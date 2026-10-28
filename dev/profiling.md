@@ -90,8 +90,14 @@ value before recording begins.
 
 The budget controller measures recorder work and lowers sampling duty when it
 would exceed its share of one CPU. Keep that feedback deterministic for the
-same observations. A budget is about microscope's own cost, not a claim that the
-target's total overhead is exactly that percentage.
+same observations. What a period spends beyond the budget is owed and paid
+back by sampling less, up to four periods' worth; the first period's cost,
+which includes warming up, is owed too, though its rate is not used to
+choose a share. While sampling is paused, the recorder sleeps rather than
+polling every ring and does not refresh the BPF engine's thread list, so a
+paused second costs about 1 ms rather than 3. A budget is about microscope's
+own cost, not a claim that the target's total overhead is exactly that
+percentage.
 
 Do not add work to the sample hot path without measuring it under each preset.
 Avoid per-sample allocation where a reused buffer or dense table works.

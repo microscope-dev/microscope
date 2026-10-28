@@ -673,7 +673,14 @@ fn drive(
             // A snapshot asked for more often than the drain's own pace
             // is taken when due, not at the next drain.
             let due = snapshots.iter().map(Snapshots::due_in).min();
-            events.wait(due.map_or(wait, |due| wait.min(due)));
+            let wait = due.map_or(wait, |due| wait.min(due));
+            // Paused, the rings fill too slowly to need waking for, and a
+            // sleep costs a fraction of a poll of every ring.
+            if pacer.as_ref().is_none_or(Pacer::sampling) {
+                events.wait(wait);
+            } else {
+                std::thread::sleep(wait);
+            }
         }
 
         let mut drained = 0;
@@ -686,7 +693,11 @@ fn drive(
             processor.gap(start, end, GapReason::Behind);
         }
         processor.collection_cpu(events.reader_cpu());
-        if let Some(walker) = &mut walker {
+        // A paused engine walks no stacks, so telling it of threads can
+        // wait until sampling is back on, and costs nothing meanwhile.
+        if let Some(walker) = &mut walker
+            && pacer.as_ref().is_none_or(Pacer::sampling)
+        {
             walker.refresh(processor);
         }
 

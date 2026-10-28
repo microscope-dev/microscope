@@ -55,13 +55,23 @@ pub struct Decision {
     pub used: f64,
 }
 
+/// The most a recording owes over its budget, in periods' worth of
+/// budget: past it, an expensive start is forgiven rather than starving
+/// sampling for longer than about this many periods.
+const MOST_OWED: u32 = 4;
+
 /// How much of each period is sampled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Controller {
     steps: u32,
 
-    /// Whether a period has passed: the first warms what recording builds
-    /// once, such as each module's unwind tables, and is not judged.
+    /// What recording has spent beyond its budget so far. A cheap period
+    /// pays it back; one under budget never banks credit for later.
+    owed: Duration,
+
+    /// Whether a period has passed. The first warms what recording builds
+    /// once, such as each module's unwind tables, so what it cost is owed
+    /// but says nothing of what sampling costs.
     warm: bool,
 }
 
@@ -69,6 +79,7 @@ impl Default for Controller {
     fn default() -> Self {
         Self {
             steps: STEPS,
+            owed: Duration::ZERO,
             warm: false,
         }
     }
@@ -82,9 +93,12 @@ impl Controller {
     }
 
     /// Chooses the share of the next period from what the last one cost,
-    /// and says so when it changes. Over budget, the share falls at once
-    /// to what fits with a margin; under it, the share at most doubles,
-    /// and only while the larger share would still fit.
+    /// and says so when it changes. What fits is what the budget leaves,
+    /// with a margin, once what is owed is paid back. Over budget, the
+    /// share falls at once to what fits. Otherwise it at most doubles,
+    /// toward what fits, and falls only while something is owed. Every
+    /// period's cost is owed, the first's too, though only later ones say
+    /// what sampling costs.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -95,6 +109,10 @@ impl Controller {
             return None;
         }
 
+        let allowed = observed.period.mul_f64(budget.cpu);
+        self.owed = (self.owed + observed.cpu)
+            .saturating_sub(allowed)
+            .min(budget.period.mul_f64(budget.cpu) * MOST_OWED);
         if !std::mem::replace(&mut self.warm, true) {
             return None;
         }
@@ -103,14 +121,17 @@ impl Controller {
 
         // CPU per second of sampling, and the share of a period that fits.
         let cost = observed.cpu.as_secs_f64() / observed.sampled.as_secs_f64();
+        let left = budget.cpu - self.owed.as_secs_f64() / budget.period.as_secs_f64();
         let fits = if cost > 0.0 {
-            ((budget.cpu / cost * 0.9 * f64::from(STEPS)).floor() as u32).clamp(1, STEPS)
+            ((left / cost * 0.9 * f64::from(STEPS)).floor().max(0.0) as u32).clamp(1, STEPS)
         } else {
             STEPS
         };
 
         let steps = if used > budget.cpu {
             fits.min(self.steps)
+        } else if !self.owed.is_zero() {
+            fits.min(self.steps.saturating_mul(2))
         } else {
             fits.min(self.steps.saturating_mul(2)).max(self.steps)
         };
@@ -142,8 +163,9 @@ mod tests {
         }
     }
 
-    /// Whatever sampling costs, the controller settles within a few periods
-    /// on a share that fits the budget, or on the least share, and stays.
+    /// Whatever sampling costs, the controller settles on a share that fits
+    /// the budget, or on the least share, and stays: within a few periods,
+    /// or a few more when a costly start must be paid back first.
     #[test]
     fn the_share_settles_where_it_fits_and_stays() {
         for cost in [0.001, 0.009, 0.011, 0.05, 0.2, 1.0, 4.0] {
@@ -164,14 +186,16 @@ mod tests {
                 "{cost}: {steps} use {used}"
             );
             assert!(
-                changes.iter().all(|(index, _)| *index < 3),
+                changes
+                    .iter()
+                    .all(|(index, _)| *index < 3 + MOST_OWED as usize * 2),
                 "{cost} changed late: {changes:?}"
             );
         }
     }
 
-    /// Once the cost falls, the share doubles back toward the whole period,
-    /// never past what fits.
+    /// Once the cost falls and what was owed is paid, the share doubles
+    /// back toward the whole period, never past what fits.
     #[test]
     fn a_cheaper_recording_samples_more_again() {
         let mut controller = Controller::default();
@@ -180,13 +204,13 @@ mod tests {
         assert_eq!(controller.steps(), 1);
         let mut shares = Vec::new();
 
-        for _ in 0..8 {
+        for _ in 0..10 {
             controller.step(BUDGET, period(0.0125, controller.steps()));
             shares.push(controller.steps());
         }
 
         // 0.9 of the budget fits 0.72 of a period: 46 sixty-fourths.
-        assert_eq!(shares, [2, 4, 8, 16, 32, 46, 46, 46]);
+        assert_eq!(shares, [1, 1, 1, 2, 4, 8, 16, 32, 46, 46]);
     }
 
     /// The first period warms what recording builds once, such as each
@@ -197,6 +221,39 @@ mod tests {
         assert_eq!(controller.step(BUDGET, period(1.0, STEPS)), None);
         assert_eq!(controller.steps(), STEPS);
         assert!(controller.step(BUDGET, period(1.0, STEPS)).is_some());
+    }
+
+    /// What `perft.py 5` under `--preset prod --python bpf` cost: its first
+    /// period, sampled in full, took 14-36 ms as recording warmed up, and
+    /// later ones 9-10 ms a second of sampling. A run of 5 s is still held
+    /// to the budget, the warm-up included.
+    #[test]
+    fn a_costly_first_period_is_paid_back() {
+        for first in [16.0, 36.0] {
+            let mut controller = Controller::default();
+            let mut spent = 0.0;
+
+            for index in 0..5 {
+                let steps = controller.steps();
+                let observed = if index == 0 {
+                    Observation {
+                        cpu: Duration::from_secs_f64(first / 1000.0),
+                        sampled: BUDGET.period,
+                        period: BUDGET.period,
+                    }
+                } else {
+                    period(0.0095, steps)
+                };
+                spent += observed.cpu.as_secs_f64();
+                controller.step(BUDGET, observed);
+            }
+
+            assert!(
+                spent <= 5.0 * BUDGET.cpu,
+                "{first} ms first: {:.1} ms in 5 s",
+                spent * 1000.0
+            );
+        }
     }
 
     /// A period that sampled nothing says nothing of the cost.
