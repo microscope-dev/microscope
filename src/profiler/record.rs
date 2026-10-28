@@ -2277,6 +2277,11 @@ impl Processor {
         self.builder.count(AccountKind::LiveSnapshots as u32, 1);
         self.builder
             .count(AccountKind::SnapshotChanged as u32, snapshot.changed);
+        let read = u64::try_from(snapshot.waiting.len()).unwrap_or(u64::MAX);
+        self.builder.count(
+            AccountKind::LiveRead as u32,
+            read.saturating_add(snapshot.changed),
+        );
         if !snapshot.changed_threads.is_empty() {
             let threads = snapshot
                 .changed_threads
@@ -2796,7 +2801,7 @@ mod tests {
         let profile = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
             .unwrap()
             .profile;
-        assert_eq!(profile.live_snapshots(), (3, 4));
+        assert_eq!(profile.live_snapshots(), (3, 4, 4));
         assert_eq!(profile.task_snapshots(), (3, 0, 2));
         assert_eq!(
             profile.task_snapshot_problems(),

@@ -372,6 +372,12 @@ pub trait RuntimeStop {
         None
     }
 
+    /// Whether the program runs while it is read, so that what one read
+    /// finds may have changed by the next.
+    fn runs(&self) -> bool {
+        false
+    }
+
     /// Fills each of `reads`' buffers from memory at its address, as
     /// [`Self::read`] does each: whether each could be. A stop that reads
     /// from outside the program makes them as few reads as it can.
@@ -2103,6 +2109,18 @@ impl InterpretedStacks {
     #[must_use]
     pub fn frames_of(&self, thread: &InterpretedThread) -> &[InterpretedFrame] {
         self.frames.get(thread.frames.clone()).unwrap_or_default()
+    }
+
+    /// Whether one of [`Self::threads`] was read whole: down to its
+    /// outermost frame, every frame of it readable. A read of a running
+    /// thread that is not may have seen its frames change.
+    #[must_use]
+    pub fn whole(&self, thread: &InterpretedThread) -> bool {
+        thread.end.is_none()
+            && self
+                .frames_of(thread)
+                .iter()
+                .all(|frame| frame.problem.is_none())
     }
 
     /// Panics unless the threads are in order, their frames lie within

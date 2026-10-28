@@ -1377,15 +1377,23 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
 fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let seconds = |nanoseconds: u64| nanoseconds as f64 / 1e9;
     let (snapshots, held, _) = profile.task_snapshots();
-    let (live, changed) = profile.live_snapshots();
+    let (live, read, changed) = profile.live_snapshots();
 
+    // A profile recorded before reads were counted has none.
+    let left_out = if read >= changed && read > 0 {
+        format!(
+            "{changed} of the {read} tasks and threads they read ({:.1}%)",
+            changed as f64 * 100.0 / read as f64
+        )
+    } else {
+        format!("{changed} tasks and threads")
+    };
     if live > 0 {
         writeln!(
             out,
-            "{} read where its tasks wait and its threads are as it ran, leaving out {} that \
-             changed while read.",
+            "{} read where its tasks wait and its threads are as it ran, leaving out {left_out} \
+             because they changed while read.",
             plural(live, "snapshot"),
-            plural(changed, "task or thread"),
         )?;
     }
 

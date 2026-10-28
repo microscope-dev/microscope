@@ -31,6 +31,7 @@ pub use agent::{
 };
 pub use exceptions::EXCEPTION_FILTERS;
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::{
@@ -80,6 +81,7 @@ pub fn detect(
                 types: types(image.as_ref(), runtime.version),
                 secret: image.symbol("_Py_HashSecret").map(|symbol| symbol.address),
                 code: Mutex::default(),
+                pages: Mutex::default(),
             })
         })
         .map_err(|reason| format!("the Python frames cannot be read: {reason}").into());
@@ -133,6 +135,14 @@ fn evaluation(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRange<Imag
     })
     .collect()
 }
+
+/// The size of a block a read of the running program reads at once: a
+/// page, as a thread's frames lie together on its stack of frames.
+const LIVE_BLOCK: usize = 4096;
+
+/// The most times the running program's frames are read at once, while a
+/// thread's still change as they are read.
+const LIVE_READS: usize = 8;
 
 /// The symbols CPython exports the objects the model reads values by as:
 /// the type objects of the built-in types it presents, and the function
@@ -222,6 +232,10 @@ struct Reading {
     /// module exports it.
     secret: Option<ImageAddress>,
     code: Mutex<code::CodeTable>,
+
+    /// The pages the last read of the running program's frames used, which
+    /// the next reads first, all at once.
+    pages: Mutex<Vec<u64>>,
 }
 
 impl Reading {
@@ -415,14 +429,91 @@ impl Reading {
         })
     }
 
+    /// Each thread's frames. While the program runs, a thread may push
+    /// and pop frames between the reads of one walk, so the pages the last
+    /// walk used are read first, all at once, for its thread states, frames
+    /// and code to come from about the same moment; and while a thread's
+    /// frames are not read whole, the walk is made again at once, up to
+    /// [`LIVE_READS`] times in all, keeping each thread's first whole read.
     fn stacks(&self, stop: &dyn RuntimeStop, version: PyVersion) -> Partial<InterpretedStacks> {
+        if !stop.runs() {
+            return self.stacks_from(stop, version, None, None);
+        }
+
+        let lock_pages = || {
+            self.pages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let mut gaps = None;
+        let mut kept = BTreeMap::new();
+        let mut unread = BTreeMap::new();
+        for _ in 0..LIVE_READS {
+            let now = StopMemory::with_block(LIVE_BLOCK);
+            let pages = lock_pages().clone();
+            now.prefetch(&pages, |reads| stop.read_each(reads));
+            let mut missed = Vec::new();
+            let walked = self.stacks_from(stop, version, Some(&now), Some(&mut missed));
+            *lock_pages() = now.used_blocks();
+
+            let stacks = &walked.value;
+            for thread in &stacks.threads {
+                let key = (thread.thread, thread.interpreter);
+                let whole = stacks.whole(thread);
+                if kept.get(&key).is_none_or(|(was, _, _)| !was && whole) {
+                    unread.remove(&key);
+                    let frames = stacks.frames_of(thread).to_vec();
+                    kept.insert(key, (whole, thread.clone(), frames));
+                }
+            }
+            for (key, problem) in missed {
+                if !kept.contains_key(&key) {
+                    unread.entry(key).or_insert(problem);
+                }
+            }
+            gaps.get_or_insert(walked.gaps);
+
+            if unread.is_empty() && kept.values().all(|(whole, _, _)| *whole) {
+                break;
+            }
+        }
+
+        let mut stacks = InterpretedStacks::default();
+        for (_, thread, frames) in kept.into_values() {
+            let start = stacks.frames.len();
+            stacks.frames.extend(frames);
+            stacks.threads.push(InterpretedThread {
+                frames: start..stacks.frames.len(),
+                ..thread
+            });
+        }
+        stacks.check_invariants();
+
+        let mut gaps = gaps.unwrap_or_default();
+        gaps.extend(unread.into_values());
+        Partial {
+            value: stacks,
+            gaps,
+        }
+    }
+
+    /// Each thread's frames, as one walk reads them, through `blocks`;
+    /// with each thread none of whose frames could be read, and why, in
+    /// `unread` where given, or else among the gaps.
+    fn stacks_from(
+        &self,
+        stop: &dyn RuntimeStop,
+        version: PyVersion,
+        blocks: Option<&StopMemory>,
+        unread: Option<&mut Vec<(ThreadKey, Arc<str>)>>,
+    ) -> Partial<InterpretedStacks> {
         let mut stacks = InterpretedStacks::default();
         let mut gaps = Vec::new();
         let reader = objects::Reader {
             stop,
             layout: &self.layout,
             charge: None,
-            blocks: None,
+            blocks,
         };
 
         let bias = stop.load_bias();
@@ -472,6 +563,7 @@ impl Reading {
             &threads,
             &mut stacks,
             &mut gaps,
+            unread,
         );
         stacks.check_invariants();
 
@@ -634,14 +726,19 @@ impl Reading {
     }
 }
 
+/// A thread, and the interpreter it runs frames in.
+type ThreadKey = (ThreadId, i64);
+
 /// Adds the frames of each thread state that runs on one of the stop's
-/// `threads` to `stacks`, and why others' are missing to `gaps`.
+/// `threads` to `stacks`, and why others' are missing to `gaps`; or, for
+/// a thread none of whose frames could be read, to `unread` where given.
 fn walk_threads(
     walk: &mut frames::Walk<'_, '_>,
     states: &[threads::ThreadState],
     threads: &threads::ThreadIds,
     stacks: &mut InterpretedStacks,
     gaps: &mut Vec<Arc<str>>,
+    mut unread: Option<&mut Vec<(ThreadKey, Arc<str>)>>,
 ) {
     for state in states.iter().filter(|state| state.frame.is_some()) {
         let thread = match threads.resolve(state.native) {
@@ -654,7 +751,11 @@ fn walk_threads(
 
         let (frames, end) = walk.thread(state);
         if frames.is_empty() {
-            gaps.extend(end);
+            match (unread.as_deref_mut(), end) {
+                (Some(unread), Some(end)) => unread.push(((thread, state.interpreter), end)),
+                (None, end) => gaps.extend(end),
+                (Some(_), None) => {}
+            }
             continue;
         }
 

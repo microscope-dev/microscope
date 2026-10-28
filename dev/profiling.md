@@ -289,9 +289,16 @@ snapshots of threads rather than tasks (`tasks::Reads`). Each thread is a
 task row named `thread`, numbered by its id, and its stack a wait row, so
 thread snapshots need no table of their own. A stopped one stores each
 thread's debugger backtrace, Python frames among native ones. A live one
-stores each thread's interpreted frames from one read, which is complete
-only when the walk ends where the runtime says it ends and every frame's
-code is proved; any other read is counted as changed, never kept shorter.
+stores each thread's interpreted frames from one walk, which is complete
+only when it ends where the runtime says it ends and every frame's code is
+proved. A busy thread pushes and pops frames faster than a walk reads them,
+so while any thread's walk is not complete the runtime walks again at once,
+up to `LIVE_READS` (8) walks, and keeps each thread's first complete one;
+each walk first reads the pages the last one used in one call. A thread with
+no complete walk is counted as changed, never kept shorter, and the report
+gives that count as a share of the threads read. Kept walks still lean
+toward moments a thread's frames change slowly: a frame that lives for less
+than a walk takes is rarely read whole.
 Each also stores the labels the runtimes give each thread
 (`RuntimeModel::thread_labels`), which the recording keeps as label spans on
 the thread from the snapshot before to this one.

@@ -930,7 +930,7 @@ pub fn stress(entry: &str, flags: &[&str]) {
     let looping = looping(&text).unwrap_or_else(|| panic!("{entry} {flags:?}: no report:\n{text}"));
     let tally = tally(&profile, &looping);
     let read = tally.reads();
-    let (snapshots, changed) = profile.live_snapshots();
+    let (snapshots, _, changed) = profile.live_snapshots();
     let summary = format!(
         "{entry} {flags:?}: {} exact of {read} reads ({} calling a site), left out {:#?}, \
          {} wrong; {} scoped of {changed} global changed while read, in {snapshots} snapshots",

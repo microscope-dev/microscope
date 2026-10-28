@@ -228,6 +228,12 @@ struct Memory {
 
     /// How many reads were made, for the tests of how much a read costs.
     reads: std::cell::Cell<usize>,
+
+    /// Whether the program runs while read, and bytes at an address that
+    /// read as others for the next so many reads of them that succeed, as
+    /// a frame's do while its thread pops it.
+    runs: bool,
+    popping: Option<(u64, Vec<u8>, std::cell::Cell<usize>)>,
 }
 
 impl Memory {
@@ -258,7 +264,22 @@ impl RuntimeStop for Memory {
             *byte = *read;
         }
 
+        if let Some((popped, read, left)) = &self.popping
+            && left.get() > 0
+            && let Some(at) = popped.checked_sub(address.get())
+            && at < bytes.len() as u64
+        {
+            left.set(left.get() - 1);
+            let at = usize::try_from(at).expect("an offset");
+            let end = bytes.len().min(at + read.len());
+            bytes[at..end].copy_from_slice(&read[..end - at]);
+        }
+
         true
+    }
+
+    fn runs(&self) -> bool {
+        self.runs
     }
 
     fn thread_pointer(&self, _thread: ThreadId) -> Option<u64> {
@@ -1132,6 +1153,83 @@ mod instances;
 mod numpy;
 mod thread_ids;
 mod values;
+
+/// A read of a running thread that catches a frame being popped, whether
+/// its code is cleared or its owner is not one yet, is read again at once,
+/// and kept once a read finds the thread whole; one that never does is
+/// left as read, for the caller to leave out.
+#[test]
+fn a_thread_whose_frames_change_while_read_is_read_again() {
+    use crate::runtime_model::RuntimeModel;
+
+    let reads = super::LIVE_READS;
+    for (field, torn) in [
+        (Field::FrameExecutable, vec![0; 8]),
+        (Field::FrameOwner, vec![0xff]),
+    ] {
+        for (popping, whole) in [(0, true), (reads - 1, true), (reads, false)] {
+            let case = format!("{} torn {popping} times", field.name());
+            let mut process = Process::new(layout());
+            let code = process.code("main", 1, &[(2, 0)]);
+            let entry = process.entry(0);
+            let frame = process.frame(entry, code, process.instruction(code, 0));
+            let state = process.thread_state(0, frame, 7);
+            let interpreter = process.interpreter(0, 0, state);
+            let runtime = process.runtime(interpreter);
+            process.memory.threads = vec![ThreadId::new(7)];
+            process.memory.runs = true;
+            let at = frame + process.offset(field);
+            process.memory.popping = Some((at, torn.clone(), std::cell::Cell::new(popping)));
+
+            let model = super::PythonRuntime {
+                free_threaded: false,
+                entries: Vec::new(),
+                evaluation: Vec::new(),
+                version: crate::image::python::PyVersion(0x030e_00f0),
+                reading: Ok(super::Reading {
+                    runtime: crate::AddressRange {
+                        start: crate::ImageAddress::new(runtime),
+                        end: crate::ImageAddress::new(runtime + SMALL),
+                    },
+                    layout: process.layout.clone(),
+                    code_type: crate::ImageAddress::new(process.code_type),
+                    types: Err("not needed for frames".into()),
+                    secret: None,
+                    code: std::sync::Mutex::default(),
+                    pages: std::sync::Mutex::default(),
+                }),
+            };
+            let stacks = model.interpreted(&process.memory).expect("interprets");
+            let read = &stacks.value;
+            if whole {
+                assert!(stacks.gaps.is_empty(), "{case}: {:?}", stacks.gaps);
+                let [thread] = read.threads.as_slice() else {
+                    panic!("{case}: {stacks:?}");
+                };
+                assert!(read.whole(thread), "{case}: {stacks:?}");
+                let names: Vec<_> = read
+                    .frames_of(thread)
+                    .iter()
+                    .map(|f| f.function.as_deref())
+                    .collect();
+                assert_eq!(names, [Some("main")], "{case}");
+            } else if field == Field::FrameOwner {
+                assert!(read.threads.is_empty(), "{case}: {stacks:?}");
+                assert_eq!(stacks.gaps.len(), 1, "{case}: {:?}", stacks.gaps);
+                assert!(
+                    stacks.gaps[0].contains("owner 255"),
+                    "{case}: {:?}",
+                    stacks.gaps
+                );
+            } else {
+                let [thread] = read.threads.as_slice() else {
+                    panic!("{case}: {stacks:?}");
+                };
+                assert!(!read.whole(thread), "{case}: {stacks:?}");
+            }
+        }
+    }
+}
 
 /// A runtime whose frames cannot be read, as one of a version microscope
 /// does not know, still finds the activations of its loop, and says why

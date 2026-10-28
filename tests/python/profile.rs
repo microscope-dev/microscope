@@ -317,7 +317,7 @@ fn live_snapshots_read_each_python_thread_as_it_runs() {
 
         let profile = record_until(interpreter, PythonEngine::Live { every: EVERY }, ready);
         let (taken, paused, _) = profile.task_snapshots();
-        let (live, _) = profile.live_snapshots();
+        let (live, _, _) = profile.live_snapshots();
         assert!(taken > 0, "{interpreter}");
         assert_eq!(
             (live, paused),

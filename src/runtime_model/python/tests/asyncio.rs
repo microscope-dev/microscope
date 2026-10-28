@@ -185,6 +185,7 @@ fn model(process: &Process, types: &Types, runtime: u64) -> super::super::Python
             types: Ok(types.images()),
             secret: None,
             code: std::sync::Mutex::new(CodeTable::default()),
+            pages: std::sync::Mutex::default(),
         }),
     }
 }

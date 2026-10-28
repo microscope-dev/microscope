@@ -1135,6 +1135,10 @@ impl LiveStop<'_> {
 }
 
 impl RuntimeStop for LiveStop<'_> {
+    fn runs(&self) -> bool {
+        true
+    }
+
     fn target_thread_id(&self, thread: crate::ThreadId) -> Option<runtime_model::TargetThreadId> {
         if self.threads.binary_search(&thread).is_err() {
             return None;
@@ -1356,7 +1360,7 @@ impl LiveRuntime<'_> {
 
         for thread in &stacks.value.threads {
             let frames = stacks.value.frames_of(thread);
-            if thread.end.is_some() || frames.iter().any(|frame| frame.problem.is_some()) {
+            if !stacks.value.whole(thread) {
                 snapshot.changed += 1;
                 continue;
             }

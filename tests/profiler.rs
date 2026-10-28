@@ -2215,7 +2215,7 @@ fn follows_a_tokio_tasks_awaits(live: bool) {
     // snapshot learns from the C library's lists of its threads.
     let profile = snapshot_until(command, live, |profile| !at_gate(profile).is_empty());
     let (taken, _, failed) = profile.task_snapshots();
-    let (read_live, _) = profile.live_snapshots();
+    let (read_live, _, _) = profile.live_snapshots();
     assert_eq!(failed, 0, "{:?}", profile.task_snapshot_problems());
     assert_eq!(
         read_live,

@@ -1024,13 +1024,15 @@ impl Profile {
             .any(|frame| frame.kind == FrameKind::Interpreted as u8)
     }
 
-    /// How many task snapshots read the program as it ran, and how many
-    /// waiting tasks they left out because they changed while read.
+    /// How many task snapshots read the program as it ran, how many
+    /// waiting tasks and threads they read, and how many of those they
+    /// left out because they changed while read.
     #[must_use]
-    pub fn live_snapshots(&self) -> (u64, u64) {
+    pub fn live_snapshots(&self) -> (u64, u64, u64) {
         let account = |kind: AccountKind| self.capture.account(kind as u32);
         (
             account(AccountKind::LiveSnapshots),
+            account(AccountKind::LiveRead),
             account(AccountKind::SnapshotChanged),
         )
     }

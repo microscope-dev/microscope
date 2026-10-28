@@ -588,6 +588,10 @@ pub enum AccountKind {
     /// Task snapshots read while the program ran.
     LiveSnapshots = 26,
 
+    /// Waiting tasks and threads live task snapshots read, kept or left
+    /// out.
+    LiveRead = 31,
+
     /// System call records the kernel's ring had no room for.
     SyscallsLost = 27,
 

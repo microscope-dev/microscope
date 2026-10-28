@@ -78,6 +78,7 @@ fn model_with(
             types,
             secret: None,
             code: std::sync::Mutex::new(CodeTable::default()),
+            pages: std::sync::Mutex::default(),
         }),
     }
 }
