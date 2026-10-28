@@ -242,6 +242,13 @@ impl Events {
         Self::attach_on(pid, options, budget, &cpus)
     }
 
+    /// Attaches as [`Self::attach`] does, with the sampling events disabled
+    /// until [`Self::enable`]; every other record is written from the start.
+    fn attach_held(pid: u32, options: &EventOptions, budget: usize) -> Result<Self, OpenError> {
+        let cpus = online_cpus().map_err(OpenError::Cpus)?;
+        Self::attach_starting(pid, options, budget, &cpus, sys::flag::DISABLED)
+    }
+
     /// Attaches as [`Self::attach`] does, with events only on `cpus`: a
     /// process kept to them needs no ring on any other.
     pub fn attach_on(
@@ -250,8 +257,20 @@ impl Events {
         budget: usize,
         cpus: &[u32],
     ) -> Result<Self, OpenError> {
+        Self::attach_starting(pid, options, budget, cpus, 0)
+    }
+
+    /// Attaches as [`Self::attach_on`] does, with the sampling events
+    /// opened with `start`'s flags.
+    fn attach_starting(
+        pid: u32,
+        options: &EventOptions,
+        budget: usize,
+        cpus: &[u32],
+        start: u64,
+    ) -> Result<Self, OpenError> {
         raise_descriptor_limit();
-        let mut attr = attr(options, 0);
+        let mut attr = attr(options, start);
         let sideband = sideband_attr(options, 0);
         let per_thread = cpus.len() * if sideband.is_some() { 2 } else { 1 };
         let mut opened = std::collections::BTreeSet::new();
@@ -856,14 +875,25 @@ impl ProcessWatch {
 }
 
 /// Samples the running process `pid` and everything it starts, within the
-/// `budget` of events [`Events::attach`] takes.
-pub fn attach(pid: u32, options: &EventOptions, budget: usize) -> Result<Attached, OpenError> {
+/// `budget` of events [`Events::attach`] takes. When `held`, sampling waits
+/// for [`Events::enable`], as a BPF engine must be loaded onto the events
+/// first; the process's mappings and threads are followed from the start.
+pub fn attach(
+    pid: u32,
+    options: &EventOptions,
+    budget: usize,
+    held: bool,
+) -> Result<Attached, OpenError> {
     // Held first, so that the process the events name is the one watched.
     let process = super::native::pidfd_open(nix::unistd::Pid::from_raw(
         i32::try_from(pid).unwrap_or(i32::MAX),
     ))
     .map_err(|error| OpenError::NoProcess(error.into()))?;
-    let events = Events::attach(pid, options, budget)?;
+    let events = if held {
+        Events::attach_held(pid, options, budget)?
+    } else {
+        Events::attach(pid, options, budget)?
+    };
 
     Ok(Attached {
         events,

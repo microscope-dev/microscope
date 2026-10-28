@@ -488,9 +488,11 @@ file and is loaded under the same path and inode its mapping finds later, so
 the image is read once. It places the isolate only where that needs no load
 bias, a fixed offset from the thread pointer; a slot, as Node 22 uses, waits
 for the mapping, and until then samples carry no isolate. The layout found
-at the mapping replaces it. A process microscope attaches to gets no early
-layout: its samples still wait for processing to read the image it has
-already mapped.
+at the mapping replaces it. A process microscope attaches to has its V8
+module mapped already, so its sampling events open disabled
+(`perf::attach` with `held`) while its mapping and thread events run.
+`record_attached` reads its mappings, tells the walker its layout
+(`Walker::refresh`), and only then enables sampling.
 
 A walked frame is kept only where its address is V8's code: a module V8 owns
 (`RuntimeModel::owns_code`) or a mapping of code it generated. Its functions

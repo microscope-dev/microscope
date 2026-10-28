@@ -1338,6 +1338,85 @@ mod bpf {
         );
     }
 
+    /// The walker knows an attached node's layout before its first sample:
+    /// sampling waits until microscope has read the images node mapped, so
+    /// no sample comes before the layout however long that takes. Without
+    /// the image cache it took long enough to leave a few percent of the
+    /// samples with every JavaScript frame unknown.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn an_attached_nodes_first_samples_hold_their_javascript_frames() {
+        use std::io::BufRead as _;
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
+            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
+        let scratch = ScratchDir::new("node-attached-bpf");
+        let profile = scratch.path().join("attached.usprof");
+        let mut spinning = Reaped(
+            Command::new(node::node(ENTRY))
+                .args([
+                    "-e",
+                    "console.log('ready'); const end = Date.now() + 3000; let n = 0; \
+                     while (Date.now() < end) n++;",
+                ])
+                .env_remove("NODE_OPTIONS")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("start node"),
+        );
+        let mut ready = String::new();
+        std::io::BufReader::new(spinning.0.stdout.take().expect("node's output"))
+            .read_line(&mut ready)
+            .expect("node says it is ready");
+        assert_eq!(ready.trim_end(), "ready");
+
+        let finished = Command::new(&launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--node", "bpf", "--pid"])
+            .arg(spinning.0.id().to_string())
+            .arg("--output")
+            .arg(&profile)
+            .env("MICROSCOPE_CACHE_DIR", "")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope");
+        assert!(
+            finished.status.success(),
+            "{}",
+            String::from_utf8_lossy(&finished.stderr)
+        );
+
+        let main = spinning.0.id();
+        let profile = Profile::read(&profile).expect("read the profile").profile;
+        let stacks = profile.stacks();
+        let ran: Vec<&SampledStack> = stacks.iter().filter(|stack| stack.tid == main).collect();
+        let unknown = ran
+            .iter()
+            .filter(|stack| {
+                matches!(&stack.ending, StackEnding::Truncated(reason)
+                    if reason == "interpreted frames unknown")
+            })
+            .count();
+        assert!(
+            ran.len() >= 500,
+            "only {} samples of node's main thread",
+            ran.len()
+        );
+        assert!(
+            unknown * 100 <= ran.len(),
+            "{unknown} of {} samples of node's main thread have unknown JavaScript frames",
+            ran.len()
+        );
+    }
+
     /// Two Node processes a shell starts, each with its own V8 and its own
     /// layout for the walker: each process's samples hold its own threads'
     /// JavaScript frames, as each reported them.

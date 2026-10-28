@@ -245,8 +245,9 @@ pub fn record_attached(
         processor.fixed_period(period);
     }
 
-    let perf::Attached { events, process } = perf::attach(pid, &events, options.max_events)?;
-    let mut walker = if options.kernel || options.python == Some(PythonEngine::Bpf) {
+    let held = options.kernel || options.python == Some(PythonEngine::Bpf);
+    let perf::Attached { events, process } = perf::attach(pid, &events, options.max_events, held)?;
+    let mut walker = if held {
         Some(Walker::attach(&events, &mut processor, options.kernel)?)
     } else {
         None
@@ -264,6 +265,13 @@ pub fn record_attached(
         stack_bytes,
         stack_copy,
     );
+    // The process's images are read now, so the engine is told its layout
+    // before the first sample: until it is, every interpreted frame it
+    // walks is unknown.
+    if let Some(walker) = &mut walker {
+        walker.refresh(&mut processor);
+        events.enable(true);
+    }
 
     let mut stopped = false;
     events.read_while(|| {
