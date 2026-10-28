@@ -373,7 +373,12 @@ impl<P: InspectionOps> Controller<P> {
                 registers,
                 after_call,
                 ..
-            } => (None, registers.clone(), *after_call, Vec::new()),
+            } => (
+                None,
+                RegisterFile::clone(registers),
+                *after_call,
+                Vec::new(),
+            ),
             RootOrigin::Suspended { .. } => return Err(Error::FrameSuspended),
             RootOrigin::Interpreted { .. } => return Err(Error::FrameInterpreted),
         };
@@ -1443,7 +1448,7 @@ pub(super) enum RootOrigin {
 
     /// The registers a parked task saved. Any other register is unknown.
     Saved {
-        registers: RegisterFile,
+        registers: Box<RegisterFile>,
 
         /// Whether the saved instruction is a return address.
         after_call: bool,
@@ -1504,6 +1509,10 @@ impl StackRoot {
 }
 
 /// The registers a logical frame's values are read from.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one per frame the debugger resolves; a register file is inline so that unwinding a sample allocates nothing"
+)]
 pub(super) enum FrameRegisters {
     /// The thread's own registers, which every logical frame of the
     /// innermost activation shares.

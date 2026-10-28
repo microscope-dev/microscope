@@ -1,7 +1,7 @@
 //! The generic unwind loop: it iterates the caller contexts a
 //! [`CallerProvider`] reconstructs.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use crate::debug_info::UnwindInfo;
 use crate::{ImageAddress, LoadedModule, ModuleImage, UnwindTermination, VirtualAddress};
@@ -27,13 +27,21 @@ pub fn unwind_module_for<'a>(
     modules: &[UnwindModule<'a>],
     address: VirtualAddress,
 ) -> Option<(UnwindModule<'a>, ImageAddress)> {
-    modules.iter().find_map(|module| {
+    unwind_module_at(modules, address).map(|(index, image_address)| (modules[index], image_address))
+}
+
+/// The index in `modules` of the module [`unwind_module_for`] finds.
+pub fn unwind_module_at(
+    modules: &[UnwindModule<'_>],
+    address: VirtualAddress,
+) -> Option<(usize, ImageAddress)> {
+    modules.iter().enumerate().find_map(|(index, module)| {
         module
             .loaded
             .image_address(address)
             .ok()
             .filter(|image_address| module.image.contains_address(*image_address))
-            .map(|image_address| (*module, image_address))
+            .map(|image_address| (index, image_address))
     })
 }
 
@@ -186,41 +194,113 @@ pub struct FrameContext {
     pub signal_frame: bool,
 }
 
+/// Registers numbered below this live in [`RegisterFile`]'s array, which
+/// covers x86-64's general registers, flags, and segment bases. Call-frame
+/// information may name any number, so the rest are kept in a list.
+const DENSE_REGISTERS: usize = 64;
+
 /// Register values by DWARF number. An absent register is unknown.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// A sampler unwinds every frame of every sample through one of these, so
+/// it holds no allocation for the registers x86-64 has: copying it is one
+/// copy of its array.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RegisterFile {
-    values: BTreeMap<DwarfRegister, u64>,
+    /// Bit `n` says whether register `n` is known.
+    known: u64,
+
+    /// Each register's value, 0 while unknown, so that equal files are
+    /// equal arrays.
+    values: [u64; DENSE_REGISTERS],
+
+    /// Registers numbered from [`DENSE_REGISTERS`] up, sorted by number.
+    others: Vec<(DwarfRegister, u64)>,
 }
 
 impl RegisterFile {
     pub fn new(values: impl IntoIterator<Item = (DwarfRegister, u64)>) -> Self {
-        Self {
-            values: values.into_iter().collect(),
+        let mut registers = Self {
+            known: 0,
+            values: [0; DENSE_REGISTERS],
+            others: Vec::new(),
+        };
+        for (register, value) in values {
+            registers.set(register, value);
         }
+
+        registers
     }
 
     pub fn get(&self, register: DwarfRegister) -> Option<u64> {
-        self.values.get(&register).copied()
+        let number = usize::from(register.0);
+        if number < DENSE_REGISTERS {
+            return (self.known & (1 << number) != 0).then(|| self.values[number]);
+        }
+
+        self.others
+            .binary_search_by_key(&register, |(other, _)| *other)
+            .ok()
+            .map(|at| self.others[at].1)
     }
 
     pub fn set(&mut self, register: DwarfRegister, value: u64) {
-        self.values.insert(register, value);
+        let number = usize::from(register.0);
+        if number < DENSE_REGISTERS {
+            self.known |= 1 << number;
+            self.values[number] = value;
+            return;
+        }
+
+        match self
+            .others
+            .binary_search_by_key(&register, |(other, _)| *other)
+        {
+            Ok(at) => self.others[at].1 = value,
+            Err(at) => self.others.insert(at, (register, value)),
+        }
     }
 
     pub fn remove(&mut self, register: DwarfRegister) {
-        self.values.remove(&register);
+        let number = usize::from(register.0);
+        if number < DENSE_REGISTERS {
+            self.known &= !(1 << number);
+            self.values[number] = 0;
+            return;
+        }
+
+        self.others.retain(|(other, _)| *other != register);
     }
 
     /// Forgets every register `keep` says not to keep.
     pub fn retain(&mut self, mut keep: impl FnMut(DwarfRegister) -> bool) {
-        self.values.retain(|&register, _| keep(register));
+        let mut known = self.known;
+        while known != 0 {
+            let number = known.trailing_zeros();
+            known &= known - 1;
+            #[expect(clippy::cast_possible_truncation, reason = "below 64")]
+            if !keep(DwarfRegister(number as u16)) {
+                self.remove(DwarfRegister(number as u16));
+            }
+        }
+
+        self.others.retain(|(register, _)| keep(*register));
     }
 
     /// Every known register and its value, by number.
     pub fn iter(&self) -> impl Iterator<Item = (DwarfRegister, u64)> + '_ {
-        self.values
-            .iter()
-            .map(|(&register, &value)| (register, value))
+        (0..DENSE_REGISTERS)
+            .filter(|number| self.known & (1 << number) != 0)
+            .map(|number| {
+                #[expect(clippy::cast_possible_truncation, reason = "below 64")]
+                (DwarfRegister(number as u16), self.values[number])
+            })
+            .chain(self.others.iter().copied())
+    }
+}
+
+impl std::fmt::Debug for RegisterFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_map().entries(self.iter()).finish()
     }
 }
 
@@ -316,6 +396,40 @@ mod tests {
             cfa: Some(VirtualAddress::new(cfa)),
             signal_frame: false,
         }
+    }
+
+    #[test]
+    fn a_register_file_keeps_any_number_and_forgets_what_it_is_told_to() {
+        let register = DwarfRegister::new;
+        let mut file =
+            RegisterFile::new([(register(700), 7), (register(6), 60), (register(63), 1)]);
+        file.set(register(64), 2);
+        file.set(register(700), 70);
+        assert_eq!(file.get(register(700)), Some(70));
+        assert_eq!(file.get(register(5)), None);
+        assert_eq!(
+            file.iter().collect::<Vec<_>>(),
+            [
+                (register(6), 60),
+                (register(63), 1),
+                (register(64), 2),
+                (register(700), 70)
+            ]
+        );
+
+        // A register set and forgotten leaves the file as it was.
+        let before = file.clone();
+        file.set(register(0), 9);
+        file.set(register(65), 9);
+        file.remove(register(0));
+        file.remove(register(65));
+        assert_eq!(file, before);
+
+        file.retain(|register| register.number() % 2 == 0);
+        assert_eq!(
+            file.iter().collect::<Vec<_>>(),
+            [(register(6), 60), (register(64), 2), (register(700), 70)]
+        );
     }
 
     #[test]

@@ -32,7 +32,8 @@ pub struct Source<'a, K> {
     pub loaded: LoadedModule,
 
     /// The ranges of the image a runtime says the process keeps code in,
-    /// where a copy may begin too.
+    /// or where the caller found a copy began before, where a copy may
+    /// begin too. They are tried before any function the symbols name.
     pub stored: Vec<(ImageAddress, ImageAddress)>,
 }
 
@@ -67,8 +68,13 @@ pub fn prove<K: Copy, T>(
         .iter()
         .filter(|source| source.loaded.window.is_none())
         .find_map(|source| {
-            candidates(source.image)
-                .chain(source.stored.iter().copied())
+            // What the caller knows first: stored ranges name the code a
+            // runtime copies, and the start of a copy proven before.
+            source
+                .stored
+                .iter()
+                .copied()
+                .chain(candidates(source.image))
                 .find_map(|(start, end)| {
                     let from = source.loaded.virtual_address(start).ok()?.get();
                     let limit = (end.get().checked_sub(start.get())?)

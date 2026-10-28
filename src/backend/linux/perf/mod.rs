@@ -1048,6 +1048,16 @@ pub fn stored_code(
     loaded: crate::LoadedModule,
     mapped: std::ops::Range<u64>,
 ) -> Vec<(crate::ImageAddress, crate::ImageAddress)> {
+    stored_code_of(&code_keepers(info), pid, loaded, mapped)
+}
+
+/// The runtimes the image `info` describes carries that may keep code of
+/// their own in a process, for [`stored_code_of`]. Detecting them reads
+/// the image's symbols, so a caller that asks of one image often keeps
+/// them.
+pub fn code_keepers(
+    info: &crate::debug_info::DebugInfo,
+) -> Vec<std::sync::Arc<dyn crate::runtime_model::RuntimeModel>> {
     use crate::runtime_model::RuntimeImage;
 
     let image: std::sync::Arc<dyn RuntimeImage + Send + Sync> =
@@ -1055,10 +1065,25 @@ pub fn stored_code(
     if image.v8().is_none() {
         return Vec::new();
     }
-    let stop = crate::profiler::LiveStop::memory(pid, loaded.load_bias);
     crate::runtime_model::detect(&image)
         .into_iter()
         .flatten()
+        .collect()
+}
+
+/// [`stored_code`], with the runtimes [`code_keepers`] found in the image.
+pub fn stored_code_of(
+    keepers: &[std::sync::Arc<dyn crate::runtime_model::RuntimeModel>],
+    pid: u32,
+    loaded: crate::LoadedModule,
+    mapped: std::ops::Range<u64>,
+) -> Vec<(crate::ImageAddress, crate::ImageAddress)> {
+    if keepers.is_empty() {
+        return Vec::new();
+    }
+    let stop = crate::profiler::LiveStop::memory(pid, loaded.load_bias);
+    keepers
+        .iter()
         .flat_map(|model| model.process_code(&stop))
         .filter(|range| mapped.start <= range.start.get() && range.end.get() <= mapped.end)
         .map(|range| {

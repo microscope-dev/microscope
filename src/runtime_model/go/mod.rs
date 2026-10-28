@@ -528,7 +528,7 @@ impl RuntimeModel for GoRuntime {
         }
 
         Ok(Some(TaskContext::Saved {
-            registers,
+            registers: Box::new(registers),
             after_call: task.resume.is_none_or(|resume| resume.after_call),
         }))
     }

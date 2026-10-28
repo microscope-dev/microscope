@@ -602,7 +602,6 @@ fn drive(
     let mut wait = watch.every.min(Duration::from_millis(250));
     let mut stopping = false;
     let mut now = false;
-    let mut buffer = Vec::new();
     loop {
         if !stopping && watch.stop.load(Ordering::Relaxed) {
             stopping = true;
@@ -628,13 +627,12 @@ fn drive(
             events.wait(due.map_or(wait, |due| wait.min(due)));
         }
 
-        buffer.clear();
-        events.drain(&mut buffer);
-        record!(
-            "record: drained {} bytes, finished {finished}",
-            buffer.len()
+        let mut drained = 0;
+        processor.ingest_drained(
+            |records| drained = events.drain(records),
+            (!finished).then_some(watermark),
         );
-        processor.ingest(&buffer, (!finished).then_some(watermark));
+        record!("record: drained {drained} bytes, finished {finished}");
         processor.collection_cpu(events.reader_cpu());
         if let Some(walker) = &mut walker {
             walker.refresh(processor);

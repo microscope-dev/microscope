@@ -2401,14 +2401,16 @@ impl UnwindInfo for DwarfUnwindInfo {
         let view = self.view();
         let sections = UnwindSections::in_image(view);
         let clobbered = self.call_clobbered_registers(address);
-        let restored = view.restored(address);
+        // Only an epilogue whose saved registers lie below the copy needs
+        // this, so it is looked up only then.
+        let restored = || view.restored(address);
         let eh_frame = sections.eh_frame();
         let result = self
             .row(false, address, || {
                 frame_row(&eh_frame, view.eh_frame_index(), &sections.bases, address)
             })
             .and_then(|row| {
-                unwind_by_row(&eh_frame, &row, registers, (clobbered, restored), memory)
+                unwind_by_row(&eh_frame, &row, registers, (clobbered, &restored), memory)
             });
         let result = if matches!(result, Err(UnwindTermination::NoUnwindInfo { .. })) {
             let debug_frame = sections.debug_frame();
@@ -2421,24 +2423,33 @@ impl UnwindInfo for DwarfUnwindInfo {
                 )
             })
             .and_then(|row| {
-                unwind_by_row(&debug_frame, &row, registers, (clobbered, restored), memory)
+                unwind_by_row(
+                    &debug_frame,
+                    &row,
+                    registers,
+                    (clobbered, &restored),
+                    memory,
+                )
             })
         } else {
             result
         };
 
-        let result = match (result, view.stub_pushes(address)) {
-            (Err(UnwindTermination::NoUnwindInfo { .. }), Some(pushed)) => {
-                unwind_stub(pushed, registers, clobbered, memory)
+        let result = match result {
+            Err(UnwindTermination::NoUnwindInfo { .. }) => {
+                view.stub_pushes(address).map_or(result, |pushed| {
+                    unwind_stub(pushed, registers, clobbered, memory)
+                })
             }
-            (result, _) => result,
+            result => result,
         };
 
-        let result = match (result, proved_frame(view, address)) {
-            (Err(UnwindTermination::NoUnwindInfo { .. }), Some(frame)) => {
-                super::x86_64::frames::frame_caller(frame, registers, memory)
-            }
-            (result, _) => result,
+        let result = match result {
+            Err(UnwindTermination::NoUnwindInfo { .. }) => proved_frame(view, address)
+                .map_or(result, |frame| {
+                    super::x86_64::frames::frame_caller(frame, registers, memory)
+                }),
+            result => result,
         };
 
         let Some(go) = self.go() else {
@@ -2579,14 +2590,14 @@ fn unwind_from_section<'data, S>(
     bases: &BaseAddresses,
     address: ImageAddress,
     registers: &RegisterFile,
-    clobbered: (&[DwarfRegister], u32),
+    (clobbered, restored): (&[DwarfRegister], u32),
     memory: &mut dyn MemoryReader,
 ) -> std::result::Result<UnwindStep, UnwindTermination>
 where
     S: UnwindSection<Reader<'data>>,
 {
     let row = frame_row(section, index, bases, address)?;
-    unwind_by_row(section, &row, registers, clobbered, memory)
+    unwind_by_row(section, &row, registers, (clobbered, &|| restored), memory)
 }
 
 /// The caller of the frame whose `registers` `row` describes.
@@ -2594,7 +2605,7 @@ fn unwind_by_row<'data, S>(
     section: &S,
     row: &FrameRow,
     registers: &RegisterFile,
-    (clobbered, restored): (&[DwarfRegister], u32),
+    (clobbered, restored): (&[DwarfRegister], &dyn Fn() -> u32),
     memory: &mut dyn MemoryReader,
 ) -> std::result::Result<UnwindStep, UnwindTermination>
 where
@@ -2637,7 +2648,7 @@ where
                 let proved = X86_64_CALLEE_SAVED_REGISTERS
                     .iter()
                     .position(|saved| *saved == register)
-                    .is_some_and(|index| restored & (1 << index) != 0);
+                    .is_some_and(|index| restored() & (1 << index) != 0);
                 if !proved || clobbered.contains(&register) {
                     caller.remove(register);
                 }

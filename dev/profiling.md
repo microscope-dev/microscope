@@ -455,7 +455,11 @@ the one the walker read, with the same script id, and the same function literal
 id. A script id is never reused in an isolate and a literal id names one
 function literal in its script, so a frame that passes ran that function; one
 that fails is `<unknown>` with the reason. A shared information of no script,
-as a native function's, is not a frame of the program.
+as a native function's, is not a frame of the program. The records of one
+drain are read at one moment, so a frame they name again, by every word its
+name and proof read, is named once (`Interpreted::named`); the next drain
+reads it afresh. Sixteen busy workers name the same few hundred frames
+thousands of times a drain.
 
 Lines follow what V8 writes, never what it might hold. The interpreter keeps a
 frame's bytecode offset in a register (`r9`, `kInterpreterBytecodeOffsetRegister`
@@ -476,7 +480,11 @@ address order, and Debian's V8 reserves its code range below `libnode`, so
 anonymous code mapped before any module that carries V8 waits for one
 (`ProcessState::before_v8`). `modules_in` keeps a copy beside its image's
 own module, keyed by image and window, so the copy does not hide V8 from the
-walker. In an image that carries V8, the interpreter's entry trampoline plays
+walker. A copy is proved against the module itself, never against another
+copy, and V8 copies the same builtins for each isolate, so the recorder keeps
+each image's runtimes and the start its last copy was proved at
+(`Processor::v8_code`): proving each against every copy before it made each
+new worker cost more than the last. In an image that carries V8, the interpreter's entry trampoline plays
 the interpreter role (`roles::v8_role`) and generated code frames do too, so
 each stands for the JavaScript functions placed at it. Functions placed at a
 frame of another role, as a bytecode handler a sample landed in, go after that

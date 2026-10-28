@@ -718,7 +718,7 @@ pub enum TaskContext {
     /// The task is parked with these registers saved; any other register is
     /// unknown.
     Saved {
-        registers: RegisterFile,
+        registers: Box<RegisterFile>,
 
         /// Whether the saved instruction is a return address, which names
         /// the call before it, as when a task parked by calling into its

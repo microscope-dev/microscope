@@ -14,7 +14,7 @@ use foldhash::HashMap;
 
 use super::{
     DwarfRegister, FramePointerRule, MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile,
-    UnwindModule, interrupted_registers, unwind_module_for,
+    UnwindModule, interrupted_registers, unwind_module_at,
 };
 
 use crate::capture::records::Truncation;
@@ -241,15 +241,10 @@ fn walk_cfi(
     let mut address = VirtualAddress::new(instruction);
     let mut previous_cfa = None;
     let end = loop {
-        let found = unwind_module_for(modules, address);
-        let module = found.map(|(module, _)| module);
-        let index = module.and_then(|found| {
-            modules
-                .iter()
-                .position(|module| module.loaded.id == found.loaded.id)
-        });
-        let role = found.map_or(CodeRole::Ordinary, |(module, image_address)| {
-            rules.role(&module, image_address)
+        let found = unwind_module_at(modules, address);
+        let index = found.map(|(index, _)| index);
+        let role = found.map_or(CodeRole::Ordinary, |(index, image_address)| {
+            rules.role(&modules[index], image_address)
         });
         unwound.push(Unwound {
             frame: SampledFrame {
@@ -276,7 +271,7 @@ fn walk_cfi(
             break StackEnd::Truncated(Truncation::StackSwitch, index);
         }
 
-        let Some((module, image_address)) = found else {
+        let Some((module, image_address)) = found.map(|(index, at)| (modules[index], at)) else {
             break StackEnd::Truncated(Truncation::UnmappedAddress, None);
         };
 
@@ -359,13 +354,11 @@ fn signal_trampoline(
     caller: u64,
     registers: &RegisterFile,
 ) -> Option<Unwound> {
-    let (module, image_address) = unwind_module_for(modules, VirtualAddress::new(caller))?;
-    (rules.role(&module, image_address) == CodeRole::SignalTrampoline).then(|| Unwound {
+    let (index, image_address) = unwind_module_at(modules, VirtualAddress::new(caller))?;
+    (rules.role(&modules[index], image_address) == CodeRole::SignalTrampoline).then(|| Unwound {
         frame: SampledFrame {
             address: VirtualAddress::new(caller),
-            module: modules
-                .iter()
-                .position(|candidate| candidate.loaded.id == module.loaded.id),
+            module: Some(index),
             role: CodeRole::SignalTrampoline,
             frame_pointer: registers.get(RBP),
             cfa: None,
@@ -462,13 +455,12 @@ fn follow_chain(
 ) -> StackEnd {
     for (position, &return_address) in chain.iter().enumerate() {
         let address = VirtualAddress::new(return_address.wrapping_sub(1));
-        let Some((module, image_address)) = unwind_module_for(modules, address) else {
+        let Some((index, image_address)) = unwind_module_at(modules, address) else {
             return StackEnd::Truncated(Truncation::UnmappedAddress, None);
         };
 
-        let index = modules
-            .iter()
-            .position(|candidate| candidate.loaded.id == module.loaded.id);
+        let module = modules[index];
+        let index = Some(index);
         let role = rules.role(&module, image_address);
         let kept = rules.rule(&module, address);
         let frame_pointer = links.get(position).copied();

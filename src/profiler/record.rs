@@ -140,6 +140,16 @@ struct Image {
     /// Whether it is code a runtime generated, as V8's compiled
     /// JavaScript, which the runtime's frames run.
     generated: bool,
+
+    /// The runtimes it carries that keep code of their own in a process,
+    /// detected the first time a mapping may copy its code: V8 copies its
+    /// builtins once for each isolate.
+    code_keepers: std::sync::OnceLock<Vec<Arc<dyn crate::runtime_model::RuntimeModel>>>,
+
+    /// The range of its code the last copy proven of it began with. V8
+    /// copies the same builtins for each isolate, which this finds without
+    /// probing every function that begins a page.
+    copied: Option<(ImageAddress, ImageAddress)>,
 }
 
 /// One executable mapping of a process.
@@ -234,6 +244,10 @@ pub struct Processor {
 
     /// Records held back for the next batch, past its watermark.
     carry: Vec<u8>,
+
+    /// The last batch's buffer, emptied, which the next batch holds
+    /// back its records in, so that neither is allocated again.
+    spare: Vec<u8>,
 
     /// The latest watermark records were processed up to.
     processed_to: u64,
@@ -337,6 +351,7 @@ impl Processor {
             // A stack keeps at least its innermost frame.
             limit: limit.max(1),
             carry: Vec::new(),
+            spare: Vec::new(),
             processed_to: 0,
             untrusted: 0,
             latest: 0,
@@ -513,16 +528,26 @@ impl Processor {
     /// enough behind the drain that every record before it has arrived,
     /// and one that still comes later is counted.
     pub fn ingest(&mut self, batch: &[u8], watermark: Option<u64>) {
+        self.ingest_drained(|bytes| bytes.extend_from_slice(batch), watermark);
+    }
+
+    /// Ingests what `drain` appends to the records held back, as
+    /// [`Processor::ingest`] does a batch. A busy recording drains tens of
+    /// megabytes at a time, which this does not copy again.
+    pub fn ingest_drained(&mut self, drain: impl FnOnce(&mut Vec<u8>), watermark: Option<u64>) {
         if let Some(watermark) = watermark {
             self.processed_to = self.processed_to.max(watermark);
         }
-        let mut bytes = std::mem::take(&mut self.carry);
-        bytes.extend_from_slice(batch);
+        let mut bytes = std::mem::replace(&mut self.carry, std::mem::take(&mut self.spare));
+        drain(&mut bytes);
         self.order.clear();
         let outputs = self
             .interpreted
-            .as_ref()
-            .map(|interpreted| interpreted.outputs.clone())
+            .as_mut()
+            .map(|interpreted| {
+                interpreted.batch();
+                interpreted.outputs.clone()
+            })
             .unwrap_or_default();
 
         // A record of Python frames goes with the next sample of its
@@ -621,6 +646,8 @@ impl Processor {
 
         self.paired = None;
         self.order = order;
+        bytes.clear();
+        self.spare = bytes;
         self.processed = watermark.unwrap_or(self.latest).max(self.processed);
         self.map_lost_before(watermark.unwrap_or(u64::MAX));
     }
@@ -972,6 +999,8 @@ impl Processor {
             probes,
             anonymous: false,
             generated: false,
+            code_keepers: std::sync::OnceLock::new(),
+            copied: None,
         });
         image
     }
@@ -1078,13 +1107,19 @@ impl Processor {
         let Some(process) = self.processes.get(&pid) else {
             return;
         };
-        let v8: Vec<(usize, &Mapped, &DebugInfo)> = process
+        // A copy of the builtins binds V8's image too, but V8 copies the
+        // module itself. Each worker's isolate adds a copy, so reading the
+        // copies as sources made each new isolate cost one more than the
+        // last.
+        let v8: Vec<(usize, &Mapped, &Image, &DebugInfo)> = process
             .mapped
             .iter()
             .enumerate()
+            .filter(|(_, mapped)| mapped.loaded.window.is_none())
             .filter_map(|(index, mapped)| {
-                let info = self.images[mapped.image].info.as_ref()?;
-                crate::debug_info::v8::is_v8(&info.image).then_some((index, mapped, info))
+                let image = &self.images[mapped.image];
+                let info = image.info.as_ref()?;
+                crate::debug_info::v8::is_v8(&info.image).then_some((index, mapped, image, info))
             })
             .collect();
         if v8.is_empty() {
@@ -1101,16 +1136,20 @@ impl Processor {
                 let sources: Vec<crate::unwind::code_copies::Source<'_, usize>> = v8
                     .iter()
                     .map(
-                        |&(index, mapped, info)| crate::unwind::code_copies::Source {
+                        |&(index, mapped, image, info)| crate::unwind::code_copies::Source {
                             key: index,
                             image: &info.image,
                             loaded: mapped.loaded,
-                            stored: perf::stored_code(
-                                pid.get(),
-                                info,
-                                mapped.loaded,
-                                mapped.start..mapped.end,
-                            ),
+                            stored: image
+                                .copied
+                                .into_iter()
+                                .chain(perf::stored_code_of(
+                                    image.code_keepers.get_or_init(|| perf::code_keepers(info)),
+                                    pid.get(),
+                                    mapped.loaded,
+                                    mapped.start..mapped.end,
+                                ))
+                                .collect(),
                         },
                     )
                     .collect();
@@ -1128,6 +1167,10 @@ impl Processor {
             return;
         };
 
+        self.images[source.image].copied = Some((
+            image_start,
+            ImageAddress::new(image_start.get().saturating_add(length)),
+        ));
         let end = code.start.saturating_add(length);
         let bias = LoadBias::between(image_start, crate::VirtualAddress::new(code.start));
         let loaded = LoadedModule {
@@ -1228,6 +1271,8 @@ impl Processor {
             probes: None,
             anonymous: true,
             generated: false,
+            code_keepers: std::sync::OnceLock::new(),
+            copied: None,
         });
 
         let loaded = LoadedModule {

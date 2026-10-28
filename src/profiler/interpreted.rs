@@ -24,6 +24,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use foldhash::HashMap;
+
 use super::tasks::LiveStop;
 use crate::backend::bpf::sampler::{self, Gil, NO_OFFSET, PyStack, StackEnd, V8End, V8Isolate};
 use crate::capture::CaptureBuilder;
@@ -244,6 +246,42 @@ pub(super) struct Interpreted {
     /// The frames of each record drained but not yet processed, read as
     /// it was drained.
     drained: BTreeMap<RecordKey, Drained>,
+
+    /// What each JavaScript frame read in this batch of records was named,
+    /// by everything the name and its proof read. A busy program's records
+    /// name the same frames over and over, and records drained together
+    /// are read together; the next batch reads them afresh.
+    named: HashMap<(Pid, NamedFrame), Option<Vec<crate::RecordedFrame>>>,
+}
+
+/// Every field of a [`SampledCodeFrame`] its name is read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NamedFrame {
+    after_call: bool,
+    generated: bool,
+    function: u64,
+    shared: u64,
+    script: u64,
+    script_id: u64,
+    literal_id: i32,
+    bytecode: u64,
+    bytecode_offset: u64,
+}
+
+impl NamedFrame {
+    const fn of(frame: &SampledCodeFrame) -> Self {
+        Self {
+            after_call: frame.after_call,
+            generated: frame.generated,
+            function: frame.function,
+            shared: frame.shared,
+            script: frame.script,
+            script_id: frame.script_id,
+            literal_id: frame.literal_id,
+            bytecode: frame.bytecode,
+            bytecode_offset: frame.bytecode_offset,
+        }
+    }
 }
 
 /// The frames of a record, read as it was drained.
@@ -259,14 +297,20 @@ enum Drained {
 }
 
 impl Interpreted {
-    pub(super) const fn new(outputs: Vec<u64>) -> Self {
+    pub(super) fn new(outputs: Vec<u64>) -> Self {
         Self {
             outputs,
             found: BTreeMap::new(),
             spans: BTreeMap::new(),
             isolates: BTreeMap::new(),
             drained: BTreeMap::new(),
+            named: HashMap::default(),
         }
+    }
+
+    /// Begins a batch of records, whose frames are read afresh.
+    pub(super) fn batch(&mut self) {
+        self.named.clear();
     }
 
     /// Whether what process `pid`'s modules say of its interpreter must
@@ -391,10 +435,22 @@ impl Interpreted {
         let model = runtime.model.as_ref();
         let drained = match runtime.kind {
             Kind::Python { .. } => Drained::Read(read_record(model, &stop, Some(&aligned))),
-            Kind::V8 { .. } => drain_v8_record(model, &stop, Some(&aligned), code)
-                .map_or(Drained::Read(Sampled::Unknown), |drained| {
-                    Drained::V8(drained, Arc::clone(&runtime.model))
-                }),
+            Kind::V8 { .. } => {
+                let named = &mut self.named;
+                let mut name = |frame: &SampledCodeFrame| {
+                    named
+                        .entry((pid, NamedFrame::of(frame)))
+                        .or_insert_with(|| model.sampled_code_frame(&stop, frame))
+                        .clone()
+                };
+                v8_record(Some(&aligned))
+                    .and_then(|stack| {
+                        drain_v8(&stack, &|address| owner(model, code, address), &mut name)
+                    })
+                    .map_or(Drained::Read(Sampled::Unknown), |drained| {
+                        Drained::V8(drained, Arc::clone(&runtime.model))
+                    })
+            }
         };
         self.drained.insert(key, drained);
     }
@@ -838,14 +894,19 @@ fn drain_v8_record(
     record: Option<&[u8]>,
     code: &dyn Fn(u64) -> Option<CodeAt>,
 ) -> Option<DrainedV8> {
-    let stack = record
-        .filter(|bytes| sampler::is_v8(bytes))
-        .and_then(|bytes| sampler::decode_v8(bytes).ok())?;
+    let stack = v8_record(record)?;
     drain_v8(
         &stack,
         &|address| owner(model, code, address),
         &mut |frame| model.sampled_code_frame(stop, frame),
     )
+}
+
+/// The V8 walker's stack `record` holds, if it is one.
+fn v8_record(record: Option<&[u8]>) -> Option<sampler::V8Stack<'_>> {
+    record
+        .filter(|bytes| sampler::is_v8(bytes))
+        .and_then(|bytes| sampler::decode_v8(bytes).ok())
 }
 
 /// The JavaScript frames a record of the V8 walker's holds, if any, each
