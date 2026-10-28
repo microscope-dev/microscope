@@ -16,7 +16,7 @@
 //! dropped its record, is mapped from the process first (see
 //! [`Jit::unseen`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::backend::perf::{self, jit::MapError};
@@ -66,6 +66,12 @@ pub struct Jit {
     /// names it by, once it has been read.
     read: u64,
     path: Option<String>,
+
+    /// When, by `CLOCK_MONOTONIC`, the map was last read to its end. A
+    /// program writes a function's line as it makes its code, before the
+    /// code runs, so a sample from before then ran no code a later line
+    /// names.
+    read_to_end: u64,
 
     /// Each registered object, by where its code starts; the descriptors
     /// they are registered with, until the process maps something; and
@@ -248,11 +254,11 @@ impl Jit {
         descriptors: impl FnOnce() -> Vec<u64>,
     ) -> Refreshed {
         let mut uncovered = false;
-        let mut needed = false;
+        let mut needed = BTreeSet::new();
         let mut unknown = false;
         for address in addresses {
             if self.needs(address) {
-                needed = true;
+                needed.extend(self.range(address).map(|(start, _)| start));
                 uncovered |= !self.covers(address);
             } else {
                 unknown |= self.range(address).is_none() && !self.covers(address);
@@ -261,21 +267,27 @@ impl Jit {
 
         let mut refreshed = Refreshed::default();
         if (uncovered || unknown) && time >= self.quiet {
-            let lines = uncovered && self.read_on(pid);
+            // A sample is processed well after it was taken, while the
+            // program goes on making code: reading on for every sample in
+            // code no function covers would find new lines nearly every
+            // time, and make the ranges' modules again each time.
+            let read_map = uncovered && time > self.read_to_end;
+            let lines = read_map && self.read_on(pid);
             let descriptors = self.descriptors.get_or_insert_with(descriptors).clone();
             if !descriptors.is_empty() {
                 refreshed.objects = self.read_objects(pid, &descriptors);
             }
-            if !lines && refreshed.objects.is_empty() {
+            if !lines && refreshed.objects.is_empty() && (read_map || !uncovered) {
                 self.quiet = time.saturating_add(QUIET);
             }
         }
 
-        if !needed {
-            return refreshed;
-        }
-
-        for (&start, range) in &mut self.ranges {
+        // Only the modules of the ranges these addresses need are made
+        // again; another range's is made once a sample needs it.
+        for start in needed {
+            let Some(range) = self.ranges.get_mut(&start) else {
+                continue;
+            };
             if range.current {
                 continue;
             }
@@ -393,6 +405,9 @@ impl Jit {
         if used == 0 && bytes.len() as u64 == limit {
             self.problem = Some(format!("a line of it is longer than {limit} bytes"));
         }
+        if (bytes.len() as u64) < limit {
+            self.read_to_end = read;
+        }
 
         self.read += used as u64;
         let any = !entries.is_empty();
@@ -452,6 +467,15 @@ impl Jit {
 mod tests {
     use super::*;
     use crate::debug_info::perf_map::Entry;
+
+    /// A perf map a test wrote, removed once it ends.
+    struct Removed(String);
+
+    impl Drop for Removed {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 
     fn function(start: u64, end: u64) -> Jitted {
         Jitted {
@@ -651,12 +675,6 @@ mod tests {
     /// function has none. A line longer than a read takes is a problem.
     #[test]
     fn a_read_of_the_map_is_bounded() {
-        struct Removed(String);
-        impl Drop for Removed {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_file(&self.0);
-            }
-        }
         static CODE: [u8; 32] = [0xcc; 32];
         let pid = std::process::id();
         let path = format!("/tmp/perf-{pid}.map");
@@ -692,6 +710,58 @@ mod tests {
         assert!(!jit.read_on_within(pid, 4, CODES_READ));
         let problem = jit.take_problem().expect("a problem");
         assert!(problem.contains("longer than 4 bytes"), "{problem}");
+    }
+
+    /// Samples are processed well after they are taken, while the program
+    /// goes on making code. A sample taken before the map was last read to
+    /// its end ran no code a line written since names, so it reads nothing
+    /// again; one taken after reads on. Of the ranges the lines are in,
+    /// only those a sample lands in have their modules made again.
+    #[test]
+    fn the_map_is_read_on_only_for_samples_taken_after_it_was_last_read() {
+        static CODE: [u8; 64] = [0xcc; 64];
+        let pid = std::process::id();
+        let path = format!("/tmp/perf-{pid}.map");
+        let start = CODE.as_ptr() as u64;
+        let second = start + 0x20;
+        std::fs::write(&path, format!("{start:x} 10 a\n{second:x} 10 b\n")).expect("write the map");
+        let _removed = Removed(path.clone());
+        let starts = |refreshed: Refreshed| -> Vec<u64> {
+            refreshed.stale.iter().map(|stale| stale.start).collect()
+        };
+
+        let mut jit = Jit::default();
+        jit.mapped(start, second, true, 0);
+        jit.mapped(second, start + 0x40, true, 0);
+        let taken = super::super::session::monotonic();
+        assert_eq!(
+            starts(jit.refresh(pid, taken, [start + 8], Vec::new)),
+            [start]
+        );
+        assert_eq!(
+            starts(jit.refresh(pid, taken, [second + 8], Vec::new)),
+            [second]
+        );
+
+        // The program makes more code after the sample was taken.
+        let mut map = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open the map");
+        std::io::Write::write_all(&mut map, format!("{:x} 10 c\n", start + 0x10).as_bytes())
+            .expect("append to the map");
+        assert_eq!(
+            starts(jit.refresh(pid, taken, [start + 0x18], Vec::new)),
+            Vec::<u64>::new()
+        );
+        assert_eq!(jit.functions.len(), 2);
+
+        let later = super::super::session::monotonic();
+        assert_eq!(
+            starts(jit.refresh(pid, later, [start + 0x18], Vec::new)),
+            [start]
+        );
+        assert_eq!(jit.functions.len(), 3);
     }
 
     /// A registered object that places no code is not a module, and the
