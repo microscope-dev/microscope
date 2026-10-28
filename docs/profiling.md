@@ -391,6 +391,17 @@ the profile reports it. Each distinct name is a separate site, so give a
 value that changes, such as a request's id, as a label's value rather than
 in a name.
 
+`report` shows what the instrumentation recorded after the summary. A table
+of zones by site gives each one's count, total, mean, and longest time. Then
+`Messages` lists each message, frame, and trigger in time order, with its time
+since the recording began, its thread's name and id, its kind, its site, and
+its text. `Zones by thread` gives, for each thread that ran zones, when its
+first outermost zone began, when its last ended, the time inside them, and
+how many there were, ordered by first start: a pool's workers that all start
+late, or finish far apart, stand out there. Only outermost zones count, so a
+zone nested in a label or another zone is counted once. Both lists show the
+first `--limit` rows and say how many more there are.
+
 ### Instrument a Python program
 
 The `microscope` package in `sdk/python` marks a Python program's work as the

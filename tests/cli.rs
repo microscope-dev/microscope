@@ -246,6 +246,97 @@ fn convert_writes_instrumentation_as_a_chrome_trace() {
     );
 }
 
+/// The report lists what the program said, in time order with its thread,
+/// and when each thread's outermost zones began and ended: the main
+/// thread's three rounds, each a label holding zones, and the worker's one
+/// zone around its steps.
+#[test]
+fn report_lists_the_programs_messages_and_each_threads_zones() {
+    let scratch = support::ScratchDir::new("cli-messages");
+    let profile = scratch.path().join("zones.usprof");
+    let recorded = microscope_command()
+        .args(["record", "-o"])
+        .arg(&profile)
+        .arg("--")
+        .arg(fixture("build/test-programs/probes"))
+        .arg("zones")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope record");
+    assert!(recorded.status.success(), "{recorded:?}");
+    let profile = profile.to_string_lossy();
+    let report = assert_success(microscope(&["report", &profile]));
+    let block = |heading: &str| -> Vec<Vec<String>> {
+        let start = report
+            .find(heading)
+            .unwrap_or_else(|| panic!("no {heading} in {report}"));
+        report[start..]
+            .lines()
+            .skip(2)
+            .take_while(|line| line.starts_with("  ") && !line.trim().is_empty())
+            .map(|line| line.split_whitespace().map(str::to_owned).collect())
+            .collect()
+    };
+
+    assert!(report.contains("Messages: 7\n"), "{report}");
+    let messages = block("Messages: 7");
+    let seconds = |row: &Vec<String>| row[0].parse::<f64>().expect("a time");
+    assert!(
+        messages
+            .windows(2)
+            .all(|pair| seconds(&pair[0]) <= seconds(&pair[1])),
+        "{report}"
+    );
+    let said: Vec<String> = messages
+        .iter()
+        .filter(|row| row.contains(&"message".to_owned()))
+        .map(|row| row[row.len() - 4..].join(" "))
+        .collect();
+    assert_eq!(
+        said,
+        ["round 0 of 3", "round 1 of 3", "round 2 of 3"],
+        "{report}"
+    );
+    let kinds = |kind: &str| {
+        messages
+            .iter()
+            .filter(|row| row.contains(&kind.to_owned()))
+            .count()
+    };
+    assert_eq!((kinds("frame"), kinds("trigger")), (3, 1), "{report}");
+    assert!(
+        messages
+            .last()
+            .is_some_and(|row| row.contains(&"done".to_owned())),
+        "{report}"
+    );
+
+    let limited = assert_success(microscope(&["report", &profile, "--limit", "2"]));
+    assert!(
+        limited.contains("and 5 more; --limit shows more"),
+        "{limited}"
+    );
+
+    assert!(report.contains("Zones by thread: 2\n"), "{report}");
+    let threads = block("Zones by thread: 2");
+    let zones = |name: &str| {
+        threads
+            .iter()
+            .find(|row| row.get(7).is_some_and(|thread| thread == name))
+            .map(|row| row[6].clone())
+    };
+    assert_eq!(zones("worker").as_deref(), Some("1"), "{report}");
+    assert_eq!(zones("probes").as_deref(), Some("3"), "{report}");
+    for row in &threads {
+        let (first, last, inside) = (
+            row[0].parse::<f64>().expect("a start"),
+            row[2].parse::<f64>().expect("an end"),
+            row[4].parse::<f64>().expect("a time"),
+        );
+        assert!(first <= last && inside <= last - first + 0.001, "{report}");
+    }
+}
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name)
 }

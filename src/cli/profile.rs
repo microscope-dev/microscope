@@ -12,8 +12,8 @@ use super::format::plural;
 use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Format, GapReason, Granularity, MOST_STACK_COPY, Preset, ProbeSelection, Profile, PythonEngine,
-    RecordOptions, SampleSource, Save, Source, StackCopy, StackView, Watch,
+    Format, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset, ProbeSelection, Profile,
+    PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy, StackView, Watch,
 };
 
 mod report;
@@ -205,7 +205,8 @@ pub struct ReportArgs {
     #[arg(long)]
     tree: bool,
 
-    /// Show this many functions, or call sites of system calls.
+    /// Show this many functions, call sites of system calls, messages, and
+    /// threads that ran zones.
     #[arg(long, default_value_t = 20)]
     limit: usize,
 
@@ -926,7 +927,7 @@ fn ordinary_report(
         return syscall_summary(profile, args.limit, out);
     }
 
-    summary(profile, out)?;
+    summary(profile, args.limit, out)?;
 
     if profile.has_syscalls() {
         writeln!(out)?;
@@ -1410,7 +1411,7 @@ fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
 )]
-fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
+fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
     let total = profile.total_weight();
     let program = profile.setting("program").unwrap_or("the program");
     let unit = profile.setting("weight").unwrap_or("nanoseconds");
@@ -1500,16 +1501,17 @@ fn summary(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         )?;
     }
 
-    instrumentation(profile, out)
+    instrumentation(profile, limit, out)
 }
 
 /// What the program's instrumentation recorded, by site, and what of it
-/// was lost.
+/// was lost; then the first `limit` of what it said, and of the threads
+/// that ran zones.
 #[expect(
     clippy::cast_precision_loss,
     reason = "times need no more precision than f64's"
 )]
-fn instrumentation(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
+fn instrumentation(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
     for (_, problem) in profile.probe_problems() {
         writeln!(out, "{problem}.")?;
     }
@@ -1582,6 +1584,151 @@ fn instrumentation(profile: &Profile, out: &mut impl std::io::Write) -> Result<(
             *total as f64 / 1e3 / *count as f64,
             *longest as f64 / 1e3,
         )?;
+    }
+
+    let names = ThreadNames::of(profile);
+    messages(profile, &names, limit, out)?;
+    thread_zones(&names, &zones, limit, out)
+}
+
+/// Each thread's name and id, as the report shows it, and seconds since a
+/// profile began.
+struct ThreadNames {
+    names: std::collections::HashMap<(u32, u32), String>,
+    start: i64,
+}
+
+impl ThreadNames {
+    fn of(profile: &Profile) -> Self {
+        let names = profile
+            .threads()
+            .into_iter()
+            .map(|thread| {
+                let name = thread.name.unwrap_or_default();
+                ((thread.pid, thread.tid), format!("{name} {}", thread.tid))
+            })
+            .collect();
+        Self {
+            names,
+            start: profile.span().0,
+        }
+    }
+
+    fn thread(&self, pid: u32, tid: u32) -> String {
+        self.names
+            .get(&(pid, tid))
+            .cloned()
+            .unwrap_or_else(|| tid.to_string())
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "times need no more precision than f64's"
+    )]
+    fn seconds(&self, time: i64) -> f64 {
+        (time - self.start) as f64 / 1e9
+    }
+}
+
+/// The first `limit` messages, frames, and triggers the program marked, in
+/// time order.
+fn messages(
+    profile: &Profile,
+    names: &ThreadNames,
+    limit: usize,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    let mut said = profile.program_markers();
+    said.sort_by_key(|marker| marker.time);
+    if !said.is_empty() {
+        let shown = &said[..said.len().min(limit)];
+        let rows: Vec<(String, &str)> = shown
+            .iter()
+            .map(|marker| (names.thread(marker.pid, marker.tid), marker.name.as_str()))
+            .collect();
+        let width = |column: &mut dyn Iterator<Item = usize>, heading: &str| {
+            column.max().unwrap_or(0).max(heading.len())
+        };
+        let threads = width(&mut rows.iter().map(|row| row.0.len()), "thread");
+        let sites = width(&mut rows.iter().map(|row| row.1.len()), "site");
+        writeln!(out, "\nMessages: {}", said.len())?;
+        writeln!(
+            out,
+            "  {:>10}  {:<threads$}  {:<7}  {:<sites$}  text",
+            "time", "thread", "kind", "site"
+        )?;
+        for (marker, (thread, site)) in shown.iter().zip(&rows) {
+            let kind = match marker.kind {
+                MarkerKind::Frame => "frame",
+                MarkerKind::Trigger => "trigger",
+                _ => "message",
+            };
+            let line = format!(
+                "  {:>8.3} s  {thread:<threads$}  {kind:<7}  {site:<sites$}  {}",
+                names.seconds(marker.time),
+                marker.text.as_deref().unwrap_or(""),
+            );
+            writeln!(out, "{}", line.trim_end())?;
+        }
+        if said.len() > limit {
+            writeln!(out, "  and {} more; --limit shows more", said.len() - limit)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// The first `limit` threads that ran zones, by when their first outermost
+/// zone began.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "times need no more precision than f64's"
+)]
+fn thread_zones(
+    names: &ThreadNames,
+    zones: &[microscope::profiler::ProfileZone],
+    limit: usize,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    // Each thread's outermost zones, which hold its others' time: when the
+    // first began, when the last ended, how long they took, and how many.
+    let mut threads: std::collections::BTreeMap<(u32, u32), (i64, i64, u64, u64)> =
+        std::collections::BTreeMap::new();
+    for zone in zones.iter().filter(|zone| zone.depth == 0) {
+        let entry = threads
+            .entry((zone.pid, zone.tid))
+            .or_insert((i64::MAX, i64::MIN, 0, 0));
+        entry.0 = entry.0.min(zone.start);
+        entry.1 = entry.1.max(zone.end);
+        entry.2 += u64::try_from(zone.end - zone.start).unwrap_or(0);
+        entry.3 += 1;
+    }
+    if !threads.is_empty() {
+        let mut threads: Vec<_> = threads.into_iter().collect();
+        threads.sort_by_key(|&(at, (first, ..))| (first, at));
+        writeln!(out, "\nZones by thread: {}", threads.len())?;
+        writeln!(
+            out,
+            "  {:>10}  {:>10}  {:>10}  {:>6}  thread",
+            "first", "last", "in zones", "zones"
+        )?;
+        for &((pid, tid), (first, last, inside, count)) in threads.iter().take(limit) {
+            writeln!(
+                out,
+                "  {:>8.3} s  {:>8.3} s  {:>8.3} s  {count:>6}  {}",
+                names.seconds(first),
+                names.seconds(last),
+                inside as f64 / 1e9,
+                names.thread(pid, tid),
+            )?;
+        }
+        if threads.len() > limit {
+            writeln!(
+                out,
+                "  and {} more; --limit shows more",
+                threads.len() - limit
+            )?;
+        }
     }
 
     Ok(())
