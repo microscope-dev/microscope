@@ -1628,31 +1628,48 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
     instrumentation(profile, limit, out)
 }
 
-/// What the program's instrumentation recorded, by site, and what of it
-/// was lost; then the first `limit` of what it said, and of the threads
-/// that ran zones.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "times need no more precision than f64's"
-)]
+/// What the program's instrumentation recorded, and the labels the
+/// recorder gave its threads from their runtimes.
 fn instrumentation(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
     for (_, problem) in profile.probe_problems() {
         writeln!(out, "{problem}.")?;
     }
 
+    // The labels the recorder gave threads from their runtimes are not the
+    // program's, and go apart from its zones.
+    let (labels, zones): (Vec<_>, Vec<_>) =
+        profile.zones().into_iter().partition(|zone| zone.runtime);
+    let names = ThreadNames::of(profile);
+
     let counts = profile.probe_counts();
-    if counts.events == 0 && !counts.lost() {
-        return Ok(());
+    if counts.events > 0 || counts.lost() {
+        program_instrumentation(profile, &names, &zones, counts, limit, out)?;
     }
 
-    let zones = profile.zones();
+    runtime_labels(&names, &labels, limit, out)
+}
 
+/// What the program's own instrumentation recorded: `zones`, by site, and
+/// what of `counts` was lost; then the first `limit` of what it said, and
+/// of the threads that ran zones.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "times need no more precision than f64's"
+)]
+fn program_instrumentation(
+    profile: &Profile,
+    names: &ThreadNames,
+    zones: &[microscope::profiler::ProfileZone],
+    counts: microscope::profiler::ProbeCounts,
+    limit: usize,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
     // Each site's zones: how many, their total and longest time, and how
     // many are flagged.
     let mut sites: std::collections::BTreeMap<&str, (u64, u64, u64, u64)> =
         std::collections::BTreeMap::new();
 
-    for zone in &zones {
+    for zone in zones {
         let site = sites.entry(zone.name.as_str()).or_default();
         let length = u64::try_from(zone.end - zone.start).unwrap_or(0);
         site.0 += 1;
@@ -1710,9 +1727,63 @@ fn instrumentation(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
         )?;
     }
 
-    let names = ThreadNames::of(profile);
-    messages(profile, &names, limit, out)?;
-    thread_zones(&names, &zones, limit, out)
+    messages(profile, names, limit, out)?;
+    thread_zones(names, zones, limit, out)
+}
+
+/// The labels the recorder gave each thread from what its runtime said,
+/// as whether it held the GIL: for each thread, label, and value, the
+/// time in its spans and how many, most time first, the first `limit`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "times need no more precision than f64's"
+)]
+fn runtime_labels(
+    names: &ThreadNames,
+    labels: &[microscope::profiler::ProfileZone],
+    limit: usize,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    let mut rows: std::collections::BTreeMap<(u32, u32, String), (u64, u64)> =
+        std::collections::BTreeMap::new();
+    for label in labels {
+        let text = format!("{}={}", label.name, label.value.as_deref().unwrap_or(""));
+        let row = rows.entry((label.pid, label.tid, text)).or_default();
+        row.0 += u64::try_from(label.end - label.start).unwrap_or(0);
+        row.1 += 1;
+    }
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut rows: Vec<_> = rows.into_iter().collect();
+    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
+    let shown = &rows[..rows.len().min(limit)];
+    let width = shown
+        .iter()
+        .map(|((_, _, text), _)| text.len())
+        .max()
+        .unwrap_or(0)
+        .max("label".len());
+    writeln!(out, "\nRuntime labels by thread: {}", rows.len())?;
+    writeln!(
+        out,
+        "  {:>12} {:>8}  {:<width$}  thread",
+        "total ms", "spans", "label"
+    )?;
+    for ((pid, tid, text), (total, spans)) in shown {
+        writeln!(
+            out,
+            "  {:>12.3} {spans:>8}  {text:<width$}  {}",
+            *total as f64 / 1e6,
+            names.thread(*pid, *tid),
+        )?;
+    }
+    if rows.len() > limit {
+        writeln!(out, "  and {} more; --limit shows more", rows.len() - limit)?;
+    }
+
+    Ok(())
 }
 
 /// Each thread's name and id, as the report shows it, and seconds since a
@@ -1816,9 +1887,25 @@ fn thread_zones(
 ) -> Result<()> {
     // Each thread's outermost zones, which hold its others' time: when the
     // first began, when the last ended, how long they took, and how many.
+    // A zone's depth counts the runtime's labels around it too, so the
+    // outermost are found among these zones alone.
+    let mut sorted: Vec<_> = zones.iter().collect();
+    sorted.sort_by_key(|zone| (zone.pid, zone.tid, zone.start, std::cmp::Reverse(zone.end)));
+    let mut reached: Option<((u32, u32), i64)> = None;
+    let outermost = sorted.into_iter().filter(|zone| {
+        let thread = (zone.pid, zone.tid);
+        let outer = !matches!(reached, Some((at, end)) if at == thread && zone.start < end);
+        let end = match reached {
+            Some((at, end)) if at == thread => end.max(zone.end),
+            _ => zone.end,
+        };
+        reached = Some((thread, end));
+        outer
+    });
+
     let mut threads: std::collections::BTreeMap<(u32, u32), (i64, i64, u64, u64)> =
         std::collections::BTreeMap::new();
-    for zone in zones.iter().filter(|zone| zone.depth == 0) {
+    for zone in outermost {
         let entry = threads
             .entry((zone.pid, zone.tid))
             .or_insert((i64::MAX, i64::MIN, 0, 0));

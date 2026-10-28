@@ -25,6 +25,11 @@ pub struct ProfileZone {
 
     /// `ZONE_` flags: what of it was not seen.
     pub flags: u32,
+
+    /// Whether the recorder gave the thread this label from what its
+    /// runtime says of it, as whether it holds the GIL, rather than the
+    /// program's instrumentation.
+    pub runtime: bool,
 }
 
 /// A value of a plotted series.
@@ -116,6 +121,7 @@ impl Profile {
 
             for zone in &capture.zones[start..start + range.count.get() as usize] {
                 let value = zone.value.get();
+                let site = capture.sites.get(zone.site.get() as usize);
                 zones.push(ProfileZone {
                     pid,
                     tid: thread.tid.get(),
@@ -125,6 +131,7 @@ impl Profile {
                     start: zone.start.get(),
                     end: zone.end.get(),
                     flags: zone.flags.get(),
+                    runtime: site.is_some_and(|site| site.module.get() == NONE),
                 });
             }
         }

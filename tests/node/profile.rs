@@ -874,6 +874,7 @@ fn the_isolate_check_fails_on_each_lie() {
         start: 0,
         end,
         flags: 0,
+        runtime: true,
     };
     let truth = [zone(10, "1", 100), zone(11, "2", 90)];
     assert!(isolate_lies(threads, &weights, &truth).is_empty());

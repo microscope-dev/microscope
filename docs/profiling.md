@@ -232,7 +232,8 @@ Each read records which thread holds its interpreter's GIL, as the label
 each CPU sample says it of its own thread, and each run of samples with one
 label is one span; a thread that waits for the GIL is mostly off its CPU, so
 `gil=waiting` shows in CPU samples only as the thread spins up. The labels
-select samples and draw lanes as instrumentation labels do. CPython before
+select samples and draw lanes as instrumentation labels do, and `report`
+lists them apart from the program's zones. CPython before
 3.15 does not say which threads wait for the GIL, and a free-threaded build's
 GIL is off, so it has no GIL labels. A label is as the GIL was when read.
 
@@ -416,6 +417,13 @@ how many there were, ordered by first start: a pool's workers that all start
 late, or finish far apart, stand out there. Only outermost zones count, so a
 zone nested in a label or another zone is counted once. Both lists show the
 first `--limit` rows and say how many more there are.
+
+The labels microscope gives a thread from its runtime, such as `gil=held`
+where a Python thread held the GIL, are not the program's, and stay out of
+those tables and counts. `Runtime labels by thread` gives, for each thread
+and label, the time its spans cover and how many there were, most time
+first, for the first `--limit` rows. The browser draws them as lanes beside
+the program's zones.
 
 ### Instrument a Python program
 

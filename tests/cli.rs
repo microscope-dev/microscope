@@ -6510,40 +6510,59 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
     assert!(cost.ends_with("% of one CPU)."), "{long}");
 }
 
+/// The report of a recording of CPython 3.14 running `source`, recorded
+/// with `options`, with the `microscope` package and its library at hand.
+fn python_report(
+    scratch: &support::ScratchDir,
+    name: &str,
+    options: &[&str],
+    source: &str,
+) -> String {
+    let python = PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON").expect("MICROSCOPE_CPYTHON names the interpreters"),
+    )
+    .join("3.14/python");
+    let profile = scratch.path().join(name);
+    let recorded = microscope_command()
+        .args(["record", "-o"])
+        .arg(&profile)
+        .args(options)
+        .arg("--")
+        .arg(&python)
+        .args(["-c", source])
+        .env("PYTHONPATH", fixture("sdk/python"))
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            fixture("build/test-programs/libmicroscope_probes_c.so"),
+        )
+        .output()
+        .expect("run microscope record");
+    assert!(recorded.status.success(), "{recorded:?}");
+    assert_success(microscope(&["report", &profile.to_string_lossy()]))
+}
+
 /// The report counts the samples that ran a task only when the snapshots
 /// found tasks: a Python program's thread snapshots read threads, which no
 /// sample runs as a task, and asyncio's tasks are tasks.
 #[test]
 fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     let scratch = support::ScratchDir::new("cli-thread-snapshots");
-    let python = PathBuf::from(
-        std::env::var_os("MICROSCOPE_CPYTHON").expect("MICROSCOPE_CPYTHON names the interpreters"),
-    )
-    .join("3.14/python");
-    let report = |name: &str, options: &[&str], source: &str| {
-        let profile = scratch.path().join(name);
-        let recorded = microscope_command()
-            .args(["record", "-o"])
-            .arg(&profile)
-            .args(options)
-            .arg("--")
-            .arg(&python)
-            .args(["-c", source])
-            .output()
-            .expect("run microscope record");
-        assert!(recorded.status.success(), "{recorded:?}");
-        assert_success(microscope(&["report", &profile.to_string_lossy()]))
-    };
     let spin = "import time\nend = time.monotonic() + 0.5\nwhile time.monotonic() < end: pass\n";
 
-    let threads = report("threads.usprof", &["--python", "snapshot=0.05"], spin);
+    let threads = python_report(
+        &scratch,
+        "threads.usprof",
+        &["--python", "snapshot=0.05"],
+        spin,
+    );
     assert!(
         threads.contains("snapshots held the program stopped"),
         "{threads}"
     );
     assert!(!threads.contains("ran a task"), "{threads}");
 
-    let tasks = report(
+    let tasks = python_report(
+        &scratch,
         "tasks.usprof",
         &["--task-snapshots", "0.05"],
         "import asyncio, time\nasync def spin():\n    end = time.monotonic() + 0.5\n    \
@@ -6556,6 +6575,52 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
             .any(|line| line.ends_with("ran a task the snapshots either side of them agree on.")),
         "{tasks}"
     );
+}
+
+/// The labels microscope gives a thread from its runtime, as whether it
+/// holds the GIL, are not the program's zones: the zones table and its
+/// counts hold only the program's, and the labels get a table of their
+/// own.
+#[test]
+fn runtime_labels_stay_out_of_the_programs_zones() {
+    let scratch = support::ScratchDir::new("cli-runtime-labels");
+    // Microscope listens once the program defines a site it selects.
+    let program = "import time, microscope\nwork = microscope.zone('work')\n\
+        while not microscope.listening(): time.sleep(0.001)\n\
+        with work:\n    end = time.monotonic() + 0.5\n    \
+        while time.monotonic() < end: pass\n";
+    let report = python_report(
+        &scratch,
+        "labels.usprof",
+        &["--python", "snapshot=0.05"],
+        program,
+    );
+
+    let lines: Vec<&str> = report.lines().collect();
+    let header = lines
+        .iter()
+        .position(|line| line.starts_with("Instrumentation: "))
+        .unwrap_or_else(|| panic!("no instrumentation in {report}"));
+    assert!(
+        lines[header].ends_with("in 1 zone from 1 site."),
+        "{report}"
+    );
+    let table: Vec<&str> = lines[header + 1..]
+        .iter()
+        .take_while(|line| !line.is_empty())
+        .copied()
+        .collect();
+    assert!(
+        table.last().is_some_and(|row| row.ends_with("  work")),
+        "{report}"
+    );
+    assert!(!table.iter().any(|row| row.contains("gil")), "{report}");
+
+    let labels = lines
+        .iter()
+        .position(|line| line.starts_with("Runtime labels by thread: "))
+        .unwrap_or_else(|| panic!("no runtime labels in {report}"));
+    assert!(lines[labels + 2].contains(" gil=held "), "{report}");
 }
 
 /// An inlined helper that does a loop's work takes its own time from the

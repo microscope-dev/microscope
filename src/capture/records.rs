@@ -619,6 +619,10 @@ pub struct Site {
     pub name: U32,
     pub file: U32,
     pub line: U32,
+
+    /// The module whose instrumentation defines it, or `NONE` for a label
+    /// the recorder gives a thread from what its runtime says of it, as
+    /// whether it holds the GIL.
     pub module: U32,
 
     /// The site record's kind: an `abi::SITE_` constant of
