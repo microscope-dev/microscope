@@ -320,6 +320,11 @@ pub fn record_attached(
     })
 }
 
+/// How long after the program starts the BPF engine's records are drained
+/// every millisecond, rather than every ten, so that it is told each
+/// interpreter's layout before the program runs much Python.
+const EARLY_DRAINS: Duration = Duration::from_millis(50);
+
 /// How often the BPF engine is told each Python process's threads anew,
 /// as they start and end.
 const WALK_REFRESH: Duration = Duration::from_millis(20);
@@ -363,9 +368,16 @@ impl Walker {
         })
     }
 
-    /// Tells the engine each Python process's layout, once, and its
-    /// threads, when due; and forgets the processes that are gone.
+    /// Tells the engine each Python process's layout, once, as soon as a
+    /// drain has read the mapping of its interpreter, and its threads,
+    /// when due; and forgets the processes that are gone.
     fn refresh(&mut self, processor: &mut record::Processor) {
+        for walked in processor.walked_early() {
+            if !self.laid_out.contains_key(&walked.pid) {
+                self.lay_out(processor, &walked);
+            }
+        }
+
         let now = std::time::Instant::now();
         if now < self.next {
             return;
@@ -648,6 +660,7 @@ fn drive(
     }
 
     let mut published = std::time::Instant::now();
+    let begun = std::time::Instant::now();
     let mut wait = watch.every.min(Duration::from_millis(250));
     let mut stopping = false;
     let mut now = false;
@@ -666,7 +679,11 @@ fn drive(
         // the next drain begins, but for a stalled CPU.
         let watermark = monotonic().saturating_sub(WATERMARK_DELAY);
         if !finished {
-            let mut wait = Duration::from_millis(10);
+            let mut wait = if walker.is_some() && begun.elapsed() < EARLY_DRAINS {
+                Duration::from_millis(1)
+            } else {
+                Duration::from_millis(10)
+            };
             if let Some(pacer) = &mut pacer {
                 wait = wait.min(pacer.pace(monotonic(), events, processor));
             }

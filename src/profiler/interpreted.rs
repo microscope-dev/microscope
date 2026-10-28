@@ -28,10 +28,11 @@ use foldhash::HashMap;
 
 use super::tasks::LiveStop;
 use crate::backend::bpf::sampler::{self, Gil, NO_OFFSET, PyStack, StackEnd, V8End, V8Isolate};
+use crate::backend::perf::decode;
 use crate::capture::CaptureBuilder;
 use crate::capture::records::{NONE, Zone};
 use crate::debug_info::DebugInfo;
-use crate::image::python::PythonLayout;
+use crate::image::python::{PythonLayout, PythonRuntime};
 use crate::model::{Pid, Tid};
 use crate::runtime_model::thread_ids::ThreadIds;
 use crate::runtime_model::{
@@ -220,7 +221,7 @@ pub enum Layout {
 /// What a process's interpreter tells the program: the layout it reads
 /// the process by, and where it begins each thread, each by the thread's
 /// id as microscope sees it, its state, and the id its state names it by.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Walked {
     pub pid: u32,
 
@@ -267,6 +268,12 @@ pub(super) struct Interpreted {
     /// `named`, it holds for that batch alone. Python's records are read
     /// without it, as a thread's frames change between its records.
     memory: HashMap<Pid, crate::runtime_model::StopMemory>,
+    /// Layouts read from mappings a drain has not yet processed, by
+    /// process, each with when it was mapped; those not yet asked for; and
+    /// the Python runtime each file mapped carries, if any.
+    early: BTreeMap<Pid, (u64, Walked)>,
+    fresh: Vec<Walked>,
+    runtimes: HashMap<(std::path::PathBuf, u64), Option<Arc<PythonRuntime>>>,
 }
 
 /// Every field of a [`SampledCodeFrame`] its name is read from.
@@ -321,6 +328,73 @@ impl Interpreted {
             drained: BTreeMap::new(),
             named: HashMap::default(),
             memory: HashMap::default(),
+            early: BTreeMap::new(),
+            fresh: Vec::new(),
+            runtimes: HashMap::default(),
+        }
+    }
+
+    /// Reads the layout of the interpreter `mmap` maps, in a process that
+    /// runs its `program`th program, from a mapping a drain has read but
+    /// not yet processed. Processing waits on the records of every CPU and on
+    /// loading each module's debug information, by which time a short
+    /// program has run; the file's own runtime section is enough here.
+    pub(super) fn mapped_early(&mut self, mmap: &decode::Mmap<'_>, program: u64) {
+        if self.early.contains_key(&mmap.pid) {
+            return;
+        }
+
+        let Some((file, bias)) = crate::backend::perf::identify(mmap) else {
+            return;
+        };
+        let runtime = self
+            .runtimes
+            .entry((file, mmap.inode.unwrap_or(0)))
+            .or_insert_with_key(|(file, _)| crate::debug_info::python_runtime(file).map(Arc::new));
+        let Some(runtime) = runtime else {
+            return;
+        };
+
+        let layout = sampler::process_layout(
+            runtime.layout.as_ref().map_err(AsRef::as_ref),
+            bias.load(runtime.runtime.start),
+            mmap.pid.get(),
+        )
+        .map(Layout::Python);
+        let walked = Walked {
+            pid: mmap.pid.get(),
+            program,
+            layout,
+            threads: Vec::new(),
+            gaps: Vec::new(),
+        };
+        self.fresh.push(walked.clone());
+        self.early.insert(mmap.pid, (mmap.time, walked));
+    }
+
+    /// The layouts read early since last asked.
+    pub(super) fn take_early(&mut self) -> Vec<Walked> {
+        std::mem::take(&mut self.fresh)
+    }
+
+    /// The layouts read early of processes for which `known` is false.
+    pub(super) fn early_unknown(&self, known: impl Fn(Pid) -> bool) -> Vec<Walked> {
+        self.early
+            .iter()
+            .filter(|&(&pid, _)| !known(pid))
+            .map(|(_, (_, walked))| walked.clone())
+            .collect()
+    }
+
+    /// Forgets the layout read early of process `pid` from a mapping
+    /// before `time`: an exec then replaced it, or the process exited.
+    pub(super) fn forget_early(&mut self, pid: Pid, time: u64) {
+        if self
+            .early
+            .get(&pid)
+            .is_some_and(|&(mapped, _)| mapped < time)
+        {
+            self.early.remove(&pid);
         }
     }
 
@@ -523,7 +597,13 @@ impl Interpreted {
     /// `None` for a process that runs no interpreter the engine reads.
     /// The process runs its `program`th program.
     pub(super) fn walked(&self, pid: Pid, program: u64) -> Option<Walked> {
-        let runtime = self.found.get(&pid)?.runtime.as_ref()?;
+        let Some(runtime) = self
+            .found
+            .get(&pid)
+            .and_then(|found| found.runtime.as_ref())
+        else {
+            return self.early.get(&pid).map(|(_, walked)| walked.clone());
+        };
         let (layout, state) = match &runtime.kind {
             Kind::V8 { layout, unplaced } => {
                 return Some(Walked {

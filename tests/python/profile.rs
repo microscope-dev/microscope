@@ -903,6 +903,53 @@ mod bpf {
         );
     }
 
+    /// A program as short as a few imports has its Python frames from its
+    /// first samples: the engine is told the interpreter's layout as soon
+    /// as a drain reads its mapping, not once microscope has processed
+    /// the mapping and loaded the image's debug information.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
+    fn a_short_program_has_its_python_frames_from_the_start() {
+        let scratch = crate::support::ScratchDir::new("python-bpf-short");
+        for interpreter in PROFILED {
+            let output = scratch.path().join(format!("{interpreter}.usprof"));
+            let finished = Command::new(launcher())
+                .arg(env!("CARGO_BIN_EXE_microscope"))
+                .args(["record", "--python", "bpf", "--output"])
+                .arg(&output)
+                .arg("--")
+                .arg(python::interpreter(interpreter))
+                .args(["-I", "-B", "-c"])
+                .arg("import json, email.parser, http.client, asyncio, decimal, argparse")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()
+                .expect("run microscope");
+            assert!(
+                finished.status.success(),
+                "{interpreter}: {}",
+                String::from_utf8_lossy(&finished.stderr)
+            );
+
+            let stacks = Profile::read(&output)
+                .expect("read the profile")
+                .profile
+                .stacks();
+            let unknown = stacks
+                .iter()
+                .filter(|stack| {
+                    stack.ending == StackEnding::Truncated("interpreted frames unknown".into())
+                })
+                .count();
+            assert!(
+                unknown * 10 < stacks.len(),
+                "{interpreter}: {unknown} of {} samples have unknown frames",
+                stacks.len()
+            );
+        }
+    }
+
     /// A program that replaces itself with another interpreter is read by
     /// the new one's modules: the spinners' samples of the program it
     /// runs hold their Python frames by line.
@@ -959,20 +1006,18 @@ mod bpf {
     /// spliced before the activations of the interpreter's loop that run
     /// them: the Python look is `spin` calling `work`, with no frame of the
     /// interpreter's, and the mixed stacks keep both. A GIL build's
-    /// spinners hold its GIL in turn; a free-threaded build's is off. Only
+    /// spinners hold its GIL in turn; a free-threaded build's is off once it
+    /// has started. Only
     /// the samples taken before the engine knew the program are unknown,
-    /// and only those of its last moments, after the drain before it
-    /// exited, have code that could not be read.
+    /// and only those of its first and last moments have code that could
+    /// not be read: a module's body runs once as it is imported and is
+    /// freed before its record drains, and the drain before the program
+    /// exited misses its last.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn samples_hold_each_threads_python_frames_by_line() {
         let lines = lines();
         for interpreter in PROFILED {
-            // The engine names no Python frames until microscope has read
-            // the interpreter's image, which a cold image cache can make
-            // a tenth of the recording. A first recording fills it.
-            recorded(interpreter, Duration::from_millis(200));
-
             let profile = recorded(interpreter, Duration::from_secs(2));
             let python = paths(&profile, Source::Samples, Look::Python);
             let spinning: u64 = python
@@ -1035,8 +1080,12 @@ mod bpf {
                 "{interpreter}: {cut} of {samples} samples have an invalid caller"
             );
 
+            let first = stacks.iter().map(|stack| stack.time).min().unwrap_or(0);
+            let last = stacks.iter().map(|stack| stack.time).max().unwrap_or(0);
+            let ends = 100_000_000;
             let unreadable = stacks
                 .iter()
+                .filter(|stack| stack.time > first + ends && stack.time + ends < last)
                 .filter(|stack| {
                     stack
                         .functions
@@ -1047,13 +1096,21 @@ mod bpf {
 
             assert!(
                 unreadable * 200 < samples,
-                "{interpreter}: {unreadable} of {samples} samples have frames that could not be read"
+                "{interpreter}: {unreadable} of {samples} samples, away from the program's first \
+                 and last 100 ms, have frames that could not be read"
             );
 
-            let gil = gil_values(&profile);
             if interpreter.ends_with('t') {
-                assert_eq!(gil, Vec::<String>::new(), "{interpreter}");
+                // A free-threaded build may turn its GIL on for a moment as
+                // it starts, as to initialize a module, but not as it spins.
+                let spun: Vec<_> = profile
+                    .zones()
+                    .into_iter()
+                    .filter(|zone| zone.name == "gil" && zone.start > first + ends)
+                    .collect();
+                assert!(spun.is_empty(), "{interpreter}: {spun:?}");
             } else {
+                let gil = gil_values(&profile);
                 assert!(gil.contains(&"held".to_owned()), "{interpreter}: {gil:?}");
             }
         }

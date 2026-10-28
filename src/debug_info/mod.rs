@@ -668,6 +668,14 @@ pub(crate) fn load_module_bytes(
     dwarf::load_bytes(path, data, id, search)
 }
 
+/// The Python runtime the module at `path` carries, read from its own
+/// runtime section and symbols alone: only the parts of the file they
+/// take are read, and none of its debug information.
+pub fn python_runtime(path: &Path) -> Option<crate::image::python::PythonRuntime> {
+    let file = object::ReadCache::new(std::fs::File::open(path).ok()?);
+    cpython::runtime(&object::File::parse(&file).ok()?)
+}
+
 /// Loads an image a process holds only in memory for a while, as a JIT
 /// compiler's objects, without the cache.
 #[expect(

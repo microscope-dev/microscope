@@ -438,8 +438,15 @@ watermark passes it by `interpreted::PAIRING_SLACK`, as its sample was.
 
 The program reads each process through a `py_layout` the recorder fills from
 the interpreter's `PythonLayout` once its module is mapped, with where the
-process keeps `_PyRuntime` and its pid namespace. A process that execs keeps
-its pid, so the recorder counts its execs and lays it out again for each new
+process keeps `_PyRuntime` and its pid namespace. It does not wait for the
+mapping to be processed, which trails the watermark and loading the module's
+debug information: as a drain reads an executable mapping, before ordering
+it, `Interpreted::mapped_early` reads the file's `.PyRuntime` section and
+`Py_Version` (`debug_info::python_runtime`, only those parts of the file)
+and the engine has the layout within a few milliseconds of the mapping. The
+first 50 ms after the program starts are drained every millisecond for this.
+Processed mappings then replace what was read early. A process that execs
+keeps its pid, so the recorder counts its execs and lays it out again for each new
 program, whose interpreter may be another version. It begins each thread at
 the state a `tid → py_thread` map names, which the recorder refreshes every
 20 ms from the interpreter's thread list (`RuntimeModel::walked_threads`),

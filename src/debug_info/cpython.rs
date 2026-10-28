@@ -118,9 +118,9 @@ pub(super) fn carries_runtime(object: &object::File<'_>) -> bool {
     runtime_section(object).is_some()
 }
 
-fn runtime_section<'data, 'file>(
-    object: &'file object::File<'data>,
-) -> Option<object::Section<'data, 'file>> {
+fn runtime_section<'data, 'file, R: object::ReadRef<'data>>(
+    object: &'file object::File<'data, R>,
+) -> Option<object::Section<'data, 'file, R>> {
     object
         .section_by_name(RUNTIME_SECTION)
         .filter(|section| section.size() > 0)
@@ -128,7 +128,9 @@ fn runtime_section<'data, 'file>(
 
 /// The Python runtime the module carries, read from the module's own
 /// file: a separate debug file keeps no data sections' bytes.
-pub(super) fn runtime(object: &object::File<'_>) -> Option<PythonRuntime> {
+pub(super) fn runtime<'data, R: object::ReadRef<'data>>(
+    object: &object::File<'data, R>,
+) -> Option<PythonRuntime> {
     let section = runtime_section(object)?;
     let runtime = AddressRange {
         start: ImageAddress::new(section.address()),
@@ -478,10 +480,12 @@ const fn structure_size(field: Field) -> Option<Field> {
 
 /// The module's `Py_Version`, the version it was built as, which every
 /// version since 3.11 exports.
-fn py_version(object: &object::File<'_>) -> Option<u32> {
+fn py_version<'data, R: object::ReadRef<'data>>(object: &object::File<'data, R>) -> Option<u32> {
+    // An exported `Py_Version` is found among the few dynamic symbols
+    // before the many others.
     let symbol = object
-        .symbols()
-        .chain(object.dynamic_symbols())
+        .dynamic_symbols()
+        .chain(object.symbols())
         .find(|symbol| symbol.name() == Ok("Py_Version") && symbol.is_definition())?;
     let address = symbol.address();
     let section = object.section_by_index(symbol.section_index()?).ok()?;

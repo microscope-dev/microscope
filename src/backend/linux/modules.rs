@@ -718,9 +718,10 @@ pub(super) fn parse_maps(maps: &str) -> Result<Vec<ModuleMapping>> {
 
 pub(super) fn mapped_module_load_bias(mapping: &ModuleMapping) -> Result<LoadBias> {
     const PAGE_MASK: u64 = !0xfff;
-    let data = fs::read(&mapping.path)?;
-    let object = object::File::parse(data.as_slice())
-        .map_err(|error| Error::backend(LinuxError::Object(error)))?;
+    // Only the headers are read, not the whole file.
+    let file = object::ReadCache::new(fs::File::open(&mapping.path)?);
+    let object =
+        object::File::parse(&file).map_err(|error| Error::backend(LinuxError::Object(error)))?;
 
     for segment in object.segments() {
         let (file_offset, _) = segment.file_range();

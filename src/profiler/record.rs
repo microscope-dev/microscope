@@ -394,19 +394,45 @@ impl Processor {
         self.interpreted = Some(Interpreted::new(outputs));
     }
 
+    /// The layouts of interpreters read from mappings drained but not yet
+    /// processed, since last asked.
+    pub fn walked_early(&mut self) -> Vec<Walked> {
+        self.interpreted
+            .as_mut()
+            .map_or_else(Vec::new, Interpreted::take_early)
+    }
+
+    /// Reads the layout of an interpreter `mmap` maps for the BPF engine,
+    /// before the mapping is processed.
+    fn mapped_early(&mut self, mmap: &decode::Mmap<'_>) {
+        if let Some(interpreted) = &mut self.interpreted {
+            let program = self
+                .processes
+                .get(&mmap.pid)
+                .map_or(0, |process| process.execs);
+            interpreted.mapped_early(mmap, program);
+        }
+    }
+
     /// What each process's interpreter tells the BPF engine, read now.
     pub fn walked(&mut self) -> Vec<Walked> {
         let Some(interpreted) = &mut self.interpreted else {
             return Vec::new();
         };
 
-        self.processes
+        let mut walked: Vec<Walked> = self
+            .processes
             .iter()
             .filter_map(|(&pid, process)| {
                 find_interpreter(interpreted, pid, process, &self.images);
                 interpreted.walked(pid, process.execs)
             })
-            .collect()
+            .collect();
+
+        // A process whose mappings are not yet processed has only the
+        // layout read early from them.
+        walked.extend(interpreted.early_unknown(|pid| self.processes.contains_key(&pid)));
+        walked
     }
 
     pub const fn builder(&mut self) -> &mut CaptureBuilder {
@@ -615,6 +641,7 @@ impl Processor {
                         pairs.insert(offset, ((key.0, key.1, time), at, length));
                     }
                 }
+                decode::Record::Mmap(mmap) => self.mapped_early(&mmap),
                 _ => {}
             }
 
@@ -743,6 +770,7 @@ impl Processor {
                     state.jit.exec();
                     if let Some(interpreted) = &mut self.interpreted {
                         interpreted.forget(pid);
+                        interpreted.forget_early(pid, time);
                     }
 
                     // Its instrumentation went with it; the new program's
@@ -2123,6 +2151,7 @@ impl Processor {
     pub fn exited(&mut self, pid: Pid) {
         if let Some(interpreted) = &mut self.interpreted {
             interpreted.forget(pid);
+            interpreted.forget_early(pid, u64::MAX);
         }
 
         if let Some(process) = self.processes.get(&pid) {
