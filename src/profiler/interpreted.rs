@@ -232,6 +232,10 @@ pub struct Walked {
     pub gaps: Vec<Arc<str>>,
 }
 
+/// The bytes [`Interpreted::memory`] reads at once: a page, which costs a
+/// read about what a word does.
+const NAMING_BLOCK: usize = 4096;
+
 /// The engine's part of a recording.
 pub(super) struct Interpreted {
     /// The identifiers of the output events, which every record of frames
@@ -252,6 +256,17 @@ pub(super) struct Interpreted {
     /// name the same frames over and over, and records drained together
     /// are read together; the next batch reads them afresh.
     named: HashMap<(Pid, NamedFrame), Option<Vec<crate::RecordedFrame>>>,
+
+    /// Each V8 process's memory read in this batch, in pages, which
+    /// naming its JavaScript frames reads through: a name reads dozens of
+    /// words of a few objects, and the frames of a batch share their
+    /// functions, scripts, and maps. Each word read on its own made 47
+    /// reads of 6.5 bytes a name, 83% of naming's time. A batch begins
+    /// once its records are drained, so every page is read after every
+    /// sample of the batch was taken, as a read of each word was; like
+    /// `named`, it holds for that batch alone. Python's records are read
+    /// without it, as a thread's frames change between its records.
+    memory: HashMap<Pid, crate::runtime_model::StopMemory>,
 }
 
 /// Every field of a [`SampledCodeFrame`] its name is read from.
@@ -305,12 +320,14 @@ impl Interpreted {
             isolates: BTreeMap::new(),
             drained: BTreeMap::new(),
             named: HashMap::default(),
+            memory: HashMap::default(),
         }
     }
 
     /// Begins a batch of records, whose frames are read afresh.
     pub(super) fn batch(&mut self) {
         self.named.clear();
+        self.memory.clear();
     }
 
     /// Whether what process `pid`'s modules say of its interpreter must
@@ -436,6 +453,11 @@ impl Interpreted {
         let drained = match runtime.kind {
             Kind::Python { .. } => Drained::Read(read_record(model, &stop, Some(&aligned))),
             Kind::V8 { .. } => {
+                let blocks = self
+                    .memory
+                    .entry(pid)
+                    .or_insert_with(|| crate::runtime_model::StopMemory::with_block(NAMING_BLOCK));
+                let stop = stop.through(blocks);
                 let named = &mut self.named;
                 let mut name = |frame: &SampledCodeFrame| {
                     named

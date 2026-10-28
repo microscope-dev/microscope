@@ -823,6 +823,7 @@ impl Snapshotter {
                 pointers: &pointers,
                 tls: Some(&self.tls),
                 unlearned: RefCell::new(BTreeSet::new()),
+                blocks: None,
             };
 
             let detected = self.runtimes.entry(info.image.id()).or_insert_with(|| {
@@ -900,6 +901,7 @@ impl Snapshotter {
                 pointers: &pointers,
                 tls: None,
                 unlearned: RefCell::new(BTreeSet::new()),
+                blocks: None,
             };
 
             let detected = self.runtimes.entry(info.image.id()).or_insert_with(|| {
@@ -1010,6 +1012,9 @@ pub struct LiveStop<'a> {
     /// The threads whose thread pointers a model asked for and none was
     /// learned.
     unlearned: RefCell<BTreeSet<u32>>,
+
+    /// The blocks of memory read so far that reads go through, if any.
+    blocks: Option<&'a crate::runtime_model::StopMemory>,
 }
 
 /// No thread pointers.
@@ -1043,11 +1048,24 @@ impl LiveStop<'static> {
             pointers: &NO_POINTERS,
             tls: None,
             unlearned: RefCell::new(BTreeSet::new()),
+            blocks: None,
         }
     }
 }
 
 impl<'a> LiveStop<'a> {
+    /// The same stop, its reads of up to a block going through `blocks`.
+    pub fn through<'b>(self, blocks: &'b crate::runtime_model::StopMemory) -> LiveStop<'b>
+    where
+        'a: 'b,
+    {
+        let stop: LiveStop<'b> = self;
+        LiveStop {
+            blocks: Some(blocks),
+            ..stop
+        }
+    }
+
     /// Process `pid`'s memory and its stopped thread `tid` alone, whose
     /// thread pointer `pointers` holds, as the runtime model of a module
     /// loaded with `bias` reads them.
@@ -1064,6 +1082,7 @@ impl<'a> LiveStop<'a> {
             pointers,
             tls: None,
             unlearned: RefCell::new(BTreeSet::new()),
+            blocks: None,
         }
     }
 }
@@ -1136,6 +1155,10 @@ impl RuntimeStop for LiveStop<'_> {
             .into_iter()
             .map(|(thread, target)| (crate::ThreadId::new(u64::from(thread)), target))
             .collect()
+    }
+
+    fn memory(&self) -> Option<&crate::runtime_model::StopMemory> {
+        self.blocks
     }
 
     fn read(&self, address: crate::VirtualAddress, bytes: &mut [u8]) -> bool {
@@ -1672,6 +1695,48 @@ const fn live_waits(task: &runtime_model::RuntimeTask) -> bool {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+
+    /// A stop read through blocks hands them to the runtime models that
+    /// read it, as naming sampled JavaScript frames does: what a model
+    /// read of a page is kept for every later read of the batch. A stop
+    /// without hands none, and models read the process afresh.
+    #[test]
+    fn a_stop_read_through_blocks_keeps_what_it_read() {
+        use crate::runtime_model::{RuntimeStop, StopMemory};
+        let mut buffer = vec![1_u8; 8192];
+        let at = buffer.as_ptr() as u64 + 100;
+        let pid = std::process::id();
+        let bias = crate::LoadBias::default();
+        // As a model's reader reads a byte.
+        let read = |stop: &super::LiveStop<'_>| {
+            let mut byte = [0];
+            match stop.memory() {
+                Some(blocks) => {
+                    let copied = blocks
+                        .copy(at, &mut byte, |start, block| {
+                            Ok::<_, ()>(stop.read(start, block))
+                        })
+                        .expect("no error");
+                    assert_eq!(copied, Some(1));
+                }
+                None => assert!(stop.read(crate::VirtualAddress::new(at), &mut byte)),
+            }
+            byte[0]
+        };
+
+        let blocks = StopMemory::with_block(4096);
+        let through = super::LiveStop::memory(pid, bias).through(&blocks);
+        assert_eq!(read(&through), 1);
+        buffer[100] = 2;
+        std::hint::black_box(&buffer);
+        assert_eq!(read(&through), 1, "kept from the first read");
+        assert_eq!(read(&super::LiveStop::memory(pid, bias)), 2);
+        let afresh = StopMemory::with_block(4096);
+        assert_eq!(
+            read(&super::LiveStop::memory(pid, bias).through(&afresh)),
+            2
+        );
+    }
 
     /// A thread blocked in a read of a pipe until the returned descriptor
     /// is written or dropped, with its id.

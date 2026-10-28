@@ -498,7 +498,11 @@ as a native function's, is not a frame of the program. The records of one
 drain are read at one moment, so a frame they name again, by every word its
 name and proof read, is named once (`Interpreted::named`); the next drain
 reads it afresh. Sixteen busy workers name the same few hundred frames
-thousands of times a drain.
+thousands of times a drain. For the same reason the drain's names read the
+process a page at a time, each page once (`Interpreted::memory`): a name
+reads dozens of words of a few objects, and one read of each made 47 reads a
+name, most of naming's time. Python's records are read word by word, as a
+thread's frames change between its records.
 
 Lines follow what V8 writes, never what it might hold. The interpreter keeps a
 frame's bytecode offset in a register (`r9`, `kInterpreterBytecodeOffsetRegister`
