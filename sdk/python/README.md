@@ -13,3 +13,7 @@ cd sdk/rust-probes
 cargo rustc --release --features c --crate-type cdylib
 cp target/release/libmicroscope_probes.so ../python/microscope/
 ```
+
+`trace_calls` costs nothing for a function whose site no recording has
+switched on, once the function has run, and about 0.6 µs a call recorded;
+[the guide](../../docs/profiling.md#instrument-a-python-program) says how.

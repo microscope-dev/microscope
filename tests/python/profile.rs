@@ -449,6 +449,10 @@ fn the_python_package_records_what_the_program_marks() {
     assert_eq!(named("__main__.numbers").len(), 3, "{zones:?}");
     assert!(named("coroutine").is_empty(), "{zones:?}");
 
+    // The module's own code began before its calls were traced, so its end
+    // ends no zone, and none is cut short.
+    assert!(zones.iter().all(|zone| zone.flags == 0), "{zones:?}");
+
     // Equal code in two modules is two sites, and a prefix added later
     // reaches code that ran before it.
     assert_eq!(named("__main__.traced.work").len(), 1, "{zones:?}");
@@ -521,6 +525,79 @@ assert listened.stdout == 'False\n', listened
             "{name}: {zones:?}"
         );
     }
+}
+
+/// While no recording switches its site on, traced code's monitoring
+/// callbacks are disabled where they first fire, so the code runs at its
+/// own speed; once its site is on they run again, and once it is off they
+/// stop again.
+#[test]
+fn traced_calls_cost_no_callbacks_while_their_sites_are_off() {
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+    let script = r"
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import microscope
+monitoring = sys.monitoring
+tool, events = monitoring.PROFILER_ID, monitoring.events
+
+def traced():
+    return 1
+
+microscope.trace_calls('__main__')
+calls = 0
+def counting(callback):
+    def counted(code, *arguments):
+        global calls
+        calls += code is traced.__code__
+        return callback(code, *arguments)
+    return counted
+for event in (events.PY_START, events.PY_RETURN):
+    monitoring.register_callback(tool, event, counting(monitoring.register_callback(tool, event, None)))
+
+def until(more):
+    deadline = time.monotonic() + 10
+    while not more():
+        assert time.monotonic() < deadline, calls
+        traced()
+        time.sleep(0.001)
+
+for _ in range(1000):
+    traced()
+assert not microscope.listening() and calls == 2, calls
+
+# A recording switches the site on.
+index, state = microscope._traced.sites[id(traced.__code__)]
+microscope._traced.states[state] = 1
+until(lambda: calls > 2)
+for _ in range(1000):
+    traced()
+assert calls > 2000, calls
+
+microscope._traced.states[state] = 0
+traced()
+off = calls
+for _ in range(1000):
+    traced()
+assert calls == off, (calls, off)
+print('TRACE CALLS OK')
+";
+
+    let output = Command::new(python::interpreter("3.14"))
+        .args(["-I", "-B", "-c", script])
+        .arg(sdk)
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
+        )
+        .output()
+        .expect("run the interpreter");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && printed.contains("TRACE CALLS OK"),
+        "{printed}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Without its native library the package still imports, and every mark

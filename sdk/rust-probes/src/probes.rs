@@ -181,6 +181,30 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
     Some(site)
 }
 
+/// The first run-time site's record, which the others follow.
+#[must_use]
+pub fn sites() -> *const Site {
+    SITES.records.as_ptr()
+}
+
+/// The run-time site defined `index`th, if one is.
+#[must_use]
+pub fn runtime_site(index: u32) -> Option<&'static Site> {
+    (index < SITES.count.load(Ordering::Acquire))
+        .then(|| SITES.records.get(index as usize))
+        .flatten()
+}
+
+/// The index of `site` among the run-time sites, or none for a site that is
+/// not one.
+#[must_use]
+pub fn index(site: &Site) -> Option<u32> {
+    let index = site.key() & !abi::RUNTIME_KEY;
+    (site.key() & abi::RUNTIME_KEY != 0
+        && runtime_site(index).is_some_and(|known| ptr::eq(known, site)))
+    .then_some(index)
+}
+
 impl Site {
     /// Whether microscope switched the site on.
     #[must_use]
@@ -840,7 +864,19 @@ fn reuse() -> Option<&'static Ring> {
         })
 }
 
-/// A new ring of the size microscope chose, in both registries, or none.
+/// The least size, as a power of two of records, of a ring made from now
+/// on, which the program asks for: see [`reserve`].
+static LEAST_SIZE: AtomicU32 = AtomicU32::new(0);
+
+/// Asks that each ring made from now on hold at least `2^size` records, up
+/// to [`abi::MOST_RING_SIZE`], as a writer of millions of records a second
+/// needs between microscope's reads. A ring made before keeps its size.
+pub fn reserve(size: u32) {
+    LEAST_SIZE.fetch_max(size, Ordering::Relaxed);
+}
+
+/// A new ring of the size microscope chose, or the program asked for if
+/// larger, in both registries, or none.
 fn allocate() -> Option<&'static Ring> {
     let mut index = CONTROL.rings.load(Ordering::Relaxed);
     loop {
@@ -862,6 +898,7 @@ fn allocate() -> Option<&'static Ring> {
     let size = CONTROL
         .ring_size
         .load(Ordering::Relaxed)
+        .max(LEAST_SIZE.load(Ordering::Relaxed))
         .clamp(abi::LEAST_RING_SIZE, abi::MOST_RING_SIZE);
     let ring = make_ring(size)?;
     let made = MADE_COUNT.fetch_add(1, Ordering::AcqRel);

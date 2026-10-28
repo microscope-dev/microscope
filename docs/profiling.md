@@ -457,6 +457,17 @@ the modules under it as zones named by module and function, using Python
 3.12's profiler monitoring tool; it is the program's own choice, as microscope
 never adds instrumentation to a Python program.
 
+While no recording reads a traced function's site, the function's monitoring
+events are disabled where they first fire, and it runs at its own speed. A
+thread named `microscope trace_calls` checks every 20 ms whether such a site
+has been switched on, and if so restarts the events with
+`sys.monitoring.restart_events()`, which restarts other tools' disabled events
+too. Recorded, a call costs about 0.6 µs on CPython 3.14 on a fast core, and
+microscope reads 3 to 4 million calls a second for about a fifth of a CPU.
+Each thread that writes a ring after `trace_calls` gets one of 2^18 records,
+4 MiB, to hold what it writes between microscope's reads; a busier program
+loses records, and the report counts them.
+
 The package loads the probes SDK's shared library, built with
 `cargo rustc --release --features c --crate-type cdylib` in
 `sdk/rust-probes`, from `libmicroscope_probes.so` beside the package or from

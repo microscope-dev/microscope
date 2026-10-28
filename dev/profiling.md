@@ -677,6 +677,22 @@ call. `tests/python/profile.rs` records `tests/fixtures/python/probes.py`,
 which uses every mark and `trace_calls`, and checks the package without its
 library.
 
+`trace_calls` runs a Python callback at each start and end of traced code,
+which is most of its cost, so the rest is kept small. ctypes calls through
+`PyDLL`, keeping the GIL, at about half the cost of `CDLL`'s, and passes a
+site's index as a small int, which converts faster than a pointer. Each
+callback does one dict lookup, by the code's id, and reads the site's state
+byte from a memoryview of the sites' records. `microscope_probes_call_begin`
+and `_end` keep each thread's begun calls in the SDK, so the package keeps no
+stack of its own and an end of a call that began before its site was on
+ends nothing. A callback whose site is off returns `DISABLE`, and the
+package's thread restarts the events once a site it disabled is on. Before
+this, 2 million calls of a leaf took 1.25 s traced and unrecorded, against
+0.06 s untraced, and 2.5 s recorded with 3 million of 4 million records
+overwritten in the 64 KiB ring; now they take 0.06 s and 1.2 s, and a ring of
+2^18 records, which `trace_calls` asks for (`microscope_probes_reserve`),
+loses none.
+
 The Node package in `sdk/node` is `index.js` over a Node-API addon,
 `microscope.c`, which `dlopen`s the same library (from
 `MICROSCOPE_PROBES_LIBRARY` or beside the addon) and passes calls through;

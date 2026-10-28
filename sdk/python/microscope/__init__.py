@@ -24,12 +24,14 @@ MICROSCOPE_PROBES_LIBRARY. Without it, instrumentation does nothing;
 
 `trace_calls(prefix)` times calls in that module and its submodules, with
 zones named by module and qualified name. Only the program can opt in;
-microscope never enables it.
+microscope never enables it. A traced function whose site is off costs
+nothing once it has run; recorded, a call costs well under a microsecond.
 """
 import ctypes
 import os
 import sys
 import threading
+import time
 
 __all__ = ['zone', 'label', 'plot', 'message', 'frame', 'trigger', 'listening',
            'trace_calls', 'problem']
@@ -47,7 +49,9 @@ def _load():
     path = os.environ.get('MICROSCOPE_PROBES_LIBRARY') or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), 'libmicroscope_probes.so')
     try:
-        library = ctypes.CDLL(path)
+        # Every call is short and never blocks, so it keeps the GIL, which
+        # halves what a call costs.
+        library = ctypes.PyDLL(path)
     except OSError as error:
         problem = f'the probes library could not be loaded: {error}'
         return None
@@ -74,6 +78,12 @@ def _load():
         'microscope_probes_event': (None, (site,)),
         'microscope_probes_plot': (None, (site, ctypes.c_double)),
         'microscope_probes_message': (None, (site, *text)),
+        'microscope_probes_reserve': (None, (ctypes.c_uint32,)),
+        'microscope_probes_index': (ctypes.c_int32, (site,)),
+        'microscope_probes_sites': (site, ()),
+        # Called with a small int, which converts fastest.
+        'microscope_probes_call_begin': (None, None),
+        'microscope_probes_call_end': (None, None),
     }
     try:
         for name, (result, arguments) in signatures.items():
@@ -92,6 +102,9 @@ _defining = threading.Lock()
 
 
 _NO_SITE = (0, None)
+
+# The ABI's run-time sites: how many, and the size of each one's record.
+_RUNTIME_SITES, _RUNTIME_SITE = 4096, 48
 
 
 def _site(kind, name, file, line):
@@ -233,6 +246,10 @@ def trigger(why):
 
 _traced = None
 
+# The least size of a ring, as a power of two of records, once calls are
+# traced.
+_TRACED_RING = 18
+
 
 def trace_calls(prefix):
     """Times future calls in `prefix` and its submodules as module/qualified-name zones.
@@ -248,6 +265,9 @@ def trace_calls(prefix):
     if _library is None:
         return
     if _traced is None:
+        # A thread that traces its calls writes millions of records a
+        # second, which a ring of 2^18 holds for about 40 ms.
+        _library.microscope_probes_reserve(_TRACED_RING)
         _traced = _Tracer(monitoring)
         _traced.prefixes = (prefix,)
     else:
@@ -255,81 +275,118 @@ def trace_calls(prefix):
 
 
 class _Tracer:
-    """Assigns zone sites to traced code objects; disables untraced code's entry events."""
+    """Assigns zone sites to traced code objects. Untraced code's events,
+    and a traced site's while it is off, are disabled where they fire, so
+    they cost nothing until a thread that checks every so often finds a
+    site switched on and restarts them."""
 
     def __init__(self, monitoring):
         self.monitoring = monitoring
         self.prefixes = ()
-        # Key by identity: equal code objects may belong to different files.
-        # Retain (code, site, state); site 0 means untraced.
+        # By the code's id, as equal code objects may belong to different
+        # files: (site, state), or (None, None) for untraced code. `codes`
+        # keeps each code object, so that its id stays its.
         self.sites = {}
-        self.stacks = threading.local()
+        self.codes = []
+        # Where in `states` lie the state bytes of traced sites that were off
+        # where their events were disabled.
+        self.waiting = []
+        # Every run-time site's record, whose state bytes the callbacks read.
+        records = ctypes.c_ubyte * (_RUNTIME_SITES * _RUNTIME_SITE)
+        self.states = memoryview(records.from_address(_library.microscope_probes_sites())).cast('B')
         tool = monitoring.PROFILER_ID
         if monitoring.get_tool(tool) is not None:
             raise RuntimeError(f'the profiler tool is taken by {monitoring.get_tool(tool)}')
         monitoring.use_tool_id(tool, 'microscope')
         events = monitoring.events
-        self.disable = monitoring.DISABLE
+        begin, end, thrown, unwind = self.callbacks()
         for event in (events.PY_START, events.PY_RESUME):
-            monitoring.register_callback(tool, event, self.begin)
+            monitoring.register_callback(tool, event, begin)
         for event in (events.PY_RETURN, events.PY_YIELD):
-            monitoring.register_callback(tool, event, self.end)
-        monitoring.register_callback(tool, events.PY_THROW, self.thrown)
-        monitoring.register_callback(tool, events.PY_UNWIND, self.unwind)
+            monitoring.register_callback(tool, event, end)
+        monitoring.register_callback(tool, events.PY_THROW, thrown)
+        monitoring.register_callback(tool, events.PY_UNWIND, unwind)
         monitoring.set_events(tool, events.PY_START | events.PY_RESUME | events.PY_RETURN
                               | events.PY_YIELD | events.PY_THROW | events.PY_UNWIND)
+        self.watch()
+        os.register_at_fork(after_in_child=self.watch)
+
+    def callbacks(self):
+        """The callbacks, which run at every call and return of traced code,
+        and so read only what they close over."""
+        get, entry, waiting, states = self.sites.get, self.entry, self.waiting, self.states
+        disable = self.monitoring.DISABLE
+        begin_call = _library.microscope_probes_call_begin
+        end_call = _library.microscope_probes_call_end
+
+        def begin(code, offset):
+            index, state = get(id(code)) or entry(code)
+            if index < 0:
+                return disable
+            if states[state]:
+                begin_call(index)
+                return None
+            waiting.append(state)
+            return disable
+
+        def end(code, offset, value):
+            index, state = get(id(code)) or entry(code)
+            if index < 0:
+                return disable
+            if states[state]:
+                end_call(index)
+                return None
+            waiting.append(state)
+            return disable
+
+        # A generator thrown into resumes, and a frame an exception leaves
+        # returns; neither event can be disabled.
+        def thrown(code, offset, exception):
+            index, state = get(id(code)) or entry(code)
+            if index >= 0 and states[state]:
+                begin_call(index)
+
+        def unwind(code, offset, exception):
+            index, state = get(id(code)) or entry(code)
+            if index >= 0 and states[state]:
+                end_call(index)
+
+        return begin, end, thrown, unwind
 
     def add(self, prefix):
         """Adds `prefix`, reenabling events for previously seen, untraced code."""
         with _defining:
             self.prefixes = (*self.prefixes, prefix)
-            self.sites = {key: entry for key, entry in self.sites.items() if entry[1]}
+            for key, (index, _) in list(self.sites.items()):
+                if index < 0:
+                    del self.sites[key]
         self.monitoring.restart_events()
 
     def entry(self, code):
-        """The code's (code, site, state)."""
-        entry = self.sites.get(id(code))
-        if entry is not None:
-            return entry
+        """The code's site's index and where its state byte lies in
+        `states`, which the callbacks hold to; -1 for untraced code."""
         module = sys._getframe(2).f_globals.get('__name__')
         traced = isinstance(module, str) and module != __name__ and any(
             module == prefix or module.startswith(prefix + '.') for prefix in self.prefixes)
-        site, state = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
-                            code.co_firstlineno) if traced else _NO_SITE
-        entry = self.sites[id(code)] = (code, site, state)
-        return entry
+        site, _ = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
+                        code.co_firstlineno) if traced else _NO_SITE
+        index = _library.microscope_probes_index(site) if site else -1
+        found = (index, index * _RUNTIME_SITE + 1) if index >= 0 else (-1, 0)
+        self.codes.append(code)
+        self.sites[id(code)] = found
+        return found
 
-    def stack(self):
-        stack = getattr(self.stacks, 'calls', None)
-        if stack is None:
-            stack = self.stacks.calls = []
-        return stack
+    def watch(self):
+        """Checks every 20 ms whether a site whose events were disabled
+        while it was off is on, and restarts them if so."""
+        waiting, states = self.waiting, self.states
+        restart = self.monitoring.restart_events
 
-    def begin(self, code, offset):
-        _, site, state = self.entry(code)
-        if not site:
-            return self.disable
-        self.stack().append(
-            (code, state.value != 0 and _library.microscope_probes_zone_begin(site)))
+        def check():
+            while True:
+                time.sleep(0.02)
+                if waiting and any(map(states.__getitem__, waiting)):
+                    waiting.clear()
+                    restart()
 
-    def thrown(self, code, offset, exception):
-        # A generator thrown into resumes; nothing can be disabled here.
-        if self.entry(code)[1]:
-            self.begin(code, offset)
-
-    def end(self, code, offset, value):
-        if not self.entry(code)[1]:
-            return self.disable
-        self.finish(code)
-
-    def unwind(self, code, offset, exception):
-        if self.entry(code)[1]:
-            self.finish(code)
-
-    def finish(self, code):
-        # A call that began before tracing did has no zone to end.
-        stack = self.stack()
-        if stack and stack[-1][0] is code:
-            _, began = stack.pop()
-            if began:
-                _library.microscope_probes_zone_end(self.sites[id(code)][1])
+        threading.Thread(target=check, name='microscope trace_calls', daemon=True).start()
