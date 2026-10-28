@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
-import { formatChange, formatPercent, shareChange } from "../../profile/paint";
+import { diffModeOf } from "../../profile/look";
+import { type Changed, changeOf, formatPercent } from "../../profile/paint";
 import { type CallTree, decodeTree, nameOf } from "../../profile/tree";
 import type { ProfileQuery, RequestError } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
@@ -72,7 +73,7 @@ export function TreeRows({
   label: string;
   reading: string;
 }) {
-  const { look, setLook } = useProfile();
+  const { look, setLook, unit } = useProfile();
   const tree = fetched.tree;
   const body = useRef<HTMLDivElement>(null);
   // Opened nodes belong to one tree; another answer opens its own.
@@ -168,11 +169,11 @@ export function TreeRows({
             const total = formatPercent(tree.total[node] ?? 0, tree.weight);
             const own = formatPercent(tree.own[node] ?? 0, tree.weight);
             const change = tree.baseTotal
-              ? shareChange(
-                  tree.total[node] ?? 0,
-                  tree.weight,
-                  tree.baseTotal[node] ?? 0,
-                  tree.baseWeight ?? 0,
+              ? changeOf(
+                  diffModeOf(look),
+                  [tree.total[node] ?? 0, tree.weight],
+                  [tree.baseTotal[node] ?? 0, tree.baseWeight ?? 0],
+                  unit,
                 )
               : null;
             const active = item.index === keys.active;
@@ -186,7 +187,7 @@ export function TreeRows({
                 aria-level={(tree.depth[node] ?? 0) + 1}
                 aria-expanded={parent(node) ? open.has(node) : undefined}
                 aria-selected={look.fn === name}
-                aria-label={`${name}, ${total} total, ${own} own${diff ? `, ${formatChange(change)} change` : ""}`}
+                aria-label={`${name}, ${total} total, ${own} own${change ? `, ${change.text} change` : ""}`}
                 className={`row tree-row ${look.fn === name ? "selected" : ""} ${active ? "active" : ""}`}
                 style={{ transform: `translateY(${item.start}px)` }}
                 onClick={() => {
@@ -196,7 +197,7 @@ export function TreeRows({
               >
                 <span className="percent">{total}</span>
                 <span className="percent dim">{own}</span>
-                {diff ? <Change points={change} /> : null}
+                {change ? <Change change={change} /> : null}
                 <span style={{ width: (tree.depth[node] ?? 0) * 12, flex: "none" }} />
                 <button
                   type="button"
@@ -240,12 +241,11 @@ export function ColumnHead({ columns, end }: { columns: string[]; end?: string }
   );
 }
 
-/** A share's change from a diff's base, colored as the flame graph is. */
-export function Change({ points }: { points: number | null }) {
-  const way = points === null || Math.abs(points) < 0.005 ? "" : points > 0 ? "up" : "down";
+/** A change from a diff's base, colored as the flame graph is. */
+export function Change({ change }: { change: Changed }) {
   return (
-    <span className={`percent change ${way}`} title="Change in share from the base">
-      {formatChange(points)}
+    <span className={`percent change ${change.way}`} title="Change from the base">
+      {change.text}
     </span>
   );
 }

@@ -356,9 +356,19 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await expect(page).not.toHaveURL(/br=/);
   await compare.selectOption({ label: "diff with middle.usprof" });
   await expect(page).toHaveURL(/bp=[0-9a-f]{16}/);
-  await expect(row("leaf")).toContainText("+100.0 pp");
-  await expect(row("middle")).toContainText("−100.0 pp");
+  // In time by default, as report --base compares them.
+  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+6 executions new change$/);
+  await expect(row("middle")).toHaveAttribute("aria-label", /, −\d+ executions? gone change$/);
   await expect(page.getByRole("button", { name: "by change" })).toBeVisible();
+
+  // In share, each side's part of its own profile; the choice is in the address.
+  await page.getByRole("button", { name: "share", exact: true }).click();
+  await expect(page).toHaveURL(/dm=share/);
+  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+100\.0 pp change$/);
+  await expect(row("middle")).toContainText("−100.0 pp");
+  await page.getByRole("button", { name: "time", exact: true }).click();
+  await expect(page).not.toHaveURL(/dm=/);
+  await expect(row("leaf")).toContainText("new");
 });
 
 test("a function's samples show on its source lines and its instructions", async ({

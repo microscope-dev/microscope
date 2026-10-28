@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { withLook } from "../../profile/look";
-import {
-  diffFill,
-  fill,
-  formatChange,
-  formatPercent,
-  formatWeight,
-  shareChange,
-} from "../../profile/paint";
+import { diffModeOf, withLook } from "../../profile/look";
+import { changeFill, changeOf, fill, formatPercent, formatWeight } from "../../profile/paint";
 import {
   type CallTree,
   decodeTree,
@@ -126,7 +119,8 @@ function FlameGraph({
   matched: Set<number> | null;
   onZoom: (node: number) => void;
 }) {
-  const { unit } = useProfile();
+  const { unit, look } = useProfile();
+  const mode = diffModeOf(look);
   const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
   const scheme = useShownScheme();
@@ -157,9 +151,10 @@ function FlameGraph({
       const key = tree.keys[tree.key[rect.node] ?? 0];
       context.globalAlpha = matched && !matched.has(rect.node) ? 0.35 : 1;
       context.fillStyle = tree.baseTotal
-        ? diffFill(
-            (tree.total[rect.node] ?? 0) / Math.max(tree.weight, 1),
-            (tree.baseTotal[rect.node] ?? 0) / Math.max(tree.baseWeight ?? 0, 1),
+        ? changeFill(
+            mode,
+            [tree.total[rect.node] ?? 0, tree.weight],
+            [tree.baseTotal[rect.node] ?? 0, tree.baseWeight ?? 0],
             dark,
           )
         : key
@@ -172,7 +167,7 @@ function FlameGraph({
       }
     }
     context.globalAlpha = 1;
-  }, [rects, tree, width, height, matched, scheme]);
+  }, [rects, tree, width, height, matched, scheme, mode]);
 
   const at = (event: React.MouseEvent) => {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -215,15 +210,16 @@ function FlameGraph({
           </div>
           {tree.baseTotal ? (
             <div className="muted">
-              base {formatPercent(tree.baseTotal[shown] ?? 0, tree.baseWeight ?? 0)} total ·{" "}
-              {formatChange(
-                shareChange(
-                  tree.total[shown] ?? 0,
-                  tree.weight,
-                  tree.baseTotal[shown] ?? 0,
-                  tree.baseWeight ?? 0,
-                ),
-              )}
+              base {formatWeight(tree.baseTotal[shown] ?? 0, unit)} ·{" "}
+              {formatPercent(tree.baseTotal[shown] ?? 0, tree.baseWeight ?? 0)} total ·{" "}
+              {
+                changeOf(
+                  mode,
+                  [tree.total[shown] ?? 0, tree.weight],
+                  [tree.baseTotal[shown] ?? 0, tree.baseWeight ?? 0],
+                  unit,
+                ).text
+              }
             </div>
           ) : null}
         </div>

@@ -138,7 +138,10 @@ disassembly, tasks, blocked time, and instrumentation zones:
 microscope web server.usprof
 ```
 
-Pass a second profile to compare it with the first.
+Pass a second profile to compare it with the first. A diff compares each
+function's time, as `report --base` does. Switch it to "share" to compare each
+side's share of its own profile instead, which suits two recordings of
+different lengths.
 
 ## Record blocked time
 

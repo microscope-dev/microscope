@@ -53,6 +53,70 @@ export function formatChange(points: number | null): string {
   return Number(shown) === 0 ? "±0" : `${points > 0 ? "+" : "−"}${shown.replace("-", "")} pp`;
 }
 
+/** What a diff's change column compares: each side's cost in the
+ * profile's unit, or each side's share of its own profile. */
+export type DiffMode = "time" | "share";
+
+/** A diff cell's change, and which way it went: `up` where cost grew. */
+export interface Changed {
+  text: string;
+  way: "up" | "down" | "";
+}
+
+/** How a cost changed from the base's, as `report --base` writes it: the
+ * difference in `unit` and as a percentage of the base, or `new` or
+ * `gone` where one side is zero. */
+export function weightChange(weight: number, baseWeight: number, unit: string): string {
+  if (weight === baseWeight) {
+    return "±0";
+  }
+  const change = weight - baseWeight;
+  const sign = change > 0 ? "+" : "−";
+  const amount = `${sign}${formatWeight(Math.abs(change), unit)}`;
+  if (baseWeight === 0) {
+    return `${amount} new`;
+  }
+  if (weight === 0) {
+    return `${amount} gone`;
+  }
+  const percent = (Math.abs(change) * 100) / baseWeight;
+  return `${amount} ${sign}${percent.toFixed(1)}%`;
+}
+
+/** A diff cell's change in `mode`, from a part of each side and each
+ * side's whole. */
+export function changeOf(
+  mode: DiffMode,
+  [part, whole]: readonly [number, number],
+  [basePart, baseWhole]: readonly [number, number],
+  unit: string,
+): Changed {
+  if (mode === "time") {
+    return {
+      text: weightChange(part, basePart, unit),
+      way: part > basePart ? "up" : part < basePart ? "down" : "",
+    };
+  }
+  const points = shareChange(part, whole, basePart, baseWhole);
+  return {
+    text: formatChange(points),
+    way: points === null || Math.abs(points) < 0.005 ? "" : points > 0 ? "up" : "down",
+  };
+}
+
+/** A diff's fill in `mode`: by each side's cost, or by each side's share
+ * of its own profile. */
+export function changeFill(
+  mode: DiffMode,
+  [part, whole]: readonly [number, number],
+  [basePart, baseWhole]: readonly [number, number],
+  dark: boolean,
+): string {
+  return mode === "time"
+    ? diffFill(part, basePart, dark)
+    : diffFill(part / Math.max(whole, 1), basePart / Math.max(baseWhole, 1), dark);
+}
+
 /** `value` to three significant digits in the largest of `units`, largest
  * first, that reads one or more once rounded, or whole in `base`. */
 function scaled(

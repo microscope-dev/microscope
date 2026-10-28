@@ -14,6 +14,8 @@ import {
   validateProfileLook,
 } from "../src/profile/look";
 import {
+  changeFill,
+  changeOf,
   diffFill,
   formatBytes,
   formatChange,
@@ -25,6 +27,7 @@ import {
   formatWeight,
   largest,
   shareChange,
+  weightChange,
 } from "../src/profile/paint";
 import { type CallTree, decodeTree, findPath, hit, layout, pathOf } from "../src/profile/tree";
 import {
@@ -66,6 +69,7 @@ describe("a profile's address", () => {
       z: ["main", "a & b", "c=d?"],
       bp: "f00d",
       br: "5-90",
+      dm: "share",
       ann: "code",
     };
     expect(roundTrip(look)).toEqual(look);
@@ -108,6 +112,7 @@ describe("a profile's address", () => {
         by: "function",
         bp: "",
         br: "9-3",
+        dm: "time",
         ann: "lines-of-code",
       }),
     ).toEqual({});
@@ -246,6 +251,55 @@ describe("a diff's colors", () => {
     expect(hueOf(diffFill(0.5, 0.25, false))).toBe(0);
     expect(hueOf(diffFill(0.25, 0.5, false))).toBe(215);
     expect(lightness(diffFill(0.5, 0, false))).toBeLessThan(lightness(diffFill(0.5, 0.4, false)));
+  });
+});
+
+describe("a diff in time", () => {
+  const s = 1e9;
+  // V8's scavenger in the ESLint diff: less time, in a smaller profile.
+  const after = [29.323 * s, 222.541 * s] as const;
+  const before = [30.322 * s, 280 * s] as const;
+
+  it("reads as report --base does, whichever side is zero", () => {
+    expect(weightChange(after[0], before[0], "nanoseconds")).toBe("−999 ms −3.3%");
+    expect(weightChange(3 * s, 2 * s, "nanoseconds")).toBe("+1.00 s +50.0%");
+    expect(weightChange(2 * s, 0, "nanoseconds")).toBe("+2.00 s new");
+    expect(weightChange(0, 2 * s, "nanoseconds")).toBe("−2.00 s gone");
+    expect(weightChange(0, 0, "nanoseconds")).toBe("±0");
+    expect(weightChange(5, 5, "executions")).toBe("±0");
+    expect(weightChange(3, 4, "executions")).toBe("−1 execution −25.0%");
+    expect(weightChange(3 * 1024, 1024, "bytes")).toBe("+2.00 KiB +200.0%");
+  });
+
+  it("goes the way the cost went, where shares can go the other", () => {
+    expect(changeOf("time", after, before, "nanoseconds")).toEqual({
+      text: "−999 ms −3.3%",
+      way: "down",
+    });
+    expect(changeOf("share", after, before, "nanoseconds")).toEqual({
+      text: "+2.35 pp",
+      way: "up",
+    });
+    expect(changeOf("time", [0, 1], [0, 1], "nanoseconds")).toEqual({ text: "±0", way: "" });
+    expect(changeOf("time", [1, 1], [0, 0], "nanoseconds").way).toBe("up");
+    expect(changeOf("time", [0, 1], [1, 1], "nanoseconds").way).toBe("down");
+  });
+
+  it("is colored by cost, scaled to the larger side", () => {
+    const hueOf = (fill: string) => Number(/^hsl\((\d+)/.exec(fill)?.[1]);
+    const lightness = (fill: string) => Number(/(\d+(?:\.\d+)?)%\)$/.exec(fill)?.[1]);
+    expect(hueOf(changeFill("time", after, before, false))).toBe(215);
+    expect(hueOf(changeFill("share", after, before, false))).toBe(0);
+    expect(hueOf(changeFill("time", [s, 1], [0, 1], false))).toBe(0);
+    expect(hueOf(changeFill("time", [0, 1], [s, 1], true))).toBe(215);
+    // Twice the time is as strong a change at any scale, and less than all new.
+    expect(changeFill("time", [2, 9], [1, 9], false)).toBe(
+      changeFill("time", [2 * s, 9], [s, 9], false),
+    );
+    expect(lightness(changeFill("time", [s, 1], [0, 1], false))).toBeLessThan(
+      lightness(changeFill("time", [2 * s, 1], [s, 1], false)),
+    );
+    expect(changeFill("time", [0, 1], [0, 1], false)).toBe(diffFill(1, 1, false));
   });
 });
 

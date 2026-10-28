@@ -9,6 +9,7 @@ import type {
   SyscallQuery,
   TransformOp,
 } from "../protocol";
+import type { DiffMode } from "./paint";
 
 export type ProfileView = "flame" | "tree" | "functions" | "zones" | "syscalls";
 
@@ -55,6 +56,8 @@ export interface ProfileLook {
   bp?: string;
   /** The range of the base profile a diff compares with, `START-END`. */
   br?: string;
+  /** A diff compares each side's share of its own profile, not its cost. */
+  dm?: "share";
   /** What the selected function shows: its source lines or its code,
    * rather than its callers and callees. */
   ann?: "lines" | "code";
@@ -163,6 +166,9 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   if (br && parseRange(br)) {
     look.br = br;
   }
+  if (text("dm") === "share") {
+    look.dm = "share";
+  }
   const ann = text("ann");
   if (ann === "lines" || ann === "code") {
     look.ann = ann;
@@ -217,6 +223,12 @@ export function parseRange(text: string): [number, number] | null {
   const start = Number(match[1]);
   const end = Number(match[2]);
   return end > start ? [start, end] : null;
+}
+
+/** What a diff's change column compares: cost, unless the look asks for
+ * shares. */
+export function diffModeOf(look: { dm?: "share" | undefined }): DiffMode {
+  return look.dm === "share" ? "share" : "time";
 }
 
 /** The look's time range, if it selects one. */

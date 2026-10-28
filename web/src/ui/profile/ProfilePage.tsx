@@ -441,13 +441,41 @@ function Compare() {
         : "this profile";
     const during = baseRange ? ` ${formatSpan(baseRange)}` : "";
     return (
-      <Chip
-        label={`diff with ${of}${during}`}
-        title="Red grew and blue shrank against this base"
-        remove={() =>
-          setLook((look) => withLook(withLook(look, "bp", undefined), "br", undefined), true)
-        }
-      />
+      <>
+        <Chip
+          label={`diff with ${of}${during}`}
+          title="Red grew and blue shrank against this base"
+          remove={() =>
+            setLook(
+              (look) =>
+                withLook(
+                  withLook(withLook(look, "bp", undefined), "br", undefined),
+                  "dm",
+                  undefined,
+                ),
+              true,
+            )
+          }
+        />
+        <div className="segmented" title="What the change column compares">
+          {(
+            [
+              [undefined, "time", "Each function's cost, as report --base compares it"],
+              ["share", "share", "Each function's share of its own profile"],
+            ] as const
+          ).map(([dm, label, title]) => (
+            <button
+              key={label}
+              type="button"
+              title={title}
+              aria-pressed={look.dm === dm}
+              onClick={() => setLook((look) => withLook(look, "dm", dm), true)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </>
     );
   }
   if (!look.range && others.length === 0) {

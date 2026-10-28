@@ -1,13 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
-import { withLook } from "../../profile/look";
-import {
-  formatChange,
-  formatCount,
-  formatPercent,
-  formatWeight,
-  shareChange,
-} from "../../profile/paint";
+import { diffModeOf, withLook } from "../../profile/look";
+import { changeOf, formatCount, formatPercent, formatWeight } from "../../profile/paint";
 import type { ProfileQuery } from "../../protocol";
 import { Code, SourceLines } from "./Annotated";
 import { useAnswer, useProfile } from "./context";
@@ -26,10 +20,17 @@ export function FunctionsView() {
   const answer = useAnswer("profileFunctions", query);
   const [order, setOrder] = useState<Order>("own");
   const body = useRef<HTMLDivElement>(null);
+  const mode = diffModeOf(look);
   const rows = useMemo(() => {
     const all = answer.data?.rows ?? [];
-    return order === "own" ? all : [...all].sort((a, b) => b.total - a.total || b.own - a.own);
-  }, [answer.data, order]);
+    if (order === "total") {
+      return [...all].sort((a, b) => b.total - a.total || b.own - a.own);
+    }
+    // The server orders a diff by change in share.
+    return answer.data?.base && mode === "time"
+      ? [...all].sort((a, b) => Math.abs(b.own - b.baseOwn) - Math.abs(a.own - a.baseOwn))
+      : all;
+  }, [answer.data, order, mode]);
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => body.current,
@@ -98,7 +99,9 @@ export function FunctionsView() {
                 const selected = look.fn === key.name;
                 const own = formatPercent(row.own, weight);
                 const total = formatPercent(row.total, weight);
-                const change = base ? shareChange(row.own, weight, row.baseOwn, base.weight) : null;
+                const change = base
+                  ? changeOf(mode, [row.own, weight], [row.baseOwn, base.weight], unit)
+                  : null;
                 return (
                   // biome-ignore lint/a11y/useFocusableInteractive: the list keeps focus and names its active row
                   // biome-ignore lint/a11y/useKeyWithClickEvents: the list takes the keys for its rows
@@ -108,7 +111,7 @@ export function FunctionsView() {
                     id={keys.rowId(item.index)}
                     role="option"
                     aria-selected={selected}
-                    aria-label={`${key.name}${key.module ? ` in ${key.module}` : ""}, ${own} own, ${total} total${base ? `, ${formatChange(change)} change` : ""}`}
+                    aria-label={`${key.name}${key.module ? ` in ${key.module}` : ""}, ${own} own, ${total} total${change ? `, ${change.text} change` : ""}`}
                     className={`row tree-row ${selected ? "selected" : ""} ${item.index === keys.active ? "active" : ""}`}
                     style={{ transform: `translateY(${item.start}px)` }}
                     title={formatWeight(row.total, unit)}
@@ -119,7 +122,7 @@ export function FunctionsView() {
                   >
                     <span className="percent">{own}</span>
                     <span className="percent dim">{total}</span>
-                    {base ? <Change points={change} /> : null}
+                    {change ? <Change change={change} /> : null}
                     <span className="name">{key.name}</span>
                     {key.module ? <span className="end">{key.module}</span> : null}
                   </div>
