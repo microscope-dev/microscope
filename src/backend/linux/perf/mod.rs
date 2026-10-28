@@ -99,8 +99,12 @@ pub struct Events {
     rings: Vec<sys::Ring>,
     pages: usize,
 
-    /// High-rate collection stays separate from symbol loading and unwinding.
+    /// Collection of sampled records stays separate from symbol loading
+    /// and unwinding.
     buffered: Option<Mutex<Vec<u8>>>,
+
+    /// How long the reader sleeps when no ring wakes it.
+    reader_wait: Duration,
     reader_cpu: AtomicU64,
 
     /// The CPU of each ring, in their order.
@@ -120,7 +124,7 @@ pub struct Events {
     gate: Mutex<Gate>,
 }
 
-/// The high-rate reader holds at most this much for processing before it
+/// The reader holds at most this much for processing before it
 /// turns sampling off until processing takes it.
 const QUEUE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -218,6 +222,7 @@ impl Events {
             rings,
             pages,
             buffered: collection_buffer(options),
+            reader_wait: reader_wait(options),
             reader_cpu: AtomicU64::new(0),
             cpus,
             followers: Vec::new(),
@@ -291,6 +296,7 @@ impl Events {
                                 rings,
                                 pages,
                                 buffered: collection_buffer(options),
+                                reader_wait: reader_wait(options),
                                 reader_cpu: AtomicU64::new(0),
                                 cpus: cpus.to_vec(),
                                 followers: Vec::new(),
@@ -442,7 +448,7 @@ impl Events {
         out.len() - before
     }
 
-    /// Drains high-rate rings while `work` processes previous records.
+    /// Drains the rings of a clock's samples while `work` processes previous records.
     /// Once the queue holds [`QUEUE_BYTES`], sampling is off until
     /// processing takes it, so that the kernel need not drop samples for
     /// want of room. The rings are still drained meanwhile, of the samples
@@ -473,7 +479,7 @@ impl Events {
                         u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
-                    self.wait(Duration::from_micros(100));
+                    self.wait(self.reader_wait);
                 }
             });
             let guard = StopReader(&stop);
@@ -526,7 +532,7 @@ impl Events {
         std::mem::take(&mut gate.spans)
     }
 
-    /// CPU time spent collecting on the high-rate reader.
+    /// CPU time spent collecting on the reader.
     pub fn reader_cpu(&self) -> Duration {
         Duration::from_nanos(self.reader_cpu.load(Ordering::Relaxed))
     }
@@ -601,9 +607,25 @@ impl Drop for StopReader<'_> {
     }
 }
 
+/// A clock's samples are read apart from processing at every rate: a low
+/// rate fills a ring slowly, but processing that loads a program's debug
+/// information or its code can be busy for longer than a ring lasts.
+/// Breakpoint counts are not, since turning their sampling off would lose
+/// counts.
 fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
-    matches!(options.source, Source::Clock { period } if period <= Duration::from_millis(2))
+    matches!(options.source, Source::Clock { .. })
         .then(|| Mutex::new(Vec::with_capacity(QUEUE_ROOM)))
+}
+
+/// How long the reader sleeps unless a ring a quarter full wakes it first,
+/// so only how late records are read. Below 500 Hz the reader wakes only
+/// as often as the processor drains: waking every 2 ms at `prod`'s 49 Hz
+/// cost 0.2 to 0.3% of a CPU, most of `prod`'s whole cost.
+fn reader_wait(options: &EventOptions) -> Duration {
+    match options.source {
+        Source::Clock { period } if period > Duration::from_millis(2) => Duration::from_millis(10),
+        _ => Duration::from_micros(100),
+    }
 }
 
 /// The flags of the records beside the samples: what each process maps and
@@ -1583,6 +1605,46 @@ mod tests {
             "{spans:?}, though the program exited at {exited} and the test ended at {end}"
         );
         assert_eq!(events.behind(Some(end)), []);
+    }
+
+    /// A low rate fills the rings slowly, but processing can still be busy
+    /// for longer than they last. Four threads spinning for 750 ms at
+    /// 200 Hz, each sample copying 64 KiB of stack, fill a 512 KiB ring
+    /// in about 40 ms and the queue not at all, so a reader loses nothing
+    /// and never turns sampling off, while processing takes nothing.
+    #[test]
+    fn a_low_rate_is_read_while_processing_is_busy() {
+        let options = EventOptions {
+            source: Source::Clock {
+                period: Duration::from_millis(5),
+            },
+            stack_bytes: 65528,
+            kernel: false,
+            ring_pages: 128,
+            switches: false,
+        };
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-switches");
+        let mut command = Command::new(program);
+        command.args(["0", "750", "4"]);
+        let Launched { events, exit, .. } =
+            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
+                .expect("launch the program");
+        let status = events
+            .read_while(|| exit.join())
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+
+        let counts = events.counts();
+        assert_eq!(
+            (counts.lost_samples, counts.lost_records),
+            (0, 0),
+            "{counts:?}"
+        );
+        assert_eq!(events.behind(Some(sys::monotonic())), []);
+        let mut records = Vec::new();
+        assert!(events.drain(&mut records) > 0);
     }
 
     #[test]

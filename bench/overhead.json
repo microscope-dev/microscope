@@ -2,7 +2,7 @@
   {
     "workload": "c",
     "setup": "bare",
-    "rate": 3792.0,
+    "rate": 2876.3333333333335,
     "p99_ns": null,
     "recorder_cpu": null,
     "recording_bytes": null
@@ -10,23 +10,23 @@
   {
     "workload": "c",
     "setup": "prod",
-    "rate": 3790.6666666666665,
+    "rate": 2874.6666666666665,
     "p99_ns": null,
-    "recorder_cpu": 0.0038189402917708434,
-    "recording_bytes": 49266688
+    "recorder_cpu": 0.004093829550410061,
+    "recording_bytes": 59994112
   },
   {
     "workload": "c",
     "setup": "dev",
-    "rate": 3782.3333333333335,
+    "rate": 2826.0,
     "p99_ns": null,
-    "recorder_cpu": 0.10837667515962258,
-    "recording_bytes": 34521088
+    "recorder_cpu": 0.07719345741670051,
+    "recording_bytes": 52482048
   },
   {
     "workload": "go",
     "setup": "bare",
-    "rate": 3771.6666666666665,
+    "rate": 2867.3333333333335,
     "p99_ns": null,
     "recorder_cpu": null,
     "recording_bytes": null
@@ -34,47 +34,47 @@
   {
     "workload": "go",
     "setup": "prod",
-    "rate": 3771.0,
+    "rate": 2862.6666666666665,
     "p99_ns": null,
-    "recorder_cpu": 0.0035408650215058906,
-    "recording_bytes": 119365632
+    "recorder_cpu": 0.00488493361417888,
+    "recording_bytes": 75186176
   },
   {
     "workload": "go",
     "setup": "dev",
-    "rate": 3765.3333333333335,
+    "rate": 2818.6666666666665,
     "p99_ns": null,
-    "recorder_cpu": 0.08670732992812612,
-    "recording_bytes": 67391488
+    "recorder_cpu": 0.08249782505200982,
+    "recording_bytes": 82100224
   },
   {
     "workload": "tokio",
     "setup": "bare",
-    "rate": 1629034.6666666667,
-    "p99_ns": 112933,
+    "rate": 1312906.6666666667,
+    "p99_ns": 138391,
     "recorder_cpu": null,
     "recording_bytes": null
   },
   {
     "workload": "tokio",
     "setup": "prod",
-    "rate": 1605152.0,
-    "p99_ns": 117712,
-    "recorder_cpu": 0.003278392199867869,
-    "recording_bytes": 160026624
+    "rate": 1327733.3333333333,
+    "p99_ns": 134784,
+    "recorder_cpu": 0.004498084336989809,
+    "recording_bytes": 212905984
   },
   {
     "workload": "tokio",
     "setup": "dev",
-    "rate": 1603562.6666666667,
-    "p99_ns": 118342,
-    "recorder_cpu": 0.009891333572835014,
-    "recording_bytes": 61399040
+    "rate": 1304608.0,
+    "p99_ns": 145114,
+    "recorder_cpu": 0.03682382734914942,
+    "recording_bytes": 101437440
   },
   {
     "workload": "probes",
     "setup": "bare",
-    "rate": 1100.3333333333333,
+    "rate": 837.6666666666666,
     "p99_ns": null,
     "recorder_cpu": null,
     "recording_bytes": null
@@ -82,407 +82,23 @@
   {
     "workload": "probes",
     "setup": "prod",
-    "rate": 1101.3333333333333,
+    "rate": 827.0,
     "p99_ns": null,
-    "recorder_cpu": 0.012562919546087709,
-    "recording_bytes": 33193984
+    "recorder_cpu": 0.012019129220277152,
+    "recording_bytes": 15011840
   },
   {
     "workload": "probes",
     "setup": "dev",
-    "rate": 1100.3333333333333,
+    "rate": 827.6666666666666,
     "p99_ns": null,
-    "recorder_cpu": 0.028755737197486475,
-    "recording_bytes": 21364736
-  },
-  {
-    "workload": "c",
-    "setup": "bare",
-    "rate": 3791.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "c",
-    "setup": "prod",
-    "rate": 3790.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": 0.0038782520670693262,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "c",
-    "setup": "dev",
-    "rate": 3783.0,
-    "p99_ns": null,
-    "recorder_cpu": 0.08716412428906371,
+    "recorder_cpu": 0.04727435429001795,
     "recording_bytes": 8794112
   },
   {
-    "workload": "go",
-    "setup": "bare",
-    "rate": 3772.0,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "go",
-    "setup": "prod",
-    "rate": 3772.0,
-    "p99_ns": null,
-    "recorder_cpu": 0.004993575856370963,
-    "recording_bytes": 18694144
-  },
-  {
-    "workload": "go",
-    "setup": "dev",
-    "rate": 3764.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": 0.07544609705167063,
-    "recording_bytes": 26746880
-  },
-  {
-    "workload": "tokio",
-    "setup": "bare",
-    "rate": 1607061.3333333333,
-    "p99_ns": 119194,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "tokio",
-    "setup": "prod",
-    "rate": 1614485.3333333333,
-    "p99_ns": 114365,
-    "recorder_cpu": 0.003478195454052295,
-    "recording_bytes": 56528896
-  },
-  {
-    "workload": "tokio",
-    "setup": "dev",
-    "rate": 1598965.3333333333,
-    "p99_ns": 119335,
-    "recorder_cpu": 0.009699063864437286,
-    "recording_bytes": 98529280
-  },
-  {
-    "workload": "probes",
-    "setup": "bare",
-    "rate": 1099.3333333333333,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "probes",
-    "setup": "prod",
-    "rate": 1101.3333333333333,
-    "p99_ns": null,
-    "recorder_cpu": 0.013045091647963464,
-    "recording_bytes": 26603520
-  },
-  {
-    "workload": "probes",
-    "setup": "dev",
-    "rate": 1099.6666666666667,
-    "p99_ns": null,
-    "recorder_cpu": 0.02821557665696624,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "c",
-    "setup": "bare",
-    "rate": 3791.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "c",
-    "setup": "prod",
-    "rate": 3787.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": 0.004984024847797694,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "c",
-    "setup": "dev",
-    "rate": 3774.0,
-    "p99_ns": null,
-    "recorder_cpu": 0.08176201232484423,
-    "recording_bytes": 20353024
-  },
-  {
-    "workload": "go",
-    "setup": "bare",
-    "rate": 3765.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "go",
-    "setup": "prod",
-    "rate": 3762.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": 0.004677961892628661,
-    "recording_bytes": 22011904
-  },
-  {
-    "workload": "go",
-    "setup": "dev",
-    "rate": 3754.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": 0.07280353674286741,
-    "recording_bytes": 43810816
-  },
-  {
-    "workload": "tokio",
-    "setup": "bare",
-    "rate": 1608704.0,
-    "p99_ns": 116890,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "tokio",
-    "setup": "prod",
-    "rate": 1614730.6666666667,
-    "p99_ns": 113403,
-    "recorder_cpu": 0.003764560873555422,
-    "recording_bytes": 43835392
-  },
-  {
-    "workload": "tokio",
-    "setup": "dev",
-    "rate": 1597482.6666666667,
-    "p99_ns": 118453,
-    "recorder_cpu": 0.010325930368280832,
-    "recording_bytes": 121794560
-  },
-  {
-    "workload": "probes",
-    "setup": "bare",
-    "rate": 1100.0,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "probes",
-    "setup": "prod",
-    "rate": 1101.3333333333333,
-    "p99_ns": null,
-    "recorder_cpu": 0.011025708735326479,
-    "recording_bytes": 8192000
-  },
-  {
-    "workload": "probes",
-    "setup": "dev",
-    "rate": 1100.6666666666667,
-    "p99_ns": null,
-    "recorder_cpu": 0.028867954076389177,
-    "recording_bytes": 75894784
-  },
-  {
-    "workload": "c",
-    "setup": "bare",
-    "rate": 3791.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "c",
-    "setup": "prod",
-    "rate": 3789.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": 0.003525400411285954,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "c",
-    "setup": "dev",
-    "rate": 3784.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": 0.05866175703480211,
-    "recording_bytes": 9596928
-  },
-  {
-    "workload": "go",
-    "setup": "bare",
-    "rate": 3771.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "go",
-    "setup": "prod",
-    "rate": 3761.0,
-    "p99_ns": null,
-    "recorder_cpu": 0.004248387848074336,
-    "recording_bytes": 30208000
-  },
-  {
-    "workload": "go",
-    "setup": "dev",
-    "rate": 3765.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": 0.061716823572686035,
-    "recording_bytes": 18898944
-  },
-  {
-    "workload": "tokio",
-    "setup": "bare",
-    "rate": 1605056.0,
-    "p99_ns": 118923,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "tokio",
-    "setup": "prod",
-    "rate": 1601109.3333333333,
-    "p99_ns": 115597,
-    "recorder_cpu": 0.0032753192987936405,
-    "recording_bytes": 70586368
-  },
-  {
-    "workload": "tokio",
-    "setup": "dev",
-    "rate": 1462069.3333333333,
-    "p99_ns": 298993,
-    "recorder_cpu": 0.009694509770192197,
-    "recording_bytes": 55508992
-  },
-  {
-    "workload": "probes",
-    "setup": "bare",
-    "rate": 1097.0,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "probes",
-    "setup": "prod",
-    "rate": 1099.6666666666667,
-    "p99_ns": null,
-    "recorder_cpu": 0.011159457602211912,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "probes",
-    "setup": "dev",
-    "rate": 1098.6666666666667,
-    "p99_ns": null,
-    "recorder_cpu": 0.025992599764595142,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "c",
-    "setup": "bare",
-    "rate": 3782.0,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "c",
-    "setup": "prod",
-    "rate": 3778.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": 0.004005967861425443,
-    "recording_bytes": 0
-  },
-  {
-    "workload": "c",
-    "setup": "dev",
-    "rate": 3772.3333333333335,
-    "p99_ns": null,
-    "recorder_cpu": 0.08982493997372994,
-    "recording_bytes": 17412096
-  },
-  {
-    "workload": "go",
-    "setup": "bare",
-    "rate": 3763.6666666666665,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "go",
-    "setup": "prod",
-    "rate": 3764.0,
-    "p99_ns": null,
-    "recorder_cpu": 0.004402277151493994,
-    "recording_bytes": 29134848
-  },
-  {
-    "workload": "go",
-    "setup": "dev",
-    "rate": 3758.0,
-    "p99_ns": null,
-    "recorder_cpu": 0.06894475080554828,
-    "recording_bytes": 38158336
-  },
-  {
-    "workload": "tokio",
-    "setup": "bare",
-    "rate": 1451392.0,
-    "p99_ns": 297530,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "tokio",
-    "setup": "prod",
-    "rate": 1511488.0,
-    "p99_ns": 295586,
-    "recorder_cpu": 0.003575167281359808,
-    "recording_bytes": 88145920
-  },
-  {
-    "workload": "tokio",
-    "setup": "dev",
-    "rate": 1475946.6666666667,
-    "p99_ns": 298111,
-    "recorder_cpu": 0.00951639411422351,
-    "recording_bytes": 68083712
-  },
-  {
-    "workload": "probes",
-    "setup": "bare",
-    "rate": 1099.0,
-    "p99_ns": null,
-    "recorder_cpu": null,
-    "recording_bytes": null
-  },
-  {
-    "workload": "probes",
-    "setup": "prod",
-    "rate": 1085.6666666666667,
-    "p99_ns": null,
-    "recorder_cpu": 0.013013285297381383,
-    "recording_bytes": 31137792
-  },
-  {
-    "workload": "probes",
-    "setup": "dev",
-    "rate": 1093.3333333333333,
-    "p99_ns": null,
-    "recorder_cpu": 0.02908428627413488,
-    "recording_bytes": 34013184
-  },
-  {
     "workload": "python",
     "setup": "bare",
-    "rate": 44806.666666666664,
+    "rate": 36211.333333333336,
     "p99_ns": null,
     "recorder_cpu": null,
     "recording_bytes": null
@@ -490,39 +106,135 @@
   {
     "workload": "python",
     "setup": "prod",
-    "rate": 45693.333333333336,
+    "rate": 35840.333333333336,
     "p99_ns": null,
-    "recorder_cpu": 0.00443121379549929,
-    "recording_bytes": 73965568
+    "recorder_cpu": 0.004612658012439852,
+    "recording_bytes": 0
   },
   {
     "workload": "python",
     "setup": "dev",
-    "rate": 44854.333333333336,
+    "rate": 36018.333333333336,
     "p99_ns": null,
-    "recorder_cpu": 0.032378708461790195,
-    "recording_bytes": 38338560
+    "recorder_cpu": 0.04379805106936732,
+    "recording_bytes": 14000128
   },
   {
     "workload": "python",
     "setup": "prod+live",
-    "rate": 45003.666666666664,
+    "rate": 35947.666666666664,
     "p99_ns": null,
-    "recorder_cpu": 0.010439933339394818,
-    "recording_bytes": 25632768
+    "recorder_cpu": 0.013099795559926339,
+    "recording_bytes": 16506880
   },
   {
     "workload": "python",
     "setup": "prod+snapshot",
-    "rate": 38197.0,
+    "rate": 26807.666666666668,
     "p99_ns": null,
-    "recorder_cpu": 0.005100906559564099,
-    "recording_bytes": 97476608
+    "recorder_cpu": 0.005972309117275761,
+    "recording_bytes": 25440256
+  },
+  {
+    "workload": "c",
+    "setup": "bare",
+    "rate": 2877.0,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "c",
+    "setup": "prod",
+    "rate": 2874.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.004269933830448322,
+    "recording_bytes": 8437760
+  },
+  {
+    "workload": "c",
+    "setup": "dev",
+    "rate": 2825.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.07893304422471752,
+    "recording_bytes": 23097344
+  },
+  {
+    "workload": "go",
+    "setup": "bare",
+    "rate": 2866.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "go",
+    "setup": "prod",
+    "rate": 2864.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.005145322071264666,
+    "recording_bytes": 8986624
+  },
+  {
+    "workload": "go",
+    "setup": "dev",
+    "rate": 2811.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.0834803507112715,
+    "recording_bytes": 72609792
+  },
+  {
+    "workload": "tokio",
+    "setup": "bare",
+    "rate": 1329536.0,
+    "p99_ns": 135284,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "tokio",
+    "setup": "prod",
+    "rate": 1325258.6666666667,
+    "p99_ns": 137428,
+    "recorder_cpu": 0.004609962596042487,
+    "recording_bytes": 89128960
+  },
+  {
+    "workload": "tokio",
+    "setup": "dev",
+    "rate": 1306410.6666666667,
+    "p99_ns": 137749,
+    "recorder_cpu": 0.03869125979169935,
+    "recording_bytes": 108224512
+  },
+  {
+    "workload": "probes",
+    "setup": "bare",
+    "rate": 838.3333333333334,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "probes",
+    "setup": "prod",
+    "rate": 830.3333333333334,
+    "p99_ns": null,
+    "recorder_cpu": 0.011456497444473062,
+    "recording_bytes": 5324800
+  },
+  {
+    "workload": "probes",
+    "setup": "dev",
+    "rate": 825.6666666666666,
+    "p99_ns": null,
+    "recorder_cpu": 0.046417776787048476,
+    "recording_bytes": 0
   },
   {
     "workload": "python",
     "setup": "bare",
-    "rate": 45996.333333333336,
+    "rate": 35797.666666666664,
     "p99_ns": null,
     "recorder_cpu": null,
     "recording_bytes": null
@@ -530,39 +242,135 @@
   {
     "workload": "python",
     "setup": "prod",
-    "rate": 44901.333333333336,
+    "rate": 36066.0,
     "p99_ns": null,
-    "recorder_cpu": 0.004770427169353314,
-    "recording_bytes": 8302592
+    "recorder_cpu": 0.004471711711576756,
+    "recording_bytes": 0
   },
   {
     "workload": "python",
     "setup": "dev",
-    "rate": 45258.0,
+    "rate": 36000.666666666664,
     "p99_ns": null,
-    "recorder_cpu": 0.032273122491056516,
-    "recording_bytes": 21196800
+    "recorder_cpu": 0.04347276658621785,
+    "recording_bytes": 8855552
   },
   {
     "workload": "python",
     "setup": "prod+live",
-    "rate": 46061.666666666664,
+    "rate": 36459.666666666664,
     "p99_ns": null,
-    "recorder_cpu": 0.010689144635808884,
-    "recording_bytes": 12599296
+    "recorder_cpu": 0.011256465381568949,
+    "recording_bytes": 380928
   },
   {
     "workload": "python",
     "setup": "prod+snapshot",
-    "rate": 38193.333333333336,
+    "rate": 26763.0,
     "p99_ns": null,
-    "recorder_cpu": 0.005683845413727333,
-    "recording_bytes": 36368384
+    "recorder_cpu": 0.0061899301007808695,
+    "recording_bytes": 16281600
+  },
+  {
+    "workload": "c",
+    "setup": "bare",
+    "rate": 2876.0,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "c",
+    "setup": "prod",
+    "rate": 2874.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.004162337293007595,
+    "recording_bytes": 8253440
+  },
+  {
+    "workload": "c",
+    "setup": "dev",
+    "rate": 2826.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.07833342603551792,
+    "recording_bytes": 17346560
+  },
+  {
+    "workload": "go",
+    "setup": "bare",
+    "rate": 2866.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "go",
+    "setup": "prod",
+    "rate": 2863.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.006306288036904288,
+    "recording_bytes": 35512320
+  },
+  {
+    "workload": "go",
+    "setup": "dev",
+    "rate": 2817.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.08089571185976142,
+    "recording_bytes": 32862208
+  },
+  {
+    "workload": "tokio",
+    "setup": "bare",
+    "rate": 1311680.0,
+    "p99_ns": 134713,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "tokio",
+    "setup": "prod",
+    "rate": 1321834.6666666667,
+    "p99_ns": 136978,
+    "recorder_cpu": 0.004881812059998539,
+    "recording_bytes": 105689088
+  },
+  {
+    "workload": "tokio",
+    "setup": "dev",
+    "rate": 1302240.0,
+    "p99_ns": 138220,
+    "recorder_cpu": 0.038079461447881324,
+    "recording_bytes": 70995968
+  },
+  {
+    "workload": "probes",
+    "setup": "bare",
+    "rate": 836.3333333333334,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "probes",
+    "setup": "prod",
+    "rate": 827.3333333333334,
+    "p99_ns": null,
+    "recorder_cpu": 0.01137158141993991,
+    "recording_bytes": 41631744
+  },
+  {
+    "workload": "probes",
+    "setup": "dev",
+    "rate": 828.3333333333334,
+    "p99_ns": null,
+    "recorder_cpu": 0.0473915574519731,
+    "recording_bytes": 0
   },
   {
     "workload": "python",
     "setup": "bare",
-    "rate": 45376.0,
+    "rate": 36353.666666666664,
     "p99_ns": null,
     "recorder_cpu": null,
     "recording_bytes": null
@@ -570,33 +378,305 @@
   {
     "workload": "python",
     "setup": "prod",
-    "rate": 45063.333333333336,
+    "rate": 36207.333333333336,
     "p99_ns": null,
-    "recorder_cpu": 0.004627530637689129,
-    "recording_bytes": 16474112
+    "recorder_cpu": 0.004446146907818899,
+    "recording_bytes": 0
   },
   {
     "workload": "python",
     "setup": "dev",
-    "rate": 44865.666666666664,
+    "rate": 36220.333333333336,
     "p99_ns": null,
-    "recorder_cpu": 0.03300867246093023,
-    "recording_bytes": 3313664
+    "recorder_cpu": 0.04355211952698615,
+    "recording_bytes": 2711552
   },
   {
     "workload": "python",
     "setup": "prod+live",
-    "rate": 44559.666666666664,
+    "rate": 36236.333333333336,
     "p99_ns": null,
-    "recorder_cpu": 0.01041485972743634,
-    "recording_bytes": 6987776
+    "recorder_cpu": 0.011576330161658824,
+    "recording_bytes": 5308416
   },
   {
     "workload": "python",
     "setup": "prod+snapshot",
-    "rate": 38510.666666666664,
+    "rate": 27202.0,
     "p99_ns": null,
-    "recorder_cpu": 0.005450404694808822,
-    "recording_bytes": 61652992
+    "recorder_cpu": 0.006003548931450848,
+    "recording_bytes": 22220800
+  },
+  {
+    "workload": "c",
+    "setup": "bare",
+    "rate": 2876.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "c",
+    "setup": "prod",
+    "rate": 2874.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.005318373681603036,
+    "recording_bytes": 0
+  },
+  {
+    "workload": "c",
+    "setup": "dev",
+    "rate": 2826.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.07982101004021168,
+    "recording_bytes": 31330304
+  },
+  {
+    "workload": "go",
+    "setup": "bare",
+    "rate": 2847.0,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "go",
+    "setup": "prod",
+    "rate": 2864.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.005082689476908087,
+    "recording_bytes": 16457728
+  },
+  {
+    "workload": "go",
+    "setup": "dev",
+    "rate": 2808.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.07905874572661285,
+    "recording_bytes": 45916160
+  },
+  {
+    "workload": "tokio",
+    "setup": "bare",
+    "rate": 1327050.6666666667,
+    "p99_ns": 134774,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "tokio",
+    "setup": "prod",
+    "rate": 1322570.6666666667,
+    "p99_ns": 131898,
+    "recorder_cpu": 0.004586117177721497,
+    "recording_bytes": 91320320
+  },
+  {
+    "workload": "tokio",
+    "setup": "dev",
+    "rate": 1304000.0,
+    "p99_ns": 144452,
+    "recorder_cpu": 0.03886832046542647,
+    "recording_bytes": 77307904
+  },
+  {
+    "workload": "probes",
+    "setup": "bare",
+    "rate": 838.0,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "probes",
+    "setup": "prod",
+    "rate": 829.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.011453243083808594,
+    "recording_bytes": 0
+  },
+  {
+    "workload": "probes",
+    "setup": "dev",
+    "rate": 825.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.04731198143055275,
+    "recording_bytes": 17358848
+  },
+  {
+    "workload": "python",
+    "setup": "bare",
+    "rate": 36098.0,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "python",
+    "setup": "prod",
+    "rate": 35826.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.004594629769805807,
+    "recording_bytes": 0
+  },
+  {
+    "workload": "python",
+    "setup": "dev",
+    "rate": 36117.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.043755288285811274,
+    "recording_bytes": 12836864
+  },
+  {
+    "workload": "python",
+    "setup": "prod+live",
+    "rate": 35889.666666666664,
+    "p99_ns": null,
+    "recorder_cpu": 0.011076695647151523,
+    "recording_bytes": 3297280
+  },
+  {
+    "workload": "python",
+    "setup": "prod+snapshot",
+    "rate": 26856.666666666668,
+    "p99_ns": null,
+    "recorder_cpu": 0.006089252745826944,
+    "recording_bytes": 33939456
+  },
+  {
+    "workload": "c",
+    "setup": "bare",
+    "rate": 2874.6666666666665,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "c",
+    "setup": "prod",
+    "rate": 2875.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.0038399888336018524,
+    "recording_bytes": 0
+  },
+  {
+    "workload": "c",
+    "setup": "dev",
+    "rate": 2824.6666666666665,
+    "p99_ns": null,
+    "recorder_cpu": 0.07955659622045065,
+    "recording_bytes": 9125888
+  },
+  {
+    "workload": "go",
+    "setup": "bare",
+    "rate": 2866.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "go",
+    "setup": "prod",
+    "rate": 2865.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.0050433375037803535,
+    "recording_bytes": 39358464
+  },
+  {
+    "workload": "go",
+    "setup": "dev",
+    "rate": 2813.3333333333335,
+    "p99_ns": null,
+    "recorder_cpu": 0.07915396251999073,
+    "recording_bytes": 47480832
+  },
+  {
+    "workload": "tokio",
+    "setup": "bare",
+    "rate": 1323360.0,
+    "p99_ns": 132599,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "tokio",
+    "setup": "prod",
+    "rate": 1321888.0,
+    "p99_ns": 133160,
+    "recorder_cpu": 0.004490639822865136,
+    "recording_bytes": 105730048
+  },
+  {
+    "workload": "tokio",
+    "setup": "dev",
+    "rate": 1317717.3333333333,
+    "p99_ns": 140835,
+    "recorder_cpu": 0.038147130409631747,
+    "recording_bytes": 73953280
+  },
+  {
+    "workload": "probes",
+    "setup": "bare",
+    "rate": 837.6666666666666,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "probes",
+    "setup": "prod",
+    "rate": 833.6666666666666,
+    "p99_ns": null,
+    "recorder_cpu": 0.011120477804025372,
+    "recording_bytes": 950272
+  },
+  {
+    "workload": "probes",
+    "setup": "dev",
+    "rate": 826.3333333333334,
+    "p99_ns": null,
+    "recorder_cpu": 0.04583631886584658,
+    "recording_bytes": 14487552
+  },
+  {
+    "workload": "python",
+    "setup": "bare",
+    "rate": 36007.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": null,
+    "recording_bytes": null
+  },
+  {
+    "workload": "python",
+    "setup": "prod",
+    "rate": 36263.333333333336,
+    "p99_ns": null,
+    "recorder_cpu": 0.004567547865400351,
+    "recording_bytes": 0
+  },
+  {
+    "workload": "python",
+    "setup": "dev",
+    "rate": 36161.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.04401405500651297,
+    "recording_bytes": 10235904
+  },
+  {
+    "workload": "python",
+    "setup": "prod+live",
+    "rate": 36251.0,
+    "p99_ns": null,
+    "recorder_cpu": 0.011288173877406531,
+    "recording_bytes": 1552384
+  },
+  {
+    "workload": "python",
+    "setup": "prod+snapshot",
+    "rate": 26926.666666666668,
+    "p99_ns": null,
+    "recorder_cpu": 0.005902462999422204,
+    "recording_bytes": 34222080
   }
 ]

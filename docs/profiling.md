@@ -73,7 +73,7 @@ the program ran. Only the latter is a share of a CPU and is compared with
 `prod`'s 1% budget. A run with fewer than 20 samples or under 50 ms of CPU time
 is too short to judge either cost or coverage, and the report says so.
 
-High-rate recordings drain rings separately from unwinding. That queue is
+Recordings drain rings separately from unwinding, at every rate. That queue is
 bounded: when processing falls behind far enough to fill it, sampling stops
 until processing catches up, rather than letting the kernel drop samples. The
 record and the report say how long sampling was off, and the browser shades

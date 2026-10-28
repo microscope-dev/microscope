@@ -31,7 +31,7 @@ filter = 'binary(profiler_kernel) | (test(/(^|::)bpf::/) & (binary(node) | (bina
 test-group = 'bpf-profiles'
 
 [[profile.default.overrides]]
-filter = 'test(/(^|::)bpf::/) | binary(profiler)'
+filter = 'test(/(^|::)bpf::/) | binary(profiler) | (binary(microscope) & test(/^backend::linux::perf::tests::/))'
 test-group = 'perf-rings'
 
 # The maximum-rate loss bound measures collection, not competing test workers.
