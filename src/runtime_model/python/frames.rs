@@ -157,6 +157,7 @@ impl Walk<'_, '_> {
                             column: 0,
                         });
                     }
+                    Err(_) if row.internal => {}
                     Err(problem) => built.problem = Some(problem),
                 }
             }
@@ -330,6 +331,7 @@ impl Walk<'_, '_> {
                     column: 0,
                 });
             }
+            Err(_) if row.internal => {}
             Err(problem) => {
                 built.problem =
                     Some(format!("the frame running {:#x} {problem}", frame.code).into());

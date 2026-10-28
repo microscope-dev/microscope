@@ -82,6 +82,10 @@ pub(super) struct CodeRecord {
 
     /// How many of its first locals its caller passes, as parameters.
     pub(super) parameters: u32,
+
+    /// Whether CPython runs it for itself, as the frame it pushes beneath
+    /// an `__init__` to check what it returned, which is at no line.
+    pub(super) internal: bool,
     pub(super) locals: Span<Local>,
     lines: Span<u8>,
 }
@@ -98,6 +102,11 @@ pub(super) struct CodeTable {
     locals: Vec<Local>,
     lines: Vec<u8>,
 }
+
+/// `CO_NO_MONITORING_EVENTS`, which from 3.13 marks the code objects
+/// CPython makes for itself, as `_Py_InitCleanup`; 3.12 has none and leaves
+/// the bit clear.
+const NO_MONITORING_EVENTS: u32 = 0x0200_0000;
 
 /// The most rows a table keeps before it begins again: a long-running
 /// program makes and frees code objects, as `exec` and lambdas do.
@@ -169,6 +178,7 @@ impl CodeTable {
             .map(|name| reader.string(name))
             .collect::<Result<Vec<_>, _>>()?;
         let parameters = parameters(reader, header)?;
+        let internal = header.int(Field::CodeFlags)?.cast_unsigned() & NO_MONITORING_EVENTS != 0;
 
         let id = u32::try_from(self.rows.len())
             .map(CodeId::new)
@@ -192,6 +202,7 @@ impl CodeTable {
             first_line: proof.first_line,
             units: proof.units,
             parameters,
+            internal,
             locals: Span::since(first_local, self.locals.len()).ok_or_else(full)?,
             lines: Span::since(first_line, self.lines.len()).ok_or_else(full)?,
         });
@@ -370,6 +381,7 @@ mod tests {
             first_line: 1,
             units: 0,
             parameters: 0,
+            internal: false,
             locals: Span::since(0, 0).expect("a span"),
             lines: Span::since(0, 4).expect("a span"),
         });

@@ -658,6 +658,45 @@ fn found(frames: &[InterpretedFrame]) -> Vec<Found<'_>> {
         .collect()
 }
 
+/// CPython's own code, as the frame it pushes beneath an `__init__` to
+/// check what it returned, is at no line by design: its frame is read
+/// with no place but no problem, where other code at no line has one.
+#[test]
+fn cpythons_own_code_is_at_no_line_without_a_problem() {
+    let mut process = Process::new(layout());
+    let make = process.code("make", 1, &[(2, 0)]);
+    let entry = process.entry(0);
+    let outer = process.frame(entry, make, process.instruction(make, 0));
+    for (flags, problem) in [(0, true), (0x0200_0000, false)] {
+        let shim = process.code("__init__", 0, &[(2, 0)]);
+        process.put(shim, Field::CodeFlags, flags, 4);
+        let frame = process.frame(outer, shim, process.instruction(shim, 0));
+
+        let (walked, end) = walk_thread(&process, frame);
+        let chain = [frame, outer, entry].map(|frame| sampled(&process, frame));
+        let (read, _) = Walk {
+            reader: process.reader(),
+            code: &mut CodeTable::default(),
+            code_type: VirtualAddress::new(process.code_type),
+        }
+        .sampled(&chain);
+        assert_eq!(end, None);
+        for frames in [walked, read] {
+            let names: Vec<_> = frames
+                .iter()
+                .map(|frame| frame.function.as_deref())
+                .collect();
+            assert_eq!(names, [Some("__init__"), Some("make")], "{flags:#x}");
+            assert_eq!(frames[0].place, None, "{flags:#x}");
+            assert_eq!(
+                frames[0].problem.is_some(),
+                problem,
+                "{flags:#x}: {frames:?}"
+            );
+        }
+    }
+}
+
 /// The frames a walker in the kernel read name the functions and lines
 /// the stopped walk of the same chain does. A code object freed since, and
 /// another put at its address, is no longer the one the walker read, and

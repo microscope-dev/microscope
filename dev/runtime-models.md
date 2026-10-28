@@ -858,6 +858,10 @@ pointers and first line, which its row must match: an object put in a freed
 one's place, as `exec` makes, has a line table of its own. `linetable.rs` decodes
 `co_linetable` to the line of the frame's instruction. A free-threaded 3.14+
 frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
+Code CPython makes for itself carries `CO_NO_MONITORING_EVENTS` from 3.13, as
+`_Py_InitCleanup` does, whose frame sits beneath each `__init__` that
+`CALL_ALLOC_AND_ENTER_INIT` runs: it has no lines, so its frame keeps its name
+and no place, and is not unreadable.
 
 **Splicing.** `RuntimeModel::driven` recognizes the activations of the
 evaluation loop, by the names `RuntimeModel::activation` judges, which the
