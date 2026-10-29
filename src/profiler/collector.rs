@@ -606,18 +606,12 @@ impl Collector {
         }
 
         // A ring a new thread took ends the zones of the thread before.
-        let thread = match ring.thread {
-            Some((tid, row)) if tid == header.thread => row,
-            previous => {
-                if let Some((_, row)) = previous {
-                    processor.probe_thread_ended(row);
-                }
-
-                let row = processor.probe_thread(Pid::new(pid), header.thread);
-                ring.thread = Some((header.thread, row));
-                row
-            }
-        };
+        if let Some((tid, row)) = ring.thread
+            && tid != header.thread
+        {
+            processor.probe_thread_ended(row);
+            ring.thread = None;
+        }
 
         processor.builder().count(
             AccountKind::ProbeInterrupted as u32,
@@ -663,31 +657,29 @@ impl Collector {
         let skip = probes::record_bytes(skipped);
         let ring = self.instances[index].rings.entry(address).or_default();
         ring.tail = span.end;
-        let before = std::mem::take(&mut ring.before);
+        ring.before |= overwritten > 0;
 
         if copied < records.len() {
             processor
                 .builder()
                 .count(AccountKind::ProbeMalformed as u32, 1);
         } else {
-            if overwritten > 0 || before {
-                processor.probe_lost(thread);
-            }
-
             processor
                 .builder()
                 .count(AccountKind::ProbeOverwritten as u32, overwritten);
             self.decoder.clear();
             self.decoder.decode(&records[skip..]);
-            self.apply(processor, index, thread, header.clock);
+            self.apply(processor, index, address, header);
         }
 
         self.buffer = records;
         if header.state == abi::RING_RETIRED {
             let _ = perf::write_memory(pid, address + 12, &abi::RING_FREE.to_le_bytes());
-            processor.probe_thread_ended(thread);
             if let Some(ring) = self.instances[index].rings.get_mut(&address) {
-                ring.thread = None;
+                if let Some((_, thread)) = ring.thread.take() {
+                    processor.probe_thread_ended(thread);
+                }
+                ring.before = false;
             }
         }
     }
@@ -698,7 +690,7 @@ impl Collector {
     /// switched on as it was, may have records here already. The program
     /// counts a site before it records one, so a read of the definitions
     /// after the ring's finds every site the ring's records name.
-    fn apply(&mut self, processor: &mut Processor, index: usize, thread: u32, clock: u16) {
+    fn apply(&mut self, processor: &mut Processor, index: usize, address: u64, header: RingHeader) {
         let instance = &self.instances[index];
         if instance.defines
             && self
@@ -716,23 +708,38 @@ impl Collector {
         builder.count(AccountKind::ProbeOverwritten as u32, decoder.orphaned);
         (decoder.malformed, decoder.orphaned) = (0, 0);
         let mut unknown = 0;
+        let instance = &mut self.instances[index];
+        let ring = instance.rings.entry(address).or_default();
 
         for decoded in &decoder.events {
-            let Some(&site) = self.instances[index].sites.get(&decoded.key) else {
+            let Some(&site) = instance.sites.get(&decoded.key) else {
                 unknown += 1;
                 continue;
             };
 
-            let time = if clock == abi::CLOCK_TSC {
+            let time = if header.clock == abi::CLOCK_TSC {
                 self.anchors.monotonic(decoded.time)
             } else {
                 decoded.time
-            };
+            }
+            .cast_signed();
+
+            // Perf may already have reported the thread's exit. Resolve its
+            // lifetime at the event's time, not at the later drain time.
+            let (_, thread) = *ring.thread.get_or_insert_with(|| {
+                (
+                    header.thread,
+                    processor.probe_thread(Pid::new(self.pid), header.thread, time),
+                )
+            });
+            if std::mem::take(&mut ring.before) {
+                processor.probe_lost(thread);
+            }
 
             processor.probe_event(
                 thread,
                 &Event {
-                    time: time.cast_signed(),
+                    time,
                     site,
                     kind: decoded.kind,
                     value: decoded.value,
@@ -770,6 +777,116 @@ mod tests {
     use super::*;
     use crate::debug_info::DebugFileSearch;
     use crate::profiler::record;
+
+    /// Perf can report a worker's exit before its ring is first read.
+    /// Its zones still belong to the named worker, on either SDK clock.
+    #[test]
+    fn zones_read_after_a_workers_exit_keep_its_name() {
+        for clock in [abi::CLOCK_MONOTONIC, abi::CLOCK_TSC] {
+            for exited in [false, true] {
+                let pid = Pid::new(std::process::id());
+                let tid = Tid::new(7);
+                let mut processor = Processor::new(DebugFileSearch::default(), 64);
+                // PERF_RECORD_COMM, followed by its sample_id trailer.
+                let comm = |tid: Tid, time: u64| {
+                    let mut bytes = [0; 64];
+                    bytes[..4].copy_from_slice(&3_u32.to_le_bytes());
+                    bytes[6..8].copy_from_slice(&64_u16.to_le_bytes());
+                    bytes[8..12].copy_from_slice(&pid.get().to_le_bytes());
+                    bytes[12..16].copy_from_slice(&tid.get().to_le_bytes());
+                    bytes[16..23].copy_from_slice(b"worker\0");
+                    bytes[40..48].copy_from_slice(&time.to_le_bytes());
+                    bytes
+                };
+                processor.ingest(&comm(tid, 1_000), None);
+                if exited {
+                    // PERF_RECORD_EXIT puts the thread ID after the parent PID.
+                    let mut exit = comm(tid, 2_000);
+                    exit[..4].copy_from_slice(&4_u32.to_le_bytes());
+                    exit[16..20].copy_from_slice(&tid.get().to_le_bytes());
+                    processor.ingest(&exit, None);
+                }
+                processor.ingest(&comm(pid.leader(), 3_000), None);
+                let site = processor.builder().site(
+                    "work",
+                    "",
+                    0,
+                    crate::capture::records::NONE,
+                    abi::SITE_ZONE,
+                );
+
+                let mut bytes =
+                    vec![0; abi::RING_HEADER + (1 << abi::LEAST_RING_SIZE) * abi::RECORD];
+                bytes[..4].copy_from_slice(&abi::RING_MAGIC.to_le_bytes());
+                bytes[4] = abi::RING_VERSION;
+                bytes[5] = u8::try_from(abi::LEAST_RING_SIZE).unwrap();
+                bytes[6] = u8::try_from(clock).unwrap();
+                bytes[8..12].copy_from_slice(&tid.get().to_le_bytes());
+                bytes[12..16].copy_from_slice(&abi::RING_ACTIVE.to_le_bytes());
+                let address = bytes.as_ptr() as u64;
+                let mut collector = Collector::new(
+                    pid.get(),
+                    ProbeSelection::All,
+                    std::time::Duration::from_secs(1),
+                );
+                collector.anchors = Anchors::new((10_000, 1_000));
+                collector.anchors.push((20_000, 2_000));
+                collector.instances.push(Instance {
+                    control: 0,
+                    module: 0,
+                    path: "probes".into(),
+                    defines: false,
+                    defined: 0,
+                    full: false,
+                    on: true,
+                    sites: HashMap::from_iter([(1, site)]),
+                    states: Vec::new(),
+                    rings: BTreeMap::new(),
+                    dropped: 0,
+                });
+
+                // Seeing an empty ring must not choose the thread's lifetime
+                // from the drain time before an event supplies its own time.
+                collector.read_ring(&mut processor, 0, address);
+                for (index, (time, kind)) in [(1_100_u64, abi::ZONE_BEGIN), (1_900, abi::ZONE_END)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let time = if clock == abi::CLOCK_TSC {
+                        time * 10
+                    } else {
+                        time
+                    };
+                    let offset = abi::RING_HEADER + index * abi::RECORD;
+                    bytes[offset..offset + 8].copy_from_slice(&time.to_le_bytes());
+                    bytes[offset + 8..offset + 12].copy_from_slice(&1_u32.to_le_bytes());
+                    bytes[offset + 12] = kind;
+                }
+                bytes[64..72].copy_from_slice(&2_u64.to_le_bytes());
+                bytes[12..16].copy_from_slice(&abi::RING_RETIRED.to_le_bytes());
+                collector.read_ring(&mut processor, 0, address);
+
+                let profile = crate::profiler::Profile {
+                    capture: processor.finish(),
+                };
+                let profile = crate::profiler::Profile::from_bytes(&profile.to_bytes().unwrap())
+                    .unwrap()
+                    .profile;
+                let threads = profile.threads();
+                assert_eq!(threads.len(), 1, "clock={clock}, exited={exited}");
+                assert_eq!(threads[0].tid, tid.get());
+                assert_eq!(
+                    threads[0].name.as_deref(),
+                    Some("worker"),
+                    "clock={clock}, exited={exited}"
+                );
+                let zones = profile.zones();
+                assert_eq!(zones.len(), 1);
+                assert_eq!((zones[0].start, zones[0].end), (1_100, 1_900));
+                assert_eq!(zones[0].flags, 0);
+            }
+        }
+    }
 
     /// The instrumentation of process `pid`, which runs `program`, as a
     /// recording finds it, its module one of `processor`'s.

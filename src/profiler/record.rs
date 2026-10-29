@@ -2133,9 +2133,9 @@ impl Processor {
             .marker(self.latest.cast_signed(), MarkerKind::Probes, text);
     }
 
-    /// The row of a thread whose ring holds instrumentation.
-    pub fn probe_thread(&mut self, pid: Pid, tid: Tid) -> u32 {
-        self.thread(pid, tid, self.latest.cast_signed())
+    /// The row of a thread at the time its instrumentation was recorded.
+    pub fn probe_thread(&mut self, pid: Pid, tid: Tid, time: i64) -> u32 {
+        self.thread(pid, tid, time)
     }
 
     /// Says that a thread's records were lost before its next.
