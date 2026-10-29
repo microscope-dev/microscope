@@ -6566,8 +6566,9 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
         &["--python", "snapshot=0.05"],
         &spin,
     );
+    // A loaded machine may take only one snapshot of the half second.
     assert!(
-        threads.contains("snapshots held the program stopped"),
+        threads.contains(" held the program stopped for "),
         "{threads}"
     );
     assert!(!threads.contains("ran a task"), "{threads}");
