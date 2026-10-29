@@ -1,3 +1,7 @@
+# Profile rustflags keep frame pointers in microscope's own builds without
+# touching the RUSTFLAGS the test programs build with.
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "microscope"
 version = "0.1.0"
@@ -147,8 +151,15 @@ lto = "off"
 
 # An integer overflow is a bug; a release build panics on one rather than
 # wrapping to a plausible wrong value. See dev/assertions.md.
+# Every build keeps the frame-pointer chain, so a profile of microscope walks
+# its stacks whole, past any stack copy: rayon nests its joins deep enough to
+# outrun one. Loading debug information costs about 1% more for it.
+[profile.dev]
+rustflags = ["-C", "force-frame-pointers=yes"]
+
 [profile.release]
 overflow-checks = true
+rustflags = ["-C", "force-frame-pointers=yes"]
 
 # Profilers read release builds with line tables, which name the functions
 # and lines their costs belong to.

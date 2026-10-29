@@ -94,3 +94,45 @@ pub fn call_sites(data: &[u8], image: &ModuleImage, unwind: &dyn UnwindInfo) -> 
 
     sites
 }
+
+#[cfg(test)]
+mod tests {
+    use iced_x86::{Code, Decoder, DecoderOptions, Register};
+
+    #[inline(never)]
+    fn leaf(value: u64) -> u64 {
+        std::hint::black_box(value).wrapping_add(1)
+    }
+
+    /// microscope is built keeping the frame-pointer chain, so that a
+    /// profile of the recorder walks its stacks whole however deep rayon
+    /// nests its joins, past any stack copy. Even a leaf begins by linking
+    /// its frame.
+    #[test]
+    fn microscope_keeps_the_frame_pointer_chain() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        assert_eq!(leaf(1), 2);
+        let address = leaf as fn(u64) -> u64 as usize as u64;
+        let mut code = [0; 16];
+        let mut memory = std::fs::File::open("/proc/self/mem").expect("open /proc/self/mem");
+        memory
+            .seek(SeekFrom::Start(address))
+            .expect("seek to the code");
+        memory.read_exact(&mut code).expect("read the code");
+
+        let mut decoder = Decoder::with_ip(64, &code, address, DecoderOptions::NONE);
+        let push = decoder.decode();
+        let link = decoder.decode();
+        assert!(
+            push.code() == Code::Push_r64 && push.op0_register() == Register::RBP,
+            "{push}"
+        );
+        assert!(
+            link.code() == Code::Mov_rm64_r64
+                && link.op0_register() == Register::RBP
+                && link.op1_register() == Register::RSP,
+            "{link}"
+        );
+    }
+}

@@ -220,6 +220,11 @@ Use the profiler that answers the current question:
 - `hyperfine` for repeated command-level wall time;
 - Cachegrind/KCachegrind for deterministic instruction and cache comparisons.
 
+microscope can profile itself too: record a recorder with `microscope record
+--pid`, through the BPF wrapper. Every Cargo profile builds with frame
+pointers (`Cargo.toml`), so its stacks unwind whole however deep rayon nests
+its joins; loading debug information costs about 1% more for it.
+
 The `system-alloc` feature replaces mimalloc when a heap tool cannot observe
 it. Use the repository recipes so feature flags and profiles match the intended
 measurement.
