@@ -306,13 +306,18 @@ pub fn seal(
     Ok(tables)
 }
 
-/// Frees what was sealed on a thread of its own. The loader's records hold
-/// millions of allocations, which took a fifth of a second to free in
-/// turn, and each is freed as soon as its tables are built, so that the
-/// records and the image are not all held at once; the loader's workers
-/// may all be busy.
-fn free<T: Send + 'static>(sealed: T) {
-    std::thread::spawn(move || drop(sealed));
+/// Frees what was sealed, `records` of the loader's, on a thread of its own
+/// when there are many. The loader's records hold millions of
+/// allocations, which took a fifth of a second to free in turn, and each is
+/// freed as soon as its tables are built, so that the records and the image
+/// are not all held at once; the loader's workers may all be busy. A few
+/// are freed here: a recording seals a module for each piece of code a
+/// perf map names, with none, and a thread for each cost more than the
+/// module.
+fn free<T: Send + 'static>(sealed: T, records: usize) {
+    if records > 1_000 {
+        std::thread::spawn(move || drop(sealed));
+    }
 }
 
 fn seal_image(
@@ -365,7 +370,8 @@ fn seal_image(
         },
     )?;
     drop(phase);
-    free(types);
+    let records = types.len();
+    free(types, records);
     crate::image::packages::add_to(
         &mut builder,
         &mut strings,
@@ -381,7 +387,8 @@ fn seal_image(
         &functions,
         &code_instances,
     )?;
-    free((functions, code_instances));
+    let records = functions.len() + code_instances.len();
+    free((functions, code_instances), records);
 
     if let Some(unwind) = &metadata.unwind {
         crate::image::unwind::add_to(&mut builder, &mut strings, unwind)?;
@@ -463,7 +470,11 @@ fn encode_strings_before_types<'a>(
     let phase = crate::span!("image.encode_variables");
     crate::image::variables::add_to(builder, strings, &variables)?;
     drop(phase);
-    free(variables);
+    let records = variables.objects.len()
+        + variables.functions.len()
+        + variables.globals.len()
+        + variables.procedures.len();
+    free(variables, records);
     crate::image::calls::add_to(builder, strings, &metadata.calls)?;
     crate::image::type_facts::add_to(builder, strings, &metadata.type_facts)?;
     crate::image::resumes::add_to(builder, strings, &metadata.resumes)?;
