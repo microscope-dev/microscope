@@ -154,6 +154,9 @@ pub enum Record<'a> {
         pid: Pid,
         ppid: Pid,
         tid: Tid,
+
+        /// The thread that made it, whose name it starts with.
+        ptid: Tid,
         time: u64,
     },
     Exit {
@@ -377,7 +380,7 @@ fn decode<'a>(
         }
         RECORD_FORK | RECORD_EXIT => {
             let (pid, parent) = fields.pair()?;
-            let (tid, _parent_tid) = fields.pair()?;
+            let (tid, parent_tid) = fields.pair()?;
             let (pid, tid) = (Pid::new(pid), Tid::new(tid));
 
             if kind == RECORD_FORK {
@@ -385,6 +388,7 @@ fn decode<'a>(
                     pid,
                     ppid: Pid::new(parent),
                     tid,
+                    ptid: Tid::new(parent_tid),
                     time,
                 }
             } else {

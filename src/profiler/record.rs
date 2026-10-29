@@ -804,22 +804,13 @@ impl Processor {
                     self.builder.process_name(process, &name);
                 }
             }
-            decode::Record::Fork { pid, ppid, tid, .. } => {
-                self.thread_changes += 1;
-                if tid == pid.leader() && pid != ppid {
-                    // A forked process starts with its parent's mappings.
-                    let (mapped, before_v8) = self
-                        .processes
-                        .get(&ppid)
-                        .map(|parent| (parent.mapped.clone(), parent.before_v8.clone()))
-                        .unwrap_or_default();
-                    let child = self.processes.entry(pid).or_default();
-                    child.mapped = mapped;
-                    child.before_v8 = before_v8;
-                }
-
-                self.thread(pid, tid, at);
-            }
+            decode::Record::Fork {
+                pid,
+                ppid,
+                tid,
+                ptid,
+                ..
+            } => self.fork((pid, tid), (ppid, ptid), at),
 
             decode::Record::Switch {
                 pid,
@@ -873,6 +864,28 @@ impl Processor {
             // An output's record is processed with its sample.
             decode::Record::Output { .. } | decode::Record::Other { .. } => {}
         }
+    }
+
+    /// Starts thread `tid` of process `pid`, which thread `maker` of
+    /// process `parent` made.
+    fn fork(&mut self, (pid, tid): (Pid, Tid), (parent, maker): (Pid, Tid), at: i64) {
+        self.thread_changes += 1;
+        if tid == pid.leader() && pid != parent {
+            // A forked process starts with its parent's mappings.
+            let (mapped, before_v8) = self
+                .processes
+                .get(&parent)
+                .map(|parent| (parent.mapped.clone(), parent.before_v8.clone()))
+                .unwrap_or_default();
+            let child = self.processes.entry(pid).or_default();
+            child.mapped = mapped;
+            child.before_v8 = before_v8;
+        }
+
+        // The kernel writes a name only when a thread executes a program or
+        // names itself; until then it has its maker's.
+        let thread = self.thread(pid, tid, at);
+        self.builder.inherit_name(thread, maker);
     }
 
     fn thread(&mut self, pid: Pid, tid: Tid, time: i64) -> u32 {
@@ -2914,24 +2927,28 @@ mod tests {
                 pid: exited,
                 ppid: Pid::new(1),
                 tid: exited.leader(),
+                ptid: Tid::new(1),
                 time: 1_000,
             },
             decode::Record::Fork {
                 pid: exited,
                 ppid: exited,
                 tid: napper,
+                ptid: exited.leader(),
                 time: 2_000,
             },
             decode::Record::Fork {
                 pid: living,
                 ppid: Pid::new(1),
                 tid: living.leader(),
+                ptid: Tid::new(1),
                 time: 2_000,
             },
             decode::Record::Fork {
                 pid: living,
                 ppid: living,
                 tid: sleeper,
+                ptid: living.leader(),
                 time: 2_000,
             },
             decode::Record::Switch {

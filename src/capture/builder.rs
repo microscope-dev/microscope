@@ -277,6 +277,18 @@ impl CaptureBuilder {
         self.threads[thread as usize].name = name.into();
     }
 
+    /// Gives a thread without a name the name of the live thread `from`,
+    /// which made it, if that has one.
+    pub fn inherit_name(&mut self, thread: u32, from: Tid) {
+        let Some(&maker) = self.live_threads.get(&from) else {
+            return;
+        };
+        let name = self.threads[maker as usize].name;
+        if self.threads[thread as usize].name.get() == NONE {
+            self.threads[thread as usize].name = name;
+        }
+    }
+
     /// Ends thread `tid` at `time`.
     pub fn thread_exit(&mut self, tid: Tid, time: i64) {
         if let Some(thread) = self.live_threads.remove(&tid) {

@@ -1788,6 +1788,20 @@ fn a_forked_child_is_sampled_through_the_mappings_it_inherits() {
         );
         assert_eq!(stack.ending, StackEnding::Complete);
     }
+
+    // The child never executes a program or names itself, so the kernel
+    // writes no name for it: it keeps the name of the thread that forked
+    // it, as /proc shows.
+    for pid in pids {
+        let names: Vec<Option<String>> = recording
+            .profile
+            .threads()
+            .into_iter()
+            .filter(|thread| thread.pid == pid)
+            .map(|thread| thread.name)
+            .collect();
+        assert_eq!(names, [Some("fork".to_owned())], "process {pid}");
+    }
 }
 
 #[test]
