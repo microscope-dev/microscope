@@ -6833,6 +6833,22 @@ fn record_writes_a_profile_that_report_summarizes() {
             "{line:?} in\n{tree}"
         );
     }
+
+    // A base another build recorded, or another tool, may name functions
+    // otherwise, which a comparison says; one this build recorded does not.
+    let profile = profile.to_string_lossy();
+    let pprof = scratch.path().join("leaf.pb.gz");
+    assert_success(microscope(&["convert", &profile, &pprof.to_string_lossy()]));
+    let renamed = "not recorded by the same build of microscope";
+    let same = assert_success(microscope(&["report", &profile, "--base", &profile]));
+    assert!(!same.contains(renamed), "{same}");
+    let other = assert_success(microscope(&[
+        "report",
+        &profile,
+        "--base",
+        &pprof.to_string_lossy(),
+    ]));
+    assert!(other.contains(renamed), "{other}");
 }
 
 #[test]

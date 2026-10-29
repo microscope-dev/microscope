@@ -1199,9 +1199,15 @@ fn selected_report(
                     "The base file was cut short; this is the part that was complete."
                 )?;
             }
-            let mut profile = read.profile;
-            symbolize_here(&mut profile, out)?;
-            Ok(profile)
+            let mut base = read.profile;
+            symbolize_here(&mut base, out)?;
+            if base.setting("recorder") != profile.setting("recorder") {
+                writeln!(
+                    out,
+                    "The two profiles were not recorded by the same build of microscope, which may name some functions otherwise: such a function shows as new in one and gone in the other."
+                )?;
+            }
+            Ok(base)
         })
         .transpose()?;
     report::write(

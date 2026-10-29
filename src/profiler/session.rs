@@ -592,6 +592,8 @@ fn settings(
         ("requested ring pages", options.ring_pages.to_string()),
         ("kernel", if options.kernel { "on" } else { "off" }.into()),
         ("source", options.source.to_string()),
+        // Which build recorded it, as another may name frames otherwise.
+        ("recorder", env!("MICROSCOPE_SOURCES_DIGEST").to_owned()),
         ("weight", options.source.unit().to_owned()),
         ("stack bytes", stack_bytes.to_string()),
         ("stack copy", stack_copy),
