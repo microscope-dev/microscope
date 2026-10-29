@@ -1034,6 +1034,13 @@ impl Snapshots {
     }
 }
 
+/// `duration` in nanoseconds, at least one.
+fn nanoseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos())
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
+
 /// Samples a share of each budget period, in one span at a random offset
 /// so that it cannot keep step with a periodic program, and asks the
 /// controller once a period how large the next share is.
@@ -1041,9 +1048,14 @@ struct Pacer {
     budget: Budget,
     controller: Controller,
 
-    /// When the period began, and the span of it to sample.
+    /// When the period began, how long it lasts, and the span of it to
+    /// sample.
     period: u64,
+    length: u64,
     window: (u64, u64),
+
+    /// How long sampling last took to turn on, and off.
+    toggled: (u64, u64),
 
     /// Since when sampling has been on, or off.
     on_since: Option<u64>,
@@ -1062,7 +1074,9 @@ impl Pacer {
             budget,
             controller: Controller::default(),
             period: now,
+            length: nanoseconds(budget.period),
             window: (now, u64::MAX),
+            toggled: (0, 0),
             on_since: Some(now),
             paused_since: None,
             sampled: 0,
@@ -1085,27 +1099,31 @@ impl Pacer {
         events: &perf::Events,
         processor: &mut record::Processor,
     ) -> Duration {
-        let length = u64::try_from(self.budget.period.as_nanos())
-            .unwrap_or(u64::MAX)
-            .max(1);
-        if now >= self.period.saturating_add(length) {
-            self.next_period(now, length, processor);
+        if now >= self.period.saturating_add(self.length) {
+            let toggling = Duration::from_nanos(self.toggled.0.saturating_add(self.toggled.1));
+            self.length = nanoseconds(self.budget.period_for(toggling));
+            self.next_period(now, self.length, processor);
         }
 
         let (from, until) = self.window;
         let wanted = from <= now && now < until;
         if wanted && let Some(paused) = self.paused_since.take() {
-            processor.gap(paused, monotonic(), GapReason::Budget);
+            let began = monotonic();
+            processor.gap(paused, began, GapReason::Budget);
             events.sample(true);
-            self.on_since = Some(monotonic());
+            let on = monotonic();
+            self.toggled.0 = on.saturating_sub(began);
+            self.on_since = Some(on);
         } else if !wanted && let Some(on) = self.on_since.take() {
+            let began = monotonic();
             events.sample(false);
             let off = monotonic();
+            self.toggled.1 = off.saturating_sub(began);
             self.sampled += off.saturating_sub(on);
             self.paused_since = Some(off);
         }
 
-        let next = [from, until, self.period.saturating_add(length)]
+        let next = [from, until, self.period.saturating_add(self.length)]
             .into_iter()
             .find(|edge| *edge > now)
             .unwrap_or(now);

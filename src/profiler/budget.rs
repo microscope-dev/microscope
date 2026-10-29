@@ -26,7 +26,23 @@ impl Budget {
         cpu: 0.01,
         period: Duration::from_secs(1),
     };
+
+    /// How long a period lasts whose sampling took `toggling` to turn on
+    /// and off: long enough that doing so costs at most a tenth of the
+    /// budget, and from one to [`MOST_STRETCH`] of the budget's periods.
+    /// Turning inherited perf events on or off visits every thread's copy
+    /// on every CPU, and took 1 to 4 ms on 16 Node workers: a quarter of a
+    /// 1% budget each second, whatever share was sampled.
+    #[must_use]
+    pub fn period_for(self, toggling: Duration) -> Duration {
+        let stretched = toggling.div_f64(self.cpu / 10.0);
+        stretched.clamp(self.period, self.period * MOST_STRETCH)
+    }
 }
+
+/// The most times a budget's period is stretched for what turning sampling
+/// on and off costs, so the controller still answers within seconds.
+pub const MOST_STRETCH: u32 = 8;
 
 /// The finest share of a period the controller samples: 1/64.
 pub const STEPS: u32 = 64;
@@ -161,6 +177,21 @@ mod tests {
             sampled,
             period: BUDGET.period,
         }
+    }
+
+    /// A period is stretched until turning sampling on and off costs a
+    /// tenth of the budget, within its bounds.
+    #[test]
+    fn a_period_lasts_until_toggling_costs_a_tenth_of_the_budget() {
+        let period = |ms| BUDGET.period_for(Duration::from_millis(ms));
+        assert_eq!(period(0), BUDGET.period);
+        assert_eq!(period(1), BUDGET.period, "a tenth of 1% of a second");
+        assert_eq!(period(3).as_millis(), 3_000);
+        assert_eq!(
+            period(1_000),
+            Duration::from_secs(8),
+            "at most MOST_STRETCH periods"
+        );
     }
 
     /// Whatever sampling costs, the controller settles on a share that fits
