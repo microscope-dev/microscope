@@ -347,6 +347,10 @@ struct Walker {
     /// processor's count of thread changes, and each process's threads.
     every: Duration,
     changes: u64,
+    #[expect(
+        clippy::type_complexity,
+        reason = "each process's pid, program, and threads"
+    )]
     told: Vec<(u32, u64, Vec<(u32, u64, u64)>)>,
 
     /// The processes whose layout it has, each with the program it ran

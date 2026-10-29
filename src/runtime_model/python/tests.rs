@@ -698,9 +698,8 @@ fn cpythons_own_frames_are_left_out() {
                 .map(|frame| frame.function.as_deref())
                 .collect();
             assert_eq!(names, expected, "{flags:#x}");
-            let problems: Vec<_> = frames.iter().map(|frame| frame.problem.is_some()).collect();
             assert_eq!(
-                problems.contains(&true),
+                frames.iter().any(|frame| frame.problem.is_some()),
                 flags == 0,
                 "{flags:#x}: {frames:?}"
             );

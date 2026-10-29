@@ -163,17 +163,16 @@ pub(crate) fn install_small<R: Send>(work: impl FnOnce() -> R + Send) -> Result<
         return Ok(work());
     }
 
-    let pool = match SMALL.get() {
-        Some(pool) => pool,
-        None => {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(1)
-                .thread_name(|_| "microscope-load-small".to_owned())
-                .start_handler(|_| register_worker())
-                .build()
-                .map_err(|error| JobsError::Start(error.to_string()))?;
-            SMALL.get_or_init(|| pool)
-        }
+    let pool = if let Some(pool) = SMALL.get() {
+        pool
+    } else {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .thread_name(|_| "microscope-load-small".to_owned())
+            .start_handler(|_| register_worker())
+            .build()
+            .map_err(|error| JobsError::Start(error.to_string()))?;
+        SMALL.get_or_init(|| pool)
     };
 
     Ok(pool.install(work))

@@ -47,10 +47,12 @@ pub const MOST_STRETCH: u32 = 8;
 /// The finest share of a period the controller samples: 1/64.
 pub const STEPS: u32 = 64;
 
-/// How many times shorter the first period is than the rest. The first is
-/// not judged, and is sampled in full, so the sooner it ends, the sooner a
-/// costly recording is held to its budget: a recording that cost 2 to 3%
-/// of a CPU while sampling went two seconds before the first decision.
+/// How many times shorter the first period is than the rest.
+///
+/// The first is not judged, and is sampled in full, so the sooner it ends,
+/// the sooner a costly recording is held to its budget: a recording that
+/// cost 2 to 3% of a CPU while sampling went two seconds before the first
+/// decision.
 pub const WARM_UP: u32 = 4;
 
 /// What one period cost.
