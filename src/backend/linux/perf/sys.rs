@@ -198,6 +198,83 @@ pub fn open(attr: &Attr, pid: i32, cpu: i32) -> std::io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+/// `struct procmap_query`, Linux 6.11's question about one address of a
+/// process's memory map.
+#[repr(C)]
+#[derive(Debug, Default)]
+struct ProcmapQuery {
+    size: u64,
+    query_flags: u64,
+    query_addr: u64,
+    vma_start: u64,
+    vma_end: u64,
+    vma_flags: u64,
+    vma_page_size: u64,
+    vma_offset: u64,
+    inode: u64,
+    dev_major: u32,
+    dev_minor: u32,
+    vma_name_size: u32,
+    build_id_size: u32,
+    vma_name_addr: u64,
+    build_id_addr: u64,
+}
+
+/// `_IOWR('f', 17, struct procmap_query)`.
+const PROCMAP_QUERY: libc::Ioctl = 0xC068_6611_u32 as libc::Ioctl;
+
+const VMA_WRITABLE: u64 = 0x02;
+const VMA_EXECUTABLE: u64 = 0x04;
+
+/// One region of a process's memory map.
+pub struct Vma {
+    pub start: u64,
+    pub end: u64,
+    pub offset: u64,
+    pub inode: u64,
+    pub writable: bool,
+
+    /// What the map's last column says, empty for anonymous memory.
+    pub name: Vec<u8>,
+}
+
+/// The executable region of the memory map open as `maps` that holds
+/// `address`, if any. A kernel without the query fails with `ENOTTY`.
+pub fn executable_vma(maps: &std::fs::File, address: u64) -> std::io::Result<Option<Vma>> {
+    let mut name = vec![0_u8; 4096];
+    let mut query = ProcmapQuery {
+        size: std::mem::size_of::<ProcmapQuery>() as u64,
+        query_flags: VMA_EXECUTABLE,
+        query_addr: address,
+        vma_name_size: u32::try_from(name.len()).unwrap_or(u32::MAX),
+        vma_name_addr: name.as_mut_ptr() as u64,
+        ..ProcmapQuery::default()
+    };
+
+    // SAFETY: the request reads and writes `query`, which is the kernel's
+    // struct and says its own size, and writes at most `vma_name_size`
+    // bytes to `name`, which outlives the call.
+    let result = unsafe { libc::ioctl(maps.as_raw_fd(), PROCMAP_QUERY, &raw mut query) };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOENT) => Ok(None),
+            _ => Err(error),
+        };
+    }
+
+    // The size counts the terminating zero.
+    name.truncate(query.vma_name_size.saturating_sub(1) as usize);
+    Ok(Some(Vma {
+        start: query.vma_start,
+        end: query.vma_end,
+        offset: query.vma_offset,
+        inode: query.inode,
+        writable: query.vma_flags & VMA_WRITABLE != 0,
+        name,
+    }))
+}
+
 /// Enables or disables an event.
 pub fn enable(fd: &OwnedFd, enabled: bool) -> std::io::Result<()> {
     let request = if enabled { IOC_ENABLE } else { IOC_DISABLE };
@@ -566,6 +643,36 @@ pub fn poll(rings: &[Ring], timeout: std::time::Duration) {
         .collect();
     let timeout = Timespec::try_from(timeout).ok();
     let _ = rustix::event::poll(&mut fds, timeout.as_ref());
+}
+
+/// Rings to wait on, registered with the kernel once: asking each of 32
+/// CPUs' rings afresh on every wait was most of what an idle recording
+/// cost.
+pub struct Poller(OwnedFd);
+
+impl Poller {
+    pub fn new(rings: &[Ring]) -> std::io::Result<Self> {
+        use rustix::event::epoll;
+        let fd = epoll::create(epoll::CreateFlags::CLOEXEC)?;
+        for ring in rings {
+            epoll::add(
+                &fd,
+                &ring.fd,
+                epoll::EventData::new_u64(0),
+                epoll::EventFlags::IN,
+            )?;
+        }
+        Ok(Self(fd))
+    }
+
+    /// Waits until one of the rings has data past its watermark, or
+    /// `timeout`.
+    pub fn wait(&self, timeout: std::time::Duration) {
+        use rustix::event::{Timespec, epoll};
+        let mut ready = [std::mem::MaybeUninit::<epoll::Event>::uninit(); 8];
+        let timeout = Timespec::try_from(timeout).ok();
+        let _ = epoll::wait(&self.0, &mut ready, timeout.as_ref());
+    }
 }
 
 /// The time-stamp counter.

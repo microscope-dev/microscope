@@ -685,7 +685,14 @@ fn drive(
                 Duration::from_millis(10)
             };
             if let Some(pacer) = &mut pacer {
-                wait = wait.min(pacer.pace(monotonic(), events, processor));
+                let edge = pacer.pace(monotonic(), events, processor);
+                // While the budget pauses sampling only the sideband's
+                // records come, few enough to wait for the next edge.
+                wait = if pacer.sampling() {
+                    wait.min(edge)
+                } else {
+                    edge.min(Duration::from_millis(100))
+                };
             }
             // A snapshot asked for more often than the drain's own pace
             // is taken when due, not at the next drain.
@@ -1089,10 +1096,10 @@ impl Pacer {
         let wanted = from <= now && now < until;
         if wanted && let Some(paused) = self.paused_since.take() {
             processor.gap(paused, monotonic(), GapReason::Budget);
-            events.enable(true);
+            events.sample(true);
             self.on_since = Some(monotonic());
         } else if !wanted && let Some(on) = self.on_since.take() {
-            events.enable(false);
+            events.sample(false);
             let off = monotonic();
             self.sampled += off.saturating_sub(on);
             self.paused_since = Some(off);

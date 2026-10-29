@@ -694,7 +694,7 @@ fn a_threads_time_off_its_cpu_is_each_sleep_and_each_preemption() {
 }
 
 /// A recording over its CPU budget samples less of each period and pauses
-/// every event between: no sample falls in a pause, no off-CPU interval
+/// sampling between: no sample falls in a pause, no off-CPU interval
 /// reaches past the start of one, and each change of the share is marked.
 #[test]
 fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {

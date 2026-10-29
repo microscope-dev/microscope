@@ -142,7 +142,7 @@ const QUEUE_ROOM: usize = 2 * QUEUE_BYTES;
 /// the reader, so that no mapping, thread, or context switch is missed.
 #[derive(Debug, Default)]
 struct Gate {
-    /// The recording turned every event off.
+    /// The recording turned sampling off.
     off: bool,
 
     /// Since when the reader has been behind, and each earlier span it
@@ -488,6 +488,7 @@ impl Events {
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
                 let began = sys::thread_cpu();
+                let poller = sys::Poller::new(&self.rings).ok();
                 let mut behind = false;
                 while !stop.load(Ordering::Relaxed) {
                     let mut buffer = buffer
@@ -513,7 +514,10 @@ impl Events {
                         u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
                         Ordering::Relaxed,
                     );
-                    self.wait(self.reader_wait);
+                    match &poller {
+                        Some(poller) => poller.wait(self.reader_wait),
+                        None => sys::poll(&self.rings, self.reader_wait),
+                    }
                 }
             });
             let guard = StopReader(&stop);
@@ -577,9 +581,15 @@ impl Events {
         self.rings.iter().map(sys::Ring::untrusted).sum()
     }
 
-    /// Waits until a ring is a quarter full, or `timeout`.
+    /// Waits until a ring is a quarter full, or `timeout`. While a reader
+    /// takes the rings ([`Self::read_while`]), only it waits on them, and
+    /// this sleeps until what it took is due for processing.
     pub fn wait(&self, timeout: Duration) {
-        sys::poll(&self.rings, timeout);
+        if self.buffered.is_some() {
+            std::thread::sleep(timeout);
+        } else {
+            sys::poll(&self.rings, timeout);
+        }
     }
 
     /// What the events have counted and lost so far, exactly. An event
@@ -613,16 +623,21 @@ impl Events {
     /// from one, counting and sampling. While the reader is behind,
     /// sampling starts only once it catches up.
     pub fn enable(&self, on: bool) {
+        self.sample(on);
+        for fd in &self.sideband {
+            let _ = sys::enable(fd, on);
+        }
+    }
+
+    /// Starts or stops sampling, as a budget pauses it, and leaves the
+    /// sideband on so that no mapping or thread is missed meanwhile.
+    pub fn sample(&self, on: bool) {
         let mut gate = self
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         gate.off = !on;
         self.enable_sampling(on && gate.behind.is_none());
-        drop(gate);
-        for fd in &self.sideband {
-            let _ = sys::enable(fd, on);
-        }
     }
 
     /// Starts or stops the sampling events alone.
@@ -650,12 +665,13 @@ fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
 }
 
 /// How long the reader sleeps unless a ring a quarter full wakes it first,
-/// so only how late records are read. Below 500 Hz the reader wakes only
-/// as often as the processor drains: waking every 2 ms at `prod`'s 49 Hz
-/// cost 0.2 to 0.3% of a CPU, most of `prod`'s whole cost.
+/// so only how late records are read. Below 500 Hz the reader wakes ten
+/// times a second: waking every 2 ms at `prod`'s 49 Hz cost 0.2 to 0.3% of
+/// a CPU, and every 10 ms, with a ring for each of 32 CPUs, still a third
+/// of `prod`'s 1% budget.
 fn reader_wait(options: &EventOptions) -> Duration {
     match options.source {
-        Source::Clock { period } if period > Duration::from_millis(2) => Duration::from_millis(10),
+        Source::Clock { period } if period > Duration::from_millis(2) => Duration::from_millis(100),
         _ => Duration::from_micros(100),
     }
 }
@@ -1286,6 +1302,34 @@ pub fn mappings(pid: u32) -> std::io::Result<Vec<Mapped>> {
     Ok(mappings)
 }
 
+/// The executable mapping of process `pid` that holds `address`, as
+/// [`mappings`] lists it. The kernel is asked about that one address where
+/// it can be: a JIT compiler's process maps tens of thousands of regions,
+/// and writing out its whole map took up to 60 ms each time V8 mapped
+/// new code.
+pub fn mapping_at(pid: u32, address: u64) -> std::io::Result<Option<Mapped>> {
+    let maps = std::fs::File::open(format!("/proc/{pid}/maps"))?;
+    match sys::executable_vma(&maps, address) {
+        Ok(vma) => Ok(vma.map(|vma| Mapped {
+            start: vma.start,
+            end: vma.end,
+            file_offset: vma.offset,
+            inode: vma.inode,
+            executable: true,
+            writable: vma.writable,
+            path: if vma.name.is_empty() {
+                b"//anon".to_vec()
+            } else {
+                vma.name
+            },
+        })),
+        Err(error) if error.raw_os_error() == Some(nix::libc::ENOTTY) => Ok(mappings(pid)?
+            .into_iter()
+            .find(|mapped| (mapped.start..mapped.end).contains(&address))),
+        Err(error) => Err(error),
+    }
+}
+
 /// Whether `mapping` is anonymous code, which no file backs: a JIT
 /// compiler's, or a copy a runtime made of a module's code.
 pub fn is_anonymous(mapping: &Mapped) -> bool {
@@ -1533,6 +1577,32 @@ mod tests {
             .expect("a readable mapping with a gap after it")
     }
 
+    /// The kernel's answer for one address is the line of the whole map
+    /// that holds it, and memory that is not code has none. The vsyscall
+    /// page is listed but is no region of the process, so the kernel does
+    /// not find it, and no program's own code is there.
+    #[test]
+    fn the_mapping_at_an_address_is_its_line_of_the_map() {
+        let pid = std::process::id();
+        let all = mappings(pid).expect("read maps");
+        assert!(all.len() > 1);
+
+        for mapped in all.iter().filter(|mapped| mapped.path != b"[vsyscall]") {
+            for address in [mapped.start, mapped.end - 1] {
+                assert_eq!(
+                    mapping_at(pid, address).expect("query").as_ref(),
+                    Some(mapped)
+                );
+            }
+        }
+
+        let stack = 0_u64;
+        assert_eq!(
+            mapping_at(pid, (&raw const stack).addr() as u64).expect("query"),
+            None
+        );
+    }
+
     /// Errors print with their chain of causes, so one whose message names
     /// its cause must not also report it as its source.
     #[test]
@@ -1648,6 +1718,60 @@ mod tests {
             "{spans:?}, though the program exited at {exited} and the test ended at {end}"
         );
         assert_eq!(events.behind(Some(end)), []);
+    }
+
+    /// A budget pauses sampling alone: what the program starts meanwhile is
+    /// still recorded, so a later sample in it has its process.
+    #[test]
+    fn a_program_paused_from_sampling_still_records_the_processes_it_starts() {
+        let options = EventOptions {
+            source: Source::Clock {
+                period: Duration::from_millis(1),
+            },
+            stack_bytes: 512,
+            kernel: false,
+            ring_pages: 16,
+            switches: false,
+        };
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        let (mut said, saying) = std::io::pipe().expect("pipe");
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "echo ready; read line; (:); :"])
+            .stdin(reader)
+            .stdout(saying);
+        let Launched { events, exit, .. } =
+            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
+                .expect("launch the program");
+
+        let status = events.read_while(|| {
+            // Once the shell runs, so that executing it turns nothing on.
+            let mut ready = [0_u8; 6];
+            std::io::Read::read_exact(&mut said, &mut ready).expect("the shell starts");
+            events.sample(false);
+            let paused = sys::monotonic();
+            std::io::Write::write_all(&mut writer, b"\n").expect("release the shell");
+            (exit.join(), paused)
+        });
+        let (status, paused) = status;
+        let status = status
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+
+        let mut records = Vec::new();
+        events.drain(&mut records);
+        let mut forks = 0;
+        let mut rest = records.as_slice();
+        while let Some(Ok((record, length))) = decode::next(rest) {
+            rest = &rest[length..];
+            if record.time().is_none_or(|time| time < paused) {
+                continue;
+            }
+            assert!(!matches!(record, decode::Record::Sample(_)), "{record:?}");
+            forks += usize::from(matches!(record, decode::Record::Fork { .. }));
+        }
+        assert_eq!(forks, 1);
     }
 
     /// A low rate fills the rings slowly, but processing can still be busy

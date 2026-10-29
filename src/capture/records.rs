@@ -751,14 +751,14 @@ impl MarkerKind {
 }
 
 /// A span of time the recording did not sample: no event counted or
-/// sampled, and no record says what threads did.
+/// sampled, though mappings and threads are still recorded.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
 )]
 pub struct Gap {
-    /// From the moment every event had stopped to the moment before any
-    /// began again, on the capture's clock.
+    /// From the moment sampling had stopped to the moment before it began
+    /// again, on the capture's clock.
     pub start: I64,
     pub end: I64,
 

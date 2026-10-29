@@ -1181,10 +1181,8 @@ impl Processor {
             return;
         }
 
-        let read_only = perf::mappings(pid.get()).is_ok_and(|mappings| {
-            mappings.iter().any(|mapping| {
-                mapping.start <= code.start && code.end <= mapping.end && !mapping.writable
-            })
+        let read_only = perf::mapping_at(pid.get(), code.start).is_ok_and(|mapping| {
+            mapping.is_some_and(|mapping| code.end <= mapping.end && !mapping.writable)
         });
         let copy = read_only
             .then(|| {
@@ -1617,9 +1615,22 @@ impl Processor {
             return false;
         }
 
-        let Ok(mappings) = perf::mappings(pid.get()) else {
-            return false;
-        };
+        let mut mappings: Vec<perf::Mapped> = Vec::new();
+        for &address in &unseen {
+            if mappings
+                .iter()
+                .any(|mapping| (mapping.start..mapping.end).contains(&address))
+            {
+                continue;
+            }
+            match perf::mapping_at(pid.get(), address) {
+                Ok(Some(mapping)) => mappings.push(mapping),
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+        }
+
+        mappings.sort_by_key(|mapping| mapping.start);
 
         let mut mapped = false;
         for mapping in &mappings {
@@ -1633,11 +1644,7 @@ impl Processor {
                 path: &mapping.path,
                 time,
             };
-            let holds = unseen
-                .iter()
-                .any(|address| (mapping.start..mapping.end).contains(address));
-
-            if holds && perf::jit::is_anonymous_code(&mmap) {
+            if perf::jit::is_anonymous_code(&mmap) {
                 self.mmap(&mmap);
                 mapped = true;
             }
@@ -2170,7 +2177,7 @@ impl Processor {
         }
     }
 
-    /// Records that every event was off from `start` to `end`, and why. A
+    /// Records that sampling was off from `start` to `end`, and why. A
     /// thread that left its CPU before a gap may have come back unseen in
     /// it, so its interval ends where the gap begins.
     ///
