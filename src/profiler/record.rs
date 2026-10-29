@@ -958,11 +958,14 @@ impl Processor {
         });
 
         let state = self.processes.entry(mmap.pid).or_default();
-        let carries_v8 = !state.before_v8.is_empty()
-            && self.images[image]
-                .info
-                .as_ref()
-                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image));
+        let is_v8 = self.images[image]
+            .info
+            .as_ref()
+            .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image));
+        // V8's code is unwound by its convention, and its perf map read
+        // only for names (see `perf_map_module`).
+        state.jit.names_only |= is_v8;
+        let carries_v8 = !state.before_v8.is_empty() && is_v8;
         if carries_v8 {
             for code in std::mem::take(&mut state.before_v8) {
                 self.v8_code(mmap.pid, mmap.time, code);

@@ -87,6 +87,11 @@ pub struct Jit {
     images: BTreeMap<u64, (u64, Vec<u8>)>,
     headers: Vec<u8>,
 
+    /// Whether the code of the functions the map names is left unread: a
+    /// process that carries V8 unwinds V8's code by V8's convention, and
+    /// the map gives it only names.
+    pub names_only: bool,
+
     /// Why the map, or a registered object, was last not read, until it is
     /// taken.
     problem: Option<String>,
@@ -450,7 +455,9 @@ impl Jit {
 
         for entry in entries {
             let length = (entry.end - entry.start).min(CODE_READ);
-            let code = if length <= codes {
+            let code = if self.names_only {
+                None
+            } else if length <= codes {
                 codes -= length;
                 let mut code = vec![0; usize::try_from(length).unwrap_or(0)];
                 perf::read_memory(pid, entry.start, &mut code)
