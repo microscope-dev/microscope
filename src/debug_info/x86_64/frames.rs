@@ -7,8 +7,12 @@
 //! frame, so the frame an instruction has on the path that falls through
 //! from the entry is the frame it always has. A call returns with the
 //! stack and frame pointers it was made with, as the x86-64 System V ABI
-//! requires. Past an instruction that never falls through, as a jump or a
-//! return, no path from the entry is known, and nothing is proved.
+//! requires. The proof follows each path from the entry, through branches
+//! and direct jumps to their targets in the code; a return or an indirect
+//! jump ends a path. An instruction that paths reach with different frames
+//! is not proved, nor is anything reached only through it.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{
     Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess,
@@ -53,16 +57,13 @@ pub(in crate::debug_info) enum CallerFramePointer {
     Lost,
 }
 
-/// The frame of every instruction of one function's code, from its entry
-/// as far as the code proves it.
+/// The frame of every instruction of one function's code that the paths
+/// from its entry prove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::debug_info) struct CodeFrames {
-    /// The offset of each instruction whose frame differs from the one
-    /// before, with its frame, in order.
-    changes: Vec<(u64, CodeFrame)>,
-
-    /// The offset past the last instruction whose frame is proved.
-    proved: u64,
+    /// Each run of instructions with one proved frame: its start, the
+    /// offset past it, and the frame, in order.
+    runs: Vec<(u64, u64, CodeFrame)>,
 }
 
 /// What an instruction leaves for the instruction after it.
@@ -78,47 +79,100 @@ impl CodeFrames {
     /// Proves the frame at each instruction of `code`, the bytes of a
     /// function from its entry.
     pub(in crate::debug_info) fn analyze(code: &[u8]) -> Self {
-        let mut frame = CodeFrame::Stack {
-            pushed: 0,
-            caller_frame_pointer: CallerFramePointer::Kept,
+        // A merge of disagreeing paths is found only after one of them went
+        // on past it, so the walk is made again without passing it.
+        let mut barriers = BTreeSet::new();
+        let found = loop {
+            let (found, conflicts) = walk(code, &barriers);
+            if conflicts.is_subset(&barriers) {
+                break found;
+            }
+            barriers.extend(conflicts);
         };
-        let mut changes = vec![(0, frame)];
-        let mut proved = 0;
-        let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
-        let mut factory = InstructionInfoFactory::new();
 
-        while decoder.can_decode() {
-            let instruction = decoder.decode();
-            if instruction.is_invalid() {
-                break;
-            }
-
-            if changes.last().is_some_and(|(_, last)| *last != frame) {
-                changes.push((instruction.ip(), frame));
-            }
-
-            proved = instruction.next_ip();
-            match next(frame, &instruction, &mut factory) {
-                Next::Frame(next) => frame = next,
-                Next::Unproved => break,
+        // An instruction a jump lands inside proves neither it nor the
+        // instruction it lands in.
+        let found: Vec<(u64, u64, CodeFrame)> = found
+            .into_iter()
+            .map(|(start, (end, frame))| (start, end, frame))
+            .collect();
+        let alone = |at: usize| {
+            let (start, end, _) = found[at];
+            at.checked_sub(1)
+                .is_none_or(|before| found[before].1 <= start)
+                && found.get(at + 1).is_none_or(|after| end <= after.0)
+        };
+        let mut runs: Vec<(u64, u64, CodeFrame)> = Vec::new();
+        for (start, end, frame) in (0..found.len()).filter(|&at| alone(at)).map(|at| found[at]) {
+            match runs.last_mut() {
+                Some(last) if last.1 == start && last.2 == frame => last.1 = end,
+                _ => runs.push((start, end, frame)),
             }
         }
 
-        Self { changes, proved }
+        Self { runs }
     }
 
     /// The frame of the instruction that holds the byte `offset` bytes
     /// past the entry, if proved.
     pub(in crate::debug_info) fn at(&self, offset: u64) -> Option<CodeFrame> {
-        if offset >= self.proved {
-            return None;
+        let run = self.runs.partition_point(|(start, ..)| *start <= offset);
+        let (_, end, frame) = self.runs.get(run.checked_sub(1)?)?;
+        (offset < *end).then_some(*frame)
+    }
+}
+
+/// Each instruction of `code` the paths from its entry reach, not past
+/// `barriers`, by offset: the offset past it and its frame. With the
+/// offsets that paths reached with different frames.
+fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (BTreeMap<u64, (u64, CodeFrame)>, BTreeSet<u64>) {
+    let mut found: BTreeMap<u64, (u64, CodeFrame)> = BTreeMap::new();
+    let mut conflicts = BTreeSet::new();
+    let mut factory = InstructionInfoFactory::new();
+    let entry = CodeFrame::Stack {
+        pushed: 0,
+        caller_frame_pointer: CallerFramePointer::Kept,
+    };
+    let mut work = vec![(0_u64, entry)];
+    let target = |instruction: &Instruction| {
+        (instruction.op0_kind() == OpKind::NearBranch64)
+            .then(|| instruction.near_branch_target())
+            .filter(|target| *target < code.len() as u64)
+    };
+
+    while let Some((offset, frame)) = work.pop() {
+        if barriers.contains(&offset) {
+            continue;
+        }
+        if let Some((_, known)) = found.get(&offset) {
+            if *known != frame {
+                conflicts.insert(offset);
+            }
+            continue;
+        }
+        let Some(bytes) = usize::try_from(offset).ok().and_then(|at| code.get(at..)) else {
+            continue;
+        };
+        let mut decoder = Decoder::with_ip(64, bytes, offset, DecoderOptions::NONE);
+        let instruction = decoder.decode();
+        if instruction.is_invalid() {
+            continue;
         }
 
-        let change = self.changes.partition_point(|(at, _)| *at <= offset);
-        self.changes
-            .get(change.checked_sub(1)?)
-            .map(|(_, frame)| *frame)
+        found.insert(offset, (instruction.next_ip(), frame));
+        if instruction.flow_control() == FlowControl::UnconditionalBranch {
+            work.extend(target(&instruction).map(|target| (target, frame)));
+            continue;
+        }
+        if let Next::Frame(after) = next(frame, &instruction, &mut factory) {
+            work.push((instruction.next_ip(), after));
+            if instruction.flow_control() == FlowControl::ConditionalBranch {
+                work.extend(target(&instruction).map(|target| (target, after)));
+            }
+        }
     }
+
+    (found, conflicts)
 }
 
 fn next(frame: CodeFrame, instruction: &Instruction, factory: &mut InstructionInfoFactory) -> Next {
@@ -404,64 +458,53 @@ impl CodeFrame {
     }
 }
 
-/// Adds the frames of one function of a runtime's code that no call-frame
+/// Adds the frames of one function of code that no call-frame
 /// information describes, whose code is `code`, at `address`, by encoded
 /// frame. Where its instructions prove the frame, that frame is kept.
-/// Past that, the runtime's convention holds at each call the code makes:
-/// it calls only from a frame it has entered, whose rbp holds the address
-/// of the word that saved the caller's, 16 bytes below the canonical frame
-/// address. Elsewhere nothing is known.
+/// For a runtime's code (`convention`), the runtime's convention holds at
+/// each other call the code makes: it calls only from a frame it has
+/// entered, whose rbp holds the address of the word that saved the
+/// caller's, 16 bytes below the canonical frame address. Elsewhere nothing
+/// is known.
 pub(in crate::debug_info) fn runtime_frames(
     code: &[u8],
     address: u64,
+    convention: bool,
     frames: &mut Vec<(AddressRange<ImageAddress>, u32)>,
 ) {
     let range = |start: u64, end: u64| AddressRange {
         start: ImageAddress::new(address.saturating_add(start)),
         end: ImageAddress::new(address.saturating_add(end)),
     };
+    let first = frames.len();
     let proved = CodeFrames::analyze(code);
-    let ends = proved
-        .changes
-        .iter()
-        .skip(1)
-        .map(|(offset, _)| *offset)
-        .chain(std::iter::once(proved.proved));
-    for ((start, frame), end) in proved.changes.iter().zip(ends) {
-        if let Some(value) = frame.encode().filter(|_| start < &end) {
-            frames.push((range(*start, end), value));
+    for (start, end, frame) in &proved.runs {
+        if let Some(value) = frame.encode() {
+            frames.push((range(*start, *end), value));
         }
     }
 
-    let convention = CodeFrame::Based {
+    let held = CodeFrame::Based {
         offset: 16,
         below: None,
     }
     .encode();
-    let Some(convention) = convention else {
-        return;
-    };
-    let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
-    decoder
-        .set_position(
-            usize::try_from(proved.proved)
-                .unwrap_or(code.len())
-                .min(code.len()),
-        )
-        .ok();
-    decoder.set_ip(proved.proved);
-    while decoder.can_decode() {
-        let instruction = decoder.decode();
-        if instruction.is_invalid() {
-            continue;
-        }
-        if matches!(
-            instruction.flow_control(),
-            FlowControl::Call | FlowControl::IndirectCall
-        ) {
-            frames.push((range(instruction.ip(), instruction.next_ip()), convention));
+    if let Some(held) = held.filter(|_| convention) {
+        let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
+        while decoder.can_decode() {
+            let instruction = decoder.decode();
+            if !instruction.is_invalid()
+                && matches!(
+                    instruction.flow_control(),
+                    FlowControl::Call | FlowControl::IndirectCall
+                )
+                && proved.at(instruction.ip()).is_none()
+            {
+                frames.push((range(instruction.ip(), instruction.next_ip()), held));
+            }
         }
     }
+    frames[first..].sort_unstable_by_key(|(range, _)| range.start);
 }
 
 /// The canonical frame address of `frame`, with `registers` its own.
@@ -623,7 +666,7 @@ mod tests {
             0x58, 0x55, 0x48, 0x89, 0xe5, 0x41, 0xff, 0x55, 0x40, 0xc9, 0xc3,
         ];
         let mut frames = Vec::new();
-        runtime_frames(&code, 0x1000, &mut frames);
+        runtime_frames(&code, 0x1000, true, &mut frames);
         let entry = stack(0, Kept).and_then(CodeFrame::encode).expect("entry");
         let convention = Based {
             offset: 16,
@@ -642,6 +685,35 @@ mod tests {
                 (range(0x1005, 0x1009), convention)
             ]
         );
+    }
+
+    #[test]
+    fn a_frame_is_proved_past_a_jump_at_its_target() {
+        // push rbp; mov rbp, rsp; jmp L; ud2; L: call rax; pop rbp; ret
+        let code = [
+            0x55, 0x48, 0x89, 0xe5, 0xeb, 0x02, 0x0f, 0x0b, 0xff, 0xd0, 0x5d, 0xc3,
+        ];
+        let frames = CodeFrames::analyze(&code);
+        let based = Some(Based {
+            offset: 16,
+            below: Some(0),
+        });
+        assert_eq!(frames.at(4), based, "at the jump");
+        assert_eq!(frames.at(6), None, "no path reaches ud2");
+        assert_eq!(frames.at(8), based, "at the call it jumps to");
+        assert_eq!(frames.at(10), based, "at pop rbp");
+        assert_eq!(frames.at(11), stack(0, Kept), "at ret");
+    }
+
+    #[test]
+    fn paths_that_arrive_with_different_frames_prove_nothing_after() {
+        // push rbp; je L; push rax; L: call rax; ret
+        let code = [0x55, 0x74, 0x01, 0x50, 0xff, 0xd0, 0xc3];
+        let frames = CodeFrames::analyze(&code);
+        assert_eq!(frames.at(1), stack(8, Saved(16)), "at the branch");
+        assert_eq!(frames.at(3), stack(8, Saved(16)), "at push rax");
+        assert_eq!(frames.at(4), None, "8 or 16 bytes pushed at the call");
+        assert_eq!(frames.at(6), None, "nor after it");
     }
 
     #[test]
@@ -742,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn conditional_branches_fall_through_and_other_transfers_end_the_proof() {
+    fn branches_and_jumps_carry_the_frame_and_other_transfers_end_the_proof() {
         // push rbp; mov rbp, rsp; je +0; call rax
         let based = Some(Based {
             offset: 16,
@@ -751,10 +823,15 @@ mod tests {
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0x74, 0x00, 0xff, 0xd0]);
         assert_eq!(frames.at(6), based);
 
-        // push rbp; mov rbp, rsp; jmp +0; call rax
+        // push rbp; mov rbp, rsp; jmp +0; call rax: the jump's target
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0xeb, 0x00, 0xff, 0xd0]);
         assert_eq!(frames.at(4), based, "the jump itself");
-        assert_eq!(frames.at(6), None);
+        assert_eq!(frames.at(6), based, "where it lands");
+
+        // push rbp; mov rbp, rsp; jmp rax; call rax
+        let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0xff, 0xe0, 0xff, 0xd0]);
+        assert_eq!(frames.at(4), based, "the indirect jump itself");
+        assert_eq!(frames.at(6), None, "no path is known past it");
 
         // ud2; call rax
         assert_eq!(CodeFrames::analyze(&[0x0f, 0x0b, 0xff, 0xd0]).at(2), None);

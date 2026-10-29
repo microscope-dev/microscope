@@ -10,7 +10,7 @@ use gimli::{
     UnwindSection, Value,
 };
 
-use object::{Object, ObjectSection, ObjectSegment};
+use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol};
 use rayon::prelude::*;
 
 use super::separate::Supplementary;
@@ -2033,9 +2033,46 @@ fn proved_frames(
             })
     };
     let mut frames = Vec::new();
+    if builtins.is_empty() {
+        return frames;
+    }
+    let starts: std::collections::BTreeSet<u64> =
+        builtins.iter().map(|(address, _)| *address).collect();
     for (address, code) in builtins {
         if !described(address) {
-            super::x86_64::frames::runtime_frames(code, address, &mut frames);
+            super::x86_64::frames::runtime_frames(code, address, true, &mut frames);
+        }
+    }
+
+    // V8's hand-written code that is not a builtin, as the heap's scan of
+    // the stack (`PushAllRegistersAndIterateStack`), has no call-frame
+    // information either, and every collection samples under it. Its
+    // instructions alone prove its frames: it keeps no convention.
+    let symbols = debug_object
+        .filter(|_| object.symbols().next().is_none())
+        .unwrap_or(object);
+    let mut functions: Vec<(u64, u64)> = symbols
+        .symbols()
+        .filter(|symbol| symbol.kind() == object::SymbolKind::Text)
+        .map(|symbol| (symbol.address(), symbol.size()))
+        .collect();
+    functions.sort_unstable();
+    functions.dedup_by_key(|(address, _)| *address);
+    for (at, &(address, size)) in functions.iter().enumerate() {
+        if starts.contains(&address) || described(address) {
+            continue;
+        }
+        // A symbol of no size, as Node 22's build gives the scan, runs at
+        // most to the next; its paths end at its return.
+        let end = match size {
+            0 => match functions.get(at + 1) {
+                Some((next, _)) => *next,
+                None => continue,
+            },
+            size => address + size,
+        };
+        if let Some(code) = code_bytes(object, address, end) {
+            super::x86_64::frames::runtime_frames(code, address, false, &mut frames);
         }
     }
     frames
@@ -4525,7 +4562,7 @@ fn first_distinct_source_statement(
 }
 
 /// Returns the bytes of `[start, end)` from an executable section.
-fn code_bytes<'data>(
+pub(super) fn code_bytes<'data>(
     object: &'data object::File<'data>,
     start: u64,
     end: u64,

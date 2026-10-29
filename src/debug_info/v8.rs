@@ -889,6 +889,64 @@ mod tests {
         }
     }
 
+    /// V8's scan of the stack for its heap, `PushAllRegistersAndIterateStack`,
+    /// is written by hand with no call-frame information, and every
+    /// collection runs under it: a sample there unwinds to its caller by
+    /// the frame its instructions build. It once ended a fifth of the
+    /// stacks of a large lint with "no unwind information".
+    #[test]
+    fn the_heaps_stack_scan_unwinds_to_its_caller() {
+        use object::{Object as _, ObjectSymbol as _};
+
+        use crate::unwind::{MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile};
+
+        struct Words(std::collections::HashMap<u64, u64>);
+        impl MemoryReader for Words {
+            fn read_u64(&mut self, address: crate::VirtualAddress) -> Option<u64> {
+                self.0.get(&address.get()).copied()
+            }
+        }
+
+        let root = std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE; run in the dev shell");
+        for entry in ["26", "24", "22"] {
+            let path = std::path::PathBuf::from(format!("{root}/{entry}/node"));
+            let data = std::fs::read(&path).expect("the build");
+            let object = object::File::parse(data.as_slice()).expect("an ELF file");
+            let scan = object
+                .symbols()
+                .find(|symbol| symbol.name() == Ok("PushAllRegistersAndIterateStack"))
+                .expect("the scan");
+            let code = super::super::dwarf::code_bytes(
+                &object,
+                scan.address(),
+                scan.address() + scan.size().max(33),
+            )
+            .expect("its code");
+            let returned = iced_x86::Decoder::with_ip(
+                64,
+                code,
+                scan.address(),
+                iced_x86::DecoderOptions::NONE,
+            )
+            .iter()
+            .find(|instruction| instruction.flow_control() == iced_x86::FlowControl::IndirectCall)
+            .expect("its call of the visitor")
+            .next_ip();
+
+            let info = super::super::load_bytes(&path, &data).expect("its debug information");
+            let rbp = 0x7fff_0000_0000;
+            let registers = RegisterFile::new([(RBP, rbp), (RSP, rbp - 48)]);
+            let mut memory = Words([(rbp, 0x1111), (rbp + 8, 0x2222)].into());
+            let step = info
+                .unwind
+                .unwind(crate::ImageAddress::new(returned), &registers, &mut memory)
+                .unwrap_or_else(|stop| panic!("{entry}: {stop:?}"));
+            assert_eq!(step.registers.get(RETURN_ADDRESS), Some(0x2222), "{entry}");
+            assert_eq!(step.registers.get(RBP), Some(0x1111), "{entry}");
+            assert_eq!(step.cfa.get(), rbp + 16, "{entry}");
+        }
+    }
+
     const V14_6: V8Version = V8Version {
         major: 14,
         minor: 6,
