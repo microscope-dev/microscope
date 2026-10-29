@@ -6793,6 +6793,45 @@ fn report_compares_and_focuses_from_the_command_line() {
     assert!(tree.lines().all(|line| line.len() < 100), "{tree}");
 }
 
+/// The time threads spent off their CPUs is a sum over threads, which can
+/// be many times as long as the recording, so the report says how many it
+/// sums and which thread was off longest.
+#[test]
+fn report_says_off_cpu_time_is_summed_over_threads() {
+    let scratch = support::ScratchDir::new("cli-offcpu");
+    let profile = scratch.path().join("offcpu.usprof");
+    let recorded = microscope_command()
+        .args(["record", "-o"])
+        .arg(&profile)
+        .arg("--")
+        .arg(fixture("build/test-programs/profile-offcpu"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope record");
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+
+    let report = assert_success(microscope(&["report", &profile.to_string_lossy()]));
+    let line = report
+        .lines()
+        .find(|line| line.contains("off their CPUs"))
+        .unwrap_or_else(|| panic!("no off-CPU line in\n{report}"));
+    let threads: u32 = line
+        .split(' ')
+        .next()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("{line:?} begins with no thread count"));
+    // main waits for its three threads, the sleeper naps, and each spinner
+    // is preempted by the other: all four leave their CPUs.
+    assert_eq!(threads, 4, "{line}");
+    assert!(line.contains(" threads were off their CPUs for "), "{line}");
+    assert!(line.contains(" between them: "), "{line}");
+    assert!(line.contains(" preempted; longest: "), "{line}");
+}
+
 #[test]
 fn record_writes_a_profile_that_report_summarizes() {
     let scratch = support::ScratchDir::new("cli-record");

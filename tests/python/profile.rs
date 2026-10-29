@@ -722,7 +722,11 @@ while time.monotonic() < end:
     };
     let blocked = report
         .lines()
-        .find(|line| line.starts_with("Threads were off their CPUs for "))
+        .find(|line| {
+            !line.starts_with("microscope's")
+                && (line.contains(" were off their CPUs for ")
+                    || line.contains(" was off its CPU for "))
+        })
         .and_then(|line| line.split(": ").nth(1))
         .and_then(|rest| rest.split(' ').next())
         .and_then(|seconds| seconds.parse::<f64>().ok())

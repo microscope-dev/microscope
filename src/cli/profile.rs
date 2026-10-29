@@ -1624,38 +1624,71 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
     cost(profile, judged, out)?;
     snapshots(profile, out)?;
 
-    if profile.setting("off-CPU") == Some("on") {
-        // The thread microscope's Python SDK starts waits on microscope,
-        // not on what the program does.
-        let (sdk, threads): (Vec<_>, Vec<_>) = profile
-            .threads()
-            .into_iter()
-            .partition(|thread| thread.name.as_deref() == Some(SDK_THREAD));
-        let blocked = threads.iter().map(|thread| thread.blocked).sum::<u64>();
-        let preempted = threads.iter().map(|thread| thread.preempted).sum::<u64>();
-        let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
+    off_cpu(profile, out)?;
+    instrumentation(profile, limit, out)
+}
 
-        writeln!(
-            out,
-            "Threads were off their CPUs for {}: {} blocked, {} preempted.",
-            seconds(blocked + preempted),
-            seconds(blocked),
-            seconds(preempted)
-        )?;
-        let waited = sdk
-            .iter()
-            .map(|thread| thread.blocked + thread.preempted)
-            .sum::<u64>();
-        if waited > 0 {
-            writeln!(
-                out,
-                "microscope's SDK thread was off its CPU for {} more, waiting to restart traced calls.",
-                seconds(waited)
-            )?;
-        }
+/// How long threads were off their CPUs, when the recording looked.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "seconds need no more precision than f64's"
+)]
+fn off_cpu(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
+    if profile.setting("off-CPU") != Some("on") {
+        return Ok(());
     }
 
-    instrumentation(profile, limit, out)
+    // A sum over threads, which can be many times the recording's
+    // length: say how many it sums and which was off longest. The thread
+    // microscope's Python SDK starts waits on microscope, not on what the
+    // program does.
+    let (sdk, threads): (Vec<_>, Vec<_>) = profile
+        .threads()
+        .into_iter()
+        .partition(|thread| thread.name.as_deref() == Some(SDK_THREAD));
+    let off = |thread: &microscope::profiler::ProfileThread| thread.blocked + thread.preempted;
+    let blocked = threads.iter().map(|thread| thread.blocked).sum::<u64>();
+    let preempted = threads.iter().map(|thread| thread.preempted).sum::<u64>();
+    let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
+    let counted = threads.iter().filter(|thread| off(thread) > 0).count() as u64;
+    let longest = threads
+        .iter()
+        .max_by_key(|thread| off(thread))
+        .filter(|thread| off(thread) > 0)
+        .map(|thread| {
+            format!(
+                "; longest: {} {}, {}",
+                thread.name.as_deref().unwrap_or("thread"),
+                thread.tid,
+                seconds(off(thread))
+            )
+        })
+        .unwrap_or_default();
+
+    writeln!(
+        out,
+        "{} {} for {}{}: {} blocked, {} preempted{longest}.",
+        plural(counted, "thread"),
+        if counted == 1 {
+            "was off its CPU"
+        } else {
+            "were off their CPUs"
+        },
+        seconds(blocked + preempted),
+        if counted == 1 { "" } else { " between them" },
+        seconds(blocked),
+        seconds(preempted)
+    )?;
+    let waited = sdk.iter().map(off).sum::<u64>();
+    if waited > 0 {
+        writeln!(
+            out,
+            "microscope's SDK thread was off its CPU for {} more, waiting to restart traced calls.",
+            seconds(waited)
+        )?;
+    }
+
+    Ok(())
 }
 
 /// The name microscope's Python SDK gives the thread `trace_calls` starts.
