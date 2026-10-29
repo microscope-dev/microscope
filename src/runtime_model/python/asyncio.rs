@@ -477,7 +477,7 @@ impl Values<'_, '_> {
                     .into());
                 }
                 Coroutine::Resting | Coroutine::Awaiting => {
-                    frames.push(walk.frame(&reader.record(frame, Field::FrameSize)?));
+                    frames.extend(walk.frame(&reader.record(frame, Field::FrameSize)?));
                 }
             }
 

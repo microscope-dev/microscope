@@ -104,7 +104,7 @@ impl Walk<'_, '_> {
             };
 
             match self.owner(&frame) {
-                Ok(Owner::Code) => frames.push(self.frame(&frame)),
+                Ok(Owner::Code) => frames.extend(self.frame(&frame)),
                 Ok(Owner::Entry) => {
                     if let Some(outermost) = frames.last_mut() {
                         outermost.outermost = true;
@@ -132,8 +132,11 @@ impl Walk<'_, '_> {
         (frames, end)
     }
 
-    /// One frame that runs code, a thread's or a coroutine's.
-    pub(super) fn frame(&mut self, frame: &Record<'_>) -> InterpretedFrame {
+    /// One frame that runs code, a thread's or a coroutine's; none for
+    /// code CPython runs for itself, as the frame it pushes beneath an
+    /// `__init__` to check what it returned, which says nothing of the
+    /// program.
+    pub(super) fn frame(&mut self, frame: &Record<'_>) -> Option<InterpretedFrame> {
         let mut built = InterpretedFrame {
             frame: frame.address,
             language: SourceLanguage::Python,
@@ -147,6 +150,9 @@ impl Walk<'_, '_> {
 
         match self.code_of(frame) {
             Ok((code, id)) => {
+                if self.code.row(id).internal {
+                    return None;
+                }
                 let line = self.line(frame, code, id);
                 let function = frame.word(Field::FrameFunction).ok();
                 built.function = Some(self.function_name(id, code, function));
@@ -163,14 +169,13 @@ impl Walk<'_, '_> {
                             column: 0,
                         });
                     }
-                    Err(_) if row.internal => {}
                     Err(problem) => built.problem = Some(problem),
                 }
             }
             Err(problem) => built.problem = Some(problem),
         }
 
-        built
+        Some(built)
     }
 
     /// The name a frame that runs the code `id`, at `code`, is shown by:
@@ -288,7 +293,7 @@ impl Walk<'_, '_> {
 
         for frame in sampled {
             match self.owner_of(u64::from(frame.owner)) {
-                Some(Owner::Code) => frames.push(self.sampled_frame(frame)),
+                Some(Owner::Code) => frames.extend(self.sampled_frame(frame)),
                 Some(Owner::Entry) => {
                     if let Some(outermost) = frames.last_mut() {
                         outermost.outermost = true;
@@ -318,8 +323,9 @@ impl Walk<'_, '_> {
         (frames, end)
     }
 
-    /// One frame a walker in the kernel read.
-    fn sampled_frame(&mut self, frame: &SampledFrame) -> InterpretedFrame {
+    /// One frame a walker in the kernel read; none for CPython's own code,
+    /// as [`Self::frame`].
+    fn sampled_frame(&mut self, frame: &SampledFrame) -> Option<InterpretedFrame> {
         let mut built = InterpretedFrame {
             frame: VirtualAddress::new(0),
             language: SourceLanguage::Python,
@@ -349,10 +355,13 @@ impl Walk<'_, '_> {
             Ok(id) => id,
             Err(problem) => {
                 built.problem = Some(problem);
-                return built;
+                return Some(built);
             }
         };
 
+        if self.code.row(id).internal {
+            return None;
+        }
         built.function = Some(self.function_name(id, frame.code, frame.function));
         let row = self.code.row(id);
         built.first_line = u32::try_from(row.first_line).ok();
@@ -370,14 +379,13 @@ impl Walk<'_, '_> {
                     column: 0,
                 });
             }
-            Err(_) if row.internal => {}
             Err(problem) => {
                 built.problem =
                     Some(format!("the frame running {:#x} {problem}", frame.code).into());
             }
         }
 
-        built
+        Some(built)
     }
 
     /// Where the bytecode the frame runs begins: the code object's own,

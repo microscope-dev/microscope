@@ -860,8 +860,10 @@ one's place, as `exec` makes, has a line table of its own. `linetable.rs` decode
 frame may run a thread-local copy of the bytecode, which `tlbc_index` selects.
 Code CPython makes for itself carries `CO_NO_MONITORING_EVENTS` from 3.13, as
 `_Py_InitCleanup` does, whose frame sits beneath each `__init__` that
-`CALL_ALLOC_AND_ENTER_INIT` runs: it has no lines, so its frame keeps its name
-and no place, and is not unreadable.
+`CALL_ALLOC_AND_ENTER_INIT` runs. It is named `__init__` and has no lines, and
+says nothing of the program, so its frame is left out of both walks and the
+`__init__` sits on its caller: a profile showed it as a bare `__init__` around
+every class's `__init__`, 45% of a dataclass-heavy program.
 
 A frame of code `exec` compiled from a string (`co_filename` `<string>`), as
 `dataclasses` compiles each method it makes, is named by its function's

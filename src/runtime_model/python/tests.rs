@@ -664,21 +664,27 @@ fn found(frames: &[InterpretedFrame]) -> Vec<Found<'_>> {
 }
 
 /// CPython's own code, as the frame it pushes beneath an `__init__` to
-/// check what it returned, is at no line by design: its frame is read
-/// with no place but no problem, where other code at no line has one.
+/// check what it returned, says nothing of the program: its frame is
+/// left out, so the `__init__` sits on its caller. Other code at no line
+/// keeps its frame, with a problem.
 #[test]
-fn cpythons_own_code_is_at_no_line_without_a_problem() {
+fn cpythons_own_frames_are_left_out() {
     let mut process = Process::new(layout());
     let make = process.code("make", 1, &[(2, 0)]);
+    let init = process.code("init", 3, &[(2, 0)]);
     let entry = process.entry(0);
     let outer = process.frame(entry, make, process.instruction(make, 0));
-    for (flags, problem) in [(0, true), (0x0200_0000, false)] {
+    for (flags, expected) in [
+        (0, &[Some("init"), Some("__init__"), Some("make")][..]),
+        (0x0200_0000, &[Some("init"), Some("make")][..]),
+    ] {
         let shim = process.code("__init__", 0, &[(2, 0)]);
         process.put(shim, Field::CodeFlags, flags, 4);
-        let frame = process.frame(outer, shim, process.instruction(shim, 0));
+        let middle = process.frame(outer, shim, process.instruction(shim, 0));
+        let frame = process.frame(middle, init, process.instruction(init, 0));
 
         let (walked, end) = walk_thread(&process, frame);
-        let chain = [frame, outer, entry].map(|frame| sampled(&process, frame));
+        let chain = [frame, middle, outer, entry].map(|frame| sampled(&process, frame));
         let (read, _) = Walk {
             reader: process.reader(),
             code: &mut CodeTable::default(),
@@ -691,13 +697,10 @@ fn cpythons_own_code_is_at_no_line_without_a_problem() {
                 .iter()
                 .map(|frame| frame.function.as_deref())
                 .collect();
-            assert_eq!(names, [Some("__init__"), Some("make")], "{flags:#x}");
-            assert_eq!(frames[0].place, None, "{flags:#x}");
-            assert_eq!(
-                frames[0].problem.is_some(),
-                problem,
-                "{flags:#x}: {frames:?}"
-            );
+            assert_eq!(names, expected, "{flags:#x}");
+            let problems: Vec<_> = frames.iter().map(|frame| frame.problem.is_some()).collect();
+            assert_eq!(problems.contains(&true), flags == 0, "{flags:#x}: {frames:?}");
+            assert!(frames.last().is_some_and(|frame| frame.outermost), "{frames:?}");
         }
     }
 }
