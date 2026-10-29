@@ -28,6 +28,7 @@ typedef const void *site_t;
 static struct {
 	uint16_t (*abi)(void);
 	bool (*listening)(void);
+	bool (*found)(void);
 	site_t (*define)(uint8_t, const char *, size_t, const char *, size_t, uint32_t);
 	bool (*on)(site_t);
 	bool (*zone_begin)(site_t);
@@ -76,6 +77,7 @@ static void load(void)
 	} symbols[] = {
 		{"microscope_probes_abi", (void **)&library.abi},
 		{"microscope_probes_listening", (void **)&library.listening},
+		{"microscope_probes_found", (void **)&library.found},
 		{"microscope_probes_define", (void **)&library.define},
 		{"microscope_probes_on", (void **)&library.on},
 		{"microscope_probes_zone_begin", (void **)&library.zone_begin},
@@ -154,6 +156,12 @@ static napi_value listening(napi_env env, napi_callback_info info)
 {
 	(void)info;
 	return boolean(env, library.listening && library.listening());
+}
+
+static napi_value found(napi_env env, napi_callback_info info)
+{
+	(void)info;
+	return boolean(env, library.found && library.found());
 }
 
 // define(kind, name, file, line): the site, or 0n.
@@ -244,6 +252,7 @@ NAPI_MODULE_INIT(/* napi_env env, napi_value exports */)
 	pthread_once(&loaded, load);
 	napi_property_descriptor properties[] = {
 		{"listening", NULL, listening, NULL, NULL, NULL, napi_default, NULL},
+		{"found", NULL, found, NULL, NULL, NULL, napi_default, NULL},
 		{"define", NULL, define, NULL, NULL, NULL, napi_default, NULL},
 		{"on", NULL, on, NULL, NULL, NULL, napi_default, NULL},
 		{"zoneBegin", NULL, zone_begin, NULL, NULL, NULL, napi_default, NULL},

@@ -37,11 +37,12 @@ except TypeError:
 else:
     raise AssertionError('a zone spanned what a generator yields')
 
-# Nothing is on until microscope reads a site it selects.
+# A recording that starts the program switches it on at once, but its marks
+# are safe only once microscope has found it.
 microscope.frame('started')
 deadline = time.monotonic() + 30
-while not microscope.listening():
-    assert time.monotonic() < deadline, 'microscope never listened'
+while not microscope.found():
+    assert time.monotonic() < deadline, 'microscope never found the program'
     time.sleep(0.001)
 
 for round in range(3):

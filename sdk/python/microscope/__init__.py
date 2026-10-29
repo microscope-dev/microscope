@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 
-__all__ = ['zone', 'label', 'plot', 'message', 'frame', 'trigger', 'listening',
+__all__ = ['zone', 'label', 'plot', 'message', 'frame', 'trigger', 'listening', 'found',
            'trace_calls', 'problem']
 
 _ZONE, _FRAME, _PLOT, _MESSAGE, _LABEL, _TRIGGER = 1, 2, 3, 4, 5, 6
@@ -69,6 +69,7 @@ def _load():
         return None
     signatures = {
         'microscope_probes_listening': (ctypes.c_bool, ()),
+        'microscope_probes_found': (ctypes.c_bool, ()),
         'microscope_probes_define': (site, (ctypes.c_uint8, *text, *text, ctypes.c_uint32)),
         'microscope_probes_on': (ctypes.c_bool, (site,)),
         'microscope_probes_zone_begin': (ctypes.c_bool, (site,)),
@@ -136,6 +137,12 @@ def _caller(depth=2):
 def listening():
     """Whether microscope is recording the program's instrumentation."""
     return _library is not None and _library.microscope_probes_listening()
+
+
+def found():
+    """Whether microscope has found the program and is recording it. A
+    program a recording starts is listening before microscope finds it."""
+    return _library is not None and _library.microscope_probes_found()
 
 
 class zone:

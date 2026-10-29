@@ -186,4 +186,10 @@ function listening() {
   return usable && native.listening();
 }
 
-module.exports = {zone, wrap, label, plot, message, frame, trigger, listening, problem};
+// Whether microscope has found the program and is recording it. A program
+// a recording starts is listening before microscope finds it.
+function found() {
+  return usable && native.found();
+}
+
+module.exports = {zone, wrap, label, plot, message, frame, trigger, listening, found, problem};

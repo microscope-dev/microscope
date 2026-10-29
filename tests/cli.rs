@@ -6584,9 +6584,11 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
 #[test]
 fn runtime_labels_stay_out_of_the_programs_zones() {
     let scratch = support::ScratchDir::new("cli-runtime-labels");
-    // Microscope listens once the program defines a site it selects.
+    // The program is listening as soon as it defines a site, but its marks
+    // are safe only once microscope has found it.
     let program = "import time, microscope\nwork = microscope.zone('work')\n\
-        while not microscope.listening(): time.sleep(0.001)\n\
+        deadline = time.monotonic() + 30\n\
+        while not microscope.found(): assert time.monotonic() < deadline; time.sleep(0.001)\n\
         with work:\n    end = time.monotonic() + 0.5\n    \
         while time.monotonic() < end: pass\n";
     let report = python_report(

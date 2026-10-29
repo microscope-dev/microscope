@@ -279,6 +279,13 @@ pub const fn listening() -> bool {
     false
 }
 
+/// Whether microscope has found the program and is recording it.
+#[cfg(not(feature = "enabled"))]
+#[must_use]
+pub const fn found() -> bool {
+    false
+}
+
 #[cfg(feature = "enabled")]
 #[doc(hidden)]
 pub use probes::*;

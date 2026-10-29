@@ -452,7 +452,11 @@ def handle(request):
 ```
 
 `message(name, text)`, `frame()`, and `trigger(why)` complete it, and
-`listening()` says whether a recording reads the program. A zone cannot
+`listening()` says whether a recording reads the program. A program that
+`microscope record` starts switches itself on, so that its first marks are
+recorded before microscope finds it; `found()` says once microscope has. A
+program that exits while microscope is busy elsewhere waits at most a second
+for it to read the marks. A zone cannot
 decorate a coroutine or generator, whose waits other work fills.
 `microscope.trace_calls("app")` times every call of the functions of `app` and
 the modules under it as zones named by module and function, using Python
@@ -495,8 +499,8 @@ const handle = microscope.wrap('handle', (request) =>
 
 `zone(name, fn)` runs `fn` as a span of the thread's time, `wrap(name, fn)`
 makes each call of `fn` one, and `label(name, value, fn)` labels the time
-`fn` runs. `message(name, text)`, `frame()`, `trigger(why)`, and
-`listening()` complete it. A zone or label spans a function of one thread,
+`fn` runs. `message(name, text)`, `frame()`, `trigger(why)`, `listening()`,
+and `found()`, as in Python, complete it. A zone or label spans a function of one thread,
 so neither accepts an async function or a generator, whose waits other work
 fills. Each mark is a site named by its name and where it was called from.
 A `worker_threads` worker marks its own thread.

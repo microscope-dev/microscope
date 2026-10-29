@@ -10,7 +10,7 @@ use core::cell::RefCell;
 use core::fmt;
 
 use crate::abi;
-use crate::probes::{Site, define, end, index, listening, reserve, runtime_site, sites};
+use crate::probes::{Site, define, end, found, index, listening, reserve, runtime_site, sites};
 
 /// The ABI the library writes.
 #[unsafe(no_mangle)]
@@ -22,6 +22,12 @@ pub extern "C" fn microscope_probes_abi() -> u16 {
 #[unsafe(no_mangle)]
 pub extern "C" fn microscope_probes_listening() -> bool {
     listening()
+}
+
+/// Whether microscope has found the program and is recording it.
+#[unsafe(no_mangle)]
+pub extern "C" fn microscope_probes_found() -> bool {
+    found()
 }
 
 /// The run-time site of `kind`, as [`define`] gives it, or null.

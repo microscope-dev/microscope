@@ -546,6 +546,13 @@ for name in ('first', 'second'):
 child = 'import sys; sys.path.insert(0, sys.argv[1]); import microscope; print(microscope.listening())'
 listened = subprocess.run([sys.executable, '-c', child, sys.argv[1]], capture_output=True, text=True)
 assert listened.stdout == 'False\n', listened
+# The zones are recorded already, but read only once microscope finds the
+# program, which can take seconds under load: it waits to be read as it
+# exits only if microscope read it within the last one.
+deadline = time.monotonic() + 30
+while not microscope.found():
+    assert time.monotonic() < deadline, 'microscope never found the program'
+    time.sleep(0.01)
 ";
     let mut command = Command::new(python::interpreter("3.14"));
     command

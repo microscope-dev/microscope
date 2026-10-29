@@ -39,12 +39,13 @@ for (const suspending of [async () => {}, function* numbers() {}]) {
   }
 }
 
-// Nothing is on until microscope reads a site it selects.
+// A recording that starts the program switches it on at once, but its marks
+// are safe only once microscope has found it.
 microscope.frame('started');
 const deadline = Date.now() + 30000;
-while (!microscope.listening()) {
+while (!microscope.found()) {
   if (Date.now() > deadline) {
-    throw new Error('microscope never listened');
+    throw new Error('microscope never found the program');
   }
   sleep(1);
 }

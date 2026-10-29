@@ -356,6 +356,14 @@ pub fn listening() -> bool {
     CONTROL.enable.load(Ordering::Acquire) != 0
 }
 
+/// Whether microscope has found the program and is recording it. A program
+/// a recording starts switches itself on before microscope finds it, so it
+/// may be [`listening`] first; only microscope sets the timeout.
+#[must_use]
+pub fn found() -> bool {
+    listening() && CONTROL.timeout.load(Ordering::Acquire) != 0
+}
+
 static ARMED: Once = Once::new();
 
 /// Switches the program on, once, if the recording that started it records

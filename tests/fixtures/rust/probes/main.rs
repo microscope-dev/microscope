@@ -56,7 +56,7 @@ fn main() {
         defined();
         return;
     }
-    wait_until_listening();
+    wait_until_found();
     match arguments[1].as_str() {
         "zones" => zones(),
         "burst" => burst(count()),
@@ -73,10 +73,13 @@ fn main() {
     }
 }
 
-/// Waits until microscope has switched the sites on.
-fn wait_until_listening() {
+/// Waits until microscope has found the program and switched the sites on.
+/// A program `microscope record` starts switches itself on at once, so only
+/// `found` waits for microscope: its debug information can take it a
+/// second to load, and a program that exits meanwhile loses its marks.
+fn wait_until_found() {
     let deadline = Instant::now() + Duration::from_secs(30);
-    while !microscope_probes::listening() {
+    while !microscope_probes::found() {
         assert!(Instant::now() < deadline, "microscope never listened");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -204,7 +207,7 @@ fn defined() {
     let load = define(abi::SITE_ZONE, "dynamic.load", "app.py", 3).expect("a zone");
     let rows = define(abi::SITE_PLOT, "dynamic.rows", "app.py", 4).expect("a plot");
     let other = define(abi::SITE_ZONE, "other", "app.py", 5).expect("a zone");
-    wait_until_listening();
+    wait_until_found();
     for round in 0..3_u32 {
         let _load = load.zone();
         rows.plot(f64::from(round));
