@@ -1093,7 +1093,7 @@ impl Processor {
                 .map(|mapped| mapped.start.max(stale.start)..mapped.end.min(stale.end))
                 .collect();
             for code in generated {
-                self.generated_module(pid, time, code, &stale.functions);
+                self.generated_module(pid, time, stale.range, code, &stale.functions);
                 // A module is found by its image's bounds, and those of the
                 // module it replaces may span more than its pieces.
                 let held = &mut self.processes.entry(pid).or_default().mapped;
@@ -1219,7 +1219,7 @@ impl Processor {
         drop(v8);
 
         let Some((source, image_start, length)) = copy else {
-            self.generated_module(pid, time, code, &[]);
+            self.generated_module(pid, time, code.start, code, &[]);
             return;
         };
 
@@ -1268,17 +1268,20 @@ impl Processor {
 
     /// Maps the module of `code` that V8 generated, whose frames keep V8's
     /// frame-pointer convention, with the functions of `jitted` a perf map
-    /// names there for its symbols.
+    /// names there for its symbols. The module is named for `mapped`, where
+    /// the mapping that holds it begins, so that each chunk of one mapping,
+    /// and each module of it made again, has the same path.
     fn generated_module(
         &mut self,
         pid: Pid,
         time: u64,
+        mapped: u64,
         code: std::ops::Range<u64>,
         jitted: &[crate::debug_info::perf_map::Jitted],
     ) {
         let began = thread_cpu();
         let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
-        let path = format!("[V8 code {:#x}]", code.start);
+        let path = format!("[V8 code {mapped:#x}]");
         let bounds = crate::AddressRange {
             start: ImageAddress::new(code.start),
             end: ImageAddress::new(code.end),

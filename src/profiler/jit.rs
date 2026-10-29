@@ -44,17 +44,22 @@ const OBJECTS_READ: u64 = 64 << 20;
 /// open the process's files at each of its samples.
 const QUIET: u64 = 20_000_000;
 
+/// How far apart, in bytes, a range's chunks begin: each chunk of a range
+/// has a module of its own, made again only for its own new functions. A
+/// chunk is a V8 code page, whose code V8 makes in a few pages at a time;
+/// one module for V8's whole code range indexed every function it held
+/// each time one was new.
+const CHUNK: u64 = 1 << 18;
+
 /// One anonymous executable mapping.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 struct Range {
     end: u64,
 
-    /// When the newest function its module holds was read, by when the
-    /// map named it; none until its module is made.
-    built: Option<u64>,
-
-    /// When the newest function the map named in it was read.
-    newest: u64,
+    /// The chunks whose modules are made, by start: each one's end, and
+    /// when the newest function its module holds was read, by when the map
+    /// named it.
+    built: BTreeMap<u64, (u64, u64)>,
 }
 
 /// What a process's anonymous code is known to hold.
@@ -124,11 +129,14 @@ pub struct JitCode {
     pub bytes: Arc<[u8]>,
 }
 
-/// An anonymous range whose module is out of date, with the functions in
-/// it.
+/// A chunk of an anonymous range whose module is out of date, with the
+/// functions in it.
 pub struct Stale {
     pub start: u64,
     pub end: u64,
+
+    /// Where the range begins, which names a module of V8's code.
+    pub range: u64,
     pub path: String,
     pub functions: Vec<Jitted>,
 }
@@ -147,17 +155,17 @@ impl Jit {
     pub fn mapped(&mut self, start: u64, end: u64, anonymous: bool, time: u64) {
         // What it does not overlap of a range is anonymous code still,
         // whose module is made again.
-        let overlapped: Vec<(u64, Range)> = self
+        let overlapped: Vec<(u64, u64)> = self
             .ranges
             .range(..end)
             .rev()
             .take_while(|(_, held)| held.end > start)
-            .map(|(&range, &held)| (range, held))
+            .map(|(&range, held)| (range, held.end))
             .collect();
 
         for (range, held) in overlapped {
             self.ranges.remove(&range);
-            let remnants = [(range, start.min(held.end)), (end.max(range), held.end)];
+            let remnants = [(range, start.min(held)), (end.max(range), held)];
 
             for (remnant, until) in remnants {
                 if remnant < until {
@@ -165,8 +173,7 @@ impl Jit {
                         remnant,
                         Range {
                             end: until,
-                            built: None,
-                            newest: held.newest,
+                            ..Range::default()
                         },
                     );
                 }
@@ -200,8 +207,7 @@ impl Jit {
                 start,
                 Range {
                     end,
-                    built: None,
-                    newest: 0,
+                    ..Range::default()
                 },
             );
         }
@@ -219,24 +225,60 @@ impl Jit {
         };
     }
 
-    /// Whether the anonymous range that holds `address`, if any, needs its
-    /// module made again: its module does not name the function that holds
-    /// `address`, or none covers `address`, so the map may have more. A
-    /// range whose module names the sample's function is not made again
-    /// for functions the map named since, which no sample has needed: each
-    /// remaking indexes every symbol of the range.
+    /// Whether the chunk of an anonymous range that holds `address`, if
+    /// any, needs its module made again: its module does not name the
+    /// function that holds `address`, or none covers `address`, so the map
+    /// may have more. A chunk whose module names the sample's function is
+    /// not made again for functions the map named since, which no sample
+    /// has needed: each remaking indexes every symbol of the chunk.
     pub fn needs(&self, address: u64) -> bool {
-        self.range(address).is_some_and(|(_, range)| {
+        self.range(address).is_some_and(|(start, range)| {
+            let (chunk, end) = self.chunk(start, range.end, address);
+            let built = range
+                .built
+                .get(&chunk)
+                .filter(|(built, _)| *built == end)
+                .map(|&(_, read)| read);
             let named = self
                 .functions
                 .range(..=address)
                 .next_back()
                 .filter(|(_, named)| address < named.function.entry.end);
             match named {
-                Some((_, named)) => range.built.is_none_or(|built| named.read > built),
+                Some((_, named)) => built.is_none_or(|built| named.read > built),
                 None => !self.covers(address),
             }
         })
+    }
+
+    /// The bounds of the chunk of range `start..end` that holds `address`:
+    /// it begins and ends where [`CHUNK`]s do, or past a function that
+    /// crosses there, so that no function is cut in two.
+    fn chunk(&self, start: u64, end: u64, address: u64) -> (u64, u64) {
+        let cut = |boundary: u64| {
+            if boundary <= start {
+                return start;
+            }
+            if boundary >= end {
+                return end;
+            }
+            self.functions
+                .range(start..boundary)
+                .next_back()
+                .map_or(boundary, |(_, named)| {
+                    named.function.entry.end.clamp(boundary, end)
+                })
+        };
+
+        let mut lower = address & !(CHUNK - 1);
+        while cut(lower) > address {
+            lower -= CHUNK;
+        }
+        let mut upper = lower.saturating_add(CHUNK);
+        while cut(upper) <= address {
+            upper = upper.saturating_add(CHUNK);
+        }
+        (cut(lower), cut(upper))
     }
 
     /// Whether `address`, sampled at `time` in no mapping the recording
@@ -248,12 +290,12 @@ impl Jit {
         self.range(address).is_none() && !self.covers(address) && time >= self.quiet
     }
 
-    fn range(&self, address: u64) -> Option<(u64, Range)> {
+    fn range(&self, address: u64) -> Option<(u64, &Range)> {
         self.ranges
             .range(..=address)
             .next_back()
             .filter(|(_, range)| address < range.end)
-            .map(|(&start, &range)| (start, range))
+            .map(|(&start, range)| (start, range))
     }
 
     fn covers(&self, address: u64) -> bool {
@@ -290,7 +332,7 @@ impl Jit {
         let mut unknown = false;
         for address in addresses {
             if self.needs(address) {
-                needed.extend(self.range(address).map(|(start, _)| start));
+                needed.extend(self.range(address).map(|(start, _)| (start, address)));
                 uncovered |= !self.covers(address);
             } else {
                 unknown |= self.range(address).is_none() && !self.covers(address);
@@ -314,34 +356,52 @@ impl Jit {
             }
         }
 
-        // Only the modules of the ranges these addresses need are made
-        // again; another range's is made once a sample needs it.
-        for start in needed {
-            let Some(range) = self.ranges.get_mut(&start) else {
+        // Only the modules of the chunks these addresses need are made
+        // again, with the bounds what was just read gives them; another
+        // chunk's is made once a sample needs it.
+        let chunks: BTreeSet<(u64, u64, u64)> = needed
+            .into_iter()
+            .filter_map(|(range, address)| {
+                let end = self.ranges.get(&range)?.end;
+                let (start, end) = self.chunk(range, end, address);
+                Some((range, start, end))
+            })
+            .collect();
+        for (range, start, end) in chunks {
+            let Some(held) = self.ranges.get_mut(&range) else {
                 continue;
             };
-            if range.built.is_some_and(|built| range.newest <= built) {
+            let newest = self
+                .functions
+                .range(start..end)
+                .map(|(_, named)| named.read)
+                .max()
+                .unwrap_or(0);
+            if held.built.get(&start) == Some(&(end, newest)) {
                 continue;
             }
 
-            let objects = self.objects.range(start..range.end).next().is_some();
-            let mut built = range.newest;
+            let objects = self
+                .objects
+                .range(..end)
+                .next_back()
+                .is_some_and(|(_, object)| object.end > start);
             let functions: Vec<Jitted> = match &self.path {
                 Some(_) if !objects => self
                     .functions
-                    .range(start..range.end)
-                    .map(|(_, named)| {
-                        built = built.max(named.read);
-                        named.function.clone()
-                    })
+                    .range(start..end)
+                    .map(|(_, named)| named.function.clone())
                     .collect(),
                 _ => Vec::new(),
             };
-            range.built = Some(built);
+            held.built
+                .retain(|&other, &mut (until, _)| until <= start || other >= end);
+            held.built.insert(start, (end, newest));
             if let (false, Some(path)) = (functions.is_empty(), &self.path) {
                 refreshed.stale.push(Stale {
                     start,
-                    end: range.end,
+                    end,
+                    range,
                     path: path.clone(),
                     functions,
                 });
@@ -500,12 +560,6 @@ impl Jit {
 
             for start in overlapped {
                 self.functions.remove(&start);
-            }
-
-            if let Some((_, range)) = self.ranges.range_mut(..=entry.start).next_back()
-                && entry.start < range.end
-            {
-                range.newest = range.newest.max(read);
             }
 
             self.functions.insert(
@@ -903,6 +957,80 @@ mod tests {
             jit.functions
                 .values()
                 .all(|named| named.function.code.is_none())
+        );
+    }
+
+    /// Each chunk of a range has a module of its own, made again only for
+    /// a function new in it, and a function that crosses where a chunk
+    /// would end stays whole in the chunk it begins in.
+    #[test]
+    fn a_new_function_makes_again_only_the_chunk_that_holds_it() {
+        let pid = std::process::id();
+        let path = format!("/tmp/perf-{pid}.map");
+        let start = 0x7f00_0000_0000_u64;
+        let (a, b, c, d) = (
+            start + 0x100,
+            start + CHUNK - 0x10,
+            start + 2 * CHUNK + 0x100,
+            start + 2 * CHUNK + 0x200,
+        );
+        std::fs::write(&path, format!("{a:x} 10 a\n{b:x} 40 b\n{c:x} 10 c\n"))
+            .expect("write the map");
+        let _removed = Removed(path.clone());
+        let stale = |refreshed: Refreshed| -> Vec<(u64, u64, u64, Vec<String>)> {
+            refreshed
+                .stale
+                .into_iter()
+                .map(|stale| {
+                    let names = stale
+                        .functions
+                        .iter()
+                        .map(|function| function.entry.name.to_string())
+                        .collect();
+                    (stale.range, stale.start, stale.end, names)
+                })
+                .collect()
+        };
+        let now = super::super::session::monotonic;
+
+        let mut jit = Jit {
+            names_only: true,
+            ..Jit::default()
+        };
+        jit.mapped(start, start + 3 * CHUNK, true, 0);
+        let b_ends = b + 0x40;
+        assert_eq!(
+            stale(jit.refresh(pid, now(), [a + 8], Vec::new)),
+            [(start, start, b_ends, vec!["a".into(), "b".into()])]
+        );
+        assert!(
+            !jit.needs(b + 0x38),
+            "b's end, past the chunk's, is in the module made"
+        );
+        assert_eq!(
+            stale(jit.refresh(pid, now(), [c + 8], Vec::new)),
+            [(
+                start,
+                start + 2 * CHUNK,
+                start + 3 * CHUNK,
+                vec!["c".into()]
+            )]
+        );
+
+        let mut map = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open the map");
+        std::io::Write::write_all(&mut map, format!("{d:x} 10 d\n").as_bytes())
+            .expect("append to the map");
+        assert_eq!(
+            stale(jit.refresh(pid, now(), [d + 8, a + 8], Vec::new)),
+            [(
+                start,
+                start + 2 * CHUNK,
+                start + 3 * CHUNK,
+                vec!["c".into(), "d".into()]
+            )]
         );
     }
 
