@@ -75,6 +75,8 @@ const fn options() -> report::Options<'static> {
         focus: None,
         invert: false,
         reshapes: &[],
+        threads: None,
+        base_threads: None,
     }
 }
 

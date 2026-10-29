@@ -6832,6 +6832,102 @@ fn report_says_off_cpu_time_is_summed_over_threads() {
     assert!(line.contains(" preempted; longest: "), "{line}");
 }
 
+/// A profile of several processes lists them with their command lines,
+/// and a report can be of one process, one thread, or the processes whose
+/// command line holds some text.
+#[test]
+fn report_lists_processes_and_selects_them() {
+    let scratch = support::ScratchDir::new("cli-processes");
+    let profile = scratch.path().join("two.usprof");
+    let program = fixture("build/test-programs/profile-vdso");
+    let program = program.to_string_lossy();
+    // Each reads the clock for some 0.6 s. A command line is read when its
+    // process's first sample is processed, and a recorder that stalls
+    // loading debug information can get there 0.2 s after a shorter run
+    // has ended.
+    let script = format!("{program} 30000000 & {program} 30000001; wait");
+    let recorded = microscope_command()
+        .args(["record", "--off-cpu", "off", "-o"])
+        .arg(&profile)
+        .args(["--", "sh", "-c", &script])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope record");
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    let path = profile.to_string_lossy();
+
+    let report = assert_success(microscope(&["report", &path]));
+    let header = report
+        .lines()
+        .position(|line| line == "Processes:")
+        .unwrap_or_else(|| panic!("no process table in\n{report}"));
+    let rows: Vec<(u32, &str)> = report
+        .lines()
+        .skip(header + 2)
+        .take_while(|line| !line.is_empty())
+        .map(|row| {
+            let pid = row
+                .split_whitespace()
+                .next()
+                .and_then(|pid| pid.parse().ok())
+                .unwrap_or_else(|| panic!("{row:?} begins with no pid"));
+            (pid, row)
+        })
+        .collect();
+    let pid_of = |argument: &str| {
+        rows.iter()
+            .find(|(_, row)| row.ends_with(&format!("test-programs/profile-vdso {argument}")))
+            .map_or_else(
+                || panic!("no process {argument} in\n{report}"),
+                |(pid, _)| *pid,
+            )
+    };
+    let (first, second) = (pid_of("30000000"), pid_of("30000001"));
+
+    let selected = |flag: &str, value: &str| {
+        let report = assert_success(microscope(&["report", &path, flag, value]));
+        let line = report
+            .lines()
+            .find(|line| line.starts_with("Selected: "))
+            .unwrap_or_else(|| panic!("{flag} {value} selected nothing:\n{report}"))
+            .to_owned();
+        assert!(report.contains("read_clock"), "{report}");
+        line
+    };
+    let seconds = |line: &str| -> f64 {
+        line["Selected: ".len()..]
+            .split(" s")
+            .next()
+            .and_then(|seconds| seconds.parse().ok())
+            .unwrap_or_else(|| panic!("{line:?}"))
+    };
+
+    // One process is part of the whole, and its main thread is all of it.
+    let by_pid = selected("--pid", &first.to_string());
+    let one = seconds(&by_pid);
+    let both = seconds(&selected("--command", "test-programs/profile-vdso"));
+    assert!(0.0 < one && one < both, "{one} of {both}");
+    assert_eq!(selected("--tid", &first.to_string()), by_pid);
+    let other = seconds(&selected("--command", "profile-vdso 30000001"));
+    assert!(
+        (one + other - both).abs() < 0.0015,
+        "{one} + {other} of {both}"
+    );
+    assert_ne!(first, second);
+
+    let none = microscope(&["report", &path, "--command", "no such program"]);
+    assert!(!none.status.success());
+    assert!(
+        String::from_utf8_lossy(&none.stderr).contains("no process's command line holds"),
+        "{}",
+        String::from_utf8_lossy(&none.stderr)
+    );
+}
+
 #[test]
 fn record_writes_a_profile_that_report_summarizes() {
     let scratch = support::ScratchDir::new("cli-record");

@@ -505,6 +505,10 @@ pub enum StackView {
 pub struct ProfileThread {
     /// The thread's row, by which a [`Query`] selects it.
     pub row: u32,
+
+    /// Its process's row, by which [`Profile::command`] finds its
+    /// command line.
+    pub process: u32,
     pub pid: u32,
     pub tid: u32,
 
@@ -645,6 +649,7 @@ impl Profile {
             let thread = &capture.threads[row as usize];
             ProfileThread {
                 row,
+                process: thread.process.get(),
                 pid: capture.processes[thread.process.get() as usize].pid.get(),
                 tid: thread.tid.get(),
                 name: Some(capture.string(thread.name.get()))
@@ -684,6 +689,13 @@ impl Profile {
         }
 
         threads.into_values().collect()
+    }
+
+    /// The command line of the process of row `process`, as the recorder
+    /// read it at its first sample, its arguments separated by spaces.
+    #[must_use]
+    pub fn command(&self, process: u32) -> Option<&str> {
+        self.capture.setting(&command_setting(process))
     }
 
     /// How many times the kernel throttled sampling.
@@ -1114,6 +1126,13 @@ impl Profile {
 
         Ok(())
     }
+}
+
+/// The setting that holds the command line of the process of row
+/// `process`.
+#[must_use]
+pub fn command_setting(process: u32) -> String {
+    format!("command {process}")
 }
 
 /// Why a profile file could not be read.

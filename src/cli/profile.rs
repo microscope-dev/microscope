@@ -237,6 +237,19 @@ pub struct ReportArgs {
     #[arg(long, value_name = "PERCENT", default_value_t = 1.0)]
     min_percent: f64,
 
+    /// Report only the samples of process PID; repeatable.
+    #[arg(long, value_name = "PID", conflicts_with = "base")]
+    pid: Vec<u32>,
+
+    /// Report only the samples of thread TID; repeatable.
+    #[arg(long, value_name = "TID", conflicts_with = "base")]
+    tid: Vec<u32>,
+
+    /// Report only the samples of processes whose command line holds TEXT,
+    /// in the --base profile too, as `--command type=renderer`.
+    #[arg(long, value_name = "TEXT")]
+    command: Option<String>,
+
     #[command(flatten)]
     reshapes: Reshapes,
 }
@@ -1038,14 +1051,19 @@ fn ordinary_report(
         (Source::Samples, profile.total_weight())
     };
 
+    processes(profile, args.limit, out)?;
+
     let granularity = args.granularity();
     let keys = profile.keys(granularity);
+    let threads = selected_threads(profile, args, false)?;
     let query = microscope::profiler::Query {
         source,
         look: look(view),
         transforms: report::transforms(&keys, &args.reshapes.0, false)?,
+        threads,
         ..microscope::profiler::Query::default()
     };
+    let total = selected_total(profile, &keys, &query, total, out)?;
 
     let percent = |value: u64| {
         if total == 0 {
@@ -1181,6 +1199,141 @@ fn truncations(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
+/// The rows of the threads `args` selects by process, thread, and command
+/// line, or `None` when it selects every thread. With `base`, only the
+/// command line selects, since process ids differ between recordings.
+fn selected_threads(profile: &Profile, args: &ReportArgs, base: bool) -> Result<Option<Vec<u32>>> {
+    let by_id = !base && (!args.pid.is_empty() || !args.tid.is_empty());
+    if !by_id && args.command.is_none() {
+        return Ok(None);
+    }
+
+    let threads = profile.threads();
+    let commanded = |thread: &microscope::profiler::ProfileThread| {
+        args.command.as_deref().is_none_or(|text| {
+            profile
+                .command(thread.process)
+                .is_some_and(|command| command.contains(text))
+        })
+    };
+    if let Some(text) = &args.command
+        && !threads.iter().any(commanded)
+    {
+        anyhow::bail!(
+            "no process's command line holds {text:?}{}",
+            if base { " in the --base profile" } else { "" }
+        );
+    }
+
+    let rows: Vec<u32> = threads
+        .iter()
+        .filter(|thread| base || args.pid.is_empty() || args.pid.contains(&thread.pid))
+        .filter(|thread| base || args.tid.is_empty() || args.tid.contains(&thread.tid))
+        .filter(|thread| commanded(thread))
+        .map(|thread| thread.row)
+        .collect();
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "no thread of the profile is of the processes and threads selected"
+    );
+    Ok(Some(rows))
+}
+
+/// The weight `query` selects when it selects threads, which it says, and
+/// otherwise `total`.
+fn selected_total(
+    profile: &Profile,
+    keys: &microscope::profiler::Keys<'_>,
+    query: &microscope::profiler::Query,
+    total: u64,
+    out: &mut impl std::io::Write,
+) -> Result<u64> {
+    if query.threads.is_none() {
+        return Ok(total);
+    }
+
+    let selected = keys.functions(query).weight;
+    writeln!(out)?;
+    writeln!(
+        out,
+        "Selected: {} of {}.",
+        weight_text(profile, selected),
+        weight_text(profile, total)
+    )?;
+    Ok(selected)
+}
+
+/// A weight in the profile's unit: seconds, or a count of executions.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "seconds need no more precision than f64's"
+)]
+fn weight_text(profile: &Profile, value: u64) -> String {
+    match profile.setting("weight").unwrap_or("nanoseconds") {
+        "nanoseconds" => format!("{:.3} s", value as f64 / 1e9),
+        unit => plural(value, unit.strip_suffix('s').unwrap_or(unit)),
+    }
+}
+
+/// The processes a profile of more than one sampled, most cost first,
+/// each with its threads and command line: Chromium's are told apart by
+/// their roles, as `--type=renderer`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "percentages need no more precision than f64's"
+)]
+fn processes(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
+    const WIDEST_COMMAND: usize = 100;
+    let mut processes =
+        std::collections::BTreeMap::<u32, (u32, u64, std::collections::BTreeSet<u32>)>::new();
+    for thread in profile
+        .threads()
+        .into_iter()
+        .filter(|thread| thread.samples > 0)
+    {
+        let process = processes
+            .entry(thread.process)
+            .or_insert_with(|| (thread.pid, 0, std::collections::BTreeSet::new()));
+        process.1 += thread.weight;
+        process.2.insert(thread.tid);
+    }
+    if processes.len() < 2 {
+        return Ok(());
+    }
+
+    let total: u64 = processes.values().map(|process| process.1).sum();
+    let mut rows: Vec<_> = processes.into_iter().collect();
+    rows.sort_by_key(|(row, (_, weight, _))| (std::cmp::Reverse(*weight), *row));
+
+    writeln!(out)?;
+    writeln!(out, "Processes:")?;
+    writeln!(out, "{:>8} {:>7} {:>7}  command", "pid", "threads", "share")?;
+    for (row, (pid, weight, threads)) in rows.iter().take(limit) {
+        let command = profile.command(*row).unwrap_or("[command line not read]");
+        let command = match command.char_indices().nth(WIDEST_COMMAND) {
+            Some((end, _)) => format!("{}…", &command[..end]),
+            None => command.to_owned(),
+        };
+        writeln!(
+            out,
+            "{pid:>8} {:>7} {:>6.2}%  {command}",
+            threads.len(),
+            *weight as f64 * 100.0 / total.max(1) as f64
+        )?;
+    }
+    if rows.len() > limit {
+        writeln!(
+            out,
+            "  and {} more",
+            match rows.len() - limit {
+                1 => "1 process".to_owned(),
+                more => format!("{more} processes"),
+            }
+        )?;
+    }
+    Ok(())
+}
+
 /// Resolves the optional base and adapts CLI selections to the report query.
 fn selected_report(
     profile: &Profile,
@@ -1227,6 +1380,12 @@ fn selected_report(
             focus: args.focus.as_deref(),
             invert: args.invert,
             reshapes: &args.reshapes.0,
+            threads: selected_threads(profile, args, false)?.as_deref(),
+            base_threads: match &base {
+                Some(base) => selected_threads(base, args, true)?,
+                None => None,
+            }
+            .as_deref(),
         },
         out,
     )

@@ -22,6 +22,11 @@ pub struct Options<'a> {
 
     /// How each stack is reshaped first, in order.
     pub reshapes: &'a [Reshape],
+
+    /// The rows of the threads whose samples count, in the profile and in
+    /// the base, or all.
+    pub threads: Option<&'a [u32]>,
+    pub base_threads: Option<&'a [u32]>,
 }
 
 /// A change to each stack before a report adds them up.
@@ -96,11 +101,13 @@ pub fn write(
         source: options.source,
         look: options.look,
         transforms: transforms(&keys, options.reshapes, false)?,
+        threads: options.threads.map(<[u32]>::to_vec),
         ..Query::default()
     };
     let base_query = Query {
         transforms: transforms(&base_keys, options.reshapes, true)
             .context("resolving --base profile")?,
+        threads: options.base_threads.map(<[u32]>::to_vec),
         ..query.clone()
     };
     let costs = keys.functions(&query);
@@ -301,6 +308,7 @@ fn focus(
         source: options.source,
         look: options.look,
         transforms: transforms(&keys, options.reshapes, false)?,
+        threads: options.threads.map(<[u32]>::to_vec),
         ..Query::default()
     };
     let base_query = base_keys
@@ -309,6 +317,7 @@ fn focus(
             Ok(Query {
                 transforms: transforms(keys, options.reshapes, true)
                     .context("resolving --base profile")?,
+                threads: options.base_threads.map(<[u32]>::to_vec),
                 ..query.clone()
             })
         })

@@ -206,6 +206,10 @@ struct ProcessState {
 
     /// How many times the process has exec'd.
     execs: u64,
+
+    /// Whether its command line has been read since it began or last
+    /// exec'd.
+    command_read: bool,
     threads: BTreeSet<Tid>,
     jit: Jit,
 
@@ -787,6 +791,7 @@ impl Processor {
                     let state = self.processes.entry(pid).or_default();
                     state.execs += 1;
                     self.thread_changes += 1;
+                    state.command_read = false;
                     state.mapped.clear();
                     state.before_v8.clear();
                     state.jit.exec();
@@ -863,6 +868,37 @@ impl Processor {
             decode::Record::Lost { time, .. } => self.lost(time),
             // An output's record is processed with its sample.
             decode::Record::Output { .. } | decode::Record::Other { .. } => {}
+        }
+    }
+
+    /// Keeps the command line of process `pid` the first time it is
+    /// sampled, when a program that rewrites its own, as Chromium's
+    /// processes do with their role, has done so. A process gone by then
+    /// has none.
+    fn read_command(&mut self, pid: Pid, time: i64) {
+        let state = self.processes.entry(pid).or_default();
+        if std::mem::replace(&mut state.command_read, true) {
+            return;
+        }
+
+        // A process that began after the sample took its pid since.
+        if !began_by(pid.get(), time) {
+            return;
+        }
+
+        let Ok(bytes) = std::fs::read(format!("/proc/{}/cmdline", pid.get())) else {
+            return;
+        };
+        let command = bytes
+            .split(|byte| *byte == 0)
+            .filter(|argument| !argument.is_empty())
+            .map(String::from_utf8_lossy)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !command.is_empty() {
+            let process = self.builder.process(pid, time);
+            self.builder
+                .setting(&super::command_setting(process), &command);
         }
     }
 
@@ -1727,6 +1763,7 @@ impl Processor {
         let kernel = self.kernel_leaf(sample);
         let time = sample.time.cast_signed();
         let thread = self.thread(sample.pid, sample.tid, time);
+        self.read_command(sample.pid, time);
         self.registers.clear();
         self.registers.extend(
             decode::DWARF_REGISTERS
@@ -2675,6 +2712,46 @@ impl Processor {
             self.builder.symbolize(frame, module, &inputs);
         }
     }
+}
+
+/// Whether process `pid` began by `CLOCK_MONOTONIC` nanoseconds `time`, as
+/// its start in `/proc`, in ticks of the boot clock, shows. A pid taken in
+/// the same tick as `time` is not told apart.
+fn began_by(pid: u32, time: i64) -> bool {
+    use nix::time::{ClockId, clock_gettime};
+
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // The 22nd field, the start, is the 20th after the name's last ')'.
+    let ticks = stat
+        .rfind(')')
+        .and_then(|end| stat.get(end + 1..))
+        .and_then(|rest| rest.split_whitespace().nth(19))
+        .and_then(|ticks| ticks.parse::<i128>().ok());
+    let per_second = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+        .ok()
+        .flatten()
+        .map(i128::from)
+        .filter(|ticks| *ticks > 0);
+    let nanoseconds = |clock| {
+        clock_gettime(clock)
+            .ok()
+            .map(|time| i128::from(time.tv_sec()) * 1_000_000_000 + i128::from(time.tv_nsec()))
+    };
+    let (Some(ticks), Some(per_second), Some(boot), Some(monotonic)) = (
+        ticks,
+        per_second,
+        nanoseconds(ClockId::CLOCK_BOOTTIME),
+        nanoseconds(ClockId::CLOCK_MONOTONIC),
+    ) else {
+        return false;
+    };
+
+    // The boot clock runs ahead of the monotonic one by the time the
+    // machine slept.
+    let began = ticks * 1_000_000_000 / per_second - (boot - monotonic);
+    began <= i128::from(time)
 }
 
 /// One source line of a frame, owned until the builder interns it.

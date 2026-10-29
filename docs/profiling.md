@@ -118,6 +118,16 @@ that native threads ran instead of logical task stacks. `--invert --tree`
 prints a caller tree instead: each function that ran, with its callers nested
 under it. `--invert` needs `--tree` and does not work with `--base`.
 
+A profile of several processes lists them, most cost first, with each one's
+pid, threads, share, and command line, as the recorder read it at the
+process's first sample: a program that rewrites its own, as Chromium's
+processes write their role, `--type=renderer`, shows it. A process that
+ended before the recorder got to its first sample shows
+`[command line not read]`. `--pid PID` and `--tid TID` report one process or
+thread; both repeat. `--command TEXT` reports the processes whose command
+line holds TEXT, and selects the same way in a `--base` profile, whose pids
+are another recording's.
+
 Each inlined function gets its own row. When a small inlined helper takes
 most of a loop's own time, `--fold-inlines` counts it as part of the function
 it was inlined into, as the browser's "functions, inlines folded" does. It
