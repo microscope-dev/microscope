@@ -13,19 +13,26 @@ stopping = threading.Event()
 MINIMUM = 0.3
 
 
-# Many fields, so that most of the time goes to each `__init__` itself.
+# Many fields, so that most of the time goes to `Line.__init__` itself.
 FIELDS = [f"field_{number}" for number in range(32)]
-Point = dataclasses.make_dataclass("Point", FIELDS)
+VALUES = tuple(range(len(FIELDS)))
 Line = dataclasses.make_dataclass("Line", FIELDS)
 
 
+def draw(point):
+    point.line = Line(*VALUES)
+
+
+# `Point.__init__` makes a `Line`, so that one stack, as one snapshot takes,
+# names both methods.
+Point = dataclasses.make_dataclass("Point", ["origin"], namespace={"__post_init__": draw})
+
+
 def build():
-    values = range(len(FIELDS))
     started = time.monotonic()
     while not stopping.is_set() or time.monotonic() - started < MINIMUM:
         for _ in range(1000):
-            Point(*values)
-            Line(*values)
+            Point(0)
 
 
 builder = threading.Thread(target=build, name="builder")
