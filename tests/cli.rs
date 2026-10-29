@@ -6551,7 +6551,10 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     // has found it. Until then microscope may be loading debug information,
     // a second of it on a busy machine, and takes no snapshot; and a
     // snapshot that stops the program for most of a second would end half
-    // a second of the clock's.
+    // a second of the clock's. A program imports what it maps before it
+    // loads microscope's library, so that microscope has read it once it
+    // has found the program: reading the modules asyncio maps took it half
+    // a second, without snapshots, which the program spent its time in.
     let found = "import time, microscope\ndeadline = time.monotonic() + 30\n\
         while not microscope.found(): assert time.monotonic() < deadline; time.sleep(0.001)\n";
     let spin =
@@ -6574,7 +6577,7 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
         "tasks.usprof",
         &["--task-snapshots", "0.05"],
         &format!(
-            "{found}import asyncio\nasync def spin():\n    end = time.process_time() + 0.5\n    \
+            "import asyncio\n{found}async def spin():\n    end = time.process_time() + 0.5\n    \
              while time.process_time() < end: await asyncio.sleep(0)\n\
              async def main(): await asyncio.gather(spin(), spin())\nasyncio.run(main())\n"
         ),
