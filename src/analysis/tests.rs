@@ -836,6 +836,36 @@ fn anonymous(places: &[Anonymous<'_>]) -> (Capture, Vec<u32>) {
     (builder.finish(), frames)
 }
 
+/// A function a module made again names keys once: node's perf map is
+/// read again as V8 compiles more, each reading a new module over V8's code
+/// at one path, and the native view once listed one JavaScript function as
+/// 274 rows. A function of that name in another module stays apart.
+#[test]
+fn a_function_of_a_remade_module_is_one_key() {
+    let mut builder = CaptureBuilder::new();
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let mut frame = |path: &str, digest: u8| {
+        let module = builder.module(path, None, [digest; 16], 0x1000);
+        let frame = builder.frame(FrameKind::Native, module, 0x10, 0);
+        builder.symbolize(frame, module, &[line("JS:*lint")]);
+        frame
+    };
+    let first = frame("[V8 code 0x7f0000000000]", 1);
+    let again = frame("[V8 code 0x7f0000000000]", 2);
+    let other = frame("[V8 code 0x7e0000000000]", 3);
+    for (time, frame) in (0..).zip([first, again, other]) {
+        let stack = builder.stack(&[frame]);
+        builder.sample(thread, time, 1, stack, NONE);
+    }
+    let capture = builder.finish();
+    let keys = Keys::new(&capture, Granularity::Function);
+    let key = |frame: u32| keys.frame(frame)[0];
+
+    assert_eq!(key(first), key(again));
+    assert_ne!(key(first), key(other));
+    assert_eq!(keys.named("JS:*lint").len(), 2);
+}
+
 /// Functions of one name, as many lint rules' `create` are, each have an
 /// exact name that a focus takes and that picks out that function alone,
 /// while a name no other function has stays as it is. The browser selects

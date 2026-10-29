@@ -93,11 +93,36 @@ pub struct Keys<'a> {
     shared: std::sync::OnceLock<std::collections::HashSet<String>>,
 }
 
+/// Each function's first function of the same name, module path, place,
+/// and role: a module made again, as node's perf map is read again over
+/// V8's code, makes its functions again under a new module of one path.
+fn canonical_functions(capture: &Capture) -> Vec<u32> {
+    let mut first = HashMap::default();
+    (0..index(capture.functions.len()))
+        .map(|function| {
+            let record = &capture.functions[function as usize];
+            let path = match record.module.get() {
+                NONE => NONE,
+                module => capture.modules[module as usize].path.get(),
+            };
+            let identity = (
+                record.name.get(),
+                path,
+                record.file.get(),
+                record.line.get(),
+                record.role,
+            );
+            *first.entry(identity).or_insert(function)
+        })
+        .collect()
+}
+
 /// Adds the keys of `frame`, innermost first, to `flat`, each made by
-/// `key`.
+/// `key`, which knows each function by its `canonical` one.
 fn frame_keys(
     capture: &Capture,
     granularity: Granularity,
+    canonical: &[u32],
     frame: u32,
     key: &mut impl FnMut(KeyKind) -> u32,
     flat: &mut Vec<u32>,
@@ -131,7 +156,7 @@ fn frame_keys(
     let by_line =
         granularity == Granularity::Line || (granularity == Granularity::Address && named);
     for line in lines {
-        let function = line.function.get();
+        let function = canonical[line.function.get() as usize];
         flat.push(key(if by_line {
             KeyKind::Line {
                 function,
@@ -197,11 +222,12 @@ impl<'a> Keys<'a> {
             })
         };
 
+        let canonical = canonical_functions(capture);
         let mut starts = Vec::with_capacity(capture.frames.len() + 1);
         let mut flat = Vec::with_capacity(capture.frames.len());
         for frame in 0..index(capture.frames.len()) {
             starts.push(index(flat.len()));
-            frame_keys(capture, granularity, frame, &mut key, &mut flat);
+            frame_keys(capture, granularity, &canonical, frame, &mut key, &mut flat);
         }
 
         starts.push(index(flat.len()));
