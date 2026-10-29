@@ -1099,8 +1099,10 @@ fn a_stack_through_the_vdso_goes_on_to_its_callers() {
         );
 
         // The vDSO exports only its entry points, so its own functions are
-        // known by address.
-        if stack.functions[0].starts_with("[vdso]+") {
+        // known by where their call-frame information says they begin,
+        // and every sample in one shares its name.
+        assert!(!stack.functions[0].starts_with("[vdso]+"), "{context}");
+        if stack.functions[0].starts_with("<unnamed [vdso]+0x") {
             let main = [
                 "read_clock",
                 "main",

@@ -333,6 +333,21 @@ impl<'a> FdeLookup<'a> {
             (None, None) => Err(FdeMiss::NoEntry),
         }
     }
+
+    /// Where the code the entry [`lookup`](Self::lookup) finds for
+    /// `address` begins: the start of a function, as call-frame
+    /// information describes one function per entry.
+    pub fn function_start(self, address: u64) -> Option<u64> {
+        let offset = u32::try_from(self.lookup(address).ok()?).ok()?;
+        let end = self
+            .entries
+            .partition_point(|interval| interval.start.get() <= address);
+        self.entries[..end]
+            .iter()
+            .rev()
+            .find(|interval| interval.value.get() == offset && address < interval.end.get())
+            .map(|interval| interval.start.get())
+    }
 }
 
 impl FdeIndex {

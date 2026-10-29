@@ -2765,9 +2765,28 @@ pub fn symbolize(image: &ModuleImage, address: ImageAddress) -> Vec<OwnedLine> {
             .map_or_else(|| symbol.name.clone(), Arc::from);
         let role = found.map_or(CodeRole::Ordinary, crate::Symbol::role);
         lines.push(line(name, role, None, source.as_ref()));
+    } else if let Some(start) = unnamed_function(image, address) {
+        // Code no symbol names, as the vDSO's own helpers, is still one
+        // function per entry of its call-frame information: its samples
+        // are counted together, named for where the function begins.
+        let module = image.path().file_name().map_or_else(
+            || image.path().to_string_lossy(),
+            |name| name.to_string_lossy(),
+        );
+        let name = Arc::from(format!("<unnamed {module}+{start:#x}>"));
+        lines.push(line(name, CodeRole::Ordinary, None, source.as_ref()));
     }
 
     lines
+}
+
+/// Where the function at `address` begins, by the image's call-frame
+/// information, when any entry describes it.
+fn unnamed_function(image: &ModuleImage, address: ImageAddress) -> Option<u64> {
+    let view = crate::image::unwind::UnwindView::new(image.tables());
+    [view.eh_frame_index(), view.debug_frame_index()]
+        .into_iter()
+        .find_map(|index| index.function_start(address.get()))
 }
 
 /// A function's name with the scopes that qualify it, as its linkage name
