@@ -92,8 +92,7 @@ fn code_at(
     if image.generated {
         return Some(interpreted::CodeAt::Generated);
     }
-    let info = image.info.as_ref()?;
-    crate::debug_info::v8::is_v8(&info.image).then(|| {
+    image.v8.then(|| {
         interpreted::CodeAt::Runtime(
             mapped
                 .loaded
@@ -140,6 +139,10 @@ struct Image {
     /// Whether it is code a runtime generated, as V8's compiled
     /// JavaScript, which the runtime's frames run.
     generated: bool,
+
+    /// Whether it is V8's (`debug_info::v8::is_v8`), told once: the test
+    /// looks a symbol up by name, and samples ask it of each frame.
+    v8: bool,
 
     /// The runtimes it carries that keep code of their own in a process,
     /// detected the first time a mapping may copy its code: V8 copies its
@@ -904,12 +907,10 @@ impl Processor {
 
         let Some((image, bias)) = image else {
             if perf::jit::is_anonymous_code(mmap) {
-                let carries_v8 = state.mapped.iter().any(|mapped| {
-                    self.images[mapped.image]
-                        .info
-                        .as_ref()
-                        .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image))
-                });
+                let carries_v8 = state
+                    .mapped
+                    .iter()
+                    .any(|mapped| self.images[mapped.image].v8);
                 if carries_v8 {
                     self.v8_code(mmap.pid, mmap.time, mmap.start..end);
                 } else {
@@ -958,10 +959,7 @@ impl Processor {
         });
 
         let state = self.processes.entry(mmap.pid).or_default();
-        let is_v8 = self.images[image]
-            .info
-            .as_ref()
-            .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image));
+        let is_v8 = self.images[image].v8;
         // V8's code is unwound by its convention, and its perf map read
         // only for names (see `perf_map_module`).
         state.jit.names_only |= is_v8;
@@ -1051,6 +1049,9 @@ impl Processor {
 
         let image = self.images.len();
         self.images.push(Image {
+            v8: info
+                .as_ref()
+                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image)),
             info,
             id,
             module,
@@ -1076,12 +1077,7 @@ impl Processor {
             .processes
             .get(&pid)
             .map_or(&[], |process| &process.mapped);
-        let carries_v8 = held.iter().any(|mapped| {
-            self.images[mapped.image]
-                .info
-                .as_ref()
-                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image))
-        });
+        let carries_v8 = held.iter().any(|mapped| self.images[mapped.image].v8);
         if carries_v8 {
             let generated: Vec<std::ops::Range<u64>> = held
                 .iter()
@@ -1176,8 +1172,8 @@ impl Processor {
             .filter(|(_, mapped)| mapped.loaded.window.is_none())
             .filter_map(|(index, mapped)| {
                 let image = &self.images[mapped.image];
-                let info = image.info.as_ref()?;
-                crate::debug_info::v8::is_v8(&info.image).then_some((index, mapped, image, info))
+                let info = image.info.as_ref().filter(|_| image.v8)?;
+                Some((index, mapped, image, info))
             })
             .collect();
         if v8.is_empty() {
@@ -1324,6 +1320,9 @@ impl Processor {
             .module(path, None, digest.to_le_bytes(), code.end - code.start);
         let image = self.images.len();
         self.images.push(Image {
+            v8: info
+                .as_ref()
+                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image)),
             info,
             id,
             module,
