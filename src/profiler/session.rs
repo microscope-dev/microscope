@@ -1604,8 +1604,14 @@ mod tests {
             ring_pages: 32,
             switches: false,
         };
-        let mut command = std::process::Command::new(program);
-        command.arg("1000000");
+        // The reader, which this thread starts, shares the program's CPU,
+        // and the program runs only when nothing else there would: once a
+        // sample wakes the reader, the program waits until it has drained.
+        // A reader on a CPU of its own could be kept off it by a busy
+        // machine for as long as the ring takes to fill.
+        sched_setaffinity(Pid::from_raw(0), &affinity).expect("pin the reader");
+        let mut command = std::process::Command::new("chrt");
+        command.args(["--idle", "0"]).arg(program).arg("1000000");
         let super::perf::Launched { events, exit, .. } = super::perf::launch(
             command,
             &options,
