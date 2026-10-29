@@ -575,13 +575,35 @@ describe("a zone's flags", () => {
 });
 
 describe("a zone's thread", () => {
-  it("is named by its row's thread, or by the row when it has no name", () => {
+  it("is named by its row's thread and its id, so workers of one name differ", () => {
     const threads = [
-      { row: 0, pid: 1, tid: 1, name: "main", samples: 0, weight: 0, blocked: 0, preempted: 0 },
-      { row: 1, pid: 1, tid: 2, name: null, samples: 0, weight: 0, blocked: 0, preempted: 0 },
+      { row: 0, pid: 40, tid: 40, name: "main", samples: 0, weight: 0, blocked: 0, preempted: 0 },
+      {
+        row: 1,
+        pid: 40,
+        tid: 47,
+        name: "WorkerThread",
+        samples: 0,
+        weight: 0,
+        blocked: 0,
+        preempted: 0,
+      },
+      {
+        row: 2,
+        pid: 40,
+        tid: 48,
+        name: "WorkerThread",
+        samples: 0,
+        weight: 0,
+        blocked: 0,
+        preempted: 0,
+      },
+      { row: 3, pid: 40, tid: 52, name: null, samples: 0, weight: 0, blocked: 0, preempted: 0 },
     ];
-    expect(threadName(threads, 0)).toBe("main");
-    expect(threadName(threads, 1)).toBe("thread 1");
+    expect(threadName(threads, 0)).toBe("main 40");
+    expect(threadName(threads, 1)).toBe("WorkerThread 47");
+    expect(threadName(threads, 2)).toBe("WorkerThread 48");
+    expect(threadName(threads, 3)).toBe("thread 52");
     expect(threadName(threads, 5)).toBe("thread 5");
   });
 });

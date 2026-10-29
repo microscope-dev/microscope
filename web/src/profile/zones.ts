@@ -101,9 +101,13 @@ export function blockAt(
   return best;
 }
 
-/** A thread's name, by its row. */
+/** A thread's name and id, by its row: a pool's threads share a name. */
 export function threadName(threads: readonly ProfileThread[], row: number): string {
-  return threads.find((each) => each.row === row)?.name ?? `thread ${row}`;
+  const thread = threads.find((each) => each.row === row);
+  if (!thread) {
+    return `thread ${row}`;
+  }
+  return `${thread.name ?? "thread"} ${thread.tid}`;
 }
 
 /** What a zone's flags say was not seen. */
