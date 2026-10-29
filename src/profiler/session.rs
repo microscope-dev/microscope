@@ -7,7 +7,7 @@ use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::budget::{Budget, Controller, Observation, STEPS};
+use super::budget::{Budget, Controller, Observation, STEPS, WARM_UP};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
 use super::interpreted::{Layout, Walked};
@@ -1133,7 +1133,14 @@ impl Pacer {
         events: &perf::Events,
         processor: &mut record::Processor,
     ) -> Duration {
-        if now >= self.period.saturating_add(self.length) {
+        let current = |pacer: &Self| {
+            if pacer.controller.warm() {
+                pacer.length
+            } else {
+                pacer.length / u64::from(WARM_UP)
+            }
+        };
+        if now >= self.period.saturating_add(current(self)) {
             let toggling = Duration::from_nanos(self.toggled.0.saturating_add(self.toggled.1));
             self.length = nanoseconds(self.budget.period_for(toggling));
             self.next_period(now, self.length, processor);
@@ -1157,7 +1164,7 @@ impl Pacer {
             self.paused_since = Some(off);
         }
 
-        let next = [from, until, self.period.saturating_add(self.length)]
+        let next = [from, until, self.period.saturating_add(current(self))]
             .into_iter()
             .find(|edge| *edge > now)
             .unwrap_or(now);

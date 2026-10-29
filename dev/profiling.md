@@ -100,7 +100,9 @@ would exceed its share of one CPU. Keep that feedback deterministic for the
 same observations. What a period spends beyond the budget is owed and paid
 back by sampling less, up to four periods' worth; the first period's cost,
 which includes warming up, is owed too, though its rate is not used to
-choose a share. While sampling is paused, the recorder sleeps rather than
+choose a share. The first period is a quarter of the others
+(`budget::WARM_UP`), so that the controller first judges the cost after
+1.25 s rather than 2 s. While sampling is paused, the recorder sleeps rather than
 polling every ring and does not refresh the BPF engine's thread list, so a
 paused second costs about 1 ms rather than 3. A budget is about microscope's
 own cost, not a claim that the target's total overhead is exactly that
