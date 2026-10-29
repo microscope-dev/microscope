@@ -468,9 +468,13 @@ first 50 ms after the program starts are drained every millisecond for this.
 Processed mappings then replace what was read early. A process that execs
 keeps its pid, so the recorder counts its execs and lays it out again for each new
 program, whose interpreter may be another version. It begins each thread at
-the state a `tid → py_thread` map names, which the recorder refreshes every
-20 ms from the interpreter's thread list (`RuntimeModel::walked_threads`),
-when that state's `native_thread_id` is the thread's id in its namespace
+the state a `tid → py_thread` map names, which the recorder refreshes from the
+interpreter's thread list (`RuntimeModel::walked_threads`) within 20 ms of a
+thread starting or ending or a process mapping a module or exec'ing, again
+every 20 ms while what it reads changes, and otherwise at most once a second
+(`Walker::refresh`): reading every thread's state every 20 ms was a third to
+half of what `prod` spent sampling a Python program. It uses the state the
+map names when that state's `native_thread_id` is the thread's id in its namespace
 (`bpf_get_ns_current_pid_tgid`). Otherwise, as for a thread that started since
 the refresh or a reused thread id, the walker looks through every
 interpreter's states for the one that names the thread (`py_find`). None, more

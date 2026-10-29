@@ -289,6 +289,11 @@ pub struct Processor {
     loading: std::time::Duration,
     collection: std::time::Duration,
 
+    /// How many threads have started, ended, run a new program, or mapped
+    /// a module, which may be an interpreter's, so that what the engine
+    /// was told of them can be told again only then.
+    thread_changes: u64,
+
     /// The time every record up to has been processed.
     processed: u64,
     window: Option<Window>,
@@ -374,6 +379,7 @@ impl Processor {
             setup: None,
             loading: std::time::Duration::ZERO,
             collection: std::time::Duration::ZERO,
+            thread_changes: 0,
             processed: 0,
             window: None,
             segment: None,
@@ -438,6 +444,12 @@ impl Processor {
         // layout read early from them.
         walked.extend(interpreted.early_unknown(|pid| self.processes.contains_key(&pid)));
         walked
+    }
+
+    /// How many threads have started, ended, run a new program, or mapped a
+    /// module so far.
+    pub const fn thread_changes(&self) -> u64 {
+        self.thread_changes
     }
 
     pub const fn builder(&mut self) -> &mut CaptureBuilder {
@@ -770,6 +782,7 @@ impl Processor {
                     // interpreter and compiled code it held.
                     let state = self.processes.entry(pid).or_default();
                     state.execs += 1;
+                    self.thread_changes += 1;
                     state.mapped.clear();
                     state.before_v8.clear();
                     state.jit.exec();
@@ -788,6 +801,7 @@ impl Processor {
                 }
             }
             decode::Record::Fork { pid, ppid, tid, .. } => {
+                self.thread_changes += 1;
                 if tid == pid.leader() && pid != ppid {
                     // A forked process starts with its parent's mappings.
                     let (mapped, before_v8) = self
@@ -828,6 +842,7 @@ impl Processor {
                 // recording could see it, so when is unknown.
             }
             decode::Record::Exit { pid, tid, .. } => {
+                self.thread_changes += 1;
                 self.switched_out.remove(&tid);
                 self.builder.thread_exit(tid, at);
                 if let Some(interpreted) = &mut self.interpreted {
@@ -897,6 +912,7 @@ impl Processor {
             .collect();
         if image.is_some() || replaces_module {
             state.mappings += 1;
+            self.thread_changes += 1;
         }
         state.jit.mapped(
             mmap.start,

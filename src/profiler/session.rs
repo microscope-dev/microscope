@@ -325,14 +325,29 @@ pub fn record_attached(
 /// interpreter's layout before the program runs much Python.
 const EARLY_DRAINS: Duration = Duration::from_millis(50);
 
-/// How often the BPF engine is told each Python process's threads anew,
-/// as they start and end.
+/// How soon the BPF engine is told each Python process's threads anew
+/// once one starts or ends. A thread's state names it only once the thread
+/// runs, so the engine is told again at this pace until what it is told
+/// stops changing.
 const WALK_REFRESH: Duration = Duration::from_millis(20);
+
+/// How long the engine goes untold while no thread starts or ends. What it
+/// is told only spares it a search: a thread it was not told of has its
+/// state found by searching the interpreter's threads. Reading every
+/// thread's state every 20 ms was a third to half of what `prod` spent
+/// sampling a Python program.
+const WALK_RECHECK: Duration = Duration::from_secs(1);
 
 /// The BPF engine for Python stacks, and what it has been told.
 struct Walker {
     sampler: Sampler,
     next: std::time::Instant,
+
+    /// How long until the next telling, and what was told last: the
+    /// processor's count of thread changes, and each process's threads.
+    every: Duration,
+    changes: u64,
+    told: Vec<(u32, u64, Vec<(u32, u64, u64)>)>,
 
     /// The processes whose layout it has, each with the program it ran
     /// then, and those it was told it cannot have.
@@ -362,6 +377,9 @@ impl Walker {
         Ok(Self {
             sampler,
             next: std::time::Instant::now(),
+            every: WALK_REFRESH,
+            changes: 0,
+            told: Vec::new(),
             laid_out: std::collections::BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
             troubled: std::collections::BTreeSet::new(),
@@ -379,12 +397,28 @@ impl Walker {
         }
 
         let now = std::time::Instant::now();
+        let changes = processor.thread_changes();
+        if changes != self.changes {
+            self.changes = changes;
+            self.every = WALK_REFRESH;
+            self.next = self.next.min(now + WALK_REFRESH);
+        }
         if now < self.next {
             return;
         }
 
-        self.next = now + WALK_REFRESH;
         let walked = processor.walked();
+        let told: Vec<_> = walked
+            .iter()
+            .map(|walked| (walked.pid, walked.program, walked.threads.clone()))
+            .collect();
+        self.every = if told == self.told {
+            (self.every * 2).min(WALK_RECHECK)
+        } else {
+            WALK_REFRESH
+        };
+        self.told = told;
+        self.next = now + self.every;
         let sampler = &mut self.sampler;
         // A process gone, or one that exec'd since it was laid out, has a
         // layout that no longer fits it.
