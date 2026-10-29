@@ -148,7 +148,9 @@ fn expected(stack: &SampledStack) -> Vec<&'static str> {
 #[test]
 fn a_function_breakpoint_records_its_exact_callers_in_every_build() {
     for (variant, frame_pointers) in VARIANTS {
-        for copy in [DEEP_STACK_COPY, SMALL_STACK_COPY] {
+        // A copy too small for call-frame information to reach a thread's
+        // start leaves the kernel's chain to carry the stack to it.
+        for copy in [DEEP_STACK_COPY, SMALL_STACK_COPY, 64] {
             let options = RecordOptions {
                 stack: StackCopy::Bytes(copy),
                 ..calls_of("leaf")

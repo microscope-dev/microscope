@@ -61,16 +61,19 @@ pub enum FramePointerRule {
 }
 
 /// Decides a [`FramePointerRule`] by unwinding with registers and memory
-/// made up for the test: only rbp is known, and every word of memory holds
-/// a value its address names. The frame keeps the chain exactly when its
-/// rules find the frame from rbp, its caller's rbp in the word rbp points
-/// to, and its return address in the next.
+/// made up for the test: rbp and rsp are far apart, and every word of
+/// memory holds a value its address names. The frame keeps the chain
+/// exactly when its rules find the frame from rbp, its caller's rbp in the
+/// word rbp points to, and its return address in the next. A frame found
+/// from rsp does not keep it, and one whose rules leave no return address,
+/// as at the start of a thread glibc's `clone3` made, has no caller.
 pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
     unwind: &U,
     address: ImageAddress,
 ) -> FramePointerRule {
-    /// A frame pointer no real frame has.
+    /// A frame pointer and a stack pointer no real frame has.
     const FRAME: u64 = 0x4000_0000_0000_0000;
+    const STACK: u64 = 0x2000_0000_0000_0000;
 
     struct Named;
 
@@ -80,7 +83,7 @@ pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
         }
     }
 
-    let registers = RegisterFile::new([(RBP, FRAME)]);
+    let registers = RegisterFile::new([(RBP, FRAME), (RSP, STACK)]);
     match unwind.unwind(address, &registers, &mut Named) {
         Ok(step) => match step.registers.get(RETURN_ADDRESS) {
             None => FramePointerRule::Outermost,
