@@ -1619,7 +1619,12 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
     snapshots(profile, out)?;
 
     if profile.setting("off-CPU") == Some("on") {
-        let threads = profile.threads();
+        // The thread microscope's Python SDK starts waits on microscope,
+        // not on what the program does.
+        let (sdk, threads): (Vec<_>, Vec<_>) = profile
+            .threads()
+            .into_iter()
+            .partition(|thread| thread.name.as_deref() == Some(SDK_THREAD));
         let blocked = threads.iter().map(|thread| thread.blocked).sum::<u64>();
         let preempted = threads.iter().map(|thread| thread.preempted).sum::<u64>();
         let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
@@ -1631,10 +1636,24 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
             seconds(blocked),
             seconds(preempted)
         )?;
+        let waited = sdk
+            .iter()
+            .map(|thread| thread.blocked + thread.preempted)
+            .sum::<u64>();
+        if waited > 0 {
+            writeln!(
+                out,
+                "microscope's SDK thread was off its CPU for {} more, waiting to restart traced calls.",
+                seconds(waited)
+            )?;
+        }
     }
 
     instrumentation(profile, limit, out)
 }
+
+/// The name microscope's Python SDK gives the thread `trace_calls` starts.
+const SDK_THREAD: &str = "microscope-sdk";
 
 /// What the program's instrumentation recorded, and the labels the
 /// recorder gave its threads from their runtimes.

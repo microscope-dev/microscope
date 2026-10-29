@@ -289,8 +289,10 @@ class _Tracer:
         self.sites = {}
         self.codes = []
         # Where in `states` lie the state bytes of traced sites that were off
-        # where their events were disabled.
+        # where their events were disabled, and what wakes the thread that
+        # watches them.
         self.waiting = []
+        self.ready = threading.Event()
         # Every run-time site's record, whose state bytes the callbacks read.
         records = ctypes.c_ubyte * (_RUNTIME_SITES * _RUNTIME_SITE)
         self.states = memoryview(records.from_address(_library.microscope_probes_sites())).cast('B')
@@ -315,6 +317,7 @@ class _Tracer:
         """The callbacks, which run at every call and return of traced code,
         and so read only what they close over."""
         get, entry, waiting, states = self.sites.get, self.entry, self.waiting, self.states
+        ready = self.ready.set
         disable = self.monitoring.DISABLE
         begin_call = _library.microscope_probes_call_begin
         end_call = _library.microscope_probes_call_end
@@ -327,6 +330,7 @@ class _Tracer:
                 begin_call(index)
                 return None
             waiting.append(state)
+            ready()
             return disable
 
         def end(code, offset, value):
@@ -337,6 +341,7 @@ class _Tracer:
                 end_call(index)
                 return None
             waiting.append(state)
+            ready()
             return disable
 
         # A generator thrown into resumes, and a frame an exception leaves
@@ -377,16 +382,41 @@ class _Tracer:
         return found
 
     def watch(self):
-        """Checks every 20 ms whether a site whose events were disabled
-        while it was off is on, and restarts them if so."""
-        waiting, states = self.waiting, self.states
+        """Restarts the events of sites disabled while they were off, once
+        one is on. The thread sleeps until a site is disabled, then checks
+        every 20 ms while microscope listens and every second while it does
+        not, so a program nobody records wakes it once a second at most,
+        and one whose sites are all on never does."""
+        waiting, states, ready = self.waiting, self.states, self.ready
         restart = self.monitoring.restart_events
+        listening = _library.microscope_probes_listening
 
         def check():
+            _name_thread()
             while True:
-                time.sleep(0.02)
-                if waiting and any(map(states.__getitem__, waiting)):
+                if not waiting:
+                    # Cleared only after waking: `waiting` is checked again,
+                    # so a site disabled meanwhile is not missed.
+                    ready.wait()
+                    ready.clear()
+                    continue
+                time.sleep(0.02 if listening() else 1.0)
+                if any(map(states.__getitem__, waiting)):
                     waiting.clear()
                     restart()
 
-        threading.Thread(target=check, name='microscope trace_calls', daemon=True).start()
+        threading.Thread(target=check, name=_THREAD_NAME, daemon=True).start()
+
+
+# The name of the SDK's own thread, which microscope's report counts apart
+# from the program's.
+_THREAD_NAME = 'microscope-sdk'
+
+
+def _name_thread():
+    """Names the calling thread for the kernel, which Python does itself
+    only from 3.14."""
+    try:
+        ctypes.CDLL(None).prctl(15, _THREAD_NAME.encode(), 0, 0, 0)
+    except (AttributeError, OSError):
+        pass

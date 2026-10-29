@@ -725,7 +725,12 @@ byte from a memoryview of the sites' records. `microscope_probes_call_begin`
 and `_end` keep each thread's begun calls in the SDK, so the package keeps no
 stack of its own and an end of a call that began before its site was on
 ends nothing. A callback whose site is off returns `DISABLE`, and the
-package's thread restarts the events once a site it disabled is on. Before
+package's thread, `microscope-sdk`, restarts the events once a site it
+disabled is on. It sleeps until a callback disables something, then checks
+every 20 ms while microscope listens and every second while it does not:
+polling every 20 ms woke a program nobody recorded 50 times a second, and
+showed in a recording as seconds of blocked time. `report` counts that
+thread's time off its CPU apart from the program's. Before
 this, 2 million calls of a leaf took 1.25 s traced and unrecorded, against
 0.06 s untraced, and 2.5 s recorded with 3 million of 4 million records
 overwritten in the 64 KiB ring; now they take 0.06 s and 1.2 s, and a ring of

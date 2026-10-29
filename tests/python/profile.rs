@@ -616,6 +616,21 @@ for _ in range(1000):
     traced()
 assert calls > 2000, calls
 
+# With every site it disabled restarted, the SDK's thread sleeps.
+import os
+def wakes():
+    for task in os.listdir('/proc/self/task'):
+        with open(f'/proc/self/task/{task}/comm') as comm:
+            if comm.read().strip() != 'microscope-sdk':
+                continue
+        with open(f'/proc/self/task/{task}/status') as status:
+            return next(int(line.split()[1]) for line in status
+                        if line.startswith('voluntary_ctxt_switches'))
+    raise AssertionError('no thread is named microscope-sdk')
+before = wakes()
+time.sleep(0.2)
+assert wakes() == before, (before, wakes())
+
 microscope._traced.states[state] = 0
 traced()
 off = calls
@@ -639,6 +654,76 @@ print('TRACE CALLS OK')
         output.status.success() && printed.contains("TRACE CALLS OK"),
         "{printed}{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The thread `trace_calls` starts waits for sites to restart, not for
+/// the program: the report counts its time off the CPU apart, so a program
+/// that only computes is off its CPU for almost none.
+#[test]
+fn the_sdk_threads_waiting_is_counted_apart() {
+    let scratch = crate::support::ScratchDir::new("python-sdk-thread");
+    let output = scratch.path().join("sdk.usprof");
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+    let script = r"
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import microscope
+microscope.trace_calls('__main__')
+end = time.monotonic() + 0.4
+while time.monotonic() < end:
+    pass
+";
+    let microscope = |args: &[&std::ffi::OsStr]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_microscope"))
+            .args(args)
+            .env(
+                "MICROSCOPE_PROBES_LIBRARY",
+                crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
+            )
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let interpreter = python::interpreter("3.14");
+    microscope(&[
+        "record".as_ref(),
+        "--off-cpu".as_ref(),
+        "on".as_ref(),
+        "-o".as_ref(),
+        output.as_os_str(),
+        "--".as_ref(),
+        interpreter.as_os_str(),
+        "-I".as_ref(),
+        "-B".as_ref(),
+        "-c".as_ref(),
+        script.as_ref(),
+        sdk.as_os_str(),
+    ]);
+    let report = microscope(&["report".as_ref(), output.as_os_str()]);
+
+    // The program may be preempted, on a busy machine, but never blocks.
+    let seconds = |prefix: &str| {
+        report
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|seconds| seconds.parse::<f64>().ok())
+            .unwrap_or_else(|| panic!("no {prefix:?} in {report}"))
+    };
+    let blocked = report
+        .lines()
+        .find(|line| line.starts_with("Threads were off their CPUs for "))
+        .and_then(|line| line.split(": ").nth(1))
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|seconds| seconds.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no time off the CPU in {report}"));
+    assert!(blocked < 0.1, "{report}");
+    assert!(
+        seconds("microscope's SDK thread was off its CPU for ") > 0.3,
+        "{report}"
     );
 }
 
