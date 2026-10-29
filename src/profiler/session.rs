@@ -1498,6 +1498,126 @@ fn cut(
 mod tests {
     use std::time::Duration;
 
+    /// Processing may be busy loading debug information longer than a
+    /// small ring holds calls. Collection must keep draining meanwhile.
+    #[test]
+    fn breakpoint_samples_are_read_while_processing_is_busy() {
+        use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
+        use nix::unistd::Pid;
+
+        let allowed = sched_getaffinity(Pid::from_raw(0)).expect("read allowed CPUs");
+        let cpu = (0..CpuSet::count())
+            .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
+            .expect("an allowed CPU");
+        let mut affinity = CpuSet::new();
+        affinity.set(cpu).expect("select one CPU");
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-stacks-gcc-o0");
+        let (source, _) = super::perf_source(
+            &program,
+            &super::SampleSource::Function {
+                symbol: "leaf".into(),
+            },
+            None,
+            1,
+        )
+        .expect("find leaf");
+        let options = super::perf::EventOptions {
+            source,
+            stack_bytes: 32768,
+            kernel: false,
+            ring_pages: 32,
+            switches: false,
+        };
+        let mut command = std::process::Command::new(program);
+        command.arg("1000000");
+        let super::perf::Launched { events, exit, .. } = super::perf::launch(
+            command,
+            &options,
+            super::perf::LaunchOptions {
+                no_address_randomization: true,
+            },
+            // Both threads must write the same ring, whose 128 KiB
+            // holds only three 32 KiB samples, not all six calls.
+            |pid, _| {
+                sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .expect("launch the program");
+        let status = events
+            .read_while(|| exit.join())
+            .expect("the waiter ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+        let counts = events.counts();
+        assert_eq!(counts.counted, 6, "every call is counted: {counts:?}");
+        assert_eq!(counts.lost_samples, 0, "{counts:?}");
+        assert_eq!(events.behind(Some(super::monotonic())), []);
+
+        let mut records = Vec::new();
+        events.drain(&mut records);
+        let mut remaining = records.as_slice();
+        let mut samples = 0;
+        while let Some(record) = super::perf::decode::next(remaining) {
+            let (record, bytes) = record.expect("a whole perf record");
+            if matches!(record, super::perf::decode::Record::Sample(_)) {
+                samples += 1;
+            }
+            remaining = &remaining[bytes..];
+        }
+        assert!(remaining.is_empty(), "no partial record remains");
+        assert_eq!(samples, 6, "every counted call has its sample");
+    }
+
+    /// A full collection queue must not turn breakpoint counting off:
+    /// samples may be lost, but the number of calls must remain exact.
+    #[test]
+    fn a_full_breakpoint_queue_keeps_counting_calls() {
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-calls");
+        let (source, _) = super::perf_source(
+            &program,
+            &super::SampleSource::Function {
+                symbol: "hot".into(),
+            },
+            None,
+            1,
+        )
+        .expect("find hot");
+        let options = super::perf::EventOptions {
+            source,
+            stack_bytes: 32768,
+            kernel: false,
+            ring_pages: 128,
+            switches: false,
+        };
+        let mut command = std::process::Command::new(program);
+        command.arg("20000");
+        let super::perf::Launched { events, exit, .. } = super::perf::launch(
+            command,
+            &options,
+            super::perf::LaunchOptions {
+                no_address_randomization: true,
+            },
+            |_, _| Ok(()),
+        )
+        .expect("launch the program");
+        let status = events
+            .read_while(|| exit.join())
+            .expect("the waiter ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+        let counts = events.counts();
+        assert_eq!(counts.counted, 20000, "{counts:?}");
+        assert!(counts.lost_samples > 0, "the queue overflows: {counts:?}");
+        assert_eq!(events.behind(Some(super::monotonic())), []);
+        let mut records = Vec::new();
+        events.drain(&mut records);
+        assert!(records.len() > 64 * 1024 * 1024, "the queue filled");
+        assert!(records.len() < 128 * 1024 * 1024, "collection is bounded");
+    }
+
     /// A live read says reads ran less often than asked once the next was
     /// due before it ended, whether it took long or began late, as on a
     /// machine too busy to wake the recorder in time.

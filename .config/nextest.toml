@@ -31,12 +31,12 @@ filter = 'binary(profiler_kernel) | (test(/(^|::)bpf::/) & (binary(node) | (bina
 test-group = 'bpf-profiles'
 
 [[profile.default.overrides]]
-filter = 'test(/(^|::)bpf::/) | binary(profiler) | (binary(microscope) & test(/^backend::linux::perf::tests::/))'
+filter = 'test(/(^|::)bpf::/) | binary(profiler) | (binary(microscope) & test(/^backend::linux::perf::tests::|^profiler::session::tests::.*breakpoint/))'
 test-group = 'perf-rings'
 
-# The maximum-rate loss bound measures collection, not competing test workers.
+# Loss bounds measure collection, not competing test workers.
 [[profile.default.overrides]]
-filter = 'binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)'
+filter = '(binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_(reader_that_falls_behind|low_rate_is_read)/))'
 threads-required = 'num-test-threads'
 
 # Node's profile and syscall tests record a program that spins two threads,

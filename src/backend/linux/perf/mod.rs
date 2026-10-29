@@ -103,6 +103,10 @@ pub struct Events {
     /// and unwinding.
     buffered: Option<Mutex<Vec<u8>>>,
 
+    /// Clock sampling can pause at the queue limit. Breakpoint counters
+    /// must stay on, even when their sample records cannot all be kept.
+    pause_on_full: bool,
+
     /// How long the reader sleeps when no ring wakes it.
     reader_wait: Duration,
     reader_cpu: AtomicU64,
@@ -222,6 +226,7 @@ impl Events {
             rings,
             pages,
             buffered: collection_buffer(options),
+            pause_on_full: matches!(options.source, Source::Clock { .. }),
             reader_wait: reader_wait(options),
             reader_cpu: AtomicU64::new(0),
             cpus,
@@ -315,6 +320,7 @@ impl Events {
                                 rings,
                                 pages,
                                 buffered: collection_buffer(options),
+                                pause_on_full: matches!(options.source, Source::Clock { .. }),
                                 reader_wait: reader_wait(options),
                                 reader_cpu: AtomicU64::new(0),
                                 cpus: cpus.to_vec(),
@@ -467,11 +473,13 @@ impl Events {
         out.len() - before
     }
 
-    /// Drains the rings of a clock's samples while `work` processes previous records.
-    /// Once the queue holds [`QUEUE_BYTES`], sampling is off until
+    /// Drains sampled records while `work` processes previous records.
+    /// Once the queue holds [`QUEUE_BYTES`], clock sampling is off until
     /// processing takes it, so that the kernel need not drop samples for
     /// want of room. The rings are still drained meanwhile, of the samples
     /// in flight and the sideband's records. [`Self::behind`] says when.
+    /// Breakpoints keep counting instead: collection waits for room in the
+    /// queue, and the kernel counts any samples the rings cannot hold.
     pub fn read_while<R>(&self, work: impl FnOnce() -> R) -> R {
         let Some(buffer) = &self.buffered else {
             return work();
@@ -485,6 +493,13 @@ impl Events {
                     let mut buffer = buffer
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if !self.pause_on_full && buffer.len() >= QUEUE_BYTES {
+                        drop(buffer);
+                        // A full ring is readable at once, so polling it
+                        // here would spin until processing takes the queue.
+                        std::thread::sleep(self.reader_wait);
+                        continue;
+                    }
                     if (buffer.len() >= QUEUE_BYTES) != behind {
                         behind = !behind;
                         self.fall_behind(behind);
@@ -626,13 +641,11 @@ impl Drop for StopReader<'_> {
     }
 }
 
-/// A clock's samples are read apart from processing at every rate: a low
+/// Samples are read apart from processing at every rate: a low
 /// rate fills a ring slowly, but processing that loads a program's debug
 /// information or its code can be busy for longer than a ring lasts.
-/// Breakpoint counts are not, since turning their sampling off would lose
-/// counts.
 fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
-    matches!(options.source, Source::Clock { .. })
+    (!matches!(options.source, Source::Mappings))
         .then(|| Mutex::new(Vec::with_capacity(QUEUE_ROOM)))
 }
 
