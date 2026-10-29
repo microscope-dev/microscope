@@ -107,8 +107,13 @@ pub struct Events {
     /// must stay on, even when their sample records cannot all be kept.
     pause_on_full: bool,
 
-    /// How much the queue holds before it is full: [`QUEUE_BYTES`].
+    /// How much the reader holds for processing before it turns sampling
+    /// off: [`QUEUE_BYTES`] but in tests.
     queue_bytes: usize,
+
+    /// Samples the reader kept only the top of the stack copy of, while
+    /// processing was behind.
+    shortened: AtomicU64,
 
     /// How long the reader sleeps when no ring wakes it.
     reader_wait: Duration,
@@ -134,6 +139,11 @@ pub struct Events {
 /// The reader holds at most this much for processing before it
 /// turns sampling off until processing takes it.
 const QUEUE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The bytes of stack the reader keeps of each sample once its queue is
+/// three quarters full: as much as recording copies where the kernel's
+/// frame-pointer chain carries a stack on.
+const SHORT_STACK_BYTES: usize = 512;
 
 /// The room each of the reader's buffers has: the queue, what the rings
 /// held when sampling went off, and the sideband's records until
@@ -169,6 +179,10 @@ pub struct Counts {
 
     /// Times a ring's head could not be trusted.
     pub untrusted: u64,
+
+    /// Samples kept with only the top of their stack copy while processing
+    /// was behind.
+    pub shortened: u64,
 }
 
 /// The fields of each record a BPF program writes through an [`Output`],
@@ -231,6 +245,7 @@ impl Events {
             buffered: collection_buffer(options),
             pause_on_full: matches!(options.source, Source::Clock { .. }),
             queue_bytes: QUEUE_BYTES,
+            shortened: AtomicU64::new(0),
             reader_wait: reader_wait(options),
             reader_cpu: AtomicU64::new(0),
             cpus,
@@ -326,6 +341,7 @@ impl Events {
                                 buffered: collection_buffer(options),
                                 pause_on_full: matches!(options.source, Source::Clock { .. }),
                                 queue_bytes: QUEUE_BYTES,
+                                shortened: AtomicU64::new(0),
                                 reader_wait: reader_wait(options),
                                 reader_cpu: AtomicU64::new(0),
                                 cpus: cpus.to_vec(),
@@ -479,7 +495,11 @@ impl Events {
     }
 
     /// Drains sampled records while `work` processes previous records.
-    /// Once the queue holds [`QUEUE_BYTES`], clock sampling is off until
+    /// Once the queue is three quarters full, so that sampling would soon
+    /// stop, each clock sample keeps only the
+    /// top [`SHORT_STACK_BYTES`] of its stack copy, and the kernel's
+    /// frame-pointer chain carries its stack on from there. Once the queue
+    /// holds [`QUEUE_BYTES`] even so, clock sampling is off until
     /// processing takes it, so that the kernel need not drop samples for
     /// want of room. The rings are still drained meanwhile, of the samples
     /// in flight and the sideband's records. [`Self::behind`] says when.
@@ -495,6 +515,20 @@ impl Events {
             let reader = scope.spawn(|| {
                 let began = sys::thread_cpu();
                 let mut behind = false;
+                // The sampling events, whose samples a busy queue keeps only
+                // the top of the stack of. Breakpoint samples omit their
+                // period, and are kept whole.
+                let sampling: Vec<u64> = if self.pause_on_full {
+                    self.rings
+                        .iter()
+                        .map(sys::Ring::fd)
+                        .chain(&self.followers)
+                        .filter_map(|fd| sys::id(fd).ok())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let mut drained = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
                     let mut buffer = buffer
                         .lock()
@@ -510,8 +544,24 @@ impl Events {
                         behind = !behind;
                         self.fall_behind(behind);
                     }
-                    for ring in &self.rings {
-                        ring.drain(&mut buffer);
+                    if sampling.is_empty() || buffer.len() < self.queue_bytes / 4 * 3 {
+                        for ring in &self.rings {
+                            ring.drain(&mut buffer);
+                        }
+                    } else {
+                        // Processing is behind, so a sample keeps only the
+                        // top of its stack, rather than sampling stop.
+                        for ring in &self.rings {
+                            drained.clear();
+                            ring.drain(&mut drained);
+                            let shortened = decode::shorten_stacks(
+                                &drained,
+                                &sampling,
+                                SHORT_STACK_BYTES,
+                                &mut buffer,
+                            );
+                            self.shortened.fetch_add(shortened, Ordering::Relaxed);
+                        }
                     }
                     drop(buffer);
                     let elapsed = sys::thread_cpu().saturating_sub(began);
@@ -629,6 +679,7 @@ impl Events {
             lost_samples,
             lost_records,
             untrusted: self.untrusted(),
+            shortened: self.shortened.load(Ordering::Relaxed),
         }
     }
 
@@ -1690,29 +1741,66 @@ mod tests {
         );
     }
 
-    /// A reader whose processing never takes what it reads turns sampling
-    /// off once its queue is full, rather than leaving the rings to fill and
-    /// the kernel to drop samples. Eight threads spinning for 750 ms at 1
-    /// kHz, each sample copying 64 KiB of stack, fill the 64 MiB queue in
-    /// about 125 ms of their CPU time.
+    /// A reader whose processing never takes what it reads keeps sampling
+    /// on, and once its queue is three quarters full keeps only the top of each
+    /// sample's stack copy, where the chain the kernel walked begins: so a
+    /// recorder busy loading a large program's debug information misses
+    /// none of what it runs meanwhile. Eight threads spinning for 750 ms
+    /// at 1 kHz, each sample copying 64 KiB of stack, would fill the 64 MiB
+    /// queue in about 125 ms of their CPU time.
     #[test]
-    fn a_reader_that_falls_behind_pauses_sampling_instead_of_losing_samples() {
-        let options = EventOptions {
-            source: Source::Clock {
-                period: Duration::from_millis(1),
-            },
-            stack_bytes: 65528,
-            kernel: false,
-            ring_pages: 128,
-            switches: false,
-        };
-        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("build/test-programs/profile-switches");
-        let mut command = Command::new(program);
-        command.args(["0", "750", "8"]);
-        let Launched { events, exit, .. } =
-            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
-                .expect("launch the program");
+    fn a_reader_that_falls_behind_shortens_stacks_instead_of_pausing_sampling() {
+        let (events, exit) = spin_with_deep_copies();
+        let status = events
+            .read_while(|| exit.join())
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+
+        let counts = events.counts();
+        assert_eq!(
+            (counts.lost_samples, counts.lost_records),
+            (0, 0),
+            "{counts:?}"
+        );
+        assert_eq!(events.behind(Some(sys::monotonic())), []);
+        assert!(counts.shortened > 1000, "{counts:?}");
+
+        let mut records = Vec::new();
+        events.drain(&mut records);
+        let (mut long, mut short) = (0, 0);
+        let mut rest = records.as_slice();
+        while let Some(Ok((record, length))) = decode::next(rest) {
+            rest = &rest[length..];
+            if let decode::Record::Sample(sample) = record {
+                // The kernel copies less than asked where the record would
+                // outgrow its size field, but never as little as is kept.
+                if sample.stack_asked > SHORT_STACK_BYTES as u64 {
+                    long += 1;
+                } else {
+                    assert_eq!(sample.stack_asked, SHORT_STACK_BYTES as u64);
+                    assert!(
+                        sample.user_chain().next().is_some(),
+                        "a sample lost its chain"
+                    );
+                    short += 1;
+                }
+            }
+        }
+        assert_eq!(short, counts.shortened);
+        assert!(
+            long > 0 && long * 65528 < QUEUE_BYTES as u64,
+            "{long} long samples"
+        );
+    }
+
+    /// A reader still behind once even shortened samples fill its queue
+    /// turns sampling off, rather than leaving the rings to fill and the
+    /// kernel to drop samples.
+    #[test]
+    fn a_reader_far_behind_pauses_sampling_instead_of_losing_samples() {
+        let (mut events, exit) = spin_with_deep_copies();
+        events.queue_bytes = 4 * 1024 * 1024;
         let (status, exited) = events.read_while(|| (exit.join(), sys::monotonic()));
         let status = status
             .expect("the launch thread ends")
@@ -1734,6 +1822,28 @@ mod tests {
             "{spans:?}, though the program exited at {exited} and the test ended at {end}"
         );
         assert_eq!(events.behind(Some(end)), []);
+    }
+
+    /// Eight threads spinning for 750 ms, sampled at 1 kHz with 64 KiB of
+    /// stack.
+    fn spin_with_deep_copies() -> (Events, JoinHandle<std::io::Result<ExitStatus>>) {
+        let options = EventOptions {
+            source: Source::Clock {
+                period: Duration::from_millis(1),
+            },
+            stack_bytes: 65528,
+            kernel: false,
+            ring_pages: 128,
+            switches: false,
+        };
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-switches");
+        let mut command = Command::new(program);
+        command.args(["0", "750", "8"]);
+        let Launched { events, exit, .. } =
+            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
+                .expect("launch the program");
+        (events, exit)
     }
 
     /// A budget pauses sampling alone: what the program starts meanwhile is

@@ -863,9 +863,17 @@ fn report_losses(profile: &Profile) {
     reason = "seconds and percentages need no more precision than f64's"
 )]
 fn behind(profile: &Profile) -> Option<String> {
+    let shortened = profile.shortened_stacks();
+    let short = (shortened > 0).then(|| {
+        format!(
+            "{} kept only the top of their stack copy while microscope caught up on the \
+             samples it had read, so where the program kept no frame pointers they end sooner",
+            plural(shortened, "sample")
+        )
+    });
     let gaps = profile.paused(GapReason::Behind);
     if gaps.is_empty() {
-        return None;
+        return short;
     }
 
     let (start, end) = profile.span();
@@ -874,7 +882,7 @@ fn behind(profile: &Profile) -> Option<String> {
         .iter()
         .map(|(start, end)| u64::try_from(end - start).unwrap_or(0))
         .sum();
-    Some(format!(
+    let off = format!(
         "sampling was off for {:.3} s of the {:.3} s recorded ({:.0}%), {}, while microscope \
          caught up on the samples it had read; a lower --rate or --stack-bytes keeps more",
         off as f64 / 1e9,
@@ -884,7 +892,11 @@ fn behind(profile: &Profile) -> Option<String> {
             1 => "once".to_owned(),
             times => format!("{times} times"),
         }
-    ))
+    );
+    Some(match short {
+        Some(short) => format!("{short}; {off}"),
+        None => off,
+    })
 }
 
 /// Hands the profile written to `path` to the agent, and prints its link

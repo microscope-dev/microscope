@@ -572,11 +572,13 @@ impl Processor {
             lost_samples,
             lost_records,
             untrusted,
+            shortened,
         } = counts;
         for (kind, total) in [
             (AccountKind::Counted, counted),
             (AccountKind::LostSamples, lost_samples),
             (AccountKind::LostRecords, lost_records),
+            (AccountKind::ShortenedStacks, shortened),
         ] {
             let had = self.builder.account(kind as u32);
             self.builder.count(kind as u32, total.saturating_sub(had));

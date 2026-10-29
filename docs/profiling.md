@@ -74,8 +74,14 @@ the program ran. Only the latter is a share of a CPU and is compared with
 is too short to judge either cost or coverage, and the report says so.
 
 Recordings drain rings separately from unwinding, at every rate. That queue is
-bounded: when processing falls behind far enough to fill it, clock sampling stops
-until processing catches up, rather than letting the kernel drop samples. The
+bounded. Once processing falls three quarters of it behind, as while
+microscope loads a large program's debug information, each clock sample keeps
+only the
+top 512 bytes of its stack copy; the kernel's frame-pointer chain carries the
+stack on from there, so a program without frame pointers gets shorter stacks
+meanwhile, and the record and the report count those samples. If processing
+falls behind far enough to fill the queue even so, clock sampling stops until
+processing catches up, rather than letting the kernel drop samples. The
 record and the report say how long sampling was off, and the browser shades
 those spans; a lower `--rate` or `--stack-bytes` keeps more. Function counters
 stay on even when the queue fills, so calls are still counted; the kernel

@@ -461,6 +461,74 @@ fn decode_sample(body: &[u8], kernel: bool, period: Option<u64>) -> Result<Sampl
     })
 }
 
+/// Copies the records of `bytes` to `out`, each sample of the usual layout
+/// that an event whose identifier is in `sampling` wrote keeping at most
+/// `keep` bytes of its stack copy, a multiple of 8, and returns how many
+/// samples it shortened. A record that cannot be decoded is copied as it
+/// is, with all that follows it.
+pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec<u8>) -> u64 {
+    let mut shortened = 0;
+    let mut rest = bytes;
+    while let Some(header) = rest.first_chunk::<8>() {
+        let size = usize::from(u16::from_le_bytes([header[6], header[7]]));
+        let Some(record) = rest.get(..size).filter(|_| size >= 8) else {
+            break;
+        };
+
+        rest = &rest[size..];
+        let kind = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+        let short = (kind == RECORD_SAMPLE)
+            .then(|| short_sample(record, sampling, keep))
+            .flatten();
+        if let Some((stack, end)) = short {
+            // The stack's size, `keep` bytes of it, and how many of those
+            // the kernel filled.
+            let used = field(record, end - 8).map_or(0, u64::from_le_bytes);
+            let length = stack + 8 + keep + 8 + (record.len() - end);
+            let Ok(length) = u16::try_from(length) else {
+                out.extend_from_slice(record);
+                continue;
+            };
+            out.extend_from_slice(&header[..6]);
+            out.extend_from_slice(&length.to_le_bytes());
+            out.extend_from_slice(&record[8..stack]);
+            out.extend_from_slice(&(keep as u64).to_le_bytes());
+            out.extend_from_slice(&record[stack + 8..stack + 8 + keep]);
+            out.extend_from_slice(&used.min(keep as u64).to_le_bytes());
+            out.extend_from_slice(&record[end..]);
+            shortened += 1;
+        } else {
+            out.extend_from_slice(record);
+        }
+    }
+
+    out.extend_from_slice(rest);
+    shortened
+}
+
+/// Where the stack copy of `record`, a whole sample record, begins, at its
+/// size, and where it ends, after how much of it the kernel filled, if an
+/// event in `sampling` wrote it and it copied more than `keep` bytes.
+fn short_sample(record: &[u8], sampling: &[u64], keep: usize) -> Option<(usize, usize)> {
+    let word = |at: usize| field(record, at).ok().map(u64::from_le_bytes);
+    if !sampling.contains(&word(8)?) {
+        return None;
+    }
+
+    // The header, then identifier, pid and tid, time, cpu, and period.
+    let chain: usize = 8 + 8 * 5;
+    let abi = chain.checked_add(8 + 8 * usize::try_from(word(chain)?).ok()?)?;
+    let registers = if word(abi)? == 0 {
+        0
+    } else {
+        8 * REGISTERS.count_ones() as usize
+    };
+    let stack = abi + 8 + registers;
+    let size = usize::try_from(word(stack)?).ok()?;
+    let end = stack.checked_add(8 + size + 8)?;
+    (size > keep && end <= record.len()).then_some((stack, end))
+}
+
 /// A record an output event wrote: [`super::OUTPUT_SAMPLE_TYPE`]'s fields.
 fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
     let mut fields = Fields { bytes: body };
@@ -524,6 +592,81 @@ mod tests {
             sample.user_chain().collect::<Vec<_>>(),
             [0x0040_1000, 0x0040_2000]
         );
+    }
+
+    fn decoded(bytes: &[u8]) -> (Sample<'_>, usize) {
+        let Some(Ok((Record::Sample(sample), length))) = next(bytes) else {
+            panic!("a sample");
+        };
+        (sample, length)
+    }
+
+    /// A shortened sample keeps every field but the end of its stack copy,
+    /// and how much of the copy the kernel filled shrinks with it. Records
+    /// of other events, and samples that copied no more, are left alone.
+    #[test]
+    fn shortening_a_sample_keeps_all_but_the_end_of_its_stack() {
+        let sample = |stack: &[u8], used: u64| {
+            let mut rest = Vec::new();
+            // The period, a chain of two, and every register.
+            for word in [1_000_000_u64, 2, 0x40_1000, 0x40_2000, 2] {
+                rest.extend_from_slice(&word.to_le_bytes());
+            }
+            for register in 0..u64::from(REGISTERS.count_ones()) {
+                rest.extend_from_slice(&(100 + register).to_le_bytes());
+            }
+            rest.extend_from_slice(&(stack.len() as u64).to_le_bytes());
+            rest.extend_from_slice(stack);
+            rest.extend_from_slice(&used.to_le_bytes());
+            sample_record(1, &rest)
+        };
+        let stack: Vec<u8> = (0..64).collect();
+        let long = sample(&stack, 40);
+        let short = sample(&stack[..16], 16);
+        let other = sample_record(2, b"abcdefgh");
+
+        let mut bytes = long.clone();
+        bytes.extend_from_slice(&short);
+        bytes.extend_from_slice(&other);
+        let mut out = Vec::new();
+        assert_eq!(shorten_stacks(&bytes, &[1], 16, &mut out), 1);
+
+        let (was, _) = decoded(&long);
+        let (now, length) = decoded(&out);
+        assert_eq!(length, long.len() - 48);
+        assert_eq!(now.stack, &stack[..16]);
+        assert_eq!(now.stack_asked, 16);
+        assert_eq!(
+            (
+                now.pid,
+                now.tid,
+                now.time,
+                now.cpu,
+                now.period,
+                now.chain,
+                now.registers
+            ),
+            (
+                was.pid,
+                was.tid,
+                was.time,
+                was.cpu,
+                was.period,
+                was.chain,
+                was.registers
+            )
+        );
+        assert_eq!(&out[length..], [short, other].concat());
+
+        // A copy the kernel filled less of than is kept keeps all it filled.
+        let mut out = Vec::new();
+        shorten_stacks(&sample(&stack, 8), &[1], 16, &mut out);
+        assert_eq!(decoded(&out).0.stack, &stack[..8]);
+
+        // A record cut short is copied as it is.
+        let mut out = Vec::new();
+        assert_eq!(shorten_stacks(&long[..40], &[1], 16, &mut out), 0);
+        assert_eq!(out, &long[..40]);
     }
 
     /// A sample record, as an event of `identifier` writes it: the fields

@@ -601,6 +601,10 @@ pub enum AccountKind {
     /// The part of [`AccountKind::RecorderCpu`] spent before the program
     /// was recorded: opening its events and loading BPF programs.
     RecorderSetup = 29,
+
+    /// Samples whose stack copy microscope cut short while it was behind
+    /// processing, rather than turn sampling off.
+    ShortenedStacks = 32,
 }
 
 /// A count of something the views must show.

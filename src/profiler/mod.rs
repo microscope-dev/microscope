@@ -778,6 +778,14 @@ impl Profile {
             .account(crate::capture::records::AccountKind::LostSamples as u32)
     }
 
+    /// Samples whose stack copy the recorder cut short while it was behind
+    /// processing.
+    #[must_use]
+    pub fn shortened_stacks(&self) -> u64 {
+        self.capture
+            .account(crate::capture::records::AccountKind::ShortenedStacks as u32)
+    }
+
     /// Records other than samples the kernel dropped: of mappings, names,
     /// threads, and context switches.
     #[must_use]
