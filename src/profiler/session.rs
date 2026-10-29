@@ -1037,8 +1037,11 @@ impl Snapshots {
             return;
         }
 
+        // Only sampling pauses: the program runs on until the snapshot
+        // stops it and after it lets go, and a mapping it makes then must
+        // still be recorded, or its module is never found.
         if sampling {
-            events.enable(false);
+            events.sample(false);
         }
 
         let modules = processor.modules_of(Pid::new(self.pid));
@@ -1046,13 +1049,13 @@ impl Snapshots {
         let taken = snapshotter.take(self.reads, &modules);
         let end = monotonic();
 
-        // With the events off, every record from before the pause is in
-        // the rings, and the snapshot claims each sample before it.
+        // With sampling off, every sample from before the pause is in the
+        // rings, and the snapshot claims each sample before it.
         let mut records = Vec::new();
         events.drain(&mut records);
         processor.ingest(&records, Some(start));
         if sampling {
-            events.enable(true);
+            events.sample(true);
         }
 
         self.next = std::time::Instant::now() + self.every;

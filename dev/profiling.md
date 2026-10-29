@@ -259,9 +259,12 @@ CPU samples describe native threads. To present Go goroutines and tokio tasks,
 the recorder can take periodic runtime snapshots.
 
 Stopped snapshots pause the target, read one consistent runtime state, and
-record the pause duration. Live snapshots read without stopping. Every live
-read is subject to change; use runtime consistency checks and omit an unstable
-task rather than combining fields from different states.
+record the pause duration. Only sampling pauses with them: the sideband stays
+on, since the program runs on either side of the stop, and a module it maps
+then would otherwise never be recorded, nor its instrumentation found. Live
+snapshots read without stopping. Every live read is subject to change; use
+runtime consistency checks and omit an unstable task rather than combining
+fields from different states.
 
 A live snapshot never falls back to a stopped one: engines do not switch by
 themselves. It reads every module the recorder has seen the process map,
