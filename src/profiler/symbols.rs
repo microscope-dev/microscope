@@ -27,7 +27,8 @@ pub struct ModuleSymbols {
 }
 
 impl Profile {
-    /// The modules some code frame of which has no lines, by row.
+    /// The modules some code frame of which has no lines, by row. A module
+    /// the kernel maps without a file, as `[vdso]`, has none to look for.
     fn unsymbolized_modules(&self) -> Vec<u32> {
         let capture = &self.capture;
         let mut modules = capture
@@ -43,6 +44,11 @@ impl Profile {
                         .is_none_or(|range| range.count.get() == 0)
             })
             .map(|(_, row)| row.module.get())
+            .filter(|&module| {
+                capture.modules.get(module as usize).is_some_and(|row| {
+                    !capture.string(row.path.get()).starts_with('[')
+                })
+            })
             .collect::<Vec<_>>();
         modules.sort_unstable();
         modules.dedup();
@@ -164,4 +170,37 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A module the kernel maps without a file, as `[vdso]`, has no file
+    /// or build id to find its lines by: it keeps its addresses without a
+    /// word, where a module whose file is gone says why.
+    #[test]
+    fn the_kernels_own_mappings_are_not_looked_for() {
+        let mut builder = CaptureBuilder::new();
+        let thread = builder.thread(crate::model::Pid::new(1), crate::model::Tid::new(1), 0);
+        let frames: Vec<u32> = ["[vdso]", "/gone/basic"]
+            .into_iter()
+            .map(|path| {
+                let module = builder.module(path, None, [0; 16], 4096);
+                builder.frame(FrameKind::Native, module, 0x10, 0)
+            })
+            .collect();
+        let stack = builder.stack(&frames);
+        builder.sample(thread, 0, 1, stack, NONE);
+        let mut profile = Profile {
+            capture: builder.finish(),
+        };
+
+        let found: Vec<_> = profile
+            .symbolize(&crate::DebugFileOptions::default())
+            .into_iter()
+            .map(|module| module.module)
+            .collect();
+        assert_eq!(found, ["/gone/basic"]);
+    }
 }
