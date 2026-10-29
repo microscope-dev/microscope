@@ -1375,7 +1375,7 @@ impl<'a, 'k> Named<'a, 'k> {
         let index = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
         let location = keys.location(key);
         self.keys.push(ProfileKey {
-            name: keys.name(key),
+            name: keys.exact_name(key),
             kind: match keys.kind(key) {
                 KeyKind::Function { .. } => ProfileKeyKind::Function,
                 KeyKind::Line { .. } => ProfileKeyKind::Line,

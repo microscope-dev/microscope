@@ -836,6 +836,44 @@ fn anonymous(places: &[Anonymous<'_>]) -> (Capture, Vec<u32>) {
     (builder.finish(), frames)
 }
 
+/// Functions of one name, as many lint rules' `create` are, each have an
+/// exact name that a focus takes and that picks out that function alone,
+/// while a name no other function has stays as it is. The browser selects
+/// functions by these names, and once could select neither `create`.
+#[test]
+fn functions_that_share_a_name_each_have_an_exact_name() {
+    let mut builder = CaptureBuilder::new();
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let mut function = |name, file, line| {
+        builder.interpreted(&InterpretedPlace {
+            function: name,
+            file: Some(file),
+            line: line + 1,
+            declared: Some((file, line)),
+        })
+    };
+    let lint = function("lint", "/app/linter.js", 10);
+    let first = function("create", "/app/rules/first.js", 3);
+    let second = function("create", "/app/rules/second.js", 7);
+    for (time, frame) in (0..).zip([first, second]) {
+        let stack = builder.stack(&[frame, lint]);
+        builder.sample(thread, time, 1, stack, NONE);
+    }
+    let capture = builder.finish();
+    let keys = Keys::new(&capture, Granularity::Function);
+    let key = |frame: u32| keys.frame(frame)[0];
+
+    assert_eq!(keys.named("create").len(), 2);
+    assert_eq!(keys.exact_name(key(lint)), "lint");
+    for (frame, exact) in [
+        (first, "create [/app/rules/first.js:3]"),
+        (second, "create [/app/rules/second.js:7]"),
+    ] {
+        assert_eq!(keys.exact_name(key(frame)), exact);
+        assert_eq!(keys.named(exact), [key(frame)], "{exact}");
+    }
+}
+
 /// An anonymous JavaScript function is named for where it is declared, as
 /// V8's stack traces show it, so that no row is blank, `--focus` can name
 /// it, and two of them pair in a diff only if declared in one place. A

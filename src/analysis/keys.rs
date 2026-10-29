@@ -88,6 +88,9 @@ pub struct Keys<'a> {
 
     /// Each task's labels, by its row.
     task_labels: Vec<Vec<u32>>,
+
+    /// The names more than one key has, found when first asked.
+    shared: std::sync::OnceLock<std::collections::HashSet<String>>,
 }
 
 /// Adds the keys of `frame`, innermost first, to `flat`, each made by
@@ -266,6 +269,7 @@ impl<'a> Keys<'a> {
             label_roots,
             spans: found.spans,
             task_labels: found.tasks,
+            shared: std::sync::OnceLock::new(),
         }
     }
 
@@ -363,12 +367,52 @@ impl<'a> Keys<'a> {
             .map(index)
     }
 
-    /// Every key a view names `name`.
+    /// Every key a view names `name`, or else the key whose
+    /// [`Self::qualified`] name it is.
     #[must_use]
     pub fn named(&self, name: &str) -> Vec<u32> {
-        (0..index(self.count()))
+        let named: Vec<u32> = (0..index(self.count()))
             .filter(|key| self.name(*key) == name)
+            .collect();
+        if !named.is_empty() {
+            return named;
+        }
+        (0..index(self.count()))
+            .filter(|key| self.qualified(*key) == name)
             .collect()
+    }
+
+    /// A key's name with its module and where it is declared, which tell
+    /// apart keys of one name: `create [/app/rules/a.js:3]`.
+    #[must_use]
+    pub fn qualified(&self, key: u32) -> String {
+        let mut parts = Vec::new();
+        if let Some(module) = self.module(key) {
+            parts.push(module.to_owned());
+        }
+        if let Some((file, line)) = self.location(key) {
+            parts.push(format!("{file}:{line}"));
+        }
+        format!("{} [{}]", self.name(key), parts.join(", "))
+    }
+
+    /// The name that picks out `key` alone, as a focus takes it: its name,
+    /// or its [`Self::qualified`] name where other keys share its name.
+    #[must_use]
+    pub fn exact_name(&self, key: u32) -> String {
+        let shared = self.shared.get_or_init(|| {
+            let mut seen = std::collections::HashSet::new();
+            (0..index(self.count()))
+                .map(|key| self.name(key))
+                .filter(|name| !seen.insert(name.clone()))
+                .collect()
+        });
+        let name = self.name(key);
+        if shared.contains(&name) {
+            self.qualified(key)
+        } else {
+            name
+        }
     }
 
     /// The call tree of the samples `query` selects.

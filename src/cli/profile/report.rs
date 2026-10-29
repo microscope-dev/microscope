@@ -190,12 +190,7 @@ fn compared_tree(
 }
 
 fn resolve(keys: &Keys<'_>, name: &str, base: bool) -> Result<u32> {
-    let mut named = keys.named(name);
-    if named.is_empty() {
-        named = (0..u32::try_from(keys.count()).unwrap_or(NO_KEY))
-            .filter(|&key| qualified(keys, key) == name)
-            .collect();
-    }
+    let named = keys.named(name);
     if named.is_empty() && base {
         return Ok(NO_KEY);
     }
@@ -203,7 +198,7 @@ fn resolve(keys: &Keys<'_>, name: &str, base: bool) -> Result<u32> {
     if named.len() > 1 {
         let candidates = named
             .iter()
-            .map(|&key| format!("  {}", qualified(keys, key)))
+            .map(|&key| format!("  {}", keys.qualified(key)))
             .collect::<Vec<_>>()
             .join("\n");
         anyhow::bail!(
@@ -212,17 +207,6 @@ fn resolve(keys: &Keys<'_>, name: &str, base: bool) -> Result<u32> {
         );
     }
     Ok(named[0])
-}
-
-fn qualified(keys: &Keys<'_>, key: u32) -> String {
-    let mut parts = Vec::new();
-    if let Some(module) = keys.module(key) {
-        parts.push(module.to_owned());
-    }
-    if let Some((file, line)) = keys.location(key) {
-        parts.push(format!("{file}:{line}"));
-    }
-    format!("{} [{}]", keys.name(key), parts.join(", "))
 }
 
 struct Butterfly {
