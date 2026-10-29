@@ -200,13 +200,17 @@ const states = {
  * OPENED returns, and each child is killed.
  */
 function release() {
+  // Read the tasks while workers are still blocked: once released, a
+  // worker can exit between listing its task and reading its children.
+  const children = [];
+  for (const task of fs.readdirSync('/proc/self/task')) {
+    const text = fs.readFileSync(`/proc/self/task/${task}/children`, 'utf8');
+    children.push(...text.split(' ').filter(Boolean));
+  }
   fs.writeSync(fs.openSync(quiet, 'r+'), Buffer.alloc(64));
   fs.closeSync(fs.openSync(opened, 'w'));
-  for (const task of fs.readdirSync('/proc/self/task')) {
-    const children = fs.readFileSync(`/proc/self/task/${task}/children`, 'utf8');
-    for (const child of children.split(' ').filter(Boolean)) {
-      process.kill(Number(child));
-    }
+  for (const child of children) {
+    process.kill(Number(child));
   }
   process.exit(0);
 }

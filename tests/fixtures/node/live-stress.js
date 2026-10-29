@@ -16,9 +16,10 @@
 // the frames say which phase a thread was in. Each thread prints, the first
 // time it blocks at a site in a phase, the frames with
 // truth.blocking('SITE PHASE TID'), on the line that blocks; `phase TID
-// PHASE TIME` as it begins a phase; once it has blocked at every site in
+// PHASE TIME` for when it begins a phase; once it has blocked at every site in
 // every phase, `ready TID TIME`; and as it stops, `done TID TIME`, with
-// TIME process.hrtime.bigint(). Between ready and done, the thread runs only
+// TIME process.hrtime.bigint(). These times are printed after the loop:
+// printing can itself block. Between ready and done, the thread runs only
 // these sites and the code that leads to them.
 // Calls to churn also report their frames once per caller and phase: V8
 // can wait while compiling churn, before churn has a JavaScript frame.
@@ -167,21 +168,23 @@ const phases = [phase0, phase1, phase2, phase3];
 
 function loop(deadline) {
   const start = Date.now();
-  let ready = false;
-  truth.report('phase', tid, phase, process.hrtime.bigint());
+  let ready;
+  const times = [[phase, process.hrtime.bigint()]];
   for (let i = 0; Date.now() < deadline; i++) {
     const now = Math.floor((Date.now() - start) / PHASE_MS) % PHASES;
     if (now !== phase) {
       phase = now;
-      truth.report('phase', tid, phase, process.hrtime.bigint());
+      times.push([phase, process.hrtime.bigint()]);
     }
     phases[phase](i);
-    if (!ready && seen.size === sites.length * PHASES) {
-      ready = true;
-      truth.report('ready', tid, process.hrtime.bigint());
+    if (ready === undefined && seen.size === sites.length * PHASES) {
+      ready = process.hrtime.bigint();
     }
   }
-  truth.report('done', tid, process.hrtime.bigint());
+  const done = process.hrtime.bigint();
+  for (const [phase, time] of times) truth.report('phase', tid, phase, time);
+  if (ready !== undefined) truth.report('ready', tid, ready);
+  truth.report('done', tid, done);
 }
 
 if (threads.isMainThread) {

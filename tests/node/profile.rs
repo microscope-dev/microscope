@@ -157,12 +157,13 @@ pub fn record_released<T>(
 ) -> (Profile, Option<T>, String) {
     let scratch = ScratchDir::new("node-profile");
     let output = scratch.path().join("output");
+    let errors = scratch.path().join("errors");
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     command
         .env_clear()
         .stdin(reader)
         .stdout(std::fs::File::create(&output).expect("the fixture's output"))
-        .stderr(Stdio::null());
+        .stderr(std::fs::File::create(&errors).expect("the fixture's errors"));
 
     let stop = AtomicBool::new(false);
     let mut released = false;
@@ -180,7 +181,8 @@ pub fn record_released<T>(
                 }
                 let waited = started.elapsed();
                 let given_up = waited > READY_DEADLINE
-                    && (profile.task_snapshots().0 >= ENOUGH_SNAPSHOTS
+                    && (profile.task_snapshots().0 + profile.live_snapshots().0
+                        >= ENOUGH_SNAPSHOTS
                         || waited > SNAPSHOT_DEADLINE);
                 // Once released, the program is past what it reported.
                 let ready = !released
@@ -201,8 +203,13 @@ pub fn record_released<T>(
     )
     .expect("record");
 
-    assert!(recording.status.success(), "{}", recording.status);
     let text = std::fs::read_to_string(&output).unwrap_or_default();
+    assert!(
+        recording.status.success(),
+        "{}\n{}\n{text}",
+        recording.status,
+        std::fs::read_to_string(&errors).unwrap_or_default()
+    );
     (recording.profile, reported.or_else(|| report(&text)), text)
 }
 
