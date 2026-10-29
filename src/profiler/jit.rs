@@ -49,8 +49,12 @@ const QUIET: u64 = 20_000_000;
 struct Range {
     end: u64,
 
-    /// Whether its module holds every function the map named in it.
-    current: bool,
+    /// When the newest function its module holds was read, by when the
+    /// map named it; none until its module is made.
+    built: Option<u64>,
+
+    /// When the newest function the map named in it was read.
+    newest: u64,
 }
 
 /// What a process's anonymous code is known to hold.
@@ -161,7 +165,8 @@ impl Jit {
                         remnant,
                         Range {
                             end: until,
-                            current: false,
+                            built: None,
+                            newest: held.newest,
                         },
                     );
                 }
@@ -195,7 +200,8 @@ impl Jit {
                 start,
                 Range {
                     end,
-                    current: false,
+                    built: None,
+                    newest: 0,
                 },
             );
         }
@@ -214,11 +220,23 @@ impl Jit {
     }
 
     /// Whether the anonymous range that holds `address`, if any, needs its
-    /// module made again: the map named functions in it since, or none
-    /// covers `address`, so the map may have more.
+    /// module made again: its module does not name the function that holds
+    /// `address`, or none covers `address`, so the map may have more. A
+    /// range whose module names the sample's function is not made again
+    /// for functions the map named since, which no sample has needed: each
+    /// remaking indexes every symbol of the range.
     pub fn needs(&self, address: u64) -> bool {
-        self.range(address)
-            .is_some_and(|(_, range)| !range.current || !self.covers(address))
+        self.range(address).is_some_and(|(_, range)| {
+            let named = self
+                .functions
+                .range(..=address)
+                .next_back()
+                .filter(|(_, named)| address < named.function.entry.end);
+            match named {
+                Some((_, named)) => range.built.is_none_or(|built| named.read > built),
+                None => !self.covers(address),
+            }
+        })
     }
 
     /// Whether `address`, sampled at `time` in no mapping the recording
@@ -302,20 +320,24 @@ impl Jit {
             let Some(range) = self.ranges.get_mut(&start) else {
                 continue;
             };
-            if range.current {
+            if range.built.is_some_and(|built| range.newest <= built) {
                 continue;
             }
 
-            range.current = true;
             let objects = self.objects.range(start..range.end).next().is_some();
+            let mut built = range.newest;
             let functions: Vec<Jitted> = match &self.path {
                 Some(_) if !objects => self
                     .functions
                     .range(start..range.end)
-                    .map(|(_, named)| named.function.clone())
+                    .map(|(_, named)| {
+                        built = built.max(named.read);
+                        named.function.clone()
+                    })
                     .collect(),
                 _ => Vec::new(),
             };
+            range.built = Some(built);
             if let (false, Some(path)) = (functions.is_empty(), &self.path) {
                 refreshed.stale.push(Stale {
                     start,
@@ -483,7 +505,7 @@ impl Jit {
             if let Some((_, range)) = self.ranges.range_mut(..=entry.start).next_back()
                 && entry.start < range.end
             {
-                range.current = false;
+                range.newest = range.newest.max(read);
             }
 
             self.functions.insert(
@@ -801,6 +823,87 @@ mod tests {
         assert!(!jit.read_on_within(pid, 4, CODES_READ));
         let problem = jit.take_problem().expect("a problem");
         assert!(problem.contains("longer than 4 bytes"), "{problem}");
+    }
+
+    /// A range's module is made again only for a sample in a function it
+    /// does not name: functions the map names in it meanwhile, read for a
+    /// sample elsewhere, wait for a sample that needs them. In a process
+    /// that carries V8 the map gives only names, so no code is read.
+    #[test]
+    fn a_range_is_made_again_only_for_a_function_its_module_lacks() {
+        static CODE: [u8; 64] = [0xcc; 64];
+        let pid = std::process::id();
+        let path = format!("/tmp/perf-{pid}.map");
+        let start = CODE.as_ptr() as u64;
+        let other = start + 0x20;
+        std::fs::write(&path, format!("{start:x} 10 a\n")).expect("write the map");
+        let _removed = Removed(path.clone());
+        let append = |line: String| {
+            let mut map = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open the map");
+            std::io::Write::write_all(&mut map, line.as_bytes()).expect("append to the map");
+        };
+        let names = |refreshed: Refreshed| -> Vec<Vec<String>> {
+            refreshed
+                .stale
+                .iter()
+                .map(|stale| {
+                    stale
+                        .functions
+                        .iter()
+                        .map(|function| function.entry.name.to_string())
+                        .collect()
+                })
+                .collect()
+        };
+        let now = super::super::session::monotonic;
+
+        let mut jit = Jit {
+            names_only: true,
+            ..Jit::default()
+        };
+        jit.mapped(start, other, true, 0);
+        jit.mapped(other, start + 0x40, true, 0);
+        assert_eq!(
+            names(jit.refresh(pid, now(), [start + 8], Vec::new)),
+            [["a"]]
+        );
+
+        // A sample in the other range reads b, in the first, with c.
+        append(format!("{:x} 10 b\n{other:x} 10 c\n", start + 0x10));
+        assert_eq!(
+            names(jit.refresh(pid, now(), [other + 8], Vec::new)),
+            [["c"]]
+        );
+        assert!(
+            jit.refresh(pid, now(), [start + 8], Vec::new)
+                .stale
+                .is_empty(),
+            "the module names a"
+        );
+        assert_eq!(
+            names(jit.refresh(pid, now(), [start + 0x18], Vec::new)),
+            [["a", "b"]]
+        );
+
+        // A function that replaces one the module names is a new function.
+        append(format!("{start:x} 10 a2\n"));
+        assert!(
+            jit.refresh(pid, now(), [other + 0x18], Vec::new)
+                .stale
+                .is_empty()
+        );
+        assert_eq!(
+            names(jit.refresh(pid, now(), [start + 8], Vec::new)),
+            [["a2", "b"]]
+        );
+        assert!(
+            jit.functions
+                .values()
+                .all(|named| named.function.code.is_none())
+        );
     }
 
     /// Samples are processed well after they are taken, while the program
