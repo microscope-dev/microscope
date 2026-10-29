@@ -1081,6 +1081,31 @@ fn a_signal_handlers_stack_keeps_to_its_frame_limit() {
     }
 }
 
+/// A function every call of which was inlined has no code of its own to
+/// count calls at. It still exists, so the error says it was inlined and
+/// where, rather than that the program has no such function.
+#[test]
+fn counting_a_function_inlined_everywhere_says_where_it_went() {
+    let mut command = Command::new(Scenario::fixture("profile-inline"));
+    command.arg("1").stdout(Stdio::null());
+    let error = record(command, &calls_of("step")).expect_err("step has no code of its own");
+    let message = error.to_string();
+    assert!(
+        message.contains("'step' has no code of its own: every call of it was inlined"),
+        "{message}"
+    );
+    assert!(message.contains(" into scan"), "{message}");
+
+    // A name the program lacks says so, as before.
+    let mut command = Command::new(Scenario::fixture("profile-inline"));
+    command.arg("1").stdout(Stdio::null());
+    let error = record(command, &calls_of("no_such_function")).expect_err("no such function");
+    assert_eq!(
+        error.to_string(),
+        "the program has no function named 'no_such_function'"
+    );
+}
+
 #[test]
 fn a_stack_through_the_vdso_goes_on_to_its_callers() {
     let mut command = Command::new(Scenario::fixture("profile-vdso"));

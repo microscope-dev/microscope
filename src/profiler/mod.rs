@@ -345,6 +345,19 @@ pub enum RecordError {
     #[error("the calls of '{name}' cannot be counted exactly: {why}")]
     Uncountable { name: String, why: String },
 
+    /// The function exists, but every call of it was inlined, leaving no
+    /// code of its own: `copies` copies, into the functions `into` names.
+    #[error(
+        "'{name}' has no code of its own: every call of it was inlined, {copies} {}, into {}; count the calls of one of those instead",
+        if *copies == 1 { "copy" } else { "copies" },
+        into.join(", ")
+    )]
+    Inlined {
+        name: String,
+        copies: usize,
+        into: Vec<String>,
+    },
+
     #[error("reading the program failed: {0}")]
     Program(String),
 

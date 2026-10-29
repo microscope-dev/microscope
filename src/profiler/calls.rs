@@ -69,6 +69,60 @@ impl Branch {
 /// segment's address, page aligned (`ELF_ET_DYN_BASE`).
 const UNRANDOMIZED_PIE_BASE: u64 = 0x5555_5555_4aaa;
 
+/// Why a function `symbol` names, which no symbol of `program` does, still
+/// has no address to count calls at: its debug information describes it,
+/// and every instance of it was inlined. None when it does not say so.
+fn inlined_everywhere(program: &Path, data: &[u8], symbol: &str) -> Option<RecordError> {
+    const SHOWN: usize = 8;
+    let search = crate::debug_info::DebugFileSearch::default();
+    let info = crate::debug_info::load_program(program, data, &search).ok()?;
+    let image = &info.image;
+    let mut copies = 0;
+    let mut enclosing_functions = BTreeSet::new();
+
+    for function in image.functions_named(symbol) {
+        for instance in function.instances() {
+            if instance.is_out_of_line() {
+                return None;
+            }
+
+            copies += 1;
+            let enclosing = instance
+                .ranges()
+                .next()
+                .and_then(|range| image.locate(range.start).physical_instance)
+                .and_then(|id| image.code_instance(id))
+                .and_then(|outer| image.function(outer.function()))
+                .map(|outer| {
+                    let outer = outer.info();
+                    outer
+                        .linkage_name
+                        .as_deref()
+                        .and_then(crate::demangle::qualified_name)
+                        .unwrap_or_else(|| outer.name.to_string())
+                });
+            enclosing_functions.extend(enclosing);
+        }
+    }
+
+    if copies == 0 {
+        return None;
+    }
+
+    let mut shown: Vec<String> = enclosing_functions.into_iter().collect();
+    if shown.len() > SHOWN {
+        let more = shown.len() - SHOWN;
+        shown.truncate(SHOWN);
+        shown.push(format!("{more} more"));
+    }
+
+    Some(RecordError::Inlined {
+        name: symbol.to_owned(),
+        copies,
+        into: shown,
+    })
+}
+
 /// Where to count the calls of the function `symbol` names in `program`.
 /// The program loads at `bias`, or where it does without address
 /// randomization.
@@ -88,21 +142,36 @@ pub fn plan(program: &Path, symbol: &str, bias: Option<LoadBias>) -> Result<Call
         })
     });
 
-    // A symbol, or the name a profile shows for one.
+    // A symbol, or the name a profile shows for one. A mangled name spells
+    // each identifier of the name as it is, so only symbols that hold the
+    // last are demangled: Chromium has millions, and demangling them all
+    // took 9 s.
+    let last = symbol
+        .rsplit("::")
+        .next()
+        .unwrap_or(symbol)
+        .split(['(', '<', ' '])
+        .next()
+        .unwrap_or(symbol);
     let addresses: BTreeSet<u64> = file
         .symbols()
         .filter(|candidate| {
             candidate.kind() == object::SymbolKind::Text
                 && candidate.name().is_ok_and(|name| {
                     name == symbol
-                        || crate::demangle::qualified_name(name).is_some_and(|name| name == symbol)
+                        || (name.contains(last)
+                            && crate::demangle::qualified_name(name)
+                                .is_some_and(|name| name == symbol))
                 })
         })
         .map(|found| found.address())
         .collect();
     let mut addresses = addresses.into_iter();
     let entry = match (addresses.next(), addresses.len()) {
-        (None, _) => return Err(RecordError::NoSuchFunction(symbol.to_owned())),
+        (None, _) => {
+            return Err(inlined_everywhere(&program, &data, symbol)
+                .unwrap_or_else(|| RecordError::NoSuchFunction(symbol.to_owned())));
+        }
         (Some(entry), 0) => entry,
         (Some(_), others) => {
             return Err(RecordError::AmbiguousFunction {
