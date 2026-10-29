@@ -64,7 +64,8 @@ slowly, but loading a program's debug information or its JIT code can keep
 the processor busy for seconds: with an inline drain, 16 Node workers at
 199 Hz lost 76% of their samples (`a_low_rate_is_read_while_processing_is_busy`).
 A ring a quarter full wakes the reader, which otherwise sleeps 100 us at
-500 Hz and up and 10 ms below: waking every 2 ms at `prod`'s 49 Hz cost 0.2
+500 Hz and up and 100 ms below; stopping wakes it at once through an
+eventfd in the same epoll set. Waking every 2 ms at `prod`'s 49 Hz cost 0.2
 to 0.3% of a CPU. For clocks, once the queue holds 64 MiB, the reader turns
 the sampling events off, leaves the sideband on, and keeps draining; when
 processing takes the queue, sampling comes back on. Each span off is a gap of reason `Behind`,

@@ -485,10 +485,10 @@ impl Events {
             return work();
         };
         let stop = AtomicBool::new(false);
+        let poller = sys::Poller::new(&self.rings).ok();
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
                 let began = sys::thread_cpu();
-                let poller = sys::Poller::new(&self.rings).ok();
                 let mut behind = false;
                 while !stop.load(Ordering::Relaxed) {
                     let mut buffer = buffer
@@ -520,7 +520,7 @@ impl Events {
                     }
                 }
             });
-            let guard = StopReader(&stop);
+            let guard = StopReader(&stop, poller.as_ref());
             let result = work();
             drop(guard);
             let _ = reader.join();
@@ -648,11 +648,14 @@ impl Events {
     }
 }
 
-struct StopReader<'a>(&'a AtomicBool);
+struct StopReader<'a>(&'a AtomicBool, Option<&'a sys::Poller>);
 
 impl Drop for StopReader<'_> {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
+        if let Some(poller) = self.1 {
+            poller.wake();
+        }
     }
 }
 

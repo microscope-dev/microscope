@@ -647,31 +647,41 @@ pub fn poll(rings: &[Ring], timeout: std::time::Duration) {
 
 /// Rings to wait on, registered with the kernel once: asking each of 32
 /// CPUs' rings afresh on every wait was most of what an idle recording
-/// cost.
-pub struct Poller(OwnedFd);
+/// cost. An eventfd beside them ends every wait once [`Poller::wake`]
+/// writes it, so that stopping need not wait out a long timeout.
+pub struct Poller {
+    epoll: OwnedFd,
+    wake: OwnedFd,
+}
 
 impl Poller {
     pub fn new(rings: &[Ring]) -> std::io::Result<Self> {
-        use rustix::event::epoll;
+        use rustix::event::{EventfdFlags, epoll, eventfd};
         let fd = epoll::create(epoll::CreateFlags::CLOEXEC)?;
-        for ring in rings {
+        let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
+        for ring in rings.iter().map(|ring| &ring.fd).chain([&wake]) {
             epoll::add(
                 &fd,
-                &ring.fd,
+                ring,
                 epoll::EventData::new_u64(0),
                 epoll::EventFlags::IN,
             )?;
         }
-        Ok(Self(fd))
+        Ok(Self { epoll: fd, wake })
     }
 
-    /// Waits until one of the rings has data past its watermark, or
-    /// `timeout`.
+    /// Ends the wait in progress and every later one at once.
+    pub fn wake(&self) {
+        let _ = rustix::io::write(&self.wake, &1u64.to_ne_bytes());
+    }
+
+    /// Waits until one of the rings has data past its watermark, the
+    /// poller is woken, or `timeout`.
     pub fn wait(&self, timeout: std::time::Duration) {
         use rustix::event::{Timespec, epoll};
         let mut ready = [std::mem::MaybeUninit::<epoll::Event>::uninit(); 8];
         let timeout = Timespec::try_from(timeout).ok();
-        let _ = epoll::wait(&self.0, &mut ready, timeout.as_ref());
+        let _ = epoll::wait(&self.epoll, &mut ready, timeout.as_ref());
     }
 }
 

@@ -1595,6 +1595,49 @@ mod tests {
         assert_eq!(samples, 6, "every counted call has its sample");
     }
 
+    /// At a low rate the reader sleeps long between drains, but a
+    /// recording stopped while the program runs on, as Ctrl-C stops it,
+    /// still ends at once.
+    #[test]
+    fn collection_at_a_low_rate_stops_at_once() {
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-calls");
+        let options = super::perf::EventOptions {
+            source: super::perf::Source::Clock {
+                period: Duration::from_millis(20),
+            },
+            stack_bytes: 1024,
+            kernel: false,
+            ring_pages: 8,
+            switches: false,
+        };
+        let mut command = std::process::Command::new(program);
+        command.arg("1000000000");
+        let super::perf::Launched {
+            events,
+            exit,
+            killer,
+            ..
+        } = super::perf::launch(
+            command,
+            &options,
+            super::perf::LaunchOptions {
+                no_address_randomization: true,
+            },
+            |_, _| Ok(()),
+        )
+        .expect("launch the program");
+        // Let the reader settle into its wait before stopping.
+        let stopping = events.read_while(|| {
+            std::thread::sleep(Duration::from_millis(30));
+            std::time::Instant::now()
+        });
+        let stopped = stopping.elapsed();
+        killer.kill();
+        let _ = exit.join();
+        assert!(stopped < Duration::from_millis(20), "took {stopped:?}");
+    }
+
     /// A full collection queue must not turn breakpoint counting off:
     /// samples may be lost, but the number of calls must remain exact.
     #[test]
