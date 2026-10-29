@@ -122,6 +122,9 @@ export function describeFlags(flags: number): string[] {
   if (flags & 4) {
     said.push("it does not nest");
   }
+  if (flags & 8) {
+    said.push("records were lost inside it");
+  }
   return said;
 }
 

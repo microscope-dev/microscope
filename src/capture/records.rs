@@ -665,7 +665,13 @@ pub const ZONE_ENDED_UNSEEN: u32 = 2;
 /// begin matched its end.
 pub const ZONE_MISMATCHED: u32 = 4;
 
-pub const ZONE_FLAGS: u32 = ZONE_BEGAN_UNSEEN | ZONE_ENDED_UNSEEN | ZONE_MISMATCHED;
+/// Its begin and end were both seen, but some of its thread's records
+/// between them were lost: what it holds is incomplete, and its end may be
+/// a later zone's of the same site.
+pub const ZONE_LOST_WITHIN: u32 = 8;
+
+pub const ZONE_FLAGS: u32 =
+    ZONE_BEGAN_UNSEEN | ZONE_ENDED_UNSEEN | ZONE_MISMATCHED | ZONE_LOST_WITHIN;
 
 /// Where one thread's zones of one depth are.
 #[repr(C)]

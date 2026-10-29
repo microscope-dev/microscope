@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use crate::capture::records::{MarkerKind, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_MISMATCHED};
+use crate::capture::records::{
+    MarkerKind, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_LOST_WITHIN, ZONE_MISMATCHED,
+};
 use crate::profiler::Profile;
 use crate::syscalls::TraceEvent;
 
@@ -46,6 +48,7 @@ pub fn export(profile: &Profile) -> String {
             (ZONE_BEGAN_UNSEEN, "its begin was lost"),
             (ZONE_ENDED_UNSEEN, "its end was not seen"),
             (ZONE_MISMATCHED, "it does not nest"),
+            (ZONE_LOST_WITHIN, "records were lost inside it"),
         ]
         .into_iter()
         .filter(|(flag, _)| zone.flags & flag != 0)

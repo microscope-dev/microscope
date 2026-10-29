@@ -754,7 +754,11 @@ costs.
 
 Probe names and prefix selection are configuration. Capture records use dense
 site IDs after validation. Zone analysis pairs begin and end records without
-assuming well-nested input unless the SDK contract proves it.
+assuming well-nested input unless the SDK contract proves it. A zone open
+when its thread's records are lost stays open: its end, when read, closes it
+flagged `ZONE_LOST_WITHIN` rather than as a second zone, so a call that ran
+once counts once. One whose end never comes ends where the records were lost,
+`ZONE_ENDED_UNSEEN`, as before (`Stacks::apply`).
 
 ## Capture format
 

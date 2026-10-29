@@ -16,7 +16,8 @@ use object::{Object as _, ObjectSection as _};
 
 use crate::capture::CaptureBuilder;
 use crate::capture::records::{
-    MarkerKind, NONE, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_MISMATCHED, Zone,
+    MarkerKind, NONE, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_LOST_WITHIN, ZONE_MISMATCHED,
+    Zone,
 };
 
 use crate::model::Tid;
@@ -577,6 +578,10 @@ struct Open {
     site: u32,
     start: i64,
     value: u32,
+
+    /// When the thread's records were first lost while it was open: its
+    /// end may be among them, or still to come.
+    lost_at: Option<i64>,
 }
 
 /// One thread's open zones, and what is known of its records.
@@ -612,9 +617,11 @@ impl Stacks {
         let state = self.threads.entry(thread).or_default();
         let time = event.time.max(state.latest);
         state.latest = time;
+        // A zone open across a loss stays open: its end, when read,
+        // closes it whole but flagged, rather than as a second zone.
         if std::mem::take(&mut state.lost) {
-            for open in state.open.drain(..) {
-                builder.zone(thread, zone(open, time, ZONE_ENDED_UNSEEN));
+            for open in &mut state.open {
+                open.lost_at.get_or_insert(time);
             }
 
             state.unknown_since = Some(time);
@@ -633,6 +640,7 @@ impl Stacks {
                     site: event.site,
                     start: time,
                     value,
+                    lost_at: None,
                 });
             }
             abi::ZONE_END | abi::LABEL_END => end(builder, thread, state, event.site, time),
@@ -649,7 +657,7 @@ impl Stacks {
     pub fn ended(&mut self, builder: &mut CaptureBuilder, thread: u32) {
         if let Some(state) = self.threads.remove(&thread) {
             for open in state.open {
-                builder.zone(thread, zone(open, state.latest, ZONE_ENDED_UNSEEN));
+                builder.zone(thread, unended(open, state.latest, 0));
             }
         }
     }
@@ -659,10 +667,7 @@ impl Stacks {
     pub fn close(&self, builder: &mut CaptureBuilder, time: i64) {
         for (&thread, state) in &self.threads {
             for &open in &state.open {
-                builder.zone(
-                    thread,
-                    zone(open, time.max(state.latest), ZONE_ENDED_UNSEEN),
-                );
+                builder.zone(thread, unended(open, time.max(state.latest), 0));
             }
         }
     }
@@ -673,15 +678,16 @@ impl Stacks {
 /// the thread's records were lost, or, if none were, a flagged instant.
 fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32, time: i64) {
     if let Some(position) = state.open.iter().rposition(|open| open.site == site) {
+        // Zones open since before a loss ended in it, unseen; others
+        // began inside this one and failed to end before it.
         for open in state.open.drain(position + 1..).rev() {
-            builder.zone(
-                thread,
-                zone(open, time, ZONE_ENDED_UNSEEN | ZONE_MISMATCHED),
-            );
+            let flags = if open.lost_at.is_some() { 0 } else { ZONE_MISMATCHED };
+            builder.zone(thread, unended(open, time, flags));
         }
 
         if let Some(open) = state.open.pop() {
-            builder.zone(thread, zone(open, time, 0));
+            let flags = if open.lost_at.is_some() { ZONE_LOST_WITHIN } else { 0 };
+            builder.zone(thread, zone(open, time, flags));
         }
 
         return;
@@ -691,15 +697,15 @@ fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32,
         site,
         start: time,
         value: NONE,
+        lost_at: None,
     };
 
     match state.unknown_since {
         Some(since) => {
-            for open in state.open.drain(..).rev() {
-                builder.zone(
-                    thread,
-                    zone(open, time, ZONE_ENDED_UNSEEN | ZONE_MISMATCHED),
-                );
+            // Its begin was lost, after every zone still open from before
+            // the loss began, so only those begun since fail to nest.
+            while let Some(open) = state.open.pop_if(|open| open.lost_at.is_none()) {
+                builder.zone(thread, unended(open, time, ZONE_MISMATCHED));
             }
 
             let began = Open {
@@ -714,6 +720,13 @@ fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32,
             zone(began, time, ZONE_BEGAN_UNSEEN | ZONE_MISMATCHED),
         ),
     }
+}
+
+/// A zone whose end was not seen, ending at `end`, or where the thread's
+/// records were lost, if they were while it was open.
+fn unended(open: Open, end: i64, flags: u32) -> Zone {
+    let end = open.lost_at.map_or(end, |lost| lost.min(end));
+    zone(open, end, flags | ZONE_ENDED_UNSEEN)
 }
 
 fn zone(open: Open, end: i64, flags: u32) -> Zone {
@@ -984,6 +997,46 @@ mod tests {
                 prop_assert_eq!(flagless, whole);
             }
         }
+    }
+
+    /// A call whose thread loses records while it runs, as a busy
+    /// traced program's does, is one zone, from its begin to its end,
+    /// flagged for what it lost; a call inside it whose end was lost
+    /// ends where the records were.
+    #[test]
+    fn a_zone_open_across_a_loss_is_one_zone() {
+        let mut builder = CaptureBuilder::new();
+        let thread = builder.thread(crate::model::Pid::new(1), Tid::new(1), 0);
+        let outer = builder.site("outer", "", 0, NONE, abi::SITE_ZONE);
+        let inner = builder.site("inner", "", 0, NONE, abi::SITE_ZONE);
+        let mut stacks = Stacks::default();
+        let apply = |stacks: &mut Stacks, builder: &mut CaptureBuilder, time, site, kind| {
+            stacks.apply(builder, thread, &Event { time, site, kind, value: 0.0, text: "" });
+        };
+
+        apply(&mut stacks, &mut builder, 10, outer, abi::ZONE_BEGIN);
+        apply(&mut stacks, &mut builder, 20, inner, abi::ZONE_BEGIN);
+        // The inner call's end, and whatever came after it, are lost.
+        stacks.lost(thread);
+        apply(&mut stacks, &mut builder, 50, inner, abi::ZONE_BEGIN);
+        apply(&mut stacks, &mut builder, 60, inner, abi::ZONE_END);
+        apply(&mut stacks, &mut builder, 90, outer, abi::ZONE_END);
+
+        let capture = builder.finish();
+        assert_eq!(capture.validate(), Ok(()));
+        let mut zones: Vec<_> = capture
+            .zones
+            .iter()
+            .map(|zone| (zone.site.get(), zone.start.get(), zone.end.get(), zone.flags.get()))
+            .collect();
+        zones.sort_unstable();
+        let mut expected = vec![
+            (outer, 10, 90, ZONE_LOST_WITHIN),
+            (inner, 20, 50, ZONE_ENDED_UNSEEN),
+            (inner, 50, 60, 0),
+        ];
+        expected.sort_unstable();
+        assert_eq!(zones, expected);
     }
 
     /// Times between two anchors are the line between them.

@@ -41,7 +41,7 @@ pub use symbols::ModuleSymbols;
 pub use tasks::THREAD;
 pub use zones::{
     PlotValue, ProbeCounts, ProfileZone, ProgramMarker, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN,
-    ZONE_MISMATCHED, ZoneSite,
+    ZONE_LOST_WITHIN, ZONE_MISMATCHED, ZoneSite,
 };
 
 pub use crate::analysis::{

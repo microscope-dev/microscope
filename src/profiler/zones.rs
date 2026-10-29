@@ -4,7 +4,9 @@
 use super::{PlotSeries, Profile, ZoneBlock, ZoneStats};
 use crate::capture::records::{AccountKind, MarkerKind, NONE};
 
-pub use crate::capture::records::{ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_MISMATCHED};
+pub use crate::capture::records::{
+    ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_LOST_WITHIN, ZONE_MISMATCHED,
+};
 
 /// One instrumented zone, or one label's span, of a thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
