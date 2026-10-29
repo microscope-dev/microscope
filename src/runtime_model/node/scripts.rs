@@ -241,6 +241,9 @@ fn function_proof(
 /// The most source characters scanned for newlines at once.
 const SCAN: u64 = 1 << 16;
 
+/// How many of V8's computed line ends are read at once: 4 KiB of them.
+const ENDS_READ: usize = 512;
+
 const MAX_LINE_ENDS: usize = 1 << 22;
 const MAX_SOURCE_SCAN: u64 = 1 << 24;
 
@@ -276,17 +279,25 @@ impl Lines {
             if count > MAX_LINE_ENDS as u64 {
                 return Err("a script exceeds the line ends limit".into());
             }
+            // A block's worth of ends at a time: a word at a time, a long
+            // script's took a read of the stop's memory for each line.
             let first = reader.field_address(ends, Field::FixedArrayObjects)?;
             let mut index = self.ends.len() as u64;
+            let mut words = [0_u8; 8 * ENDS_READ];
             while index < count {
-                let end = reader
-                    .smi(reader.word(first + index * 8)?)?
-                    .and_then(|end| u64::try_from(end).ok())
-                    .ok_or("a script's line end is not an offset")?;
-                self.ends.push(end);
-                index += 1;
-                if end >= offset {
-                    return Ok(());
+                let batch = usize::try_from((count - index).min(ENDS_READ as u64)).unwrap_or(0);
+                let words = &mut words[..8 * batch];
+                reader.bytes_into(first + index * 8, words)?;
+                for word in words.as_chunks::<8>().0 {
+                    let end = reader
+                        .smi(u64::from_le_bytes(*word))?
+                        .and_then(|end| u64::try_from(end).ok())
+                        .ok_or("a script's line end is not an offset")?;
+                    self.ends.push(end);
+                    index += 1;
+                    if end >= offset {
+                        return Ok(());
+                    }
                 }
             }
             self.complete = true;
@@ -637,6 +648,48 @@ mod tests {
             (2, 1, 2)
         );
         assert_eq!(table.sources["s"].reads.len(), 2);
+    }
+
+    /// V8's computed line ends are read a block at a time, and each read
+    /// stops at the array's end and at the line of the offset asked for.
+    #[test]
+    fn computed_line_ends_give_lines_across_reads() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let ty = u16::try_from(layout.constant(Constant::FixedArrayType).unwrap()).unwrap();
+        let map = writer.map(0x1000, ty);
+        let script = Object(writer.script(0x2000, 0, (1, 0, 0)));
+        let count = 2 * super::ENDS_READ + 3;
+        let ends = 0x10001;
+        writer.heap.word(0x10000, map);
+        writer.field(ends, Field::FixedArrayBaseLength, smi(count as u64));
+        let first = 0x10000 + writer.offset(Field::FixedArrayObjects);
+        // Line n ends at 10n + 9, so is ten characters long.
+        for line in 0..count as u64 {
+            writer.heap.word(first + line * 8, smi(line * 10 + 9));
+        }
+        writer.field(script.0, Field::ScriptLineEnds, ends);
+        let reader = reader(&heap, &layout);
+        let mut lines = super::Lines::default();
+
+        lines.cover(&reader, script, 5, None).unwrap();
+        assert_eq!(lines.ends, [9], "the first read stops at the offset's line");
+        let past = (super::ENDS_READ as u64 + 7) * 10 + 4;
+        lines.cover(&reader, script, past, None).unwrap();
+        assert_eq!(lines.ends.len(), super::ENDS_READ + 8);
+        assert_eq!(
+            lines.ends.last(),
+            Some(&((super::ENDS_READ as u64 + 7) * 10 + 9))
+        );
+        assert!(!lines.complete);
+        lines.cover(&reader, script, u64::MAX, None).unwrap();
+        assert_eq!(lines.ends.len(), count);
+        assert_eq!(lines.ends.last(), Some(&(count as u64 * 10 - 1)));
+        assert!(lines.complete);
     }
 
     #[test]
