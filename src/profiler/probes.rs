@@ -16,8 +16,7 @@ use object::{Object as _, ObjectSection as _};
 
 use crate::capture::CaptureBuilder;
 use crate::capture::records::{
-    MarkerKind, NONE, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_LOST_WITHIN, ZONE_MISMATCHED,
-    Zone,
+    MarkerKind, NONE, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, ZONE_LOST_WITHIN, ZONE_MISMATCHED, Zone,
 };
 
 use crate::model::Tid;
@@ -681,12 +680,20 @@ fn end(builder: &mut CaptureBuilder, thread: u32, state: &mut Thread, site: u32,
         // Zones open since before a loss ended in it, unseen; others
         // began inside this one and failed to end before it.
         for open in state.open.drain(position + 1..).rev() {
-            let flags = if open.lost_at.is_some() { 0 } else { ZONE_MISMATCHED };
+            let flags = if open.lost_at.is_some() {
+                0
+            } else {
+                ZONE_MISMATCHED
+            };
             builder.zone(thread, unended(open, time, flags));
         }
 
         if let Some(open) = state.open.pop() {
-            let flags = if open.lost_at.is_some() { ZONE_LOST_WITHIN } else { 0 };
+            let flags = if open.lost_at.is_some() {
+                ZONE_LOST_WITHIN
+            } else {
+                0
+            };
             builder.zone(thread, zone(open, time, flags));
         }
 
@@ -1011,7 +1018,17 @@ mod tests {
         let inner = builder.site("inner", "", 0, NONE, abi::SITE_ZONE);
         let mut stacks = Stacks::default();
         let apply = |stacks: &mut Stacks, builder: &mut CaptureBuilder, time, site, kind| {
-            stacks.apply(builder, thread, &Event { time, site, kind, value: 0.0, text: "" });
+            stacks.apply(
+                builder,
+                thread,
+                &Event {
+                    time,
+                    site,
+                    kind,
+                    value: 0.0,
+                    text: "",
+                },
+            );
         };
 
         apply(&mut stacks, &mut builder, 10, outer, abi::ZONE_BEGIN);
@@ -1027,7 +1044,14 @@ mod tests {
         let mut zones: Vec<_> = capture
             .zones
             .iter()
-            .map(|zone| (zone.site.get(), zone.start.get(), zone.end.get(), zone.flags.get()))
+            .map(|zone| {
+                (
+                    zone.site.get(),
+                    zone.start.get(),
+                    zone.end.get(),
+                    zone.flags.get(),
+                )
+            })
             .collect();
         zones.sort_unstable();
         let mut expected = vec![

@@ -873,7 +873,14 @@ pub fn load(
     crate::count!("input_bytes", data.len());
     drop(phase);
 
-    load_bytes_on_pool(path, &data, image_id, search, crate::cache::current(), false)
+    load_bytes_on_pool(
+        path,
+        &data,
+        image_id,
+        search,
+        crate::cache::current(),
+        false,
+    )
 }
 
 pub fn load_bytes(

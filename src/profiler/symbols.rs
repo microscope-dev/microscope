@@ -45,9 +45,10 @@ impl Profile {
             })
             .map(|(_, row)| row.module.get())
             .filter(|&module| {
-                capture.modules.get(module as usize).is_some_and(|row| {
-                    !capture.string(row.path.get()).starts_with('[')
-                })
+                capture
+                    .modules
+                    .get(module as usize)
+                    .is_some_and(|row| !capture.string(row.path.get()).starts_with('['))
             })
             .collect::<Vec<_>>();
         modules.sort_unstable();
