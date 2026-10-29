@@ -59,7 +59,9 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
         let output = command
             .arg("--")
             .arg(Scenario::fixture("profile-kernel"))
-            .arg("2000000")
+            // Copy enough per call to measure kernel work rather than
+            // the overhead of libc's syscall wrapper.
+            .args(["200000", "65536"])
             .stdin(Stdio::null())
             .output()
             .expect("record the read loop");
