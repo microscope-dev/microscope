@@ -513,6 +513,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if self.inspector_cleanup_starting() {
             match self.begin_inspector_cleanup() {
                 Ok(true) => {}
+                Ok(false) if self.drain_requested_stops()? => {}
                 Ok(false) => self.detach_inferior(),
                 Err(error) => self.detach_inferior_reporting(Some(error)),
             }
@@ -560,7 +561,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Ok(false);
             }
         };
-        self.detach_inferior_reporting(problem.map(Error::RuntimeAgent));
+        // The all-stop's SIGSTOPs are collected first; the stop that does
+        // so finishes this barrier again.
+        if !self.drain_requested_stops()? {
+            self.detach_inferior_reporting(problem.map(Error::RuntimeAgent));
+        }
         Ok(true)
     }
 

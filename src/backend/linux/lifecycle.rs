@@ -1489,6 +1489,46 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(resumed)
     }
 
+    /// Collects the SIGSTOPs launched threads were sent for a barrier that
+    /// another stop satisfied first, and returns whether any thread was
+    /// resumed for one. A barrier reuses such a stop, but detaching would
+    /// deliver it to an untraced process and stop it for good. Resumed
+    /// without a signal, the thread dequeues it before running any
+    /// instruction.
+    pub(super) fn drain_requested_stops(&mut self) -> Result<bool> {
+        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        if inferior.origin.seized() {
+            // Seized threads are interrupted, which queues no signal.
+            return Ok(false);
+        }
+
+        let candidates = inferior
+            .threads
+            .iter()
+            .filter(|(_, thread)| {
+                matches!(thread.state, NativeThreadState::Stopped) && thread.debugger_stop_pending
+            })
+            .map(|(&pid, _)| pid)
+            .collect::<Vec<_>>();
+
+        // As with traps, every queue is read before any thread resumes.
+        let mut queued = Vec::new();
+        for pid in candidates {
+            if self.ptrace.queued_signal(pid, Signal::SIGSTOP)? {
+                queued.push(pid);
+            } else {
+                inferior.thread_mut(pid)?.debugger_stop_pending = false;
+            }
+        }
+        let resumed = !queued.is_empty();
+
+        for pid in queued {
+            self.resume_to_drain(pid)?;
+        }
+
+        Ok(resumed)
+    }
+
     /// Resumes a stopped thread while the session detaches, to take a
     /// signal still queued for it, passing on a signal it stopped for as
     /// the detach would. A published stop ends with it. A thread SIGKILL
@@ -1953,7 +1993,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.handle_vfork_during_detach(pid)
             }
             WaitEvent::Stopped(pid, signal) => {
-                let pending = match self.classify_stop(pid, signal) {
+                let stop = self.classify_stop(pid, signal);
+                let requested = matches!(stop, ClassifiedStop::DebuggerRequested);
+                let pending = match stop {
                     ClassifiedStop::SignalDelivery(pending) => Some(pending),
                     _ => None,
                 };
@@ -1962,6 +2004,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 inferior.and_then(|inferior| {
                     let thread = inferior.thread_mut(pid)?;
                     thread.state = NativeThreadState::Stopped;
+                    if requested {
+                        thread.debugger_stop_pending = false;
+                    }
                     if pending.is_some() {
                         thread.pending_signal = pending;
                     }
@@ -2015,7 +2060,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .iter()
                 .all(|(&pid, thread)| inferior.settled(pid, thread));
         if ready {
-            match self.drain_queued_traps() {
+            let drained = self
+                .drain_requested_stops()
+                .and_then(|stops| Ok(self.drain_queued_traps()? || stops));
+            match drained {
                 Ok(false) => match self.begin_inspector_cleanup() {
                     Ok(true) => {}
                     Ok(false) => self.detach_inferior(),

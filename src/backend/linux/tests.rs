@@ -944,6 +944,9 @@ pub(super) struct FakeTrace {
 
     /// Threads holding a SIGTRAP queued behind an interrupt stop.
     queued_traps: RefCell<BTreeSet<Pid>>,
+
+    /// Threads holding a requested SIGSTOP behind another stop.
+    queued_stops: RefCell<BTreeSet<Pid>>,
     queue_error: Option<Pid>,
 
     /// Threads past their exit, which no interrupt reaches, whose exit
@@ -1469,7 +1472,12 @@ impl LinuxTraceOps for FakeTrace {
             )
             .into());
         }
-        Ok(signal == Signal::SIGTRAP && self.queued_traps.borrow().contains(&pid))
+        let queued = match signal {
+            Signal::SIGTRAP => &self.queued_traps,
+            Signal::SIGSTOP => &self.queued_stops,
+            _ => return Ok(false),
+        };
+        Ok(queued.borrow().contains(&pid))
     }
 
     fn executable(&self, _pid: Pid, _address: VirtualAddress) -> Result<bool> {
@@ -3172,6 +3180,48 @@ fn detaching_collects_queued_traps_before_releasing_the_process() {
     assert!(
         actions.contains(&format!("detach {pid} None")),
         "the collected trap is not delivered: {actions:?}"
+    );
+}
+
+/// A launched thread hit a trap before the SIGSTOP a barrier sent it. The
+/// detach collects that SIGSTOP first, which would otherwise stop the
+/// released process for good.
+#[test]
+fn detaching_a_launched_process_collects_its_outstanding_debugger_stops() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    harness.thread(pid).debugger_stop_pending = true;
+    harness.trace().queued_stops.borrow_mut().insert(pid);
+    harness.controller.ending = super::Ending::Release;
+    harness.trace().take_actions();
+
+    let (reply, result) = tokio::sync::oneshot::channel();
+    harness.controller.begin_shutdown(Some(reply));
+    assert_eq!(
+        harness.trace().take_actions(),
+        [format!("continue {pid} None")],
+        "detaching waits for the outstanding SIGSTOP"
+    );
+
+    harness.trace().queued_stops.borrow_mut().clear();
+    harness.trace().set_siginfo(
+        pid,
+        libc::SI_TKILL,
+        Some(i32::try_from(std::process::id()).expect("tracer pid fits")),
+    );
+    assert!(
+        !harness
+            .controller
+            .handle_detach_wait(WaitEvent::Stopped(pid, Signal::SIGSTOP))
+    );
+    result
+        .blocking_recv()
+        .expect("shutdown reply")
+        .expect("detached");
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("detach {pid} None")),
+        "the collected SIGSTOP is not delivered: {actions:?}"
     );
 }
 
