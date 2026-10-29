@@ -107,6 +107,9 @@ pub struct Events {
     /// must stay on, even when their sample records cannot all be kept.
     pause_on_full: bool,
 
+    /// How much the queue holds before it is full: [`QUEUE_BYTES`].
+    queue_bytes: usize,
+
     /// How long the reader sleeps when no ring wakes it.
     reader_wait: Duration,
     reader_cpu: AtomicU64,
@@ -227,6 +230,7 @@ impl Events {
             pages,
             buffered: collection_buffer(options),
             pause_on_full: matches!(options.source, Source::Clock { .. }),
+            queue_bytes: QUEUE_BYTES,
             reader_wait: reader_wait(options),
             reader_cpu: AtomicU64::new(0),
             cpus,
@@ -321,6 +325,7 @@ impl Events {
                                 pages,
                                 buffered: collection_buffer(options),
                                 pause_on_full: matches!(options.source, Source::Clock { .. }),
+                                queue_bytes: QUEUE_BYTES,
                                 reader_wait: reader_wait(options),
                                 reader_cpu: AtomicU64::new(0),
                                 cpus: cpus.to_vec(),
@@ -494,14 +499,14 @@ impl Events {
                     let mut buffer = buffer
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if !self.pause_on_full && buffer.len() >= QUEUE_BYTES {
+                    if !self.pause_on_full && buffer.len() >= self.queue_bytes {
                         drop(buffer);
                         // A full ring is readable at once, so polling it
                         // here would spin until processing takes the queue.
                         std::thread::sleep(self.reader_wait);
                         continue;
                     }
-                    if (buffer.len() >= QUEUE_BYTES) != behind {
+                    if (buffer.len() >= self.queue_bytes) != behind {
                         behind = !behind;
                         self.fall_behind(behind);
                     }
@@ -568,6 +573,14 @@ impl Events {
         }
 
         std::mem::take(&mut gate.spans)
+    }
+
+    /// Makes the queue full at `bytes`, so that a test fills it in a few
+    /// drains rather than racing the program for over a hundred.
+    #[cfg(test)]
+    pub(crate) const fn set_queue_bytes(&mut self, bytes: usize) {
+        debug_assert!(bytes <= QUEUE_BYTES);
+        self.queue_bytes = bytes;
     }
 
     /// CPU time spent collecting on the reader.

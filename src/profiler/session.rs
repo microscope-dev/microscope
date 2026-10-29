@@ -1689,6 +1689,15 @@ mod tests {
     /// samples may be lost, but the number of calls must remain exact.
     #[test]
     fn a_full_breakpoint_queue_keeps_counting_calls() {
+        use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
+        use nix::unistd::Pid;
+
+        let allowed = sched_getaffinity(Pid::from_raw(0)).expect("read allowed CPUs");
+        let cpu = (0..CpuSet::count())
+            .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
+            .expect("an allowed CPU");
+        let mut affinity = CpuSet::new();
+        affinity.set(cpu).expect("select one CPU");
         let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("build/test-programs/profile-calls");
         let (source, _) = super::perf_source(
@@ -1709,15 +1718,28 @@ mod tests {
         };
         let mut command = std::process::Command::new(program);
         command.arg("20000");
-        let super::perf::Launched { events, exit, .. } = super::perf::launch(
+        let super::perf::Launched {
+            mut events, exit, ..
+        } = super::perf::launch(
             command,
             &options,
             super::perf::LaunchOptions {
                 no_address_randomization: true,
             },
-            |_, _| Ok(()),
+            // Pinned before it executes, the program writes all its records
+            // to one ring, which bounds what collection can hold below.
+            |pid, _| {
+                sched_setaffinity(Pid::from_raw(pid.cast_signed()), &affinity)
+                    .map_err(|error| error.to_string())
+            },
         )
         .expect("launch the program");
+        // The program writes 20000 samples of 32 KiB, but the ring holds
+        // only 15: a reader starved by a busy machine reads few of them. A
+        // queue of 64 MiB needs over a hundred timely drains to fill; one
+        // of 1 MiB needs two or three.
+        let queue = 1024 * 1024;
+        events.set_queue_bytes(queue);
         let status = events
             .read_while(|| exit.join())
             .expect("the waiter ends")
@@ -1729,8 +1751,15 @@ mod tests {
         assert_eq!(events.behind(Some(super::monotonic())), []);
         let mut records = Vec::new();
         events.drain(&mut records);
-        assert!(records.len() > 64 * 1024 * 1024, "the queue filled");
-        assert!(records.len() < 128 * 1024 * 1024, "collection is bounded");
+        assert!(records.len() >= queue, "the queue filled");
+        // The drain that fills the queue takes at most a ring, and the ring
+        // holds at most as much again at the end.
+        let ring = options.ring_pages * 4096;
+        assert!(
+            records.len() <= queue + 2 * ring,
+            "collection is bounded: {}",
+            records.len()
+        );
     }
 
     /// A live read says reads ran less often than asked once the next was
