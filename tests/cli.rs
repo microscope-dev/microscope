@@ -6547,13 +6547,21 @@ fn python_report(
 #[test]
 fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     let scratch = support::ScratchDir::new("cli-thread-snapshots");
-    let spin = "import time\nend = time.monotonic() + 0.5\nwhile time.monotonic() < end: pass\n";
+    // Each program runs half a second of its own CPU time once microscope
+    // has found it. Until then microscope may be loading debug information,
+    // a second of it on a busy machine, and takes no snapshot; and a
+    // snapshot that stops the program for most of a second would end half
+    // a second of the clock's.
+    let found = "import time, microscope\ndeadline = time.monotonic() + 30\n\
+        while not microscope.found(): assert time.monotonic() < deadline; time.sleep(0.001)\n";
+    let spin =
+        format!("{found}end = time.process_time() + 0.5\nwhile time.process_time() < end: pass\n");
 
     let threads = python_report(
         &scratch,
         "threads.usprof",
         &["--python", "snapshot=0.05"],
-        spin,
+        &spin,
     );
     assert!(
         threads.contains("snapshots held the program stopped"),
@@ -6565,9 +6573,11 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
         &scratch,
         "tasks.usprof",
         &["--task-snapshots", "0.05"],
-        "import asyncio, time\nasync def spin():\n    end = time.monotonic() + 0.5\n    \
-         while time.monotonic() < end: await asyncio.sleep(0)\n\
-         async def main(): await asyncio.gather(spin(), spin())\nasyncio.run(main())\n",
+        &format!(
+            "{found}import asyncio\nasync def spin():\n    end = time.process_time() + 0.5\n    \
+             while time.process_time() < end: await asyncio.sleep(0)\n\
+             async def main(): await asyncio.gather(spin(), spin())\nasyncio.run(main())\n"
+        ),
     );
     assert!(
         tasks
