@@ -873,7 +873,7 @@ pub fn load(
     crate::count!("input_bytes", data.len());
     drop(phase);
 
-    load_bytes_on_pool(path, &data, image_id, search, crate::cache::current())
+    load_bytes_on_pool(path, &data, image_id, search, crate::cache::current(), false)
 }
 
 pub fn load_bytes(
@@ -883,7 +883,7 @@ pub fn load_bytes(
     search: &super::DebugFileSearch,
 ) -> Result<DebugInfo> {
     let _load = crate::span!("load", "{}", path.display());
-    load_bytes_on_pool(path, data, image_id, search, crate::cache::current())
+    load_bytes_on_pool(path, data, image_id, search, crate::cache::current(), false)
 }
 
 /// Loads the debug information of an image that lives only as long as a
@@ -896,20 +896,26 @@ pub fn load_transient_bytes(
 ) -> Result<DebugInfo> {
     let _load = crate::span!("load", "{}", path.display());
     let search = super::DebugFileSearch::default();
-    load_bytes_on_pool(path, data, image_id, &search, None)
+    load_bytes_on_pool(path, data, image_id, &search, None, true)
 }
 
-/// Loads an image's debug information on the loader's workers.
+/// Loads an image's debug information on the loader's workers. A
+/// `transient` image, as a JIT compiler's object, is small and loads on one
+/// worker: a load on the shared pool wakes all of its workers.
 fn load_bytes_on_pool(
     path: &Path,
     data: &[u8],
     image_id: crate::ModuleImageId,
     search: &super::DebugFileSearch,
     cache: Option<&crate::cache::ImageCache>,
+    transient: bool,
 ) -> Result<DebugInfo> {
-    crate::pool::install(|| {
-        load_debug_info(path, data, image_id, search, LoadLimits::default(), cache)
-    })
+    let load = || load_debug_info(path, data, image_id, search, LoadLimits::default(), cache);
+    if transient {
+        crate::pool::install_small(load)
+    } else {
+        crate::pool::install(load)
+    }
     .map_err(Error::debug_info)?
     .map(|(info, _)| info)
     .map_err(|error| match error {

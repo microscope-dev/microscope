@@ -232,6 +232,13 @@ is theirs alone: no perf-map module is made over it. The objects are read
 from the running process, so a program that exits before the recorder
 ingests its samples leaves them unnamed, and those stacks end short.
 
+Each object loads on a pool of one worker (`pool::install_small`), not the
+shared loader pool: a load there woke all 16 workers, which spun looking for
+work for about 10 s of CPU time over a 2 s CPython JIT benchmark and slowed
+it 25% when they shared its core. The recording's cost, and its budget,
+count every loader worker's CPU time (`pool::cpu`), not only the
+processor's: that spinning had been reported as 0.05 s.
+
 ## Symbolization now and later
 
 Immediate symbolization loads module debug information on the recording host

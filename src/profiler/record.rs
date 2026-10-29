@@ -289,6 +289,9 @@ pub struct Processor {
     loading: std::time::Duration,
     collection: std::time::Duration,
 
+    /// What the loader's workers had spent when the processor began.
+    pool_began: std::time::Duration,
+
     /// How many threads have started, ended, run a new program, or mapped
     /// a module, which may be an interpreter's, so that what the engine
     /// was told of them can be told again only then.
@@ -379,6 +382,7 @@ impl Processor {
             setup: None,
             loading: std::time::Duration::ZERO,
             collection: std::time::Duration::ZERO,
+            pool_began: crate::pool::cpu(),
             thread_changes: 0,
             processed: 0,
             window: None,
@@ -1022,9 +1026,9 @@ impl Processor {
     /// Adds the image of a module whose file holds `data`, if it could be
     /// read.
     fn add_image(&mut self, path: &std::path::Path, data: Option<Vec<u8>>) -> usize {
-        let began = thread_cpu();
+        let began = self.own_cpu();
         let image = self.load_image(path, data);
-        self.loading += thread_cpu().saturating_sub(began);
+        self.loading += self.own_cpu().saturating_sub(began);
         image
     }
 
@@ -1116,7 +1120,7 @@ impl Processor {
             return;
         }
 
-        let began = thread_cpu();
+        let began = self.own_cpu();
         let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
         let range = crate::AddressRange {
             start: ImageAddress::new(stale.start),
@@ -1146,13 +1150,13 @@ impl Processor {
             code,
             info,
         );
-        self.loading += thread_cpu().saturating_sub(began);
+        self.loading += self.own_cpu().saturating_sub(began);
     }
 
     /// Makes the module of an object a JIT compiler registered, mapped at
     /// the addresses its code runs at, in place of what they held.
     fn jit_object_module(&mut self, pid: Pid, time: u64, object: &JitCode) {
-        let began = thread_cpu();
+        let began = self.own_cpu();
         let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
         let info = crate::debug_info::load_transient_bytes(
             std::path::Path::new(&object.path),
@@ -1163,7 +1167,7 @@ impl Processor {
         let digest = twox_hash::XxHash3_128::oneshot(&object.bytes);
         let code = object.start..object.end;
         self.anonymous_module(pid, time, (id, &object.path, digest), code, info);
-        self.loading += thread_cpu().saturating_sub(began);
+        self.loading += self.own_cpu().saturating_sub(began);
     }
 
     /// Maps a module over anonymous `code` of process `pid`, where a module
@@ -1291,7 +1295,7 @@ impl Processor {
         code: std::ops::Range<u64>,
         jitted: &[crate::debug_info::perf_map::Jitted],
     ) {
-        let began = thread_cpu();
+        let began = self.own_cpu();
         let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
         let path = format!("[V8 code {mapped:#x}]");
         let bounds = crate::AddressRange {
@@ -1318,7 +1322,7 @@ impl Processor {
         if let Some(image) = self.images.last_mut() {
             image.generated = true;
         }
-        self.loading += thread_cpu().saturating_sub(began);
+        self.loading += self.own_cpu().saturating_sub(began);
     }
 
     /// Maps the module of anonymous code `id` named `path`, which `digest`
@@ -2107,7 +2111,7 @@ impl Processor {
         for (kind, total) in [
             (
                 AccountKind::RecorderCpu,
-                thread_cpu().saturating_sub(self.began) + self.collection,
+                self.cpu().saturating_sub(self.began),
             ),
             (AccountKind::RecorderLoading, self.loading),
             (AccountKind::RecorderSetup, self.setup.unwrap_or_default()),
@@ -2568,8 +2572,8 @@ impl Processor {
     /// Ends the recorder's setup: what it costs from here on is the cost of
     /// recording the program.
     pub fn set_up(&mut self) {
-        self.setup
-            .get_or_insert_with(|| thread_cpu().saturating_sub(self.began));
+        let spent = self.cpu().saturating_sub(self.began);
+        self.setup.get_or_insert(spent);
     }
 
     /// The CPU time loading images has taken.
@@ -2582,9 +2586,16 @@ impl Processor {
         self.collection = total;
     }
 
-    /// The processor and reader's CPU time, for the recording budget.
+    /// The processor and reader's CPU time, and what the loader's workers
+    /// have spent since the processor began, for the recording budget.
     pub fn cpu(&self) -> std::time::Duration {
-        thread_cpu() + self.collection
+        self.own_cpu() + self.collection
+    }
+
+    /// The processor's own CPU time, and the loader's workers' since it
+    /// began: what loading an image costs, on whichever threads.
+    fn own_cpu(&self) -> std::time::Duration {
+        thread_cpu() + crate::pool::cpu().saturating_sub(self.pool_began)
     }
 
     /// Leaves every frame without lines, for a viewer to symbolize from
@@ -2796,6 +2807,23 @@ pub use crate::backend::perf::sys::thread_cpu;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the loader's workers spend is the recording's cost too, though
+    /// the processor only waits for it: loading a JIT compiler's objects
+    /// once cost seconds of their CPU time that no report counted.
+    #[test]
+    fn the_loaders_work_is_counted_as_recording() {
+        use rayon::prelude::*;
+        let processor = Processor::new(DebugFileSearch::default(), 64);
+        let before = processor.cpu();
+        let burn = |_| {
+            let began = thread_cpu();
+            while thread_cpu().saturating_sub(began) < std::time::Duration::from_millis(30) {}
+        };
+        crate::pool::install(|| (0..4).into_par_iter().for_each(burn)).expect("the pool");
+        let spent = processor.cpu().saturating_sub(before);
+        assert!(spent >= std::time::Duration::from_millis(110), "{spent:?}");
+    }
 
     #[test]
     fn changed_threads_keep_their_time_and_ids_without_counting_as_failures() {

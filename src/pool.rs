@@ -6,7 +6,8 @@
 //! Work already running on a pool, such as a test's own, stays there.
 
 use std::num::NonZeroUsize;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 /// The most workers the pool starts with when nothing says how many.
 pub const MAX_DEFAULT_JOBS: usize = 16;
@@ -30,6 +31,38 @@ pub enum JobsError {
 }
 
 static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// One worker, for loads too small to share: woken for each object a JIT
+/// compiler registers, the whole pool's workers spun looking for work,
+/// seconds of CPU time over a two-second program, on its own cores.
+static SMALL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// The CPU-time clock of every worker either pool started.
+static CLOCKS: Mutex<Vec<nix::time::ClockId>> = Mutex::new(Vec::new());
+
+/// Registers the calling worker's CPU-time clock, as glibc's
+/// `pthread_getcpuclockid` names a thread's: its id, inverted, shifted,
+/// and marked a thread's scheduler clock.
+fn register_worker() {
+    let tid = nix::unistd::gettid().as_raw();
+    let clock = nix::time::ClockId::from_raw((!tid << 3) | 6);
+    CLOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(clock);
+}
+
+/// The CPU time every worker of the loader has spent so far, whichever
+/// load it worked for.
+pub fn cpu() -> Duration {
+    CLOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(|&clock| nix::time::clock_gettime(clock).ok())
+        .map(Duration::from)
+        .sum()
+}
 
 /// How many workers to run: `option`, else the variable's value `variable`,
 /// else `config`, else `cpus` up to [`MAX_DEFAULT_JOBS`], or two when
@@ -79,6 +112,7 @@ fn start(jobs: NonZeroUsize) -> Result<&'static rayon::ThreadPool, JobsError> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs.get())
         .thread_name(|index| format!("microscope-load-{index}"))
+        .start_handler(|_| register_worker())
         .build()
         .map_err(|error| JobsError::Start(error.to_string()))?;
 
@@ -117,6 +151,29 @@ pub(crate) fn install<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, Job
     let pool = match POOL.get() {
         Some(pool) => pool,
         None => start(resolve_here(None, None)?)?,
+    };
+
+    Ok(pool.install(work))
+}
+
+/// Runs `work`, a load too small to share, on a pool of one worker, as
+/// [`install`] runs work on the shared pool.
+pub(crate) fn install_small<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, JobsError> {
+    if rayon::current_thread_index().is_some() {
+        return Ok(work());
+    }
+
+    let pool = match SMALL.get() {
+        Some(pool) => pool,
+        None => {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .thread_name(|_| "microscope-load-small".to_owned())
+                .start_handler(|_| register_worker())
+                .build()
+                .map_err(|error| JobsError::Start(error.to_string()))?;
+            SMALL.get_or_init(|| pool)
+        }
     };
 
     Ok(pool.install(work))
