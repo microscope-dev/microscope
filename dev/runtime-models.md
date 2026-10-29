@@ -1172,7 +1172,11 @@ the native agent and UUID at an exact nonce-bearing main-thread dispatch
 entry and redirects that entry to `Agent::Stop`.
 All threads run while Stop joins the I/O thread. Its return starts an all-stop
 barrier that verifies the server closed before ptrace detach. Borrowed servers
-only release debugger pauses and acknowledge the protocol cleanup. Native
+stay open: they release debugger pauses and acknowledge the protocol cleanup,
+and then microscope closes its WebSocket and waits, with the program running,
+for Node to answer the close before the all-stop. A node that exits with a
+session still open waits for its debugger, and a session that dropped then
+crashed Node's inspector thread in `TcpHolder::WriteRaw`. Native
 entry extraction and StringView layout are provider facts, not controller
 guesses. Cleanup has a deadline and reports failures, including a main thread
 that never reaches the check callback. It does not prevent the application

@@ -27,6 +27,10 @@ pub(super) const MAX_MESSAGE: usize = 64 << 20;
 /// The most workers nested inside one another that a session may name.
 pub(super) const MAX_SESSION_DEPTH: usize = 8;
 
+/// How long the transport's thread waits for the inspector to answer the
+/// close microscope sends, before it gives the connection up unanswered.
+const CLOSE_ANSWER: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Requests waiting for the transport's thread to write them.
 const QUEUE_LENGTH: usize = 256;
 
@@ -108,7 +112,9 @@ pub(super) enum Incoming {
     /// A message the transport could not take as a reply or an event.
     Malformed { session: Session, reason: Arc<str> },
     /// The last message, after a reply to every outstanding request.
-    Closed { reason: Arc<str> },
+    /// `answered` is whether microscope closed the connection and the
+    /// inspector answered the close, having ended microscope's session.
+    Closed { reason: Arc<str>, answered: bool },
 }
 
 /// A connection to one inspector. Dropping it closes the connection.
@@ -162,6 +168,7 @@ impl Connection {
             sink: Box::new(sink),
             pending: BTreeMap::new(),
             stopped: false,
+            answered: false,
         };
         let path = path.to_owned();
         let thread_shared = Arc::clone(&shared);
@@ -247,8 +254,10 @@ impl Connection {
         Ok(RequestId(id))
     }
 
-    /// Ends the connection without waiting. The transport's thread then
-    /// answers every outstanding request with `Closed` and delivers `Closed`.
+    /// Ends the connection without waiting. The transport's thread sends the
+    /// inspector a close and waits, up to [`CLOSE_ANSWER`], for its answer;
+    /// it then answers every outstanding request with `Closed` and delivers
+    /// `Closed`.
     pub(super) fn close(&self) {
         self.shared.closing.store(true, Ordering::Release);
         self.shared.wake();
@@ -323,6 +332,9 @@ struct Transport {
     sink: Box<dyn FnMut(Incoming) -> bool + Send>,
     pending: BTreeMap<u64, Pending>,
     stopped: bool,
+
+    /// Whether the inspector answered the close microscope sent.
+    answered: bool,
 }
 
 impl Transport {
@@ -351,6 +363,7 @@ impl Transport {
 
         loop {
             if shared.closing() {
+                self.answered = close(&mut socket);
                 return closed_by_caller();
             }
 
@@ -601,7 +614,8 @@ impl Transport {
                 return;
             }
         }
-        self.deliver(Incoming::Closed { reason });
+        let answered = self.answered;
+        self.deliver(Incoming::Closed { reason, answered });
     }
 
     fn deliver(&mut self, incoming: Incoming) -> bool {
@@ -609,6 +623,54 @@ impl Transport {
             self.stopped = true;
         }
         !self.stopped
+    }
+}
+
+/// Sends the inspector a close and reads until it answers, for at most
+/// [`CLOSE_ANSWER`]: whether it did. What else it sends meanwhile is
+/// dropped, as the caller has closed the connection.
+fn close(socket: &mut WebSocket<QuickAck>) -> bool {
+    let deadline = std::time::Instant::now() + CLOSE_ANSWER;
+    match socket.close(None) {
+        Ok(()) => {}
+        Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
+        Err(_) => return false,
+    }
+
+    loop {
+        let flags = match socket.flush() {
+            Ok(()) => PollFlags::IN,
+            Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                PollFlags::IN | PollFlags::OUT
+            }
+            Err(tungstenite::Error::ConnectionClosed) => return true,
+            Err(_) => return false,
+        };
+
+        // tungstenite reads the inspector's answering close as a message,
+        // then reports the connection closed.
+        loop {
+            match socket.read() {
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(tungstenite::Error::ConnectionClosed) => return true,
+                Err(_) => return false,
+            }
+        }
+
+        let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return false;
+        };
+        let Ok(left) = rustix::event::Timespec::try_from(left) else {
+            return false;
+        };
+        let mut fds = [PollFd::from_borrowed_fd(socket.get_ref().0.as_fd(), flags)];
+        match rustix::event::poll(&mut fds, Some(&left)) {
+            Ok(_) | Err(Errno::INTR) => {}
+            Err(_) => return false,
+        }
     }
 }
 
@@ -1432,6 +1494,7 @@ mod tests {
             sink: Box::new(|_| true),
             pending: BTreeMap::new(),
             stopped: false,
+            answered: false,
         };
         assert!(
             transport
@@ -1562,7 +1625,7 @@ mod tests {
         drop(listener);
 
         let client = Client::open(address);
-        let Incoming::Closed { reason } = client.next() else {
+        let Incoming::Closed { reason, .. } = client.next() else {
             panic!("expected Closed");
         };
         assert!(reason.starts_with("cannot connect"), "{reason}");

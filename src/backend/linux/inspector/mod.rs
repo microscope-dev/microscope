@@ -847,7 +847,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
                 return self.inspector_event(runtime, &session, &method, &params);
             }
-            Incoming::Closed { reason } => {
+            Incoming::Closed { reason, .. } => {
                 record!("the inspector connection closed: {reason}");
                 inspector.connection = None;
                 inspector.isolates.clear();

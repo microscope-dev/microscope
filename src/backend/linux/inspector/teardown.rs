@@ -31,6 +31,11 @@ enum Phase {
     Quiescing,
     Waiting,
     Borrowed(RequestId),
+    /// The borrowed inspector acknowledged the release, and microscope's
+    /// session closes while the program runs: a node that exits with a
+    /// session open waits for its debugger, and its inspector's thread can
+    /// crash when the session drops then.
+    Closing,
     Captured {
         pid: Pid,
         stack: u64,
@@ -611,23 +616,34 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
         let returning = matches!(cleanup.phase, Phase::Returning { .. } | Phase::Done);
+        let closing = matches!(cleanup.phase, Phase::Closing);
         let borrowed_reply = matches!(&message.incoming, Incoming::Reply { id, .. } if matches!(cleanup.phase, Phase::Borrowed(request) if request == *id));
         let Some(inspector) = inferior.inspectors.records.get_mut(&message.runtime) else {
             return Ok(());
         };
         match message.incoming {
             Incoming::Reply { result, .. } if borrowed_reply => {
+                let phase = match (result, inspector.connection.as_ref()) {
+                    (Ok(_), Some(link)) => {
+                        link.connection.close();
+                        Phase::Closing
+                    }
+                    (Ok(_), None) => Phase::Failed(
+                        "the borrowed inspector disconnected as it acknowledged detach".into(),
+                    ),
+                    (Err(reason), _) => Phase::Failed(
+                        format!("the borrowed inspector did not acknowledge detach: {reason}")
+                            .into(),
+                    ),
+                };
+                let closing = matches!(phase, Phase::Closing);
                 if let Some(cleanup) = inferior.inspectors.cleanup.as_mut() {
-                    cleanup.phase = match result {
-                        Ok(_) => Phase::Done,
-                        Err(reason) => Phase::Failed(
-                            format!("the borrowed inspector did not acknowledge detach: {reason}")
-                                .into(),
-                        ),
-                    };
+                    cleanup.phase = phase;
                 }
-                self.queue_internal_edit(Edit::InspectorCleanup)?;
-                self.finish_barrier_if_ready()?;
+                if !closing {
+                    self.queue_internal_edit(Edit::InspectorCleanup)?;
+                    self.finish_barrier_if_ready()?;
+                }
             }
             Incoming::Event {
                 session,
@@ -661,17 +677,30 @@ impl<P: LinuxTraceOps> Controller<P> {
                     }
                 }
             }
-            Incoming::Closed { reason } => {
+            Incoming::Closed { reason, answered } => {
                 inspector.connection = None;
                 inspector.isolates.clear();
-                if !returning {
+                if returning {
+                    return Ok(());
+                }
+                if closing && answered {
+                    record!("the borrowed inspector ended microscope's session");
+                    if let Some(cleanup) = inferior.inspectors.cleanup.as_mut() {
+                        cleanup.phase = Phase::Done;
+                    }
+                } else if closing {
+                    self.fail_inspector_cleanup(
+                        format!("the borrowed inspector did not answer the close of microscope's session: {reason}")
+                            .into(),
+                    );
+                } else {
                     self.fail_inspector_cleanup(
                         format!("the inspector disconnected before native cleanup: {reason}")
                             .into(),
                     );
-                    self.queue_internal_edit(Edit::InspectorCleanup)?;
-                    self.finish_barrier_if_ready()?;
                 }
+                self.queue_internal_edit(Edit::InspectorCleanup)?;
+                self.finish_barrier_if_ready()?;
             }
             _ => {}
         }

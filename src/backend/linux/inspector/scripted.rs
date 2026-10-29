@@ -314,6 +314,18 @@ impl Scripted {
         );
     }
 
+    /// Hands the controller messages until the connection's last, which
+    /// follows replies to the requests still outstanding, as `sent`'s
+    /// markers are.
+    fn pump_closed(&mut self) -> Incoming {
+        loop {
+            let incoming = self.pump();
+            if matches!(incoming, Incoming::Closed { .. }) {
+                return incoming;
+            }
+        }
+    }
+
     /// Every request the controller has sent since the last call: a marker
     /// sent after them arrives once they all have.
     fn sent(&mut self) -> Vec<Request> {
@@ -982,6 +994,7 @@ fn a_disconnect_mid_request_leaves_the_breakpoint_pending() {
     });
     let closed = stale(Incoming::Closed {
         reason: "an old close".into(),
+        answered: false,
     });
     for message in [pause, closed] {
         assert!(scripted.harness.controller.handle_message(message));
@@ -1080,7 +1093,7 @@ fn a_process_exiting_while_armed_closes_the_connection() {
                 );
                 replies += 1;
             }
-            Incoming::Closed { reason } => {
+            Incoming::Closed { reason, .. } => {
                 assert_eq!(&*reason, "closed by microscope");
                 break;
             }
@@ -1359,6 +1372,11 @@ fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
         ));
     scripted.inspector.reply(&release, json!({"id": "isolate"}));
     scripted.pump_reply();
+    let closed = scripted.pump_closed();
+    assert!(
+        matches!(closed, Incoming::Closed { answered: true, .. }),
+        "{closed:?}"
+    );
     scripted
         .harness
         .controller
@@ -1379,6 +1397,70 @@ fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
     assert!(
         matches!(result.try_recv(), Ok(Ok(()))),
         "the worker's exit ends the cleanup's stop and the detach: {:?}",
+        scripted.actions()
+    );
+}
+
+/// Detaching from a program whose own inspector microscope borrowed leaves
+/// the server open but ends microscope's session first, while the program
+/// still runs: once the inspector acknowledges the release, the controller
+/// closes its WebSocket, and stops the threads to detach only once the
+/// inspector has answered the close. A node that exits with a session open
+/// waits for its debugger, and a session dropped then crashed its
+/// inspector's thread.
+#[test]
+fn a_borrowed_inspector_answers_the_close_of_its_session_before_the_detach() {
+    use super::super::{Signal, WaitEvent};
+
+    let mut scripted = Scripted::connected(1);
+    scripted.sent();
+    scripted.record().ownership = super::super::node_launch::Ownership::Borrowed;
+    scripted
+        .harness
+        .controller
+        .inferior
+        .as_mut()
+        .expect("inferior")
+        .origin = super::super::InferiorOrigin::Attached;
+
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    scripted.harness.controller.begin_shutdown(Some(reply));
+    let release = scripted
+        .sent()
+        .into_iter()
+        .find(|request| request.method == "Runtime.getIsolateId")
+        .expect("the cleanup asks the borrowed inspector to acknowledge");
+    scripted.actions();
+
+    scripted.inspector.reply(&release, json!({"id": "isolate"}));
+    scripted.pump_reply();
+    let early = scripted.actions();
+    assert!(
+        !early
+            .iter()
+            .any(|action| action.starts_with("interrupt") || action.starts_with("detach")),
+        "the program runs on until its inspector answers the close: {early:?}"
+    );
+    assert!(result.try_recv().is_err(), "the detach awaits the close");
+
+    scripted.inspector.wait_gone();
+    let closed = scripted.pump_closed();
+    assert!(
+        matches!(closed, Incoming::Closed { answered: true, .. }),
+        "{closed:?}"
+    );
+    let main = scripted.main();
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            main,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        ));
+    assert!(
+        matches!(result.try_recv(), Ok(Ok(()))),
+        "the answered close lets the detach finish: {:?}",
         scripted.actions()
     );
 }
