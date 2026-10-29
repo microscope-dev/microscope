@@ -2321,6 +2321,11 @@ for variant in \
     build_fixture "$compiler" "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-$name" \
         "$level" -g3 "$frames" "$code" "$link" -pthread
 done
+# Built as Google ships Chrome: frame pointers, but no call-frame information
+# and no symbols, so that only its code proves its frames.
+build_fixture clang "$c_fixtures_dir/profile-stacks.c" "$output_dir/profile-stacks-clang-o2-nocfi" \
+    -O2 -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -fno-unwind-tables -fPIE -pie \
+    -pthread -s
 # A program attached to, with threads started before and after.
 build_fixture gcc "$c_fixtures_dir/profile-attach.c" "$output_dir/profile-attach-gcc-o0" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread

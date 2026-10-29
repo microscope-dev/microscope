@@ -192,6 +192,41 @@ fn a_function_breakpoint_records_its_exact_callers_in_every_build() {
     }
 }
 
+/// A program built as Google ships Chrome, with frame pointers but no
+/// call-frame information or symbols, unwinds by what its code proves:
+/// the functions its calls and address loads reach are found, and each
+/// frame whose prologue keeps the frame pointer carries the stack on.
+#[test]
+fn code_without_call_frame_information_unwinds_by_its_proved_frames() {
+    let options = RecordOptions {
+        off_cpu: false,
+        ..RecordOptions::default()
+    };
+    let recording = record(command("clang-o2-nocfi", 50_000_000), &options).expect("record");
+    assert!(recording.status.success());
+    let stacks = recording.profile.stacks();
+    assert!(stacks.len() > 100, "{} stacks", stacks.len());
+    let complete = stacks
+        .iter()
+        .filter(|stack| stack.ending == StackEnding::Complete)
+        .count();
+    // Both threads spin in leaf, under middle and outer; the main thread
+    // under five frames of descend and main, the other under worker and
+    // glibc's thread start.
+    let deep = stacks
+        .iter()
+        .filter(|stack| stack.ending == StackEnding::Complete && stack.functions.len() >= 6)
+        .count();
+    assert!(
+        complete * 100 >= stacks.len() * 95 && deep == complete,
+        "{complete} of {} stacks complete, {deep} of them deep: {:?}",
+        stacks.len(),
+        stacks
+            .iter()
+            .find(|stack| stack.ending != StackEnding::Complete)
+    );
+}
+
 #[test]
 fn auto_mode_copies_a_small_stack_only_where_the_chain_carries_every_stack() {
     for (variant, bytes, why) in [

@@ -102,6 +102,14 @@ kernel drop samples. A program without frame pointers whose frames
 need more ends with `[stack copy exhausted]`, and the report suggests a larger
 `--stack-bytes`. perf copies at most 65528 bytes per sample.
 
+Some programs keep frame pointers but ship call-frame information for little
+of their code, as Google's build of Chrome does. When call-frame information
+describes less than half of a module's code, microscope proves the frames of
+the rest from its instructions: a function found from a call, an address its
+code loads, a relocation, a symbol, or a prologue after padding, whose code
+keeps the frame pointer, carries the stack on. Proving costs a few seconds
+the first time such a large module loads; the image cache keeps the result.
+
 Code a just-in-time compiler generates has no file. A program that writes a
 perf map, `/tmp/perf-PID.map`, names it: stacks go on through the functions
 the map names, under those names. For Python, run the interpreter with

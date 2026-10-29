@@ -466,6 +466,50 @@ impl CodeFrame {
 /// entered, whose rbp holds the address of the word that saved the
 /// caller's, 16 bytes below the canonical frame address. Elsewhere nothing
 /// is known.
+/// `push rbp; mov rbp, rsp`, the prologue of a function that keeps the
+/// frame-pointer chain.
+pub(in crate::debug_info) const PROLOGUE: [u8; 4] = [0x55, 0x48, 0x89, 0xe5];
+
+/// The starts of functions in `code`, the bytes of an executable section
+/// at `address`, read from its start as a compiler's code: what it calls
+/// directly or loads as an address relative to the instruction pointer,
+/// and code that sets up a frame right after `int3` padding, which no
+/// instruction falls through to. What it loads may also be data; those
+/// that lie outside the code are for the caller to leave out.
+pub(in crate::debug_info) fn code_entries(code: &[u8], address: u64) -> Vec<u64> {
+    let mut entries = Vec::new();
+    let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
+    let mut instruction = Instruction::default();
+    let mut padded = false;
+    while decoder.can_decode() {
+        decoder.decode_out(&mut instruction);
+        if instruction.is_invalid() {
+            padded = false;
+            continue;
+        }
+        let after_padding =
+            std::mem::replace(&mut padded, instruction.mnemonic() == Mnemonic::Int3);
+        if after_padding && !padded {
+            let offset = usize::try_from(instruction.ip() - address).unwrap_or(usize::MAX);
+            if code
+                .get(offset..)
+                .is_some_and(|rest| rest.starts_with(&PROLOGUE))
+            {
+                entries.push(instruction.ip());
+            }
+        }
+        if instruction.flow_control() == FlowControl::Call
+            && instruction.op0_kind() == OpKind::NearBranch64
+        {
+            entries.push(instruction.near_branch_target());
+        } else if instruction.mnemonic() == Mnemonic::Lea && instruction.is_ip_rel_memory_operand()
+        {
+            entries.push(instruction.ip_rel_memory_address());
+        }
+    }
+    entries
+}
+
 pub(in crate::debug_info) fn runtime_frames(
     code: &[u8],
     address: u64,

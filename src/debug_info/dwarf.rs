@@ -2011,9 +2011,12 @@ fn load_unwind_info(
     Ok(unwind)
 }
 
-/// The frames of V8's builtins, which no call-frame information
-/// describes, as their code and V8's conventions prove them. A separate
-/// debug file may name the builtins its module's file was stripped of.
+/// The frames of code no call-frame information describes, as its
+/// instructions prove them: V8's builtins, by V8's conventions too, and,
+/// in a module whose call-frame information leaves most of its code
+/// undescribed, as Google's build of Chrome does, every function its own
+/// code or relocations reach. A separate debug file may name the builtins
+/// its module's file was stripped of.
 #[cfg(target_arch = "x86_64")]
 fn proved_frames(
     object: &object::File<'_>,
@@ -2046,14 +2049,39 @@ fn proved_frames(
             })
     };
     let mut frames = Vec::new();
-    if builtins.is_empty() {
-        return frames;
-    }
-    let starts: std::collections::BTreeSet<u64> =
+    let mut starts: std::collections::BTreeSet<u64> =
         builtins.iter().map(|(address, _)| *address).collect();
+    if !builtins.is_empty() {
+        v8_frames(
+            object,
+            debug_object,
+            builtins,
+            &described,
+            &mut starts,
+            &mut frames,
+        );
+    }
+
+    if sparsely_described(object, unwind) {
+        undescribed_frames(object, unwind, &described, &starts, &mut frames);
+    }
+    frames
+}
+
+/// The frames of V8's builtins and of V8's other hand-written code, whose
+/// starts are added to `starts`.
+#[cfg(target_arch = "x86_64")]
+fn v8_frames(
+    object: &object::File<'_>,
+    debug_object: Option<&object::File<'_>>,
+    builtins: Vec<(u64, &[u8])>,
+    described: &dyn Fn(u64) -> bool,
+    starts: &mut std::collections::BTreeSet<u64>,
+    frames: &mut Vec<(AddressRange<ImageAddress>, u32)>,
+) {
     for (address, code) in builtins {
         if !described(address) {
-            super::x86_64::frames::runtime_frames(code, address, true, &mut frames);
+            super::x86_64::frames::runtime_frames(code, address, true, frames);
         }
     }
 
@@ -2085,10 +2113,128 @@ fn proved_frames(
             size => address + size,
         };
         if let Some(code) = code_bytes(object, address, end) {
-            super::x86_64::frames::runtime_frames(code, address, false, &mut frames);
+            super::x86_64::frames::runtime_frames(code, address, false, frames);
+            starts.insert(address);
         }
     }
-    frames
+}
+
+/// Whether call-frame information describes less than half of the code
+/// of `object`'s executable sections.
+#[cfg(target_arch = "x86_64")]
+fn sparsely_described(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> bool {
+    let code: u64 = object
+        .sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .map(|section| section.size())
+        .sum();
+    let described: u64 = [&unwind.eh_frame_index, &unwind.debug_frame_index]
+        .iter()
+        .flat_map(|index| index.entries.iter())
+        .map(|entry| entry.end.get().saturating_sub(entry.start.get()))
+        .sum();
+    described.saturating_mul(2) < code
+}
+
+/// The frames of the functions of `object` that no call-frame information
+/// describes and that `starts` does not already hold, each found at an
+/// address its code calls or loads, a relocation holds, or a symbol
+/// names, and analyzed up to the next function's start.
+#[cfg(target_arch = "x86_64")]
+fn undescribed_frames(
+    object: &object::File<'_>,
+    unwind: &crate::image::unwind::Unwind,
+    described: &(dyn Fn(u64) -> bool + Sync),
+    starts: &std::collections::BTreeSet<u64>,
+    frames: &mut Vec<(AddressRange<ImageAddress>, u32)>,
+) {
+    let sections: Vec<(u64, &[u8])> = object
+        .sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .filter_map(|section| Some((section.address(), section.data().ok()?)))
+        .collect();
+    let in_code = |address: u64| {
+        sections
+            .iter()
+            .any(|(start, code)| *start <= address && address - start < code.len() as u64)
+    };
+
+    let mut entries: Vec<u64> = sections
+        .par_iter()
+        .flat_map_iter(|(address, code)| super::x86_64::frames::code_entries(code, *address))
+        .collect();
+    entries.extend(
+        object
+            .symbols()
+            .chain(object.dynamic_symbols())
+            .filter(|symbol| symbol.kind() == object::SymbolKind::Text)
+            .map(|symbol| symbol.address()),
+    );
+    entries.extend(
+        object
+            .dynamic_relocations()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, relocation)| {
+                matches!(
+                    relocation.flags(),
+                    object::RelocationFlags::Elf {
+                        r_type: object::elf::R_X86_64_RELATIVE
+                    }
+                )
+                .then(|| relocation.addend().cast_unsigned())
+            }),
+    );
+    entries.retain(|&address| in_code(address));
+
+    // Where each function ends: at the next start of any function,
+    // described or not.
+    let mut bounds = entries.clone();
+    bounds.extend(
+        [&unwind.eh_frame_index, &unwind.debug_frame_index]
+            .iter()
+            .flat_map(|index| index.entries.iter())
+            .map(|entry| entry.start.get()),
+    );
+    bounds.extend(starts.iter().copied());
+    bounds.sort_unstable();
+    bounds.dedup();
+    entries.sort_unstable();
+    entries.dedup();
+
+    let found: Vec<Vec<(AddressRange<ImageAddress>, u32)>> = entries
+        .par_iter()
+        .filter(|&&address| !starts.contains(&address))
+        .filter_map(|&address| {
+            let (start, code) = sections
+                .iter()
+                .find(|(start, code)| *start <= address && address - start < code.len() as u64)?;
+            let section_end = start + code.len() as u64;
+            let next = bounds.partition_point(|&bound| bound <= address);
+            let end = bounds
+                .get(next)
+                .copied()
+                .unwrap_or(section_end)
+                .min(section_end);
+            // Google's Chrome describes only the prologue of many functions,
+            // in an entry of a few bytes; the rest of such a function is
+            // proved, and unwinding prefers an entry wherever one exists.
+            if described(address) && described(end.saturating_sub(1)) {
+                return None;
+            }
+            let offset = usize::try_from(address - start).ok()?;
+            let length = usize::try_from(end - address).ok()?;
+            let code = code.get(offset..offset.checked_add(length)?)?;
+            // A function that begins by linking its frame was built to keep
+            // the chain, so each call its paths do not reach, as the cases
+            // of a jump table, keeps it too.
+            let convention = code.starts_with(&super::x86_64::frames::PROLOGUE);
+            let mut frames = Vec::new();
+            super::x86_64::frames::runtime_frames(code, address, convention, &mut frames);
+            Some(frames)
+        })
+        .collect();
+    frames.extend(found.into_iter().flatten());
 }
 
 /// The instructions of `section`'s functions at which registers their
