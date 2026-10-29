@@ -532,6 +532,19 @@ pub(super) const fn is_public(row: &LineRow) -> bool {
             || row.flags & (row_flags::PROLOGUE_END | row_flags::EPILOGUE_BEGIN) != 0)
 }
 
+/// The line of row `index` of the given tables, as [`decode_row`] finds
+/// it, without reading the rest of the row.
+pub(super) fn row_line(rows: &[LineRow], extras: &[LineExtra], index: usize) -> u64 {
+    let row = &rows[index];
+    if row.line.get() != WIDE_LINE || row.flags & row_flags::EXTRA == 0 {
+        return u64::from(row.line.get());
+    }
+
+    extras
+        .binary_search_by_key(&index, |extra| extra.row.get() as usize)
+        .map_or_else(|_| u64::from(WIDE_LINE), |found| extras[found].line.get())
+}
+
 /// Row `index` of the given tables.
 pub(super) fn decode_row(
     addresses: &[RowAddress],

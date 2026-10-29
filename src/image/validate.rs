@@ -90,6 +90,7 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
         return Err(malformed("a file names no path"));
     }
 
+    let parallel = image.as_bytes().len() >= PARALLEL_VALIDATION;
     let lines = || {
         let _phase = crate::span!("validate.lines");
         let tables = Lines {
@@ -98,14 +99,25 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
             extras: image.table(),
             sequences: image.table(),
             ranges: image.table(),
+            parallel,
         };
 
-        tables.rows(files.len())?;
-        tables.extras()?;
-        tables.sequences()?;
-        tables.ranges()?;
-        tables.statements(image.table())?;
-        tables.boundaries(image.table())
+        // Each check reads the tables alone, and none relies on another
+        // having passed.
+        let checks: [&(dyn Fn() -> Result<(), ImageError> + Sync); 6] = [
+            &|| tables.rows(files.len()),
+            &|| tables.extras(),
+            &|| tables.sequences(),
+            &|| tables.ranges(),
+            &|| tables.statements(image.table()),
+            &|| tables.boundaries(image.table()),
+        ];
+        if parallel {
+            let results: Vec<_> = checks.par_iter().map(|check| check()).collect();
+            results.into_iter().collect()
+        } else {
+            checks.iter().try_for_each(|check| check())
+        }
     };
 
     let families: [(&'static str, Validation); 14] = [
@@ -133,7 +145,7 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
     // parallel; a small one's are checked in turn, which takes less than
     // waking the pool's threads. Either way the first to fail in this
     // order is the error.
-    if image.as_bytes().len() < PARALLEL_VALIDATION {
+    if !parallel {
         lines()?;
         return families.iter().try_for_each(family);
     }
@@ -158,6 +170,9 @@ struct Lines<'a> {
     extras: &'a [LineExtra],
     sequences: &'a [LineSequence],
     ranges: &'a [LineRange],
+
+    /// Whether the tables are large enough to check in parallel.
+    parallel: bool,
 }
 
 /// Whether `items`' keys strictly increase.
@@ -312,17 +327,23 @@ impl Lines<'_> {
             return Err(malformed("the statement index is out of order"));
         }
 
-        for key in statements {
+        // The keys name rows in no order a cache likes, so a large index's
+        // are checked in parallel.
+        let agrees = |key: &StatementKey| {
             let at = key.row.get() as usize;
-            let agrees = self.rows.get(at).is_some_and(|row| {
+            self.rows.get(at).is_some_and(|row| {
                 indexed(row)
                     && row.file == key.file
-                    && lines::decode_row(self.addresses, self.rows, self.extras, at).line
-                        == key.line.get()
-            });
-            if !agrees {
-                return Err(malformed("the statement index disagrees with the rows"));
-            }
+                    && lines::row_line(self.rows, self.extras, at) == key.line.get()
+            })
+        };
+        let all = if self.parallel {
+            statements.par_iter().with_min_len(1 << 14).all(agrees)
+        } else {
+            statements.iter().all(agrees)
+        };
+        if !all {
+            return Err(malformed("the statement index disagrees with the rows"));
         }
 
         Ok(())
@@ -347,8 +368,10 @@ impl Lines<'_> {
         }
 
         if !strictly_ordered(boundaries, |boundary| {
+            // `rows` rejects tables with too few addresses.
             let at = boundary.row.get();
-            (self.addresses[at as usize].address.get(), at)
+            let address = self.addresses.get(at as usize);
+            (address.map(|address| address.address.get()), at)
         }) {
             return Err(malformed("the boundary index is out of order"));
         }
