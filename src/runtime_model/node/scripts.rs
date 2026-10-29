@@ -4,7 +4,10 @@
 //!
 //! Script identity uses its source string and id, never reused within an
 //! isolate. Function identity adds its script's address and function literal
-//! id. Line ends are decoded once per script, only as far as frames need.
+//! id. Line ends are decoded once per script, only as far as frames need,
+//! and once per source: each of a Node program's workers compiles the same
+//! files into an isolate of its own, and a script whose source reads the
+//! same as one already scanned under its path takes that one's line ends.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +25,26 @@ pub(super) struct Table {
 
     /// Each function's first line, by its shared information's address.
     first_lines: HashMap<u64, (FunctionProof, Option<u32>)>,
+
+    /// The line ends scanned from the source of the scripts of each path.
+    sources: HashMap<Arc<str>, Source>,
+}
+
+/// The line ends scanned from a source, read by read, for every script of
+/// its path whose source reads the same: a read of a script's source
+/// whose units hash as the same read of this one did, after reads that
+/// all did, holds the same line ends.
+#[derive(Debug, Default)]
+struct Source {
+    length: u64,
+
+    /// The hash of each read: its units, and the one after, which says
+    /// whether a carriage return at its end ends its line.
+    reads: Vec<u128>,
+
+    /// The line ends found, and how many all the reads up to each found.
+    ends: Vec<u64>,
+    found: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +68,10 @@ struct Lines {
     ends_word: Option<u64>,
     scanned: u64,
     complete: bool,
+
+    /// How many reads of the source read the same as its path's
+    /// [`Source`], every one before them too.
+    same: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,8 +192,18 @@ impl Table {
         script: Object,
         offset: u64,
     ) -> Result<(u32, u32), Problem> {
-        let row = self.script(reader, script)?;
-        row.lines.cover(reader, script, offset)?;
+        let path = self.script(reader, script)?.path.clone();
+        let source = path.map(|path| {
+            if self.sources.len() >= MAX_ROWS && !self.sources.contains_key(&path) {
+                self.sources.clear();
+            }
+            self.sources.entry(path).or_default()
+        });
+        let row = self
+            .scripts
+            .get_mut(&script.0)
+            .ok_or("the script's row is missing")?;
+        row.lines.cover(reader, script, offset, source)?;
         let ends = &row.lines.ends;
         // Lines end at their newline; the line of `offset` is the first whose
         // end is at or past it.
@@ -210,8 +247,15 @@ const MAX_SOURCE_SCAN: u64 = 1 << 24;
 impl Lines {
     /// Reads newline offsets until one is at or past `offset`, or the
     /// script ends: from V8's line ends where it computed them, else from
-    /// the source.
-    fn cover(&mut self, reader: &Reader<'_>, script: Object, offset: u64) -> Result<(), Problem> {
+    /// the source, in whole reads, taking those of `shared` that the source
+    /// reads the same as.
+    fn cover(
+        &mut self,
+        reader: &Reader<'_>,
+        script: Object,
+        offset: u64,
+        mut shared: Option<&mut Source>,
+    ) -> Result<(), Problem> {
         let word = reader.field(script, Field::ScriptLineEnds)?;
         let computed = reader
             .object(word)?
@@ -260,27 +304,48 @@ impl Lines {
         }
         let mut text = Vec::new();
         while self.scanned < target {
-            let limit = (target - self.scanned).min(SCAN);
+            // Whole reads, so that each script of a source reads the same.
+            let limit = (length - self.scanned).min(SCAN);
             text.clear();
             // Look ahead one unit so a CRLF straddling reads ends at its LF.
             reader.string_into(source, self.scanned, limit + 1, 0, &mut text)?;
             let scanned = self.scanned;
-            let mut ends = Vec::new();
             let consumed = text.len().min(limit as usize);
             if consumed == 0 {
                 return Err("the script's source ends before its declared length".into());
             }
-            for (at, &unit) in text.iter().take(consumed).enumerate() {
-                let end = scanned + at as u64;
-                match unit {
-                    0x0d => ends.push(end + u64::from(text.get(at + 1) == Some(&0x0a))),
-                    0x0a if ends.last().or_else(|| self.ends.last()) != Some(&end) => {
-                        ends.push(end);
-                    }
-                    0x2028 | 0x2029 => ends.push(end),
-                    _ => {}
-                }
+
+            // The read is shared only while every earlier one was.
+            let read = self.same;
+            let hash = twox_hash::XxHash3_128::oneshot(zerocopy::IntoBytes::as_bytes(&text[..]));
+            if let Some(shared) = shared.as_deref_mut()
+                && shared.reads.is_empty()
+            {
+                shared.length = length;
             }
+            let shared = shared
+                .as_deref_mut()
+                .filter(|shared| shared.length == length && scanned == read as u64 * SCAN);
+            let ends = match shared {
+                Some(shared) if shared.reads.get(read) == Some(&hash) => {
+                    self.same += 1;
+                    let from = read
+                        .checked_sub(1)
+                        .map_or(0, |earlier| shared.found[earlier]);
+                    shared.ends[from..shared.found[read]].to_vec()
+                }
+                shared => {
+                    let ends = scan(&text, consumed, scanned, self.ends.last().copied());
+                    if let Some(shared) = shared.filter(|shared| shared.reads.len() == read) {
+                        shared.reads.push(hash);
+                        shared.ends.extend_from_slice(&ends);
+                        shared.found.push(shared.ends.len());
+                        self.same += 1;
+                    }
+                    ends
+                }
+            };
+
             if ends.len() > MAX_LINE_ENDS - self.ends.len() {
                 return Err("a script exceeds the line ends limit".into());
             }
@@ -290,6 +355,22 @@ impl Lines {
         self.complete = self.scanned >= length;
         Ok(())
     }
+}
+
+/// The line ends of the first `consumed` of `text`, which begins at unit
+/// `scanned` of a source whose last line end before it is `last`.
+fn scan(text: &[u16], consumed: usize, scanned: u64, last: Option<u64>) -> Vec<u64> {
+    let mut ends = Vec::new();
+    for (at, &unit) in text.iter().take(consumed).enumerate() {
+        let end = scanned + at as u64;
+        match unit {
+            0x0d => ends.push(end + u64::from(text.get(at + 1) == Some(&0x0a))),
+            0x0a if ends.last().copied().or(last) != Some(end) => ends.push(end),
+            0x2028 | 0x2029 => ends.push(end),
+            _ => {}
+        }
+    }
+    ends
 }
 
 #[cfg(test)]
@@ -521,6 +602,43 @@ mod tests {
         );
     }
 
+    /// Scripts of one path, as each worker of a Node program compiles,
+    /// share the line ends of each read their sources hold alike, and only
+    /// while every earlier read was alike: a source that differs from the
+    /// second read on has its own line ends there.
+    #[test]
+    fn scripts_of_one_path_share_line_ends_only_where_their_sources_match() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let mut writer = Writer {
+            heap: &mut heap,
+            layout: &layout,
+        };
+        let map = writer.map(0x1000, 0);
+        let scan = usize::try_from(super::SCAN).unwrap();
+        let first: String = "a".repeat(scan - 1) + "\n";
+        let name = writer.string_units(0x2000, map, &['s' as u16]);
+        let mut script = |at: u64, rest: &str| {
+            let text: Vec<u16> = format!("{first}{rest}").encode_utf16().collect();
+            let source = writer.string_units(at << 20, map, &text);
+            Object(writer.script(0x3000 + at * 0x100, 0, (at, name, source)))
+        };
+        let (worker, other, again) = (script(1, "b\nc"), script(2, "bc\n"), script(3, "b\nc"));
+        let mut table = Table::default();
+        let reader = reader(&heap, &layout);
+        let at = super::SCAN + 2;
+
+        assert_eq!(table.line_column(&reader, worker, at).unwrap(), (3, 1));
+        assert_eq!(table.line_column(&reader, other, at).unwrap(), (2, 3));
+        assert_eq!(table.line_column(&reader, again, at).unwrap(), (3, 1));
+        let row = |script: Object| &table.scripts[&script.0].lines;
+        assert_eq!(
+            (row(worker).same, row(other).same, row(again).same),
+            (2, 1, 2)
+        );
+        assert_eq!(table.sources["s"].reads.len(), 2);
+    }
+
     #[test]
     fn oversized_line_end_arrays_report_a_limit_instead_of_a_prefix() {
         let layout = layout();
@@ -539,7 +657,7 @@ mod tests {
         writer.field(script.0, Field::ScriptLineEnds, ends);
         let mut lines = super::Lines::default();
         let problem = lines
-            .cover(&reader(&heap, &layout), script, 0)
+            .cover(&reader(&heap, &layout), script, 0, None)
             .expect_err("the declared line count exceeds the limit");
         assert!(problem.contains("limit"), "{problem}");
     }
@@ -561,7 +679,7 @@ mod tests {
         let script = Object(writer.script(0x3000, 0, (1, 0, source)));
         let mut lines = super::Lines::default();
         let problem = lines
-            .cover(&reader(&heap, &layout), script, 1 << 24)
+            .cover(&reader(&heap, &layout), script, 1 << 24, None)
             .expect_err("the source scan is bounded");
         assert!(problem.contains("scan limit"), "{problem}");
     }
