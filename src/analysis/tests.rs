@@ -1101,6 +1101,53 @@ fn collapsing_cycles_cuts_each_path_back_to_the_first_call() {
     );
 }
 
+/// A C++ function is named with its parameter list, which can run past
+/// 200 characters, so a name without it picks the function out when it
+/// is the only one so named; overloads are all found, for the caller to
+/// tell apart; and a name nothing has finds the names that contain it.
+#[test]
+fn a_name_without_its_parameters_finds_the_function() {
+    let capture = named_stacks(&[(
+        &[
+            "main",
+            "content::RendererMain(content::MainFunctionParams)",
+            "blink::Paint(int) const",
+            "blink::Paint(float) const",
+            "blink::PaintLayer::Update()",
+            "operator()",
+        ],
+        1,
+    )]);
+    let keys = Keys::new(&capture, Granularity::Function);
+    let name = |key: u32| keys.name(key);
+
+    let renderer = keys.named("content::RendererMain");
+    assert_eq!(
+        renderer.iter().map(|&key| name(key)).collect::<Vec<_>>(),
+        ["content::RendererMain(content::MainFunctionParams)"]
+    );
+    let mut paints: Vec<String> = keys.named("blink::Paint").into_iter().map(name).collect();
+    paints.sort();
+    assert_eq!(
+        paints,
+        ["blink::Paint(float) const", "blink::Paint(int) const"]
+    );
+
+    // A whole name still wins over another's prefix, and a prefix that
+    // stops inside a name is no match.
+    assert_eq!(keys.named("operator()").len(), 1);
+    assert!(keys.named("blink::PaintLayer").is_empty());
+    assert!(keys.named("content::Renderer").is_empty());
+
+    let similar: Vec<String> = keys
+        .similar("paintlayer", 5)
+        .into_iter()
+        .map(name)
+        .collect();
+    assert_eq!(similar, ["blink::PaintLayer::Update()"]);
+    assert!(keys.similar("nothing like it", 5).is_empty());
+}
+
 /// A sample: its thread, time, weight, and task choice.
 type Sample = (u32, i64, u64, u32);
 

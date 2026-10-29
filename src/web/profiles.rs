@@ -926,7 +926,18 @@ fn resolve_in(
         if named.is_empty() {
             return Err(Failure::new(
                 ErrorKind::Invalid,
-                format!("nothing in the profile is named {}", transform.name),
+                match keys.similar(&transform.name, 5).as_slice() {
+                    [] => format!("nothing in the profile is named {}", transform.name),
+                    similar => format!(
+                        "nothing in the profile is named {}; names that contain it: {}",
+                        transform.name,
+                        similar
+                            .iter()
+                            .map(|&key| keys.exact_name(key))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                },
             ));
         }
 

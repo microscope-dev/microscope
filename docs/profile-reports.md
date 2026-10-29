@@ -43,7 +43,12 @@ microscope report spin.usprof --focus leaf --tree
 microscope report after.usprof --base before.usprof --focus leaf --tree
 ```
 
-`--focus SYMBOL` matches an exact displayed name, as the browser does. The
+`--focus SYMBOL` matches an exact displayed name, as the browser does. A C++
+function's name can be given without its parameter list:
+`--focus content::RendererMain` finds
+`content::RendererMain(content::MainFunctionParams)`, and lists every
+overload when there are several. A name that matches nothing lists the
+names that contain it, ignoring case. The
 ordinary focus report shows the function's total and own cost, its immediate
 callers with the cost that passed through them, and its immediate callees.
 This is often called a butterfly view. `--limit N` limits each list.

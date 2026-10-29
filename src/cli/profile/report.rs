@@ -194,7 +194,20 @@ fn resolve(keys: &Keys<'_>, name: &str, base: bool) -> Result<u32> {
     if named.is_empty() && base {
         return Ok(NO_KEY);
     }
-    ensure!(!named.is_empty(), "nothing in the profile is named {name}");
+    if named.is_empty() {
+        let similar = keys.similar(name, 10);
+        if similar.is_empty() {
+            anyhow::bail!("nothing in the profile is named {name}");
+        }
+        let candidates = similar
+            .iter()
+            .map(|&key| format!("  {}", keys.exact_name(key)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!(
+            "nothing in the profile is named {name}; names that contain it:\n{candidates}"
+        );
+    }
     if named.len() > 1 {
         let candidates = named
             .iter()

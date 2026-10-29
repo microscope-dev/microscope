@@ -394,7 +394,8 @@ impl<'a> Keys<'a> {
     }
 
     /// Every key a view names `name`, or else the key whose
-    /// [`Self::qualified`] name it is.
+    /// [`Self::qualified`] name it is, or else every key named `name`
+    /// followed by a parameter list, as a C++ function is named.
     #[must_use]
     pub fn named(&self, name: &str) -> Vec<u32> {
         let named: Vec<u32> = (0..index(self.count()))
@@ -403,9 +404,46 @@ impl<'a> Keys<'a> {
         if !named.is_empty() {
             return named;
         }
-        (0..index(self.count()))
+        let qualified: Vec<u32> = (0..index(self.count()))
             .filter(|key| self.qualified(*key) == name)
+            .collect();
+        if !qualified.is_empty() || name.is_empty() {
+            return qualified;
+        }
+        (0..index(self.count()))
+            .filter(|key| {
+                self.name(*key)
+                    .strip_prefix(name)
+                    .is_some_and(|rest| rest.starts_with('('))
+            })
             .collect()
+    }
+
+    /// At most `limit` keys whose names contain `name`, ignoring case,
+    /// shortest name first: what a name that matched nothing was likely
+    /// meant to be.
+    #[must_use]
+    pub fn similar(&self, name: &str, limit: usize) -> Vec<u32> {
+        let wanted = name.to_lowercase();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<(usize, u32)> = (0..index(self.count()))
+            .filter(|&key| {
+                matches!(
+                    self.kind(key),
+                    KeyKind::Function { .. } | KeyKind::Line { .. }
+                )
+            })
+            .filter_map(|key| {
+                let name = self.name(key);
+                name.to_lowercase()
+                    .contains(&wanted)
+                    .then_some((name.len(), key))
+            })
+            .collect();
+        found.sort_unstable();
+        found.into_iter().take(limit).map(|(_, key)| key).collect()
     }
 
     /// A key's name with its module and where it is declared, which tell
