@@ -268,7 +268,11 @@ GIL is off, so it has no GIL labels. A label is as the GIL was when read.
 CPU samples of a Node program unwind through V8's own code: its builtins,
 its interpreter, and the code its compilers generate. Run Node with
 `--perf-basic-prof` and its perf map names the code its compilers generate
-in each stack, which still unwinds through it. `--node ENGINE`, the
+in each stack, which still unwinds through it. The same holds for other
+programs that embed V8, such as Chrome, when their symbols name V8's
+embedded builtins; Chrome's `--js-flags=--perf-basic-prof` (with
+`--no-sandbox`) names its JavaScript. Only a V8 built with postmortem
+support, as Node is, can have its JavaScript frames read. `--node ENGINE`, the
 same option as `--python ENGINE`, reads each thread's JavaScript frames as
 well:
 

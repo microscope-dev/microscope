@@ -21,8 +21,10 @@ pub const MATRIX: [&str; 6] = ["26", "24", "22", "nixpkgs-26", "nixpkgs-24", "ni
 
 /// The builds the flake provides that the matrix's tests do not run:
 /// Debian's shared libnode runs only inside its own mount namespace, so its
-/// tests (`debian.rs`) run themselves there.
-pub const SEPARATE: [&str; 1] = ["debian-24"];
+/// tests (`debian.rs`) run themselves there. Node 26 without its debugger
+/// constants stands for a V8 built without postmortem support, which only
+/// the profiler's tests run.
+pub const SEPARATE: [&str; 2] = ["debian-24", "26-without-postmortem"];
 
 /// The builds whose fixtures' cores the build saves, one per V8 line.
 pub const CORES: [&str; 3] = ["26", "24", "22"];

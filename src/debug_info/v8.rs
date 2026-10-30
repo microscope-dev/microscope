@@ -78,13 +78,15 @@ use crate::image::v8::{Constant, DYNAMIC_SYMBOLS, Field, V8Layout, V8Runtime, V8
 const FRAME_FUNCTION_OFFSET: &str = "v8dbg_off_fp_function";
 
 /// Whether `image` is V8's, which generates code whose frames keep the
-/// frame-pointer chain at its calls.
+/// frame-pointer chain at its calls. Its debugger constants say so, but a
+/// build without postmortem support, as Chrome's, has none of them, and
+/// still has its embedded builtins.
 pub fn is_v8(image: &crate::ModuleImage) -> bool {
-    image.symbol_named(FRAME_FUNCTION_OFFSET).is_ok()
+    image.symbol_named(FRAME_FUNCTION_OFFSET).is_ok() || image.symbol_named(EMBEDDED_BLOB).is_ok()
 }
 
-/// Whether the object being read carries V8, as [`is_v8`] tells of its
-/// image.
+/// Whether the object being read carries V8's debugger constants, whose
+/// interpreter frames its JavaScript walker reads.
 pub(super) fn carries_runtime(object: &object::File<'_>) -> bool {
     object
         .symbols()

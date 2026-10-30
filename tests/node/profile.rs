@@ -540,6 +540,29 @@ fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
     );
 }
 
+/// A V8 built without postmortem support, as Chrome's is, exports none of
+/// the debugger constants that give its heap's layout, yet still keeps
+/// V8's frame pointers in the code it generates: samples of a Node whose
+/// constants are renamed away still unwind through that code to each
+/// thread's root.
+#[test]
+fn v8_without_its_debugger_constants_unwinds_through_its_code() {
+    let scratch = ScratchDir::new("node-busy-without-postmortem");
+    let (command, _) = busy_on("26-without-postmortem", &scratch, 2);
+    let recording =
+        microscope::profiler::record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+    let paths = paths(&recording.profile, Source::Samples, Look::Native);
+    let total: u64 = paths.values().sum();
+    let rootless = rootless(&paths);
+    let short: u64 = rootless.iter().map(|(_, weight)| weight).sum();
+    assert!(total > 0, "no samples");
+    assert!(
+        short * 100 <= total,
+        "{short} of {total} ns begin with no thread's root:\n{rootless:#?}"
+    );
+}
+
 /// Under `--perf-basic-prof`, Node's perf map names the code V8
 /// generated, and samples there keep both: each frame the map names
 /// has its name, and the stack still unwinds by V8's frame pointers

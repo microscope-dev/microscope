@@ -882,8 +882,24 @@
           ];
         }
       ];
+      node26 = nodeOfficial { version = "26.12.1"; hash = "sha256-YXCy1HThxib0PP863BGN+f47VzJYpPw9hQyNvGsHm70="; };
+      # Node 26 with its v8dbg_ debugger constants renamed in place, as V8
+      # is when built without postmortem support, as Chrome is: what is left
+      # to tell it is V8 is its embedded builtins. The names keep their
+      # length, so nothing else in the file moves.
+      nodeWithoutPostmortem = pkgs.runCommand "node-26-without-postmortem" {
+        dontStrip = true;
+        dontPatchELF = true;
+        dontFixup = true;
+      } ''
+        mkdir -p $out
+        LC_ALL=C sed 's/v8dbg_/v8nodb/g' ${node26}/node > $out/node
+        chmod +x $out/node
+        ! grep -q v8dbg_ $out/node
+      '';
       nodes = pkgs.linkFarm "node" [
-        { name = "26"; path = nodeOfficial { version = "26.12.1"; hash = "sha256-YXCy1HThxib0PP863BGN+f47VzJYpPw9hQyNvGsHm70="; }; }
+        { name = "26"; path = node26; }
+        { name = "26-without-postmortem"; path = nodeWithoutPostmortem; }
         { name = "24"; path = nodeOfficial { version = "24.22.1"; hash = "sha256-bBcqmrZxj3uAH7WnvUhq8u5eMnWAhqBLhPzOKqdwleY="; }; }
         # Node 22 leaves at its end of life, on 30 April 2027.
         { name = "22"; path = nodeOfficial { version = "22.23.4"; hash = "sha256-GAW8015oFVWb0uuX20ONP9sOs6XmqXe3wbrcp2M36c4="; }; }

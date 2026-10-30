@@ -417,7 +417,10 @@ version is new, and run these tests.
 `debug_info::v8::runtime` makes the image of a Node executable or a libnode
 one `V8Runtime` row (`src/image/v8.rs`): V8's version, and a layout of
 `Field` offsets and `Constant` values, or the reason the module cannot be
-read. A module is V8's when it defines `v8dbg_off_fp_function`. The
+read. A module has a runtime row when it defines `v8dbg_off_fp_function`.
+`is_v8` also takes a module that names `v8_Default_embedded_blob_code_`
+for V8's, as Chrome is without postmortem support: its generated code is
+unwound by V8's frame convention, with no layout to read its heap by. The
 provider reads every `v8dbg_` symbol from the module's own file, from its
 symbol table or, as in Debian's libnode, its dynamic table only. Each is an
 `int` in the module's data; one in a section with no file bytes, such as
