@@ -2,6 +2,7 @@
 //! lookup of every interval containing an address, and names ordered for
 //! the lookup of every record a name names.
 
+use rayon::slice::ParallelSliceMut as _;
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -42,7 +43,7 @@ pub fn intervals(
             value: value.into(),
         })
         .collect::<Vec<_>>();
-    intervals.sort_unstable_by_key(|interval| {
+    intervals.par_sort_unstable_by_key(|interval| {
         (
             interval.start.get(),
             interval.end.get(),
@@ -138,7 +139,7 @@ pub fn names<'s>(entries: impl IntoIterator<Item = (&'s str, StrId, u32)>) -> Ve
             value: value.into(),
         })
         .collect::<Vec<_>>();
-    names.sort_unstable_by_key(key);
+    names.par_sort_unstable_by_key(key);
     names.dedup_by_key(|entry| key(entry));
     names
 }

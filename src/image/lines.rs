@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+use rayon::slice::ParallelSliceMut as _;
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -660,7 +661,7 @@ pub(super) struct LineIndexes {
 /// Orders `tables`' ranges and builds their indexes.
 pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
     let mut ranges = tables.ranges.clone();
-    ranges.sort_unstable_by_key(|range| (range.start.get(), range.end.get(), range.row.get()));
+    ranges.par_sort_unstable_by_key(|range| (range.start.get(), range.end.get(), range.row.get()));
     let mut prefix_max_end = 0;
 
     for range in &mut ranges {
@@ -692,8 +693,8 @@ pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
         }
     }
 
-    statements.sort_unstable_by_key(|key| (key.file.get(), key.line.get(), key.row.get()));
-    boundaries.sort_unstable_by_key(|boundary| {
+    statements.par_sort_unstable_by_key(|key| (key.file.get(), key.line.get(), key.row.get()));
+    boundaries.par_sort_unstable_by_key(|boundary| {
         (
             tables.addresses[boundary.row.get() as usize].address.get(),
             boundary.row.get(),
