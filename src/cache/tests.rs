@@ -187,6 +187,30 @@ fn opening_evicts_the_entries_used_longest_ago() {
     assert_eq!(files(&cache), ["notes"]);
 }
 
+/// The default capacity keeps an image as large as Chrome's with its debug
+/// information, 7.6 GB, beside a program's other images, so that the next
+/// recording of it finds them rather than building them again.
+#[test]
+fn the_default_capacity_keeps_chromes_image() {
+    let dir = ScratchDir::new("cache-chrome");
+    let directory = dir.join("images");
+    let cache = ImageCache::open(&directory, DEFAULT_CAPACITY).unwrap();
+    let chrome = Key::of(&[b"chrome"]);
+    let library = Key::of(&[b"libc"]);
+    cache.put(library, &image(b"views")).unwrap();
+    // Eviction reads only an entry's length, which a sparse file has
+    // without the disk.
+    std::fs::File::create(cache.path(chrome))
+        .and_then(|file| file.set_len(7_622_533_960))
+        .unwrap();
+    set_modified(&cache.path(chrome), 1_000);
+
+    let cache = ImageCache::open(&directory, DEFAULT_CAPACITY).unwrap();
+    let mut expected = vec![format!("{chrome}.image"), format!("{library}.image")];
+    expected.sort();
+    assert_eq!(files(&cache), expected);
+}
+
 /// Writers and readers of one key at once never see part of an entry, and
 /// leave no temporary files.
 #[test]

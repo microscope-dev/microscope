@@ -36,8 +36,10 @@ use crate::image::{AlignedBytes, Image, ImageError, Limits};
 pub const DIRECTORY_VARIABLE: &str = "MICROSCOPE_CACHE_DIR";
 
 /// The most bytes a cache keeps; opening one evicts its oldest entries
-/// beyond this.
-pub const DEFAULT_CAPACITY: u64 = 4 << 30;
+/// beyond this. One image may be as large as a load's input, 16 GiB, and
+/// Chrome's with its debug information is 7.6 GB, so the cache holds
+/// that much.
+pub const DEFAULT_CAPACITY: u64 = crate::image::backing::MAX_INPUT;
 
 /// Which cache a process uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
