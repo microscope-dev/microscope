@@ -13,6 +13,12 @@ readme = "README.md"
 keywords = ["debugger", "dwarf", "linux", "ptrace"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 
+# cpp_demangle 0.5.1 with C++20's template parameter declarations, requires
+# clauses, and template parameters of enclosing levels, which Chromium's
+# names hold; see vendor/cpp_demangle/MICROSCOPE.md.
+[patch.crates-io]
+cpp_demangle = { path = "vendor/cpp_demangle" }
+
 [build-dependencies]
 # Compiles the agent protocol without protoc.
 prost-build = "0.14"
