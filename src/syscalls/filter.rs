@@ -373,9 +373,8 @@ impl Filter {
                         }
 
                         filter.calls.extend(&calls);
+                        traced_by_name = true;
                     }
-
-                    traced_by_name = true;
                 }
                 "status" => filter.status = Self::status(value)?,
                 "signal" | "signals" | "s" => filter.signals = signal_set(value, signal_named)?,
@@ -601,6 +600,12 @@ mod tests {
 
         let all_but = parse(&["trace=!%net"]).expect("parses");
         assert!(all_but.calls.contains(named("read")) && !all_but.calls.contains(named("sendto")));
+
+        // A negated set first still leaves the first plain set to replace "all".
+        let removed_first = parse(&["trace=!open", "trace=read"]).expect("parses");
+        assert!(removed_first.calls.contains(named("read")));
+        assert!(!removed_first.calls.contains(named("write")));
+        assert!(!removed_first.calls.contains(named("open")));
 
         assert!(parse(&["trace=nosuchcall"]).is_err());
         assert!(parse(&["trace=?nosuchcall,read"]).is_ok());
