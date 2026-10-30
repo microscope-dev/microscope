@@ -187,6 +187,38 @@ fn opening_evicts_the_entries_used_longest_ago() {
     assert_eq!(files(&cache), ["notes"]);
 }
 
+/// Writing an entry first evicts the entries used longest ago until the
+/// new one fits, so a process that writes many images, or one as large as
+/// Chrome's beside the entries of older microscope builds that no loader
+/// reads again, never holds more than the capacity. Writers' files are
+/// left to them.
+#[test]
+fn writing_evicts_the_entries_used_longest_ago_to_make_room() {
+    let dir = ScratchDir::new("cache-write-evicts");
+    let directory = dir.join("images");
+    let entry = image(b"views");
+    let length = entry.as_bytes().len() as u64;
+    let cache = ImageCache::open(&directory, 3 * length).unwrap();
+    let keys = (0..4_u8).map(|n| Key::of(&[&[n]])).collect::<Vec<_>>();
+
+    for (age, key) in keys[..3].iter().enumerate() {
+        cache.put(*key, &entry).unwrap();
+        set_modified(&cache.path(*key), 1_000 + i64::try_from(age).unwrap() * 10);
+    }
+    let writing = directory.join(format!(".{}.1.0.tmp", keys[3]));
+    std::fs::write(&writing, b"").unwrap();
+    set_modified(&writing, 900);
+
+    cache.put(keys[3], &entry).unwrap();
+    let mut expected = keys[1..]
+        .iter()
+        .map(|key| format!("{key}.image"))
+        .collect::<Vec<_>>();
+    expected.push(format!(".{}.1.0.tmp", keys[3]));
+    expected.sort();
+    assert_eq!(files(&cache), expected);
+}
+
 /// The default capacity keeps an image as large as Chrome's with its debug
 /// information, 7.6 GB, beside a program's other images, so that the next
 /// recording of it finds them rather than building them again.

@@ -35,10 +35,11 @@ use crate::image::{AlignedBytes, Image, ImageError, Limits};
 /// The environment variable that names the cache's directory.
 pub const DIRECTORY_VARIABLE: &str = "MICROSCOPE_CACHE_DIR";
 
-/// The most bytes a cache keeps; opening one evicts its oldest entries
-/// beyond this. One image may be as large as a load's input, 16 GiB, and
-/// Chrome's with its debug information is 7.6 GB, so the cache holds
-/// that much.
+/// The most bytes a cache keeps.
+///
+/// Opening one, and writing to it, evicts its oldest entries beyond this.
+/// One image may be as large as a load's input, 16 GiB, and Chrome's with
+/// its debug information is 7.6 GB, so the cache holds that much.
 pub const DEFAULT_CAPACITY: u64 = crate::image::backing::MAX_INPUT;
 
 /// Which cache a process uses.
@@ -235,6 +236,7 @@ static WRITES: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub struct ImageCache {
     directory: PathBuf,
+    capacity: u64,
 }
 
 const SUFFIX: &str = ".image";
@@ -256,9 +258,10 @@ impl ImageCache {
             .map_err(open)?;
         let cache = Self {
             directory: directory.to_owned(),
+            capacity,
         };
 
-        cache.evict(capacity).map_err(open)?;
+        cache.evict(capacity, true).map_err(open)?;
 
         Ok(cache)
     }
@@ -322,13 +325,18 @@ impl ImageCache {
     }
 
     /// Writes `image` as the entry for `key`: to a file of its own, then
-    /// renamed into place, replacing any entry another writer made.
+    /// renamed into place, replacing any entry another writer made. The
+    /// entries used longest ago are evicted first, until it fits.
     pub fn put(&self, key: Key, image: &Image) -> Result<(), WriteError> {
         let failed = |error| WriteError {
             key,
             directory: self.directory.clone(),
             error,
         };
+
+        let length = image.as_bytes().len() as u64;
+        self.evict(self.capacity.saturating_sub(length), false)
+            .map_err(failed)?;
 
         let temporary = self.directory.join(format!(
             ".{key}.{}.{}{TEMPORARY}",
@@ -350,16 +358,18 @@ impl ImageCache {
         Ok(())
     }
 
-    /// Removes the entries used longest ago, and files writers left, until
-    /// the cache holds at most `capacity` bytes.
-    fn evict(&self, capacity: u64) -> std::io::Result<()> {
+    /// Removes the entries used longest ago, and files writers left when
+    /// `abandoned` says the cache is opening, until the cache holds at most
+    /// `capacity` bytes. A writer's file is left alone while it writes.
+    fn evict(&self, capacity: u64, abandoned: bool) -> std::io::Result<()> {
         let mut entries = Vec::new();
 
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if !name.ends_with(SUFFIX) && !name.ends_with(TEMPORARY) {
+            let evictable = name.ends_with(SUFFIX) || (abandoned && name.ends_with(TEMPORARY));
+            if !evictable {
                 continue;
             }
 
