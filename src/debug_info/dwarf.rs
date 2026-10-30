@@ -109,9 +109,6 @@ enum DwarfError {
         requested: u64,
     },
 
-    #[error("concrete function has no source-level name")]
-    MissingFunctionName,
-
     #[error(transparent)]
     Binding(crate::image::facts::Unbound),
 
@@ -3434,12 +3431,13 @@ fn load_function_metadata<'data>(
     let mut trampolines = Vec::new();
     let mut body_futures = Vec::new();
     let mut function_ids = vec![None; raw.len()];
+    let mut nameless = vec![false; raw.len()];
     for (definition, named) in order.into_iter().zip(named) {
         let Some((name, role)) = named else {
-            if concrete[definition] {
-                return Err(DwarfError::MissingFunctionName);
-            }
-
+            // Clang also emits code with no name of any kind, as some
+            // subprograms Chromium's split DWARF has: its code keeps its
+            // symbol's name, and what it inlined, theirs.
+            nameless[definition] = concrete[definition];
             continue;
         };
 
@@ -3473,7 +3471,8 @@ fn load_function_metadata<'data>(
         function_ids[definition] = Some(id);
     }
 
-    let (code_instances, instance_ids) = code_instances(&raw, &definitions, &function_ids)?;
+    let (code_instances, instance_ids) =
+        code_instances(&raw, &definitions, &function_ids, &nameless)?;
     crate::count!("functions", functions.len());
     crate::count!("code_instances", code_instances.len());
     let roles = crate::span!("functions.go_roles");
@@ -3495,17 +3494,19 @@ fn load_function_metadata<'data>(
 }
 
 /// Each function DIE with code as an instance, numbered in DIE order, of
-/// its definition's function; and the instance each such DIE is.
+/// its definition's function; and the instance each such DIE is. Code of a
+/// definition with no name is no instance, and keeps its symbol's.
 fn code_instances(
     raw: &RawFunctions,
     definitions: &[usize],
     function_ids: &[Option<FunctionId>],
+    nameless: &[bool],
 ) -> std::result::Result<(Vec<CodeInstanceInfo>, DieMap<CodeInstanceId>), DwarfError> {
     let mut instances = vec![None; raw.len()];
     let mut instance_ids = DieMap::default();
     let mut count = 0;
-    for (index, function) in raw.iter().enumerate() {
-        if !function.ranges.is_empty() {
+    for ((index, function), definition) in raw.iter().enumerate().zip(definitions) {
+        if !function.ranges.is_empty() && !nameless[*definition] {
             let id = CodeInstanceId::new(
                 u32::try_from(count).map_err(|_| gimli::Error::UnsupportedOffset)?,
             );
@@ -4784,6 +4785,154 @@ mod tests {
     use super::*;
     use crate::{LineSequenceId, SourceFileId, StatementFlags, StatementRow};
     use std::fs;
+
+    /// A shared object whose `.text` at `address` holds `size` bytes, with
+    /// the DWARF sections `sections` holds.
+    fn elf_with_dwarf(
+        address: u64,
+        size: usize,
+        sections: &Sections<EndianVec<LittleEndian>>,
+    ) -> Vec<u8> {
+        let mut debug = Vec::new();
+        sections
+            .for_each(|id, data| {
+                if !data.slice().is_empty() {
+                    debug.push((id.name(), data.slice().to_vec()));
+                }
+                Ok::<_, gimli::Error>(())
+            })
+            .expect("the sections");
+
+        let mut bytes = Vec::new();
+        let mut writer =
+            object::write::elf::Writer::new(object::Endianness::Little, true, &mut bytes);
+        let text = writer.add_section_name(b".text");
+        let names: Vec<_> = debug
+            .iter()
+            .map(|(name, _)| writer.add_section_name(name.as_bytes()))
+            .collect();
+        writer.reserve_file_header();
+        writer.reserve_null_section_index();
+        writer.reserve_section_index();
+        for _ in &debug {
+            writer.reserve_section_index();
+        }
+        let code = writer.reserve(size, 16);
+        let offsets: Vec<_> = debug
+            .iter()
+            .map(|(_, data)| writer.reserve(data.len(), 1))
+            .collect();
+        writer.reserve_shstrtab_section_index();
+        writer.reserve_shstrtab();
+        writer.reserve_section_headers();
+
+        writer
+            .write_file_header(&object::write::elf::FileHeader {
+                os_abi: 0,
+                abi_version: 0,
+                e_type: object::elf::ET_DYN,
+                e_machine: object::elf::EM_X86_64,
+                e_entry: 0,
+                e_flags: 0,
+            })
+            .expect("a header");
+        writer.write_align(16);
+        writer.write(&vec![0xc3; size]);
+        for (_, data) in &debug {
+            writer.write(data);
+        }
+        writer.write_shstrtab();
+        writer.write_null_section_header();
+        writer.write_section_header(&object::write::elf::SectionHeader {
+            name: Some(text),
+            sh_type: object::elf::SHT_PROGBITS,
+            sh_flags: u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR),
+            sh_addr: address,
+            sh_offset: code as u64,
+            sh_size: size as u64,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 16,
+            sh_entsize: 0,
+        });
+        for ((name, (_, data)), offset) in names.into_iter().zip(&debug).zip(offsets) {
+            writer.write_section_header(&object::write::elf::SectionHeader {
+                name: Some(name),
+                sh_type: object::elf::SHT_PROGBITS,
+                sh_flags: 0,
+                sh_addr: 0,
+                sh_offset: offset as u64,
+                sh_size: data.len() as u64,
+                sh_link: 0,
+                sh_info: 0,
+                sh_addralign: 1,
+                sh_entsize: 0,
+            });
+        }
+        writer.write_shstrtab_section_header();
+        bytes
+    }
+
+    /// Clang leaves some functions with code and no name of any kind, as
+    /// in Chromium's split DWARF. Such a function is none the image names,
+    /// and the rest of its DWARF still loads.
+    #[test]
+    fn a_function_with_code_and_no_name_leaves_the_rest_loaded() {
+        use gimli::write::AttributeValue;
+
+        let encoding = Encoding {
+            format: Format::Dwarf32,
+            version: 4,
+            address_size: 8,
+        };
+        let mut written = WriteDwarf::new();
+        let id = written.units.add(Unit::new(encoding, LineProgram::none()));
+        let unit = written.units.get_mut(id);
+        let root = unit.root();
+        unit.get_mut(root)
+            .set(gimli::DW_AT_name, AttributeValue::String(b"a.c".to_vec()));
+        unit.get_mut(root).set(
+            gimli::DW_AT_language,
+            AttributeValue::Language(gimli::DW_LANG_C99),
+        );
+        for (name, start) in [(None, 0x1000), (Some("named"), 0x1010)] {
+            let die = unit.add(root, gimli::DW_TAG_subprogram);
+            let entry = unit.get_mut(die);
+            if let Some(name) = name {
+                entry.set(gimli::DW_AT_name, AttributeValue::String(name.into()));
+            }
+            entry.set(
+                gimli::DW_AT_low_pc,
+                AttributeValue::Address(Address::Constant(start)),
+            );
+            entry.set(gimli::DW_AT_high_pc, AttributeValue::Udata(0x10));
+        }
+        let mut sections = Sections::new(EndianVec::new(LittleEndian));
+        written.write(&mut sections).expect("write test DWARF");
+
+        let elf = elf_with_dwarf(0x1000, 0x20, &sections);
+        let info = load_transient_bytes(Path::new("nameless"), &elf, crate::ModuleImageId::new(0))
+            .expect("load");
+        assert_eq!(
+            info.image.debug_information(),
+            crate::DebugInformation::Loaded
+        );
+        let named = info.image.function_named("named").expect("named");
+        assert_eq!(
+            info.image
+                .locate(ImageAddress::new(0x1018))
+                .physical_instance
+                .and_then(|instance| info.image.code_instance(instance))
+                .map(crate::image::functions::CodeInstance::function),
+            Some(named.id())
+        );
+        assert!(
+            info.image
+                .locate(ImageAddress::new(0x1008))
+                .physical_instance
+                .is_none()
+        );
+    }
 
     #[test]
     fn type_signature_references_resolve_only_indexed_primary_dies() {
