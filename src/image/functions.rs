@@ -4,6 +4,7 @@
 //! prefers, and the image the addresses where instructions are known to
 //! begin.
 
+use rayon::slice::ParallelSliceMut as _;
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -358,7 +359,7 @@ fn add_functions(
         .iter()
         .map(|instance| (instance.function.get(), instance.id.get()))
         .collect::<Vec<_>>();
-    by_function.sort_unstable();
+    by_function.par_sort_unstable();
     let members = by_function
         .iter()
         .map(|(_, instance)| Member {
@@ -387,8 +388,13 @@ fn add_functions(
             });
         }
 
-        let instance_count =
-            by_function[first_instance..].partition_point(|(owner, _)| *owner == function.id.get());
+        // The function's instances are the run that starts here, and are
+        // counted in turn: a binary search of the rest for each of Chrome's
+        // 14 million functions missed the cache on most probes.
+        let instance_count = by_function[first_instance..]
+            .iter()
+            .take_while(|(owner, _)| *owner == function.id.get())
+            .count();
         let (language, other_language) = language_code(function.language).ok_or(TooMany)?;
         records.push(FunctionRecord {
             name: name.0.into(),
