@@ -187,12 +187,12 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
         let end = (start..frames.len())
             .find(|at| kept.contains(&frames[*at].level))
             .unwrap_or(frames.len());
-        if end - start >= 2 {
-            // The dispatch frame joins the run that ends at it.
-            match runs.last_mut() {
-                Some(run) if run.end == start => run.end = end,
-                _ => runs.push(start..end),
-            }
+        // The dispatch frame's run takes in what follows it, however few;
+        // a run of its own needs two frames.
+        match runs.last_mut() {
+            Some(run) if run.end == start => run.end = end,
+            _ if end - start >= 2 => runs.push(start..end),
+            _ => {}
         }
 
         start = end + 1;
@@ -349,6 +349,41 @@ mod tests {
             unfollowed: Arc::from([]),
         };
         assert_eq!(folds(&trace, 7, 0), vec![2..4, 5..7]);
+    }
+
+    /// A single frame past the dispatch joins the run that ends at the
+    /// dispatch, as two do; on its own, after a shown frame, it is shown.
+    #[test]
+    fn a_lone_frame_past_the_dispatch_joins_its_run() {
+        let frame = |level, role| StackFrame {
+            level,
+            role,
+            ..interpreted(None)
+        };
+        let trace = |roles: &[CodeRole]| Backtrace {
+            frames: (0..)
+                .zip(roles)
+                .map(|(level, role)| frame(level, *role))
+                .collect::<Vec<_>>()
+                .into(),
+            context: microscope::ExecutionContext::Thread(microscope::ThreadId::new(1)),
+            termination: microscope::UnwindTermination::Complete,
+            unfollowed: Arc::from([]),
+        };
+        let (ordinary, runtime, dispatch) = (
+            CodeRole::Ordinary,
+            CodeRole::RuntimeInternal,
+            CodeRole::Dispatch,
+        );
+
+        let one = trace(&[ordinary, runtime, dispatch, runtime]);
+        assert_eq!(folds(&one, 4, 0), vec![1..4]);
+        let two = trace(&[ordinary, runtime, dispatch, runtime, runtime]);
+        assert_eq!(folds(&two, 5, 0), vec![1..5]);
+
+        // The dispatch alone folds into no run for the frame to join.
+        let alone = trace(&[ordinary, dispatch, runtime]);
+        assert_eq!(folds(&alone, 3, 0), Vec::<std::ops::Range<usize>>::new());
     }
 
     #[test]
