@@ -739,6 +739,16 @@ struct OracleFile {
     plt: Vec<(String, u64)>,
 }
 
+/// Whether readelf's symbol names code: a function, or the process's entry
+/// point even as a bare label, as glibc's dynamic loader defines it.
+fn names_code(symbol: &OracleSymbol) -> bool {
+    match symbol.kind {
+        Some(SymbolKind::Function | SymbolKind::IndirectFunction) => true,
+        Some(SymbolKind::Unknown) => symbol.name == "_start",
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OracleSymbol {
     name: String,
@@ -1232,10 +1242,7 @@ fn assert_code_extents_match_oracle(
     let mut code_starts = BTreeSet::new();
     let mut code_symbols = Vec::new();
     for (file, symbol) in oracle.symbols() {
-        if !matches!(
-            symbol.kind,
-            Some(SymbolKind::Function | SymbolKind::IndirectFunction)
-        ) {
+        if !names_code(symbol) {
             continue;
         }
 

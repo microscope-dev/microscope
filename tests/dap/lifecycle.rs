@@ -131,11 +131,11 @@ fn stop_on_entry_stops_before_the_program_runs_any_code() {
     assert_eq!(stop.reason, "entry");
     let frames = dap.inspect_as(Profile::VsCode, &stop);
 
-    // The first instruction belongs to the dynamic loader.
-    assert!(
-        frames[0]["name"]
-            .as_str()
-            .is_some_and(|name| name.contains("ld-linux")),
+    // The first instruction is the dynamic loader's entry point, a label
+    // with no size.
+    assert_eq!(
+        frames[0]["name"].as_str(),
+        Some("_start (unsized symbol)"),
         "{frames:?}"
     );
     assert!(dap.output_text(started.mark, "stdout").is_empty());

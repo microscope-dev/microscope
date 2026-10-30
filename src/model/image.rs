@@ -529,10 +529,12 @@ fn validate_dense_ids(metadata: &ModuleMetadata) {
         assert_eq!(symbol.id.index(), index, "symbol IDs are dense and ordered");
         if let Some(extent) = symbol.extent {
             assert!(
-                matches!(
+                (matches!(
                     symbol.kind,
                     SymbolKind::Function | SymbolKind::IndirectFunction
-                ) && extent.range.start == symbol.address
+                ) || (symbol.kind == SymbolKind::Unknown
+                    && symbol.role == crate::CodeRole::Outermost))
+                    && extent.range.start == symbol.address
                     && extent.range.start < extent.range.end,
                 "symbol extents are non-empty code ranges beginning at the symbol"
             );

@@ -669,11 +669,15 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
         let storage = flags & symbol_flags::STORAGE != 0;
         let kind = SYMBOL_KINDS.get(usize::from(symbol.kind));
         let shape = match (extent, storage) {
+            // An untyped entry point names code too (see `elf::entry_label`).
             (true, false) => {
-                matches!(
+                (matches!(
                     kind,
                     Some(SymbolKind::Function | SymbolKind::IndirectFunction)
-                ) && start < end
+                ) || (kind == Some(&SymbolKind::Unknown)
+                    && valid_role(symbol.role)
+                    && role(symbol.role) == CodeRole::Outermost))
+                    && start < end
             }
             (false, true) => kind == Some(&SymbolKind::Data) && start <= end,
             (false, false) => kind.is_some() && end == start,

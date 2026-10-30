@@ -89,10 +89,9 @@ fn a_program_in_an_external_terminal_stops_on_entry_restarts_and_ends_with_the_s
     let stop = dap.stopped(started.mark);
     assert_eq!(stop.reason, "entry");
     let frames = dap.inspect_as(Profile::VsCode, &stop);
-    assert!(
-        frames[0]["name"]
-            .as_str()
-            .is_some_and(|name| name.contains("ld-linux")),
+    assert_eq!(
+        frames[0]["name"].as_str(),
+        Some("_start (unsized symbol)"),
         "{frames:?}"
     );
     let entry = frames[0]["instructionPointerReference"].clone();

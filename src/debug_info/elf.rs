@@ -717,7 +717,11 @@ fn collect<'data, S>(
         // A symbol from the embedded object refers to that object's copy of
         // the section header table, so sections are matched by identity.
         let defining = source.section_by_index(index).ok();
-        let code_section = matches!(kind, SymbolKind::Function | SymbolKind::IndirectFunction)
+        // A label names no code, except the process's entry point, which
+        // glibc's dynamic loader defines as one: where a stack ends.
+        let names_code = matches!(kind, SymbolKind::Function | SymbolKind::IndirectFunction)
+            || (kind == SymbolKind::Unknown && entry_label(name));
+        let code_section = names_code
             .then_some(defining.as_ref())
             .flatten()
             .and_then(|section| image_section(section, is_code))
@@ -1220,6 +1224,12 @@ fn normalize(
         .collect()
 }
 
+/// Whether an untyped symbol of this name is the label a process starts
+/// at, which names the code after it as a function would.
+fn entry_label(name: &[u8]) -> bool {
+    super::roles::symbol_role(&String::from_utf8_lossy(name)) == crate::CodeRole::Outermost
+}
+
 /// Determines the storage a data symbol of `size` bytes names in the
 /// allocated section `[section.0, section.1)`: empty for an unsized symbol,
 /// and none when the symbol or its declared size lies outside the section.
@@ -1328,10 +1338,12 @@ pub(super) fn fuzz(data: &[u8]) {
             continue;
         };
 
-        assert!(matches!(
-            symbol.kind,
-            SymbolKind::Function | SymbolKind::IndirectFunction
-        ));
+        assert!(
+            matches!(
+                symbol.kind,
+                SymbolKind::Function | SymbolKind::IndirectFunction
+            ) || symbol.role == crate::CodeRole::Outermost
+        );
         assert_eq!(extent.range.start, symbol.address);
         assert!(extent.range.start < extent.range.end);
         assert!(sections.iter().any(|section| {
@@ -1853,6 +1865,61 @@ mod tests {
         assert_eq!(summary(&table)[9].3, Some((0x3c, 0x3e)));
         let table = load(&data, &[(0x0, 0x10), (0x18, 0x20)]);
         assert_eq!(summary(&table)[3].3, Some((0x10, 0x18)));
+    }
+
+    /// A process's entry point may be a bare label, as glibc's dynamic
+    /// loader's `_start` is, with no type, size, or call-frame entry. It
+    /// still names the entry code, up to the next function, so a stack of
+    /// a program starting up ends there complete. Other labels still name
+    /// no code.
+    #[test]
+    fn an_untyped_entry_point_names_its_code() {
+        use write::SymbolSection::Section;
+
+        let data = object(
+            Architecture::X86_64,
+            |sections| {
+                let text = Section(sections.text);
+                vec![
+                    Spec::new("_start", text)
+                        .at(0x00, 0)
+                        .typed(elf::STT_NOTYPE, elf::STB_LOCAL),
+                    Spec::new("_dl_start_user", text)
+                        .at(0x08, 0)
+                        .typed(elf::STT_NOTYPE, elf::STB_LOCAL),
+                    Spec::new("_dl_start", text)
+                        .at(0x20, 0x10)
+                        .typed(elf::STT_FUNC, elf::STB_LOCAL),
+                ]
+            },
+            &[],
+        );
+
+        let table = load(&data, &[]);
+        assert_eq!(
+            summary(&table),
+            [
+                (
+                    "_start",
+                    SymbolKind::Unknown,
+                    SymbolBinding::Local,
+                    Some((0x00, 0x20))
+                ),
+                (
+                    "_dl_start_user",
+                    SymbolKind::Unknown,
+                    SymbolBinding::Local,
+                    None
+                ),
+                (
+                    "_dl_start",
+                    SymbolKind::Function,
+                    SymbolBinding::Local,
+                    Some((0x20, 0x30))
+                ),
+            ]
+        );
+        assert_eq!(table.symbols[0].role, crate::CodeRole::Outermost);
     }
 
     #[test]

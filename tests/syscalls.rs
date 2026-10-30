@@ -432,6 +432,22 @@ fn stacks_unwind_to_the_frames_strace_finds() {
     ] {
         let (theirs, ours) = both(arguments, mode);
         let (theirs, ours) = (normalized(&theirs), normalized(&ours));
+
+        // strace can't unwind the dynamic loader's `_start`, which has no
+        // call-frame information, and says so; microscope ends the stack
+        // there, at the process's entry point.
+        let mut previous = "";
+        let theirs = theirs
+            .lines()
+            .filter(|line| {
+                let past_entry = previous.contains("(_start+")
+                    && line.starts_with(" > ")
+                    && !frame.is_match(line);
+                previous = line;
+                !past_entry
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let context = || format!("with {arguments:?}:\n{ours}\n---\n{theirs}");
         assert_eq!(
             ours.lines().count(),
