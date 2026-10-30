@@ -13,12 +13,6 @@ readme = "README.md"
 keywords = ["debugger", "dwarf", "linux", "ptrace"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 
-# cpp_demangle 0.5.1 with C++20's template parameter declarations, requires
-# clauses, and template parameters of enclosing levels, which Chromium's
-# names hold; see vendor/cpp_demangle/MICROSCOPE.md.
-[patch.crates-io]
-cpp_demangle = { path = "vendor/cpp_demangle" }
-
 [build-dependencies]
 # Compiles the agent protocol without protoc.
 prost-build = "0.14"
@@ -118,7 +112,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 [target.'cfg(target_os = "linux")'.dependencies]
 aya = "0.14"
 aya-obj = "0.3"
-cpp_demangle = "0.5"
+# C++20 manglings emitted by Chromium; see MICROSCOPE.md in the fork.
+cpp_demangle = { git = "https://github.com/microscope-dev/cpp_demangle", rev = "82e492e239986b5d5374ada56b634e7550b90a58" }
 crc32fast = "1.5"
 gimli = "0.34"
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "gas", "instr_info", "intel", "std"] }
