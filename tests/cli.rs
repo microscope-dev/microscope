@@ -6162,6 +6162,43 @@ fn sessions_cache_images_unless_told_not_to() {
     assert!(assert_success(output).contains("breakpoint 1"));
 }
 
+/// A recording whose program's image can't be written to the image cache
+/// says so, in `record` and in `report`, since every later recording reads
+/// the program's debug information again: on a large program, minutes of
+/// CPU with sampling off.
+#[test]
+fn a_recording_says_when_the_cache_cannot_keep_an_image() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = support::ScratchDir::new("cli-cache-unwritable");
+    let cache = scratch.path().join("images");
+    std::fs::create_dir(&cache).unwrap();
+    std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let profile = scratch.path().join("basic.usprof");
+    let recorded = microscope_command()
+        .env("MICROSCOPE_CACHE_DIR", &cache)
+        .args(["record", "-o"])
+        .arg(&profile)
+        .arg("--")
+        .arg(fixture(BASIC))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope record");
+    std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stderr = String::from_utf8_lossy(&recorded.stderr).into_owned();
+    assert!(recorded.status.success(), "{stderr}");
+
+    // The program, its loader, libc, and the vDSO, for one reason.
+    let note = format!(
+        "4 images were not kept in the image cache in {}, so the next recording reads their \
+         debug information again: Permission denied (os error 13). They are basic, ",
+        cache.display()
+    );
+    assert!(stderr.contains(&note), "{note:?} in\n{stderr}");
+    let report = assert_success(microscope(&["report", &profile.to_string_lossy()]));
+    assert!(report.contains(&note), "{note:?} in\n{report}");
+}
+
 /// `--timings` reports where a session's stops and requests spend their
 /// time, beside its loads: each stop from its last thread stopping to its
 /// publication, the modules it refreshed, and every request.

@@ -1070,7 +1070,7 @@ fn load_debug_info(
     let tables = read.seal()?;
     let phase = crate::span!("cache.write");
     if let Err(error) = cache.put(key, &tables) {
-        crate::cache::report(format_args!("{error}"));
+        crate::cache::unwritten(path, &error);
     }
 
     drop(phase);

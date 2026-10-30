@@ -1118,6 +1118,13 @@ impl Processor {
             None => None,
         };
 
+        // An image the cache could not keep is read again by every later
+        // recording, which a large program's recordings notice.
+        for (unwritten, why) in crate::cache::take_unwritten() {
+            self.builder
+                .setting(&format!("image cache {}", unwritten.display()), &why);
+        }
+
         // What the debug information leaves out costs a profile its
         // inlines and names, as split DWARF whose `.dwo` files are gone
         // does; leaving out locals costs it nothing.

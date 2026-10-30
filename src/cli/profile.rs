@@ -854,7 +854,7 @@ fn report_losses(profile: &Profile) {
     if let Some(behind) = behind(profile) {
         eprintln!("microscope: {behind}");
     }
-    for note in incomplete_debug_information(profile) {
+    for note in debug_information_notes(profile) {
         eprintln!("microscope: {note}");
     }
 }
@@ -1546,7 +1546,7 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
         writeln!(out, "{behind}.")?;
     }
 
-    for note in incomplete_debug_information(profile) {
+    for note in debug_information_notes(profile) {
         writeln!(out, "{note}")?;
     }
 
@@ -1554,11 +1554,12 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
 }
 
 /// Each module whose debug information left out what the profile names
-/// frames by, as split DWARF whose `.dwo` files were not found does.
-fn incomplete_debug_information(profile: &Profile) -> Vec<String> {
-    profile
-        .settings()
-        .into_iter()
+/// frames by, as split DWARF whose `.dwo` files were not found does; and
+/// the modules whose images the image cache could not keep, by why.
+fn debug_information_notes(profile: &Profile) -> Vec<String> {
+    let settings = profile.settings();
+    let mut notes = settings
+        .iter()
         .filter_map(|(key, value)| {
             let module = key.strip_prefix("debug information ")?;
             let reason = value.strip_prefix("incomplete: ")?;
@@ -1566,7 +1567,44 @@ fn incomplete_debug_information(profile: &Profile) -> Vec<String> {
                 "{module}'s debug information is incomplete: {reason}."
             ))
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    let mut unwritten = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+    for (key, value) in &settings {
+        if let Some(module) = key.strip_prefix("image cache ") {
+            unwritten.entry(value).or_default().push(module);
+        }
+    }
+    for (why, modules) in unwritten {
+        let (location, error) = why.split_once(": ").unwrap_or((why, "unknown"));
+        notes.push(match modules.as_slice() {
+            [module] => format!(
+                "{module}'s image was not kept in the image cache {location}, so the next \
+                 recording reads its debug information again: {error}."
+            ),
+            [first, second, rest @ ..] => {
+                let name = |module: &&str| {
+                    std::path::Path::new(module).file_name().map_or_else(
+                        || (*module).to_owned(),
+                        |name| name.to_string_lossy().into_owned(),
+                    )
+                };
+                let named = match rest {
+                    [] => format!("{} and {}", name(first), name(second)),
+                    [third] => format!("{}, {}, and {}", name(first), name(second), name(third)),
+                    more => format!("{}, {}, and {} more", name(first), name(second), more.len()),
+                };
+                format!(
+                    "{} images were not kept in the image cache {location}, so the next \
+                     recording reads their debug information again: {error}. They are {named}.",
+                    modules.len()
+                )
+            }
+            [] => continue,
+        });
+    }
+
+    notes
 }
 
 /// What task snapshots cost the program, and what they found.

@@ -110,6 +110,14 @@ code loads, a relocation, a symbol, or a prologue after padding, whose code
 keeps the frame pointer, carries the stack on. Proving costs a few seconds
 the first time such a large module loads; the image cache keeps the result.
 
+The image cache keeps what microscope read from each module's debug
+information, in `~/.cache/microscope/images` or the directory
+`MICROSCOPE_CACHE_DIR` names, up to 16 GiB; writing an entry removes the
+entries used longest ago to make room. A module whose image can't be written
+there, as when the disk or a quota is full, is read again by every recording,
+which for a program as large as Chrome costs minutes of CPU. `record` and
+`report` say which modules and why.
+
 Code a just-in-time compiler generates has no file. A program that writes a
 perf map, `/tmp/perf-PID.map`, names it: stacks go on through the functions
 the map names, under those names. For Python, run the interpreter with

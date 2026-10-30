@@ -157,6 +157,34 @@ pub(crate) fn report(problem: fmt::Arguments<'_>) {
     let _ = problem;
 }
 
+/// The images this process could not write since [`take_unwritten`] was
+/// last called: each program's path, and where and why.
+static UNWRITTEN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Reports that the image of the program at `path` could not be written,
+/// which costs every later load of it all of its time, not only this one:
+/// [`report`]ed, and kept for [`take_unwritten`].
+pub(crate) fn unwritten(path: &Path, error: &WriteError) {
+    report(format_args!(
+        "{} for {}: {error}",
+        error.key,
+        path.display()
+    ));
+    let why = format!("in {}: {}", error.directory.display(), error.error);
+    if let Ok(mut unwritten) = UNWRITTEN.lock() {
+        unwritten.push((path.to_owned(), why));
+    }
+}
+
+/// Each program whose image could not be written since the last call, with
+/// the cache's directory and the error, as `in DIRECTORY: ERROR`.
+pub fn take_unwritten() -> Vec<(PathBuf, String)> {
+    UNWRITTEN
+        .lock()
+        .map(|mut unwritten| std::mem::take(&mut *unwritten))
+        .unwrap_or_default()
+}
+
 /// The process's cache, choosing it from the environment when nothing has.
 pub(crate) fn current() -> Option<&'static ImageCache> {
     CACHE
