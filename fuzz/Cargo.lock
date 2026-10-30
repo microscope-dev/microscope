@@ -307,7 +307,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 [[package]]
 name = "cpp_demangle"
 version = "0.5.1"
-source = "git+https://github.com/microscope-dev/cpp_demangle?rev=82e492e239986b5d5374ada56b634e7550b90a58#82e492e239986b5d5374ada56b634e7550b90a58"
+source = "git+https://github.com/microscope-dev/cpp_demangle?rev=58dc3f034112ed7c4d74450676dcc779238b9c05#58dc3f034112ed7c4d74450676dcc779238b9c05"
 dependencies = [
  "cfg-if",
 ]
