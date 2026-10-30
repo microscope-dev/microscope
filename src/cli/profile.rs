@@ -1181,12 +1181,26 @@ const fn look(view: StackView) -> microscope::profiler::Look {
 /// more of those that ran out of copied stack.
 fn truncations(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let truncations = profile.truncations();
+    let mut limited = 0;
     if !truncations.is_empty() {
         writeln!(out)?;
         writeln!(out, "Stacks that end short of their outermost frame:")?;
         for (reason, count) in truncations {
             writeln!(out, "  {count:>8}  {reason}")?;
+            if reason == "kernel call chain limit" {
+                limited = count;
+            }
         }
+    }
+
+    if limited > 0 {
+        writeln!(
+            out,
+            "{} went past the {} addresses the kernel's call chain holds; a larger \
+             --stack-bytes unwinds them further.",
+            plural(limited, "stack"),
+            microscope::profiler::CHAIN_LIMIT
+        )?;
     }
 
     let exhausted = profile.stack_copy_exhausted();

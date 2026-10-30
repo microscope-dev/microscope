@@ -780,7 +780,7 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
         sample_regs_user: decode::REGISTERS,
         sample_stack_user: options.stack_bytes,
         clockid: libc::CLOCK_MONOTONIC,
-        sample_max_stack: 127,
+        sample_max_stack: crate::unwind::sample::CHAIN_LIMIT,
         ..sys::Attr::default()
     };
 

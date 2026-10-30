@@ -100,7 +100,10 @@ copied memory end. A truncated stack records its reason. `dev` copies 32 KiB
 of each sampled stack, and `max` 16 KiB, since at its rate more makes the
 kernel drop samples. A program without frame pointers whose frames
 need more ends with `[stack copy exhausted]`, and the report suggests a larger
-`--stack-bytes`. perf copies at most 65528 bytes per sample.
+`--stack-bytes`. perf copies at most 65528 bytes per sample. Past the copy,
+the kernel's frame-pointer chain carries a stack on for at most 127
+addresses; a deeper stack, as Chrome's layout code makes, ends with
+`[kernel call chain limit]`.
 
 Some programs keep frame pointers but ship call-frame information for little
 of their code, as Google's build of Chrome does. When call-frame information

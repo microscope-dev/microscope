@@ -315,10 +315,14 @@ pub enum Truncation {
     /// The interpreter's frames, which follow the native frames, belong
     /// before activations of its loop that differ from them in number.
     InterpretedUnplaced = 14,
+
+    /// The kernel's chain ended because it held as many addresses as the
+    /// kernel records, not at a frame that broke it.
+    ChainLimit = 15,
 }
 
 impl Truncation {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::NoUnwindInfo,
         Self::FramePointerNotKept,
         Self::StackCopyExhausted,
@@ -333,6 +337,7 @@ impl Truncation {
         Self::InterpretedUnknown,
         Self::InterpretedEnded,
         Self::InterpretedUnplaced,
+        Self::ChainLimit,
     ];
 
     pub fn from_number(number: u64) -> Option<Self> {
@@ -356,6 +361,7 @@ impl Truncation {
             Self::InterpretedUnknown => "interpreted frames unknown",
             Self::InterpretedEnded => "interpreted frames ended early",
             Self::InterpretedUnplaced => "interpreted frames not placed among the native ones",
+            Self::ChainLimit => "kernel call chain limit",
         }
     }
 }

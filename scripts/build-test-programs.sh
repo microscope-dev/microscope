@@ -1520,6 +1520,8 @@ build_fixture gcc "$c_fixtures_dir/profile-bigframe.c" "$output_dir/profile-bigf
     -O2 -g -fomit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/profile-inline.c" "$output_dir/profile-inline" \
     -O2 -g -fno-omit-frame-pointer
+build_fixture gcc "$c_fixtures_dir/profile-deep.c" "$output_dir/profile-deep" \
+    -O2 -g -fno-omit-frame-pointer
 # Built as Chromium builds by default: split DWARF, so that only the line
 # tables stay in the program and its inlines are described in a .dwo.
 build_fixture clang "$c_fixtures_dir/profile-inline.c" "$output_dir/profile-inline-clang-split" \

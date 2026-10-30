@@ -57,6 +57,13 @@ pub struct SampledFrame {
     pub cfa: Option<u64>,
 }
 
+/// The most addresses the kernel's chain holds.
+///
+/// It is the events' `sample_max_stack`, as much as the default
+/// `kernel.perf_event_max_stack` allows. A chain this long ended at the
+/// limit, not at its outermost frame.
+pub const CHAIN_LIMIT: u16 = 127;
+
 /// How an unwound stack ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackEnd {
@@ -166,13 +173,20 @@ fn sampled_frames(
     unwound.truncate(kept + 1);
     let mut frames = frames(unwound);
     let links = links.get(link..).unwrap_or_default();
-    let end = follow_chain(
+    let end = match follow_chain(
         modules,
         rules,
         &mut frames,
         (&sample.chain[link..], links),
         limit,
-    );
+    ) {
+        StackEnd::Truncated(Truncation::ChainEnded, module)
+            if sample.chain.len() >= usize::from(CHAIN_LIMIT) =>
+        {
+            StackEnd::Truncated(Truncation::ChainLimit, module)
+        }
+        end => end,
+    };
     (frames, end)
 }
 

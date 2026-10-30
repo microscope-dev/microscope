@@ -1118,6 +1118,35 @@ fn a_signal_handlers_stack_keeps_to_its_frame_limit() {
     }
 }
 
+/// A stack deeper than the kernel's frame-pointer chain holds, 127
+/// addresses, ends where the kernel stopped the chain, and says that was
+/// the kernel's limit, not a frame that broke the chain. A stack copy that
+/// reaches main unwinds it whole.
+#[test]
+fn a_stack_past_the_kernels_chain_limit_says_so() {
+    for (copy, expected) in [
+        (
+            SMALL_STACK_COPY,
+            StackEnding::Truncated("kernel call chain limit".into()),
+        ),
+        (DEEP_STACK_COPY, StackEnding::Complete),
+    ] {
+        let options = RecordOptions {
+            stack: StackCopy::Bytes(copy),
+            ..calls_of("leaf")
+        };
+        let mut command = Command::new(Scenario::fixture("profile-deep"));
+        command.stdout(Stdio::null());
+        let recording = record(command, &options).expect("record");
+        assert!(recording.status.success(), "{}", recording.status);
+        let stacks = recording.profile.stacks();
+        assert_eq!(stacks.len(), 1, "{copy}: leaf is called once");
+        let stack = &stacks[0];
+        assert_eq!(stack.ending, expected, "{copy}: {stack:?}");
+        assert!(stack.functions.len() >= 127, "{copy}: {stack:?}");
+    }
+}
+
 /// Line tables only, as Chromium builds, name a function in DWARF without
 /// its class or namespace, and with no linkage name; its symbol has both.
 /// A profile names the code by the symbol's qualified name, as a full
