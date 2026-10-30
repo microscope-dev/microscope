@@ -306,15 +306,15 @@ pub fn seal(
     Ok(tables)
 }
 
-/// Frees what was sealed, `records` of the loader's, on a thread of its own
-/// when there are many. The loader's records hold millions of
-/// allocations, which took a fifth of a second to free in turn, and each is
-/// freed as soon as its tables are built, so that the records and the image
-/// are not all held at once; the loader's workers may all be busy. A few
-/// are freed here: a recording seals a module for each piece of code a
-/// perf map names, with none, and a thread for each cost more than the
-/// module.
-fn free<T: Send + 'static>(sealed: T, records: usize) {
+/// Frees `records` of the loader's, on a thread of its own when there are
+/// many. The loader's records hold millions of allocations, which took a
+/// fifth of a second to free in turn, and up to a second for every DIE of
+/// Chrome's functions; those sealed are freed as soon as their tables are
+/// built, so that the records and the image are not all held at once. The
+/// loader's workers may all be busy. A few are freed here: a recording
+/// seals a module for each piece of code a perf map names, with none, and
+/// a thread for each cost more than the module.
+pub fn free<T: Send + 'static>(sealed: T, records: usize) {
     if records > 1_000 {
         std::thread::spawn(move || drop(sealed));
     }

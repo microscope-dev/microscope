@@ -6,6 +6,7 @@ use crate::{Error, Result};
 
 mod image;
 
+pub use image::free;
 pub use image::{Binding, SealError, seal};
 pub use image::{ModuleImage, ModuleMetadata, PackageInfo, ThreadLocal};
 

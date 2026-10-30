@@ -3473,49 +3473,54 @@ fn load_function_metadata<'data>(
             })
         })
         .collect::<Vec<_>>();
-    let mut functions = Vec::new();
-    let mut trampolines = Vec::new();
-    let mut body_futures = Vec::new();
+
+    // Only numbering the functions is done in turn; they are built in
+    // parallel, which on Chrome's 14 million took a tenth of a cold load
+    // on one thread.
     let mut function_ids = vec![None; raw.len()];
     let mut nameless = vec![false; raw.len()];
-    for (definition, named) in order.into_iter().zip(named) {
-        let Some((name, role)) = named else {
+    let mut named_definitions = Vec::new();
+    for (definition, named) in order.iter().zip(&named) {
+        if named.is_some() {
+            let id = u32::try_from(named_definitions.len())
+                .map_err(|_| gimli::Error::UnsupportedOffset)?;
+            function_ids[*definition] = Some(FunctionId::new(id));
+            named_definitions.push(*definition);
+        } else {
             // Clang also emits code with no name of any kind, as some
             // subprograms Chromium's split DWARF has: its code keeps its
             // symbol's name, and what it inlined, theirs.
-            nameless[definition] = concrete[definition];
-            continue;
-        };
-
-        let origin = &raw[definition];
-        let id = FunctionId::new(
-            u32::try_from(functions.len()).map_err(|_| gimli::Error::UnsupportedOffset)?,
-        );
-        trampolines.push(origin.trampoline);
-        if origin.language == SourceLanguage::Rust
-            && let Some(future) = origin
-                .name
-                .as_deref()
-                .zip(origin.namespace.as_deref())
-                .and_then(|(name, namespace)| super::coroutines::body_future(name, namespace))
-        {
-            body_futures.push((id, Arc::from(future)));
+            nameless[*definition] = concrete[*definition];
         }
-
-        functions.push(FunctionInfo {
-            id,
-            name,
-            linkage_name: origin.linkage_name.clone(),
-            declaration: origin.declaration.clone(),
-            language: origin.language,
-            role,
-            enclosing: None,
-            coroutine: None,
-            generics: Arc::from([]),
-            main_subprogram: origin.main_subprogram,
-        });
-        function_ids[definition] = Some(id);
     }
+
+    let named = named.into_iter().flatten().collect::<Vec<_>>();
+    let mut functions = named_definitions
+        .par_iter()
+        .zip(named)
+        .enumerate()
+        .map(|(id, (definition, (name, role)))| {
+            let origin = &raw[*definition];
+            FunctionInfo {
+                #[expect(clippy::cast_possible_truncation, reason = "numbered as u32 above")]
+                id: FunctionId::new(id as u32),
+                name,
+                linkage_name: origin.linkage_name.clone(),
+                declaration: origin.declaration.clone(),
+                language: origin.language,
+                role,
+                enclosing: None,
+                coroutine: None,
+                generics: Arc::from([]),
+                main_subprogram: origin.main_subprogram,
+            }
+        })
+        .collect::<Vec<_>>();
+    let trampolines = named_definitions
+        .par_iter()
+        .map(|definition| raw[*definition].trampoline)
+        .collect::<Vec<_>>();
+    let body_futures = body_futures(&raw, &named_definitions, &function_ids);
 
     let (code_instances, instance_ids) =
         code_instances(&raw, &definitions, &function_ids, &nameless)?;
@@ -3530,6 +3535,8 @@ fn load_function_metadata<'data>(
         go_table,
     );
     drop(roles);
+    let records = raw.len();
+    crate::model::free(raw, records);
 
     Ok(FunctionMetadata {
         functions,
@@ -3537,6 +3544,31 @@ fn load_function_metadata<'data>(
         instance_ids,
         body_futures,
     })
+}
+
+/// Each Rust async body of the functions `definitions` name, with the full
+/// name of the coroutine type rustc's naming says it runs.
+fn body_futures(
+    raw: &RawFunctions,
+    definitions: &[usize],
+    function_ids: &[Option<FunctionId>],
+) -> Vec<(FunctionId, Arc<str>)> {
+    definitions
+        .par_iter()
+        .filter_map(|definition| {
+            let origin = &raw[*definition];
+            if origin.language != SourceLanguage::Rust {
+                return None;
+            }
+
+            let future = origin
+                .name
+                .as_deref()
+                .zip(origin.namespace.as_deref())
+                .and_then(|(name, namespace)| super::coroutines::body_future(name, namespace))?;
+            Some((function_ids[*definition]?, Arc::from(future)))
+        })
+        .collect()
 }
 
 /// Each function DIE with code as an instance, numbered in DIE order, of
@@ -3548,41 +3580,61 @@ fn code_instances(
     function_ids: &[Option<FunctionId>],
     nameless: &[bool],
 ) -> std::result::Result<(Vec<CodeInstanceInfo>, DieMap<CodeInstanceId>), DwarfError> {
+    // Which DIEs are instances is found in parallel, and only their
+    // numbering in turn: reading each of Chrome's 53 million DIEs on one
+    // thread took seconds.
+    let has_code = raw
+        .par_iter()
+        .zip(definitions)
+        .map(|(function, definition)| !function.ranges.is_empty() && !nameless[*definition])
+        .collect::<Vec<_>>();
     let mut instances = vec![None; raw.len()];
-    let mut instance_ids = DieMap::default();
-    let mut count = 0;
-    for ((index, function), definition) in raw.iter().enumerate().zip(definitions) {
-        if !function.ranges.is_empty() && !nameless[*definition] {
+    let mut instance_functions = Vec::new();
+    for ((index, has_code), definition) in has_code.into_iter().enumerate().zip(definitions) {
+        if has_code {
             let id = CodeInstanceId::new(
-                u32::try_from(count).map_err(|_| gimli::Error::UnsupportedOffset)?,
+                u32::try_from(instance_functions.len())
+                    .map_err(|_| gimli::Error::UnsupportedOffset)?,
             );
+            // Every instance's definition has an ID.
+            let Some(of) = function_ids[*definition] else {
+                let key = raw[index].key;
+                return Err(DwarfError::ReferencedFunctionMissing {
+                    unit: key.unit,
+                    offset: key.offset,
+                });
+            };
             instances[index] = Some(id);
-            instance_ids.insert(function.key, id);
-            count += 1;
+            instance_functions.push((index, of));
         }
     }
 
-    if let Some(((function, _), _)) = raw
-        .iter()
-        .zip(&instances)
-        .zip(definitions)
-        .find(|((_, id), definition)| id.is_some() && function_ids[**definition].is_none())
-    {
-        return Err(DwarfError::ReferencedFunctionMissing {
-            unit: function.key.unit,
-            offset: function.key.offset,
-        });
-    }
+    // Each unit's map is filled on its own: one thread inserting Chrome's
+    // 21 million instances in turn took over a second.
+    let instance_ids = DieMap {
+        first: 0,
+        units: raw
+            .units
+            .par_iter()
+            .zip(&raw.starts)
+            .map(|(unit, start)| {
+                (*start..)
+                    .zip(unit)
+                    .filter_map(|(index, function)| Some((function.key.offset, instances[index]?)))
+                    .collect()
+            })
+            .collect(),
+    };
 
-    let code_instances = raw
+    let code_instances = instance_functions
         .par_iter()
-        .zip(&instances)
-        .zip(definitions)
-        .filter_map(|((function, id), definition)| {
-            Some(CodeInstanceInfo {
-                id: (*id)?,
-                // Every instance's definition has an ID, as checked above.
-                function: function_ids[*definition]?,
+        .enumerate()
+        .map(|(id, (index, of))| {
+            let function = &raw[*index];
+            CodeInstanceInfo {
+                #[expect(clippy::cast_possible_truncation, reason = "numbered as u32 above")]
+                id: CodeInstanceId::new(id as u32),
+                function: *of,
                 parent: match function.kind {
                     RawFunctionKind::Inline => {
                         containing_instance(function.parent, raw, &instances)
@@ -3597,7 +3649,7 @@ fn code_instances(
                 },
                 ranges: Arc::clone(&function.ranges),
                 breakpoint_entry: breakpoint_entry(function),
-            })
+            }
         })
         .collect::<Vec<_>>();
 
