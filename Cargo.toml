@@ -113,7 +113,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 aya = "0.14"
 aya-obj = "0.3"
 # C++20 manglings emitted by Chromium; see MICROSCOPE.md in the fork.
-cpp_demangle = { git = "https://github.com/microscope-dev/cpp_demangle", rev = "58dc3f034112ed7c4d74450676dcc779238b9c05" }
+cpp_demangle = { git = "https://github.com/microscope-dev/cpp_demangle", rev = "3f6f357479cd8b7ffea785d8dace50e2bf974b5b" }
 crc32fast = "1.5"
 gimli = "0.34"
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "gas", "instr_info", "intel", "std"] }
