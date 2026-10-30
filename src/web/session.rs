@@ -183,8 +183,6 @@ pub struct Session {
     /// Whether a process attached to runs on at once rather than staying
     /// stopped at the attach.
     resume_attached: AtomicBool,
-    /// Whether `share` makes links; see [`Session::stop_sharing`].
-    share_links: AtomicBool,
 
     /// Which processes a launched or attached program starts are debugged
     /// too.
@@ -280,7 +278,6 @@ impl Session {
             cause: Arc::default(),
             handles: values::Handles::default(),
             resume_attached: AtomicBool::new(false),
-            share_links: AtomicBool::new(true),
             follow: Mutex::default(),
             stopping: watch::Sender::new(false),
         })
@@ -298,16 +295,6 @@ impl Session {
     /// `policy` says.
     pub fn follow(&self, policy: FollowPolicy) {
         *self.follow.lock().unwrap_or_else(PoisonError::into_inner) = policy;
-    }
-
-    /// Stops making links that share the session, as behind a trusted
-    /// proxy, whose links are its own.
-    pub fn stop_sharing(&self) {
-        self.share_links.store(false, Ordering::Relaxed);
-    }
-
-    pub fn shares(&self) -> bool {
-        self.share_links.load(Ordering::Relaxed)
     }
 
     /// Lets every process attached to from now on run on at once: a
@@ -1051,13 +1038,6 @@ impl Session {
     }
 
     fn share(&self, role: Role, wanted: Role, to: &str) -> Answer {
-        if !self.shares() {
-            return Err(Failure::new(
-                ErrorKind::Forbidden,
-                "this server's pages are shared by the proxy in front of it",
-            ));
-        }
-
         if wanted == Role::Control && role != Role::Control {
             return Err(Failure::new(
                 ErrorKind::Forbidden,

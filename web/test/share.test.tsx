@@ -3,7 +3,6 @@
 
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
-import { PROTOCOL_VERSION } from "../src/protocol";
 import { Share } from "../src/ui/Share";
 import { mountPane, unmountPane } from "./pane";
 
@@ -27,21 +26,6 @@ it("keeps the link for the access chosen last", async () => {
   await expect
     .element(page.getByRole("textbox", { name: "Join link" }))
     .toHaveValue("http://x/join?control");
-});
-
-it("is hidden on a server that makes no links", async () => {
-  const server = await mountPane(<Share />);
-  await expect.element(page.getByRole("button", { name: "Share" })).toBeVisible();
-  server.send({
-    type: "hello",
-    version: PROTOCOL_VERSION,
-    connection: 1,
-    role: "view",
-    name: "guest-1",
-    cwd: "/work",
-    share: false,
-  });
-  await expect.element(page.getByRole("button", { name: "Share" })).not.toBeInTheDocument();
 });
 
 it("shows a failure as an error", async () => {

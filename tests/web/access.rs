@@ -73,7 +73,6 @@ async fn the_socket_refuses_other_pages_names_and_cookies() {
     let hello = client.next().await;
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["role"], "control");
-    assert_eq!(hello["share"], true);
     assert_eq!(hello["version"], 2);
 }
 

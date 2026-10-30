@@ -52,7 +52,6 @@ export async function fakeServer(): Promise<FakeServer> {
     role: "control",
     name: "tester",
     cwd: "/work",
-    share: true,
   });
   return {
     session,

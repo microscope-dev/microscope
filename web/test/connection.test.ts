@@ -20,7 +20,6 @@ const hello = (version = PROTOCOL_VERSION) =>
     role: "control",
     name: "tester",
     cwd: "/",
-    share: true,
   });
 
 /** A connection whose every attempt is recorded and driven by the test. */

@@ -41,7 +41,6 @@ pub async fn serve(
         role,
         name: joined.name.clone(),
         cwd: session.cwd().display().to_string(),
-        share: session.shares(),
     });
     let state = ServerMessage::State(Arc::clone(&joined.state.borrow_and_update()));
     let list = ServerMessage::Profiles(ProfileList::clone(&listed.borrow_and_update()));

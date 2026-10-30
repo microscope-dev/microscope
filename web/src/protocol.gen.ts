@@ -165,12 +165,7 @@ name: string,
 /**
  * The server's working directory, which relative paths start from.
  */
-cwd: string, 
-/**
- * Whether the server makes links that share the session. One behind a
- * trusted proxy makes none, since the proxy decides who sees its pages.
- */
-share: boolean, };
+cwd: string, };
 
 export type State = { 
 /**

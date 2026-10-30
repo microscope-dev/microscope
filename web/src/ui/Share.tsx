@@ -6,8 +6,6 @@ import { useDialogFocus } from "./dialog";
 
 export function Share() {
   const open = useModel((model) => model.link === "open");
-  // A server behind a trusted proxy makes no links; the proxy has its own.
-  const shares = useModel((model) => model.hello?.share === true);
   const [shown, setShown] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
 
@@ -34,7 +32,7 @@ export function Share() {
     };
   }, [shown]);
 
-  if (!open || !shares) {
+  if (!open) {
     return null;
   }
   return (

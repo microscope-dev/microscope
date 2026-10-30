@@ -381,9 +381,6 @@ microscope record --continuous profiles --segment 60 --keep 24h --pid 1842
 `microscope report profiles` and `microscope web profiles` read the retained
 segments as one profile. Old segments are deleted after the `--keep` duration.
 
-To upload segments to a microscope service as they finish, see
-[Upload a continuous recording](agent.md#upload-a-continuous-recording).
-
 ## Record system calls too
 
 `--syscalls SET` traces system calls beside the samples, with their stacks:

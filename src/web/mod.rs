@@ -118,24 +118,6 @@ pub struct WebArgs {
     #[arg(long, value_name = "URL")]
     public_url: Option<auth::PublicUrl>,
 
-    /// Listen on the Unix domain socket PATH instead of TCP, for a proxy on
-    /// this machine. PATH must not exist; the server removes it when it
-    /// stops. Requires --public-url, the only address pages are served at.
-    #[arg(
-        long,
-        value_name = "PATH",
-        conflicts_with_all = ["port", "listen"],
-        requires = "public_url"
-    )]
-    listen_unix: Option<PathBuf>,
-
-    /// Serve profiles to a proxy that has already decided who may see them.
-    /// Every request that passes the Host and Origin checks for --public-url
-    /// is read-only, with no token or cookie. Requires --public-url, and
-    /// serves only profiles.
-    #[arg(long, requires = "public_url")]
-    trust_proxy: bool,
-
     /// Also accept pages served from ORIGIN, such as the development
     /// server's `http://127.0.0.1:5173`. May be repeated.
     #[arg(long = "allow-origin", value_name = "ORIGIN", hide = true)]
@@ -176,10 +158,8 @@ struct App {
     session: Arc<Session>,
     profiles: Arc<profiles::Profiles>,
     origins: Origins,
-    /// The TCP port the cookie is named for; 0 on a Unix socket.
     port: u16,
     public: Option<auth::PublicUrl>,
-    trust_proxy: bool,
 }
 
 impl App {
@@ -188,11 +168,6 @@ impl App {
     fn authorize(&self, headers: &HeaderMap) -> Option<Role> {
         if !self.is_own_page(headers) {
             return None;
-        }
-
-        // The proxy has already decided who may see the page.
-        if self.trust_proxy {
-            return Some(Role::View);
         }
 
         let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
@@ -245,19 +220,13 @@ pub async fn run(args: &WebArgs) -> Result<()> {
             .policy(&[]);
     let profiles = profiles::Profiles::new(cwd.clone());
     let (start, profile) = what_to_serve(args, &profiles)?;
-    if args.trust_proxy {
-        anyhow::ensure!(profile.is_some(), "--trust-proxy serves only profiles");
-    }
-
     let listener = bind(args).await?;
-    let address = listener.address().context("the listening address")?;
+    let address = listener.local_addr().context("the listening address")?;
     let origins = Origins::new(address, args.allow_origins.clone(), args.public_url.clone());
-    let link_base = match (&args.public_url, origins.primary()) {
-        (Some(public), _) => public.url(),
-        (None, Some(host)) => format!("http://{host}/"),
-        // A Unix socket listener requires --public-url, so one arm holds.
-        (None, None) => anyhow::bail!("no address to serve pages at"),
-    };
+    let link_base = args.public_url.as_ref().map_or_else(
+        || format!("http://{}/", origins.primary()),
+        auth::PublicUrl::url,
+    );
     let tokens = Tokens::mint().context("failed to mint access tokens")?;
     let debug_files = microscope::DebugFileOptions {
         directories: args.debug_directories.clone(),
@@ -268,26 +237,50 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     let session = Session::new(cwd, link_base, tokens, debug_files, args.views.clone());
     session.resume_attached(args.resume);
     session.follow(follow);
-    if args.trust_proxy {
-        session.stop_sharing();
-    }
     let app = Arc::new(App {
         session: Arc::clone(&session),
         profiles,
         origins,
-        port: address.map_or(0, |address| address.port()),
+        port: address.port(),
         public: args.public_url.clone(),
-        trust_proxy: args.trust_proxy,
     });
 
-    // The page a profile opens at, relative to the public URL's path.
-    let page = profile.map_or_else(|| "/".to_owned(), |id| format!("/profile/{id}"));
-    let keys = if args.trust_proxy {
-        announce_ready(&app, &page)?;
-        None
+    // Before any debugger exists: see `terminal`.
+    let link = session.join_link(
+        Role::Control,
+        &profile.map_or_else(|| "/".to_owned(), |id| format!("/profile/{id}")),
+    );
+    let keys = if terminal::interactive() {
+        match terminal::start_opener() {
+            Ok(opener) => Some(terminal::Keys::listen(link.clone(), opener)?),
+            Err(error) => {
+                eprintln!("warning: pressing o cannot open a browser: {error}");
+                None
+            }
+        }
     } else {
-        announce_link(&session, &app, &page)?
+        None
     };
+
+    {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(
+            stdout,
+            "microscope web: serving http://{}",
+            app.origins.primary()
+        )?;
+        if let Some(public) = &app.public {
+            writeln!(stdout, "pages are served through {}", public.url())?;
+        }
+
+        writeln!(stdout, "open {link}")?;
+        writeln!(stdout, "anyone with this link can control the program")?;
+        if keys.is_some() {
+            writeln!(stdout, "press o to open it in your browser")?;
+        }
+
+        stdout.flush()?;
+    }
 
     // The page is served while the program loads, which can take a while,
     // and a tab that comes meanwhile sees it loading.
@@ -305,7 +298,7 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     let app_profiles = Arc::clone(&app.profiles);
     let router = router(app);
     let served = tokio::select! {
-        served = serve(listener, router) => served.context("the server failed"),
+        served = axum::serve(listener, router) => served.context("the server failed"),
         () = terminated => Ok(()),
     };
 
@@ -327,75 +320,7 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     let _ = tokio::task::spawn_blocking(move || profiles.shutdown()).await;
     drop(keys);
 
-    // The socket is the file this server created, so it goes with the server.
-    if let Some(path) = &args.listen_unix {
-        let _ = std::fs::remove_file(path);
-    }
-
     served
-}
-
-/// Prints where the server listens and the link that opens the page. Returns
-/// the key listener a terminal can use to open the link.
-fn announce_link(session: &Session, app: &App, page: &str) -> Result<Option<terminal::Keys>> {
-    let link = session.join_link(Role::Control, page);
-    // Before any debugger exists: see `terminal`.
-    let keys = if terminal::interactive() {
-        match terminal::start_opener() {
-            Ok(opener) => Some(terminal::Keys::listen(link.clone(), opener)?),
-            Err(error) => {
-                eprintln!("warning: pressing o cannot open a browser: {error}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let mut stdout = std::io::stdout().lock();
-    if let Some(primary) = app.origins.primary() {
-        writeln!(stdout, "microscope web: serving http://{primary}")?;
-    }
-
-    if let Some(public) = &app.public {
-        writeln!(stdout, "pages are served through {}", public.url())?;
-    }
-
-    writeln!(stdout, "open {link}")?;
-    writeln!(stdout, "anyone with this link can control the program")?;
-    if keys.is_some() {
-        writeln!(stdout, "press o to open it in your browser")?;
-    }
-
-    stdout.flush()?;
-    Ok(keys)
-}
-
-/// Prints the one line a supervisor reads on stdout: where the first profile's
-/// page lies under the public URL. No join link is printed, since the proxy
-/// decides who sees the page.
-fn announce_ready(app: &App, page: &str) -> Result<()> {
-    if let Some(public) = &app.public {
-        eprintln!("microscope web: pages are served through {}", public.url());
-    }
-
-    let mut stdout = std::io::stdout().lock();
-    writeln!(
-        stdout,
-        "ready {}{}",
-        app.base(),
-        page.trim_start_matches('/')
-    )?;
-    stdout.flush()?;
-    Ok(())
-}
-
-/// Serves `router` on whichever listener was bound.
-async fn serve(listener: Listener, router: Router) -> std::io::Result<()> {
-    match listener {
-        Listener::Tcp(listener) => axum::serve(listener, router).await,
-        Listener::Unix(listener) => axum::serve(listener, router).await,
-    }
 }
 
 /// Every route, under the public URL's path when there is one.
@@ -510,40 +435,10 @@ fn start_from(args: &WebArgs) -> Option<Start> {
     })
 }
 
-/// Where the server accepts connections.
-enum Listener {
-    Tcp(tokio::net::TcpListener),
-    Unix(tokio::net::UnixListener),
-}
-
-impl Listener {
-    /// The TCP address, which a Unix socket does not have.
-    fn address(&self) -> std::io::Result<Option<SocketAddr>> {
-        match self {
-            Self::Tcp(listener) => listener.local_addr().map(Some),
-            Self::Unix(_) => Ok(None),
-        }
-    }
-}
-
-async fn bind(args: &WebArgs) -> Result<Listener> {
-    if let Some(path) = &args.listen_unix {
-        // A file already there is never replaced, since it may belong to
-        // something else.
-        anyhow::ensure!(
-            std::fs::symlink_metadata(path).is_err(),
-            "{} already exists; remove it or choose another path",
-            path.display()
-        );
-        let listener = tokio::net::UnixListener::bind(path)
-            .with_context(|| format!("cannot listen on {}", path.display()))?;
-        return Ok(Listener::Unix(listener));
-    }
-
+async fn bind(args: &WebArgs) -> Result<tokio::net::TcpListener> {
     if let Some(address) = args.listen {
         return tokio::net::TcpListener::bind(address)
             .await
-            .map(Listener::Tcp)
             .with_context(|| format!("cannot listen on {address}"));
     }
 
@@ -551,15 +446,13 @@ async fn bind(args: &WebArgs) -> Result<Listener> {
     if let Some(port) = args.port {
         return tokio::net::TcpListener::bind(loopback(port))
             .await
-            .map(Listener::Tcp)
             .with_context(|| format!("cannot listen on port {port}"));
     }
 
     match tokio::net::TcpListener::bind(loopback(DEFAULT_PORT)).await {
-        Ok(listener) => Ok(Listener::Tcp(listener)),
+        Ok(listener) => Ok(listener),
         Err(_) => tokio::net::TcpListener::bind(loopback(0))
             .await
-            .map(Listener::Tcp)
             .context("cannot listen on any port"),
     }
 }

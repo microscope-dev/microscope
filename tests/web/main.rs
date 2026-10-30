@@ -12,7 +12,6 @@ mod group;
 mod inspecting;
 mod lowlevel;
 mod profiles;
-mod proxy;
 mod python;
 mod running;
 mod sessions;

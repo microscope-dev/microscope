@@ -14,7 +14,6 @@
     )
 )]
 
-mod agent;
 mod cli;
 mod dap;
 mod present;
@@ -291,10 +290,6 @@ enum Tool {
     /// Serve a debugger to web browsers.
     Web(Box<web::WebArgs>),
 
-    /// Keep this machine connected to microscope's service, upload its
-    /// recordings, and record what the service asks.
-    Agent(agent::AgentArgs),
-
     /// Show, check, and create settings files, and trust projects.
     Config(ConfigArgs),
 
@@ -434,8 +429,6 @@ async fn async_main() -> ExitCode {
             // Tabs still connected would keep the runtime from shutting down.
             std::process::exit(code);
         }
-        // Reading a token from stdin may block a runtime thread.
-        Some(Tool::Agent(agent_args)) => std::process::exit(agent::main(agent_args).await),
         Some(Tool::Views(views)) => {
             return match run_views(views).await {
                 Ok(true) => ExitCode::SUCCESS,

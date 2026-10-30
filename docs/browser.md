@@ -104,23 +104,3 @@ an untrusted network.
 
 For a reverse proxy, `--public-url URL` gives microscope the external origin and
 path. The proxy is responsible for authentication and access control.
-
-`--listen-unix PATH` listens on a Unix socket instead of TCP, so only a process
-on the same machine can connect. It requires `--public-url`, and `PATH` must not
-exist: microscope never replaces a file, and it removes the socket when it
-stops.
-
-`--trust-proxy` serves every request that the proxy sends to the public URL as
-a read-only viewer, with no link or cookie. Use it only when the proxy already
-decides who may see the page. It requires `--public-url` and serves only
-profiles:
-
-```sh
-microscope web --listen-unix /run/microscope/web.sock \
-  --public-url https://proxy.example/debug/7/ --trust-proxy profile.usprof
-```
-
-Nothing is printed as a join link in this mode. Standard output holds one line,
-`ready PATH`, where `PATH` is the page's path under the public URL, such as
-`/debug/7/profile/0123456789abcdef`. A supervisor can read that line to learn
-the server is listening. Other messages go to standard error.

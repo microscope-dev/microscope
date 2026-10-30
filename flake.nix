@@ -1140,8 +1140,6 @@
           nodejs_24
           pnpm
           biome
-          # Lints the agent protocol's schema and keeps it compatible.
-          buf
           # A display of its own for the VS Code acceptance test, whose window
           # needs focus that a desktop's compositor may refuse it.
           xvfb

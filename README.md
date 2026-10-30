@@ -16,7 +16,6 @@ Protocol.
 - [Using an editor](docs/editors.md)
 - [Recording and reading profiles](docs/profiling.md)
 - [Tracing system calls](docs/syscalls.md)
-- [Uploading recordings](docs/agent.md)
 - [Expressions](docs/expressions.md)
 - [Views](docs/views.md) and [writing views](docs/writing-views.md)
 - [Supported languages](docs/languages.md)
