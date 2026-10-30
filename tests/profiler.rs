@@ -1118,6 +1118,35 @@ fn a_signal_handlers_stack_keeps_to_its_frame_limit() {
     }
 }
 
+/// Line tables only, as Chromium builds, name a function in DWARF without
+/// its class or namespace, and with no linkage name; its symbol has both.
+/// A profile names the code by the symbol's qualified name, as a full
+/// build's DWARF would, and the method it inlined by its own.
+#[test]
+fn line_tables_only_functions_keep_their_qualified_names() {
+    let mut command = Command::new(Scenario::fixture("profile-names-cpp-clang-g1"));
+    command.arg("5000000").stdout(Stdio::null());
+    let recording = record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+    let stacks = recording.profile.stacks();
+    let named = |name: &str| {
+        stacks
+            .iter()
+            .filter(|stack| stack.functions.iter().any(|function| function == name))
+            .count()
+    };
+
+    let spin = named("names::Worker::spin");
+    assert!(
+        spin * 10 >= stacks.len() * 9,
+        "{spin} of {} stacks in names::Worker::spin: {:?}",
+        stacks.len(),
+        stacks.first()
+    );
+    assert_eq!(named("spin"), 0);
+    assert!(named("next") > 0, "{:?}", stacks.first());
+}
+
 /// Split DWARF, as Chromium builds by default, leaves only line tables in
 /// the program and its inlines in a `.dwo` file: samples in the helper
 /// inlined into `scan` still name it inside `scan`. A copy of the program

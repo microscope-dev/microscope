@@ -2864,8 +2864,12 @@ pub fn symbolize(image: &ModuleImage, address: ImageAddress) -> Vec<OwnedLine> {
         .and_then(|instance| image.function(instance.function()))
         .map(crate::Function::info);
     if let Some(function) = physical {
+        let symbol = location
+            .symbol
+            .as_ref()
+            .and_then(|symbol| image.symbol(symbol.symbol));
         lines.push(line(
-            qualified(&function),
+            physical_name(&function, symbol),
             function.role,
             function.declaration.as_ref(),
             source.as_ref(),
@@ -2899,6 +2903,24 @@ fn unnamed_function(image: &ModuleImage, address: ImageAddress) -> Option<u64> {
     [view.eh_frame_index(), view.debug_frame_index()]
         .into_iter()
         .find_map(|index| index.function_start(address.get()))
+}
+
+/// The name of the function code belongs to. DWARF of line tables alone,
+/// as Chromium builds, names a C++ function without its scopes or its
+/// linkage name, as `spin`; the symbol holding its code then qualifies
+/// it, as `names::Worker::spin`, when it ends in that name.
+fn physical_name(function: &crate::FunctionInfo, symbol: Option<crate::Symbol<'_>>) -> Arc<str> {
+    if function.linkage_name.is_none()
+        && let Some(named) =
+            symbol.and_then(|symbol| crate::demangle::qualified_name(symbol.name()))
+        && named
+            .strip_suffix(&*function.name)
+            .is_some_and(|scopes| scopes.ends_with("::"))
+    {
+        return named.into();
+    }
+
+    qualified(function)
 }
 
 /// A function's name with the scopes that qualify it, as its linkage name

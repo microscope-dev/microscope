@@ -2372,6 +2372,10 @@ build_cpp_fixture g++ "$cpp_fixtures_dir/profile-stacks.cpp" "$output_dir/profil
     -O2 -g3 -fomit-frame-pointer -fPIE -pie -pthread
 build_cpp_fixture clang++ "$cpp_fixtures_dir/profile-stacks.cpp" "$output_dir/profile-stacks-cpp-clang-o0" \
     -O0 -g3 -fno-omit-frame-pointer -fPIE -pie -pthread
+# Line tables only, as Chromium builds: its DWARF names functions without
+# their classes, namespaces, or linkage names.
+build_cpp_fixture clang++ "$cpp_fixtures_dir/profile-names.cpp" "$output_dir/profile-names-cpp-clang-g1" \
+    -O2 -g1 -fno-omit-frame-pointer -fPIE -pie
 build_rust_fixture "$rust_fixtures_dir/profile-stacks.rs" "$output_dir/profile-stacks-rust-o0" \
     -C opt-level=0 -C force-frame-pointers=yes
 build_rust_fixture "$rust_fixtures_dir/profile-stacks.rs" "$output_dir/profile-stacks-rust-o2-nofp" \
