@@ -181,21 +181,32 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
 
     let mut runs = machinery_runs(&frames[..=dispatch], &kept);
 
-    // Past it, a kept frame is shown between the runs on either side.
+    // Past it, a kept frame is shown between the runs on either side, and
+    // a run ends where the stack changes.
+    let is_kept = |at: usize| kept.contains(&frames[at].level);
     let mut start = dispatch + 1;
     while start < frames.len() {
+        let segment = frames[start].segment;
         let end = (start..frames.len())
-            .find(|at| kept.contains(&frames[*at].level))
+            .find(|at| is_kept(*at) || frames[*at].segment != segment)
             .unwrap_or(frames.len());
-        // The dispatch frame's run takes in what follows it, however few;
-        // a run of its own needs two frames.
+        // The dispatch frame's run takes in what follows it on its stack,
+        // however few; a run of its own needs two frames.
         match runs.last_mut() {
-            Some(run) if run.end == start => run.end = end,
+            Some(run) if run.end == start && frames[run.start].segment == segment => {
+                run.end = end;
+            }
             _ if end - start >= 2 => runs.push(start..end),
             _ => {}
         }
 
-        start = end + 1;
+        let next = if end < frames.len() && is_kept(end) {
+            end + 1
+        } else {
+            end
+        };
+        debug_assert!(next > start, "folding past the dispatch makes progress");
+        start = next;
     }
 
     runs
@@ -328,27 +339,54 @@ mod tests {
             segment,
             ..interpreted(None)
         };
-        let (thread, future) = (StackSegment::Thread, StackSegment::Future);
-        let trace = Backtrace {
-            frames: [
-                (CodeRole::Ordinary, thread),
-                (CodeRole::Dispatch, thread),
-                (CodeRole::RuntimeInternal, thread),
-                (CodeRole::Ordinary, future),
-                (CodeRole::RuntimeInternal, thread),
-                (CodeRole::RuntimeInternal, thread),
-                (CodeRole::RuntimeInternal, thread),
-            ]
-            .into_iter()
-            .zip(0..)
-            .map(|((role, segment), level)| frame(level, role, segment))
-            .collect::<Vec<_>>()
-            .into(),
+        let trace = |frames: &[(CodeRole, StackSegment)]| Backtrace {
+            frames: frames
+                .iter()
+                .zip(0..)
+                .map(|((role, segment), level)| frame(level, *role, *segment))
+                .collect::<Vec<_>>()
+                .into(),
             context: microscope::ExecutionContext::Thread(microscope::ThreadId::new(1)),
             termination: microscope::UnwindTermination::Complete,
             unfollowed: Arc::from([]),
         };
-        assert_eq!(folds(&trace, 7, 0), vec![2..4, 5..7]);
+        let (thread, future) = (StackSegment::Thread, StackSegment::Future);
+        let (ordinary, runtime) = (CodeRole::Ordinary, CodeRole::RuntimeInternal);
+
+        let driven = trace(&[
+            (ordinary, thread),
+            (CodeRole::Dispatch, thread),
+            (runtime, thread),
+            (ordinary, future),
+            (runtime, thread),
+            (runtime, thread),
+            (runtime, thread),
+        ]);
+        assert_eq!(folds(&driven, 7, 0), vec![5..7]);
+
+        // A run is on one stack: it ends where the future's frames begin.
+        let longer = trace(&[
+            (ordinary, thread),
+            (CodeRole::Dispatch, thread),
+            (runtime, thread),
+            (runtime, thread),
+            (ordinary, future),
+            (ordinary, future),
+            (runtime, thread),
+            (runtime, thread),
+            (runtime, thread),
+        ]);
+        assert_eq!(folds(&longer, 9, 0), vec![2..4, 4..6, 7..9]);
+
+        // Nor does the dispatch frame's run take in a frame on another.
+        let after_run = trace(&[
+            (ordinary, thread),
+            (runtime, thread),
+            (CodeRole::Dispatch, thread),
+            (ordinary, future),
+            (runtime, thread),
+        ]);
+        assert_eq!(folds(&after_run, 5, 0), vec![1..3]);
     }
 
     /// A single frame past the dispatch joins the run that ends at the
