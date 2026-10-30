@@ -56,8 +56,12 @@ pub struct Limits {
 }
 
 impl Default for Limits {
+    /// As large as the input a load reads may be: Chrome's image with its
+    /// debug information is 7 GB.
     fn default() -> Self {
-        Self { bytes: 4 << 30 }
+        Self {
+            bytes: super::backing::MAX_INPUT,
+        }
     }
 }
 

@@ -882,6 +882,13 @@ fn the_header_is_checked() {
         ImageError::Malformed(_)
     ));
 
+    // An image as large as Chrome's with its debug information, 7 GB, is
+    // one an image may be: these bytes are only too few for it.
+    assert_eq!(
+        header(|header| header.length = (7_u64 << 30).into()),
+        ImageError::Truncated
+    );
+
     let small = Limits { bytes: 64 };
     let error = Image::from_bytes(AlignedBytes::copy_of(&bytes).unwrap(), small).unwrap_err();
     assert_eq!(error, ImageError::TooLarge);
