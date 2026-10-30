@@ -389,7 +389,7 @@ impl<'data> Units<'data> {
     /// units referring to it, when they agree: dwz merges what names a file
     /// by a relative path only among units that share their directory.
     fn load(
-        dwarf: &gimli::Dwarf<Reader<'data>>,
+        dwarf: &DwarfSet<'data>,
         mut units: Vec<gimli::Unit<Reader<'data>>>,
     ) -> std::result::Result<Self, DwarfError> {
         let partial = units.iter().any(is_partial_unit);
@@ -499,6 +499,9 @@ impl<'data> Units<'data> {
             let mut starts = units
                 .iter()
                 .enumerate()
+                // A split unit's offsets are its `.dwo` file's, and neither
+                // it nor its skeleton is named from another unit.
+                .filter(|(_, unit)| unit.dwo_id.is_none())
                 .filter_map(|(index, unit)| {
                     Some((unit.header.debug_info_offset()?.0, first + index))
                 })
@@ -729,14 +732,19 @@ fn outward_references(
     Ok(references)
 }
 
-/// The DWARF whose sections a unit's attributes name: the supplementary
-/// file's for a unit that file holds, else the file's own. A unit holds
-/// its DIEs' bytes, which lie in one file's `.debug_info`.
+/// The DWARF whose sections a unit's attributes name: that of the `.dwo`
+/// file a split unit was read from, or the supplementary file's for a unit
+/// that file holds, else the file's own. A unit holds its DIEs' bytes,
+/// which lie in one file's `.debug_info`.
 fn unit_dwarf<'a, 'data>(
-    dwarf: &'a gimli::Dwarf<Reader<'data>>,
+    dwarf: &'a DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
 ) -> &'a gimli::Dwarf<Reader<'data>> {
     use gimli::Section as _;
+    if let Some(split) = dwarf.split_of(unit) {
+        return split;
+    }
+    let dwarf = dwarf.main();
     let Some(supplementary) = dwarf.sup() else {
         return dwarf;
     };
@@ -795,7 +803,7 @@ impl CodeRanges {
 /// Reads the code ranges a DIE covers, dropping empty ranges and the stubs
 /// of discarded functions that lie outside the image's code.
 fn die_code_ranges<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
     code: &CodeRanges,
@@ -834,6 +842,8 @@ fn die_code_ranges<'data>(
 
 mod budget;
 use budget::LoadLimits;
+mod split;
+pub(in crate::debug_info) use split::DwarfSet;
 mod variables;
 
 pub(in crate::debug_info) use variables::{PathStep, array_byte_offset};
@@ -998,7 +1008,14 @@ fn load_debug_info(
         let rejected = rejected
             .as_ref()
             .map(|(file, reason)| (file, Arc::<str>::from(reason.as_str())));
-        read_debug_info(data, separate, rejected.as_ref(), supplementary, limits)
+        read_debug_info(
+            path,
+            data,
+            separate,
+            rejected.as_ref(),
+            supplementary,
+            limits,
+        )
     };
 
     let Some(cache) = cache else {
@@ -1018,6 +1035,13 @@ fn load_debug_info(
     if let Supplementary::Found(file) = &supplementary {
         inputs.push(file.data.as_slice());
     }
+
+    // So are the `.dwo` files split DWARF keeps its units in, as found now.
+    let dwarf_data = separate.as_ref().map_or(data, |file| file.data.as_slice());
+    let split = object::File::parse(dwarf_data)
+        .ok()
+        .and_then(|object| split::fingerprint(&object, path));
+    inputs.extend(split.as_deref());
 
     let key = crate::cache::Key::of(&inputs);
     let outcome = match cache.get(key) {
@@ -1062,6 +1086,7 @@ fn load_debug_info(
 /// recorded. Without one, the file `rejected` names that describes another
 /// module is recorded with why.
 fn read_debug_info(
+    program: &Path,
     data: &[u8],
     separate: Option<&super::separate::DebugFile>,
     rejected: Option<&(&super::separate::DebugFile, Arc<str>)>,
@@ -1074,12 +1099,14 @@ fn read_debug_info(
         })
     };
 
-    let image =
-        |separate, supplementary, dwarf| load_image(data, separate, supplementary, dwarf, limits);
+    let image = |separate, supplementary, dwarf| {
+        load_image(program, data, separate, supplementary, dwarf, limits)
+    };
 
     // The file's own DWARF, or, when it cannot be read, none.
     let own = |separate: Separate<'_>, supplementary| {
         load_image(
+            program,
             data,
             separate.clone(),
             supplementary,
@@ -1088,6 +1115,7 @@ fn read_debug_info(
         )
         .or_else(|error| {
             load_image(
+                program,
                 data,
                 separate,
                 None,
@@ -1197,6 +1225,7 @@ impl Read {
     reason = "one loader assembles every table of an image from its sources"
 )]
 fn load_image(
+    program: &Path,
     data: &[u8],
     separate: Separate<'_>,
     supplementary: Option<&super::separate::DebugFile>,
@@ -1293,6 +1322,22 @@ fn load_image(
             })
             .collect(),
     )?;
+
+    // A skeleton unit's DIEs are in the `.dwo` file it names, read in its
+    // place where found.
+    let dwo_files: Vec<(usize, Vec<u8>)> = split::read_files(&dwarf, &units, program)
+        .into_iter()
+        .filter_map(|(index, found)| found.ok().map(|(_, bytes)| (index, bytes)))
+        .collect();
+    // The budget follows the debug information, which is theirs too.
+    let dwo_bytes: u64 = dwo_files.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+    crate::count!("dwo_bytes", dwo_bytes);
+    input += dwo_bytes;
+    let dwo_sections: Vec<(usize, Sections<'_>)> = dwo_files
+        .iter()
+        .filter_map(|(index, bytes)| Some((*index, split::sections(bytes)?)))
+        .collect();
+    let (dwarf, units) = split::with_split_units(dwarf, units, &dwo_sections, endian);
     let units = Units::load(&dwarf, units)?;
     let catalog = UnitCatalog {
         type_signatures: type_signature_index(&units)?,
@@ -1690,17 +1735,17 @@ fn unit_end(header: &gimli::UnitHeader<Reader<'_>>) -> usize {
 }
 
 /// Why the image's DWARF is incomplete when compile units keep it in split
-/// DWARF files, which the debugger does not read: how many do, and the
+/// DWARF files that were not found or could not be read: how many, and the
 /// first one's file.
 fn split_units<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
 ) -> std::result::Result<Option<Arc<str>>, DwarfError> {
-    let (mut compile_units, mut split, mut first) = (0, 0, None);
+    let (mut compile_units, mut unread, mut first) = (0, 0, None);
     for unit in catalog.units.iter().filter(|unit| !is_type_unit(unit)) {
         compile_units += 1;
-        if unit.dwo_id.is_some() {
-            split += 1;
+        if split::is_skeleton(unit) && dwarf.split_of(unit).is_none() {
+            unread += 1;
             first.get_or_insert(unit);
         }
     }
@@ -1717,15 +1762,16 @@ fn split_units<'data>(
     let file = |such_as| file.map_or_else(String::new, |file| format!(", {such_as}{file}"));
     let reason = if compile_units == 1 {
         format!(
-            "its compile unit is described in a split DWARF file{}, which this debugger does not \
-             read; its functions are known only by their symbols, without variables or types",
+            "its compile unit is described in a split DWARF file{} that was not found or could \
+             not be read; its functions are known only by their symbols, without inlines, \
+             variables, or types",
             file("")
         )
     } else {
         format!(
-            "{split} of its {compile_units} compile units are described in split DWARF files{}, which this \
-             debugger does not read; their functions are known only by their symbols, without \
-             variables or types",
+            "{unread} of its {compile_units} compile units are described in split DWARF files{} \
+             that were not found or could not be read; their functions are known only by their \
+             symbols, without inlines, variables, or types",
             file("such as ")
         )
     };
@@ -1735,7 +1781,7 @@ fn split_units<'data>(
 
 /// The producers the units name, in unit order.
 fn unit_producers<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
 ) -> std::result::Result<Vec<Arc<str>>, DwarfError> {
     let mut producers = Vec::<Arc<str>>::new();
@@ -1760,7 +1806,7 @@ const DW_AT_GO_PACKAGE_NAME: gimli::DwAt = gimli::DwAt(0x2905);
 /// The Go packages the image has units for, with the names their code
 /// declares.
 fn go_packages(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     catalog: &UnitCatalog<'_>,
 ) -> std::result::Result<Vec<crate::model::PackageInfo>, DwarfError> {
     let mut packages = Vec::new();
@@ -1809,7 +1855,7 @@ fn assign_go_symbol_roles(table: &super::gopclntab::GoTable, symbols: &mut [crat
 /// by start address. A Go unit's ranges also cover the assembly functions
 /// of its package, which follow the same calling convention.
 fn go_code_ranges<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
 ) -> std::result::Result<Vec<AddressRange<ImageAddress>>, DwarfError> {
     let mut ranges = Vec::new();
@@ -3379,7 +3425,7 @@ struct FunctionMetadata {
 }
 
 fn load_function_metadata<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
     go_table: Option<&super::gopclntab::GoTable>,
     files: &mut Files,
@@ -3843,7 +3889,7 @@ impl std::ops::Index<usize> for RawFunctions {
 /// Every unit's function DIEs, decoded in parallel, with the files they
 /// name numbered as one walk of every unit in order would number them.
 fn collect_function_dies<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
     files: &mut Files,
 ) -> std::result::Result<(RawFunctions, Futures), DwarfError> {
@@ -3894,7 +3940,7 @@ fn collect_function_dies<'data>(
 
 /// One unit's function DIEs, and the coroutine types of its `async fn`s.
 fn collect_unit_functions<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
     unit_index: usize,
 ) -> std::result::Result<UnitFunctions, DwarfError> {
@@ -3998,7 +4044,7 @@ fn collect_unit_functions<'data>(
 
 /// What a function DIE says of its function.
 fn raw_function<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
     (key, kind, parent, language): (DieKey, RawFunctionKind, Option<DieKey>, SourceLanguage),
@@ -4070,7 +4116,7 @@ type Futures = HashMap<DieKey, Arc<str>>;
 /// The name of the `async fn` whose coroutine type a DIE is, which rustc
 /// nests in the function's namespace.
 fn future_of(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
     namespace: Option<&str>,
@@ -4093,7 +4139,7 @@ fn future_of(
 
 /// The language a unit is written in, by its root DIE or its importers.
 fn unit_language(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     units: &Units<'_>,
     unit_index: usize,
 ) -> std::result::Result<SourceLanguage, DwarfError> {
@@ -4117,7 +4163,7 @@ fn unit_language(
 }
 
 fn string_attribute(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
     attribute: gimli::DwAt,
@@ -4133,7 +4179,7 @@ fn string_attribute(
 /// A string attribute as the section holds it, without copying it: for
 /// callers that only inspect a name, which need not allocate one.
 fn str_attribute<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
     attribute: gimli::DwAt,
@@ -4240,7 +4286,7 @@ fn containing_instance(
 
 /// The source location a DIE's file, line, and column attributes name.
 fn entry_source_location(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
     [file_attribute, line_attribute, column_attribute]: [gimli::DwAt; 3],
@@ -4297,7 +4343,7 @@ fn entry_source_location(
 /// Appends a unit's line program to `tables`: every row of each sequence
 /// in the image's code, and the range of code each located row describes.
 fn load_lines(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     code: &CodeRanges,
     files: &mut Files,
@@ -4393,7 +4439,7 @@ fn load_lines(
 }
 
 fn source_path(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     header: &gimli::LineProgramHeader<Reader<'_>>,
     file: &gimli::FileEntry<Reader<'_>>,
@@ -5031,6 +5077,7 @@ mod tests {
             Ok::<_, gimli::Error>(EndianSlice::new(bytes, RunTimeEndian::Little))
         })
         .expect("read test DWARF");
+        let dwarf = DwarfSet::from(dwarf);
         let mut headers = dwarf.units();
         let header = headers.next().unwrap().expect("one test unit");
         let unit = dwarf.unit(header).expect("read test unit");

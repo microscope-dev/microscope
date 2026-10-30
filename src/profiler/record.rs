@@ -1118,6 +1118,19 @@ impl Processor {
             None => None,
         };
 
+        // What the debug information leaves out costs a profile its
+        // inlines and names, as split DWARF whose `.dwo` files are gone
+        // does; leaving out locals costs it nothing.
+        if let Some(info) = &info
+            && let crate::DebugInformation::Incomplete { reason } = info.image.debug_information()
+            && info.image.locals_left_out().as_deref() != Some(&*reason)
+        {
+            self.builder.setting(
+                &format!("debug information {}", path.display()),
+                &format!("incomplete: {reason}"),
+            );
+        }
+
         let image = self.images.len();
         self.images.push(Image {
             v8: info

@@ -14,6 +14,7 @@
 //!   and selecting storage of every form.
 //! - [`call_sites`]: the calls that recover parameters' entry values.
 
+use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError};
@@ -131,7 +132,7 @@ enum RustScope {
 impl RustScope {
     /// The scope of a subprogram or inline instance of a Rust unit.
     fn routine<'data>(
-        dwarf: &gimli::Dwarf<Reader<'data>>,
+        dwarf: &DwarfSet<'data>,
         units: &Units<'data>,
         unit_index: usize,
         unit: &gimli::Unit<Reader<'data>>,
@@ -229,7 +230,7 @@ pub(super) struct LoadedVariables {
 
 /// The producer a unit names.
 fn unit_producer(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
 ) -> std::result::Result<Option<Arc<str>>, DwarfError> {
     let mut entries = unit.entries();
@@ -243,7 +244,7 @@ fn unit_producer(
 /// What a function returns by the System V convention: one value of its
 /// type, named for it, unless it returns nothing.
 fn system_v_returns<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'data>>,
@@ -281,7 +282,7 @@ fn system_v_returns<'data>(
 
 /// The file declaring a function or inlined call's function, if known.
 fn declared_file<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -298,7 +299,7 @@ fn declared_file<'data>(
 /// calls', as Delve reads them: Go may place a nested block's code
 /// outside its parent's ranges. Only blocks the fusion changes are listed.
 fn fused_block_ranges(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     code: &super::CodeRanges,
 ) -> std::result::Result<HashMap<usize, Vec<AddressRange<ImageAddress>>>, DwarfError> {
@@ -382,7 +383,7 @@ pub(super) struct CodeMetadata<'a> {
     reason = "one depth-first DIE walk must keep scope, variable, and parameter state synchronized"
 )]
 pub(super) fn load_variable_info<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
     target: TargetDescription,
     image_id: ModuleImageId,
@@ -652,7 +653,7 @@ fn layout_child(child: DynamicAggregateChild) -> Option<crate::image::type_facts
 
 /// What the main walk reads every unit with.
 struct WalkContext<'w, 'data> {
-    dwarf: &'w gimli::Dwarf<Reader<'data>>,
+    dwarf: &'w DwarfSet<'data>,
     catalog: &'w UnitCatalog<'data>,
     target: TargetDescription,
     languages: &'w [Option<gimli::DwLang>],
@@ -1493,7 +1494,7 @@ struct AbstractTargets<'a, 'data, 'units> {
 /// A nested abstract block is its own concrete block's to add; one with
 /// none has no code, so its variables are nowhere in scope.
 fn add_abstract_only_variables<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     routine: &ConcreteRoutine,
     targets: &mut AbstractTargets<'_, 'data, '_>,
@@ -1596,7 +1597,7 @@ fn add_abstract_only_variables<'data>(
 /// The line of the await whose future an abstract block's origin declares
 /// as `__awaitee`, which a concrete copy of the block may leave out.
 fn origin_awaitee<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -1634,7 +1635,7 @@ fn origin_awaitee<'data>(
 /// Whether a subprogram or inline instance is the body of a Rust `async
 /// fn`, by its name or its abstract origin's.
 fn async_fn_body<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'data>>,
@@ -1716,7 +1717,7 @@ fn rust_temporary(name: &str, unnamed_parameter: bool) -> bool {
 }
 
 fn string_attribute_of<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
 ) -> std::result::Result<Option<Arc<str>>, DwarfError> {
@@ -1731,7 +1732,7 @@ fn string_attribute_of<'data>(
 /// A Rust trait object's vtable, `<C as Trait>::{vtable}`: a variable at a
 /// fixed address, whose type names `C` as its containing type.
 fn rust_vtable<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,

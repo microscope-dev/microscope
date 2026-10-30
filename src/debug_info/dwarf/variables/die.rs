@@ -1,5 +1,6 @@
 //! Reading attributes from DIEs and the origins they inherit from.
 
+use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::sync::Arc;
 
@@ -103,7 +104,7 @@ pub(super) const fn is_type_scope(tag: gimli::DwTag) -> bool {
 }
 
 pub(super) fn copy_name(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
 ) -> std::result::Result<Option<Arc<str>>, DwarfError> {
@@ -122,7 +123,7 @@ const MAX_ZIG_PARENTS: usize = 16;
 /// the way the LLVM backend spells it. A parent whose own name is
 /// qualified, or has no parent, ends the chain.
 pub(super) fn zig_qualified_name(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     units: &Units<'_>,
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
@@ -169,7 +170,7 @@ pub(super) fn zig_qualified_name(
 /// A string attribute of a DIE or, failing that, of the first origin that
 /// has it.
 pub(super) fn string_with_origins(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     units: &Units<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
@@ -335,7 +336,7 @@ pub(super) fn strict_flag(
 }
 
 pub(super) fn declaration_with_origins<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -373,7 +374,7 @@ impl DeclaredSource {
 
 /// [`declaration_with_origins`] without interning its file.
 pub(super) fn declared_source<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -410,7 +411,7 @@ pub(super) struct DeclaredFiles(HashMap<(usize, u64), SourceFileId>);
 /// relative path is not remembered, as the file it names depends on the
 /// files interned by then.
 pub(super) fn declaration_remembering_files<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit: &gimli::Unit<Reader<'data>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,

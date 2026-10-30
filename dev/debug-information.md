@@ -119,7 +119,11 @@ validation unchanged.
 The cache key names every input whose bytes affect the image: module content,
 separate debug content, supplementary data, and loader revision. Paths do not
 identify content. The same bytes at another path should reuse an image; new
-bytes at the same path must not.
+bytes at the same path must not. A program with split DWARF is the
+exception: which `.dwo` files are found depends on where it is, so its key
+also holds each one's path, size, inode, and modification time, or that it
+is missing (`split::fingerprint`). Reading them all would cost a hit what a
+miss costs.
 
 A cache hit still validates the image. Cache files are not trusted merely
 because microscope wrote them. Failed or interrupted writes must not leave an
@@ -202,6 +206,18 @@ DWARF is frequently partial or internally inconsistent. Bound recursion,
 references, expression work, ranges, and table sizes. A malformed entry should
 carry enough unit and offset context to diagnose the producer without exposing
 raw DWARF concepts through every public API.
+
+Split DWARF (`dwarf/split.rs`) leaves a skeleton of each unit in the program,
+with the unit's line table, and the rest in a `.dwo` file the skeleton names.
+Each file is looked for under the skeleton's compile directory, then beside
+the program, and its unit read in the skeleton's place, with the skeleton's
+line program and relocated bases. A split unit's strings, addresses, and
+ranges are read through its own file's DWARF, which `unit_dwarf` finds from
+where the unit's bytes lie; every pass takes a `DwarfSet`, the program's
+DWARF with each file's. Split units' offsets are their files', so no
+reference across units resolves to one. Type units in `.dwo` files and
+`.dwp` packages are not read yet. A skeleton whose file was not found leaves
+the image incomplete, which a profile records and `report` says.
 
 Type identity is not a DIE offset. Compilers may emit declarations and
 definitions in several units, imported types, aliases, split debug data, and

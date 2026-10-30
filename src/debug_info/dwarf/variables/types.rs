@@ -1,5 +1,6 @@
 //! Normalizing DWARF type DIEs into the platform-neutral type graph.
 
+use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, PoisonError};
@@ -56,7 +57,7 @@ pub(super) enum TypeEntry {
 }
 
 pub(super) struct TypeArenaBuilder<'a, 'data> {
-    pub(super) dwarf: &'a gimli::Dwarf<Reader<'data>>,
+    pub(super) dwarf: &'a DwarfSet<'data>,
     pub(super) units: &'a Units<'data>,
     pub(super) type_signatures: &'a TypeSignatures,
     pub(super) image: ModuleImageId,
@@ -243,7 +244,7 @@ struct UnitPrepass {
 
 impl UnitPrepass {
     fn read(
-        dwarf: &gimli::Dwarf<Reader<'_>>,
+        dwarf: &DwarfSet<'_>,
         units: &Units<'_>,
         type_signatures: &TypeSignatures,
         unit_index: usize,
@@ -372,7 +373,7 @@ impl UnitPrepass {
 
 /// The language a unit's producer or name proves, from its root DIE.
 fn unit_produced_language(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     root: &gimli::DebuggingInformationEntry<Reader<'_>>,
 ) -> Option<SourceLanguage> {
@@ -535,7 +536,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         reason = "the module's debug information and what building shares"
     )]
     pub(super) fn new(
-        dwarf: &'a gimli::Dwarf<Reader<'data>>,
+        dwarf: &'a DwarfSet<'data>,
         units: &'a Units<'data>,
         type_signatures: &'a TypeSignatures,
         image: ModuleImageId,
@@ -3836,7 +3837,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
             let name = child
                 .attr_value(gimli::DW_AT_name)
-                .and_then(|name| self.dwarf.attr_string(unit, name).ok())?;
+                .and_then(|name| unit_dwarf(self.dwarf, unit).attr_string(unit, name).ok())?;
             members.push((
                 name.slice().to_vec(),
                 child

@@ -12,6 +12,7 @@
 //! first unit reached them. A unit that does, or a load that runs out of
 //! its budget or fails, is walked again in order instead.
 
+use crate::debug_info::dwarf::DwarfSet;
 use std::sync::{Mutex, PoisonError};
 
 use foldhash::HashMap;
@@ -126,7 +127,7 @@ pub(super) struct UnitTypes {
 /// The arena as it was before any unit was walked, which each unit's walk
 /// builds on.
 struct Frozen<'a, 'data> {
-    dwarf: &'a gimli::Dwarf<crate::debug_info::dwarf::Reader<'data>>,
+    dwarf: &'a DwarfSet<'data>,
     units: &'a crate::debug_info::dwarf::Units<'data>,
     type_signatures: &'a crate::debug_info::dwarf::TypeSignatures,
     image: crate::ModuleImageId,

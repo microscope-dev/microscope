@@ -401,6 +401,12 @@ microscope symbolize --debug-dir /srv/debug server.usprof
 Pass `--debuginfod` to fetch missing debug files from the servers listed by
 `DEBUGINFOD_URLS`.
 
+A program built with split DWARF (`-gsplit-dwarf`, Chromium's default)
+keeps its functions, inlines, and types in `.dwo` files, which microscope
+reads from where the compiler wrote them or from beside the program. When
+some can't be found, the profile's frames lose their inlines, and `record`
+and `report` say which program and the first missing file.
+
 ## Convert profile formats
 
 `microscope convert` reads microscope profiles, pprof files, and folded stacks.

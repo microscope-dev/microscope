@@ -143,21 +143,16 @@ async fn a_library_with_malformed_dwarf_is_described_by_its_symbols() {
     scenario.shutdown().await;
 }
 
-/// Split DWARF is not read: the compile unit kept in a `.dwo` file is said
-/// to be, while its skeleton's line program still places its code.
+/// Split DWARF is read from the `.dwo` file each skeleton unit names: the
+/// unit's variables and types are there, declared in files of the line
+/// table the skeleton keeps.
 #[tokio::test]
-async fn split_dwarf_is_reported_as_incomplete() {
+async fn split_dwarf_is_read_from_its_dwo_file() {
     let mut scenario = Scenario::launch("basic-split-dwarf");
     let image = scenario.handle().module_image();
-    let microscope::DebugInformation::Incomplete { reason } = image.debug_information() else {
-        panic!("{:?}", image.debug_information());
-    };
-
     assert_eq!(
-        &*reason,
-        "its compile unit is described in a split DWARF file, \
-         build/test-programs/basic-split-dwarf-basic.dwo, which this debugger does not read; its functions are known only by their symbols, \
-         without variables or types"
+        image.debug_information(),
+        microscope::DebugInformation::Loaded
     );
 
     scenario
@@ -170,17 +165,34 @@ async fn split_dwarf_is_reported_as_incomplete() {
         .await;
 
     scenario.run_to_stop().await;
-    let location = scenario
-        .operation("location", scenario.handle().current_location())
+    let trace = scenario
+        .operation("backtrace", scenario.handle().backtrace())
         .await;
-
+    scenario
+        .operation(
+            "select main",
+            scenario.handle().select_frame(trace.frames[1].id),
+        )
+        .await;
+    let variables = scenario
+        .operation("variables", scenario.handle().variables())
+        .await;
+    let first = variables
+        .variables
+        .iter()
+        .find(|variable| &*variable.name == "first")
+        .unwrap_or_else(|| panic!("no `first` in {:?}", variables.variables));
     assert_eq!(
-        location_line(&location),
-        Some(source_line(
-            "tests/fixtures/c/basic.c",
-            "uint64_t breakpoint_target(void) {"
-        )),
-        "{location:?}"
+        first.type_info.as_ref().map(|info| &*info.name),
+        Some("uint64_t")
+    );
+    let declaration = first.declaration.as_ref().expect("a declaration");
+    assert_eq!(
+        image
+            .source_file(declaration.file)
+            .and_then(|file| file.path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("basic.c")
     );
 
     scenario.shutdown().await;

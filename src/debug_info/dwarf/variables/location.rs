@@ -1,5 +1,6 @@
 //! Location descriptions and DWARF expressions copied out of the debug sections.
 
+use crate::debug_info::dwarf::DwarfSet;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -80,7 +81,7 @@ fn too_large(_: crate::image::locations::TooLarge) -> DwarfError {
 }
 
 pub(super) fn copy_optional_location(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'_>>,
@@ -98,7 +99,7 @@ pub(super) fn copy_optional_location(
 }
 
 pub(super) fn copy_data_object_value(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'_>>,
@@ -122,7 +123,7 @@ pub(super) fn copy_data_object_value(
 }
 
 pub(super) fn copy_data_object_value_with_origins(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     units: &Units<'_>,
     unit_index: usize,
@@ -168,7 +169,7 @@ fn copy_constant(
 }
 
 fn copy_location(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'_>>,
@@ -178,7 +179,7 @@ fn copy_location(
 }
 
 type CopyExpression = fn(
-    &gimli::Dwarf<Reader<'_>>,
+    &DwarfSet<'_>,
     &mut LocationsBuilder,
     usize,
     &gimli::Unit<Reader<'_>>,
@@ -186,7 +187,7 @@ type CopyExpression = fn(
 ) -> std::result::Result<crate::image::locations::ExpressionId, DwarfError>;
 
 fn copy_location_with(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'_>>,
@@ -244,7 +245,7 @@ fn copy_location_with(
 /// evaluation, which resolves them from its table, and all are in one
 /// unit, whose table they share.
 pub(super) fn copy_expression(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'_>>,
@@ -309,7 +310,7 @@ pub(super) fn copy_expression(
 
 /// Copies an expression's operations without the procedures it calls.
 fn copy_operations(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     unit_index: usize,
     unit: &gimli::Unit<Reader<'_>>,
@@ -329,7 +330,7 @@ fn copy_operations(
 
 /// The addresses `.debug_addr` gives the indexes an expression names.
 fn indexed_addresses(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     expression: &gimli::Expression<Reader<'_>>,
 ) -> std::result::Result<Vec<(u64, u64)>, DwarfError> {

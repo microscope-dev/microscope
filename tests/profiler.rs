@@ -1118,6 +1118,60 @@ fn a_signal_handlers_stack_keeps_to_its_frame_limit() {
     }
 }
 
+/// Split DWARF, as Chromium builds by default, leaves only line tables in
+/// the program and its inlines in a `.dwo` file: samples in the helper
+/// inlined into `scan` still name it inside `scan`. A copy of the program
+/// without its `.dwo` file can't, and the profile says why, even with an
+/// image cache that holds the program's image from where its file was.
+#[test]
+fn split_dwarf_inlines_are_read_from_the_dwo_file() {
+    let scratch = support::ScratchDir::new("profile-split-dwarf-alone");
+    microscope::cache::configure(Some(microscope::cache::Setting::Directory(
+        scratch.path().join("images"),
+    )))
+    .expect("an image cache");
+    let inlined = |program: &std::path::Path| {
+        let mut command = Command::new(program);
+        command.arg("20").stdout(Stdio::null());
+        let recording = record(command, &RecordOptions::default()).expect("record");
+        assert!(recording.status.success(), "{}", recording.status);
+        let stacks = recording.profile.stacks();
+        let inside = stacks
+            .iter()
+            .filter(|stack| {
+                stack
+                    .functions
+                    .starts_with(&["step".to_owned(), "scan".to_owned()])
+            })
+            .count();
+        let incomplete: Vec<String> = recording
+            .profile
+            .settings()
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("debug information "))
+            .map(|(key, value)| format!("{key}: {value}"))
+            .collect();
+        (inside, stacks.len(), incomplete)
+    };
+
+    let program = Scenario::fixture("profile-inline-clang-split");
+    let (inside, total, incomplete) = inlined(&program);
+    assert!(
+        inside * 2 >= total,
+        "{inside} of {total} stacks in step inside scan"
+    );
+    assert_eq!(incomplete, Vec::<String>::new());
+
+    let alone = scratch.path().join("profile-inline-clang-split");
+    std::fs::copy(&program, &alone).expect("copy the program");
+    let (inside, _, incomplete) = inlined(&alone);
+    assert_eq!(inside, 0);
+    assert!(
+        matches!(&incomplete[..], [one] if one.contains("profile-inline-clang-split-profile-inline.dwo that was not found")),
+        "{incomplete:?}"
+    );
+}
+
 /// A function every call of which was inlined has no code of its own to
 /// count calls at. It still exists, so the error says it was inlined and
 /// where, rather than that the program has no such function.

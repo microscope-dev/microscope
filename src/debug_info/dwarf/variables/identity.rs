@@ -6,6 +6,7 @@
 //! const generic parameters, and Go and Zig emit none. A parsed argument
 //! names a type only when exactly one type matches it.
 
+use crate::debug_info::dwarf::DwarfSet;
 use std::sync::Arc;
 
 use foldhash::{HashMap, HashMapExt, HashSet};
@@ -196,7 +197,7 @@ pub(in crate::debug_info) const fn source_language(
 /// The namespaces a D module scopes what it declares in, one for each
 /// part of its name: `std.array` is `std`, then `array`.
 pub(super) fn module_segments(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
 ) -> Vec<ScopeSegment> {
@@ -217,7 +218,7 @@ pub(super) fn module_segments(
 /// How a DIE scopes the types nested in it, or `None` when it is not a
 /// scope. `cpp` when the DIE's unit is C++.
 pub(super) fn scope_segment(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     unit: &gimli::Unit<Reader<'_>>,
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,

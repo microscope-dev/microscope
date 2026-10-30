@@ -2,6 +2,7 @@
 //! values a function's parameters held on entry from the call that entered
 //! it, and the tail calls that may have entered it since.
 
+use crate::debug_info::dwarf::DwarfSet;
 use std::sync::Arc;
 
 use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
@@ -74,7 +75,7 @@ impl CallSiteBuilder {
     /// Records the subprogram that the next cataloged function describes.
     pub(super) fn function<'data>(
         &mut self,
-        dwarf: &gimli::Dwarf<Reader<'data>>,
+        dwarf: &DwarfSet<'data>,
         units: &Units<'data>,
         unit_index: usize,
         entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -138,7 +139,7 @@ impl CallSiteBuilder {
     )]
     pub(super) fn site<'data>(
         &mut self,
-        dwarf: &gimli::Dwarf<Reader<'data>>,
+        dwarf: &DwarfSet<'data>,
         pool: &mut LocationsBuilder,
         units: &Units<'data>,
         unit_index: usize,
@@ -189,7 +190,7 @@ impl CallSiteBuilder {
     /// Records a parameter of the site whose entry contains it.
     pub(super) fn parameter(
         &mut self,
-        dwarf: &gimli::Dwarf<Reader<'_>>,
+        dwarf: &DwarfSet<'_>,
         pool: &mut LocationsBuilder,
         units: &Units<'_>,
         unit_index: usize,
@@ -361,7 +362,7 @@ fn tail_jump(call: Option<ImageAddress>, after: Option<ImageAddress>) -> Option<
 }
 
 fn site_attributes<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     pool: &mut LocationsBuilder,
     units: &Units<'data>,
     unit_index: usize,
@@ -441,7 +442,7 @@ fn site_attributes<'data>(
 }
 
 fn site_parameter(
-    dwarf: &gimli::Dwarf<Reader<'_>>,
+    dwarf: &DwarfSet<'_>,
     pool: &mut LocationsBuilder,
     units: &Units<'_>,
     unit_index: usize,
@@ -494,7 +495,7 @@ fn site_parameter(
 /// The name a linker symbol gives a function: its linkage name, or else
 /// its name.
 fn linkage_name<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -517,7 +518,7 @@ fn linkage_name<'data>(
 
 /// The linkage name of a function other units may call.
 fn external_name<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'data>>,

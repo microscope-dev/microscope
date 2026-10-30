@@ -854,6 +854,9 @@ fn report_losses(profile: &Profile) {
     if let Some(behind) = behind(profile) {
         eprintln!("microscope: {behind}");
     }
+    for note in incomplete_debug_information(profile) {
+        eprintln!("microscope: {note}");
+    }
 }
 
 /// How long sampling was off while microscope caught up on the samples it
@@ -1543,7 +1546,27 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
         writeln!(out, "{behind}.")?;
     }
 
+    for note in incomplete_debug_information(profile) {
+        writeln!(out, "{note}")?;
+    }
+
     Ok(())
+}
+
+/// Each module whose debug information left out what the profile names
+/// frames by, as split DWARF whose `.dwo` files were not found does.
+fn incomplete_debug_information(profile: &Profile) -> Vec<String> {
+    profile
+        .settings()
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let module = key.strip_prefix("debug information ")?;
+            let reason = value.strip_prefix("incomplete: ")?;
+            Some(format!(
+                "{module}'s debug information is incomplete: {reason}."
+            ))
+        })
+        .collect()
 }
 
 /// What task snapshots cost the program, and what they found.

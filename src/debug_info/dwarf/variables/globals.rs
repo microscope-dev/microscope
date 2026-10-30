@@ -1,5 +1,6 @@
 //! The catalog of global data objects, deduplicated across units.
 
+use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::borrow::Cow;
 use std::sync::{Arc, PoisonError};
@@ -151,7 +152,7 @@ impl DefinitionIndex {
     reason = "global collection deliberately resolves producer variants in one auditable pass"
 )]
 pub(super) fn load_globals<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     units: &Units<'data>,
     objects: &mut Vec<DataObject>,
     order: &mut u64,
@@ -365,7 +366,7 @@ pub(super) fn load_globals<'data>(
 /// One unit's scopes, its root first and each parent by its index there,
 /// and the scope of each of its DIEs.
 fn unit_scopes<'data>(
-    dwarf: &gimli::Dwarf<Reader<'data>>,
+    dwarf: &DwarfSet<'data>,
     unit: &gimli::Unit<Reader<'data>>,
 ) -> std::result::Result<(Vec<GlobalScope<'data>>, UnitScopes), DwarfError> {
     let mut table = vec![GlobalScope::default()];

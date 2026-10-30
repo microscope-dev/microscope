@@ -143,6 +143,7 @@ fn array_type_in(language: gimli::DwLang, lower_bound: Option<WriteAttributeValu
         Ok::<_, gimli::Error>(Reader::new(bytes, RunTimeEndian::Little))
     })
     .expect("read test DWARF");
+    let dwarf = crate::debug_info::dwarf::DwarfSet::from(dwarf);
     let mut headers = dwarf.units();
     let header = headers
         .next()
@@ -272,6 +273,7 @@ fn declaration_canonicalization_cannot_launder_a_non_type_reference() {
         Ok::<_, gimli::Error>(Reader::new(bytes, RunTimeEndian::Little))
     })
     .expect("read test DWARF");
+    let dwarf = crate::debug_info::dwarf::DwarfSet::from(dwarf);
     let mut headers = dwarf.units();
     let header = headers
         .next()
