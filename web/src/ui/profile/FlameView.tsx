@@ -125,7 +125,14 @@ function FlameGraph({
   const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
   const scheme = useShownScheme();
-  const [hovered, setHovered] = useState<{ rect: Rect; left: number; top: number } | null>(null);
+  // What is hovered belongs to one tree; another answer hovers nothing.
+  const [hover, setHovered] = useState<{
+    tree: CallTree;
+    rect: Rect;
+    left: number;
+    top: number;
+  } | null>(null);
+  const hovered = hover?.tree === tree ? hover : null;
 
   const rects = useMemo(
     () => (width > 0 ? layout(tree, zoom, 0.5 / width) : []),
@@ -183,7 +190,7 @@ function FlameGraph({
     const x = event.clientX - bounds.left;
     const y = event.clientY - bounds.top;
     const rect = hit(rects, Math.floor(y / ROW), x / bounds.width);
-    return rect ? { rect, left: x, top: y } : null;
+    return rect ? { tree, rect, left: x, top: y } : null;
   };
   const shown = hovered ? hovered.rect.node : null;
   return (

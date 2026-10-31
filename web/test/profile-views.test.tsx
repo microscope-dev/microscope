@@ -392,6 +392,33 @@ it("says it is reading a flame graph, and reads a function's cost from the serve
     .toBeVisible();
 });
 
+/** A mouse event at `x`, `y` within `target`'s box. */
+function mouseAt(target: Element, type: string, x: number, y: number): void {
+  const bounds = target.getBoundingClientRect();
+  act(() => {
+    target.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        clientX: bounds.left + x,
+        clientY: bounds.top + y,
+      }),
+    );
+  });
+}
+
+it("forgets the frame it hovered once another tree arrives", async () => {
+  const server = await mount(<FlameView />);
+  server.answer(await server.next("profileTree"), ...TREE);
+  const canvas = page.getByRole("img", { name: "Flame graph" });
+  await expect.element(canvas).toBeVisible();
+  mouseAt(canvas.element(), "mousemove", 10, 5);
+  const tip = () => document.querySelector("[data-testid=flame-tip] .mono")?.textContent;
+  await vi.waitFor(() => expect(tip()).toBe("main"));
+  changeLook((look) => ({ ...look, invert: "1" }));
+  server.answer(await server.next("profileTree"), ...treeOf([["other", 1, 1, 0]]));
+  await expect.element(page.getByTestId("flame-tip")).not.toBeInTheDocument();
+});
+
 it("draws a lane per thread for hundreds of threads", async () => {
   const threads: ProfileThread[] = Array.from({ length: 300 }, (_, row) => ({
     row,
