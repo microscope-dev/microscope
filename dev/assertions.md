@@ -53,6 +53,25 @@ debug_assert!(
 );
 ```
 
+## JavaScript, TypeScript, and Python
+
+The same rules hold, but where an assertion may fire depends on where the
+code runs.
+
+| Code | How it asserts | When it's on |
+| --- | --- | --- |
+| `web/src` | `assert` from `web/src/assert.ts` | Always. A failure shows in the page and can't harm a tracee |
+| `editors/vscode` | `node:assert/strict` | Always |
+| `src/runtime_model/python/agent.py` | `assert` | Debug builds only: `agent::bootstrap` compiles it with `optimize=1` in release |
+| `sdk/node`, `sdk/python` | the package's `assert`, or `assert not _CHECKED or FACT` | Only with `MICROSCOPE_SDK_CHECKS=1`, which the dev shell sets |
+
+The agent and the packages run inside the program microscope observes, so in a
+user's program they must never raise into its code. A test that clears a
+fixture's environment sets `MICROSCOPE_SDK_CHECKS` itself. In the web UI,
+server messages, the URL, storage, and anything a visualizer sends are input.
+Validate them and assert only on the page's own state. Keep checks with
+interpolated messages out of hot loops in painting code and the packages.
+
 ## Invariant checks
 
 Give a stateful component a `check_invariants` method and call it under debug
