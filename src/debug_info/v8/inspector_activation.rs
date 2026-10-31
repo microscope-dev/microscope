@@ -287,6 +287,12 @@ fn argument(
     call: usize,
     register: Register,
 ) -> Result<u64, Arc<str>> {
+    debug_assert_eq!(
+        instructions.get(call).map(Instruction::flow_control),
+        Some(FlowControl::Call),
+        "instruction {call} of {} whose argument is read is not a call",
+        instructions.len()
+    );
     let mut factory = iced_x86::InstructionInfoFactory::new();
     for instruction in instructions[..call].iter().rev().take(64) {
         if !matches!(instruction.flow_control(), FlowControl::Next) {
@@ -408,6 +414,13 @@ fn prove_writer(
         let Ok(append) = shape(candidate, address, APPEND, false) else {
             continue;
         };
+        for load in [0, 1, 5] {
+            debug_assert!(
+                append[load].is_ip_rel_memory_operand(),
+                "the registry append's instruction {load} at image address {address:#x} is not \
+                 RIP-relative"
+            );
+        }
         if !reached.contains(&address)
             || append[0].ip_rel_memory_address() != registry.checked_add(8).ok_or(UNSUPPORTED)?
             || append[1].ip_rel_memory_address() != registry.checked_add(16).ok_or(UNSUPPORTED)?
@@ -424,6 +437,10 @@ fn prove_writer(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the registration, handler, and watchdog form one proof"
+)]
 fn fallback(object: &object::File<'_>) -> Result<(ImageAddress, bool, ImageAddress), Arc<str>> {
     if object.architecture() != object::Architecture::X86_64 || !object.is_little_endian() {
         return Err(UNSUPPORTED.into());
@@ -466,6 +483,15 @@ fn fallback(object: &object::File<'_>) -> Result<(ImageAddress, bool, ImageAddre
         HANDLER,
         true,
     )?;
+    debug_assert!(
+        wake[0].is_ip_rel_memory_operand(),
+        "the signal handler's semaphore load at image address {handler:#x} is not RIP-relative"
+    );
+    debug_assert_eq!(
+        wake[1].op0_kind(),
+        OpKind::NearBranch64,
+        "the signal handler at image address {handler:#x} does not end in a near jump"
+    );
     if !calls(object, &wake[1], "uv_sem_post") {
         return Err(UNSUPPORTED.into());
     }
@@ -482,6 +508,13 @@ fn fallback(object: &object::File<'_>) -> Result<(ImageAddress, bool, ImageAddre
         .filter(|instruction| instruction.is_ip_rel_memory_operand())
         .map(Instruction::ip_rel_memory_address)
         .collect();
+    debug_assert_eq!(
+        references.len(),
+        5,
+        "the watchdog at image address {watchdog:#x} matches its template but makes {} \
+         RIP-relative references",
+        references.len()
+    );
     let [_, registry, waited, mutex, unlocked] = references.as_slice() else {
         return Err(UNSUPPORTED.into());
     };
@@ -502,6 +535,12 @@ fn fallback(object: &object::File<'_>) -> Result<(ImageAddress, bool, ImageAddre
         .iter()
         .filter(|instruction| instruction.flow_control() == FlowControl::Call)
         .collect();
+    debug_assert_eq!(
+        actual_calls.len(),
+        expected_calls.len(),
+        "the watchdog at image address {watchdog:#x} matches its template but makes {} calls",
+        actual_calls.len()
+    );
     if actual_calls.len() != expected_calls.len()
         || !actual_calls
             .iter()

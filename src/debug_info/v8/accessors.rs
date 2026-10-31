@@ -47,6 +47,15 @@ const DESTRUCTOR_BYTES: usize = 192;
 /// table's teardown frees.
 const SEGMENT_SIZE: u64 = 0x1_0000;
 
+const _: () = assert!(
+    DESTRUCTOR_BYTES >= 100,
+    "the destructor's teardown lies within its first 100 bytes"
+);
+const _: () = assert!(
+    SEGMENT_SIZE <= u32::MAX as u64,
+    "the segment size must fit the 32-bit immediate the teardown moves"
+);
+
 /// The address of the function symbol named `name`, or of the first whose
 /// name begins with it when `prefix`.
 fn function(object: &object::File<'_>, name: &str, prefix: bool) -> Option<u64> {
@@ -725,7 +734,21 @@ fn follow(instructions: &[Instruction], what: &str) -> Result<Flow, Arc<str>> {
                 .filter(|register| register.full_register().is_gpr64())
         };
         match (instruction.mnemonic(), instruction.op0_kind()) {
-            (Mnemonic::Ret, _) => return Ok(flow),
+            (Mnemonic::Ret, _) => {
+                debug_assert!(
+                    !matches!(flow.code, Some(Value::Returned(call)) if call >= flow.calls.len()),
+                    "{what} stores the result of call {:?} of {} as the code",
+                    flow.code,
+                    flow.calls.len()
+                );
+                debug_assert!(
+                    !matches!(flow.size, Some(Value::Returned(call)) if call >= flow.calls.len()),
+                    "{what} stores the result of call {:?} of {} as the size",
+                    flow.size,
+                    flow.calls.len()
+                );
+                return Ok(flow);
+            }
             (Mnemonic::Nop, _) | (Mnemonic::Push, OpKind::Register) => {}
             (Mnemonic::Sub | Mnemonic::Add, OpKind::Register)
                 if instruction.op0_register() == Register::RSP => {}
@@ -771,6 +794,10 @@ impl Registers {
 
     fn set(&mut self, register: Register, value: Value) {
         let register = register.full_register();
+        debug_assert!(
+            register.is_gpr64(),
+            "setting {register:?}, which is not a general-purpose register"
+        );
         if register.is_gpr64()
             && let Some(slot) = self.0.get_mut(register.number())
         {
@@ -894,6 +921,16 @@ fn assign_blob(
         _ => return Err(format!("{what}'s other accessors are not a pointer and a size").into()),
     };
 
+    debug_assert!(
+        code < accessors.len(),
+        "the code's call {code} is past the {} accessors",
+        accessors.len()
+    );
+    debug_assert!(
+        size < accessors.len(),
+        "the size's call {size} is past the {} accessors",
+        accessors.len()
+    );
     let variable = |index: usize| {
         accessors
             .get(index)

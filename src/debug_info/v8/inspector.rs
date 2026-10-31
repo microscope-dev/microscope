@@ -257,6 +257,38 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         let Some(session) = constructor_shape(object, at, SESSION) else {
             continue;
         };
+        debug_assert_eq!(
+            session[1].flow_control(),
+            FlowControl::Call,
+            "the session constructor's allocation at image address {at:#x} is not a call"
+        );
+        for branch in [7, 19, 24] {
+            debug_assert_eq!(
+                session[branch].flow_control(),
+                FlowControl::ConditionalBranch,
+                "the session constructor's instruction {branch} at image address {at:#x} is \
+                 not a conditional branch"
+            );
+        }
+        debug_assert!(
+            session[11].is_ip_rel_memory_operand(),
+            "the session constructor's vtable address at image address {at:#x} is not \
+             RIP-relative"
+        );
+        for rejoined in [0x6f, 0x8e] {
+            debug_assert!(
+                session
+                    .iter()
+                    .any(|instruction| instruction.ip().wrapping_sub(at) == rejoined),
+                "the session constructor at image address {at:#x} has no instruction at \
+                 +{rejoined:#x}"
+            );
+        }
+        debug_assert_eq!(
+            session.last().map(Instruction::flow_control),
+            Some(FlowControl::Return),
+            "the session constructor at image address {at:#x} does not end in a return"
+        );
         if session.last()?.next_ip() > end
             || !plt_symbol(object, session[1].near_branch_target(), "_Znwm")
         {
@@ -265,6 +297,15 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         let empty_at = session[7].near_branch_target();
         let empty = constructor_shape(object, empty_at, SESSION_EMPTY)?;
         let vtable = session[11].ip_rel_memory_address();
+        debug_assert!(
+            empty[0].is_ip_rel_memory_operand(),
+            "the empty session's vtable load at image address {empty_at:#x} is not RIP-relative"
+        );
+        debug_assert_eq!(
+            empty.last().map(Instruction::flow_control),
+            Some(FlowControl::UnconditionalBranch),
+            "the empty session at image address {empty_at:#x} does not end in a jump"
+        );
         if empty_at < start
             || empty.last()?.next_ip() > end
             || empty[0].ip_rel_memory_address() != vtable
@@ -282,6 +323,12 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
                 0xff,
             ],
         )?;
+        debug_assert_eq!(
+            atomic.last().map(Instruction::flow_control),
+            Some(FlowControl::UnconditionalBranch),
+            "the atomic weak-count path at image address {:#x} does not end in a jump",
+            atomic[0].ip()
+        );
         if atomic[0].ip() < start
             || atomic.last()?.next_ip() > end
             || atomic.last()?.near_branch_target() != at.checked_add(0x6f)?
@@ -368,6 +415,17 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
                 0xd7, 0xb1, 0xff,
             ],
         )?;
+        debug_assert_eq!(
+            delete[4].flow_control(),
+            FlowControl::Call,
+            "the deleting destructor at image address {deleting:#x} does not call the \
+             destructor"
+        );
+        debug_assert_eq!(
+            delete.last().map(Instruction::flow_control),
+            Some(FlowControl::UnconditionalBranch),
+            "the deleting destructor at image address {deleting:#x} does not end in a jump"
+        );
         if delete[4].near_branch_target() != destructor
             || !plt_symbol(object, delete.last()?.near_branch_target(), "_ZdlPvm")
         {

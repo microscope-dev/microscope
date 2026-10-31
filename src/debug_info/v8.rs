@@ -165,6 +165,11 @@ pub(super) fn builtins<'data>(object: &object::File<'data>) -> Vec<(u64, &'data 
         .collect();
     builtins.sort_unstable_by_key(|(address, _)| *address);
     builtins.dedup_by_key(|(address, _)| *address);
+    debug_assert!(
+        builtins.is_sorted_by(|(first, _), (second, _)| first < second),
+        "the {} builtins' image addresses are not strictly ascending",
+        builtins.len()
+    );
     builtins
 }
 
@@ -191,11 +196,47 @@ impl Generated {
     fn layout(&self) -> V8Layout {
         let mut layout = V8Layout::default();
         for &(field, offset) in self.fields {
+            debug_assert!(
+                !layout.has(field),
+                "V8 {}.{}'s generated layout gives {} twice",
+                self.major,
+                self.minor,
+                field.name()
+            );
             layout.set_field(field, u64::from(offset));
+            debug_assert_eq!(
+                layout.field(field),
+                Some(u64::from(offset)),
+                "V8 {}.{}'s generated offset of {} does not fit a layout",
+                self.major,
+                self.minor,
+                field.name()
+            );
         }
 
         for &(constant, value) in self.constants {
+            debug_assert!(
+                constant.is_torque(),
+                "V8 {}.{}'s generated layout gives {}, which the binary exports",
+                self.major,
+                self.minor,
+                constant.name()
+            );
+            debug_assert!(
+                !layout.has_constant(constant),
+                "V8 {}.{}'s generated layout gives {} twice",
+                self.major,
+                self.minor,
+                constant.name()
+            );
             layout.set_constant(constant, value);
+            debug_assert!(
+                layout.has_constant(constant),
+                "V8 {}.{}'s generated {} is {value}, which reads back as absent",
+                self.major,
+                self.minor,
+                constant.name()
+            );
         }
 
         layout
@@ -208,6 +249,19 @@ impl Generated {
             .map(|&(_, value)| value)
     }
 }
+
+const _: () = {
+    let mut at = 1;
+    while at < layouts::GENERATED.len() {
+        let (before, after) = (&layouts::GENERATED[at - 1], &layouts::GENERATED[at]);
+        assert!(
+            before.major < after.major
+                || (before.major == after.major && before.minor < after.minor),
+            "the generated layouts' versions are not strictly ascending"
+        );
+        at += 1;
+    }
+};
 
 /// The layout generated for V8 `major.minor`, before any build's own
 /// constants complete it, for tests of what reads it.
@@ -373,6 +427,26 @@ const CHECKED_FIELDS: &[(Field, &str)] = &[
     (Field::AccessorPairGetter, "AccessorPair__getter"),
     (Field::AccessorPairSetter, "AccessorPair__setter"),
 ];
+
+const _: () = {
+    let mut at = 0;
+    while at < CHECKED_FIELDS.len() {
+        let name = CHECKED_FIELDS[at].1.as_bytes();
+        let mut separators = 0;
+        let mut byte = 1;
+        while byte < name.len() {
+            if name[byte - 1] == b'_' && name[byte] == b'_' {
+                separators += 1;
+            }
+            byte += 1;
+        }
+        assert!(
+            separators == 1,
+            "a checked field's constant is not written Class__field"
+        );
+        at += 1;
+    }
+};
 
 /// What a module exports of V8's constants and version.
 #[derive(Debug, Default)]
@@ -547,6 +621,23 @@ fn bind(
     check_instance_types(version, generated, values)?;
     check_constants(version, generated, values)?;
     check_complete(version, &layout)?;
+    debug_assert_eq!(
+        layout.constant(Constant::TaggedSize),
+        Some(8),
+        "V8 {version} bound with a tagged size refuse_configuration refuses"
+    );
+    debug_assert_eq!(
+        layout.constant(Constant::SmiShiftSize),
+        Some(31),
+        "V8 {version} bound with a Smi shift refuse_configuration refuses"
+    );
+    for &(name, own) in generated.checked {
+        let bound = Constant::named(name).and_then(|constant| layout.constant(constant));
+        debug_assert!(
+            bound.is_none_or(|value| value == own),
+            "V8 {version} bound {PREFIX}{name} as {bound:?}, but its headers make it {own}"
+        );
+    }
     Ok(layout)
 }
 
@@ -727,6 +818,11 @@ fn check_complete(version: V8Version, layout: &V8Layout) -> Result<(), Arc<str>>
 /// The first version with V8's leaptiering, in which a function has a
 /// dispatch handle instead of its code, and the trusted space.
 const LEAPTIERING: (u32, u32) = (13, 6);
+
+const _: () = assert!(
+    LEAPTIERING.0 < 14 || (LEAPTIERING.0 == 14 && LEAPTIERING.1 < 6),
+    "leaptiering must precede 14.6, whose fields and constants assume it"
+);
 
 /// Whether V8 `major.minor` has `field`, which its layout must then give.
 fn requires_field(field: Field, version: (u32, u32)) -> bool {
