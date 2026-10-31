@@ -196,4 +196,26 @@ describe("the answer cache", () => {
     expect((await again.promise).ok).toBe(true);
     expect(asked).toBe(2);
   });
+
+  it("keeps a newer answer when an older one under its key drops", async () => {
+    const drops: (() => void)[] = [];
+    let asked = 0;
+    const connection = {
+      request: () => {
+        asked += 1;
+        return new Promise((_, reject) => {
+          drops.push(() => reject(new RequestError("disconnected", "the connection closed")));
+        });
+      },
+    } as unknown as Connection;
+    const answers = new Cache();
+    const old = answers.get(connection, "scopes", { stop: 1 });
+    answers.forget("scopes ");
+    const newer = answers.get(connection, "scopes", { stop: 1 });
+    drops[0]?.();
+    await old.promise;
+    await Promise.resolve();
+    expect(answers.get(connection, "scopes", { stop: 1 })).toBe(newer);
+    expect(asked).toBe(2);
+  });
 });

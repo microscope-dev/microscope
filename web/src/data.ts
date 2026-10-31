@@ -64,7 +64,11 @@ export class Cache {
     };
     void entry.promise.then((settled) => {
       entry.settled = settled;
-      if (!settled.ok && settled.error.kind === "disconnected") {
+      if (
+        !settled.ok &&
+        settled.error.kind === "disconnected" &&
+        this.#entries.get(key) === entry
+      ) {
         this.#entries.delete(key);
       }
     });
