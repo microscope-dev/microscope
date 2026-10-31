@@ -4,6 +4,7 @@
 
 'use strict';
 
+const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -149,6 +150,7 @@ function provideDebugConfigurations(folder) {
     }
     return programs(folder.uri.fsPath).map((program) => {
         const relative = path.relative(folder.uri.fsPath, program);
+        assert.ok(relative !== '' && !relative.startsWith('..'), 'program found outside the workspace folder');
         return {
             type: 'microscope',
             request: 'launch',
@@ -183,6 +185,7 @@ function programs(root) {
             }
             for (const child of children) {
                 if (++entries > PROGRAM_SEARCH.entries || found.length >= PROGRAM_SEARCH.programs) {
+                    assert.ok(found.length <= PROGRAM_SEARCH.programs, `found ${found.length} programs, over the limit`);
                     return found;
                 }
                 const file = path.join(directory, child.name);
@@ -199,6 +202,8 @@ function programs(root) {
         }
         level = next;
     }
+    assert.ok(found.length <= PROGRAM_SEARCH.programs, `found ${found.length} programs, over the limit`);
+    assert.ok(entries <= PROGRAM_SEARCH.entries, `searched ${entries} entries, over the limit`);
     return found;
 }
 
@@ -345,6 +350,7 @@ async function toggleHexadecimal() {
 function updateHexadecimal() {
     vscode.commands.executeCommand('setContext', 'microscope.hexadecimal', hexadecimal());
     for (const session of sessions) {
+        assert.ok(session.type === 'microscope', 'session set holds a session of another type');
         sendValueFormat(session);
     }
 }
@@ -402,6 +408,8 @@ function expressionAt(text, column) {
     }
     // Walk back over what joins the name to the operands before it.
     for (;;) {
+        assert.ok(start >= 0, `expression starts at ${start}`);
+        assert.ok(start <= column, `expression starts at ${start}, after column ${column}`);
         let at = start;
         if (text.startsWith('->', at - 2)) {
             at -= 2;
@@ -449,6 +457,9 @@ function expressionAt(text, column) {
     if (text[start - 1] === '$') {
         start--;
     }
+    assert.ok(start >= 0, `expression starts at ${start}`);
+    assert.ok(start < end, `expression spans ${start} to ${end}`);
+    assert.ok(start <= column && column <= end, `expression spans ${start} to ${end}, not column ${column}`);
     return { expression: text.slice(start, end), start, end };
 }
 
@@ -460,6 +471,7 @@ function expressionAt(text, column) {
  */
 function opening(text, close) {
     const pairs = { ']': '[', ')': '(' };
+    assert.ok(text[close] in pairs, `no closing bracket at column ${close}`);
     const stack = [];
     for (let index = close; index >= 0; index--) {
         const character = text[index];
@@ -470,6 +482,7 @@ function opening(text, close) {
                 return undefined;
             }
             if (stack.length === 0) {
+                assert.ok(index < close, `bracket closing at ${close} opens at ${index}`);
                 return index;
             }
         }
@@ -492,7 +505,10 @@ async function provideInlineValues(document, viewPort, context) {
     }
     try {
         return await inlineValues(session, document, viewPort, context);
-    } catch {
+    } catch (error) {
+        if (error instanceof assert.AssertionError) {
+            throw error;
+        }
         // The program ran on, and the stop's references are gone.
         return undefined;
     }
@@ -599,6 +615,9 @@ function uses(lines, name, first, last) {
             return [];
         }
         if (entry.start !== undefined && entry.depth <= lowest) {
+            assert.ok(entry.line >= first && entry.line <= last, `use on line ${entry.line}, outside ${first} to ${last}`);
+            assert.ok(lines[entry.line].startsWith(name, entry.start), `use on line ${entry.line} at ${entry.start} is not the name`);
+            assert.ok(found.length === 0 || found[found.length - 1].line > entry.line, `use on line ${entry.line} out of order`);
             found.push({ line: entry.line, start: entry.start });
         }
         lowest = Math.min(lowest, entry.depth);
@@ -614,6 +633,7 @@ function uses(lines, name, first, last) {
  * @param {string} quote
  */
 function closing(text, open, quote) {
+    assert.ok(text[open] === quote, `no opening quote at column ${open}`);
     for (let column = open + 1; column < text.length; column++) {
         if (text[column] === '\\' && quote !== '`') {
             column++;
