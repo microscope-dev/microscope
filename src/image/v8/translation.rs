@@ -91,6 +91,50 @@ opcodes! {
     MatchPreviousTranslation = "MATCH_PREVIOUS_TRANSLATION",
 }
 
+const _: () = {
+    let mut at = 0;
+    while at < generated::TRANSLATIONS.len() {
+        let own = &generated::TRANSLATIONS[at];
+        assert!(
+            own.js_frame_opcodes <= own.frame_opcodes,
+            "a version has more JavaScript frame opcodes than frame opcodes",
+        );
+        assert!(
+            own.frame_opcodes as usize <= own.opcodes.len(),
+            "a version has more frame opcodes than opcodes",
+        );
+        assert!(
+            own.opcodes.len() <= u8::MAX as usize + 1,
+            "a version has more opcodes than an opcode byte holds",
+        );
+
+        let mut number = 0;
+        while number < own.opcodes.len() {
+            let mut later = number + 1;
+            while later < own.opcodes.len() {
+                assert!(
+                    own.opcodes[number].0 as usize != own.opcodes[later].0 as usize,
+                    "a version numbers one opcode twice",
+                );
+                later += 1;
+            }
+            number += 1;
+        }
+
+        let mut later = at + 1;
+        while later < generated::TRANSLATIONS.len() {
+            let other = &generated::TRANSLATIONS[later];
+            assert!(
+                own.major != other.major || own.minor != other.minor,
+                "a version has two rows of translation opcodes",
+            );
+            later += 1;
+        }
+
+        at += 1;
+    }
+};
+
 /// One version's translation opcodes: each opcode's number is its place in
 /// `opcodes`, with its operand count. The first `js_frame_opcodes` begin a
 /// JavaScript frame, and the first `frame_opcodes` a frame of any kind.

@@ -141,6 +141,93 @@ pub fn builtins(version: V8Version) -> Result<(u32, Numbers), std::sync::Arc<str
         })
 }
 
+const _: () = {
+    let mut at = 0;
+    while at < bytecodes::BYTECODE_SIZES.len() {
+        let (major, minor, sizes) = bytecodes::BYTECODE_SIZES[at];
+        assert!(!sizes.is_empty(), "a version has no bytecode sizes");
+        assert!(
+            sizes.len() % 3 == 0,
+            "a version's bytecode sizes are not three equal rows",
+        );
+
+        let mut later = at + 1;
+        while later < bytecodes::BYTECODE_SIZES.len() {
+            let (other_major, other_minor, _) = bytecodes::BYTECODE_SIZES[later];
+            assert!(
+                major != other_major || minor != other_minor,
+                "a version has two rows of bytecode sizes",
+            );
+            later += 1;
+        }
+
+        at += 1;
+    }
+
+    let mut at = 0;
+    while at < bytecodes::SUSPEND_GENERATOR.len() {
+        let (major, minor, number) = bytecodes::SUSPEND_GENERATOR[at];
+        let mut sizes = 0;
+        let mut row = 0;
+        while row < bytecodes::BYTECODE_SIZES.len() {
+            let (own_major, own_minor, own) = bytecodes::BYTECODE_SIZES[row];
+            if own_major == major && own_minor == minor {
+                sizes += 1;
+                assert!(
+                    (number as usize) < own.len() / 3,
+                    "SuspendGenerator's number is past the version's bytecodes",
+                );
+            }
+            row += 1;
+        }
+
+        assert!(
+            sizes == 1,
+            "SuspendGenerator's version has no one row of bytecode sizes",
+        );
+        at += 1;
+    }
+
+    let mut at = 0;
+    while at < builtins::BUILTINS.len() {
+        let (major, minor, count, numbers) = builtins::BUILTINS[at];
+        let mut number = 0;
+        while number < numbers.len() {
+            let (builtin, value) = numbers[number];
+            assert!(value >= 0, "a builtin's number is negative");
+            assert!(
+                value < count as i64,
+                "a builtin's number is past the version's count",
+            );
+
+            let mut later = number + 1;
+            while later < numbers.len() {
+                let (other, other_value) = numbers[later];
+                assert!(
+                    builtin as usize != other as usize,
+                    "a version numbers one builtin twice",
+                );
+                assert!(value != other_value, "two builtins share a number");
+                later += 1;
+            }
+
+            number += 1;
+        }
+
+        let mut later = at + 1;
+        while later < builtins::BUILTINS.len() {
+            let (other_major, other_minor, ..) = builtins::BUILTINS[later];
+            assert!(
+                major != other_major || minor != other_minor,
+                "a version has two rows of builtin numbers",
+            );
+            later += 1;
+        }
+
+        at += 1;
+    }
+};
+
 /// The symbol of the table of V8's builtins' names, as clang and gcc
 /// mangle it: 24 bytes per builtin in number order, each beginning with a
 /// pointer to its name.
@@ -180,13 +267,38 @@ macro_rules! entries {
             /// The entry `name` names.
             #[must_use]
             pub fn named(name: &str) -> Option<Self> {
-                Self::ALL.iter().copied().find(|entry| entry.name() == name)
+                let found = Self::ALL.iter().copied().find(|entry| entry.name() == name);
+                debug_assert!(
+                    found.is_none_or(|found| Self::ALL
+                        .iter()
+                        .skip(found.index() + 1)
+                        .all(|entry| entry.name() != name)),
+                    "{found:?} shares its name with a later {}",
+                    stringify!($kind),
+                );
+                found
             }
 
             const fn index(self) -> usize {
                 self as usize
             }
         }
+
+        const _: () = assert!(
+            $kind::COUNT <= u16::MAX as usize + 1,
+            "a layout's entries outnumber their u16 discriminants",
+        );
+
+        const _: () = {
+            let mut at = 0;
+            while at < $kind::COUNT {
+                assert!(
+                    $kind::ALL[at].index() == at,
+                    "a layout entry's index is not its place in ALL",
+                );
+                at += 1;
+            }
+        };
     };
 }
 
@@ -1676,6 +1788,13 @@ const DISPATCH_ISOLATE: u16 = 1;
 /// [`DispatchTable::Group`].
 const DISPATCH_GROUP: u16 = 2;
 
+const _: () = assert!(
+    DISPATCH_NONE != DISPATCH_ISOLATE
+        && DISPATCH_NONE != DISPATCH_GROUP
+        && DISPATCH_ISOLATE != DISPATCH_GROUP,
+    "two kinds of dispatch table share a number",
+);
+
 impl Record for V8RuntimeRecord {
     const KIND: TableKind = TableKind::V8Runtime;
 }
@@ -1934,6 +2053,12 @@ impl NodeTasks {
             self.object_wrapper,
             u64::from(self.pool.is_some()),
         ];
+        debug_assert_eq!(
+            fixed.len() + pool.len() + self.nodedbg.len(),
+            Self::WORDS,
+            "a node task layout's words do not fill its record",
+        );
+
         for (word, value) in words.iter_mut().zip(
             fixed
                 .into_iter()
@@ -1946,8 +2071,21 @@ impl NodeTasks {
     }
 
     fn decode(words: [u64; Self::WORDS]) -> Self {
-        let word = |at: usize| words.get(at).copied().unwrap_or(0);
+        let word = |at: usize| {
+            debug_assert!(
+                at < Self::WORDS,
+                "node task word {at} is past the record's {} words",
+                Self::WORDS,
+            );
+            words.get(at).copied().unwrap_or(0)
+        };
         let address = |at: usize| ImageAddress::new(word(at));
+        debug_assert!(
+            word(10) <= 1,
+            "validation checked the node task layout's pool flag {} is 0 or 1",
+            word(10),
+        );
+
         Self {
             current_context: word(0),
             environment_slot: word(1),
@@ -2010,6 +2148,21 @@ impl NodeInspector {
             list,
             upgrade,
         ] = words;
+        debug_assert!(
+            vector <= 1,
+            "validation checked the inspector layout's vector flag {vector} is 0 or 1",
+        );
+        debug_assert_eq!(
+            dispatch == 0,
+            stop == 0,
+            "validation checked the inspector's close functions {dispatch:#x} and {stop:#x} \
+             (image addresses) are both set or both absent",
+        );
+        debug_assert!(
+            target_source <= 4096,
+            "validation checked the inspector's target source offset {target_source:#x} is at most 4096",
+        );
+
         Self {
             registry: ImageAddress::new(registry),
             signal_handler: ImageAddress::new(signal_handler),
@@ -2073,7 +2226,14 @@ pub fn add_to(
 }
 
 fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8RuntimeRecord, TooLarge> {
-    let mut problem = |problem: &str| strings.push(problem).map(|id| id.0).ok_or(TooLarge);
+    let mut problem = |problem: &str| {
+        let id = strings.push(problem).map(|id| id.0).ok_or(TooLarge)?;
+        debug_assert_ne!(
+            id, NONE,
+            "a V8 runtime's problem pooled as string {id}, which reads back as none"
+        );
+        Ok(id)
+    };
     let (layout, layout_problem) = match &runtime.layout {
         Ok(layout) => (layout.clone(), NONE),
         Err(error) => (V8Layout::default(), problem(error)?),
@@ -2173,7 +2333,13 @@ fn encode(strings: &mut StringsBuilder, runtime: &V8Runtime) -> Result<V8Runtime
 #[must_use]
 pub fn runtime(image: &Image) -> Option<V8Runtime> {
     let record: &V8RuntimeRecord = image.table().first()?;
-    let problem = |id: u32| -> std::sync::Arc<str> { image.strings().get(StrId(id)).into() };
+    let problem = |id: u32| -> std::sync::Arc<str> {
+        debug_assert!(
+            image.strings().contains(StrId(id)),
+            "validation checked the V8 runtime's problem {id} names a string",
+        );
+        image.strings().get(StrId(id)).into()
+    };
     let layout = match record.problem.get() {
         NONE => Ok(V8Layout {
             offsets: record.offsets.map(U32::get),
@@ -2188,8 +2354,20 @@ pub fn runtime(image: &Image) -> Option<V8Runtime> {
             group: ImageAddress::new(record.dispatch_address.get()),
             offset,
         })),
-        (NONE, _) => Ok(None),
-        (id, _) => Err(problem(id)),
+        (NONE, kind) => {
+            debug_assert_eq!(
+                kind, DISPATCH_NONE,
+                "validation checked the V8 runtime's dispatch table kind {kind} is defined",
+            );
+            Ok(None)
+        }
+        (id, kind) => {
+            debug_assert_eq!(
+                kind, DISPATCH_NONE,
+                "validation checked a dispatch table of kind {kind} has no problem {id}",
+            );
+            Err(problem(id))
+        }
     };
     let [code, code_size, data, data_size] = record.blob.map(|at| ImageAddress::new(at.get()));
     let embedded_blob = match record.blob_problem.get() {

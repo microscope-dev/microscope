@@ -154,6 +154,226 @@ impl Values {
     }
 }
 
+const _: () = check(super::slices::TRANSLATED);
+
+/// Checks the generated translations: every function, slice, and call
+/// named exists, every register a function names is one of its own, every
+/// jump goes forward within its function, which ends in a return or
+/// `UNREACHABLE()`, and every call passes and takes as many values as its
+/// callee takes and returns.
+const fn check(translated: &[Translated]) {
+    let mut at = 0;
+    while at < translated.len() {
+        let version = &translated[at];
+        let mut later = at + 1;
+        while later < translated.len() {
+            assert!(
+                version.major != translated[later].major
+                    || version.minor != translated[later].minor,
+                "a version has two translations",
+            );
+            later += 1;
+        }
+
+        let mut slice = 0;
+        while slice < version.scope_info.len() {
+            let (_, function) = version.scope_info[slice];
+            assert!(
+                (function as usize) < version.functions.len(),
+                "a ScopeInfo slice's function is past the version's functions",
+            );
+            let function = &version.functions[function as usize];
+            assert!(
+                function.parameters == 1,
+                "a slice function takes other than one object"
+            );
+            assert!(
+                returns(function, 3),
+                "a slice function returns other than its object, offset, and length",
+            );
+            slice += 1;
+        }
+
+        let mut function = 0;
+        while function < version.functions.len() {
+            check_function(version.functions, &version.functions[function]);
+            function += 1;
+        }
+
+        at += 1;
+    }
+}
+
+const fn check_function(functions: &[Function], function: &Function) {
+    assert!(
+        function.parameters <= function.registers,
+        "a function has more parameters than registers",
+    );
+    assert!(!function.ops.is_empty(), "a function has no ops");
+    assert!(
+        matches!(
+            function.ops[function.ops.len() - 1],
+            Op::Return(_) | Op::Unreachable
+        ),
+        "a function's last op neither returns nor is unreachable",
+    );
+
+    let registers = function.registers;
+    let mut pc = 0;
+    while pc < function.ops.len() {
+        match function.ops[pc] {
+            Op::Set(to, from) | Op::SmiUntag(to, from) | Op::IntToSmi(to, from) => {
+                check_registers(to, &[from], registers);
+            }
+            Op::Binary(_, to, left, right) => check_registers(to, &[left, right], registers),
+            Op::Decode {
+                to,
+                from,
+                shift,
+                size,
+                ..
+            } => {
+                check_registers(to, &[from], registers);
+                assert!(
+                    shift as u32 + size as u32 <= u32::BITS,
+                    "a bit field reaches past its 32-bit storage",
+                );
+            }
+            Op::ReadTagged { to, object, offset } | Op::ReadU32 { to, object, offset } => {
+                check_registers(to, &[object, offset], registers);
+            }
+            Op::Call {
+                function: callee,
+                arguments,
+                results,
+            } => check_call(functions, callee, arguments, results, registers),
+            Op::Branch {
+                condition,
+                then,
+                otherwise,
+            } => {
+                assert!(
+                    operand(condition, registers),
+                    "a branch reads a register past its function's",
+                );
+                assert!(then as usize > pc, "a branch jumps backward");
+                assert!(otherwise as usize > pc, "a branch jumps backward");
+                assert!(
+                    (then as usize) < function.ops.len(),
+                    "a branch jumps past its function's end",
+                );
+                assert!(
+                    (otherwise as usize) < function.ops.len(),
+                    "a branch jumps past its function's end",
+                );
+            }
+            Op::Goto(target) => {
+                assert!(target as usize > pc, "a goto jumps backward");
+                assert!(
+                    (target as usize) < function.ops.len(),
+                    "a goto jumps past its function's end",
+                );
+            }
+            Op::Return(values) => {
+                assert!(
+                    values.len() <= MAX_VALUES,
+                    "a function returns too many values"
+                );
+                let mut value = 0;
+                while value < values.len() {
+                    assert!(
+                        operand(values[value], registers),
+                        "a return reads a register past its function's",
+                    );
+                    value += 1;
+                }
+            }
+            Op::Unreachable => {}
+        }
+        pc += 1;
+    }
+}
+
+const fn check_call(
+    functions: &[Function],
+    callee: u16,
+    arguments: &[Operand],
+    results: &[Register],
+    registers: u8,
+) {
+    assert!(
+        (callee as usize) < functions.len(),
+        "a call's function is past the version's functions",
+    );
+    assert!(
+        arguments.len() <= MAX_VALUES,
+        "a call passes too many values"
+    );
+    assert!(
+        arguments.len() == functions[callee as usize].parameters as usize,
+        "a call passes other than its callee's parameters",
+    );
+    assert!(
+        returns(&functions[callee as usize], results.len()),
+        "a call takes other than what its callee returns",
+    );
+
+    let mut argument = 0;
+    while argument < arguments.len() {
+        assert!(
+            operand(arguments[argument], registers),
+            "a call passes a register past its function's",
+        );
+        argument += 1;
+    }
+
+    let mut result = 0;
+    while result < results.len() {
+        assert!(
+            results[result] < registers,
+            "a call's result goes to a register past its function's",
+        );
+        result += 1;
+    }
+}
+
+const fn check_registers(to: Register, reads: &[Operand], registers: u8) {
+    assert!(
+        to < registers,
+        "an op writes a register past its function's"
+    );
+    let mut read = 0;
+    while read < reads.len() {
+        assert!(
+            operand(reads[read], registers),
+            "an op reads a register past its function's",
+        );
+        read += 1;
+    }
+}
+
+/// Whether an operand is a value or one of `registers` registers.
+const fn operand(operand: Operand, registers: u8) -> bool {
+    match operand {
+        Operand::Register(register) => register < registers,
+        Operand::Value(_) => true,
+    }
+}
+
+/// Whether every return of `function` gives `count` values.
+const fn returns(function: &Function, count: usize) -> bool {
+    let mut pc = 0;
+    while pc < function.ops.len() {
+        if let Op::Return(values) = function.ops[pc]
+            && values.len() != count
+        {
+            return false;
+        }
+        pc += 1;
+    }
+    true
+}
+
 /// Runs `functions[function]` on `arguments`, giving what it returns.
 pub(super) fn run(
     functions: &[Function],
@@ -175,7 +395,13 @@ pub(super) fn run(
         read,
         stack: Vec::with_capacity(64),
     };
-    Ok(interpreter.call(function, passed, 0)?.as_slice().to_vec())
+    let returned = interpreter.call(function, passed, 0)?;
+    debug_assert!(
+        interpreter.stack.is_empty(),
+        "a finished program left {} registers on the stack",
+        interpreter.stack.len(),
+    );
+    Ok(returned.as_slice().to_vec())
 }
 
 struct Interpreter<'a, 'r> {
@@ -242,6 +468,13 @@ impl Interpreter<'_, '_> {
                 Op::Goto(target) => jump(target)?,
                 Op::Return(values) => {
                     let returned = Values::of(&self.stack[base..], values)?;
+                    debug_assert_eq!(
+                        self.stack.len(),
+                        base + usize::from(function.registers),
+                        "{} returns with its frame at {base} grown to {}",
+                        function.name,
+                        self.stack.len(),
+                    );
                     self.stack.truncate(base);
                     return Ok(returned);
                 }
@@ -255,6 +488,12 @@ impl Interpreter<'_, '_> {
                 } => {
                     let values = Values::of(&self.stack[base..], arguments)?;
                     let returned = self.call(callee, values, depth + 1)?;
+                    debug_assert_eq!(
+                        self.stack.len(),
+                        base + usize::from(function.registers),
+                        "function {callee} returned to {} with the stack not back at its frame",
+                        function.name,
+                    );
                     if returned.length != results.len() {
                         return Err(format!("{} misreads a call's results", function.name));
                     }
