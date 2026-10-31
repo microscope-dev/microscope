@@ -33,3 +33,34 @@ it("says the list failed, and a later Refresh clears the error", async () => {
   await expect.element(page.getByRole("option", { name: /kvstore/ })).toBeVisible();
   await expect.element(page.getByText("cannot read /proc")).not.toBeInTheDocument();
 });
+
+it("chooses the first process after ArrowDown in an empty list", async () => {
+  const server = await fakeServer();
+  render(
+    <SessionContext value={server.session}>
+      <AttachForm working={false} submit={() => undefined} />
+    </SessionContext>,
+  );
+  server.answer(await server.next("processes"), {
+    processes: [{ pid: 41, command: "kvstore" }],
+    ptraceScope: null,
+  });
+  await expect.element(page.getByRole("option", { name: /kvstore/ })).toBeVisible();
+  await userEvent.click(page.getByRole("textbox"));
+  await userEvent.keyboard("redis");
+  await expect.element(page.getByText("No process matches.")).toBeVisible();
+  await userEvent.keyboard("{ArrowDown}");
+
+  await userEvent.click(page.getByRole("button", { name: "Refresh" }));
+  server.answer(await server.next("processes"), {
+    processes: [
+      { pid: 41, command: "kvstore" },
+      { pid: 42, command: "redis" },
+    ],
+    ptraceScope: null,
+  });
+  await expect
+    .element(page.getByRole("option", { name: /redis/ }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect.element(page.getByRole("button", { name: "Attach to 42" })).toBeEnabled();
+});

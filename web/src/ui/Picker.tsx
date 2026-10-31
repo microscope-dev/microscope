@@ -553,7 +553,7 @@ export function AttachForm({ working, submit }: FormProps) {
               setSelected(0);
             }}
             onKeyDown={(event) => {
-              if (event.key === "ArrowDown") {
+              if (event.key === "ArrowDown" && shown.length > 0) {
                 event.preventDefault();
                 setSelected(Math.min(selected + 1, shown.length - 1));
               } else if (event.key === "ArrowUp") {
