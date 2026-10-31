@@ -295,6 +295,10 @@ fn typed_element(
         .and_then(|offset| data.checked_add(offset))
         .ok_or("the typed array element address overflows")?;
     if element == E::Float64 {
+        // A handle keeps a double's address in its upper bits.
+        if !address.is_multiple_of(size) {
+            return Err(format!("the Float64Array element at {address:#x} is not aligned").into());
+        }
         return Ok(Some(Handle::Double(address).handle()));
     }
     let mut bytes = [0u8; 8];
@@ -428,4 +432,49 @@ pub(super) fn operand(
         kind: value.kind,
         text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::objects::Object;
+    use super::super::objects::tests::{Heap, layout, reader};
+    use crate::image::v8::{Constant, Field};
+
+    #[test]
+    fn a_float64_element_at_an_unaligned_address_is_refused() {
+        let layout = layout();
+        let constant = |constant| layout.constant(constant).unwrap().cast_unsigned();
+        let field = |field| layout.field(field).unwrap();
+        let mut heap = Heap::default();
+        for (map, ty) in [
+            (0x1000, constant(Constant::JSTypedArrayType)),
+            (0x1100, constant(Constant::JSArrayBufferType)),
+        ] {
+            heap.word(map, map + 1);
+            heap.word(map + field(Field::MapInstanceType), ty);
+        }
+        heap.word(
+            0x1000 + field(Field::MapBitField2),
+            constant(Constant::ElementsKindFloat64) << constant(Constant::MapElementsKindShift),
+        );
+
+        // A Float64Array of two elements whose data pointer is odd.
+        let array = 0x2000;
+        heap.word(array, 0x1001);
+        heap.word(array + field(Field::JSArrayBufferViewBuffer), 0x3001);
+        heap.word(array + field(Field::JSArrayBufferViewBitField), 0);
+        heap.word(array + field(Field::JSArrayBufferViewRawByteOffset), 0);
+        heap.word(array + field(Field::JSArrayBufferViewRawByteLength), 16);
+        heap.word(array + field(Field::JSTypedArrayExternalPointer), 0x5001);
+        heap.word(array + field(Field::JSTypedArrayBasePointer), 0);
+        let buffer = 0x3000;
+        heap.word(buffer, 0x1101);
+        heap.word(buffer + field(Field::JSArrayBufferRawByteLength), 16);
+        heap.word(buffer + field(Field::JSArrayBufferBackingStore), 0x5001);
+        heap.word(buffer + field(Field::JSArrayBufferBitField), 0);
+
+        let found = super::typed_element(&reader(&heap, &layout), Object(array + 1), 0);
+        let problem = found.expect_err("the element's address is not aligned");
+        assert!(problem.contains("aligned"), "{problem}");
+    }
 }
