@@ -2159,6 +2159,11 @@ impl NodeInspector {
              (image addresses) are both set or both absent",
         );
         debug_assert!(
+            before_wait != 0 || [after_wait, check, async_offset] == [0; 3],
+            "validation checked the inspector's startup words {after_wait:#x}, {check:#x}, and \
+             {async_offset:#x} are zero without its first wait",
+        );
+        debug_assert!(
             target_source <= 4096,
             "validation checked the inspector's target source offset {target_source:#x} is at most 4096",
         );
@@ -2458,6 +2463,10 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
     target_sites.sort_unstable();
     if record.inspector[1].get() > 1
         || (record.inspector[8].get() == 0) != (record.inspector[9].get() == 0)
+        || (record.inspector[10].get() == 0
+            && record.inspector[11..14]
+                .iter()
+                .any(|value| value.get() != 0))
         || (record.inspector_problem.get() == NONE
             && (record.inspector[15].get() > 4096
                 || target_sites[0] == 0
@@ -2614,4 +2623,70 @@ pub fn scope_info_slice(
         offset: unsigned(offset)?,
         length: unsigned(length)?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::image::Limits;
+
+    /// A record of a runtime without a layout whose inspector has no
+    /// startup, as encoding one leaves it, with its strings.
+    fn encoded() -> (V8RuntimeRecord, Vec<u8>) {
+        let runtime = V8Runtime {
+            version: V8Version::default(),
+            flags: 0,
+            layout: Err("no layout".into()),
+            dispatch_table: Ok(None),
+            embedded_blob: Err("no blob".into()),
+            node: Err("no release".into()),
+            inspector: Ok(NodeInspector {
+                registry: ImageAddress::new(0x10),
+                signal_handler: ImageAddress::new(0x20),
+                vector: false,
+                io: 8,
+                host_port: 16,
+                host: 0,
+                port: 32,
+                id: 40,
+                close: None,
+                startup: None,
+                targets: InspectorTargets {
+                    entry: ImageAddress::new(0x30),
+                    source: 160,
+                    hidden: [0x40, 0x50, 0x60].map(ImageAddress::new),
+                    upgrade: ImageAddress::new(0x70),
+                },
+            }),
+            tasks: Err("no tasks".into()),
+            entry_stack: Err("no entry stack".into()),
+        };
+        let mut strings = StringsBuilder::default();
+        let record = encode(&mut strings, &runtime).unwrap();
+        (record, strings.into_bytes())
+    }
+
+    #[test]
+    fn validation_rejects_an_inspector_startup_without_its_first_wait() {
+        let (record, strings) = encoded();
+        let mut builder = Builder::new(crate::TargetDescription::X86_64);
+        builder.owned_table(vec![record]);
+        builder.bytes(TableKind::Strings, strings);
+        assert!(builder.seal(Limits::default()).is_ok());
+
+        for word in 11..14 {
+            let (mut record, strings) = encoded();
+            record.inspector[word] = 0x80.into();
+            let mut builder = Builder::new(crate::TargetDescription::X86_64);
+            builder.owned_table(vec![record]);
+            builder.bytes(TableKind::Strings, strings);
+            let refusal = builder.seal(Limits::default()).map(|_| ()).unwrap_err();
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("invalid Node inspector layout"),
+                "inspector word {word}: {refusal}",
+            );
+        }
+    }
 }
