@@ -346,12 +346,20 @@ fn deopt_index(
 ) -> Result<Option<u32>, Problem> {
     let (entries, has_deopt_data) = safepoints(table, format)?;
     if format.maglev {
-        return Ok(
-            maglev_entry(&entries, has_deopt_data, pc_offset).and_then(|entry| entry.deopt_index)
+        let entry = maglev_entry(&entries, has_deopt_data, pc_offset);
+        debug_assert!(
+            entry.is_none_or(|entry| entry.pc == pc_offset || entry.trampoline == Some(pc_offset)),
+            "the Maglev safepoint found for pc offset {pc_offset} is not at it"
         );
+        return Ok(entry.and_then(|entry| entry.deopt_index));
     }
     let entry = turbofan_entry(&entries, has_deopt_data, pc_offset)
         .ok_or("the Turbofan code has no safepoint at the frame's pc")?;
+    debug_assert!(
+        entry.pc <= pc_offset || entry.trampoline.is_some_and(|at| at <= pc_offset),
+        "the Turbofan safepoint at pc offset {} found for pc offset {pc_offset} is past it",
+        entry.pc
+    );
     entry
         .deopt_index
         .map(Some)
@@ -477,6 +485,11 @@ fn summarize(
         });
         constructor = false;
     }
+    debug_assert!(
+        frames.len() <= frame_count.unsigned_abs() as usize,
+        "a translation of {frame_count} frames named {} JavaScript frames",
+        frames.len()
+    );
 
     if i32::try_from(frames.len()).ok() != Some(js_frame_count) {
         return Err(format!(

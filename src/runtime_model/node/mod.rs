@@ -309,6 +309,10 @@ fn builtins(image: &(dyn RuntimeImage + Send + Sync)) -> Option<AddressRange<Ima
         .iter()
         .filter_map(|symbol| symbol.address.checked_add(symbol.size?))
         .max()?;
+    debug_assert!(
+        start <= end,
+        "the builtins end at {end:?}, before their first starts at {start:?}"
+    );
     Some(AddressRange { start, end })
 }
 
@@ -343,6 +347,11 @@ fn bytecode_handlers(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRan
             _ => merged.push(range),
         }
     }
+    debug_assert!(
+        merged.windows(2).all(|pair| pair[0].end < pair[1].start),
+        "the bytecode handlers' {} ranges are not sorted and apart",
+        merged.len()
+    );
     merged
 }
 
@@ -703,6 +712,12 @@ impl RuntimeModel for NodeRuntime {
                 pages.clear();
             }
             pages.insert(thread.thread, read_now.used_blocks());
+            let kept = pages.len();
+            drop(pages);
+            debug_assert!(
+                kept <= MOST_PAGED_THREADS,
+                "the pages of {kept} threads are kept, past {MOST_PAGED_THREADS}"
+            );
         }
         Some(read)
     }

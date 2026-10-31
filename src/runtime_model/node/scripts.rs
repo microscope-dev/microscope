@@ -352,6 +352,7 @@ impl Lines {
                         shared.ends.extend_from_slice(&ends);
                         shared.found.push(shared.ends.len());
                         self.same += 1;
+                        debug_assert_eq!(self.same, shared.reads.len(), "reads matched");
                     }
                     ends
                 }

@@ -154,7 +154,14 @@ impl Walk<'_, '_> {
             if !seen.insert(current) {
                 return Err("the await chain is a cycle".into());
             }
+            let before = self.frames.len();
             promise = self.step(current)?;
+            debug_assert!(
+                self.frames.len() <= before + 1,
+                "one step from the promise {:#x} added {} frames",
+                current.0,
+                self.frames.len() - before
+            );
         }
         if promise.is_some() {
             return Err(format!("the await chain is longer than {MAX_STEPS} promises").into());
@@ -369,6 +376,11 @@ impl Walk<'_, '_> {
     fn combinator(&mut self, element: Object, name: &str) -> Result<(), Problem> {
         let reader = self.reader;
         let index = identity_hash(reader, element)? - 1;
+        debug_assert!(
+            index >= 0,
+            "the combinator element {:#x} has the negative index {index}",
+            element.0
+        );
         self.frames.push(InterpretedFrame {
             frame: VirtualAddress::new(element.0),
             language: crate::SourceLanguage::JavaScript,

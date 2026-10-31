@@ -34,6 +34,14 @@ const MAX_CODE_SEARCH: u64 = 1 << 20;
 /// first four bytecodes on 12.4, 13.6, and 14.6.
 pub(super) const PREFIXES: [usize; 4] = [1, 2, 1, 2];
 
+const _: () = {
+    let mut index = 0;
+    while index < PREFIXES.len() {
+        assert!(PREFIXES[index] >= 1 && PREFIXES[index] <= 2);
+        index += 1;
+    }
+};
+
 /// A function a frame runs, by its `SharedFunctionInfo`, and its offset
 /// in its script, or why it has none.
 pub(super) type Place = (Object, Result<u64, Problem>);
@@ -82,6 +90,13 @@ pub(super) fn running(
         }
     }
     if let Some(code) = containing_code(reader, lookup)? {
+        debug_assert!(
+            code.holds(lookup),
+            "the instruction stream found for {lookup:#x} is code {:#x} at {:#x}, which does \
+             not hold it",
+            code.object.0,
+            code.start
+        );
         return Ok(code);
     }
     let mut reason = String::from(
@@ -140,6 +155,12 @@ pub(super) fn places(
     shared: Object,
     pc: u64,
 ) -> Result<Vec<Place>, Problem> {
+    debug_assert!(
+        code.start < pc,
+        "the pc {pc:#x} is not past the start {:#x} of the code {:#x} that holds it",
+        code.start,
+        code.object.0
+    );
     if code.is_baseline(reader)? {
         let (bytecode, offset) = baseline_offset(reader, code, pc - code.start)?;
         let table = positions::decode(&positions::table_bytes(reader, bytecode)?, encoding)?;

@@ -446,6 +446,13 @@ impl Walk<'_, '_> {
             Start::Exit((fp, pc)) => (fp, pc, false),
             Start::Fast(fp, pc) => (fp, pc, true),
         };
+        debug_assert!(
+            self.sp < self.js_entry_sp,
+            "walking {:?} with its stack pointer {:#x} at or above its outermost entry {:#x}",
+            thread.thread,
+            self.sp,
+            self.js_entry_sp
+        );
         let mut frames: Vec<InterpretedFrame> = Vec::new();
         let mut below = self.sp;
         for _ in 0..MOST_FRAMES {
@@ -456,6 +463,11 @@ impl Walk<'_, '_> {
             let marker = self.word(fp, self.offsets.marker)?;
             if self.markers.entries.contains(&marker) {
                 if fp == self.js_entry_sp {
+                    debug_assert!(
+                        frames.iter().all(|frame| !frame.outermost),
+                        "{:?} has an outermost frame before its outermost entry {fp:#x}",
+                        thread.thread
+                    );
                     if let Some(outermost) = frames.last_mut() {
                         outermost.outermost = true;
                     }
@@ -523,6 +535,13 @@ impl Walk<'_, '_> {
         (fp, pc, generated): (u64, u64, bool),
         frames: &mut Vec<InterpretedFrame>,
     ) -> Result<(), Unread> {
+        debug_assert!(
+            self.sp < fp && fp <= self.js_entry_sp,
+            "describing {:?}'s frame at {fp:#x}, outside its stack from {:#x} to {:#x}",
+            thread.thread,
+            self.sp,
+            self.js_entry_sp
+        );
         let registers = RegisterFile::new([(RBP, fp)]);
         let frame = CodeFrame {
             thread: thread.thread,

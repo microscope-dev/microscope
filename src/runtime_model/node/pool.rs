@@ -7,7 +7,7 @@
 //! the job is done, through a request the walk lists apart.
 
 use super::objects::{Problem, Reader};
-use super::tasks::pool_job;
+use super::tasks::{pool_job, pool_thread};
 use crate::image::v8::UvPool;
 use crate::runtime_model::RuntimeTask;
 use crate::{TaskState, ThreadId};
@@ -94,13 +94,25 @@ pub(super) fn read(reader: &Reader<'_>, pool: &UvPool) -> Result<Pool, Problem> 
         )
         .into());
     }
+    debug_assert!(
+        busy.len() <= members.len(),
+        "{} of libuv's {} pool threads are busy",
+        busy.len(),
+        members.len()
+    );
     Ok(Pool { busy })
 }
 
 /// The task of the job the pool thread `thread` runs.
 pub(super) fn job(thread: ThreadId) -> RuntimeTask {
+    let number = pool_job(thread);
+    debug_assert_eq!(
+        pool_thread(number),
+        Some(thread),
+        "the pool job {number:#x} does not name its thread {thread:?}"
+    );
     RuntimeTask {
-        number: pool_job(thread),
+        number,
         locator: 0,
         state: TaskState::Running,
         detail: Some("thread-pool job".into()),
