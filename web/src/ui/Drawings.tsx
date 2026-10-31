@@ -637,7 +637,7 @@ function InputTable({ rows, label }: { rows: InputRows; label: string }) {
   const height = Math.min(rows.count * ROW, MOST_HEIGHT);
   const shownCount = Math.min(rows.count, SHOWN_ROWS + 2);
   const room = Math.max(0, height - shownCount * ROW);
-  const top = Math.min(scrolled, room);
+  const top = Math.max(0, Math.min(scrolled, room));
   const first =
     rows.count * ROW <= MOST_HEIGHT
       ? Math.floor(top / ROW)
