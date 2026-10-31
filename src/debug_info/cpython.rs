@@ -38,6 +38,62 @@ const COOKIE: &[u8; 8] = b"xdebugpy";
 /// the free-threaded flag.
 const TABLE_START: usize = 24;
 
+const _: () = assert!(
+    TABLE_START == COOKIE.len() + 2 * 8,
+    "the table's offsets begin past the cookie, the version word, and the flag word"
+);
+
+const _: () = {
+    let mut at = 0;
+    while at < layouts::GENERATED.len() {
+        let generated = &layouts::GENERATED[at];
+        let version = PyVersion(generated.version);
+        assert!(version.major() == 3, "a generated layout is of CPython 3");
+        assert!(
+            12 <= version.minor() && version.minor() <= 15,
+            "a generated layout is of a minor version microscope reads"
+        );
+        assert!(
+            !generated.free_threaded || version.minor() >= 13,
+            "a generated free-threaded layout is of 3.13 or later"
+        );
+
+        let fields = generated.fields;
+        let mut field = 0;
+        while field < fields.len() {
+            assert!(
+                fields[field].1 != u32::MAX,
+                "a generated offset is not the one a layout keeps for an absent field"
+            );
+            let mut before = 0;
+            while before < field {
+                assert!(
+                    fields[before].0 as usize != fields[field].0 as usize,
+                    "a generated layout places each field once"
+                );
+                before += 1;
+            }
+            field += 1;
+        }
+
+        let constants = generated.constants;
+        let mut constant = 0;
+        while constant < constants.len() {
+            let mut before = 0;
+            while before < constant {
+                assert!(
+                    constants[before].0 as usize != constants[constant].0 as usize,
+                    "a generated layout gives each constant once"
+                );
+                before += 1;
+            }
+            constant += 1;
+        }
+
+        at += 1;
+    }
+};
+
 /// A layout generated from one interpreter's headers.
 pub(super) struct Generated {
     /// The interpreter's name in the matrix, as `3.12`.
@@ -138,6 +194,25 @@ pub(super) fn runtime<'data, R: object::ReadRef<'data>>(
     };
     let bytes = section.data().ok().filter(|bytes| !bytes.is_empty());
     let (version, flags, layout) = describe(bytes, py_version(object));
+    debug_assert_eq!(
+        flags & !(FREE_THREADED | TARGET_TABLE | GENERATED_TABLE),
+        0,
+        "the runtime of CPython {version} sets only defined flags, not {flags:#x}"
+    );
+    debug_assert!(
+        runtime.start <= runtime.end,
+        "the .PyRuntime section ends at image address {:#x}, before its start {:#x}",
+        runtime.end,
+        runtime.start
+    );
+    debug_assert!(
+        layout.is_err() || flags & GENERATED_TABLE != 0,
+        "a layout of CPython {version} is at least partly generated, but its flags are {flags:#x}"
+    );
+    debug_assert!(
+        layout.is_err() || version.minor() < 13 || flags & TARGET_TABLE != 0,
+        "a layout of CPython {version} comes from its offsets table, but its flags are {flags:#x}"
+    );
     Some(PythonRuntime {
         version,
         flags,
@@ -241,6 +316,12 @@ fn from_table(
     let offsets = table
         .get(TABLE_START..end)
         .ok_or_else(|| -> Arc<str> { "its offsets table is cut short".into() })?;
+    debug_assert!(
+        offsets.as_chunks::<8>().0.len() == schema.len(),
+        "CPython 3.{}'s table has a word for each of its schema's {} names",
+        version.minor(),
+        schema.len()
+    );
     let mut named = Vec::new();
     for (name, bytes) in schema.iter().zip(offsets.as_chunks::<8>().0) {
         let Some(field) = Field::named(name) else {
@@ -265,6 +346,12 @@ fn from_table(
             return Err(format!("its table puts {name} at {offset}, past any structure").into());
         }
 
+        debug_assert!(
+            named.iter().all(|&(other, _)| other != field),
+            "CPython 3.{}'s schema names {} once",
+            version.minor(),
+            field.name()
+        );
         named.push((field, offset));
     }
 
@@ -388,6 +475,14 @@ fn validated(
     free_threaded: bool,
     layout: PythonLayout,
 ) -> Result<PythonLayout, Arc<str>> {
+    debug_assert!(
+        (12..=15).contains(&version.minor()),
+        "only a layout of a minor version microscope reads is validated, not CPython {version}'s"
+    );
+    debug_assert!(
+        !free_threaded || version.minor() >= 13,
+        "only a layout of 3.13 or later is free-threaded, not CPython {version}'s"
+    );
     let thread_local = if free_threaded && version.minor() >= 14 {
         &THREAD_LOCAL_BYTECODE[..]
     } else {
@@ -477,6 +572,30 @@ const fn structure_size(field: Field) -> Option<Field> {
         _ => None,
     }
 }
+
+const _: () = {
+    let mut at = 0;
+    while at < Field::ALL.len() {
+        if let Some(size) = structure_size(Field::ALL[at]) {
+            assert!(
+                structure_size(size).is_none(),
+                "a structure's size is in no structure"
+            );
+
+            let mut found = false;
+            let mut whole = 0;
+            while whole < READ_WHOLE.len() {
+                found |= READ_WHOLE[whole] as usize == size as usize;
+                whole += 1;
+            }
+            assert!(
+                found,
+                "a structure whose fields are checked against its size is read whole, so its size is bounded"
+            );
+        }
+        at += 1;
+    }
+};
 
 /// The module's `Py_Version`, the version it was built as, which every
 /// version since 3.11 exports.

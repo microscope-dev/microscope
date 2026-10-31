@@ -47,6 +47,31 @@ macro_rules! entries {
                 self as usize
             }
         }
+
+        const _: () = {
+            let mut at = 0;
+            while at < $kind::ALL.len() {
+                assert!(
+                    $kind::ALL[at].index() == at,
+                    "an entry's index is its place in ALL"
+                );
+
+                let name = $kind::ALL[at].name().as_bytes();
+                let mut before = 0;
+                while before < at {
+                    let other = $kind::ALL[before].name().as_bytes();
+                    let mut same = name.len() == other.len();
+                    let mut byte = 0;
+                    while same && byte < name.len() {
+                        same = name[byte] == other[byte];
+                        byte += 1;
+                    }
+                    assert!(!same, "no two entries share a name");
+                    before += 1;
+                }
+                at += 1;
+            }
+        };
     };
 }
 
@@ -478,6 +503,21 @@ pub const TARGET_TABLE: u16 = 2;
 /// microscope's table generated from the version's headers.
 pub const GENERATED_TABLE: u16 = 4;
 
+const _: () = assert!(
+    FREE_THREADED.is_power_of_two()
+        && TARGET_TABLE.is_power_of_two()
+        && GENERATED_TABLE.is_power_of_two(),
+    "each runtime flag is one bit"
+);
+const _: () = assert!(
+    (FREE_THREADED | TARGET_TABLE | GENERATED_TABLE).count_ones() == 3,
+    "no two runtime flags share a bit"
+);
+const _: () = assert!(
+    MAX_STRUCTURE < ABSENT as u64,
+    "a structure's size fits a layout without reading as absent"
+);
+
 /// The Python runtime a module carries.
 #[repr(C)]
 #[derive(
@@ -588,6 +628,11 @@ impl PythonLayout {
             .ok()
             .filter(|offset| *offset != ABSENT)
             .unwrap_or(ABSENT);
+        debug_assert!(
+            offset >= u64::from(ABSENT) || self.field(field) == Some(offset),
+            "{} set at {offset} is kept",
+            field.name()
+        );
     }
 
     pub const fn set_constant(&mut self, constant: Constant, value: u8) {
@@ -635,6 +680,19 @@ pub fn add_to(
 ) -> Result<(), TooLarge> {
     let records = runtime
         .map(|runtime| {
+            debug_assert_eq!(
+                runtime.flags & !(FREE_THREADED | TARGET_TABLE | GENERATED_TABLE),
+                0,
+                "the runtime of CPython {} sets only defined flags, not {:#x}",
+                runtime.version,
+                runtime.flags
+            );
+            debug_assert!(
+                runtime.runtime.start <= runtime.runtime.end,
+                "the runtime's section ends at image address {:#x}, before its start {:#x}",
+                runtime.runtime.end,
+                runtime.runtime.start
+            );
             let (layout, problem) = match &runtime.layout {
                 Ok(layout) => (layout.clone(), NONE),
                 Err(problem) => (
@@ -665,6 +723,22 @@ pub fn add_to(
 pub fn runtime(image: &Image) -> Option<PythonRuntime> {
     let record: &PythonRuntimeRecord = image.table().first()?;
     let problem = record.problem.get();
+    debug_assert!(
+        problem == NONE || image.strings().contains(StrId(problem)),
+        "a validated image's Python runtime problem {problem} is a string"
+    );
+    debug_assert_eq!(
+        record.flags.get() & !(FREE_THREADED | TARGET_TABLE | GENERATED_TABLE),
+        0,
+        "a validated image's Python runtime sets only defined flags, not {:#x}",
+        record.flags.get()
+    );
+    debug_assert!(
+        record.runtime_start.get() <= record.runtime_end.get(),
+        "a validated image's Python runtime section ends at image address {:#x}, before its start {:#x}",
+        record.runtime_end.get(),
+        record.runtime_start.get()
+    );
     Some(PythonRuntime {
         version: PyVersion(record.version.get()),
         flags: record.flags.get(),
