@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { assert } from "../assert";
 import { base } from "../base";
 import { useRequest } from "../data";
 import { type At, drawing, formatPinned, type Look, type Pinned, parsePinned } from "../focus";
@@ -70,7 +71,8 @@ function sandbox(): Sandbox {
 export function useCards(): Card[] {
   const focus = useFocus();
   const why = hidden(focus);
-  const scopes = useRequest("scopes", why === null ? (focus.at as At) : null);
+  assert(why !== null || focus.at !== null, "values shown with no stop");
+  const scopes = useRequest("scopes", why === null ? focus.at : null);
   const pins = focus.look.d;
   // While the program runs or its stop has passed, and until the next
   // stop's values arrive, the cards stay as they were, each dimmed until it
@@ -105,7 +107,8 @@ export function useCards(): Card[] {
       if (seen.has(key)) {
         // A pin of a variable the frame draws pins that variable's card.
         const card = cards.find((each) => each.key === key);
-        if (card && card.pinned === null) {
+        assert(card !== undefined, `pin ${index} seen with no card`);
+        if (card.pinned === null) {
           card.pinned = index;
         }
         return;
@@ -119,6 +122,7 @@ export function useCards(): Card[] {
         pinned: index,
       });
     });
+    assert(seen.size === cards.length, `${cards.length} cards for ${seen.size} keys`);
     last.current = cards;
     return cards;
   }, [scopes.data, pins, why]);
@@ -231,6 +235,7 @@ function shownFor(job: Job, outcome: Outcome): Shown {
     remember(job.key, stop, inputs);
     return { stop, live, renderer: job.renderer, inputs };
   }
+  assert(outcome.kind === "picture", `draw outcome ${outcome.kind} unhandled`);
   try {
     const picture = validate((outcome as { picture: unknown }).picture);
     remember(job.key, stop, inputs);
@@ -296,9 +301,7 @@ function DrawingCard({ card }: { card: Card }) {
   // Only cards on screen draw.
   useEffect(() => {
     const element = holder.current;
-    if (!element) {
-      return;
-    }
+    assert(element !== null, "drawing card mounted without its element");
     if (reveal === card.key) {
       reveal = null;
       element.scrollIntoView({ block: "nearest" });
@@ -366,9 +369,7 @@ function DrawingCard({ card }: { card: Card }) {
   const picture = shown && "picture" in shown ? shown.picture : null;
   useEffect(() => {
     const element = body.current;
-    if (!element) {
-      return;
-    }
+    assert(element !== null, "drawing card mounted without its body");
     element.replaceChildren();
     if (picture) {
       element.append(buildPicture(picture, (path) => setSelected(path)));
@@ -524,6 +525,7 @@ function useDrawQueue(
         if (job === null || !mounted.current) {
           return;
         }
+        assert(!drawing.current, `card ${id} starts a draw with one running`);
         drawing.current = true;
         started.current = job;
         startedWidth.current = offeredWidth(holder.current, body.current);
@@ -535,6 +537,7 @@ function useDrawQueue(
         void sandbox()
           .draw(id, job.source, job.inputs, context)
           .then((outcome) => {
+            assert(drawing.current, `card ${id} finished a draw it did not start`);
             drawing.current = false;
             show(shownFor(job, outcome));
             pump();
@@ -569,9 +572,7 @@ function useDrawQueue(
 
   useEffect(() => {
     const element = holder.current;
-    if (!element) {
-      return;
-    }
+    assert(element !== null, "draw queue mounted without its card element");
     const observer = new ResizeObserver(() => {
       const job = started.current;
       const width = offeredWidth(holder.current, body.current);
@@ -641,6 +642,10 @@ function InputTable({ rows, label }: { rows: InputRows; label: string }) {
     rows.count * ROW <= MOST_HEIGHT
       ? Math.floor(top / ROW)
       : Math.round((top / Math.max(1, room)) * (rows.count - shownCount));
+  assert(
+    first <= rows.count - shownCount,
+    `table starts at row ${first} of ${rows.count}, showing ${shownCount}`,
+  );
   const shown: number[] = [];
   for (let index = first; index < Math.min(rows.count, first + shownCount); index++) {
     shown.push(index);

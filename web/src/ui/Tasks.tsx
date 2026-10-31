@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { assert } from "../assert";
 import { useRequest } from "../data";
 import type { At } from "../focus";
 import type { Task, TaskKey } from "../protocol";
@@ -67,34 +68,38 @@ export function Tasks() {
             </li>
           ))}
           {grouped
-            ? groups(list.tasks).map(([place, tasks]) => (
-                <li key={place} className="task-group" data-testid="task-group">
-                  <div className="row task-row" title={place}>
-                    <span className="dim">{tasks.length} in</span>
-                    <span className="fn">{tasks[0]?.frame?.name ?? (place || "no callback")}</span>
-                    {tasks[0]?.frame && <span className="end">{where(tasks[0].frame)}</span>}
-                  </div>
-                  <div className="task-numbers">
-                    {tasks.map((task) =>
-                      // Work that runs no code opens no stack.
-                      task.stackless ? (
-                        <span
-                          key={key(task.key)}
-                          className="chip dim"
-                          data-testid="stackless-task"
-                          title={describe(task)}
-                        >
-                          {task.key.number}
-                        </span>
-                      ) : (
-                        <TaskButton key={key(task.key)} task={task} at={at} onChoose={choose}>
-                          {task.key.number}
-                        </TaskButton>
-                      ),
-                    )}
-                  </div>
-                </li>
-              ))
+            ? groups(list.tasks).map(([place, tasks]) => {
+                const first = tasks[0];
+                assert(first !== undefined, "an empty group of tasks");
+                return (
+                  <li key={place} className="task-group" data-testid="task-group">
+                    <div className="row task-row" title={place}>
+                      <span className="dim">{tasks.length} in</span>
+                      <span className="fn">{first.frame?.name ?? (place || "no callback")}</span>
+                      {first.frame && <span className="end">{where(first.frame)}</span>}
+                    </div>
+                    <div className="task-numbers">
+                      {tasks.map((task) =>
+                        // Work that runs no code opens no stack.
+                        task.stackless ? (
+                          <span
+                            key={key(task.key)}
+                            className="chip dim"
+                            data-testid="stackless-task"
+                            title={describe(task)}
+                          >
+                            {task.key.number}
+                          </span>
+                        ) : (
+                          <TaskButton key={key(task.key)} task={task} at={at} onChoose={choose}>
+                            {task.key.number}
+                          </TaskButton>
+                        ),
+                      )}
+                    </div>
+                  </li>
+                );
+              })
             : list.tasks.map((task) =>
                 // Work an event loop waits on has no stack to show: it is
                 // what it waits for, then the callback it will run.
@@ -184,5 +189,10 @@ function groups(tasks: readonly Task[]): [string, Task[]][] {
       byPlace.set(task.place, [task]);
     }
   }
-  return [...byPlace].sort(([, a], [, b]) => b.length - a.length);
+  const sorted = [...byPlace].sort(([, a], [, b]) => b.length - a.length);
+  assert(
+    sorted.reduce((sum, [, group]) => sum + group.length, 0) === tasks.length,
+    `${tasks.length} tasks grouped into ${sorted.length} places lost some`,
+  );
+  return sorted;
 }

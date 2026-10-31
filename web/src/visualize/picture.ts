@@ -4,6 +4,8 @@
 // that are not colors, path data outside SVG's grammar, and pictures over
 // the limits are all refused.
 
+import { assert } from "../assert";
+
 /** The most shapes a picture holds, groups included. */
 export const MOST_SHAPES = 100_000;
 /** How deeply groups nest. */
@@ -179,10 +181,14 @@ export function isPathData(d: unknown): d is string {
   let command: string | null = null;
   let count = 0;
   let at = 0;
-  const whole = () =>
-    command === null ||
-    ARGUMENTS[command] === 0 ||
-    (count > 0 && count % (ARGUMENTS[command] ?? 1) === 0);
+  const whole = () => {
+    if (command === null) {
+      return true;
+    }
+    const each = ARGUMENTS[command];
+    assert(each !== undefined, "path command has an argument count");
+    return each === 0 || (count > 0 && count % each === 0);
+  };
   while (at < d.length) {
     token.lastIndex = at;
     const found = token.exec(d);
@@ -226,10 +232,17 @@ export function validate(value: unknown): Picture {
   }
   const totals: Totals = { shapes: 0, pixels: 0, points: 0 };
   shapes(picture.shapes, "", 1, totals);
+  assert(totals.shapes <= MOST_SHAPES, `validated ${totals.shapes} shapes, past ${MOST_SHAPES}`);
+  assert(totals.pixels <= MOST_PIXELS, `validated ${totals.pixels} pixels, past ${MOST_PIXELS}`);
+  assert(
+    totals.points <= MOST_POINTS,
+    `validated ${totals.points} coordinates, past ${MOST_POINTS}`,
+  );
   return picture as unknown as Picture;
 }
 
 function shapes(value: unknown, within: string, depth: number, totals: Totals): void {
+  assert(depth >= 1, "group depth starts at 1");
   if (!Array.isArray(value)) {
     throw new PictureError(`${within ? `${within}: ` : ""}shapes must be an array`);
   }

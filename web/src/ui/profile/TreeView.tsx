@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
+import { assert } from "../../assert";
 import { diffModeOf } from "../../profile/look";
 import { type Changed, changeOf, formatPercent } from "../../profile/paint";
 import { type CallTree, decodeTree, nameOf } from "../../profile/tree";
@@ -120,9 +121,7 @@ export function TreeRows({
   const parent = (node: number) => node + 1 < (tree.end[node] ?? 0);
   const onKey = (key: string) => {
     const node = rows[keys.active];
-    if (node === undefined) {
-      return false;
-    }
+    assert(node !== undefined, `active row ${keys.active} is outside ${rows.length} rows`);
     if (key === "Enter") {
       select(node);
     } else if (key === "ArrowRight") {
@@ -138,7 +137,9 @@ export function TreeRows({
       if (parent(node) && open.has(node)) {
         toggle(node);
       } else {
-        const caller = rows.indexOf(tree.parent[node] ?? -1);
+        const above = tree.parent[node] ?? -1;
+        const caller = rows.indexOf(above);
+        assert(caller >= 0 || above === -1, `node ${node} is shown but its caller ${above} is not`);
         if (caller < 0) {
           return false;
         }

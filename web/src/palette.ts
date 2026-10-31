@@ -3,6 +3,8 @@
 // in order, as the server ranks functions. Shorter names come first among
 // equals.
 
+import { assert } from "./assert";
+
 export interface Score {
   /** 0 for the whole name, up to 3 for scattered letters. */
   rank: number;
@@ -47,6 +49,7 @@ export function best<T>(
   text: (item: T) => string,
   limit: number,
 ): T[] {
+  assert(Number.isInteger(limit) && limit >= 0, `palette limit ${limit}`);
   if (query === "") {
     return items.slice(0, limit);
   }

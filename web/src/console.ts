@@ -2,6 +2,7 @@
 // History lasts across reloads, in this browser.
 
 import { createStore } from "zustand";
+import { assert } from "./assert";
 import type { ConsoleResult } from "./protocol";
 import { read, write } from "./storage";
 
@@ -50,6 +51,7 @@ export function started(line: string, stop: number | null): number {
 }
 
 export function finished(id: number, outcome: { result?: ConsoleResult; error?: string }): void {
+  assert(Number.isInteger(id) && id >= 1 && id < next, `console entry ${id} was never started`);
   consoleStore.setState((state) => ({
     entries: state.entries.map((entry) => (entry.id === id ? { ...entry, ...outcome } : entry)),
   }));
@@ -64,7 +66,8 @@ export function commonPrefix(labels: readonly string[]): string {
   if (labels.length === 0) {
     return "";
   }
-  let prefix = labels[0] as string;
+  let prefix = labels[0];
+  assert(prefix !== undefined, `${labels.length} candidates have no first`);
   for (const label of labels) {
     while (!label.startsWith(prefix)) {
       prefix = prefix.slice(0, -1);

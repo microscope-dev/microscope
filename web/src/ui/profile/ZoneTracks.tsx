@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { assert } from "../../assert";
 import { formatRange, rangeOf, withLook } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant, formatSpan, hue } from "../../profile/paint";
 import {
@@ -160,9 +161,7 @@ export function ZoneTracks() {
     const positions = new Map(laid.map((track, index) => [track.thread, trackTop(track, index)]));
     for (let at = 0; at < blocks.count; at += 1) {
       const y = positions.get(blocks.thread[at] ?? 0);
-      if (y === undefined) {
-        continue;
-      }
+      assert(y !== undefined, "a zone block's thread has no track");
       const row = y + (blocks.depth[at] ?? 0) * ROW;
       const from = x(blocks.start[at] ?? 0);
       const wide = Math.max(x(blocks.end[at] ?? 0) - from, 1);
@@ -439,6 +438,7 @@ function blockLines(
   name: (thread: number) => string,
   pixel: number,
 ): string[] {
+  assert(at >= 0 && at < blocks.count, `block ${at} is outside ${blocks.count} blocks`);
   const length = (blocks.end[at] ?? 0) - (blocks.start[at] ?? 0);
   const count = blocks.zones[at] ?? 1;
   const label = blocks.names[blocks.name[at] ?? 0] ?? "";

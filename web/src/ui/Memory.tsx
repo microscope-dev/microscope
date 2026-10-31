@@ -3,6 +3,7 @@
 // types its length could be, and controllers write bytes in place.
 
 import { type KeyboardEvent, useRef, useState } from "react";
+import { assert } from "../assert";
 import { cache, useRequest } from "../data";
 import {
   dumpRows,
@@ -129,6 +130,10 @@ function Dump({ shown }: { shown: Target }) {
   const value = shown.bytes
     ? { from: shown.address, to: shown.address + BigInt(shown.bytes - 1) }
     : null;
+  assert(
+    value === null || value.from <= value.to,
+    `value at ${hex(shown.address)} ends before it starts`,
+  );
   const [selection, setSelection] = useState<Selection | null>(value);
   const [editing, setEditing] = useState<bigint | null>(null);
   // The byte the keyboard is on, the bytes' one stop in the tab order.
@@ -137,6 +142,8 @@ function Dump({ shown }: { shown: Target }) {
 
   const first = rowStart(shown.address) + BigInt(moved * ROW);
   const start = first < 0n ? 0n : first;
+  assert(moved % ROWS === 0, `memory moved ${moved} rows, not a page`);
+  assert(start % BigInt(ROW) === 0n, `memory starts mid-row at ${hex(start)}`);
   const read = useRequest(
     "readMemory",
     why === null && at ? { stop: at.stop, address: hex(start), count: ROWS * ROW } : null,
@@ -151,6 +158,8 @@ function Dump({ shown }: { shown: Target }) {
     return <div className="empty center-message">Reading memory…</div>;
   }
   const rows = dumpRows(start, read.data.bytes, ROWS);
+  assert(rows.length === ROWS, `memory shows ${rows.length} rows, not ${ROWS}`);
+  assert(rows[0]?.address === start, `memory rows do not start at ${hex(start)}`);
   const readable: bigint[] = rows.flatMap((row) =>
     row.bytes.flatMap((byte, column) => (byte === null ? [] : [row.address + BigInt(column)])),
   );
@@ -159,6 +168,7 @@ function Dump({ shown }: { shown: Target }) {
   const within = (range: Selection | null, address: bigint) =>
     range !== null && address >= range.from && address <= range.to;
   const choose = (address: bigint, extend: boolean) => {
+    assert(readable.includes(address), `chose unread byte ${hex(address)}`);
     setCursor(address);
     setSelection((current) =>
       extend && current
@@ -350,6 +360,7 @@ function Readings({
       </div>
     );
   }
+  assert(selection.from <= selection.to, `selection ${hex(selection.from)} ends before it starts`);
   const bytes: (number | null)[] = [];
   for (const row of rows) {
     for (const [column, byte] of row.bytes.entries()) {
@@ -360,6 +371,7 @@ function Readings({
     }
   }
   const count = Number(selection.to - selection.from) + 1;
+  assert(bytes.length <= count, `${bytes.length} bytes shown of a ${count} byte selection`);
   const whole = bytes.length === count && bytes.every((byte) => byte !== null);
   return (
     <div className="mem-selection" data-testid="selection">

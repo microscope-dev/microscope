@@ -4,6 +4,7 @@
 // of numbers are read a row at a time, so a million samples cost nothing
 // until a row is shown.
 
+import { assert } from "../assert";
 import type { TypedArray, Value } from "./decode";
 
 /** Every value of a drawing's inputs, one row each. */
@@ -37,6 +38,8 @@ export function inputRows(inputs: Record<string, Value>): InputRows {
     count += "array" in run ? run.array.length : 1;
   }
   const at = (index: number, quote: boolean): [string, string] => {
+    assert(Number.isInteger(index), "row index is whole");
+    assert(index >= 0 && index < count, "row index is within the rows");
     let low = 0;
     let high = runs.length - 1;
     while (low < high) {
@@ -48,14 +51,17 @@ export function inputRows(inputs: Record<string, Value>): InputRows {
       }
     }
     const run = runs[low] as Run;
+    assert((starts[low] as number) <= index, "row's run starts at or before it");
     if ("array" in run) {
       const offset = index - (starts[low] as number);
+      assert(offset < run.array.length, "row lies within its run's array");
       const value = run.array[offset] as number | bigint;
       return [
         `${run.path}[${offset}]`,
         run.array instanceof Float32Array ? float32(value as number) : text(value),
       ];
     }
+    assert(index === starts[low], "a single value's row is its run's start");
     if ("empty" in run) {
       return [run.path, run.empty];
     }
@@ -88,6 +94,7 @@ function float32(value: number): string {
         return String(shortest);
       }
     }
+    assert(false, "9 digits round-trip every finite 32-bit float");
   }
   return text(value);
 }

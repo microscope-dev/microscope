@@ -2,6 +2,7 @@
 // one the builder names, and text goes in as text, never as markup. Images
 // are canvases the page paints, which name the pixel under the pointer.
 
+import { assert } from "../assert";
 import { type OnSelect, pixelIndex, pixelName, type Tip } from "./draw";
 import { isLine, type Picture, type Shape, type Style } from "./picture";
 
@@ -10,6 +11,14 @@ const HTML = "http://www.w3.org/1999/xhtml";
 
 /** The picture as an `<svg>`, scaled to fit its container and never cropped. */
 export function buildSvg(picture: Picture, onSelect?: OnSelect, tip?: Tip): SVGSVGElement {
+  assert(
+    picture.width > 0 && Number.isFinite(picture.width),
+    `picture width ${picture.width} is positive and finite`,
+  );
+  assert(
+    picture.height > 0 && Number.isFinite(picture.height),
+    `picture height ${picture.height} is positive and finite`,
+  );
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("viewBox", `0 0 ${picture.width} ${picture.height}`);
   svg.setAttribute("width", String(picture.width));
@@ -179,6 +188,10 @@ function image(shape: Extract<Shape, { type: "image" }>, tip: Tip | undefined): 
     canvas.height = shape.rendered.height;
     canvas.getContext("2d")?.drawImage(shape.rendered, 0, 0);
   } else {
+    assert(
+      shape.pixels.length === shape.columns * shape.rows * 4,
+      "image pixels hold 4 bytes per column and row",
+    );
     canvas.width = shape.columns;
     canvas.height = shape.rows;
     const pixels = new Uint8ClampedArray(shape.pixels);

@@ -2,6 +2,7 @@
 // letter, for keyboards without function keys.
 
 import { useRef } from "react";
+import { assert } from "../assert";
 import { BINDINGS, type Command, describe, LABELS } from "../keys";
 import { tab, useTab } from "../tab";
 import { useDialogFocus } from "./dialog";
@@ -15,6 +16,10 @@ function Keys() {
   const dialog = useRef<HTMLDivElement>(null);
   useDialogFocus(dialog);
   const commands = [...new Set(BINDINGS.map((binding) => binding.command))] as Command[];
+  assert(
+    commands.every((command) => describe(command) !== null || describe(command, true) !== null),
+    "a bound command has no key to show",
+  );
   const done = () => tab.setState({ help: false });
   return (
     <div className="overlay">

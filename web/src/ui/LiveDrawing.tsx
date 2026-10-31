@@ -4,6 +4,7 @@
 // pointer, and the keys while the canvas has focus, as numbers and flags.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { assert } from "../assert";
 import { Tip } from "../visualize/draw";
 import { isSelect } from "../visualize/picture";
 import {
@@ -131,10 +132,13 @@ export function LiveDrawing({
       if (!state.started || (!state.wanted && !state.animating)) {
         return;
       }
+      assert(!state.inFlight, "live frame asked for with one in flight");
+      assert(sent.current !== null, "live session started with no job sent");
+      assert(session.current !== null, "live frame asked for with no session");
       state.wanted = false;
       state.inFlight = true;
-      state.asked = { stop: sent.current?.stop ?? -1, events: events.current };
-      session.current?.frame(time);
+      state.asked = { stop: sent.current.stop, events: events.current };
+      session.current.frame(time);
     });
   };
   const want = () => {
@@ -148,9 +152,7 @@ export function LiveDrawing({
   // biome-ignore lint/correctness/useExhaustiveDependencies: want reads only refs
   useLayoutEffect(() => {
     const element = holder.current;
-    if (element === null) {
-      return;
-    }
+    assert(element !== null, "live drawing mounted without its holder");
     const resized = () => {
       const next = measure(element);
       const before = size.current;
@@ -181,12 +183,13 @@ export function LiveDrawing({
   // coming back starts it afresh with the inputs of then.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the session reads its job and callbacks through refs; a new renderer is a new component
   useEffect(() => {
-    const element = holder.current;
     const shown = canvas.current;
-    if (!active || failure !== null || element === null || shown === null) {
+    assert(shown !== null, "live drawing mounted without its canvas");
+    if (!active || failure !== null) {
       return;
     }
-    const measured = size.current ?? measure(element);
+    const measured = size.current;
+    assert(measured !== null, `live card ${card} starts before its size is measured`);
     const state = loop.current;
     state.started = false;
     state.wanted = false;
@@ -270,7 +273,8 @@ export function LiveDrawing({
   useEffect(() => {
     const live = session.current;
     const measured = size.current;
-    if (live === null || measured === null || sent.current === job) {
+    assert(measured !== null, "live drawing updates before its size is measured");
+    if (live === null || sent.current === job) {
       return;
     }
     sent.current = job;
@@ -281,9 +285,7 @@ export function LiveDrawing({
   // The hover text shows in the page's own tip.
   useEffect(() => {
     const element = holder.current;
-    if (element === null) {
-      return;
-    }
+    assert(element !== null, "live drawing mounted without its holder");
     const made = new Tip(element);
     element.append(made.element);
     tip.current = made;
@@ -297,9 +299,7 @@ export function LiveDrawing({
   // biome-ignore lint/correctness/useExhaustiveDependencies: forward reads only refs
   useEffect(() => {
     const shown = canvas.current;
-    if (shown === null) {
-      return;
-    }
+    assert(shown !== null, "live drawing mounted without its canvas");
     const wheel = (event: WheelEvent) => {
       if (session.current === null) {
         return;
@@ -324,8 +324,10 @@ export function LiveDrawing({
     }
     pointer.current = event;
     counted(shown);
+    const measured = size.current;
+    assert(measured !== null, "live pointer forwarded before the size is measured");
     const bounds = shown.getBoundingClientRect();
-    const scale = bounds.width > 0 ? (size.current?.device.width ?? 0) / bounds.width : 1;
+    const scale = bounds.width > 0 ? measured.device.width / bounds.width : 1;
     let wheel = 0;
     if (event instanceof WheelEvent) {
       // Lines and pages as pixels, as most mice give them.

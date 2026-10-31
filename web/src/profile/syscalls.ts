@@ -1,6 +1,7 @@
 // What the Syscalls view draws, apart from React: each class's hue, the
 // heat map's ramp, histogram buckets' names, and stacked series.
 
+import { assert } from "../assert";
 import { formatDuration, hue } from "./paint";
 
 /** Each class the server shows calls under, with a hue of its own. Red is
@@ -39,6 +40,7 @@ export function heatAlpha(count: number, most: number): number {
 /** The shortest duration a log2 bucket holds, as the server buckets: 0,
  * then `[2^(i-1), 2^i)` nanoseconds. */
 export function bucketFloor(bucket: number): number {
+  assert(Number.isInteger(bucket) && bucket >= 0, `latency bucket ${bucket} is not an index`);
   return bucket === 0 ? 0 : 2 ** (bucket - 1);
 }
 

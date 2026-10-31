@@ -4,6 +4,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { ACTION_NAMES, type ActionName, action } from "../actions";
+import { assert } from "../assert";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
 import { type At, inView, stringifySearch, type View } from "../focus";
@@ -133,6 +134,7 @@ export function useCommands(): (command: Command) => boolean {
         default: {
           const pane = /^pane(\d)$/.exec(command);
           if (pane) {
+            assert(pane[1] !== undefined, `command ${command} matched with no pane`);
             const target = document.querySelector<HTMLElement>(`[data-pane="${pane[1]}"]`);
             target?.focus();
             return target !== null;

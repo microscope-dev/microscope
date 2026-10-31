@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { assert } from "../assert";
 import { stopPath } from "../focus";
 import { stopKind } from "../model";
 import type { StopEntry } from "../protocol";
@@ -42,16 +43,16 @@ export function Strip() {
               className={`stop ${entry.stop === at?.stop ? "on" : ""} ${entry.stop === current ? "current" : ""}`}
               aria-current={entry.stop === at?.stop ? "true" : undefined}
               title={describeStop(entry)}
-              onClick={() =>
-                session &&
-                navigate({
+              onClick={() => {
+                assert(session, `stop ${entry.stop} listed with no session`);
+                void navigate({
                   href: stopPath(session, {
                     stop: entry.stop,
                     thread: entry.thread,
                     frame: entry.frame,
                   }),
-                })
-              }
+                });
+              }}
             >
               #{entry.stop} {stopKind(entry.reason.kind)} · {placeText(entry.place)}
               {entry.stop === current && " ◂ now"}

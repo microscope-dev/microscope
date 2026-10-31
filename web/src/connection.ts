@@ -2,6 +2,7 @@
 // server messages turned into model events, and reconnecting after a drop.
 // The transport is injected so tests drive it without a socket.
 
+import { assert } from "./assert";
 import { base } from "./base";
 import type { ModelEvent } from "./model";
 import {
@@ -102,14 +103,22 @@ export class Connection {
       return Promise.reject(new RequestError("disconnected", "not connected to microscope"));
     }
     const id = this.#nextId++;
+    assert(!this.#pending.has(id), `request id ${id} is already pending`);
+    assert(!this.#binary.has(id), `request id ${id} already has bytes`);
     const message = params.length === 0 ? { id, method } : { id, method, params: params[0] };
     return new Promise<Results[M]>((resolve, reject) => {
       this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      this.#transport?.send(JSON.stringify(message));
+      assert(this.#transport !== null, `request ${id} lost its transport before sending`);
+      this.#transport.send(JSON.stringify(message));
     });
   }
 
   async #attemptConnection(): Promise<void> {
+    assert(!this.#stopped, `connection attempt ${this.#attempt} started while stopped`);
+    assert(
+      this.#timer === null,
+      `connection attempt ${this.#attempt} started with a retry pending`,
+    );
     this.#generation += 1;
     const generation = this.#generation;
     const current = () => generation === this.#generation;
@@ -184,6 +193,10 @@ export class Connection {
     if (message.type === "result" || message.type === "error") {
       const pending = this.#pending.get(message.id);
       const payload = this.#binary.get(message.id);
+      assert(
+        payload === undefined || pending !== undefined,
+        `bytes kept for request ${message.id}, which is not pending`,
+      );
       this.#binary.delete(message.id);
       if (pending) {
         this.#pending.delete(message.id);
@@ -213,8 +226,11 @@ export class Connection {
   }
 
   #retry(): void {
+    assert(!this.#stopped, `retry ${this.#attempt} scheduled while stopped`);
+    assert(this.#timer === null, `retry ${this.#attempt} scheduled with another pending`);
     const backoff = this.#options.backoff ?? [100, 250, 500, 1000, 2000];
-    const delay = backoff[Math.min(this.#attempt, backoff.length - 1)] ?? 1000;
+    const delay = backoff[Math.min(this.#attempt, backoff.length - 1)];
+    assert(delay !== undefined, `backoff has no delay for attempt ${this.#attempt}`);
     this.#attempt += 1;
     this.#timer = setTimeout(() => {
       this.#timer = null;

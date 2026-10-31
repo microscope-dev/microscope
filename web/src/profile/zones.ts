@@ -1,6 +1,7 @@
 // Zones as the server sends them, in columns, and how the zones view lays
 // each thread's track out: a row per depth, tracks one under another.
 
+import { assert } from "../assert";
 import type { ProfileThread, ProfileZones } from "../protocol";
 
 export interface ZoneBlocks {
@@ -59,6 +60,14 @@ export interface Track {
 /** Each thread's track, in `order`, then any other thread with zones,
  * each as deep as its deepest block. */
 export function tracks(blocks: ZoneBlocks, order: number[]): Track[] {
+  assert(
+    blocks.thread.length === blocks.count,
+    `${blocks.thread.length} block threads for ${blocks.count} blocks`,
+  );
+  assert(
+    blocks.depth.length === blocks.count,
+    `${blocks.depth.length} block depths for ${blocks.count} blocks`,
+  );
   const deepest = new Map<number, number>();
   for (let at = 0; at < blocks.count; at += 1) {
     const thread = blocks.thread[at] ?? 0;
@@ -70,7 +79,9 @@ export function tracks(blocks: ZoneBlocks, order: number[]): Track[] {
   ];
   let row = 0;
   return threads.map((thread) => {
-    const depths = deepest.get(thread) ?? 1;
+    const depths = deepest.get(thread);
+    assert(depths !== undefined, `thread ${thread} has a track but no zones`);
+    assert(depths >= 1, `thread ${thread} has a track of ${depths} rows`);
     const track = { thread, row, depths };
     row += depths;
     return track;
@@ -85,6 +96,11 @@ export function blockAt(
   time: number,
   slack: number,
 ): number | null {
+  assert(
+    depth >= 0 && depth < track.depths,
+    `depth ${depth} is outside thread ${track.thread}'s ${track.depths} rows`,
+  );
+  assert(slack >= 0, `slack ${slack} is negative`);
   let best: number | null = null;
   for (let at = 0; at < blocks.count; at += 1) {
     if (blocks.thread[at] !== track.thread || blocks.depth[at] !== depth) {
@@ -183,6 +199,8 @@ export function zoomed(
   total: number,
   least = 1000,
 ): [number, number] {
+  assert(start <= end, `view ${start}..${end} is reversed`);
+  assert(total > 0, `profile length ${total} is not positive`);
   const span = Math.min(Math.max((end - start) * factor, least), total);
   const from = at - (at - start) * (span / Math.max(end - start, 1));
   const kept = Math.min(Math.max(from, 0), total - span);
@@ -196,6 +214,7 @@ export function panned(
   by: number,
   total: number,
 ): [number, number] {
+  assert(start <= end, `view ${start}..${end} is reversed`);
   const moved = Math.min(Math.max(start + by, 0), total - (end - start));
   return [Math.round(moved), Math.round(moved + end - start)];
 }
@@ -206,6 +225,7 @@ export function ticks(
   [start, end]: readonly [number, number],
   width: number,
 ): { step: number; times: number[] } {
+  assert(start <= end, `ruler ${start}..${end} is reversed`);
   const raw = ((end - start) * 100) / Math.max(width, 1);
   const power = 10 ** Math.floor(Math.log10(Math.max(raw, 1)));
   const step = power * ([1, 2, 5, 10].find((each) => each * power >= raw) ?? 10);

@@ -3,6 +3,7 @@
 // whenever no text box has focus, for keyboards without function keys.
 
 import type { ActionName } from "./actions";
+import { assert } from "./assert";
 
 export type Command =
   | ActionName
@@ -122,6 +123,16 @@ export const BINDINGS: readonly Binding[] = [
   { key: "m", alt: true, typing: false, command: "viewMemory" },
   { key: "v", alt: true, typing: false, command: "viewDrawings" },
 ];
+
+{
+  const presses = new Set<string>();
+  for (const binding of BINDINGS) {
+    const shift = binding.typing && binding.key.length === 1 ? "any" : Boolean(binding.shift);
+    const press = `${binding.key} ${shift} ${Boolean(binding.ctrl)} ${Boolean(binding.alt)}`;
+    assert(!presses.has(press), `key ${press} is bound twice, the second to ${binding.command}`);
+    presses.add(press);
+  }
+}
 
 export interface KeyLike {
   key: string;

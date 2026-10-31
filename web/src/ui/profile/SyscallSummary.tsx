@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { assert } from "../../assert";
 import type { Requested } from "../../data";
 import { rangeOf, withLook } from "../../profile/look";
 import { formatCount, largest } from "../../profile/paint";
@@ -251,10 +252,16 @@ function Rate({ query }: { query: SyscallQuery }) {
     const y = (count: number) => CHART - 2 - ((CHART - 6) * count) / most;
     const dark = scheme === "dark";
     for (const [index, series] of data.series.entries()) {
+      const column = tops[index];
+      assert(column !== undefined, `series ${index} has no stacked tops`);
+      assert(
+        column.length === series.counts.length,
+        `series ${index} has ${column.length} tops for ${series.counts.length} counts`,
+      );
       context.fillStyle = seriesColor(series.name, dark);
       for (const [bucket, count] of series.counts.entries()) {
         if (count > 0) {
-          const top = tops[index]?.[bucket] ?? 0;
+          const top = column[bucket] ?? 0;
           context.fillRect(x(bucket), y(top), Math.max(slice, 1), y(top - count) - y(top));
         }
       }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { assert } from "../assert";
 import { formatPlace } from "../focus";
 import { latestStop } from "../follow";
 import type { Place, StopEntry } from "../protocol";
@@ -78,7 +79,9 @@ export function Banner() {
               onClick={() => {
                 setStayed(at.stop);
                 const place = shown.place;
-                if (place?.path && place.line && !look.src) {
+                assert(place?.path, `stay on stop ${at.stop} offered with no path`);
+                assert(place.line, `stay on stop ${at.stop} offered with no line`);
+                if (!look.src) {
                   go(
                     at,
                     {

@@ -2,6 +2,7 @@
 
 import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
+import { assert } from "../assert";
 import { useRequest } from "../data";
 import { type At, followedLook, type Look, parseAt } from "../focus";
 import { follow, latestStop } from "../follow";
@@ -165,7 +166,12 @@ function useFollowing(session: string, at: At | null, look: Look) {
     if (!state || state.session !== session) {
       return;
     }
-    const where = stop === undefined ? null : { stop, thread: thread ?? 0, frame: frame ?? 0 };
+    let where: At | null = null;
+    if (stop !== undefined) {
+      assert(thread !== undefined, `stop ${stop} shown without a thread`);
+      assert(frame !== undefined, `stop ${stop} shown without a frame`);
+      where = { stop, thread, frame };
+    }
     const move = follow(state, where, followed.current, pinned);
     // A running state shows no stop, so it leaves the one a following tab
     // showed. Its stops can be another member's, once the member that

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { assert } from "../assert";
 import { firstBreakpointPlace, knownBreakpointPlaces, PENDING } from "../breakpoints";
 import { useRequest } from "../data";
 import { controls } from "../model";
@@ -71,6 +72,7 @@ export function placeLabel(breakpoint: Breakpoint): string {
   const place = firstBreakpointPlace(breakpoint);
   if (place?.path && place.line) {
     const count = knownBreakpointPlaces(breakpoint).length;
+    assert(count >= 1, `breakpoint ${breakpoint.id} has a first place but ${count} known`);
     const more = count > 1 ? ` +${count - 1}` : "";
     return `${fileName(place.path)}:${place.line}${more}`;
   }

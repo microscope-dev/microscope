@@ -5,6 +5,7 @@
 // still hover text and selects still open their parts, though only for the
 // pointer: the canvas has no element per shape for the keyboard to reach.
 
+import { assert } from "../assert";
 import type { OnSelect, Tip } from "./draw";
 import { pixelIndex, pixelName } from "./draw";
 import { isLine, type Picture, type Shape } from "./picture";
@@ -44,7 +45,9 @@ interface Hit {
 /** The most device pixels a picture's canvas holds. */
 const MOST_PIXELS = 16 * 1024 * 1024;
 
-const BASELINES: Record<string, CanvasTextBaseline> = {
+type Text = Extract<Shape, { type: "text" }>;
+
+const BASELINES: Record<NonNullable<Text["baseline"]>, CanvasTextBaseline> = {
   auto: "alphabetic",
   alphabetic: "alphabetic",
   middle: "middle",
@@ -53,7 +56,11 @@ const BASELINES: Record<string, CanvasTextBaseline> = {
   ideographic: "ideographic",
 };
 
-const ALIGN: Record<string, CanvasTextAlign> = { start: "left", middle: "center", end: "right" };
+const ALIGN: Record<NonNullable<Text["anchor"]>, CanvasTextAlign> = {
+  start: "left",
+  middle: "center",
+  end: "right",
+};
 
 /** The picture as a canvas, scaled to fit its container like the SVG. */
 export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HTMLCanvasElement {
@@ -63,8 +70,17 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
   if (picture.caption !== undefined) {
     canvas.setAttribute("aria-label", picture.caption);
   }
+  assert(
+    picture.width > 0 && Number.isFinite(picture.width),
+    `picture width ${picture.width} is positive and finite`,
+  );
+  assert(
+    picture.height > 0 && Number.isFinite(picture.height),
+    `picture height ${picture.height} is positive and finite`,
+  );
   const area = Math.max(1, picture.width * picture.height);
   const ratio = Math.min(Math.max(1, window.devicePixelRatio || 1), Math.sqrt(MOST_PIXELS / area));
+  assert(ratio > 0 && Number.isFinite(ratio), `canvas ratio ${ratio} is positive and finite`);
   canvas.width = Math.max(1, Math.round(picture.width * ratio));
   canvas.height = Math.max(1, Math.round(picture.height * ratio));
   canvas.style.width = `${picture.width}px`;
@@ -206,6 +222,8 @@ function paint(
     title: shape.title ?? inherited.title,
     select: shape.select ?? inherited.select,
   };
+  assert(own.alpha >= 0 && own.alpha <= 1, "inherited alpha is within 0 to 1");
+  assert(own.strokeWidth >= 0, "inherited stroke width is not negative");
   if (shape.type === "group") {
     pen.save();
     pen.translate(shape.x ?? 0, shape.y ?? 0);
@@ -266,6 +284,7 @@ function paint(
     case "polygon": {
       path = new Path2D();
       const points = shape.points;
+      assert(points.length % 2 === 0, "polyline points are x, y pairs");
       let left = Number.POSITIVE_INFINITY;
       let top = Number.POSITIVE_INFINITY;
       let right = Number.NEGATIVE_INFINITY;
@@ -296,8 +315,8 @@ function paint(
       const size = shape.size ?? 12;
       const weight = shape.weight ?? "normal";
       pen.font = `${weight} ${size}px ${shape.family === "mono" ? page.mono : page.sans}`;
-      pen.textAlign = ALIGN[shape.anchor ?? "start"] ?? "left";
-      pen.textBaseline = BASELINES[shape.baseline ?? "auto"] ?? "alphabetic";
+      pen.textAlign = ALIGN[shape.anchor ?? "start"];
+      pen.textBaseline = BASELINES[shape.baseline ?? "auto"];
       if (fill !== null) {
         pen.fillStyle = fill;
         pen.fillText(shape.text, shape.x, shape.y);
@@ -386,6 +405,10 @@ function imageSource(
   if ("rendered" in shape) {
     return { image: shape.rendered, columns: shape.rendered.width, rows: shape.rendered.height };
   }
+  assert(
+    shape.pixels.length === shape.columns * shape.rows * 4,
+    "image pixels hold 4 bytes per column and row",
+  );
   const canvas = document.createElement("canvas");
   canvas.width = shape.columns;
   canvas.height = shape.rows;

@@ -4,6 +4,7 @@
 // moving.
 
 import { useState } from "react";
+import { assert } from "../assert";
 import { useRequest } from "../data";
 import type { At } from "../focus";
 import { hidden } from "./hidden";
@@ -17,6 +18,7 @@ export { errorClass, hidden } from "./hidden";
 export function Variables() {
   const focus = useFocus();
   const why = hidden(focus);
+  assert(why !== null || focus.at !== null, "variables shown with no stop");
   const scopes = useRequest("scopes", why === null ? (focus.at as At) : null);
   const statics = focus.look.x?.includes("statics") ?? false;
   const look = useLook();
@@ -94,12 +96,14 @@ export function Watch() {
   const [text, setText] = useState("");
   const why = hidden(focus);
 
-  const remove = (index: number) =>
+  const remove = (index: number) => {
+    assert(index >= 0 && index < watches.length, `removing watch ${index} of ${watches.length}`);
     look((current) => {
       const w = (current.w ?? []).filter((_, at) => at !== index);
       const { w: _w, ...rest } = current;
       return w.length > 0 ? { ...rest, w } : rest;
     });
+  };
 
   return (
     <section className="pane watch" aria-label="Watch" data-pane="4" tabIndex={-1}>

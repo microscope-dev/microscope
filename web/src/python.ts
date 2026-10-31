@@ -1,6 +1,8 @@
 // What Python's grammar says of a word: whether it is a keyword where it
 // stands. The highlighter and the expressions a line shows both ask.
 
+import { assert } from "./assert";
+
 /** Python's keywords, hard and soft. */
 export const PYTHON_KEYWORDS = new Set(
   (
@@ -16,6 +18,7 @@ export const PYTHON_KEYWORDS = new Set(
  * or `case` ending in a colon or a `type` alias. Elsewhere they are names,
  * as `type(x)` calls one. */
 export function pythonKeywordHolds(word: string, before: string, rest: string): boolean {
+  assert(PYTHON_KEYWORDS.has(word), "asking whether a word that is no Python keyword holds as one");
   if (word !== "match" && word !== "case" && word !== "type") {
     return true;
   }

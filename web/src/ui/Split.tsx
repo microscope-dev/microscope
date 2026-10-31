@@ -2,6 +2,7 @@
 // arrow keys move. Each split remembers its size in this browser.
 
 import { type HTMLAttributes, useCallback, useState } from "react";
+import { assert } from "../assert";
 import { read, write } from "../storage";
 
 interface Limits {
@@ -22,6 +23,12 @@ export function useSplit(
   initial: number,
   { label, min, max, axis = "columns", reversed = false }: Limits,
 ): { size: number; handle: HTMLAttributes<HTMLDivElement> } {
+  assert(Number.isFinite(min) && Number.isFinite(max), `split ${key} has unbounded limits`);
+  assert(min <= max, `split ${key} has min ${min} above max ${max}`);
+  assert(
+    initial >= min && initial <= max,
+    `split ${key} starts at ${initial}, outside ${min}..${max}`,
+  );
   const [size, setSize] = useState(() => clamp(read(key, initial, isNumber), min, max));
   const resize = useCallback(
     (next: number) => {

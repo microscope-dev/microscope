@@ -3,6 +3,7 @@
 // dropped connection are discarded and retried on reconnection.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { assert } from "./assert";
 import type { Connection } from "./connection";
 import { type Method, type ParamsOf, RequestError, type Results } from "./protocol";
 import { useConnection } from "./store";
@@ -70,11 +71,10 @@ export class Cache {
     this.#entries.set(key, entry);
     while (this.#entries.size > LIMIT) {
       const oldest = this.#entries.keys().next().value;
-      if (oldest === undefined) {
-        break;
-      }
+      assert(oldest !== undefined, `cache of ${this.#entries.size} answers has no oldest`);
       this.#entries.delete(oldest);
     }
+    assert(this.#entries.get(key) === entry, "the cache evicted the answer it just asked for");
     return entry;
   }
 
@@ -91,6 +91,7 @@ export class Cache {
 
   /** Forgets answers whose key starts with `prefix`, such as one method's. */
   forget(prefix: string): void {
+    assert(prefix.includes(" "), `forgetting by prefix "${prefix}", which names no whole method`);
     let forgot = false;
     for (const key of [...this.#entries.keys()]) {
       if (key.startsWith(prefix)) {

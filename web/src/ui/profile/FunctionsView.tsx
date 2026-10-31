@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
+import { assert } from "../../assert";
 import { diffModeOf, withLook } from "../../profile/look";
 import { changeOf, formatCount, formatPercent, formatWeight } from "../../profile/paint";
 import type { ProfileQuery } from "../../protocol";
@@ -42,7 +43,9 @@ export function FunctionsView() {
   const names = answer.data?.keys ?? [];
   const base = answer.data?.base ?? null;
   const select = (index: number) => {
-    const name = names[rows[index]?.key ?? -1]?.name;
+    const row = rows[index];
+    assert(row !== undefined, `row ${index} is outside ${rows.length} rows`);
+    const name = names[row.key]?.name;
     if (name !== undefined) {
       setLook((look) => ({ ...look, fn: name }));
     }

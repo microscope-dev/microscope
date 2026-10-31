@@ -3,6 +3,7 @@
 // stop before is marked, as variables are.
 
 import { useState } from "react";
+import { assert } from "../assert";
 import { useRequest } from "../data";
 import type { At } from "../focus";
 import type { Register, Row } from "../protocol";
@@ -32,6 +33,7 @@ export function Registers() {
   const focus = useFocus();
   const [open, setOpen] = useState(() => read("microscope-registers-open", true, isBoolean));
   const why = hidden(focus, "Registers");
+  assert(why !== null || focus.at !== null, "registers shown with no stop");
   const registers = useRequest("registers", open && why === null ? (focus.at as At) : null);
 
   let body: React.ReactNode;
@@ -42,14 +44,16 @@ export function Registers() {
   } else if (!registers.data) {
     body = <div className="empty">Reading registers…</div>;
   } else {
+    const at = focus.at;
+    assert(at !== null, "registers listed with no stop");
     body = (
       <ul className="value-list" data-testid="registers">
         {registers.data.registers.map((register) => (
           <ValueRow
             key={register.name}
-            row={row(register, (focus.at?.frame ?? 0) === 0)}
+            row={row(register, at.frame === 0)}
             // Each frame's registers are compared with that frame's.
-            parent={`registers@${focus.at?.frame ?? 0}`}
+            parent={`registers@${at.frame}`}
             depth={0}
             missing={register.value === null ? "absent" : undefined}
           />

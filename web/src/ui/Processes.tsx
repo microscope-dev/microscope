@@ -3,6 +3,7 @@
 // program has started a second process the session debugs.
 
 import { useState } from "react";
+import { assert } from "../assert";
 import { controls } from "../model";
 import type { Group, Member } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -11,7 +12,9 @@ import { useFocus } from "./Workspace";
 
 /** A member's program, by file name, as `ps` names it. */
 export function memberName(member: Member): string {
-  const program = member.program ?? member.command.split(" ")[0] ?? "";
+  const word = member.command.split(" ")[0];
+  assert(word !== undefined, `member ${member.number} command split into nothing`);
+  const program = member.program ?? word;
   return program.slice(program.lastIndexOf("/") + 1) || `process ${member.pid ?? "?"}`;
 }
 

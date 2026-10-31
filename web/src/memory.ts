@@ -2,6 +2,8 @@
 // as the types its length could be. Addresses are bigints, since a 64-bit
 // address does not fit a number. The target is little-endian, as x86-64 is.
 
+import { assert } from "./assert";
+
 /** Bytes shown in each row. */
 export const ROW = 16;
 
@@ -35,6 +37,7 @@ export function hex(address: bigint): string {
 
 /** The start of the row holding `address`. */
 export function rowStart(address: bigint): bigint {
+  assert(address >= 0n, `row of negative address ${address}`);
   return address - (address % BigInt(ROW));
 }
 
@@ -49,8 +52,10 @@ export interface DumpRow {
  * `start`, given as hexadecimal pairs.
  */
 export function dumpRows(start: bigint, read: string, count: number): DumpRow[] {
+  assert(Number.isInteger(count) && count >= 0, `dumping ${count} rows`);
   const first = rowStart(start);
   const offset = Number(start - first);
+  assert(offset >= 0 && offset < ROW, `address ${hex(start)} is ${offset} bytes into its row`);
   const rows: DumpRow[] = [];
   for (let row = 0; row < count; row++) {
     const bytes: (number | null)[] = [];

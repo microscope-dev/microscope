@@ -3,6 +3,7 @@
 // shown, the view, watches, and the expanded rows of the variable tree.
 // Every function here is pure, so links round-trip exactly.
 
+import { assert } from "./assert";
 import type { TaskKey } from "./protocol";
 
 /** What a tab looks at, beyond the stop: everything in the query. */
@@ -211,6 +212,10 @@ export function taskSegment(task: TaskKey): string {
 }
 
 export function stopPath(session: string, at: At): string {
+  assert(
+    !at.task || at.thread === 0,
+    `a task's focus at stop ${at.stop} names thread ${at.thread}`,
+  );
   const who = at.task ? `task/${taskSegment(at.task)}` : `t/${at.thread}`;
   return `/s/${session}/stop/${at.stop}/${who}/f/${at.frame}`;
 }

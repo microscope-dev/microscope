@@ -3,6 +3,7 @@
 // mirrors it for code outside the router, such as the keyboard.
 
 import { createStore, useStore } from "zustand";
+import { assert } from "./assert";
 import type { At, Look } from "./focus";
 
 export interface TabState {
@@ -75,7 +76,9 @@ export function openFile(path: string): void {
     }
     const oldest =
       Object.keys(state.places).find((file) => file !== path && files.includes(file)) ?? files[0];
-    const { [oldest ?? ""]: _, ...places } = state.places;
+    assert(oldest !== undefined, `${files.length} open files have no oldest`);
+    assert(oldest !== path, "opening a file closed it to make room");
+    const { [oldest]: _, ...places } = state.places;
     return { files: files.filter((file) => file !== oldest), places };
   });
 }

@@ -5,6 +5,7 @@
 
 import { useId, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { assert } from "../assert";
 import { commonPrefix, consoleStore, finished, started } from "../console";
 import type { Completion } from "../protocol";
 import { useConnection } from "../store";
@@ -144,8 +145,10 @@ function ConsoleInput() {
         : recalled + step >= history.length
           ? null
           : Math.max(0, recalled + step);
+    const recalledLine = index === null ? "" : history[index];
+    assert(recalledLine !== undefined, `recalled line ${index} of ${history.length}`);
     setRecalled(index);
-    setText(index === null ? "" : (history[index] as string));
+    setText(recalledLine);
   };
 
   const walk = (step: -1 | 1) => {
@@ -153,12 +156,14 @@ function ConsoleInput() {
       return;
     }
     const count = choices.items.length;
+    assert(count >= 2, `choices kept for ${count} completions`);
     const active =
       choices.active === null
         ? step > 0
           ? 0
           : count - 1
         : (choices.active + step + count) % count;
+    assert(active >= 0 && active < count, `active completion ${active} of ${count}`);
     setChoices({ ...choices, active });
   };
 
@@ -230,7 +235,9 @@ function ConsoleInput() {
             }
           } else if (event.key === "Enter" && choices && active !== null) {
             event.preventDefault();
-            take(choices.items[active] as Completion);
+            const item = choices.items[active];
+            assert(item !== undefined, `active completion ${active} of ${choices.items.length}`);
+            take(item);
           } else if (event.key === "Escape" && choices) {
             event.stopPropagation();
             setChoices(null);

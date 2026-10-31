@@ -2,6 +2,7 @@
 // flame graph. Nodes are in depth-first order, each node's children
 // largest first, so a subtree is the run of nodes from it to its `end`.
 
+import { assert } from "../assert";
 import type { ProfileKey, ProfileTree } from "../protocol";
 
 export interface CallTree {
@@ -53,7 +54,9 @@ export function decodeTree(answer: ProfileTree, payload: Uint8Array | undefined)
   for (let node = 0; node < count; node += 1) {
     const at = depth[node] ?? 0;
     while (open.length > at) {
-      end[open.pop() ?? 0] = node;
+      const closed = open.pop();
+      assert(closed !== undefined, "closing a node with no open ancestor");
+      end[closed] = node;
     }
     if (open.length !== at) {
       throw new Error(`node ${node} is ${at} deep under ${open.length} ancestors`);
@@ -91,10 +94,15 @@ export function nameOf(tree: CallTree, node: number): string {
 
 /** A node's path of names from its root. */
 export function pathOf(tree: CallTree, node: number): string[] {
+  assert(node >= 0 && node < tree.count, `node ${node} is outside a tree of ${tree.count}`);
   const path: string[] = [];
   for (let at = node; at >= 0; at = tree.parent[at] ?? -1) {
     path.push(nameOf(tree, at));
   }
+  assert(
+    path.length === (tree.depth[node] ?? 0) + 1,
+    `node ${node} at depth ${tree.depth[node]} has a path of ${path.length}`,
+  );
   return path.reverse();
 }
 
@@ -117,7 +125,12 @@ export function findPath(tree: CallTree, path: readonly string[]): number | null
     node = found;
     from = node + 1;
     to = tree.end[node] ?? from;
+    assert(from <= to && to <= tree.count, `node ${node} spans ${from}..${to} of ${tree.count}`);
   }
+  assert(
+    node < 0 || tree.depth[node] === path.length - 1,
+    `path of ${path.length} reached node ${node} at depth ${tree.depth[node]}`,
+  );
   return node < 0 ? null : node;
 }
 
@@ -137,6 +150,7 @@ export interface Rect {
  * left out, and so are their subtrees, which are narrower still.
  */
 export function layout(tree: CallTree, zoom: number | null, narrowest: number): Rect[] {
+  assert(narrowest >= 0, `narrowest rectangle ${narrowest} is negative`);
   const rects: Rect[] = [];
   if (tree.count === 0) {
     return rects;
@@ -145,12 +159,18 @@ export function layout(tree: CallTree, zoom: number | null, narrowest: number): 
   let to = tree.count;
   let scale = tree.weight > 0 ? 1 / tree.weight : 0;
   if (zoom !== null) {
+    assert(zoom >= 0 && zoom < tree.count, `zoom ${zoom} is outside a tree of ${tree.count}`);
     for (let at = tree.parent[zoom] ?? -1; at >= 0; at = tree.parent[at] ?? -1) {
       rects.push({ node: at, depth: tree.depth[at] ?? 0, x: 0, width: 1 });
     }
     rects.reverse();
+    assert(
+      rects.length === tree.depth[zoom],
+      `zoom ${zoom} at depth ${tree.depth[zoom]} has ${rects.length} ancestors`,
+    );
     from = zoom;
     to = tree.end[zoom] ?? zoom + 1;
+    assert(zoom < to && to <= tree.count, `zoom ${zoom} ends at ${to} of ${tree.count}`);
     const total = tree.total[zoom] ?? 0;
     scale = total > 0 ? 1 / total : 0;
   }

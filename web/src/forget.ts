@@ -4,6 +4,7 @@
 // changes forgets as surely as one watching it.
 
 import type { StoreApi } from "zustand";
+import { assert } from "./assert";
 import { clearConsole } from "./console";
 import { type Cache, cache } from "./data";
 import { latestStop } from "./follow";
@@ -25,6 +26,7 @@ export interface Marks {
 
 function marks(model: Model): Marks {
   const state = model.state;
+  assert(model.link !== "open" || model.hello !== null, "the link is open with no hello");
   return {
     session: state?.session ?? null,
     latest: state ? latestStop(state) : undefined,

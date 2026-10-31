@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { assert } from "../assert";
 import { isPagePath } from "../focus";
 import type { Person } from "../protocol";
 import { write } from "../storage";
@@ -9,7 +10,9 @@ import { useConnection, useModel } from "../store";
 export function hue(name: string): number {
   let hash = 0;
   for (const char of name) {
-    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+    const code = char.codePointAt(0);
+    assert(code !== undefined, "a character with no code point");
+    hash = (hash * 31 + code) >>> 0;
   }
   return hash % 360;
 }

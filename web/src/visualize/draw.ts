@@ -4,8 +4,9 @@
 // The canvas's titles and selects answer only the pointer. Either way an
 // image says which of its pixels is under the pointer.
 
+import { assert } from "../assert";
 import { buildCanvas } from "./canvas";
-import type { Picture, Shape } from "./picture";
+import { MOST_SHAPES, type Picture, type Shape } from "./picture";
 import { buildSvg } from "./svg";
 
 /** What clicking, or pressing Enter or Space on, a shape with `select` does. */
@@ -32,8 +33,10 @@ export function buildPicture(picture: Picture, onSelect?: OnSelect): HTMLElement
   holder.classList.add("picture-holder");
   holder.style.position = "relative";
   const tip = new Tip(holder);
+  const count = countShapes(picture.shapes);
+  assert(count <= MOST_SHAPES, `picture holds ${count} shapes, past ${MOST_SHAPES}`);
   holder.append(
-    countShapes(picture.shapes) > MOST_SVG_SHAPES
+    count > MOST_SVG_SHAPES
       ? buildCanvas(picture, tip, onSelect)
       : buildSvg(picture, onSelect, tip),
     tip.element,

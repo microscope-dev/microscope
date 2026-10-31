@@ -7,6 +7,8 @@
 // draws the frames the page asks for; one that stops answering, or floods
 // the page with messages, is ended.
 
+import { assert } from "../assert";
+
 /** A renderer: its name, its JavaScript, and the digest that names both. */
 export interface RendererCode {
   name: string;
@@ -245,12 +247,17 @@ export class Sandbox {
     if (!(await this.turn())) {
       return closed;
     }
+    assert(
+      this.running >= 1 && this.running <= PARALLEL,
+      `${this.running} draws run, not 1 to ${PARALLEL}`,
+    );
     const port = await this.port;
     if (port === null || this.disposed) {
       this.leave();
       return closed;
     }
     const id = this.next++;
+    assert(!this.pending.has(id), `draw ${id} is already pending`);
     return new Promise<Outcome>((resolve) => {
       const pending: Pending = { card, digest: renderer.digest, resolve, timer: null };
       pending.timer = setTimeout(() => {
@@ -302,9 +309,11 @@ export class Sandbox {
         clearInterval(watchdog);
       }
       if (port !== null) {
+        assert(this.lives.get(key) === live, `live session ${key} is not in lives`);
         this.lives.delete(key);
         send({ type: "release" });
         this.liveRunning -= 1;
+        assert(this.liveRunning >= 0, `${this.liveRunning} live sessions run`);
         this.liveWaiting.shift()?.(true);
       }
       return true;
@@ -330,13 +339,19 @@ export class Sandbox {
       if (!(await this.liveTurn())) {
         return;
       }
+      assert(
+        this.liveRunning >= 1 && this.liveRunning <= LIVE_PARALLEL,
+        `${this.liveRunning} live sessions run, not 1 to ${LIVE_PARALLEL}`,
+      );
       const opened = await this.port;
       if (opened === null || this.disposed || ended) {
         this.liveRunning -= 1;
+        assert(this.liveRunning >= 0, `${this.liveRunning} live sessions run`);
         this.liveWaiting.shift()?.(true);
         return;
       }
       port = opened;
+      assert(!this.lives.has(key), `live session ${key} is already in lives`);
       this.lives.set(key, live);
       send({ type: "live-start", renderer, ...current });
       for (const message of early.splice(0)) {
@@ -416,6 +431,8 @@ export class Sandbox {
         failure: { message: "the page closed the sandbox", file: null, line: null, column: null },
       });
     }
+    assert(this.lives.size === 0, `${this.lives.size} live sessions outlive the sandbox`);
+    assert(this.pending.size === 0, `${this.pending.size} draws outlive the sandbox`);
     this.frame.remove();
   }
 
@@ -520,9 +537,8 @@ export class Sandbox {
       return;
     }
     this.pending.delete(id);
-    if (pending.timer !== null) {
-      clearTimeout(pending.timer);
-    }
+    assert(pending.timer !== null, `draw ${id} has no timer`);
+    clearTimeout(pending.timer);
     this.leave();
     pending.resolve(outcome);
   }
@@ -530,6 +546,7 @@ export class Sandbox {
   /** Ends a draw's turn, giving it to the next that waits. */
   private leave(): void {
     this.running -= 1;
+    assert(this.running >= 0, `${this.running} draws run`);
     this.waiting.shift()?.(true);
   }
 

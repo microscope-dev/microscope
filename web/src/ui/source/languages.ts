@@ -17,6 +17,7 @@ import {
 } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 import { tags } from "@lezer/highlight";
+import { assert } from "../../assert";
 import { PYTHON_KEYWORDS, pythonKeywordHolds } from "../../python";
 
 const ZIG_KEYWORDS = new Set(
@@ -122,11 +123,22 @@ function simple(syntax: Syntax) {
   const keywords = new Set(syntax.keywords.split(" "));
   const blocks = syntax.blockComments ?? [];
   const raws = syntax.rawStrings ?? [];
+  assert(syntax.lineComment !== "", `${syntax.name} has an empty line comment`);
+  assert(
+    blocks.every(([open, close]) => open !== "" && close !== ""),
+    `${syntax.name} has an empty block comment delimiter`,
+  );
+  assert(
+    raws.every(([open, close]) => open !== "" && close !== ""),
+    `${syntax.name} has an empty raw string delimiter`,
+  );
 
   /** Reads on through the block comment open until it closes or the line
    * ends. */
   const inComment = (stream: StringStream, state: SimpleState) => {
-    const [open, close, nests] = state.comment ?? ["", "", false];
+    assert(state.comment !== null, "reading a block comment with none open");
+    assert(state.depth >= 1, "reading a block comment at depth below 1");
+    const [open, close, nests] = state.comment;
     while (!stream.eol()) {
       if (nests && stream.match(open)) {
         state.depth += 1;
@@ -146,7 +158,8 @@ function simple(syntax: Syntax) {
   /** Reads on through the raw string open until it closes or the line
    * ends. A string closed by quotes ends at the last of them. */
   const inRaw = (stream: StringStream, state: SimpleState) => {
-    const closing = state.closing ?? "";
+    const closing = state.closing;
+    assert(closing !== null, "reading a raw string with no closing");
     while (!stream.eol()) {
       if (stream.match(closing)) {
         while (closing.startsWith('"') && stream.eat('"')) {}
@@ -342,6 +355,7 @@ interface PythonState {
  * line's end. A backslash escapes the next character, even a line's end,
  * which continues the string onto the next line. */
 function readPythonString(stream: StringStream, state: PythonState, closing: string) {
+  assert(closing.length === 1 || closing.length === 3, "python string closing of a bad length");
   const triple = closing.length === 3;
   let continued = false;
   while (!stream.eol()) {
@@ -362,7 +376,10 @@ function readPythonString(stream: StringStream, state: PythonState, closing: str
  * in the string's own quotes and span lines, then after a `:` its format
  * spec, which is text but for fields of its own; `{{` is a brace. */
 function readFormattedString(stream: StringStream, state: PythonState) {
-  const closing = state.closing ?? "";
+  assert(state.formatted, "reading a plain string as formatted");
+  const closing = state.closing;
+  assert(closing !== null, "reading a formatted string with no closing");
+  assert(closing.length === 1 || closing.length === 3, "python string closing of a bad length");
   const triple = closing.length === 3;
   let continued = false;
   while (!stream.eol()) {
@@ -402,7 +419,8 @@ function readFormattedString(stream: StringStream, state: PythonState) {
     // An expression, whose strings end none of this one.
     const before = stream.string.charAt(stream.pos - 1);
     if (!/\w/.test(before) && stream.match(PYTHON_STRING_START)) {
-      const quote = stream.next() ?? "";
+      const quote = stream.next();
+      assert(quote === '"' || quote === "'", "python string prefix not before a quote");
       state.inner = stream.string.startsWith(quote.repeat(3), stream.pos - 1)
         ? quote.repeat(3)
         : quote;
@@ -449,8 +467,10 @@ const python = StreamLanguage.define<PythonState>({
     }
     const prefix = stream.match(PYTHON_STRING_START);
     if (prefix) {
-      const letters = (Array.isArray(prefix) ? prefix[0] : "").toLowerCase();
-      const quote = stream.next() ?? "";
+      assert(Array.isArray(prefix), "python string prefix match is not a match array");
+      const letters = prefix[0].toLowerCase();
+      const quote = stream.next();
+      assert(quote === '"' || quote === "'", "python string prefix not before a quote");
       const closing = stream.string.startsWith(quote.repeat(3), stream.pos - 1)
         ? quote.repeat(3)
         : quote;

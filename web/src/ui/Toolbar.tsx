@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { type ActionName, action, continueLabel } from "../actions";
+import { assert } from "../assert";
 import { base } from "../base";
 import { describe } from "../keys";
 import { targetName } from "../model";
@@ -146,7 +147,10 @@ function ThemeGlyph({ theme }: { theme: Theme }) {
 /** Cycles the theme: the system's, light, then dark. */
 function ThemeButton() {
   const theme = useChosenTheme();
-  const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length] as Theme;
+  const index = THEMES.indexOf(theme);
+  assert(index >= 0, `theme ${theme} is not one of ${THEMES.length}`);
+  const next = THEMES[(index + 1) % THEMES.length];
+  assert(next !== undefined, `no theme after ${index}`);
   return (
     <button
       type="button"

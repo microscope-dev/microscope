@@ -3,6 +3,7 @@
 // time range by dragging across one.
 
 import { useCallback, useMemo, useState } from "react";
+import { assert } from "../../assert";
 import { formatRange, withLook } from "../../profile/look";
 import { token, useProfile } from "./context";
 
@@ -31,6 +32,7 @@ export function prepare(
   width: number,
   height: number,
 ): CanvasRenderingContext2D | null {
+  assert(height >= 0, `canvas height ${height} is negative`);
   const context = element?.getContext("2d");
   if (!element || !context || width <= 0) {
     return null;
@@ -46,6 +48,7 @@ export function prepare(
 /** Dragging across a chart of the whole profile selects a range; a click
  * clears it. Returns the handlers and the range being dragged. */
 export function useRangeDrag(span: number) {
+  assert(span > 0, `chart span ${span} is not positive`);
   const { setLook } = useProfile();
   const [dragging, setDragging] = useState<{ from: number; to: number } | null>(null);
   const time = (event: React.PointerEvent) => {
@@ -101,6 +104,8 @@ export function shade(
   if (!range) {
     return;
   }
+  assert(span > 0, `chart span ${span} is not positive`);
+  assert(range[0] <= range[1], `shaded range ${range[0]}..${range[1]} is reversed`);
   const from = (width * range[0]) / span;
   const to = (width * range[1]) / span;
   context.fillStyle = token("--accent-soft");

@@ -4,6 +4,7 @@
 // with what it was.
 
 import { createContext, type ReactNode, useContext, useState } from "react";
+import { assert } from "../assert";
 import { useRequest } from "../data";
 import { controls } from "../model";
 import type { Children, Row } from "../protocol";
@@ -126,7 +127,13 @@ interface ValueRowProps {
 export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 }: ValueRowProps) {
   const { at, stale } = useFocus();
   const expansion = useExpansion();
+  assert(occurrence >= 1, `value row occurrence ${occurrence}`);
+  assert(depth >= 0, `value row at depth ${depth}`);
   const key = childKey(parent, row.name, occurrence);
+  assert(
+    key.startsWith(parent) && key.charAt(parent.length) === "/",
+    "row path outside its parent",
+  );
   const open = row.children !== null && expansion.isOpen(key);
   let was: string | undefined;
   if (expansion.remember && at && !stale && !row.truncated && !missing) {
@@ -223,12 +230,13 @@ function RowActions({ row }: { row: Row }) {
           className="icon"
           aria-label={`Watch ${row.name} for changes`}
           title="Stop when this value changes"
-          onClick={() =>
-            connection
-              .request("addWatchpoint", { ...at, target: row.path ?? "", access: "change" })
+          onClick={() => {
+            assert(row.path !== null, "watching a row with no path");
+            void connection
+              .request("addWatchpoint", { ...at, target: row.path, access: "change" })
               .then(() => flash(`Stopping when ${row.path} changes`))
-              .catch((failure: Error) => flash(failure.message))
-          }
+              .catch((failure: Error) => flash(failure.message));
+          }}
         >
           ◉
         </button>

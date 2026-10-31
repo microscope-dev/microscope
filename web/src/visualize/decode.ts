@@ -3,6 +3,7 @@
 // copied out of the drawing's binary frame into arrays of their own, so
 // that each crosses into the sandbox without the rest.
 
+import { assert } from "../assert";
 import type { Datum, DrawInput, NumberKind } from "../protocol";
 
 /** A value as a renderer receives it. */
@@ -115,11 +116,16 @@ export function decode(datum: Datum, bytes: Uint8Array): Value {
       const length = datum.count * Kind.BYTES_PER_ELEMENT;
       within(bytes, datum.offset, length, `${datum.count} ${datum.kind} numbers`);
       const start = bytes.byteOffset + datum.offset;
-      return new Kind(bytes.buffer.slice(start, start + length) as ArrayBuffer);
+      const numbers = new Kind(bytes.buffer.slice(start, start + length) as ArrayBuffer);
+      assert(numbers.length === datum.count, "decoded numbers match their count");
+      return numbers;
     }
-    case "bytes":
+    case "bytes": {
       within(bytes, datum.offset, datum.length, `${datum.length} bytes`);
-      return bytes.slice(datum.offset, datum.offset + datum.length);
+      const copied = bytes.slice(datum.offset, datum.offset + datum.length);
+      assert(copied.length === datum.length, "copied bytes match their length");
+      return copied;
+    }
     case "null":
       return null;
   }

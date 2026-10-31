@@ -2,6 +2,7 @@
 // `reduce` is pure, so every behavior here is tested by replaying real
 // server traffic (test/replay.test.ts).
 
+import { assert } from "./assert";
 import type { Hello, Notice, Person, ProfileInfo, ServerMessage, State, Stream } from "./protocol";
 
 /** How the page is connected. */
@@ -65,6 +66,7 @@ export type ModelEvent =
 
 export function reduce(model: Model, event: ModelEvent): Model {
   if (event.type === "link") {
+    assert(event.link !== "open", "the link opened without a hello");
     return { ...model, link: event.link };
   }
   const message = event.message;
@@ -112,9 +114,16 @@ function appendOutput(model: Model, stream: Stream, text: string): Model {
   let bytes = model.outputBytes + piece.text.length;
   let first = 0;
   while (bytes > OUTPUT_LIMIT && first < output.length - 1) {
-    bytes -= output[first]?.text.length ?? 0;
+    const dropped = output[first];
+    assert(dropped !== undefined, `output piece ${first} of ${output.length} is missing`);
+    bytes -= dropped.text.length;
     first += 1;
   }
+  assert(bytes >= piece.text.length, `output holds ${bytes} bytes, less than its last piece`);
+  assert(
+    output[first]?.seq === piece.seq - (output.length - 1 - first),
+    `output pieces from ${first} are not numbered in order up to ${piece.seq}`,
+  );
   return {
     ...model,
     output: first === 0 ? output : output.slice(first),

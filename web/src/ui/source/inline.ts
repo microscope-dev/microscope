@@ -5,6 +5,7 @@
 // variable not yet assigned, which the value tree shows better.
 
 import { useEffect, useMemo, useState } from "react";
+import { assert } from "../../assert";
 import { cache } from "../../data";
 import { expressionsIn } from "../../expressions";
 import type { At } from "../../focus";
@@ -46,6 +47,8 @@ export function inlineExpressions(
       shown.set(number, found);
     }
   }
+  assert(count <= MOST, `${count} inline expressions, over the most of ${MOST}`);
+  assert(seen.size === count, `${seen.size} expressions seen but ${count} shown`);
   return shown;
 }
 

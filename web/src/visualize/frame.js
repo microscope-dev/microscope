@@ -13,6 +13,13 @@
   const cards = new Map();
   let port = null;
 
+  /** Fails when the frame's own bookkeeping is wrong: a bug in microscope. */
+  function assert(condition, message) {
+    if (!condition) {
+      throw new Error(`assertion failed: ${message}`);
+    }
+  }
+
   function release(card) {
     const held = cards.get(card);
     if (held !== undefined) {
@@ -22,6 +29,7 @@
   }
 
   function start(card, renderer) {
+    assert(!cards.has(card), "a card's worker starts once it has none");
     const worker = new Worker(url);
     const held = { worker, digest: renderer.digest };
     worker.addEventListener("message", (event) => {

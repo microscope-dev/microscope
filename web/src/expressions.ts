@@ -2,6 +2,7 @@
 // member chains whose values show beside the lines just run. Python source,
 // which its path names, is read by Python's words, comments, and strings.
 
+import { assert } from "./assert";
 import { isPythonPath, PYTHON_KEYWORDS, pythonKeywordHolds } from "./python";
 
 const NAME = /[A-Za-z_][A-Za-z0-9_]*/y;
@@ -161,6 +162,7 @@ export function expressionsIn(line: string, path?: string): string[] {
       found.push(chain);
     }
     previous = word;
+    assert(end > index, `expression scan stuck at column ${index}`);
     index = end;
   }
   return found;

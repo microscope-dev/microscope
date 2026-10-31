@@ -1,6 +1,7 @@
 // Profile view state is encoded in the URL. Selections use function names,
 // not node numbers, so links work across clients.
 
+import { assert } from "../assert";
 import type {
   ProfileGranularity,
   ProfileQuery,
@@ -237,6 +238,7 @@ export function rangeOf(look: { range?: string | undefined }): [number, number] 
 }
 
 export function formatRange([start, end]: [number, number]): string {
+  assert(start <= end, `range ${start}..${end} is reversed`);
   return `${Math.round(start)}-${Math.round(end)}`;
 }
 
@@ -296,6 +298,10 @@ export function transformed(look: ProfileLook, transform: ProfileTransform): Pro
 /** The same look without its transform at `index`, and those after it. */
 export function untransformed(look: ProfileLook, index: number): ProfileLook {
   const { tf, z: _z, ...rest } = look;
+  assert(
+    index >= 0 && index < (tf?.length ?? 0),
+    `transform ${index} is outside ${tf?.length ?? 0} transforms`,
+  );
   const kept = (tf ?? []).slice(0, index);
   return kept.length > 0 ? { ...rest, tf: kept } : rest;
 }

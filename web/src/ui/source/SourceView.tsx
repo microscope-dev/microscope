@@ -22,6 +22,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+import { assert } from "../../assert";
 import { PENDING } from "../../breakpoints";
 import { expressionAt } from "../../expressions";
 import { highlighting, language } from "./languages";
@@ -135,10 +136,11 @@ class Values extends WidgetType {
     return (
       other instanceof Values &&
       other.values.length === this.values.length &&
-      other.values.every(
-        (value, index) =>
-          value.text === this.values[index]?.text && value.changed === this.values[index]?.changed,
-      )
+      other.values.every((value, index) => {
+        const mine = this.values[index];
+        assert(mine !== undefined, "inline value index past an equal length");
+        return value.text === mine.text && value.changed === mine.changed;
+      })
     );
   }
   override toDOM(): HTMLElement {
@@ -206,6 +208,10 @@ function lineDecorations(state: EditorState): DecorationSet {
     }
   };
   if (marks.selection) {
+    assert(
+      marks.selection.line <= marks.selection.end,
+      `selection ${marks.selection.line}-${marks.selection.end} ends before it starts`,
+    );
     lines(marks.selection.line, marks.selection.end, "cm-selected-line");
   }
   if (marks.frame !== null) {
@@ -269,9 +275,7 @@ export function SourceView({
   shownPath.current = path;
 
   useEffect(() => {
-    if (!parent.current) {
-      return;
-    }
+    assert(parent.current !== null, "source view mounted without its element");
     const editor = new EditorView({
       parent: parent.current,
       state: EditorState.create({
@@ -291,7 +295,8 @@ export function SourceView({
               return RangeSet.of(
                 lines.map((line) => {
                   const kind = marks.breakpoints.get(line);
-                  const marker = kind ? (markers.get(kind) as GutterMarker) : breakable;
+                  const marker = kind ? markers.get(kind) : breakable;
+                  assert(marker !== undefined, "no gutter marker for a breakpoint kind");
                   return marker.range(doc.line(line).from);
                 }),
               );
@@ -331,6 +336,8 @@ export function SourceView({
               if (!evaluate || !found) {
                 return null;
               }
+              assert(found.from <= found.to, "hovered expression ends before it starts");
+              assert(found.to <= line.length, "hovered expression ends past its line");
               const value = await evaluate(found.text);
               if (!value) {
                 return null;
@@ -358,9 +365,7 @@ export function SourceView({
   // A new file replaces the text and its language.
   useEffect(() => {
     const editor = view.current;
-    if (!editor) {
-      return;
-    }
+    assert(editor !== null, "new text for a source view with no editor");
     editor.dispatch({
       changes: { from: 0, to: editor.state.doc.length, insert: text },
       effects: languageSlot.current.reconfigure(language(path)),
@@ -368,13 +373,15 @@ export function SourceView({
   }, [path, text]);
 
   useEffect(() => {
-    view.current?.dispatch({ effects: setMarks.of(marks) });
+    assert(view.current !== null, "new marks for a source view with no editor");
+    view.current.dispatch({ effects: setMarks.of(marks) });
   }, [marks]);
 
   useEffect(() => {
     const editor = view.current;
+    assert(editor !== null, "revealing a line in a source view with no editor");
     // The text arriving is a reason to look for the line again.
-    if (!editor || !text || reveal === null || reveal < 1 || reveal > editor.state.doc.lines) {
+    if (!text || reveal === null || reveal < 1 || reveal > editor.state.doc.lines) {
       return;
     }
     const line = editor.state.doc.line(reveal);

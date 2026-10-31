@@ -18,6 +18,14 @@
   const evaluate = self.eval;
   const { defineProperty, freeze, getOwnPropertyDescriptor, getPrototypeOf, keys } = Object;
   const { deleteProperty, ownKeys } = Reflect;
+  const Failure = Error;
+
+  /** Fails when the worker's own bookkeeping is wrong: a bug in microscope. */
+  function assert(condition, message) {
+    if (!condition) {
+      throw new Failure(`assertion failed: ${message}`);
+    }
+  }
 
   // The globals a renderer keeps: the language, timers, and drawing.
   const KEEP = new Set([
@@ -305,6 +313,7 @@
   let flushLater = false;
 
   function ask(kind, message) {
+    assert(kind in asked, "asked for a known kind");
     if (starter === null) {
       return;
     }
@@ -423,6 +432,8 @@
   }
 
   async function live(message) {
+    assert(starter !== null, "live message without microscope.live");
+    assert(drawer === null, "live renderer also has microscope.draw");
     switch (message.type) {
       case "live-start": {
         canvas = new OffscreenCanvas(message.size.width, message.size.height);
@@ -468,6 +479,7 @@
 
   async function draw(id, input, context) {
     if (drawer === null) {
+      assert(starter !== null, "draw without microscope.draw or microscope.live");
       // A live renderer draws in its own canvas, which the page starts.
       post({ type: "live", id });
       return;

@@ -1,3 +1,4 @@
+import { assert } from "../assert";
 import { openingFrame } from "../follow";
 import type { Inferior } from "../protocol";
 import { threadLabel } from "./names";
@@ -39,14 +40,14 @@ export function Threads() {
                   className={`row button-row ${thread.id === shown ? "selected" : ""}`}
                   disabled={!choosable}
                   aria-current={thread.id === shown ? "true" : undefined}
-                  onClick={() =>
-                    at &&
+                  onClick={() => {
+                    assert(at !== null, `thread ${thread.id} chosen with no stop`);
                     go({
                       stop: at.stop,
                       thread: thread.id,
                       frame: openingFrame(state, at.stop, thread.id),
-                    })
-                  }
+                    });
+                  }}
                 >
                   <span>{threadLabel(thread.id, thread.name)}</span>
                   {thread.labels.map((label) => (

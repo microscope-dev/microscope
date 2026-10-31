@@ -1,5 +1,6 @@
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { assert } from "../assert";
 import { targetName } from "../model";
 import type { PathEntry, Process, RecordPreset } from "../protocol";
 import { RequestError } from "../protocol";
@@ -580,7 +581,11 @@ export function AttachForm({ working, submit }: FormProps) {
               tabIndex={-1}
               aria-selected={process === choice}
               className={`row ${process === choice ? "selected" : ""}`}
-              onClick={() => setSelected(shown.indexOf(process))}
+              onClick={() => {
+                const index = shown.indexOf(process);
+                assert(index >= 0, `process ${process.pid} is not in the ${shown.length} shown`);
+                setSelected(index);
+              }}
               onDoubleClick={() => attach(process)}
               onKeyDown={(event) => event.key === "Enter" && attach(process)}
             >
@@ -753,6 +758,7 @@ export function PathInput({
   };
   const current = completion?.text === value ? completion.entries : null;
   const shown = open && current ? current.slice(0, 50) : [];
+  assert(selected >= 0, `suggestion ${selected} selected`);
   // Tab completes a partial name, or takes what the arrow keys chose; in an
   // empty field or after a directory it moves on, as it would anywhere else.
   const completes = picked || (value !== "" && !value.endsWith("/"));

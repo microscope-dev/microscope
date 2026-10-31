@@ -5,6 +5,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { assert } from "../assert";
 import { toggleBreakpoint } from "../breakpoints";
 import { useRequest } from "../data";
 import { type Look, stringifySearch } from "../focus";
@@ -160,7 +161,8 @@ function Lines({
   return (
     <div className="asm-lines" style={{ height: rows.getTotalSize() }}>
       {rows.getVirtualItems().map((item) => {
-        const line = lines[item.index] as Line;
+        const line = lines[item.index];
+        assert(line !== undefined, "virtual row past the listing's lines");
         return (
           <div
             key={line.key}

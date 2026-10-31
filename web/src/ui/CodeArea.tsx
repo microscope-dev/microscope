@@ -4,6 +4,7 @@
 // shows its instructions instead.
 
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { assert } from "../assert";
 import {
   askedAt,
   breakpointAt,
@@ -43,6 +44,8 @@ export function useShown(): Shown | null {
   const own = useOwnSource();
   const named = look.src ? parsePlace(look.src) : null;
   if (named) {
+    assert(named.line >= 1, `link selects from line ${named.line}`);
+    assert(named.line <= named.end, `link selects lines ${named.line}-${named.end}`);
     const path = paths.recorded(named.path);
     return path
       ? { path, line: named.line, selection: { line: named.line, end: named.end } }
@@ -134,6 +137,7 @@ export function CodeArea() {
   // before it. Closing the last drops it from the address.
   const close = (closed: string) => {
     const index = files.indexOf(closed);
+    assert(index >= 0, `closing a file not among the ${files.length} open`);
     const neighbor = files[index + 1] ?? files[index - 1];
     closeFile(closed);
     if (closed !== path) {

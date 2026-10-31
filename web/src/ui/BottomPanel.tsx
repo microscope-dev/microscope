@@ -2,6 +2,7 @@
 // program's input; how signals are handled; and the loaded modules.
 
 import { type KeyboardEvent, useId, useRef, useState } from "react";
+import { assert } from "../assert";
 import { controls } from "../model";
 import { isString, read, write } from "../storage";
 import { useConnection, useModel } from "../store";
@@ -43,6 +44,7 @@ export function BottomPanel() {
   // The arrow keys, Home, and End move between tabs, choosing as they go.
   const walk = (event: KeyboardEvent) => {
     const index = TABS.findIndex((tab) => tab.key === shown);
+    assert(index >= 0, "shown bottom tab is not in TABS");
     const next = {
       ArrowLeft: index - 1,
       ArrowRight: index + 1,
@@ -53,7 +55,8 @@ export function BottomPanel() {
       return;
     }
     event.preventDefault();
-    const tab = TABS[(next + TABS.length) % TABS.length] as (typeof TABS)[number];
+    const tab = TABS[(next + TABS.length) % TABS.length];
+    assert(tab !== undefined, `bottom tab ${next} past ${TABS.length}`);
     choose(tab.key);
     tabs.current?.querySelector<HTMLElement>(`#${CSS.escape(`${ids}-${tab.key}`)}`)?.focus();
   };

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { assert } from "../../assert";
 import { diffModeOf, withLook } from "../../profile/look";
 import { changeFill, changeOf, fill, formatPercent, formatWeight } from "../../profile/paint";
 import {
@@ -142,6 +143,14 @@ function FlameGraph({
     const dark = scheme === "dark";
     const ink = token("--ink");
     const surface = token("--surface");
+    assert(
+      (tree.baseTotal === null) === (tree.baseWeight === null),
+      "a diff tree's base totals and base weight disagree",
+    );
+    assert(
+      tree.baseTotal === null || tree.baseTotal.length === tree.count,
+      `${tree.baseTotal?.length} base totals for ${tree.count} nodes`,
+    );
     context.font = `11px ${token("--mono")}`;
     context.textBaseline = "middle";
     for (const rect of rects) {

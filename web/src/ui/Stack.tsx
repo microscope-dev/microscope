@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { assert } from "../assert";
 import type { Backtrace, Frame } from "../protocol";
 import { stackRows } from "../stack";
 import { threadLabel } from "./names";
@@ -48,6 +49,7 @@ export function Stack() {
         {stackRows(trace, at.frame, runs).map((row) => {
           if (row.kind === "fold") {
             const { first, count } = row.run;
+            assert(count > 0, `fold at frame ${first} holds ${count} frames`);
             return (
               <li key={`fold ${first}`}>
                 <button

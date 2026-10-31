@@ -3,6 +3,7 @@
 // the file shown. Groups come in the order of their best match.
 
 import { useId, useRef, useState } from "react";
+import { assert } from "../assert";
 import { firstBreakpointPlace } from "../breakpoints";
 import { useRequest } from "../data";
 import { openingFrame } from "../follow";
@@ -68,6 +69,8 @@ function Open({ mode }: { mode: Mode }) {
   const note = useRequest("sources", mode === "files" ? undefined : null).data?.note;
   const items = groups.flatMap((group) => group.items);
   const chosen = Math.min(selected, Math.max(items.length - 1, 0));
+  assert(chosen >= 0, `palette chose ${chosen} of ${items.length}`);
+  assert(items.length === 0 || chosen < items.length, `palette chose ${chosen} of ${items.length}`);
   const run = (item: Item | undefined) => {
     if (item) {
       close();
@@ -185,7 +188,12 @@ function ranked(name: string, items: Item[], query: string, limit = EACH): Group
   if (kept.length === 0) {
     return null;
   }
-  const rank = query === "" ? 0 : (score(kept[0]?.label ?? "", query)?.rank ?? 3);
+  assert(kept.length <= limit, `${name} kept ${kept.length} past its limit ${limit}`);
+  const first = kept[0];
+  assert(first !== undefined, `${name} kept nothing`);
+  const found = query === "" ? null : score(first.label, query);
+  assert(query === "" || found !== null, `${name} kept an item the query does not match`);
+  const rank = found?.rank ?? 0;
   return { name, items: kept, rank };
 }
 
@@ -350,10 +358,13 @@ function useGroups(mode: Mode, query: string): Found {
         .request("addBreakpoint", { location: found.name })
         .catch((failure: Error) => flash(failure.message)),
   }));
-  const breakGroup: Group | null =
-    breakAt.length > 0
-      ? { name: "Commands", items: breakAt, rank: score(found[0]?.name ?? "", query)?.rank ?? 3 }
-      : null;
+  let breakGroup: Group | null = null;
+  const first = found[0];
+  if (first) {
+    const matched = score(first.name, query);
+    assert(matched !== null, "a function the query does not match");
+    breakGroup = { name: "Commands", items: breakAt, rank: matched.rank };
+  }
   const commandGroup = ranked("Commands", commands, query);
 
   const threads: Item[] = state.threads.map((thread) => ({
