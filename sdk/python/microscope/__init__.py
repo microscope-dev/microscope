@@ -43,6 +43,11 @@ _SUSPENDS = 0x20 | 0x80 | 0x200
 # Why the library could not be used, or None.
 problem = None
 
+# Whether to check facts the package's own code guarantees, as
+# `assert not _CHECKED or FACT`. Only microscope's tests turn checks on: a
+# program's own code must never fail because of the package.
+_CHECKED = os.environ.get('MICROSCOPE_SDK_CHECKS') == '1'
+
 
 def _load():
     global problem
@@ -125,6 +130,7 @@ def _site(kind, name, file, line):
             # The ABI puts a run-time site's state byte at its offset 1.
             site = (address, ctypes.c_ubyte.from_address(address + 1)) if address else _NO_SITE
             _sites[key] = site
+    assert not _CHECKED or (site[1] is None) == (not site[0]), f'site {site[0]:#x} state'
     return site
 
 
@@ -383,9 +389,12 @@ class _Tracer:
         site, _ = _site(_ZONE, f'{module}.{code.co_qualname}', code.co_filename,
                         code.co_firstlineno) if traced else _NO_SITE
         index = _library.microscope_probes_index(site) if site else -1
+        assert not _CHECKED or index < _RUNTIME_SITES, f'site index {index} of {_RUNTIME_SITES}'
         found = (index, index * _RUNTIME_SITE + 1) if index >= 0 else (-1, 0)
+        assert not _CHECKED or found[1] < len(self.states), f'state byte {found[1]}'
         self.codes.append(code)
         self.sites[id(code)] = found
+        assert not _CHECKED or len(self.sites) <= len(self.codes), 'a traced site lost its code'
         return found
 
     def watch(self):

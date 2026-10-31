@@ -1100,6 +1100,9 @@
         # headers, whose syscall numbers also generate src/syscalls' tables.
         MICROSCOPE_BPF_CLANG = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang";
         MICROSCOPE_BPF_INCLUDE = "${pkgs.libbpf}/include:${pkgs.linuxHeaders}/include";
+        # Turns on the Node and Python packages' assertions in the programs
+        # the tests run. They are off in everyone else's programs.
+        MICROSCOPE_SDK_CHECKS = "1";
         packages = with pkgs; [
           rust
           cargo-fuzz

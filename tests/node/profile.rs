@@ -1558,6 +1558,7 @@ fn the_node_package_records_what_the_program_marks() {
     command
         .arg(node::fixture("probes.js"))
         .env_clear()
+        .env("MICROSCOPE_SDK_CHECKS", "1")
         .env(
             "MICROSCOPE_PROBES_LIBRARY",
             crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
@@ -1681,6 +1682,7 @@ process.stdout.write('NOTHING OK\n');
             .arg(&sdk)
             .arg(expected)
             .env_clear()
+            .env("MICROSCOPE_SDK_CHECKS", "1")
             .env("MICROSCOPE_NODE_ADDON", &addon)
             .env(
                 "MICROSCOPE_PROBES_LIBRARY",

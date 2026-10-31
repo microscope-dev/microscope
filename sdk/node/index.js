@@ -45,6 +45,17 @@ function load() {
 
 const native = load();
 
+// Checks a fact the package's own code guarantees. Only microscope's tests
+// turn checks on: a program's own calls must never fail because of the
+// package.
+const checked = process.env.MICROSCOPE_SDK_CHECKS === '1';
+
+function assert(condition, message) {
+  if (checked && !condition) {
+    throw new Error(`microscope: assertion failed: ${message}`);
+  }
+}
+
 // Why the package does nothing, or null.
 const problem = native.problem ?? null;
 const usable = problem === null;
@@ -53,6 +64,7 @@ const usable = problem === null;
 const sites = new Map();
 
 function site(kind, name, [file, line]) {
+  assert(kind >= ZONE && kind <= TRIGGER, 'a site kind out of range');
   if (!usable) {
     return 0n;
   }
@@ -60,6 +72,7 @@ function site(kind, name, [file, line]) {
   let found = sites.get(key);
   if (found === undefined) {
     found = native.define(kind, String(name), String(file), line);
+    assert(typeof found === 'bigint', `the addon defined a site as a ${typeof found}`);
     sites.set(key, found);
   }
   return found;
