@@ -293,6 +293,11 @@ async function findTheAdapterFromTheSetting() {
             vscode.debug.startDebugging(folder, configuration('vscode-missing-adapter')),
             /Cannot find microscope at "\$\{workspaceFolder\}\/missing-microscope"/,
         );
+        await settings.update('path', 7, vscode.ConfigurationTarget.Global);
+        await assert.rejects(
+            vscode.debug.startDebugging(folder, configuration('vscode-invalid-adapter')),
+            /Cannot find microscope at "7"/,
+        );
 
         await settings.update('path', '${workspaceFolder}/microscope-wrapper', vscode.ConfigurationTarget.Global);
         const exited = event('exited');

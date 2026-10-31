@@ -60,7 +60,7 @@ function createDebugAdapterDescriptor(session) {
     const folder = session.workspaceFolder;
     const settings = vscode.workspace.getConfiguration('microscope', folder);
     const setting = settings.get('path', 'microscope');
-    const command = findExecutable(setting, folder?.uri.fsPath);
+    const command = typeof setting === 'string' ? findExecutable(setting, folder?.uri.fsPath) : undefined;
     if (command === undefined) {
         throw new Error(`Cannot find microscope at "${setting}". Install microscope on PATH or set microscope.path.`);
     }
