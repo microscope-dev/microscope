@@ -357,7 +357,7 @@ fn environments(
 /// `Environment::GetCurrent` finds it: the context's embedder data holds
 /// it beside Node's context tag.
 fn environment(reader: &Reader<'_>, layout: &NodeTasks, isolate: u64) -> Result<u64, Problem> {
-    let context = reader.word(isolate + layout.current_context)?;
+    let context = reader.word(address_at(isolate, layout.current_context)?)?;
     let context = reader
         .object(context)?
         .ok_or("its isolate has entered no context")?;
@@ -379,10 +379,10 @@ fn environment(reader: &Reader<'_>, layout: &NodeTasks, isolate: u64) -> Result<
             .ok_or("Node's context tag is outside the address space")?
             .get(),
     )?;
-    if reader.word(data.0 + layout.tag_slot)? != tag {
+    if reader.word(address_at(data.0, layout.tag_slot)?)? != tag {
         return Err("its context is not one of Node's".into());
     }
-    let environment = reader.word(data.0 + layout.environment_slot)?;
+    let environment = reader.word(address_at(data.0, layout.environment_slot)?)?;
     if environment == 0 {
         return Err("its context has no environment yet".into());
     }
@@ -442,22 +442,22 @@ fn layouts(reader: &Reader<'_>, layout: &NodeTasks) -> Result<(List, List, u64),
 /// The entries of the list `list` of `environment`, innermost first: each
 /// entry's address, proven by its neighbours.
 fn entries(reader: &Reader<'_>, environment: u64, list: List) -> Result<Vec<u64>, Problem> {
-    let head = environment + list.queue + list.head;
+    let head = address_at(address_at(environment, list.queue)?, list.head)?;
     let mut found = Vec::new();
     let mut previous = head;
-    let mut node = reader.word(head + list.next)?;
+    let mut node = reader.word(address_at(head, list.next)?)?;
     while node != head {
         if found.len() == MOST_ENTRIES {
             return Err(format!("a list holds more than {MOST_ENTRIES} entries").into());
         }
-        if node == 0 || reader.word(node + list.previous)? != previous {
+        if node == 0 || reader.word(address_at(node, list.previous)?)? != previous {
             return Err(
                 format!("the list's node at {node:#x} is not linked to its neighbour").into(),
             );
         }
         found.push(node);
         previous = node;
-        node = reader.word(node + list.next)?;
+        node = reader.word(address_at(node, list.next)?)?;
     }
     debug_assert_eq!(
         found
@@ -479,27 +479,31 @@ fn lists(
     let (handles, requests, persistent) = layouts(&walk.reader, walk.layout)?;
     let mut problems = Vec::new();
     for node in entries(&walk.reader, environment.address, handles)? {
-        let wrap = node - handles.node;
-        match entry(
-            walk,
-            environment,
-            wrap,
-            persistent,
-            Kind::Handle(node + HANDLE_AFTER_NODE),
-        ) {
+        let (Some(wrap), Some(handle)) = (
+            node.checked_sub(handles.node),
+            node.checked_add(HANDLE_AFTER_NODE),
+        ) else {
+            problems.push(format!(
+                "the handle node at {node:#x} puts its wrapper outside the address space"
+            ));
+            continue;
+        };
+        match entry(walk, environment, wrap, persistent, Kind::Handle(handle)) {
             Ok(task) => tasks.push(task),
             Err(problem) => problems.push(format!("the handle at {wrap:#x}: {problem}")),
         }
     }
     for node in entries(&walk.reader, environment.address, requests)? {
-        let wrap = node - requests.node;
-        match entry(
-            walk,
-            environment,
-            wrap,
-            persistent,
-            Kind::Request(node + REQUEST_AFTER_NODE),
-        ) {
+        let (Some(wrap), Some(request)) = (
+            node.checked_sub(requests.node),
+            node.checked_add(REQUEST_AFTER_NODE),
+        ) else {
+            problems.push(format!(
+                "the request node at {node:#x} puts its wrapper outside the address space"
+            ));
+            continue;
+        };
+        match entry(walk, environment, wrap, persistent, Kind::Request(request)) {
             Ok(task) => tasks.push(task),
             Err(problem) => problems.push(format!("the request at {wrap:#x}: {problem}")),
         }
@@ -531,7 +535,7 @@ fn c_string(reader: &Reader<'_>, address: u64, limit: usize) -> Result<String, P
     // The stop's block cache makes each byte's read cheap.
     for at in 0..limit as u64 {
         let mut byte = [0];
-        reader.bytes_into(address + at, &mut byte)?;
+        reader.bytes_into(address_at(address, at)?, &mut byte)?;
         if byte[0] == 0 {
             return Ok(String::from_utf8_lossy(&text).into_owned());
         }
@@ -564,7 +568,11 @@ fn provider(reader: &Reader<'_>, layout: &NodeTasks, index: u32) -> Result<Strin
         .load_bias()
         .load(layout.provider_names)
         .ok_or("the providers' names are outside the address space")?;
-    let name = c_string(reader, reader.word(table.get() + 8 * u64::from(index))?, 64)?;
+    let name = c_string(
+        reader,
+        reader.word(address_at(table.get(), 8 * u64::from(index))?)?,
+        64,
+    )?;
     if name.is_empty()
         || !name
             .bytes()
@@ -578,8 +586,8 @@ fn provider(reader: &Reader<'_>, layout: &NodeTasks, index: u32) -> Result<Strin
 /// A wrapper's async id and its trigger's.
 fn async_ids(reader: &Reader<'_>, layout: &NodeTasks, wrap: u64) -> Result<(f64, f64), Problem> {
     Ok((
-        f64::from_bits(reader.word(wrap + layout.async_id)?),
-        f64::from_bits(reader.word(wrap + layout.async_id + 8)?),
+        f64::from_bits(reader.word(address_at(wrap, layout.async_id)?)?),
+        f64::from_bits(reader.word(address_at(address_at(wrap, layout.async_id)?, 8)?)?),
     ))
 }
 
@@ -592,7 +600,7 @@ fn object(
     wrap: u64,
     persistent: u64,
 ) -> Result<Option<Object>, Problem> {
-    let slot = reader.word(wrap + persistent)?;
+    let slot = reader.word(address_at(wrap, persistent)?)?;
     if slot == 0 {
         return Ok(None);
     }
@@ -672,7 +680,7 @@ fn entry(
     let provider = provider(
         &reader,
         layout,
-        u32_at(&reader, wrap + layout.provider_type)?,
+        u32_at(&reader, address_at(wrap, layout.provider_type)?)?,
     )?;
 
     let (state, detail) = match kind {
@@ -738,8 +746,8 @@ fn handle_state(
             noun,
         ));
     }
-    let ty = u32_at(reader, handle + UV_HANDLE_TYPE)?;
-    let flags = u32_at(reader, handle + UV_HANDLE_FLAGS)?;
+    let ty = u32_at(reader, address_at(handle, UV_HANDLE_TYPE)?)?;
+    let flags = u32_at(reader, address_at(handle, UV_HANDLE_FLAGS)?)?;
     let Some(uv) = usize::try_from(ty)
         .ok()
         .and_then(|ty| UV_HANDLE_TYPES.get(ty))
@@ -787,9 +795,9 @@ fn request_state(
             request_noun(provider).unwrap_or(provider).to_owned(),
         ));
     }
-    let ty = u32_at(reader, request + UV_REQUEST_TYPE)?;
+    let ty = u32_at(reader, address_at(request, UV_REQUEST_TYPE)?)?;
     let noun = if ty == UV_FS {
-        let operation = u32_at(reader, request + UV_FS_TYPE)?;
+        let operation = u32_at(reader, address_at(request, UV_FS_TYPE)?)?;
         let operation = usize::try_from(operation)
             .ok()
             .and_then(|operation| UV_FS_OPERATIONS.get(operation))
@@ -797,7 +805,7 @@ fn request_state(
                 || format!("operation {operation}"),
                 |name| (*name).to_owned(),
             );
-        let path = reader.word(request + UV_FS_PATH)?;
+        let path = reader.word(address_at(request, UV_FS_PATH)?)?;
         let path = if path == 0 {
             String::new()
         } else {
@@ -1000,4 +1008,124 @@ pub(super) fn start_position(reader: &Reader<'_>, shared: Object) -> Result<Opti
     }
     let position = reader.int32_field(data, Field::UncompiledDataStartPosition)?;
     Ok(u64::try_from(position).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::super::objects::tests::{Heap, layout, reader};
+    use super::super::scripts::Table;
+    use super::{Environment, Owner, Walk};
+    use crate::image::v8::{NODEDBG, NodeTasks};
+    use crate::runtime_model::{ImageSymbol, Member, RuntimeImage};
+    use crate::{ImageAddress, IntegerValue, ThreadLocal};
+
+    /// An image with no symbols, whose wrappers have no classes.
+    #[derive(Debug)]
+    struct Image;
+
+    impl RuntimeImage for Image {
+        fn producers(&self) -> Vec<&str> {
+            Vec::new()
+        }
+
+        fn constant(&self, _name: &str) -> Option<IntegerValue> {
+            None
+        }
+
+        fn symbol(&self, _name: &str) -> Option<ImageSymbol> {
+            None
+        }
+
+        fn function_answering(&self, _name: &str) -> Option<ImageSymbol> {
+            None
+        }
+
+        fn symbol_at(&self, _address: ImageAddress) -> Option<Arc<str>> {
+            None
+        }
+
+        fn has_function(&self, _name: &str) -> bool {
+            false
+        }
+
+        fn function_body(&self, _name: &str) -> Option<ImageAddress> {
+            None
+        }
+
+        fn member(&self, _type_name: &str, _path: &[&str]) -> Option<Member> {
+            None
+        }
+
+        fn function_name(&self, _address: ImageAddress) -> Option<Arc<str>> {
+            None
+        }
+
+        fn thread_local(&self, _name: &str) -> Option<Result<ThreadLocal, Arc<str>>> {
+            None
+        }
+    }
+
+    /// Node's task layout, its `nodedbg_` variables at 0x100 on.
+    fn tasks() -> NodeTasks {
+        NodeTasks {
+            current_context: 0,
+            environment_slot: 0,
+            tag_slot: 0,
+            context_tag: ImageAddress::new(0),
+            principal_realm: 0,
+            timers_callback: 0,
+            provider_type: 0,
+            provider_names: ImageAddress::new(0),
+            async_id: 0,
+            object_wrapper: 0,
+            nodedbg: std::array::from_fn(|index| ImageAddress::new(0x100 + 8 * index as u64)),
+            pool: None,
+        }
+    }
+
+    /// Writes the `nodedbg_` variables: the handle list at 0x10 into the
+    /// `Environment` with its nodes `node` into their wrappers, and an
+    /// empty request list at 0x20.
+    fn nodedbg(heap: &mut Heap, node: u64) {
+        let values: [u64; NODEDBG.len()] = [0, 8, 0x10, 0x20, 0, 0, node, 8, 0, 0, 8, 8];
+        for (index, value) in values.into_iter().enumerate() {
+            heap.word(0x100 + 8 * index as u64, value);
+        }
+    }
+
+    fn listed(heap: &Heap, environment: u64) -> Result<(), Arc<str>> {
+        let layout = layout();
+        let tasks = tasks();
+        let mut walk = Walk {
+            reader: reader(heap, &layout),
+            layout: &tasks,
+            image: &Image,
+            table: &mut Table::default(),
+        };
+        let environment = Environment {
+            address: environment,
+            owner: Owner::Main,
+        };
+        super::lists(&mut walk, environment, &mut Vec::new())
+    }
+
+    #[test]
+    fn list_offsets_past_the_address_space_are_problems() {
+        let mut heap = Heap::default();
+        nodedbg(&mut heap, 0x30);
+        let problem = listed(&heap, u64::MAX - 8).expect_err("the list's head overflows");
+        assert!(problem.contains("address space"), "{problem}");
+
+        // A node below its own offset into its wrapper.
+        let environment = 0x10000;
+        let (handles, requests) = (environment + 0x10, environment + 0x20);
+        heap.word(handles, 0x20);
+        heap.word(0x20, handles);
+        heap.word(0x28, handles);
+        heap.word(requests, requests);
+        let problem = listed(&heap, environment).expect_err("the node has no wrapper");
+        assert!(problem.contains("address space"), "{problem}");
+    }
 }

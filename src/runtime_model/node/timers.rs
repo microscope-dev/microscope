@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use super::own::{self, Held};
 use super::tasks::{Environment, Walk};
 use crate::TaskState;
@@ -85,11 +85,14 @@ pub(super) fn listed(
 /// `processTimers`; `None` before the environment set up its timers.
 fn module_of(walk: &mut Walk<'_>, environment: Environment) -> Result<Option<Module>, Problem> {
     let reader = walk.reader;
-    let realm = reader.word(environment.address + walk.layout.principal_realm)?;
+    let realm = reader.word(address_at(
+        environment.address,
+        walk.layout.principal_realm,
+    )?)?;
     if realm == 0 {
         return Err("the environment has no principal realm".into());
     }
-    let handle = reader.word(realm + walk.layout.timers_callback)?;
+    let handle = reader.word(address_at(realm, walk.layout.timers_callback)?)?;
     if handle == 0 {
         return Ok(None);
     }
