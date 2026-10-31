@@ -116,6 +116,8 @@ const NO_MONITORING_EVENTS: u32 = 0x0200_0000;
 /// program makes and frees code objects, as `exec` and lambdas do.
 const MAX_ROWS: usize = 1 << 16;
 
+const _: () = assert!(MAX_ROWS <= u32::MAX as usize, "every row's id fits its u32");
+
 impl CodeTable {
     /// The row of the code object at `address`, proved against the
     /// object as it is now, and decoded if it is new. `code_type` is
@@ -135,6 +137,11 @@ impl CodeTable {
         if let Some(&id) = self.index.get(&address)
             && self.rows[id.index()].proof == proof
         {
+            debug_assert_eq!(
+                self.rows[id.index()].address,
+                address,
+                "the index finds row {id} at {address:#x}, which is not its"
+            );
             return Ok(id);
         }
 
@@ -224,6 +231,11 @@ impl CodeTable {
             .map_err(|_| -> Problem { "the code table is full".into() })?;
         self.names.push(Arc::clone(&name));
         self.name_index.insert(name, id);
+        debug_assert_eq!(
+            self.names.len(),
+            self.name_index.len(),
+            "interning name {id} puts the names out of step with their index"
+        );
         Ok(id)
     }
 
@@ -264,6 +276,7 @@ impl CodeTable {
 
         let name = self.intern(reader.string(qualname)?)?;
         self.rows[id.index()].function = Some((function, qualname, name));
+        self.check_row(id.index());
         Ok(Arc::clone(self.name(name)))
     }
 
@@ -287,7 +300,8 @@ impl CodeTable {
     }
 
     /// Panics unless every span lies within its pool, every name id names
-    /// a name, and the index finds each row it names by its address.
+    /// a name, the index finds each row it names by its address, and the
+    /// name index finds each name it names.
     #[cfg(test)]
     pub(super) fn check_invariants(&self) {
         for index in 0..self.rows.len() {
@@ -304,6 +318,17 @@ impl CodeTable {
                     .get(id.index())
                     .is_some_and(|row| row.address == *address),
                 "the index finds row {id} at {address:#x}, which is not its"
+            );
+        }
+
+        #[allow(
+            clippy::iter_over_hash_type,
+            reason = "every entry is checked, in any order"
+        )]
+        for (name, id) in &self.name_index {
+            debug_assert!(
+                self.names.get(id.index()) == Some(name),
+                "the name index finds name {id}, which is not its"
             );
         }
     }
@@ -326,6 +351,11 @@ impl CodeTable {
         debug_assert!(
             row.qualname.index() < self.names.len() && row.file.index() < self.names.len(),
             "row {index} names no name"
+        );
+        debug_assert!(
+            row.function
+                .is_none_or(|(_, _, name)| name.index() < self.names.len()),
+            "row {index}'s function names no name"
         );
         for local in self.locals.get(row.locals.range()).unwrap_or_default() {
             debug_assert!(
@@ -412,6 +442,15 @@ mod tests {
             lines: Span::since(0, 4).expect("a span"),
             function: None,
         });
+        table.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "the name index finds name")]
+    fn a_name_index_entry_of_another_name_breaks_the_tables_invariants() {
+        let mut table = CodeTable::default();
+        table.names.push("f".into());
+        table.name_index.insert("g".into(), NameId::new(0));
         table.check_invariants();
     }
 

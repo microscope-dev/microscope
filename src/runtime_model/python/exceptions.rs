@@ -35,6 +35,19 @@ const UNCAUGHT: ExceptionFilter = ExceptionFilter {
 /// this, so a longer one is a malformed report, not a message to cut.
 const MAX_MESSAGE: u64 = 1 << 13;
 
+const _: () = assert!(
+    MAX_MESSAGE <= usize::MAX as u64,
+    "an exception's message fits a usize"
+);
+const _: () = assert!(
+    matches!(EXCEPTION_FILTERS[0].kind, LanguageExceptionKind::Raised),
+    "the agent's raised bit names the raised filter"
+);
+const _: () = assert!(
+    matches!(EXCEPTION_FILTERS[1].kind, LanguageExceptionKind::Unhandled),
+    "the agent's uncaught bit names the uncaught filter"
+);
+
 /// The filter the agent reports under `bit`.
 pub const fn filter(bit: u64) -> Option<&'static ExceptionFilter> {
     match bit {

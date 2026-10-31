@@ -73,6 +73,11 @@ impl PythonRuntime {
                     classification = Some(failure);
                     reason
                 })?;
+            debug_assert!(
+                only.is_none_or(|only| plan.thread == only),
+                "the request is planned on thread {}, not on thread {only:?} it must run on",
+                plan.thread
+            );
 
             let mut walk = frames::Walk {
                 reader: values.reader,
@@ -485,6 +490,30 @@ pub(super) fn command(
     exceptions: u64,
     assignment: Option<agent::Assignment>,
 ) -> Result<Vec<RuntimeWrite>, Arc<str>> {
+    debug_assert!(
+        exceptions & !(agent::RAISED | agent::UNCAUGHT) == 0,
+        "generation {generation}'s command stops at exceptions {exceptions:#b}, which no filter is"
+    );
+    debug_assert!(
+        stepping.is_none_or(|(_, kind, ..)| matches!(
+            kind,
+            agent::INTO | agent::OVER | agent::OUT | agent::BACK
+        )),
+        "generation {generation}'s command steps by kind {:?}, which the agent has not",
+        stepping.map(|(_, kind, ..)| kind)
+    );
+    debug_assert!(
+        stepping.is_none_or(|(number, ..)| number != 0),
+        "generation {generation}'s command steps under number 0, which the hook reserves"
+    );
+    debug_assert!(
+        assignment.as_ref().is_none_or(|(number, ..)| *number != 0),
+        "generation {generation}'s command assigns under number 0, which the hook reserves"
+    );
+    debug_assert!(
+        probes.iter().all(|&(_, _, number, ..)| number != 0),
+        "generation {generation}'s command has a probe numbered 0, which the hook reserves"
+    );
     if generation <= previous || !control.get().is_multiple_of(8) {
         return Err("the Python command sequence or alignment is invalid".into());
     }
@@ -544,12 +573,39 @@ pub(super) fn ticket(
     runtime: VirtualAddress,
     plan: &injection::Plan,
 ) -> Arc<dyn AgentRequestTicket> {
+    let [path, pending, _] = &plan.writes;
+    debug_assert!(
+        path.bytes.last() == Some(&0),
+        "the script path written at {:#x} for thread {} is not terminated",
+        path.address,
+        plan.thread
+    );
+    debug_assert_eq!(
+        path.expected.len(),
+        path.bytes.len(),
+        "the script path at {:#x} for thread {} expects other bytes than it writes",
+        path.address,
+        plan.thread
+    );
+    debug_assert!(
+        pending.bytes == 1_i32.to_le_bytes(),
+        "the write at {:#x} for thread {} sets no pending request",
+        pending.address,
+        plan.thread
+    );
+    debug_assert_eq!(
+        pending.expected.len(),
+        4,
+        "the pending flag at {:#x} for thread {} is not an int",
+        pending.address,
+        plan.thread
+    );
     Arc::new(Ticket {
         layout: layout.clone(),
         runtime,
         state: plan.state,
-        path: plan.writes[0].clone(),
-        pending: plan.writes[1].clone(),
+        path: path.clone(),
+        pending: pending.clone(),
     })
 }
 

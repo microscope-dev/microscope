@@ -133,6 +133,13 @@ fn compute(
     }
     let breaker = ranges[2].start;
     let (state, thread) = select_thread(reader, runtime, candidates, &ranges)?;
+    debug_assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.thread == thread && candidate.native.get() == state.native),
+        "thread {thread} was selected with native thread {}, which no candidate pairs it with",
+        state.native
+    );
 
     let add = |base: VirtualAddress, offset: u64| {
         base.get()
@@ -151,9 +158,15 @@ fn compute(
 
     let change = |offset, bytes: Vec<u8>| -> Result<RuntimeWrite, AgentFailure> {
         let address = add(state.address, offset)?;
+        let expected = reader.bytes(address, bytes.len() as u64)?;
+        debug_assert_eq!(
+            expected.len(),
+            bytes.len(),
+            "the bytes expected at {address:#x} for thread {thread} differ in length from those written"
+        );
         Ok(RuntimeWrite {
             address,
-            expected: reader.bytes(address, bytes.len() as u64)?,
+            expected,
             bytes,
         })
     };
@@ -161,6 +174,12 @@ fn compute(
     let breaker_value = reader.word(add(state.address, breaker)?)?;
     let mut path = script.as_bytes().to_vec();
     path.push(0);
+    debug_assert!(
+        path.len() as u64 <= ranges[1].end - ranges[1].start,
+        "thread {thread}'s script path of {} bytes overflows its slot of {:?}",
+        path.len(),
+        ranges[1]
+    );
     // Publish the request last. The controller applies these in order at
     // an all-stop, checking every expected byte before it changes any.
     Ok(Plan {

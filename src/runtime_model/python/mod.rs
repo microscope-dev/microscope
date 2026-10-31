@@ -477,6 +477,14 @@ impl Reading {
                 break;
             }
         }
+        debug_assert!(
+            unread.keys().all(|key| !kept.contains_key(key)),
+            "threads {:?} are both kept and unread",
+            unread
+                .keys()
+                .filter(|key| kept.contains_key(key))
+                .collect::<Vec<_>>()
+        );
 
         let mut stacks = InterpretedStacks::default();
         for (_, thread, frames) in kept.into_values() {

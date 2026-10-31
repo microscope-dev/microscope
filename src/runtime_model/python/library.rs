@@ -38,6 +38,23 @@ const DECIMAL_INFINITE: u8 = 2;
 const DECIMAL_NAN: u8 = 4;
 const DECIMAL_SIGNALING: u8 = 8;
 
+const _: () = assert!(
+    10_u64.pow(DECIMAL_RADIX.ilog10()) == DECIMAL_RADIX,
+    "the coefficient words' radix is a power of ten"
+);
+const _: () = assert!(
+    DECIMAL_RADIX.ilog10() as u64 == DECIMAL_WORD_DIGITS,
+    "a coefficient word's digits are those below the radix"
+);
+const _: () = assert!(
+    DECIMAL_WORD_DIGITS == 19,
+    "a coefficient word is written as 19 digits"
+);
+const _: () = assert!(
+    (DECIMAL_NEGATIVE | DECIMAL_INFINITE | DECIMAL_NAN | DECIMAL_SIGNALING).count_ones() == 4,
+    "each of a Decimal's flags is its own bit"
+);
+
 /// One of the standard library's types that only C defines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LibraryType {
@@ -434,6 +451,11 @@ impl Values<'_, '_> {
                 .collect()
         };
 
+        debug_assert_eq!(
+            words.len() as u64,
+            length,
+            "the Decimal at {address:#x} read other than its {length} words"
+        );
         let counted = words.last().map_or(0, |last| {
             word_digits(*last) + (length - 1) * DECIMAL_WORD_DIGITS
         });
@@ -460,6 +482,10 @@ impl Values<'_, '_> {
         let (data, link) = (
             reader.offset(Field::DequeBlockData)?,
             reader.offset(Field::DequeBlockRightLink)?,
+        );
+        debug_assert!(
+            index < per_block,
+            "the deque at block {block:#x} begins at item {index} of a block of {per_block}"
         );
         let end = range.end.min(length);
         let start = range.start.min(end);
@@ -500,6 +526,11 @@ impl Values<'_, '_> {
             taken += run;
         }
 
+        debug_assert_eq!(
+            items.len() as u64,
+            end - start,
+            "the deque gave other than items {start}..{end}, ending at block {block:#x}"
+        );
         Ok(items)
     }
 
@@ -808,6 +839,14 @@ fn word_digits(word: u64) -> u64 {
 /// A libmpdec number in scientific notation, as `mpd_to_sci` writes it
 /// with capitals: libmpdec's `_mpd_to_string`, without its other formats.
 fn scientific(flags: u8, exponent: i64, words: &[u64]) -> String {
+    debug_assert!(
+        !words.is_empty() || flags & (DECIMAL_INFINITE | DECIMAL_NAN | DECIMAL_SIGNALING) != 0,
+        "a finite Decimal with flags {flags:#x} has no coefficient"
+    );
+    debug_assert!(
+        words.iter().all(|word| *word < DECIMAL_RADIX),
+        "a Decimal's coefficient word is not below the radix"
+    );
     let mut text = String::new();
     if flags & DECIMAL_NEGATIVE != 0 {
         text.push('-');

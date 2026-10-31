@@ -125,6 +125,14 @@ pub const OVER: u8 = 1;
 pub const OUT: u8 = 2;
 pub const BACK: u8 = 3;
 
+const _: () = assert!(RAISED.is_power_of_two(), "the raised filter is one bit");
+const _: () = assert!(UNCAUGHT.is_power_of_two(), "the uncaught filter is one bit");
+const _: () = assert!(RAISED != UNCAUGHT, "the exception filters' bits differ");
+const _: () = assert!(
+    INTO != OVER && INTO != OUT && INTO != BACK && OVER != OUT && OVER != BACK && OUT != BACK,
+    "the step kinds' numbers differ"
+);
+
 /// A standalone whole-state script, executable with fresh globals, which
 /// stops at the exceptions whose bits `exceptions` sets.
 pub fn script(
@@ -134,6 +142,23 @@ pub fn script(
     step: Option<Step>,
     exceptions: u64,
 ) -> Result<String, serde_json::Error> {
+    debug_assert!(
+        exceptions & !(RAISED | UNCAUGHT) == 0,
+        "generation {generation}'s script stops at exceptions {exceptions:#b}, which no filter is"
+    );
+    debug_assert!(
+        step.is_none_or(|(_, kind, ..)| matches!(kind, INTO | OVER | OUT | BACK)),
+        "generation {generation}'s script steps by kind {:?}, which the agent has not",
+        step.map(|(_, kind, ..)| kind)
+    );
+    debug_assert!(
+        step.is_none_or(|(number, ..)| number != 0),
+        "generation {generation}'s script steps under number 0, which the hook reserves"
+    );
+    debug_assert!(
+        probes.iter().all(|&(_, _, number, ..)| number != 0),
+        "generation {generation}'s script has a probe numbered 0, which the hook reserves"
+    );
     let library = serde_json::to_string(library)?;
     let probes = serde_json::to_string(probes)?;
     // Integers only, which JSON and Python write alike.
@@ -274,6 +299,12 @@ impl Failure {
 /// The most breakpoint hits one report carries: far more than the probes
 /// that can match one event, and a bounded read of the target.
 pub const MAX_HITS: u64 = 4096;
+
+const _: () = assert!(MAX_HITS >= 2, "a report of several hits can carry two");
+const _: () = assert!(
+    MAX_HITS <= usize::MAX as u64,
+    "a report's count of hits fits a usize"
+);
 
 pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::sync::Arc<str>> {
     match (event, number, argument) {

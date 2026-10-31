@@ -14,6 +14,51 @@ pub const CONTROL_MAGIC: &[u8; 8] = b"MICPYC02";
 const DYNAMIC_OFFSET: usize = CONTROL_OFFSET + CONTROL_SIZE;
 const DYNAMIC_SIZE: usize = 96;
 
+const _: () = assert!(
+    CONTROL_OFFSET.is_multiple_of(4096),
+    "the control object begins the writable segment's page"
+);
+const _: () = assert!(
+    1024 + 9 * 64 <= CONTROL_OFFSET,
+    "the section headers end before the control object"
+);
+const _: () = assert!(
+    CONTROL_MAGIC.len() == 8,
+    "the command sequence follows an 8-byte magic"
+);
+const _: () = assert!(
+    CONTROL_OFFSET + CONTROL_MAGIC.len() == 4104,
+    "the sequence reader loads the word after the magic"
+);
+const _: () = assert!(
+    (CONTROL_OFFSET + CONTROL_MAGIC.len()).is_multiple_of(8),
+    "the command sequence is one aligned word"
+);
+const _: () = assert!(
+    CONTROL_MAGIC.len() + 8 + 4 + 4 + 8 == CONTROL_HEADER,
+    "the header holds magic, sequence, length, capacity, and 8 reserved bytes"
+);
+const _: () = assert!(
+    DYNAMIC_OFFSET.is_multiple_of(8),
+    "the dynamic section is word-aligned"
+);
+const _: () = assert!(
+    DYNAMIC_SIZE == 6 * 16,
+    "the dynamic section holds six entries"
+);
+const _: () = assert!(
+    1 + SYMBOL.len() + 1 == 24,
+    "the control symbol's name follows the hook's in the string table"
+);
+const _: () = assert!(
+    24 + CONTROL_SYMBOL.len() + 1 == 50,
+    "the sequence symbol's name follows the control symbol's in the string table"
+);
+const _: () = assert!(
+    640 + 50 + SEQUENCE_SYMBOL.len() < 720,
+    "the string table ends before the hash table"
+);
+
 #[expect(
     clippy::too_many_lines,
     reason = "one fixed ELF layout keeps offsets auditable together"
