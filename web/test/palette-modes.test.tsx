@@ -51,3 +51,21 @@ it("says why a pending breakpoint shows nothing", async () => {
   await userEvent.click(page.getByRole("option", { name: /later_fn/ }));
   expect(tab.getState().flash?.text).toBe("later_fn is pending until a module with its code loads");
 });
+
+it("marks the characters that matched, past ones that are not one code unit", async () => {
+  const state = stoppedState({
+    threads: [
+      { id: 1, name: "😀worker", stopped: true, labels: [] },
+      { id: 2, name: "İworker", stopped: true, labels: [] },
+    ],
+  });
+  await mountPane(<Palette />, { state }, state);
+  tab.setState({ palette: "all" });
+  await userEvent.keyboard("work");
+  for (const name of ["thread 1 (😀worker)", "thread 2 (İworker)"]) {
+    const option = page.getByRole("option", { name });
+    await expect.element(option).toBeVisible();
+    const marked = [...option.element().querySelectorAll("mark")].map((mark) => mark.textContent);
+    expect(marked.join("")).toBe("work");
+  }
+});

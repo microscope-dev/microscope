@@ -168,13 +168,19 @@ function Open({ mode }: { mode: Mode }) {
 
 /** The label, with the characters the query matched marked. */
 function Marked({ text, query }: { text: string; query: string }) {
-  const marks = new Set(score(text, query)?.marks ?? []);
+  const chars = [...text];
+  // Score marks code units of the lowercased text; each belongs to the
+  // character it was lowercased from.
+  const owners = chars.flatMap((char, index) =>
+    Array<number>(char.toLowerCase().length).fill(index),
+  );
+  const marks = new Set(score(text, query)?.marks.map((mark) => owners[mark]) ?? []);
   if (marks.size === 0) {
     return <span className="palette-label">{text}</span>;
   }
   return (
     <span className="palette-label">
-      {[...text].map((char, index) =>
+      {chars.map((char, index) =>
         // biome-ignore lint/suspicious/noArrayIndexKey: characters of one fixed label
         marks.has(index) ? <mark key={index}>{char}</mark> : <span key={index}>{char}</span>,
       )}
