@@ -305,10 +305,10 @@ fn from_table(
     table: &[u8],
 ) -> Result<PythonLayout, Arc<str>> {
     let build = if free_threaded { "free-threaded " } else { "" };
-    let schema = match version.minor() {
-        13 => schemas::V3_13,
-        14 => schemas::V3_14,
-        15 => schemas::V3_15,
+    let schema = match (version.major(), version.minor()) {
+        (3, 13) => schemas::V3_13,
+        (3, 14) => schemas::V3_14,
+        (3, 15) => schemas::V3_15,
         _ => return Err(unsupported(version)),
     };
 
@@ -421,7 +421,7 @@ fn generated_exactly(version: PyVersion, free_threaded: bool) -> Result<PythonLa
         })
         .map(Generated::layout)
         .ok_or_else(|| {
-            if (12..=15).contains(&version.minor()) {
+            if version.major() == 3 && (12..=15).contains(&version.minor()) {
                 let known = layouts::GENERATED
                     .iter()
                     .filter(|generated| {
@@ -475,6 +475,11 @@ fn validated(
     free_threaded: bool,
     layout: PythonLayout,
 ) -> Result<PythonLayout, Arc<str>> {
+    debug_assert_eq!(
+        version.major(),
+        3,
+        "only a layout of CPython 3 is validated, not CPython {version}'s"
+    );
     debug_assert!(
         (12..=15).contains(&version.minor()),
         "only a layout of a minor version microscope reads is validated, not CPython {version}'s"
@@ -815,6 +820,7 @@ mod tests {
 
         assert!(refused(None, Some(0x030c_01f0)).contains("CPython 3.12.1 is not a release"));
         assert!(refused(None, Some(0x030b_04f0)).contains("3.11.4 is not supported"));
+        assert!(refused(None, Some(0x020c_0df0)).contains("2.12.13 is not supported"));
         assert!(refused(None, Some(0x030d_02f0)).contains("has no offsets table"));
         assert!(refused(None, None).contains("version is unknown"));
         let none = PythonLayout::default();
@@ -826,6 +832,9 @@ mod tests {
             &none,
         );
         assert!(refused(Some(&next), Some(0x0310_00f0)).contains("3.16.0 is not supported"));
+        let (_, mut four) = table_of("3.14", schemas::V3_14);
+        four[8..16].copy_from_slice(&0x040e_04f0u64.to_le_bytes());
+        assert!(refused(Some(&four), Some(0x040e_04f0)).contains("4.14.4 is not supported"));
         let beta = table(
             0x030f_00b3,
             false,
