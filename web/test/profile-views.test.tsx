@@ -532,6 +532,29 @@ it("says it is reading a call's detail, and why it could not", async () => {
   await expect.element(detail.getByText("the heat map is cut short")).toBeVisible();
 });
 
+it("reads a click on a heat map's top edge as its highest row, in the slice clicked", async () => {
+  const server = await mount(<SyscallsView />, { summary: traced(), look: { sc: "read" } });
+  server.answer(await server.next("syscallSummary"), SUMMARY);
+  // Two slices of three rows: the first's calls are slow, the second's fast.
+  server.answer(await server.next("syscallHeatmap"), {
+    start: 1000,
+    width: 500,
+    rows: 3,
+    counts: [0, 0, 5, 4, 0, 0],
+    most: 5,
+  });
+  const map = page.getByRole("img", { name: "Latency heat map" });
+  await expect.element(page.getByText(/0 to/)).toBeVisible();
+  const bounds = map.element().getBoundingClientRect();
+  // A mouse event's coordinates are whole pixels, so on a canvas whose top
+  // falls between two, a click on its top row reads as just above it.
+  expect(bounds.top % 1, "the heat map's top is a whole pixel").not.toBe(0);
+  mouseAt(map.element(), "click", bounds.width / 4, 0);
+  await vi.waitFor(() => expect(lookShown().sl).toBeDefined());
+  expect(lookShown().sl).toBe("2");
+  expect(lookShown().range).toBe("1000-1500");
+});
+
 it("says why the lanes and the rate could not be read", async () => {
   const server = await mount(<SyscallsView />, { summary: traced() });
   server.fail(await server.next("syscallLanes"), "the lanes are cut short");

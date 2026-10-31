@@ -194,8 +194,14 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
               const box = event.currentTarget.getBoundingClientRect();
               const slices = data.counts.length / data.rows;
               const slice = Math.floor(((event.clientX - box.left) / box.width) * slices);
-              const row =
-                last - Math.floor(((event.clientY - box.top) / box.height) * (last - first + 1));
+              // Whole-pixel coordinates can fall just outside a fractional box.
+              const row = Math.min(
+                Math.max(
+                  last - Math.floor(((event.clientY - box.top) / box.height) * (last - first + 1)),
+                  first,
+                ),
+                last,
+              );
               if (!data.counts[slice * data.rows + row]) {
                 return;
               }
