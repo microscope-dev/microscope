@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use super::variables::{self, Kind};
 use crate::VirtualAddress;
 use crate::image::v8::{Constant, Field};
@@ -167,7 +167,7 @@ pub(super) fn placed(
         InterpretedPlace::Frame(address) => address.get(),
         InterpretedPlace::Scope { depth, offset } => {
             let context = context_at(reader, fp, depth)?;
-            let address = untagged(reader, context)? + offset;
+            let address = address_at(untagged(reader, context)?, offset)?;
             if offset_in(reader, context, address)? != Some(offset) {
                 return Err(
                     format!("the context {:#x} has no slot {offset} bytes in", context.0).into(),

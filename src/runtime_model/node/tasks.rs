@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use super::scripts::Table;
 use crate::image::v8::{Constant, Field, NodeTasks, ScopeInfoSlice, scope_info_slice};
 use crate::runtime_model::{RuntimeImage, RuntimeTask, TaskCallback};
@@ -600,7 +600,7 @@ fn object(
         return Ok(None);
     };
     let tag = reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
-    if reader.word(object.0 - tag + layout.object_wrapper)? != wrap {
+    if reader.word(address_at(object.0 - tag, layout.object_wrapper)?)? != wrap {
         return Err("its JavaScript object does not point back at it".into());
     }
     Ok(Some(object))
@@ -970,10 +970,11 @@ pub(super) fn start_position(reader: &Reader<'_>, shared: Object) -> Result<Opti
                 scope_info_slice(
                     reader.version,
                     ScopeInfoSlice::PositionInfo,
-                    &mut |offset| reader.word(untagged + offset).ok(),
+                    &mut |offset| reader.word(address_at(untagged, offset).ok()?).ok(),
                 )?
                 .filter(|slice| slice.length > 0)
-                .map(|slice| untagged + slice.offset)
+                .map(|slice| address_at(untagged, slice.offset))
+                .transpose()?
             };
             if let Some(start) = start
                 && let Some(position) = reader.smi(reader.word(start)?)?

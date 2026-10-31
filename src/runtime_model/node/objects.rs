@@ -43,6 +43,14 @@ pub(super) struct Reader<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Object(pub(super) u64);
 
+/// The address `bytes` past `address`, or the problem that it lies past
+/// the end of the address space.
+pub(super) fn address_at(address: u64, bytes: u64) -> Result<u64, Problem> {
+    address.checked_add(bytes).ok_or_else(|| {
+        format!("{bytes:#x} bytes past {address:#x} lies past the address space").into()
+    })
+}
+
 impl Reader<'_> {
     pub(super) fn bytes_into(&self, address: u64, bytes: &mut [u8]) -> Result<(), Problem> {
         let unreadable = || format!("the memory at {address:#x} is unreadable").into();
@@ -139,7 +147,19 @@ impl Reader<'_> {
     /// Where `field` of `object` is.
     pub(super) fn field_address(&self, object: Object, field: Field) -> Result<u64, Problem> {
         let tag = self.constant(Constant::HeapObjectTag)?.cast_unsigned();
-        Ok(object.0 - tag + self.offset(field)?)
+        let offset = self.offset(field)?;
+        object
+            .0
+            .checked_sub(tag)
+            .and_then(|start| start.checked_add(offset))
+            .ok_or_else(|| {
+                format!(
+                    "{} of {:#x} lies past the address space",
+                    field.name(),
+                    object.0
+                )
+                .into()
+            })
     }
 
     /// The tagged word `field` of `object` holds.
@@ -247,7 +267,18 @@ impl Reader<'_> {
         if !(0..self.smi_field(array, length)?).contains(&index) {
             return Err(format!("index {index} is past the end of {:#x}", array.0).into());
         }
-        self.word(self.field_address(array, objects)? + index.cast_unsigned() * 8)
+        let objects = self.field_address(array, objects)?;
+        let address = index
+            .cast_unsigned()
+            .checked_mul(8)
+            .and_then(|offset| objects.checked_add(offset))
+            .ok_or_else(|| {
+                format!(
+                    "element {index} of {:#x} lies past the address space",
+                    array.0
+                )
+            })?;
+        self.word(address)
     }
 
     /// The map of `object`.
@@ -397,7 +428,7 @@ impl Reader<'_> {
         let width = if one_byte { 1 } else { 2 };
         let length = usize::try_from((end - start) * width).map_err(|_| "a string is too long")?;
         let mut bytes = vec![0; length];
-        self.bytes_into(address + start * width, &mut bytes)?;
+        self.bytes_into(address_at(address, start * width)?, &mut bytes)?;
         let before = text.len();
         if one_byte {
             text.extend(bytes.iter().map(|byte| u16::from(*byte)));
@@ -416,5 +447,117 @@ impl Reader<'_> {
             "the string at {address:#x} appended the wrong number of units for {start}..{end}",
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use std::collections::HashMap;
+
+    use super::{Object, Reader};
+    use crate::image::v8::{Constant, Field, V8Layout, V8Version};
+    use crate::runtime_model::RuntimeStop;
+    use crate::{LoadBias, ThreadId, VirtualAddress};
+
+    /// Memory the tests write, by address.
+    #[derive(Default)]
+    pub(in super::super) struct Heap(HashMap<u64, u8>);
+
+    impl Heap {
+        pub(in super::super) fn word(&mut self, address: u64, word: u64) {
+            for (at, byte) in (address..).zip(word.to_le_bytes()) {
+                self.0.insert(at, byte);
+            }
+        }
+    }
+
+    impl RuntimeStop for Heap {
+        fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+            for (at, byte) in (address.get()..).zip(bytes.iter_mut()) {
+                let Some(read) = self.0.get(&at) else {
+                    return false;
+                };
+                *byte = *read;
+            }
+            true
+        }
+
+        fn thread_pointer(&self, _thread: ThreadId) -> Option<u64> {
+            None
+        }
+
+        fn instruction(&self, _thread: ThreadId) -> Option<VirtualAddress> {
+            None
+        }
+
+        fn load_bias(&self) -> LoadBias {
+            LoadBias::default()
+        }
+
+        fn threads(&self) -> Vec<ThreadId> {
+            Vec::new()
+        }
+    }
+
+    /// 14.6's generated layout, with the tags each build exports.
+    pub(in super::super) fn layout() -> V8Layout {
+        let mut layout = crate::debug_info::v8::generated_layout(14, 6).expect("a layout");
+        for (constant, value) in [
+            (Constant::SmiTag, 0),
+            (Constant::SmiTagMask, 1),
+            (Constant::SmiShiftSize, 31),
+            (Constant::HeapObjectTag, 1),
+            (Constant::HeapObjectTagMask, 3),
+        ] {
+            layout.set_constant(constant, value);
+        }
+        layout
+    }
+
+    pub(in super::super) fn reader<'a>(heap: &'a Heap, layout: &'a V8Layout) -> Reader<'a> {
+        Reader {
+            stop: heap,
+            layout,
+            version: V8Version {
+                major: 14,
+                minor: 6,
+                ..V8Version::default()
+            },
+            charge: None,
+            blocks: None,
+        }
+    }
+
+    #[test]
+    fn fields_past_the_end_of_the_address_space_are_problems() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let pointer = reader(&heap, &layout)
+            .object(0xffff_ffff_ffff_fffd)
+            .unwrap()
+            .expect("a tagged word");
+        let problem = reader(&heap, &layout)
+            .string(pointer)
+            .expect_err("a string's length lies past the address space");
+        assert!(problem.contains("address space"), "{problem}");
+
+        // A fixed array at the top of memory whose element lies past it.
+        let map = 0x1000;
+        let fixed = layout.constant(Constant::FixedArrayType).unwrap();
+        heap.word(map, map + 1);
+        heap.word(
+            map + layout.field(Field::MapInstanceType).unwrap(),
+            fixed.cast_unsigned(),
+        );
+        let array = 0xffff_ffff_ffff_ff00;
+        heap.word(array, map + 1);
+        heap.word(
+            array + layout.field(Field::FixedArrayBaseLength).unwrap(),
+            1 << 62,
+        );
+        let problem = reader(&heap, &layout)
+            .element(Object(array + 1), 1 << 28)
+            .expect_err("the element lies past the address space");
+        assert!(problem.contains("address space"), "{problem}");
     }
 }

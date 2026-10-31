@@ -9,7 +9,7 @@
 //! a global object's, and an object V8 looks up through interceptors or
 //! access checks are refused by name.
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field};
 
 /// The most prototypes followed: chains are a few objects long.
@@ -159,10 +159,10 @@ pub(super) fn descriptor(
         return Err(format!("the map {:#x} has more descriptors than its array", map.0).into());
     }
     let slot = index * reader.constant(Constant::PropDescSize)? + reader.constant(entry)?;
-    reader.word(
-        reader.field_address(descriptors, Field::DescriptorArrayDescriptors)?
-            + slot.cast_unsigned() * 8,
-    )
+    reader.word(address_at(
+        reader.field_address(descriptors, Field::DescriptorArrayDescriptors)?,
+        slot.cast_unsigned() * 8,
+    )?)
 }
 
 /// The value of the field `index` of `holder`, whose map is `map`: in the
@@ -181,7 +181,10 @@ pub(super) fn field_value(
     let inobject = size - start;
     if index < inobject {
         let tag = reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
-        return reader.word(holder.0 - tag + (start + index).cast_unsigned() * 8);
+        return reader.word(address_at(
+            holder.0 - tag,
+            (start + index).cast_unsigned() * 8,
+        )?);
     }
 
     let properties = reader.typed_field(
@@ -196,9 +199,10 @@ pub(super) fn field_value(
     if index >= length {
         return Err(format!("field {index} is past the properties of {:#x}", holder.0).into());
     }
-    reader.word(
-        reader.field_address(properties, Field::PropertyArrayObjects)? + index.cast_unsigned() * 8,
-    )
+    reader.word(address_at(
+        reader.field_address(properties, Field::PropertyArrayObjects)?,
+        index.cast_unsigned() * 8,
+    )?)
 }
 
 /// The property `name` of `holder`, a dictionary-mode object.

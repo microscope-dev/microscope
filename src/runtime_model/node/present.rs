@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use super::inspect::{self, Kind as Shape, Layout, Value};
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use super::own::{self, Held};
 use super::values::Builder;
 use crate::image::v8::NodeRelease;
@@ -394,7 +394,12 @@ fn element_children(
             .ok_or("the typed array is not a contiguous row of numbers")?;
         return range
             .map(|index| {
-                let at = array.data.get() + index * kind.size();
+                let at = index
+                    .checked_mul(kind.size())
+                    .ok_or_else(|| {
+                        Problem::from("a typed array element lies past the address space")
+                    })
+                    .and_then(|offset| address_at(array.data.get(), offset))?;
                 Ok(InterpretedChild::Element(typed_number(
                     reader,
                     at,

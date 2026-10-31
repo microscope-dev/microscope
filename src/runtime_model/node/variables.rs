@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use std::sync::Arc;
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
 use crate::runtime_model::{InterpretedFrameRef, ReportedLocal, ReportedValue};
 
@@ -835,7 +835,10 @@ fn lexical_this(
 /// The tagged word in the slot `index` of `context`.
 pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Problem> {
     let index = u64::try_from(reader.constant(index)?).map_err(|_| "a negative context slot")?;
-    reader.word(reader.field_address(context, Field::ContextElements)? + 8 * index)
+    reader.word(address_at(
+        reader.field_address(context, Field::ContextElements)?,
+        8 * index,
+    )?)
 }
 
 /// A context local's name and its tagged word, or why it cannot be read.
@@ -903,7 +906,7 @@ fn located_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<(String, u
         if name.is_empty() || name.starts_with('.') {
             continue;
         }
-        found.push((name, elements + 8 * (first + index)));
+        found.push((name, address_at(elements, 8 * (first + index))?));
     }
     Ok(found)
 }
@@ -918,13 +921,16 @@ fn local_names(
     start: u64,
     count: i64,
 ) -> Result<Vec<(u64, u64)>, Problem> {
-    let mut read = |offset| reader.word(start + offset).ok();
+    let mut read = |offset| reader.word(address_at(start, offset).ok()?).ok();
     if let Some(names) =
         scope_info_slice(reader.version, ScopeInfoSlice::ContextLocalNames, &mut read)?
             .filter(|names| i64::try_from(names.length).is_ok_and(|length| length == count))
     {
         return (0..names.length)
-            .map(|index| Ok((index, reader.word(start + names.offset + 8 * index)?)))
+            .map(|index| {
+                let at = address_at(address_at(start, names.offset)?, 8 * index)?;
+                Ok((index, reader.word(at)?))
+            })
             .collect();
     }
 
@@ -942,7 +948,7 @@ fn local_names(
     .filter(|table| table.length == 1)
     .ok_or_else(missing)?;
     let table = reader
-        .object(reader.word(start + table.offset)?)?
+        .object(reader.word(address_at(start, table.offset)?)?)?
         .filter(|table| {
             reader
                 .is(*table, Constant::NameToIndexHashTableType)
@@ -955,7 +961,7 @@ fn local_names(
         if !(0..length).contains(&index) {
             return Err(format!("an entry past the hash table {:#x}", table.0).into());
         }
-        reader.word(objects + 8 * index.cast_unsigned())
+        reader.word(address_at(objects, 8 * index.cast_unsigned())?)
     };
     let capacity = reader
         .smi(word(reader.constant(Constant::HashTableCapacityIndex)?)?)?

@@ -4,7 +4,7 @@
 //! never called.
 
 use super::lookup::{self, Key};
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use super::own;
 use super::present::{Handle, Writer};
 use super::variables::{self, Variable};
@@ -88,7 +88,10 @@ pub(super) fn native_context(reader: &Reader<'_>, object: Object) -> Result<Obje
 
 pub(super) fn slot(reader: &Reader<'_>, context: Object, index: Constant) -> Result<u64, Problem> {
     let index = u64::try_from(reader.constant(index)?).map_err(|_| "a negative context slot")?;
-    reader.word(reader.field_address(context, Field::ContextElements)? + 8 * index)
+    reader.word(address_at(
+        reader.field_address(context, Field::ContextElements)?,
+        8 * index,
+    )?)
 }
 
 /// The script contexts in `native`'s script context table, in the order
@@ -114,7 +117,7 @@ pub(super) fn script_contexts(reader: &Reader<'_>, native: Object) -> Result<Vec
     (0..length.cast_unsigned())
         .map(|index| {
             reader
-                .object(reader.word(first + 8 * index)?)?
+                .object(reader.word(address_at(first, 8 * index)?)?)?
                 .ok_or_else(|| "a script context is not an object".into())
         })
         .collect()

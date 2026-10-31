@@ -1,7 +1,7 @@
 //! What a `SharedFunctionInfo` says of its function: its name, as V8's call
 //! sites give it, and the bytecode it runs.
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field, ScopeInfoSlice, scope_info_slice};
 
 /// The name of `function`, whose shared information is `shared`, as V8's
@@ -145,10 +145,10 @@ fn scope_word(
 ) -> Result<Option<u64>, Problem> {
     let start = scope.0 - reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
     let found = scope_info_slice(reader.version, slice, &mut |offset| {
-        reader.word(start + offset).ok()
+        reader.word(address_at(start, offset).ok()?).ok()
     })?;
     match found {
-        Some(found) if found.length > 0 => reader.word(start + found.offset).map(Some),
+        Some(found) if found.length > 0 => reader.word(address_at(start, found.offset)?).map(Some),
         _ => Ok(None),
     }
 }
