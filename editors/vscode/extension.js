@@ -384,7 +384,7 @@ function provideEvaluatableExpression(document, position) {
     return new vscode.EvaluatableExpression(range, found.expression);
 }
 
-const NAME = /[A-Za-z0-9_]/;
+const NAME = /^[A-Za-z0-9_]$/;
 
 /**
  * The expression ending with the name at a column of a line, and where it

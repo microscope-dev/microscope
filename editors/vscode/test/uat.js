@@ -552,6 +552,8 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
         ['(*node).next', 10, '(*node).next'],
         ['len(items).x', 11, 'len(items).x'],
         ['// 12', 3, undefined],
+        ['ab', 5, undefined],
+        ['ab', -1, undefined],
     ]) {
         assert.strictEqual(extension().expressionAt(text, column)?.expression, expression, text);
     }
