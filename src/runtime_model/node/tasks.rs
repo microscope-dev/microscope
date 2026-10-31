@@ -163,13 +163,23 @@ impl Owner {
         let number = match self {
             Self::Main => id,
             Self::Worker(thread) => {
-                // Linux's thread ids are below 2^22.
+                // Linux's thread ids are below 2^22, and none is 0, whose
+                // numbers would be the main thread's.
+                if thread.get() == 0 {
+                    return Err(
+                        "a worker on thread 0 has no numbers apart from the main thread's".into(),
+                    );
+                }
                 if thread.get() >= POOL_JOB >> WORKER_SHIFT {
                     return Err(format!("thread {thread}'s id is too large to number").into());
                 }
                 (thread.get() << WORKER_SHIFT) | id
             }
         };
+        debug_assert!(
+            Self::of(number) == self,
+            "async id {id} of {self:?} numbers {number:#x}, which names another environment",
+        );
         debug_assert!(
             pool_thread(number).is_none(),
             "async id {id} of {self:?} numbers {number:#x}, which names a pool job",
@@ -1019,7 +1029,7 @@ mod tests {
     use super::{Environment, Owner, Walk};
     use crate::image::v8::{NODEDBG, NodeTasks};
     use crate::runtime_model::{ImageSymbol, Member, RuntimeImage};
-    use crate::{ImageAddress, IntegerValue, ThreadLocal};
+    use crate::{ImageAddress, IntegerValue, ThreadId, ThreadLocal};
 
     /// An image with no symbols, whose wrappers have no classes.
     #[derive(Debug)]
@@ -1109,6 +1119,15 @@ mod tests {
             owner: Owner::Main,
         };
         super::lists(&mut walk, environment, &mut Vec::new())
+    }
+
+    #[test]
+    fn a_worker_on_thread_0_does_not_number_its_work_as_the_main_thread() {
+        let number = Owner::Worker(ThreadId::new(0)).number(5.0);
+        assert!(
+            !matches!(number, Ok(number) if Owner::of(number) == Owner::Main),
+            "{number:?}",
+        );
     }
 
     #[test]
