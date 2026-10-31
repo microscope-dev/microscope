@@ -96,7 +96,19 @@ impl<'a> Reader<'a> {
                 && !rest.is_empty()
             {
                 match self.copy_block(blocks, address.get() + done as u64, rest)? {
-                    Some(copied) => done += copied,
+                    Some(copied) => {
+                        debug_assert!(
+                            copied > 0,
+                            "the block cache copied nothing at virtual {:#x}",
+                            address.get() + done as u64,
+                        );
+                        debug_assert!(
+                            copied <= rest.len(),
+                            "the block cache copied {copied} bytes into {} at virtual {address:#x}",
+                            rest.len(),
+                        );
+                        done += copied;
+                    }
                     None => break,
                 }
             }
@@ -150,6 +162,10 @@ impl<'a> Reader<'a> {
 
             text.extend_from_slice(&chunk);
             at = at.wrapping_add(length);
+            debug_assert!(
+                at.get().is_multiple_of(CHUNK),
+                "the C string at virtual {address:#x} reads on from unaligned {at:#x}",
+            );
         }
 
         Err(format!("the C string at {address:#x} is longer than {MAX_C_STRING} bytes").into())
@@ -224,12 +240,18 @@ impl<'a> Reader<'a> {
         }
 
         let items = self.field_bytes(object, Field::TupleItems, length * 8)?;
-        Ok(items
+        let items: Vec<VirtualAddress> = items
             .as_chunks::<8>()
             .0
             .iter()
             .map(|item| VirtualAddress::new(u64::from_le_bytes(*item)))
-            .collect())
+            .collect();
+        debug_assert_eq!(
+            items.len() as u64,
+            length,
+            "the items read of the tuple at virtual {object:#x} are not its {length}",
+        );
+        Ok(items)
     }
 }
 
@@ -337,6 +359,12 @@ impl Head<'_, '_> {
                 .collect(),
         };
 
+        debug_assert_eq!(
+            points.len() as u64,
+            shown,
+            "the code points read of the str at virtual {object:#x} are not the {shown} shown",
+        );
+
         // A 4-byte kind holds no code point past Unicode's last.
         if points.iter().any(|point| *point > u32::from(char::MAX)) {
             return Err(malformed(object, "str"));
@@ -395,6 +423,7 @@ pub(super) fn stack_reference(bits: u64) -> Option<VirtualAddress> {
 
 /// The `width`-byte little-endian number at `offset` of `bytes`.
 pub(super) fn read_le(bytes: &[u8], offset: u64, width: u64) -> Option<u64> {
+    debug_assert!(width <= 8, "a {width}-byte number is wider than a word");
     let start = usize::try_from(offset).ok()?;
     let end = start.checked_add(usize::try_from(width).ok()?)?;
     let bytes = bytes.get(start..end)?;

@@ -197,17 +197,26 @@ fn integers(op: BinaryOp, left: Exact, right: Exact) -> Result<LoadedValue, Stop
 /// The remainder of division rounded down, which has the divisor's sign.
 fn floored_rem(left: Exact, right: Exact) -> Result<Exact, NumberError> {
     let rem = left.rem(right)?;
-    if !rem.is_zero() && rem.is_negative() != right.is_negative() {
-        rem.add(right)
+    let floored = if !rem.is_zero() && rem.is_negative() != right.is_negative() {
+        rem.add(right)?
     } else {
-        Ok(rem)
-    }
+        rem
+    };
+
+    debug_assert!(
+        floored.is_zero() || floored.is_negative() == right.is_negative(),
+        "a floored remainder has the dividend's sign, not the divisor's",
+    );
+    Ok(floored)
 }
 
 /// How many of a quotient's leading bits are kept before it is rounded:
 /// a double's 53, a guard bit, and a last bit that also records whether
 /// any bit below it is set.
 const KEPT: u32 = 55;
+
+const _: () = assert!(KEPT == f64::MANTISSA_DIGITS + 2);
+const _: () = assert!(KEPT < u64::BITS);
 
 /// `left / right` rounded once to the nearest double, ties to even, as
 /// CPython's `long_true_divide` gives it. Dividing the operands' nearest
@@ -235,6 +244,10 @@ fn quotient(dividend: u128, divisor: u128) -> f64 {
     let mut bits: u64 = 0;
     let mut kept = 0;
     while kept < KEPT {
+        debug_assert!(
+            remainder < divisor,
+            "a quotient's remainder {remainder:#x} reached its divisor {divisor:#x}",
+        );
         let next = if position >= 0 {
             (dividend >> position) & 1
         } else {
@@ -260,6 +273,11 @@ fn quotient(dividend: u128, divisor: u128) -> f64 {
         }
     }
 
+    debug_assert_eq!(
+        bits.bit_width(),
+        KEPT,
+        "a quotient kept {bits:#x}, not {KEPT} bits",
+    );
     let below = position > 0 && dividend & ((1 << position) - 1) != 0;
     let bits = bits | u64::from(remainder != 0 || below);
 
@@ -268,6 +286,10 @@ fn quotient(dividend: u128, divisor: u128) -> f64 {
 
     // Scaling by a power of two is exact: the quotient lies within
     // [2^-128, 2^128].
+    debug_assert!(
+        (1..2047).contains(&(position + 1023)),
+        "a quotient scales by 2^{position}, which is no normal double",
+    );
     rounded * f64::from_bits(u64::from((position + 1023).unsigned_abs()) << 52)
 }
 

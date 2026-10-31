@@ -82,6 +82,10 @@ impl Values<'_, '_> {
     /// The type object at `ty`, read once in an inspection.
     pub(super) fn class(&self, ty: VirtualAddress) -> Result<Arc<Class>, Problem> {
         if let Some(class) = self.classes.borrow().get(&ty) {
+            debug_assert_eq!(
+                class.address, ty,
+                "the class cached for virtual {ty:#x} is another type's",
+            );
             return Ok(Arc::clone(class));
         }
 
@@ -492,6 +496,12 @@ impl Values<'_, '_> {
             }
         }
 
+        debug_assert!(
+            slots.len() <= taken.len(),
+            "the instance at virtual {object:#x} has {} slots of {} names",
+            slots.len(),
+            taken.len(),
+        );
         Ok(slots)
     }
 

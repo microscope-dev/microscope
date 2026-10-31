@@ -160,6 +160,15 @@ impl Project {
             }
         }
 
+        debug_assert!(
+            files.len() <= most_files,
+            "a listing holds {} files, more than its {most_files}",
+            files.len(),
+        );
+        debug_assert!(
+            entries <= most_entries,
+            "a listing read {entries} entries, more than its {most_entries}",
+        );
         Listing {
             files: files.into_iter().collect(),
             complete: unreadable.is_empty(),

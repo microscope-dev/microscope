@@ -10,6 +10,16 @@ use std::fmt::Write as _;
 #[path = "printable.gen.rs"]
 mod printable;
 
+const _: () = {
+    let escaped = &printable::ESCAPED;
+    let mut index = 0;
+    while index < escaped.len() {
+        assert!(escaped[index].0 < escaped[index].1);
+        assert!(index == 0 || escaped[index - 1].1 <= escaped[index].0);
+        index += 1;
+    }
+};
+
 /// Whether every supported interpreter's `repr` keeps the code point
 /// `point` as it is.
 fn printable(point: u32) -> bool {
@@ -71,6 +81,10 @@ pub(super) fn utf8(code_points: &[u32]) -> Vec<u8> {
         } else {
             // A surrogate, which a str may hold alone: three bytes, as
             // every code point from U+0800 to U+FFFF takes.
+            debug_assert!(
+                (0xd800..0xe000).contains(&point),
+                "code point {point:#x} is neither a character nor a surrogate",
+            );
             let [_, _, high, low] = point.to_be_bytes();
             let point = u16::from_be_bytes([high, low]);
             bytes.extend_from_slice(&[
@@ -155,6 +169,7 @@ fn shortest(sign: &str, shortest: &str) -> String {
     let (mantissa, exponent) = shortest.split_once('e').unwrap_or((shortest, "0"));
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     let exponent: i64 = exponent.parse().unwrap_or(0);
+    debug_assert!(!digits.is_empty(), "a float's exponent form has no digits");
 
     // Where the decimal point lies, counted in digits from the first.
     let point = exponent + 1;
@@ -205,6 +220,14 @@ pub(super) fn int(negative: bool, digits: &[u32], shift: u32) -> String {
         }
     }
 
+    debug_assert!(
+        limbs.iter().all(|limb| *limb < LIMB),
+        "an int's decimal limb is 10^9 or more",
+    );
+    debug_assert!(
+        limbs.last().is_none_or(|most| *most != 0),
+        "an int's most significant decimal limb is zero",
+    );
     let mut text = String::new();
 
     match limbs.split_last() {

@@ -148,6 +148,12 @@ impl Values<'_, '_> {
             }
         }
 
+        debug_assert!(
+            running.len() <= states.len(),
+            "{} tasks run on {} thread states",
+            running.len(),
+            states.len(),
+        );
         running
     }
 
@@ -223,6 +229,7 @@ impl Values<'_, '_> {
         let next = reader.offset(Field::LlistNext)?;
         let node_offset = reader.offset(Field::TaskNode)?;
         let mut seen = HashSet::new();
+        let before = tasks.len();
         let mut node = VirtualAddress::new(reader.word(head.wrapping_add(next))?);
 
         while node != head {
@@ -250,6 +257,11 @@ impl Values<'_, '_> {
             node = VirtualAddress::new(reader.word(node.wrapping_add(next))?);
         }
 
+        debug_assert_eq!(
+            tasks.len() - before,
+            seen.len(),
+            "the list of {whose} tasks at virtual {head:#x} lists other than the nodes walked",
+        );
         Ok(())
     }
 
@@ -410,6 +422,11 @@ impl Values<'_, '_> {
             awaiters.push(format!("and {} more entries not read", used - MAX_AWAITERS));
         }
 
+        debug_assert!(
+            awaiters.len() as u64 <= MAX_AWAITERS + 1,
+            "the task at virtual {task:#x} names {} awaiters",
+            awaiters.len(),
+        );
         Ok(awaiters)
     }
 
@@ -528,6 +545,10 @@ impl Values<'_, '_> {
             return Err(bad());
         }
 
+        debug_assert!(
+            top - below >= values.get(),
+            "the awaited slot of the frame at virtual {frame:#x} lies below its stack",
+        );
         let bits = reader.word(VirtualAddress::new(top - below))?;
         self.reference(bits)?
             .ok_or_else(|| format!("the frame at {frame:#x} awaits nothing").into())

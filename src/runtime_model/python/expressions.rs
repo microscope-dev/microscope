@@ -48,6 +48,9 @@ const HASH_MODULUS: u64 = (1 << 61) - 1;
 const HASH_BITS: u32 = 61;
 const HASH_INFINITY: i64 = 314_159;
 
+const _: () = assert!(HASH_MODULUS == (1 << HASH_BITS) - 1);
+const _: () = assert!(28 < HASH_BITS);
+
 /// The primes of xxHash64, by which CPython's `tuplehash` mixes its items'
 /// hashes, and the hash it gives where the mix comes to -1.
 const XXPRIME_1: u64 = 11_400_714_785_074_694_791;
@@ -335,6 +338,18 @@ impl Values<'_, '_> {
         key: VirtualAddress,
         hash: i64,
     ) -> Result<Option<VirtualAddress>, Problem> {
+        debug_assert!(
+            dict.log2_size < 32,
+            "the dict at virtual {:#x} has unchecked log2 size {}",
+            dict.object,
+            dict.log2_size,
+        );
+        debug_assert!(
+            matches!(dict.index_width, 1 | 2 | 4 | 8),
+            "the dict at virtual {:#x} has {}-byte indices",
+            dict.object,
+            dict.index_width,
+        );
         let mask = (1_u64 << dict.log2_size) - 1;
         let mut slot = hash.cast_unsigned() & mask;
         let mut perturb = hash.cast_unsigned();
@@ -554,6 +569,18 @@ impl Values<'_, '_> {
         hash: i64,
     ) -> Result<Option<VirtualAddress>, InterpretedFailure> {
         let unavailable = |problem| self.unavailable(problem);
+        debug_assert!(
+            dict.log2_size < 32,
+            "the dict at virtual {:#x} has unchecked log2 size {}",
+            dict.object,
+            dict.log2_size,
+        );
+        debug_assert!(
+            matches!(dict.index_width, 1 | 2 | 4 | 8),
+            "the dict at virtual {:#x} has {}-byte indices",
+            dict.object,
+            dict.index_width,
+        );
         let mask = (1_u64 << dict.log2_size) - 1;
         let mut slot = hash.cast_unsigned() & mask;
         let mut perturb = hash.cast_unsigned();
@@ -1266,6 +1293,10 @@ pub(super) fn hash_float(value: f64) -> Option<i64> {
             reason = "the mantissa's integer part is below 2**28"
         )]
         let digit = mantissa as u64;
+        debug_assert!(
+            digit < 1 << 28,
+            "a float's hash digit {digit:#x} is past 28 bits"
+        );
         #[expect(clippy::cast_precision_loss, reason = "the digit is below 2**28")]
         let whole = digit as f64;
         mantissa -= whole;
@@ -1275,6 +1306,11 @@ pub(super) fn hash_float(value: f64) -> Option<i64> {
         }
     }
 
+    debug_assert!(
+        hash < HASH_MODULUS,
+        "a float's hash {hash:#x} is past its modulus"
+    );
+
     let bits = i32::try_from(HASH_BITS).unwrap_or(61);
     let shift = if exponent >= 0 {
         exponent % bits
@@ -1282,6 +1318,7 @@ pub(super) fn hash_float(value: f64) -> Option<i64> {
         bits - 1 - ((-1 - exponent) % bits)
     }
     .cast_unsigned();
+    debug_assert!(shift < HASH_BITS, "a float's hash rotates by {shift} bits");
 
     hash = ((hash << shift) & HASH_MODULUS) | hash >> (HASH_BITS - shift);
     let signed = i64::try_from(hash).unwrap_or(i64::MAX);
@@ -1291,6 +1328,8 @@ pub(super) fn hash_float(value: f64) -> Option<i64> {
 /// C's `frexp` of a finite, non-negative value: a mantissa in [0.5, 1),
 /// or 0, and the power of two that scales it to the value.
 fn frexp(value: f64) -> (f64, i32) {
+    debug_assert!(value.is_finite(), "frexp of a float that is not finite");
+    debug_assert!(value >= 0.0, "frexp of a negative float");
     if value == 0.0 {
         return (0.0, 0);
     }
@@ -1304,6 +1343,10 @@ fn frexp(value: f64) -> (f64, i32) {
     }
 
     let mantissa = f64::from_bits((bits & !(0x7ff << 52)) | (1022 << 52));
+    debug_assert!(
+        (0.5..1.0).contains(&mantissa),
+        "frexp gave a mantissa outside [0.5, 1)",
+    );
     (mantissa, biased - 1022)
 }
 

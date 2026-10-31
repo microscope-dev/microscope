@@ -37,6 +37,11 @@ pub(super) const FIELDS: u64 = 48;
 const BYTE_ORDER: u64 = 10;
 const TYPE_NUMBER: u64 = 12;
 
+const _: () = assert!(DATA + 8 <= AXES && AXES + 4 <= SHAPE);
+const _: () = assert!(SHAPE + 8 <= STRIDES && STRIDES + 8 <= DTYPE);
+const _: () = assert!(DTYPE + 8 <= FIELDS);
+const _: () = assert!(BYTE_ORDER < TYPE_NUMBER);
+
 /// The most axes numpy gives an array.
 const MAX_AXES: u64 = 64;
 
@@ -123,6 +128,18 @@ impl Array {
 
     /// The part at `index` of its first axis: an array of the rest.
     fn row(&self, index: u64) -> Self {
+        debug_assert!(
+            self.shape.first().is_some_and(|length| index < *length),
+            "row {index} lies past the first axis, of {:?} rows, of the array at virtual {:#x}",
+            self.shape.first(),
+            self.data,
+        );
+        debug_assert_eq!(
+            self.shape.len(),
+            self.strides.len(),
+            "the axes and strides of the array at virtual {:#x} differ in count",
+            self.data,
+        );
         Self {
             data: offset(self.data, index, self.strides.first().copied().unwrap_or(0)),
             shape: self.shape.get(1..).unwrap_or_default().to_vec(),
@@ -268,6 +285,16 @@ impl Values<'_, '_> {
             .map(i32::from_le_bytes)
             .ok_or_else(bad)?;
 
+        debug_assert_eq!(
+            shape.len() as u64,
+            axes,
+            "the shape read of the array at virtual {address:#x} is not its axes'",
+        );
+        debug_assert_eq!(
+            strides.len() as u64,
+            axes,
+            "the strides read of the array at virtual {address:#x} are not its axes'",
+        );
         Ok(Array {
             data,
             shape,
@@ -282,6 +309,10 @@ impl Values<'_, '_> {
             ArrayElement::Bool => 1,
             ArrayElement::Number(kind) => kind.size(),
         };
+        debug_assert!(
+            (1..=8).contains(&size),
+            "an element at virtual {at:#x} is {size} bytes, not a word or less",
+        );
         let bytes = self.reader.bytes(at, size)?;
         let mut word = [0; 8];
         word.get_mut(..bytes.len())
@@ -460,6 +491,11 @@ impl Values<'_, '_> {
             children.push(InterpretedChild::Element(slot));
         }
 
+        debug_assert_eq!(
+            children.len() as u64,
+            end - start,
+            "the elements of the array at virtual {object:#x} are not its {start}..{end}",
+        );
         Ok(children)
     }
 }

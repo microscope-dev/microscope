@@ -1038,6 +1038,13 @@ impl Values<'_, '_> {
         range: std::ops::Range<u64>,
         mut each: impl FnMut(Entry) -> Result<(), Problem>,
     ) -> Result<(), Problem> {
+        debug_assert!(
+            dict.length <= dict.count,
+            "the dict at virtual {:#x} holds {} items in {} entries",
+            dict.object,
+            dict.length,
+            dict.count,
+        );
         if dict.count > MAX_DICT_ENTRIES {
             return Err(format!(
                 "the dict at {:#x} has a table of {} entries, more than {MAX_DICT_ENTRIES} are read",
@@ -1157,6 +1164,14 @@ impl Values<'_, '_> {
         mut each: impl FnMut(VirtualAddress) -> Result<(), Problem>,
     ) -> Result<(), Problem> {
         let reader = &self.reader;
+        debug_assert!(
+            mask.checked_add(1).is_some_and(u64::is_power_of_two),
+            "the set at virtual {object:#x} has mask {mask:#x}, not a power of two slots",
+        );
+        debug_assert!(
+            used <= mask,
+            "the set at virtual {object:#x} fills {used} of {mask:#x}"
+        );
         let slots = mask + 1;
         if slots > MAX_SET_SLOTS {
             return Err(format!(
@@ -1215,15 +1230,25 @@ impl Values<'_, '_> {
         start: u64,
         end: u64,
     ) -> Result<Vec<VirtualAddress>, Problem> {
+        debug_assert!(
+            start <= end,
+            "the items {start}..{end} at virtual {items:#x} are reversed"
+        );
         let bytes = self
             .reader
             .bytes(items.wrapping_add(start * 8), (end - start) * 8)?;
-        Ok(bytes
+        let read: Vec<VirtualAddress> = bytes
             .as_chunks::<8>()
             .0
             .iter()
             .map(|item| VirtualAddress::new(u64::from_le_bytes(*item)))
-            .collect())
+            .collect();
+        debug_assert_eq!(
+            read.len() as u64,
+            end - start,
+            "the items read at virtual {items:#x} are not the {start}..{end} asked for",
+        );
+        Ok(read)
     }
 
     /// The module and name of the object's type.
@@ -1416,7 +1441,8 @@ impl Values<'_, '_> {
 
         summary.within.push(address);
         let text = self.text(address, &object, depth, summary);
-        summary.within.pop();
+        let left = summary.within.pop();
+        debug_assert_eq!(left, Some(address), "a summary left a container unbalanced");
         text
     }
 

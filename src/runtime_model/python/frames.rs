@@ -129,6 +129,13 @@ impl Walk<'_, '_> {
             _ => end,
         };
 
+        debug_assert!(
+            frames.len() <= seen.len(),
+            "native thread {} shows {} frames of {} walked",
+            state.native,
+            frames.len(),
+            seen.len(),
+        );
         (frames, end)
     }
 
@@ -320,6 +327,12 @@ impl Walk<'_, '_> {
             _ => end,
         };
 
+        debug_assert!(
+            frames.len() <= sampled.len(),
+            "{} frames shown of {} sampled",
+            frames.len(),
+            sampled.len(),
+        );
         (frames, end)
     }
 
