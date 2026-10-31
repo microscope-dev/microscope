@@ -100,7 +100,7 @@ impl<'b> Budget<'b> {
         Self(RefCell::new(budget))
     }
 
-    fn exhaustion(&self) -> Option<InspectionExhaustion> {
+    pub(super) fn exhaustion(&self) -> Option<InspectionExhaustion> {
         self.0.borrow().exhaustion()
     }
 }

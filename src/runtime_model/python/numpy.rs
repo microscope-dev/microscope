@@ -388,7 +388,7 @@ impl Values<'_, '_> {
         let shown = length.min(SUMMARY_ITEMS);
         let mut texts = Vec::new();
         for index in 0..shown {
-            if summary.objects >= SUMMARY_OBJECTS || summary.problem.is_some() {
+            if summary.objects >= SUMMARY_OBJECTS || self.budget.exhaustion().is_some() {
                 note(
                     summary,
                     format!("a summary shows {SUMMARY_OBJECTS} objects"),

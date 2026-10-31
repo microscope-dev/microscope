@@ -265,3 +265,30 @@ fn a_type_of_numpys_name_too_small_for_its_fields_is_no_array() {
         format!("<numpy.ndarray object at {object:#x}>")
     );
 }
+
+#[test]
+fn each_row_of_an_array_wider_than_a_summary_shows_is_shown_cut_short() {
+    let (mut process, types, ty) = numpy_world(ARRAY_FIELDS);
+    let data: Vec<u8> = (0..130_u8).map(|value| value % 100).collect();
+    let object = array(
+        &mut process,
+        ty,
+        &Spec::new(&data, &[2, 65], &[65, 1], INT8),
+    );
+
+    let row = |first: u8| {
+        let numbers: Vec<String> = (first..first + 64)
+            .map(|value| (value % 100).to_string())
+            .collect();
+        format!("[{}, ...]", numbers.join(", "))
+    };
+    let value = read_value(&process, types, object);
+    assert_eq!(
+        &*value.summary,
+        format!("array([{}, {}], dtype=int8)", row(0), row(65))
+    );
+    assert_eq!(
+        value.problem.as_deref(),
+        Some("a summary shows 64 items of each container")
+    );
+}
