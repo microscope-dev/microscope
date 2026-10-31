@@ -6,6 +6,10 @@ describe("memory", () => {
     expect(target("0x7ffff7a3e020:16")).toEqual({ address: 0x7ffff7a3e020n, bytes: 16 });
     expect(target("0xffffffffff600000")).toEqual({ address: 0xffffffffff600000n, bytes: null });
     expect(target("0x10:0")).toBeNull();
+    // A byte count past what a link may name is malformed.
+    expect(target("0x10:999999999")).toEqual({ address: 0x10n, bytes: 999999999 });
+    expect(target("0x10:1000000000")).toBeNull();
+    expect(target(`0x10:${"9".repeat(400)}`)).toBeNull();
     expect(target("main")).toBeNull();
     // As a link writes it.
     expect(targetText({ address: 0x1fn, bytes: 4 })).toBe("0x1f:4");

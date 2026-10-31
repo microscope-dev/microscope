@@ -15,14 +15,11 @@ export interface Target {
 
 /** Parses `0xADDRESS` or `0xADDRESS:BYTES`. */
 export function target(text: string): Target | null {
-  const match = /^(0x[0-9a-f]{1,16})(?::(\d+))?$/i.exec(text);
+  const match = /^(0x[0-9a-f]{1,16})(?::([1-9]\d{0,8}))?$/i.exec(text);
   if (!match) {
     return null;
   }
   const bytes = match[2] === undefined ? null : Number(match[2]);
-  if (bytes === 0) {
-    return null;
-  }
   return { address: BigInt(match[1] as string), bytes };
 }
 
