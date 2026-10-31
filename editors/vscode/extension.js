@@ -562,6 +562,9 @@ async function inlineValues(session, document, viewPort, context) {
  * @returns {{ line: number, start: number }[]}
  */
 function uses(lines, name, first, last) {
+    if (first < 0) {
+        return [];
+    }
     const found = [];
     // Each line's block depth where it starts, and its first use.
     const depths = [];

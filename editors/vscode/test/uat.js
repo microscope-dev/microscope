@@ -583,6 +583,8 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
     }
     // A member named like a variable is no use of it.
     assert.ok(!inline.some((value) => value.endsWith(': y = 2')), `${inline}`);
+    // A declaration before the first line has no uses.
+    assert.deepStrictEqual(extension().uses(['a'], 'a', -1, 0), []);
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
     await vscode.commands.executeCommand('workbench.debug.viewlet.action.removeAllWatchExpressions');
     // The program checks its sum, which the assignment to x changed.
