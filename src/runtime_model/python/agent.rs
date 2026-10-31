@@ -63,6 +63,9 @@ pub fn is_script_filename(filename: &str) -> bool {
 /// Keeping this separate also lets a cooperative fixture load the agent.
 pub fn bootstrap() -> Result<String, serde_json::Error> {
     let source = serde_json::to_string(SOURCE)?;
+    // The agent's asserts are debug assertions: compiled in only when
+    // microscope's are, whatever the program's interpreter was told.
+    let optimize = if cfg!(debug_assertions) { "0" } else { "1" };
     Ok(format!(
         r"import sys as _sys
 import _thread as _thread
@@ -72,7 +75,7 @@ _agent = _sys.modules.setdefault('_microscope_agent', _candidate)
 try:
     with _agent._bootstrap_lock:
         if '_microscope_loaded' not in _agent.__dict__:
-            exec(compile({source}, '{FILENAME_PREFIX}' + __microscope_library + '>', 'exec'), _agent.__dict__)
+            exec(compile({source}, '{FILENAME_PREFIX}' + __microscope_library + '>', 'exec', optimize={optimize}), _agent.__dict__)
         elif _agent._microscope_loaded != 2:
             raise RuntimeError('incompatible microscope agent transport')
     _agent.apply(__microscope_library, __microscope_generation, __microscope_probes,

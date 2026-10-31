@@ -182,6 +182,7 @@ def clear():
     raising = 0
     discovered.clear()
     resolved.clear()
+    assert tool is None, f"tool {tool} is still held after clearing"
 
 
 def dispatch(event, code, location):
@@ -193,6 +194,7 @@ def dispatch(event, code, location):
 def together(hits):
     """Groups an event's breakpoint hits into one stop, like a native address.
     Reports one ID directly, or count/address of an array kept alive through the hook."""
+    assert all(hit[0] in (1, 2) for hit in hits), f"hit kinds {[hit[0] for hit in hits]}"
     numbers = [number for kind, number, _ in hits if kind == 1]
     others = [hit for hit in hits if hit[0] != 1]
     if len(numbers) < 2:
@@ -203,6 +205,7 @@ def together(hits):
 
 def reported(notice):
     """The hits a report carries, by kind and number."""
+    assert len(notice) in (3, 4), f"a notice of kind {notice[0]} has {len(notice)} fields"
     if len(notice) == 4:
         return [(1, number) for number in notice[3]] if notice[0] == 1 else []
     if notice[0] in (1, 2):
@@ -212,6 +215,7 @@ def reported(notice):
 
 def local_mask(code):
     """The local events `code` takes: its probes', and the step's."""
+    assert tool is not None, "local events asked for without a tool"
     mask = 0
     for probe in probes:
         if probe[0] in LOCAL and matches(probe, code):
@@ -224,6 +228,7 @@ def local_mask(code):
 def global_mask():
     """The events all code takes: discovery, the probes' other events, and
     what the bound step watches everywhere."""
+    assert stepping is None or step is not None, f"no step is configured, bound in {stepping[0]}"
     mask = events.PY_START | events.PY_RESUME | events.PY_THROW
     for probe in probes:
         if probe[0] in OTHER:
@@ -244,6 +249,7 @@ def global_mask():
 def watch(phase, frame):
     """Moves the bound step to `phase`/`frame`, updating events and removing obsolete ones."""
     global stepped
+    assert (frame is None) == (phase in (THREAD, DONE)), f"phase {phase}, framed {frame is not None}"
     stepping[0], stepping[1] = phase, frame
     previous = stepped
     stepped = None
@@ -267,6 +273,8 @@ def bind(frame):
     """Binds the configured step to its frame in the chain `frame` is in, on
     the step's thread; or reports that the frame is not there."""
     global stepping
+    assert stepping is None, f"binding step {step[0]} while it is bound in phase {stepping[0]}"
+    assert step[1] != BACK, f"binding step back {step[0]} to a frame"
     chain = []
     while frame is not None:
         chain.append(frame)
@@ -330,6 +338,7 @@ def assigned_value(frame, value):
         return value[1]
     if kind == "none":
         return None
+    assert kind == "object", f"assignment value kind {kind}"
     for candidate in _SINGLETONS:
         if id(candidate) == value[1]:
             return candidate
@@ -356,6 +365,7 @@ def step_waiting(frame, started, event):
         return []
     if step[1] == BACK:
         return returned(frame, event)
+    assert step_generation is not None, f"step {step[0]} has no generation"
     if step_generation <= started:
         stepping = [DONE, None]
         return [(2, step[0], 2)]  # Its thread ran on before the step began.
@@ -366,6 +376,8 @@ def returned(frame, event):
     """Ends a step back at the first LINE with fewer callers, or equal depth and matching code.
     The starting stop was in native code, so this thread's next line follows it."""
     global stepping
+    assert step[1] == BACK, f"step {step[0]} of kind {step[1]} ends as a step back"
+    assert stepping is None, f"step back {step[0]} is already bound"
     if event != 'LINE':
         return []
     depth = 0
@@ -409,6 +421,7 @@ def finish():
 def leave(frame):
     """Follows the step out of `frame`, which returns, yields, or unwinds, to
     its Python caller; or to the next line its thread runs, if none."""
+    assert stepping[0] in (FRAME, CALLER), f"step {step[0]} leaves a frame in phase {stepping[0]}"
     caller = frame.f_back
     if caller is None:
         watch(THREAD, None)
@@ -422,6 +435,7 @@ def step_event(event, code, frame, arguments):
     the event's `arguments`."""
     global step
     phase, target = stepping
+    assert phase != DONE, f"step {step[0]} takes an event after it ended"
     kind = step[1]
     if frame is target:
         if phase == FRAME:
@@ -455,6 +469,7 @@ def step_event(event, code, frame, arguments):
 
 
 def discover(code):
+    assert tool is not None, "discovering code without a tool"
     identity = id(code)
     previous = discovered.get(identity)
     if previous is not None and previous() is code:
@@ -474,6 +489,7 @@ def discover(code):
             if discovered.get(identity) is reference:
                 discovered.pop(identity, None)
     discovered[identity] = _weakref.ref(code, expired)
+    assert discovered[identity]() is code, "discovered code is not the code it names"
 
 
 def running_code():
@@ -548,6 +564,7 @@ def request(payload):
 def pending():
     # The helper performs one aligned native load. A byte-wise sequence
     # copy could straddle an all-stop publication and manufacture an ID.
+    assert _sequence is not None, "a command is read before a transport is loaded"
     wanted_generation = _sequence()
     if wanted_generation <= generation:
         return None
@@ -582,6 +599,7 @@ def emit(report, report_hook, report_owner, report_generation):
     # Keep that iterative: repeated edits must not nest Python scripts.
     changed = False
     while report is not None:
+        assert len(report) in (3, 4), f"a report of kind {report[0]} has {len(report)} fields"
         report_hook(report[0], report[1], report[2])
         with lock:
             if (report_owner != _owner or report_hook is not hook
@@ -620,6 +638,7 @@ def emit_interruption():
                 # unsent reports and cleanup are conservatively unconfirmed.
                 captured = ((3, number, 3), report_hook, report_owner, number)
         _local.interruption = None
+    assert captured is None or len(captured) == 4, f"an interruption has {len(captured)} fields"
     if captured is not None and captured[1] is not None:
         emit(*captured)
 
@@ -730,6 +749,7 @@ def origin(exc):
 def exception_event(event, frame, exc):
     """The report of an exception at `event` in `frame`, if one stops: one
     raised there, or one leaving its thread's Python code there."""
+    assert event in ('RAISE', 'PY_UNWIND'), f"exception report at {event}"
     if not issubclass(type(exc), BaseException):
         return []
     if event == 'RAISE':
@@ -756,6 +776,8 @@ def exception_event(event, frame, exc):
 
 
 def callback(event):
+    assert event in LOCAL + OTHER + STEPPING, f"a callback for {event}"
+
     def report(code, location, *unused):
         if id(code) in INTERNAL:
             return None
@@ -990,6 +1012,7 @@ def apply(library, wanted_generation, wanted_probes, wanted_step=None, wanted_ex
             _local.context = (next_hook, library, wanted_generation)
             report = configure(library, wanted_generation, wanted_probes, replacement,
                                wanted_step, wanted_exceptions)
+            assert _owner == library, "the transport's owner is not the library that configured it"
             missed = interference()
             if missed is not None:
                 report = missed
