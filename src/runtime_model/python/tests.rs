@@ -1280,6 +1280,78 @@ fn a_thread_list_that_loops_is_a_gap_and_keeps_the_threads_before_it() {
     assert_eq!(gaps, ["interpreter 7's list of threads loops"]);
 }
 
+/// Threads are listed in the order of the debugger's ids, which need not
+/// be the order of their native ids, as after the kernel's ids wrap.
+#[test]
+fn a_stops_threads_are_in_the_order_of_their_ids_not_their_native_ids() {
+    use crate::runtime_model::RuntimeModel;
+
+    let mut process = Process::new(layout());
+    let frame = |process: &mut Process, name: &str| {
+        let code = process.code(name, 1, &[(2, 0)]);
+        let entry = process.entry(0);
+        process.frame(entry, code, process.instruction(code, 0))
+    };
+    let older = frame(&mut process, "older");
+    let newer = frame(&mut process, "newer");
+    let second = process.thread_state(0, newer, 50);
+    let first = process.thread_state(second, older, 100);
+    let interpreter = process.interpreter(0, 0, first);
+    let runtime = process.runtime(interpreter);
+    process.memory.threads = vec![ThreadId::new(1), ThreadId::new(2)];
+    process.memory.target_ids = BTreeMap::from([
+        (
+            ThreadId::new(1),
+            crate::runtime_model::TargetThreadId::new(100),
+        ),
+        (
+            ThreadId::new(2),
+            crate::runtime_model::TargetThreadId::new(50),
+        ),
+    ]);
+
+    let model = super::PythonRuntime {
+        free_threaded: false,
+        entries: Vec::new(),
+        evaluation: Vec::new(),
+        version: crate::image::python::PyVersion(0x030e_00f0),
+        reading: Ok(super::Reading {
+            runtime: crate::AddressRange {
+                start: crate::ImageAddress::new(runtime),
+                end: crate::ImageAddress::new(runtime + SMALL),
+            },
+            layout: process.layout.clone(),
+            code_type: crate::ImageAddress::new(process.code_type),
+            types: Err("not needed for frames".into()),
+            secret: None,
+            code: std::sync::Mutex::default(),
+            pages: std::sync::Mutex::default(),
+        }),
+    };
+    let stacks = model.interpreted(&process.memory).expect("interprets");
+    assert!(stacks.gaps.is_empty(), "{:?}", stacks.gaps);
+    let read = &stacks.value;
+    let threads: Vec<_> = read
+        .threads
+        .iter()
+        .map(|thread| {
+            let names: Vec<_> = read
+                .frames_of(thread)
+                .iter()
+                .map(|frame| frame.function.as_deref())
+                .collect();
+            (thread.thread, names)
+        })
+        .collect();
+    assert_eq!(
+        threads,
+        [
+            (ThreadId::new(1), vec![Some("older")]),
+            (ThreadId::new(2), vec![Some("newer")]),
+        ]
+    );
+}
+
 mod asyncio;
 mod control;
 mod exceptions;

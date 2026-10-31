@@ -546,8 +546,6 @@ impl Reading {
             }
         };
 
-        states.sort_by_key(|state| (state.native, state.interpreter));
-
         let threads = match threads::ThreadIds::new(stop) {
             Ok(threads) => threads,
             Err(problem) => {
@@ -558,6 +556,7 @@ impl Reading {
                 };
             }
         };
+        states.sort_by_cached_key(|state| (threads.lookup(state.native).ok(), state.interpreter));
         walk_threads(
             &mut frames::Walk {
                 reader,
