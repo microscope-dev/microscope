@@ -296,13 +296,12 @@ fn stack_variables(
     let mut found = Vec::new();
 
     // The argument count includes the receiver, kept untagged.
-    let argc = reader
-        .word(at(Constant::StandardFrameArgCOffset)?)?
+    let word = reader.word(at(Constant::StandardFrameArgCOffset)?)?;
+    let argc = word
         .cast_signed()
-        - reader.constant(Constant::JSArgcReceiverSlots)?;
-    if !(0..MAX_SLOTS).contains(&argc) {
-        return Err(format!("the frame's argument count is {argc}").into());
-    }
+        .checked_sub(reader.constant(Constant::JSArgcReceiverSlots)?)
+        .filter(|argc| (0..MAX_SLOTS).contains(argc))
+        .ok_or_else(|| format!("the frame's argument count word is {word:#x}"))?;
     let first = at(Constant::UnoptimizedFrameFirstParamFromFp)?;
     let context = reader.word(at(Constant::OffFpContext)?)?;
     let context = reader
@@ -334,10 +333,10 @@ fn stack_variables(
     } else {
         None
     };
-    let register_at = |index: u32| file - 8 * u64::from(index);
-    let read_register = |index: u32| reader.word(register_at(index));
+    let register_at = |index: u32| file.checked_sub(8 * u64::from(index));
+    let read_register = |index: u32| reader.word(register_at(index).ok_or("no such register")?);
 
-    let argument = |index: u32| reader.word(first + 8 * (u64::from(index) + 1));
+    let argument = |index: u32| reader.word(address_at(first, 8 * (u64::from(index) + 1))?);
     let Names {
         parameters,
         registers: names,
@@ -372,7 +371,7 @@ fn stack_variables(
                 } else {
                     read_register(index)
                 },
-                at: Some(register_at(index)),
+                at: register_at(index),
             });
         }
     }
@@ -391,7 +390,7 @@ fn stack_variables(
                     unnamed: unnamed.clone(),
                 },
                 word: read_register(index),
-                at: Some(register_at(index)),
+                at: register_at(index),
             });
         }
     }
@@ -654,7 +653,7 @@ fn arguments(
     argument: &dyn Fn(u32) -> Result<u64, Problem>,
     first: u64,
 ) -> Vec<Variable> {
-    let at = |index: u32| Some(first + 8 * (u64::from(index) + 1));
+    let at = |index: u32| first.checked_add(8 * (u64::from(index) + 1));
     let passed = u32::try_from(argc).unwrap_or(0);
     let mut found = Vec::new();
     for index in 0..passed {
@@ -1000,4 +999,45 @@ fn local_names(
         .into());
     }
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::objects::tests::{Heap, layout, reader};
+    use crate::VirtualAddress;
+    use crate::image::v8::{Constant, Field};
+    use crate::runtime_model::InterpretedFrameRef;
+
+    #[test]
+    fn a_frame_whose_argument_count_overflows_is_a_problem() {
+        let mut layout = layout();
+        let function = layout.constant(Constant::JSFunctionType).unwrap();
+        for (constant, value) in [
+            (Constant::OffFpFunction, -16),
+            (Constant::StandardFrameArgCOffset, -24),
+            (Constant::JSArgcReceiverSlots, 1),
+            (Constant::FirstJSFunctionType, function),
+            (Constant::LastJSFunctionType, function),
+        ] {
+            layout.set_constant(constant, value);
+        }
+        let mut heap = Heap::default();
+        heap.word(0x1000, 0x1001);
+        heap.word(
+            0x1000 + layout.field(Field::MapInstanceType).unwrap(),
+            function.cast_unsigned(),
+        );
+        heap.word(0x2000, 0x1001);
+        let fp = 0x9000;
+        heap.word(fp - 16, 0x2001);
+        heap.word(fp - 24, 1 << 63);
+
+        let frame = InterpretedFrameRef {
+            address: VirtualAddress::new(fp),
+            live_registers: true,
+        };
+        let problem = super::variables(&reader(&heap, &layout), frame)
+            .expect_err("the argument count is out of range");
+        assert!(problem.contains("argument count"), "{problem}");
+    }
 }

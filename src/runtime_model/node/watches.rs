@@ -289,26 +289,88 @@ fn frame_slot(reader: &Reader<'_>, fp: u64, address: u64) -> Result<bool, Proble
         .ok_or("the frame runs no JavaScript function")?;
     if let Some(count) = variables::registers(reader, fp, function)? {
         let file = at(Constant::UnoptimizedFrameRegisterFileFromFp)?;
-        let lowest = file - 8 * u64::from(count.saturating_sub(1));
+        let lowest = file
+            .checked_sub(8 * u64::from(count.saturating_sub(1)))
+            .ok_or("the frame's registers lie below the start of the address space")?;
         if count > 0 && (lowest..=file).contains(&address) && (file - address).is_multiple_of(8) {
             return Ok(true);
         }
         // The arguments: as many as the call passed, or as the function
         // declares, whose slots V8 fills with undefined.
-        let argc = reader
-            .word(at(Constant::StandardFrameArgCOffset)?)?
+        let word = reader.word(at(Constant::StandardFrameArgCOffset)?)?;
+        let argc = word
             .cast_signed()
-            - reader.constant(Constant::JSArgcReceiverSlots)?;
+            .checked_sub(reader.constant(Constant::JSArgcReceiverSlots)?)
+            .ok_or_else(|| format!("the frame's argument count word {word:#x} is out of range"))?;
         let declared = i64::try_from(variables::parameters(reader, function)?)
             .map_err(|_| "too many parameters")?;
         let count = u64::try_from(argc.max(declared)).unwrap_or(0);
         let receiver = at(Constant::UnoptimizedFrameFirstParamFromFp)?;
-        if address > receiver
-            && address <= receiver + 8 * count
-            && (address - receiver).is_multiple_of(8)
-        {
+        let last = count
+            .checked_mul(8)
+            .and_then(|bytes| receiver.checked_add(bytes))
+            .ok_or_else(|| format!("the frame's argument count {count} is out of range"))?;
+        if address > receiver && address <= last && (address - receiver).is_multiple_of(8) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::objects::tests::{Heap, layout, reader};
+    use crate::image::v8::{Constant, Field};
+
+    #[test]
+    fn a_frame_whose_argument_count_overflows_is_a_problem() {
+        let mut layout = layout();
+        let ty = |constant| layout.constant(constant).unwrap().cast_unsigned();
+        let (function, shared, bytecode) = (
+            ty(Constant::JSFunctionType),
+            ty(Constant::SharedFunctionInfoType),
+            ty(Constant::BytecodeArrayType),
+        );
+        for (constant, value) in [
+            (Constant::OffFpFunction, -16),
+            (Constant::OffFpBytecodeArray, -32),
+            (Constant::StandardFrameArgCOffset, -24),
+            (Constant::UnoptimizedFrameRegisterFileFromFp, -48),
+            (Constant::UnoptimizedFrameFirstParamFromFp, 16),
+            (Constant::JSArgcReceiverSlots, 1),
+            (Constant::FirstJSFunctionType, function.cast_signed()),
+            (Constant::LastJSFunctionType, function.cast_signed()),
+        ] {
+            layout.set_constant(constant, value);
+        }
+        let field = |field| layout.field(field).unwrap();
+        let mut heap = Heap::default();
+        for (map, ty) in [(0x1000, function), (0x1100, shared), (0x1200, bytecode)] {
+            heap.word(map, map + 1);
+            heap.word(map + field(Field::MapInstanceType), ty);
+        }
+        // A function whose shared information runs a bytecode array of one
+        // register and declares no parameters.
+        heap.word(0x2000, 0x1001);
+        heap.word(0x2000 + field(Field::JSFunctionSharedFunctionInfo), 0x3001);
+        heap.word(0x3000, 0x1101);
+        heap.word(
+            0x3000 + field(Field::SharedFunctionInfoTrustedFunctionData),
+            0x4001,
+        );
+        heap.word(
+            0x3000 + field(Field::SharedFunctionInfoFormalParameterCount),
+            1,
+        );
+        heap.word(0x4000, 0x1201);
+        heap.word(0x4000 + field(Field::BytecodeArrayFrameSize), 8);
+
+        let fp = 0x9000;
+        heap.word(fp - 16, 0x2001);
+        heap.word(fp - 32, 0x4001);
+        heap.word(fp - 24, 1 << 62);
+        let problem = super::frame_slot(&reader(&heap, &layout), fp, fp + 24)
+            .expect_err("the argument count is out of range");
+        assert!(problem.contains("argument count"), "{problem}");
+    }
 }
