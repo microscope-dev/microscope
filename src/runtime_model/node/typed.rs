@@ -81,6 +81,29 @@ pub(super) const fn size(element: ElementType) -> u64 {
     }
 }
 
+const _: () = {
+    use ElementType as E;
+    let all = [
+        E::Int8,
+        E::Uint8,
+        E::Uint8Clamped,
+        E::Int16,
+        E::Uint16,
+        E::Int32,
+        E::Uint32,
+        E::Float16,
+        E::Float32,
+        E::Float64,
+        E::BigInt64,
+        E::BigUint64,
+    ];
+    let mut at = 0;
+    while at < all.len() {
+        assert!(size(all[at]) == all[at].size() as u64);
+        at += 1;
+    }
+};
+
 /// The constructor name for typed arrays of `element`, as the
 /// `Symbol.toStringTag` getter of `%TypedArray%.prototype` returns it.
 pub(super) const fn constructor_name(element: ElementType) -> &'static str {
@@ -188,6 +211,13 @@ pub(super) fn array_buffer(
             full,
         )?)
     };
+    debug_assert!(
+        bytes
+            .as_ref()
+            .is_none_or(|bytes| bytes.len() as u64 <= SHOWN),
+        "the buffer {:#x} shows more than {SHOWN} bytes",
+        object.0,
+    );
     Ok(Kind::ArrayBuffer {
         shared: buffer.shared,
         byte_length: if buffer.detached {
@@ -269,6 +299,12 @@ pub(super) fn typed_array(
         length.min(SHOWN).saturating_mul(size(element)),
         full,
     )?;
+    debug_assert!(
+        bytes.len() as u64 <= SHOWN * size(element),
+        "the typed array {:#x} shows {} bytes, past {SHOWN} elements",
+        object.0,
+        bytes.len(),
+    );
     Ok(Kind::TypedArray {
         element,
         length,

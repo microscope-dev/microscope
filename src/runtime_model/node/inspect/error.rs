@@ -189,6 +189,20 @@ impl<'g> Ctx<'g> {
 
         if frames.len() > 10 {
             let ranges = duplicate_frame_ranges(&frames);
+            debug_assert!(
+                ranges
+                    .last()
+                    .is_none_or(|last| last.offset + last.length * last.repeats <= frames.len()),
+                "a repeat of frames passes the {} frames",
+                frames.len(),
+            );
+            debug_assert!(
+                ranges.windows(2).all(|pair| {
+                    pair[0].offset + pair[0].length * pair[0].repeats <= pair[1].offset
+                }),
+                "two repeats of the {} frames overlap",
+                frames.len(),
+            );
             for range in ranges.iter().rev() {
                 let lines = range.length * range.repeats;
                 let message = format!(
@@ -342,6 +356,11 @@ fn identical_sequence_range(a: &[String], b: &[&str]) -> (usize, usize) {
                 length += 1;
             }
             if length > 3 {
+                debug_assert!(
+                    i + length <= a.len(),
+                    "a run of {length} frames from frame {i} passes the {} frames",
+                    a.len(),
+                );
                 return (length, i);
             }
         }

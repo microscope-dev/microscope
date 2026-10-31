@@ -184,11 +184,11 @@ pub(super) fn elements(
             .object(word)?
             .ok_or_else(|| format!("the elements of {:#x} are not an object", holder.0).into())
     };
-    match store {
+    let found = match store {
         Store::Tagged | Store::StringWrapper { dictionary: false } => {
-            fast_elements(reader, backing()?, range)
+            fast_elements(reader, backing()?, range.clone())
         }
-        Store::Doubles => double_elements(reader, backing()?, range),
+        Store::Doubles => double_elements(reader, backing()?, range.clone()),
         Store::Dictionary | Store::StringWrapper { dictionary: true } => {
             let mut found = dictionary_elements(reader, backing()?)?;
             found.retain(|element| range.contains(&element.index));
@@ -198,7 +198,18 @@ pub(super) fn elements(
         Store::SloppyArguments => {
             Err("sloppy-mode arguments alias the frame's variables, and microscope does not follow them".into())
         }
-    }
+    }?;
+    debug_assert!(
+        found.iter().all(|element| range.contains(&element.index)),
+        "the elements of {:#x} hold an index outside {range:?}",
+        holder.0,
+    );
+    debug_assert!(
+        found.is_sorted_by_key(|element| element.index),
+        "the elements of {:#x} are out of index order",
+        holder.0,
+    );
+    Ok(found)
 }
 
 /// The requested slots within a fixed backing store's capacity, bounded by
@@ -387,6 +398,13 @@ pub(super) fn all_named(reader: &Reader<'_>, holder: Object) -> Result<Vec<Named
     };
     // A stable sort keeps each kind's own order.
     found.sort_by_key(|property| property.symbol);
+    debug_assert!(
+        !found
+            .iter()
+            .any(|property| matches!(property.held, Held::Double { .. })),
+        "a named property of {:#x} holds a double element",
+        holder.0,
+    );
     Ok(found)
 }
 
@@ -576,12 +594,18 @@ pub(super) fn words(reader: &Reader<'_>, address: u64, count: i64) -> Result<Vec
     let count = usize::try_from(count).map_err(|_| "a negative count of words")?;
     let mut bytes = vec![0; count * 8];
     reader.bytes_into(address, &mut bytes)?;
-    Ok(bytes
+    let words: Vec<u64> = bytes
         .as_chunks::<8>()
         .0
         .iter()
         .map(|word| u64::from_le_bytes(*word))
-        .collect())
+        .collect();
+    debug_assert_eq!(
+        words.len(),
+        count,
+        "reading {count} words at {address:#x} gave another number",
+    );
+    Ok(words)
 }
 
 /// The properties in a global object's global dictionary, in enumeration

@@ -45,6 +45,7 @@ pub(super) fn listed(
         return Ok(());
     };
 
+    let before = tasks.len();
     let mut count = 0;
     for list in own::elements(&reader, module.lists, 0..u32::MAX)? {
         let Held::Data(list) = list.held else {
@@ -70,6 +71,12 @@ pub(super) fn listed(
             timer = linked(&reader, timer, "_idleNext")?;
         }
     }
+    debug_assert_eq!(
+        tasks.len() - before,
+        count,
+        "the timers of the environment at {:#x} gave tasks other than one per timer",
+        environment.address,
+    );
     Ok(())
 }
 

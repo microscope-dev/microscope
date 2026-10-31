@@ -309,6 +309,15 @@ impl SourceMap {
         if start.line != at.line {
             return None;
         }
+        debug_assert!(
+            start <= at,
+            "segment {index} covers {at:?} but starts after it at {start:?}",
+        );
+        debug_assert!(
+            index < self.originals.len(),
+            "segment {index} has no row among {} originals",
+            self.originals.len(),
+        );
 
         Some(Covering {
             start: start.column,
@@ -346,8 +355,13 @@ impl SourceMap {
             .get(start..end)
             .unwrap_or_default()
             .iter()
-            .filter_map(|&index| {
+            .filter_map(move |&index| {
                 let generated = *self.generated.get(usize::try_from(index).ok()?)?;
+                debug_assert!(
+                    self.original_at(generated)
+                        .is_some_and(|place| place.source == source && place.line == line),
+                    "segment {index} at {generated:?} is indexed under source {source} line {line:?} but does not map back to it",
+                );
                 Some(GeneratedMatch {
                     generated,
                     original_column: self.original_of(index)?.column,
@@ -384,6 +398,10 @@ impl SourceMap {
             .filter(|candidate| candidate.original_column == chosen)
             .map(|candidate| candidate.generated)
             .collect();
+        debug_assert!(
+            !positions.is_empty(),
+            "column {chosen:?} was chosen from line {line:?} of source {source}, but no match has it",
+        );
         positions.sort_unstable();
         positions
     }
@@ -622,6 +640,11 @@ impl Builder {
             };
             ids.push(self.add_source(source, shared));
         }
+        debug_assert_eq!(
+            ids.len(),
+            sources.len(),
+            "a section's source ids differ in number from its sources",
+        );
 
         let names = raw.names.as_deref().unwrap_or_default();
         let first_name = self.name_ends.len();
@@ -634,6 +657,11 @@ impl Builder {
                 })?;
             self.name_ends.push(end);
         }
+        debug_assert_eq!(
+            self.name_ends.len(),
+            first_name + names.len(),
+            "a section's names do not end the name table",
+        );
 
         decode_mappings(
             mappings.as_bytes(),
@@ -655,6 +683,11 @@ impl Builder {
             self.shared.insert(source.clone(), id);
         }
         self.sources.push(source);
+        debug_assert_eq!(
+            id.index() + 1,
+            self.sources.len(),
+            "source {id} is not the last of the table",
+        );
         id
     }
 
@@ -822,10 +855,12 @@ fn generated_position(offset: Position, line: u32, column: u32) -> Option<Positi
     } else {
         column
     };
-    Some(Position::new(
-        Line(offset.line.0.checked_add(line)?),
-        Column(column),
-    ))
+    let position = Position::new(Line(offset.line.0.checked_add(line)?), Column(column));
+    debug_assert!(
+        position >= offset,
+        "line {line} column {column} of a section lies before its offset {offset:?}",
+    );
+    Some(position)
 }
 
 /// Decodes one base64 VLQ at `at`, moving `at` past it. Values are limited
@@ -866,6 +901,14 @@ fn decode_vlq(text: &[u8], at: &mut usize) -> Result<i64> {
         }
     }
 
+    debug_assert!(
+        *at > start,
+        "a number at byte {start} was decoded from no digits"
+    );
+    debug_assert!(
+        value < 1 << 32,
+        "a number at byte {start} decoded past 32 bits"
+    );
     let magnitude = i64::try_from(value >> 1).unwrap_or(i64::MAX);
     Ok(if value & 1 == 0 {
         magnitude
@@ -1087,6 +1130,12 @@ fn percent_decode(text: &str) -> Vec<u8> {
             at += 1;
         }
     }
+    debug_assert!(
+        out.len() <= bytes.len(),
+        "percent-decoding {} bytes made {}",
+        bytes.len(),
+        out.len(),
+    );
     out
 }
 
@@ -1275,6 +1324,12 @@ fn forgiving_base64(input: &[u8]) -> Option<Vec<u8>> {
             out.push(u8::try_from((buffer >> bits) & 0xff).ok()?);
         }
     }
+    debug_assert_eq!(
+        out.len(),
+        digits.len() * 6 / 8,
+        "{} base64 digits decoded to the wrong number of bytes",
+        digits.len(),
+    );
     Some(out)
 }
 

@@ -434,6 +434,12 @@ impl<'g> Ctx<'g> {
                 base = format!("{reference} {base}");
             }
         }
+        debug_assert_eq!(
+            self.seen.last(),
+            Some(&object.address),
+            "leaving the object at {} with another innermost",
+            object.address,
+        );
         self.seen.pop();
 
         self.reduce_to_single_string(output, &base, (&open, close), entries, level, Some(object))
@@ -813,6 +819,11 @@ impl<'g> Ctx<'g> {
         if length > shown {
             output.push(remaining_text(length - shown));
         }
+        debug_assert!(
+            output.len() <= shown + 1,
+            "an array of {shown} shown elements formatted {} entries",
+            output.len(),
+        );
         output
     }
 
@@ -850,6 +861,11 @@ impl<'g> Ctx<'g> {
             output.push(text);
             index += 1;
         }
+        debug_assert!(
+            output.len() <= max_length,
+            "an array with holes formatted {} entries past its {max_length}",
+            output.len(),
+        );
         if exhausted && array.listed_below < array.length {
             let listed_below = usize::try_from(array.listed_below).unwrap_or(usize::MAX);
             if let Some(empty) = listed_below.checked_sub(index).filter(|empty| *empty > 0) {
@@ -1071,6 +1087,12 @@ impl<'g> Ctx<'g> {
             {
                 grouped.push(last.clone());
             }
+            debug_assert!(
+                grouped.len() < output.len(),
+                "grouping {} entries in {columns} columns made {} rows",
+                output.len(),
+                grouped.len(),
+            );
             return grouped;
         }
         output
@@ -1194,6 +1216,11 @@ fn format_typed_array(element: ElementType, length: u64, bytes: &[u8]) -> Vec<St
     if length > shown {
         output.push(remaining_text(length - shown));
     }
+    debug_assert!(
+        output.len() <= shown + 1,
+        "a typed array of {shown} shown elements formatted {} entries",
+        output.len(),
+    );
     output
 }
 
@@ -1246,6 +1273,12 @@ impl ElementType {
 
     /// An element's text, from exactly `size` little-endian bytes.
     fn format(self, bytes: &[u8]) -> String {
+        debug_assert_eq!(
+            bytes.len(),
+            self.size(),
+            "a {} element formatted from the wrong number of bytes",
+            self.name(),
+        );
         let mut raw = [0u8; 8];
         raw[..bytes.len().min(8)].copy_from_slice(&bytes[..bytes.len().min(8)]);
         let [b0, b1, b2, b3, ..] = raw;

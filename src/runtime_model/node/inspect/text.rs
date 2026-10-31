@@ -22,6 +22,8 @@ fn meta(unit: u16) -> Option<&'static str> {
         "\\x93", "\\x94", "\\x95", "\\x96", "\\x97", "\\x98", "\\x99", "\\x9A", "\\x9B", "\\x9C",
         "\\x9D", "\\x9E", "\\x9F",
     ];
+    const _: () = assert!(LOW.len() == 0x1f + 1);
+    const _: () = assert!(HIGH.len() == 0x9f - 0x7f + 1);
     match unit {
         0x00..=0x1f => LOW.get(usize::from(unit)).copied(),
         0x27 => Some("\\'"),
@@ -190,6 +192,10 @@ pub fn bigint_to_string(value: &BigInt) -> String {
         let mut remainder: u128 = 0;
         for digit in digits.iter_mut().rev() {
             let current = (remainder << 64) | u128::from(*digit);
+            debug_assert!(
+                current / CHUNK <= u128::from(u64::MAX),
+                "a BigInt digit's quotient by 10^19 does not fit 64 bits"
+            );
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "the quotient of a value below CHUNK << 64 by CHUNK fits"
@@ -233,6 +239,14 @@ pub fn iso_date(time: f64) -> Option<String> {
     let days = time.div_euclid(DAY);
     let ms = time.rem_euclid(DAY);
     let (year, month, day) = civil_from_days(days);
+    debug_assert!(
+        (1..=12).contains(&month),
+        "day {days} from the epoch falls in month {month}"
+    );
+    debug_assert!(
+        (1..=31).contains(&day),
+        "day {days} from the epoch falls on day {day} of its month"
+    );
     let year = if (0..=9999).contains(&year) {
         format!("{year:04}")
     } else if year < 0 {

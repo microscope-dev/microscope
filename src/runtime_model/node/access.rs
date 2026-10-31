@@ -388,6 +388,12 @@ pub(super) fn operand(
             let mut units = Vec::new();
             let limit = u64::try_from(TextSummary::MAX_BYTES).unwrap_or(256);
             reader.string_into(object, 0, limit, 0, &mut units)?;
+            debug_assert!(
+                units.len() as u64 <= limit,
+                "the operand string {:#x} read {} units past its limit of {limit}",
+                object.0,
+                units.len(),
+            );
             let raw: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
             let completion = if length <= limit {
                 TextCompletion::Complete

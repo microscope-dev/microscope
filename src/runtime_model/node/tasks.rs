@@ -94,6 +94,9 @@ const UV_REQUEST_TYPES: [&str; 11] = [
     "random",
 ];
 const UV_FS: u32 = 6;
+const _: () = assert!(matches!(UV_REQUEST_TYPES[UV_FS as usize].as_bytes(), b"fs"));
+const _: () = assert!((UV_HANDLE_CLOSING | UV_HANDLE_ACTIVE | UV_HANDLE_REF).count_ones() == 3);
+const _: () = assert!(WORKER_SHIFT < POOL_JOB.trailing_zeros());
 
 /// libuv's file operations, from `UV_FS_CUSTOM` (`uv_fs_type`).
 const UV_FS_OPERATIONS: [&str; 37] = [
@@ -157,16 +160,21 @@ impl Owner {
             reason = "a whole number from 1 to 2^32 - 1"
         )]
         let id = async_id as u64;
-        match self {
-            Self::Main => Ok(id),
+        let number = match self {
+            Self::Main => id,
             Self::Worker(thread) => {
                 // Linux's thread ids are below 2^22.
                 if thread.get() >= POOL_JOB >> WORKER_SHIFT {
                     return Err(format!("thread {thread}'s id is too large to number").into());
                 }
-                Ok((thread.get() << WORKER_SHIFT) | id)
+                (thread.get() << WORKER_SHIFT) | id
             }
-        }
+        };
+        debug_assert!(
+            pool_thread(number).is_none(),
+            "async id {id} of {self:?} numbers {number:#x}, which names a pool job",
+        );
+        Ok(number)
     }
 }
 
@@ -279,6 +287,11 @@ pub(super) fn listed(
         gaps.push("two of Node's tasks have one async id, so the list was misread".into());
         tasks.dedup_by_key(|task| task.number);
     }
+    debug_assert!(
+        tasks.is_sorted_by(|before, after| before.number < after.number),
+        "the {} Node tasks listed are not in strictly increasing number",
+        tasks.len(),
+    );
     (tasks, gaps)
 }
 
@@ -446,6 +459,14 @@ fn entries(reader: &Reader<'_>, environment: u64, list: List) -> Result<Vec<u64>
         previous = node;
         node = reader.word(node + list.next)?;
     }
+    debug_assert_eq!(
+        found
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        found.len(),
+        "the list at {head:#x} holds a node twice though each links back to the one before",
+    );
     Ok(found)
 }
 

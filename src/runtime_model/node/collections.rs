@@ -106,5 +106,10 @@ pub(super) fn all_entries(
         )
         .into());
     }
+    debug_assert!(
+        found.iter().all(|(_, value)| value.is_some() == map),
+        "the table {:#x} read entries whose values do not match it being a map: {map}",
+        table.0,
+    );
     Ok((found, live))
 }

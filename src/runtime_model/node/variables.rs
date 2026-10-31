@@ -160,6 +160,28 @@ fn bind(
         }
         binding.registers.push(Some(Arc::clone(&local.name)));
     }
+    debug_assert_eq!(
+        binding.parameters.len(),
+        parameters.len(),
+        "the binding names {} parameters of {}",
+        binding.parameters.len(),
+        parameters.len(),
+    );
+    debug_assert_eq!(
+        binding.registers.len(),
+        first as usize + locals.len(),
+        "the binding from register {first} names {} registers for {} locals",
+        binding.registers.len(),
+        locals.len(),
+    );
+    debug_assert!(
+        binding
+            .uninitialized
+            .iter()
+            .all(|index| (*index as usize) < binding.registers.len()),
+        "the binding marks a register past its {} as uninitialized",
+        binding.registers.len(),
+    );
     Ok(binding)
 }
 
@@ -849,6 +871,18 @@ fn located_locals(reader: &Reader<'_>, context: Object) -> Result<Vec<(String, u
     }
     let start = scope.0 - reader.constant(Constant::HeapObjectTag)?.cast_unsigned();
     let names = local_names(reader, scope, start, count)?;
+    debug_assert!(
+        names
+            .iter()
+            .all(|(index, _)| i64::try_from(*index).is_ok_and(|index| index < count)),
+        "the scope {:#x} names a context local past its {count}",
+        scope.0,
+    );
+    debug_assert!(
+        names.is_sorted_by_key(|(index, _)| *index),
+        "the context locals of the scope {:#x} are out of index order",
+        scope.0,
+    );
 
     let flags = super::names::scope_flags(reader, scope)?;
     let extension = flags & reader.constant(Constant::ScopeHasContextExtensionSlotMask)? != 0;

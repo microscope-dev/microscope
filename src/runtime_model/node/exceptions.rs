@@ -4,6 +4,14 @@
 use crate::protocol::{ExceptionFilter, ExceptionStops, LanguageExceptionKind};
 
 pub const EXCEPTION_FILTERS: [ExceptionFilter; 2] = [THROWN, UNCAUGHT];
+const _: () = assert!(matches!(
+    EXCEPTION_FILTERS[0].kind,
+    LanguageExceptionKind::Raised
+));
+const _: () = assert!(matches!(
+    EXCEPTION_FILTERS[1].kind,
+    LanguageExceptionKind::Unhandled
+));
 
 const THROWN: ExceptionFilter = ExceptionFilter {
     id: "javascript-thrown",

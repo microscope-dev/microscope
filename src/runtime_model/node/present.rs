@@ -371,6 +371,11 @@ pub(super) fn children(
             index += 1;
         }
     }
+    debug_assert!(
+        found.len() as u64 <= range.end.saturating_sub(range.start),
+        "the children {range:?} of {word:#x} are {} values",
+        found.len(),
+    );
     Ok(found)
 }
 

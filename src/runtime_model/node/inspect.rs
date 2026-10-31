@@ -61,6 +61,11 @@ impl ValueGraph {
     pub fn push(&mut self, object: Object) -> Option<ObjectId> {
         let id = ObjectId::new(u32::try_from(self.objects.len()).ok()?);
         self.objects.push(object);
+        debug_assert_eq!(
+            id.index() + 1,
+            self.objects.len(),
+            "row {id} is not the last of the graph",
+        );
         Some(id)
     }
 
@@ -109,10 +114,17 @@ impl JsString {
     #[must_use]
     pub fn new(units: Vec<u16>, length: u32) -> Self {
         let read = u32::try_from(units.len()).unwrap_or(u32::MAX);
-        Self {
+        let string = Self {
             units,
             length: length.max(read),
-        }
+        };
+        debug_assert!(
+            string.units.len() <= string.length as usize,
+            "a string of length {} holds {} units",
+            string.length,
+            string.units.len(),
+        );
+        string
     }
 
     /// A string whose units were all read.

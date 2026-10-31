@@ -56,10 +56,16 @@ impl<'r> Builder<'r> {
         if self.depth >= MAX_READ_DEPTH {
             return Value::Unreadable("the object or proxy chain is too long".to_owned());
         }
+        let depth = self.depth;
         self.depth += 1;
         let value = self
             .read(word, level)
             .unwrap_or_else(|problem| Value::Unreadable(problem.to_string()));
+        debug_assert_eq!(
+            self.depth,
+            depth + 1,
+            "reading {word:#x} left the read depth unbalanced",
+        );
         self.depth -= 1;
         value
     }
@@ -113,6 +119,15 @@ impl<'r> Builder<'r> {
         if let Some(&(row, read)) = self.rows.get(&object.0)
             && (read || !full)
         {
+            debug_assert!(
+                self.graph.row(row).is_some_and(|kept| {
+                    self.reader
+                        .constant(Constant::HeapObjectTag)
+                        .is_ok_and(|tag| kept.address.get() + tag.cast_unsigned() == object.0)
+                }),
+                "the rows find the object {:#x} at row {row}, which holds another",
+                object.0,
+            );
             return Ok(row);
         }
         let tag = self
@@ -141,6 +156,10 @@ impl<'r> Builder<'r> {
                 kind: Kind::Boxed(Value::Unreadable(problem.to_string())),
                 properties: Vec::new(),
             });
+        debug_assert!(
+            self.graph.row(row).is_some(),
+            "row {row} of the object at {address} is gone before its contents are kept",
+        );
         if let Some(slot) = self.graph.object_mut(row) {
             *slot = read;
         }
@@ -711,6 +730,12 @@ pub(super) fn string(reader: &Reader<'_>, object: Object, limit: u64) -> Result<
         .map_err(|_| format!("the string {:#x} has a negative length", object.0))?;
     let mut units = Vec::new();
     reader.string_into(object, 0, limit, 0, &mut units)?;
+    debug_assert!(
+        units.len() as u64 <= limit,
+        "the string {:#x} read {} units past its limit of {limit}",
+        object.0,
+        units.len(),
+    );
     Ok(JsString::new(units, length))
 }
 

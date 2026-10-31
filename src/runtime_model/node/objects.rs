@@ -67,6 +67,11 @@ impl Reader<'_> {
                     Some(copied) if copied > 0 => done += copied,
                     _ => break,
                 }
+                debug_assert!(
+                    done <= bytes.len(),
+                    "the block cache copied {done} bytes into {} at {address:#x}",
+                    bytes.len(),
+                );
             }
             if done == bytes.len() {
                 return Ok(());
@@ -282,6 +287,12 @@ impl Reader<'_> {
         }
         let mut text = Vec::new();
         self.string_into(object, 0, MAX_STRING, 0, &mut text)?;
+        debug_assert!(
+            text.len() as u64 <= MAX_STRING,
+            "the string {:#x} read {} units past its limit of {MAX_STRING}",
+            object.0,
+            text.len(),
+        );
         if text.len() as u64 != length {
             return Err("the string's contents end before its declared length".into());
         }
@@ -379,10 +390,15 @@ impl Reader<'_> {
         one_byte: bool,
         text: &mut Vec<u16>,
     ) -> Result<(), Problem> {
+        debug_assert!(
+            start < end,
+            "reading the units {start}..{end} of the string at {address:#x}, which are none",
+        );
         let width = if one_byte { 1 } else { 2 };
         let length = usize::try_from((end - start) * width).map_err(|_| "a string is too long")?;
         let mut bytes = vec![0; length];
         self.bytes_into(address + start * width, &mut bytes)?;
+        let before = text.len();
         if one_byte {
             text.extend(bytes.iter().map(|byte| u16::from(*byte)));
         } else {
@@ -394,6 +410,11 @@ impl Reader<'_> {
                     .map(|pair| u16::from_le_bytes(*pair)),
             );
         }
+        debug_assert_eq!(
+            (text.len() - before) as u64,
+            end - start,
+            "the string at {address:#x} appended the wrong number of units for {start}..{end}",
+        );
         Ok(())
     }
 }
