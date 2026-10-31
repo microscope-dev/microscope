@@ -112,6 +112,12 @@ export function decode(datum: Datum, bytes: Uint8Array): Value {
     case "entries":
       return datum.entries.map(([key, value]) => [decode(key, bytes), decode(value, bytes)]);
     case "numbers": {
+      if (!Object.hasOwn(ARRAYS, datum.kind)) {
+        throw new DecodeError(`numbers of kind ${JSON.stringify(datum.kind)} are not known`);
+      }
+      if (!Number.isSafeInteger(datum.count)) {
+        throw new DecodeError(`${datum.count} ${datum.kind} numbers are not a whole count`);
+      }
       const Kind = ARRAYS[datum.kind];
       const length = datum.count * Kind.BYTES_PER_ELEMENT;
       within(bytes, datum.offset, length, `${datum.count} ${datum.kind} numbers`);

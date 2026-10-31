@@ -27,4 +27,17 @@ describe("decodeInputs", () => {
       new DecodeError("samples: 4 bytes at byte 10 lie past the 12 bytes sent"),
     );
   });
+
+  it("refuses a count that is not whole, or a kind it does not know", () => {
+    const frame = new Uint8Array(8);
+    // One and a half i16 numbers are three whole bytes.
+    const half = input({ t: "numbers", kind: "i16", offset: 0, count: 1.5 });
+    expect(() => decodeInputs(half, frame)).toThrow(DecodeError);
+    expect(() => decodeInputs(half, frame)).toThrow("samples: ");
+    for (const kind of ["f16", "toString"]) {
+      const unknown = input({ t: "numbers", kind, offset: 0, count: 1 } as DrawInput["value"]);
+      expect(() => decodeInputs(unknown, frame)).toThrow(DecodeError);
+      expect(() => decodeInputs(unknown, frame)).toThrow("samples: ");
+    }
+  });
 });
