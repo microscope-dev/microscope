@@ -422,3 +422,208 @@ fn computed_values_are_written_as_their_language_writes_them() {
 
     assert_eq!(shown(&literal(1)), None);
 }
+
+mod properties {
+    use std::cmp::Ordering;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// A nonnegative integer as 64-bit limbs, low first: just enough
+    /// arithmetic to compare a quotient with a double exactly.
+    fn wide(value: u128) -> Vec<u64> {
+        #[expect(clippy::cast_possible_truncation, reason = "the low limb")]
+        let low = value as u64;
+        let high = (value >> 64) as u64;
+        vec![low, high]
+    }
+
+    fn times(limbs: &[u64], factor: u64) -> Vec<u64> {
+        let mut carry = 0_u128;
+        let mut product: Vec<u64> = limbs
+            .iter()
+            .map(|&limb| {
+                let sum = u128::from(limb) * u128::from(factor) + carry;
+                carry = sum >> 64;
+                #[expect(clippy::cast_possible_truncation, reason = "the low limb")]
+                let low = sum as u64;
+                low
+            })
+            .collect();
+        product.extend(wide(carry));
+        product
+    }
+
+    fn shifted(limbs: &[u64], bits: u32) -> Vec<u64> {
+        let mut shifted = vec![0; (bits / 64) as usize];
+        let (by, mut carry) = (bits % 64, 0);
+        for &limb in limbs {
+            shifted.push(if by == 0 { limb } else { (limb << by) | carry });
+            carry = if by == 0 { 0 } else { limb >> (64 - by) };
+        }
+
+        shifted.push(carry);
+        shifted
+    }
+
+    fn compare(left: &[u64], right: &[u64]) -> Ordering {
+        let length = left.len().max(right.len());
+        let limb = |limbs: &[u64], at: usize| limbs.get(at).copied().unwrap_or(0);
+        (0..length)
+            .rev()
+            .map(|at| limb(left, at).cmp(&limb(right, at)))
+            .find(|order| order.is_ne())
+            .unwrap_or(Ordering::Equal)
+    }
+
+    /// A positive normal double as `mantissa · 2^exponent`.
+    fn parts(value: f64) -> (u128, i32) {
+        let bits = value.to_bits();
+        let exponent = i32::try_from(bits >> 52).expect("positive") - 1075;
+        (u128::from(bits & ((1 << 52) - 1) | 1 << 52), exponent)
+    }
+
+    /// The point halfway between two neighboring positive doubles.
+    fn midpoint(low: f64, high: f64) -> (u128, i32) {
+        let ((low, low_exponent), (high, high_exponent)) = (parts(low), parts(high));
+        let exponent = low_exponent.min(high_exponent);
+        let sum = (low << (low_exponent - exponent)) + (high << (high_exponent - exponent));
+        (sum, exponent - 1)
+    }
+
+    /// `dividend / divisor` against `mantissa · 2^exponent`, exactly.
+    fn compare_quotient(
+        dividend: u128,
+        divisor: u128,
+        (mantissa, exponent): (u128, i32),
+    ) -> Ordering {
+        let mantissa = u64::try_from(mantissa).expect("a midpoint has 55 bits");
+        let left = shifted(&wide(dividend), (-exponent).max(0).unsigned_abs());
+        let right = shifted(
+            &times(&wide(divisor), mantissa),
+            exponent.max(0).unsigned_abs(),
+        );
+        compare(&left, &right)
+    }
+
+    /// An exact integer: small ones, powers of two and their neighbors,
+    /// and any in range, of either sign.
+    fn exact() -> impl Strategy<Value = Exact> {
+        let magnitude = prop_oneof![
+            0_u128..1000,
+            (0_u32..128, 0_u128..3)
+                .prop_map(|(shift, add)| (1_u128 << shift).saturating_add(add).saturating_sub(1)),
+            0_u128..(1 << 60),
+            any::<u128>(),
+        ];
+
+        (any::<bool>(), magnitude).prop_map(|(negative, magnitude)| {
+            if negative && magnitude <= 1 << 127 {
+                Exact::from(magnitude.cast_signed().wrapping_neg())
+            } else {
+                Exact::from(magnitude)
+            }
+        })
+    }
+
+    fn nonzero() -> impl Strategy<Value = Exact> {
+        exact().prop_map(|value| {
+            if value.is_zero() {
+                Exact::from(1_u128)
+            } else {
+                value
+            }
+        })
+    }
+
+    fn py_exact(value: Exact) -> Loaded {
+        of(Some(Rules::Python), LoadedValue::Int(value))
+    }
+
+    /// `x mod modulus`, in `0..modulus`.
+    fn modulo(value: Exact, modulus: u128) -> u128 {
+        let rest = value.magnitude() % modulus;
+        if value.is_negative() && rest != 0 {
+            modulus - rest
+        } else {
+            rest
+        }
+    }
+
+    const TWO_53: i64 = 1 << 53;
+
+    proptest! {
+        /// Operands a double holds exactly divide as their doubles do,
+        /// which IEEE division rounds once.
+        #[test]
+        fn python_divides_small_integers_as_doubles(
+            left in -TWO_53..=TWO_53,
+            right in (1..=TWO_53, any::<bool>()).prop_map(|(right, negative)| if negative { -right } else { right }),
+        ) {
+            let actual = float(binary(BinaryOp::Div, &py_int(left.into()), &py_int(right.into())));
+            #[expect(clippy::cast_precision_loss, reason = "both fit in 53 bits")]
+            let expected = left as f64 / right as f64;
+            prop_assert!(same(actual, expected), "{} / {} is {}, not {}", left, right, actual, expected);
+        }
+
+        /// Any quotient is the double nearest the exact one, ties to
+        /// even, with the operands' sign; by a power of two it is the
+        /// dividend's nearest double, scaled.
+        #[test]
+        fn python_divides_integers_rounding_once(left in exact(), right in nonzero()) {
+            let actual = float(binary(BinaryOp::Div, &py_exact(left), &py_exact(right)));
+            let negative = left.is_negative() != right.is_negative();
+            prop_assert_eq!(actual.is_sign_negative(), negative, "{:?} / {:?} is {}", left, right, actual);
+
+            let magnitude = actual.abs();
+            let (dividend, divisor) = (left.magnitude(), right.magnitude());
+            if dividend == 0 {
+                prop_assert_eq!(magnitude.to_bits(), 0);
+            } else {
+                let below = compare_quotient(dividend, divisor, midpoint(magnitude.next_down(), magnitude));
+                let above = compare_quotient(dividend, divisor, midpoint(magnitude, magnitude.next_up()));
+                let even = parts(magnitude).0.is_multiple_of(2);
+                prop_assert!(below.is_ge() && above.is_le(), "{:?} / {:?} is {}", left, right, actual);
+                prop_assert!(even || (below.is_gt() && above.is_lt()), "{:?} / {:?}: a tie to odd {}", left, right, actual);
+            }
+
+            if divisor.is_power_of_two() {
+                #[expect(clippy::cast_precision_loss, reason = "the one rounding")]
+                let expected = dividend as f64 / divisor as f64;
+                prop_assert_eq!(magnitude.to_bits(), expected.to_bits());
+            }
+        }
+
+        /// `a % b` has `b`'s sign, is smaller than `b`, and differs from
+        /// `a` by a multiple of `b`: `a == floor(a / b) · b + r`.
+        #[test]
+        fn python_remainders_take_the_divisors_sign(left in exact(), right in nonzero()) {
+            let result = binary(BinaryOp::Rem, &py_exact(left), &py_exact(right)).expect("a remainder");
+            let LoadedValue::Int(rest) = result.value else {
+                panic!("not an integer: {result:?}");
+            };
+
+            prop_assert!(rest.is_zero() || rest.is_negative() == right.is_negative(), "{:?} % {:?} is {:?}", left, right, rest);
+            prop_assert!(rest.magnitude() < right.magnitude(), "{:?} % {:?} is {:?}", left, right, rest);
+            prop_assert_eq!(modulo(left, right.magnitude()), modulo(rest, right.magnitude()));
+        }
+
+        /// `x | 0` is `ToInt32(x)`: an integer-valued double below 2^63
+        /// wraps as an `i64` cut to 32 bits, and any other drops its
+        /// fraction first.
+        #[test]
+        fn javascript_bit_operators_take_32_bits(
+            mantissa in -TWO_53..TWO_53,
+            shift in -60_i32..=10,
+        ) {
+            #[expect(clippy::cast_precision_loss, reason = "the mantissa has 53 bits")]
+            let value = mantissa as f64 * 2_f64.powi(shift);
+            let actual = float(binary(BinaryOp::BitOr, &js_number(value), &js_number(0.0)));
+
+            #[expect(clippy::cast_possible_truncation, reason = "the rule under test")]
+            let expected = f64::from((value as i64) as i32);
+            prop_assert!(same(actual, expected), "{} | 0 is {}, not {}", value, actual, expected);
+        }
+    }
+}

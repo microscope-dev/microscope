@@ -160,6 +160,8 @@ pub fn run(program: &[Instruction], arch: u32, number: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::syscalls::{Filter, SyscallId};
 
@@ -204,5 +206,126 @@ mod tests {
         assert_eq!(filter(&calls(&["trace=all"])), [op(RETURN, RET_TRACE)]);
         let none = filter(&calls(&["trace=none"]));
         assert_eq!(run(&none, AUDIT_ARCH_X86_64, 0), Some(RET_ALLOW));
+    }
+
+    /// The rules the kernel's `bpf_check_classic` and
+    /// `seccomp_check_filter` hold a program to, apart from `run`: at
+    /// most `BPF_MAXINSNS` instructions, only the codes seccomp allows,
+    /// loads of aligned `seccomp_data` words, every jump landing inside
+    /// the program, and a return last.
+    fn check_structure(program: &[Instruction]) -> Result<(), TestCaseError> {
+        prop_assert!(
+            !program.is_empty() && program.len() <= 4096,
+            "{} instructions",
+            program.len()
+        );
+
+        for (at, instruction) in program.iter().enumerate() {
+            let lands = |offset: usize| at + 1 + offset < program.len();
+            match instruction.code {
+                LOAD_WORD => prop_assert!(instruction.k % 4 == 0 && instruction.k < 64),
+                JUMP => prop_assert!(
+                    lands(instruction.k as usize),
+                    "ja {} at {at}",
+                    instruction.k
+                ),
+                JUMP_EQUAL | JUMP_SET => prop_assert!(
+                    lands(usize::from(instruction.jt)) && lands(usize::from(instruction.jf)),
+                    "{instruction:?} at {at}"
+                ),
+                RETURN => {}
+                code => prop_assert!(false, "code {code:#x} at {at}"),
+            }
+        }
+
+        prop_assert_eq!(program[program.len() - 1].code, RETURN);
+        Ok(())
+    }
+
+    fn every_call() -> Vec<SyscallId> {
+        crate::syscalls::table::all().collect()
+    }
+
+    /// A set built by `trace=` lists of single calls, some removing, so
+    /// that both small sets and nearly every call come up.
+    fn call_set() -> impl Strategy<Value = CallSet> {
+        let list = prop::collection::vec(prop::sample::select(every_call()), 0..12);
+        let first = prop::sample::select(vec!["trace=all", "trace=none", ""]);
+
+        (first, prop::collection::vec((any::<bool>(), list), 0..4)).prop_map(|(first, lists)| {
+            let mut expressions = vec![first.to_owned()];
+            for (negated, ids) in lists {
+                let names = ids
+                    .iter()
+                    .map(|id| format!("{}@{}", id.display_name(), id.abi.suffix()))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let bang = if negated { "!" } else { "" };
+                expressions.push(format!("trace={bang}{names}"));
+            }
+
+            let expressions: Vec<&str> = expressions
+                .iter()
+                .map(String::as_str)
+                .filter(|text| !text.is_empty())
+                .collect();
+            calls(&expressions)
+        })
+    }
+
+    /// Numbers to run a program on: listed calls, numbers past every
+    /// table, and words with the x32 bit or others set.
+    fn number() -> impl Strategy<Value = u32> {
+        prop_oneof![
+            3 => prop::sample::select(every_call()).prop_map(|id| id.number),
+            1 => 0u32..1024,
+            1 => (0u32..1024).prop_map(|number| number | X32_SYSCALL_BIT),
+            1 => any::<u32>(),
+        ]
+    }
+
+    proptest! {
+        /// For any set of calls, the filter is a program the kernel
+        /// accepts that traces exactly the set's calls, in each ABI, and
+        /// lets everything else run.
+        #[test]
+        fn filters_trace_exactly_their_calls(
+            calls in call_set(),
+            members in prop::collection::vec(any::<prop::sample::Index>(), 32),
+            numbers in prop::collection::vec(number(), 32),
+            other_arch in any::<u32>(),
+        ) {
+            let program = filter(&calls);
+            check_structure(&program)?;
+
+            let traced = |traced: bool| if traced || calls.is_all() { RET_TRACE } else { RET_ALLOW };
+
+            // Calls in the set, then numbers of any kind.
+            let listed: Vec<SyscallId> = calls.iter().collect();
+            let members = members.iter().filter(|_| !listed.is_empty()).map(|index| {
+                let id = listed[index.index(listed.len())];
+                match id.abi {
+                    Abi::X86_64 => (AUDIT_ARCH_X86_64, id.number),
+                    Abi::X32 => (AUDIT_ARCH_X86_64, id.number | X32_SYSCALL_BIT),
+                    Abi::X86_32 => (AUDIT_ARCH_I386, id.number),
+                }
+            });
+            let others = numbers.iter().flat_map(|&number| {
+                [(AUDIT_ARCH_X86_64, number), (AUDIT_ARCH_I386, number), (other_arch, number)]
+            });
+
+            for (arch, number) in members.chain(others) {
+                let expected = match arch {
+                    AUDIT_ARCH_X86_64 if number & X32_SYSCALL_BIT != 0 => traced(
+                        calls.contains(SyscallId::new(Abi::X32, number & !X32_SYSCALL_BIT)),
+                    ),
+                    AUDIT_ARCH_X86_64 => traced(calls.contains(SyscallId::new(Abi::X86_64, number))),
+                    AUDIT_ARCH_I386 => traced(calls.contains(SyscallId::new(Abi::X86_32, number))),
+                    _ => traced(false),
+                };
+
+                prop_assert_eq!(run(&program, arch, number), Some(expected), "{:#x} {:#x}", arch, number);
+            }
+        }
     }
 }

@@ -32,6 +32,7 @@ macro_rules! edges {
 
 edges! {
     u64_edges: u64,
+    i128_edges: i128,
 }
 
 #[cfg(test)]

@@ -816,6 +816,12 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64, style: &Style) {
             text.push_str("|FUTEX_CLOCK_REALTIME");
         }
 
+        // The kernel rejects any other bit, so it shows rather than vanish.
+        let rest = value & !0x1ff;
+        if rest != 0 {
+            let _ = write!(text, "|{rest:#x}");
+        }
+
         constant(out, &text, value, style);
         return;
     }

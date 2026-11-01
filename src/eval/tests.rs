@@ -1,11 +1,13 @@
 //! Runs every example in the language's reference, `docs/expressions.md`,
 //! so that the reference and the implementation cannot drift apart.
 
+use proptest::prelude::*;
+
 use super::bind::{Mode, bind};
 use super::error::ExpressionError;
 use super::fake::world;
 use super::interp::{Assigned, Failure, Outcome, run};
-use super::number::Float;
+use super::number::{Exact, Float};
 use super::syntax::Expression;
 use crate::{FloatValue, IntegerValue, ScalarValue, VariableState, VariableValue};
 
@@ -457,8 +459,7 @@ fn too_little_work_ends_in_an_unavailable_value_never_a_wrong_one() {
 }
 
 /// Expressions from the language's grammar over the memory world's names.
-fn world_expression() -> impl proptest::strategy::Strategy<Value = String> {
-    use proptest::prelude::*;
+fn world_expression() -> impl Strategy<Value = String> {
     let leaf = prop_oneof![
         Just("s"),
         Just("s.a"),
@@ -546,21 +547,33 @@ fn world_expression() -> impl proptest::strategy::Strategy<Value = String> {
     })
 }
 
-proptest::proptest! {
-    /// Whatever an expression is, evaluating it never panics, reads only
-    /// mapped memory it may, runs the same twice, and presents the type the
-    /// binder computed.
-    #[test]
-    fn generated_expressions_evaluate_consistently(text in world_expression()) {
-        let Ok(expression) = Expression::parse(&text) else {
-            return Ok(());
-        };
+/// Whatever an expression is, evaluating it never panics, reads only
+/// mapped memory it may, runs the same twice, and presents the type the
+/// binder computed. Most generated expressions mix types the binder
+/// refuses, so the cases that bind are counted and must not fall below a
+/// floor: about 10% bind.
+#[test]
+fn generated_expressions_evaluate_consistently() {
+    use proptest::test_runner::{Config, TestRunner};
+
+    let config = Config {
+        source_file: Some(file!()),
+        ..Config::default()
+    };
+    let mut runner = TestRunner::new(config);
+    let bound = std::cell::Cell::new(0_u32);
+
+    let result = runner.run(&world_expression(), |text| {
+        let expression = Expression::parse(&text);
+        proptest::prop_assert!(expression.is_ok(), "`{}` does not parse", text);
+        let expression = expression.expect("checked");
 
         let mut world = super::fake::memory();
         let Ok(program) = bind(&expression, &world, Mode::Read) else {
             return Ok(());
         };
 
+        bound.set(bound.get() + 1);
         let expected = super::types::type_info(&world, program.result()).name;
         let first = run(&program, &mut world);
         let second = run(&program, &mut world);
@@ -569,6 +582,303 @@ proptest::proptest! {
             let presented = value.type_info.map(|info| info.name);
             proptest::prop_assert_eq!(presented.as_ref(), Some(&expected), "`{}`", text);
         }
+
+        Ok(())
+    });
+
+    if let Err(failure) = result {
+        panic!("{failure}");
+    }
+
+    let cases = runner.config().cases;
+    assert!(
+        bound.get() * 30 >= cases,
+        "only {} of {cases} expressions bound",
+        bound.get()
+    );
+}
+
+/// What an expression of exact integers is: an integer or a truth value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Model {
+    Int(Exact),
+    Bool(bool),
+}
+
+/// A generated expression and what the reference says of it.
+#[derive(Debug, Clone)]
+struct Part {
+    text: String,
+
+    /// Its value, or an arithmetic error at the text of the part that
+    /// failed, in the order evaluation reaches them.
+    value: Result<Model, String>,
+
+    /// A literal, or `-` of one: the binder folds those into one literal,
+    /// as it does `-129i8`.
+    literal: bool,
+
+    /// The first folded literal out of range, which the binder refuses
+    /// before anything runs, in a branch evaluation would skip too.
+    refused: Option<String>,
+}
+
+impl Part {
+    /// The part as an operand in parentheses, which its span then
+    /// includes: an error at the part itself is at the parenthesized text.
+    fn grouped(self) -> Self {
+        let text = self.text.clone();
+        let wrap = move |failed: String| {
+            if failed == text {
+                format!("({failed})")
+            } else {
+                failed
+            }
+        };
+
+        Self {
+            value: self.value.map_err(&wrap),
+            refused: self.refused.map(&wrap),
+            ..self
+        }
+    }
+
+    fn int(&self) -> Result<Exact, String> {
+        match &self.value {
+            Ok(Model::Int(value)) => Ok(*value),
+            Ok(Model::Bool(_)) => unreachable!("integers only"),
+            Err(failed) => Err(failed.clone()),
+        }
+    }
+
+    /// The part combining operands, refused at the first operand that is.
+    fn of(text: String, value: Result<Model, String>, operands: &[&Self]) -> Self {
+        let refused = operands.iter().find_map(|operand| operand.refused.clone());
+        Self {
+            text,
+            value,
+            literal: false,
+            refused,
+        }
+    }
+}
+
+fn truth(model: &Model) -> bool {
+    match model {
+        Model::Int(value) => !value.is_zero(),
+        Model::Bool(value) => *value,
+    }
+}
+
+/// An exact literal as the language may write it.
+fn literal() -> impl Strategy<Value = Part> {
+    let value = prop_oneof![
+        3 => 0_u128..300,
+        2 => (0_u32..128, -1_i32..=1)
+            .prop_map(|(shift, offset)| (1_u128 << shift).saturating_add_signed(offset.into())),
+        1 => prop::sample::select(vec![u128::MAX, 1 << 127, i128::MAX.cast_unsigned()]),
+        1 => any::<u128>(),
+    ];
+
+    (value, 0_usize..4).prop_map(|(value, spelling)| {
+        let text = match spelling {
+            0 => format!("{value:#x}"),
+            1 => format!("{value:#b}"),
+            2 => format!("{value:#o}").replacen("0o", "0o_", 1),
+            _ => value.to_string(),
+        };
+
+        Part {
+            text,
+            value: Ok(Model::Int(Exact::from(value))),
+            literal: true,
+            refused: None,
+        }
+    })
+}
+
+/// `+ - * / % & | ^ << >>` of two operands, and `-` or `~` of one.
+fn integer_parts(inner: BoxedStrategy<Part>) -> impl Strategy<Value = Part> {
+    use super::number::BitOperator;
+
+    let integer = |value: Result<Exact, super::number::NumberError>, text: &str| {
+        value.map(Model::Int).map_err(|_| text.to_owned())
+    };
+
+    let arithmetic = (
+        inner.clone(),
+        prop::sample::select(vec!["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]),
+        inner.clone(),
+    )
+        .prop_map(move |(left, op, right)| {
+            let text = format!("({}) {op} ({})", left.text, right.text);
+            let value = left.int().and_then(|a| {
+                let b = right.int()?;
+                integer(
+                    match op {
+                        "+" => a.add(b),
+                        "-" => a.sub(b),
+                        "*" => a.mul(b),
+                        "/" => a.div(b),
+                        "%" => a.rem(b),
+                        "&" => a.bitwise(BitOperator::And, b),
+                        "|" => a.bitwise(BitOperator::Or, b),
+                        "^" => a.bitwise(BitOperator::Xor, b),
+                        "<<" => a.shl(b),
+                        _ => a.shr(b),
+                    },
+                    &text,
+                )
+            });
+            Part::of(text, value, &[&left, &right])
+        });
+
+    let prefix = (prop::sample::select(vec!["-", "~"]), inner).prop_map(move |(op, operand)| {
+        let text = format!("{op}({})", operand.text);
+        let value = operand
+            .int()
+            .and_then(|value| integer(if op == "-" { value.neg() } else { value.not() }, &text));
+
+        let folded = op == "-" && operand.literal;
+        let mut part = Part::of(text.clone(), value.clone(), &[&operand]);
+        part.literal = folded;
+        if folded && part.refused.is_none() && value.is_err() {
+            part.refused = Some(text);
+        }
+
+        part
+    });
+
+    prop_oneof![2 => arithmetic, 1 => prefix]
+}
+
+/// `?:` over a comparison, `&&`, `||`, `!`, or an integer's truth.
+fn conditional_parts(inner: BoxedStrategy<Part>) -> impl Strategy<Value = Part> {
+    let comparison = (
+        inner.clone(),
+        prop::sample::select(vec!["==", "!=", "<", "<=", ">", ">="]),
+        inner.clone(),
+    )
+        .prop_map(move |(left, op, right)| {
+            let text = format!("({}) {op} ({})", left.text, right.text);
+            let value = left.int().and_then(|a| {
+                let b = right.int()?;
+                Ok(Model::Bool(match op {
+                    "==" => a == b,
+                    "!=" => a != b,
+                    "<" => a < b,
+                    "<=" => a <= b,
+                    ">" => a > b,
+                    _ => a >= b,
+                }))
+            });
+            Part::of(text, value, &[&left, &right])
+        });
+
+    let truth_of = prop_oneof![comparison.prop_map(Part::grouped), inner.clone()];
+    let logic = (
+        truth_of.clone(),
+        prop::sample::select(vec!["&&", "||"]),
+        truth_of.clone(),
+    )
+        .prop_map(|(left, op, right)| {
+            let text = format!("({}) {op} ({})", left.text, right.text);
+            let value = left
+                .value
+                .clone()
+                .and_then(|value| match (op, truth(&value)) {
+                    ("&&", false) => Ok(Model::Bool(false)),
+                    ("||", true) => Ok(Model::Bool(true)),
+                    _ => right.value.clone().map(|right| Model::Bool(truth(&right))),
+                });
+            Part::of(text, value, &[&left, &right])
+        });
+
+    let not = truth_of.clone().prop_map(|operand| {
+        let text = format!("!({})", operand.text);
+        let value = operand
+            .value
+            .clone()
+            .map(|value| Model::Bool(!truth(&value)));
+        Part::of(text, value, &[&operand])
+    });
+
+    (
+        prop_oneof![
+            truth_of,
+            logic.prop_map(Part::grouped),
+            not.prop_map(Part::grouped)
+        ],
+        inner.clone(),
+        inner,
+    )
+        .prop_map(|(condition, then, otherwise)| {
+            let text = format!(
+                "({}) ? ({}) : ({})",
+                condition.text, then.text, otherwise.text
+            );
+            let value = condition.value.clone().and_then(|condition| {
+                if truth(&condition) {
+                    then.value.clone()
+                } else {
+                    otherwise.value.clone()
+                }
+            });
+            Part::of(text, value, &[&condition, &then, &otherwise])
+        })
+}
+
+/// Expressions of exact integer literals, with comparisons, truth
+/// operators, and conditionals, each with the value the language's
+/// reference gives it: exact arithmetic within -2^127..2^128, infinite
+/// two's complement for bits, and `&&`, `||`, and `?:` evaluating only
+/// what they need.
+fn literal_expression() -> impl Strategy<Value = Part> {
+    literal()
+        .prop_recursive(4, 24, 3, |inner| {
+            // Every operand below is written in parentheses.
+            let inner = inner.prop_map(Part::grouped).boxed();
+            prop_oneof![
+                6 => integer_parts(inner.clone()),
+                1 => conditional_parts(inner),
+            ]
+        })
+        .prop_flat_map(|whole| {
+            // A whole expression may also be a truth value.
+            let comparison = (
+                Just(whole.clone().grouped()),
+                prop::sample::select(vec!["==", "<"]),
+                literal(),
+            )
+                .prop_map(|(left, op, right)| {
+                    let text = format!("({}) {op} ({})", left.text, right.text);
+                    let value = left.int().and_then(|a| {
+                        let b = right.int()?;
+                        Ok(Model::Bool(if op == "==" { a == b } else { a < b }))
+                    });
+                    Part::of(text, value, &[&left, &right])
+                });
+            prop_oneof![3 => Just(whole), 1 => comparison]
+        })
+}
+
+proptest::proptest! {
+    // A negative operand of a bitwise operator with one above 2^127 is
+    // rare, and took a bug to find; 1024 cases cost about 0.15 s.
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(1024))]
+
+    /// Literal arithmetic, comparisons, and truth operators evaluate to
+    /// the model's value, or to an arithmetic error at the part the model
+    /// says failed.
+    #[test]
+    fn literal_expressions_evaluate_to_their_value(part in literal_expression()) {
+        let expected = match (part.refused, part.value) {
+            (Some(failed), _) | (None, Err(failed)) => format!("error arithmetic at `{failed}`"),
+            (None, Ok(Model::Int(value))) => format!("{value} : integer"),
+            (None, Ok(Model::Bool(value))) => format!("{value} : bool"),
+        };
+
+        proptest::prop_assert_eq!(evaluate("scalars", &part.text), expected, "`{}`", part.text);
     }
 }
 
@@ -626,4 +936,28 @@ fn the_evaluator_stays_pure() {
     }
 
     assert!(checked >= 6, "the evaluator's sources were found");
+}
+
+/// Found by `literal_expressions_evaluate_to_their_value`: a bitwise result
+/// of two exact integers beyond the range blamed its left operand, which
+/// is a fine value, rather than the operation.
+#[test]
+fn bitwise_results_out_of_range_point_at_the_operation() {
+    let text = "(-(0x1)) ^ ((0o_103) | (0xb07d992beac56249596f30113b3d4011))";
+    assert_eq!(
+        evaluate("scalars", text),
+        format!("error arithmetic at `{text}`")
+    );
+
+    let text = "0xb07d992beac56249596f30113b3d4011 ^ -1";
+    assert_eq!(
+        evaluate("scalars", text),
+        format!("error arithmetic at `{text}`")
+    );
+
+    // An exact operand too wide for a typed one is still the culprit.
+    assert_eq!(
+        evaluate("scalars", "uc | 0x100"),
+        "error arithmetic at `0x100`"
+    );
 }

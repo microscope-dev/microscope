@@ -117,8 +117,9 @@ impl SyscallStats {
     }
 
     /// An estimate of the `q` quantile (0 to 1) of the timed calls'
-    /// durations, interpolated linearly within its log2 bucket and never
-    /// above the largest seen. The bucket bounds it within a factor of two.
+    /// durations, interpolated linearly within its log2 bucket and between
+    /// the shortest and largest seen. The bucket bounds it within a factor
+    /// of two.
     #[must_use]
     pub fn quantile_ns(&self, q: f64) -> Option<u64> {
         if self.timed == 0 {
@@ -140,8 +141,12 @@ impl SyscallStats {
             }
 
             if seen + count >= rank {
+                // The extremes narrow the first and last buckets.
                 let (low, high) = bucket_range(index);
-                let high = high.min(self.max_ns.saturating_add(1)).max(low + 1);
+                let low = low.max(self.min_ns);
+                let high = high
+                    .min(self.max_ns.saturating_add(1))
+                    .max(low.saturating_add(1));
 
                 #[expect(
                     clippy::cast_precision_loss,
@@ -246,6 +251,8 @@ impl Folded {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -312,5 +319,104 @@ mod tests {
             (merged.calls, merged.errors_by_errno[&2], merged.max_ns),
             (12, 2, 5_000)
         );
+    }
+
+    /// Found by `quantiles_lie_between_the_extremes_in_the_true_bucket`:
+    /// the estimate went below the shortest call.
+    #[test]
+    fn equal_durations_give_that_duration_at_every_quantile() {
+        let mut stats = SyscallStats::default();
+        stats.add(Outcome::Returned(0), Some(6), 0);
+        assert_eq!(stats.quantile_ns(0.0), Some(6));
+
+        let mut stats = SyscallStats::default();
+        stats.add(Outcome::Returned(0), Some(u64::MAX), 0);
+        assert_eq!(stats.quantile_ns(0.0), Some(u64::MAX));
+
+        let mut stats = SyscallStats::default();
+        for _ in 0..5 {
+            stats.add(Outcome::Returned(0), Some(1000), 0);
+        }
+
+        assert_eq!(stats.quantile_ns(0.5), Some(1000));
+        assert_eq!(stats.quantile_ns(0.9), Some(1000));
+    }
+
+    type Call = (Outcome, Option<u64>, u64);
+
+    fn duration() -> impl Strategy<Value = u64> {
+        prop_oneof![
+            crate::test_strategies::u64_edges(),
+            0u64..5000,
+            (0u32..64, -1i64..=1)
+                .prop_map(|(shift, off)| (1u64 << shift).saturating_add_signed(off)),
+        ]
+    }
+
+    fn calls() -> impl Strategy<Value = Vec<Call>> {
+        let outcome = prop_oneof![
+            Just(Outcome::Returned(0)),
+            (1u16..5).prop_map(|errno| Outcome::Failed(Errno(errno))),
+        ];
+        let call = (
+            outcome,
+            prop::option::weighted(0.8, duration()),
+            prop_oneof![0u64..100, crate::test_strategies::u64_edges()],
+        );
+
+        prop::collection::vec(call, 0..40)
+    }
+
+    fn stats_of(calls: &[Call]) -> SyscallStats {
+        let mut stats = SyscallStats::default();
+        for &(outcome, duration, bytes) in calls {
+            stats.add(outcome, duration, bytes);
+        }
+
+        stats
+    }
+
+    proptest! {
+        /// Folding calls one by one or per part and merging gives the same
+        /// stats, whichever part has no timed calls.
+        #[test]
+        fn adding_all_calls_equals_merging_the_parts(a in calls(), b in calls()) {
+            let mut merged = stats_of(&a);
+            merged.merge(&stats_of(&b));
+
+            let whole: Vec<Call> = a.iter().chain(&b).copied().collect();
+            prop_assert_eq!(merged, stats_of(&whole));
+        }
+
+        /// The estimate of the `q` quantile lies between the shortest and
+        /// longest calls, in the log2 bucket of the call at rank
+        /// `ceil(q·n)`. `q` is a multiple of 1/64, so `q·n` is exact.
+        #[test]
+        fn quantiles_lie_between_the_extremes_in_the_true_bucket(
+            durations in prop::collection::vec(duration(), 1..40),
+            sixty_fourths in 0u64..=64,
+        ) {
+            let calls: Vec<Call> = durations
+                .iter()
+                .map(|&duration| (Outcome::Returned(0), Some(duration), 0))
+                .collect();
+            let stats = stats_of(&calls);
+
+            let mut sorted = durations;
+            sorted.sort_unstable();
+            let n = sorted.len() as u64;
+            let rank = (sixty_fourths * n).div_ceil(64).max(1);
+            let truth = sorted[usize::try_from(rank - 1).expect("small")];
+
+            #[expect(clippy::cast_precision_loss, reason = "at most 64")]
+            let q = sixty_fourths as f64 / 64.0;
+            let estimate = stats.quantile_ns(q).expect("timed calls");
+
+            prop_assert!(
+                (sorted[0]..=sorted[sorted.len() - 1]).contains(&estimate),
+                "{estimate} outside {}..={}", sorted[0], sorted[sorted.len() - 1]
+            );
+            prop_assert_eq!(bucket(estimate), bucket(truth), "{} vs the true {}", estimate, truth);
+        }
     }
 }

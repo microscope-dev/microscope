@@ -648,4 +648,175 @@ mod tests {
         assert!(!by_path.shows(&event, &[], &|_| None));
         assert!(by_path.shows(&event, &["/etc/hosts"], &|_| None));
     }
+
+    /// What one element of a `trace=` set names.
+    #[derive(Debug, Clone)]
+    enum Element {
+        Name(&'static str),
+        Regex(&'static str),
+        Class(&'static str),
+        All,
+        None,
+        Missing,
+    }
+
+    /// An element, its personality, and whether `?` marks it optional.
+    type Part = (Element, Option<Abi>, bool);
+
+    /// The calls a part names, or `None` when it must fail to parse.
+    fn model(&(ref element, abi, optional): &Part) -> Option<BTreeSet<SyscallId>> {
+        let abis: Vec<Abi> = abi.map_or_else(|| Abi::ALL.to_vec(), |abi| vec![abi]);
+        let named = |wanted: &dyn Fn(&str) -> bool| -> BTreeSet<SyscallId> {
+            abis.iter()
+                .flat_map(|&abi| {
+                    table::calls(abi)
+                        .iter()
+                        .filter(|(_, name)| wanted(name))
+                        .map(move |&(number, _)| SyscallId::new(abi, number))
+                })
+                .collect()
+        };
+
+        // strace reads a class's old name, without `%`, where no 64-bit
+        // call has the name, as `signal` and `ipc`.
+        let element = match element {
+            Element::Name(name)
+                if Class::named(name).is_some() && table::number(Abi::X86_64, name).is_none() =>
+            {
+                &Element::Class(name)
+            }
+            element => element,
+        };
+
+        let calls = match element {
+            Element::Name(wanted) | Element::Regex(wanted) => named(&|name| name == *wanted),
+            // A class holds a call by its name, in every ABI.
+            Element::Class(class) => {
+                let classes = match *class {
+                    "%stat" => vec![Class::Stat, Class::Lstat, Class::Fstat],
+                    "%statfs" => vec![Class::Statfs, Class::Fstatfs],
+                    class => vec![Class::named(class).expect("a class")],
+                };
+
+                named(&|name| {
+                    (*class == "%statfs" && name == "ustat")
+                        || specs::spec_named(name).is_some_and(|spec| {
+                            classes.iter().any(|&class| spec.classes.contains(class))
+                        })
+                })
+            }
+            Element::All => named(&|_| true),
+            Element::None => return Some(BTreeSet::new()),
+            Element::Missing => BTreeSet::new(),
+        };
+
+        (optional || !calls.is_empty()).then_some(calls)
+    }
+
+    fn text(&(ref element, abi, optional): &Part) -> String {
+        let body = match element {
+            Element::Name(name) => (*name).to_owned(),
+            Element::Regex(name) => format!("/^{name}$"),
+            Element::Class(class) => format!("%{class}"),
+            Element::All => "all".to_owned(),
+            Element::None => "none".to_owned(),
+            Element::Missing => "nosuchcall".to_owned(),
+        };
+        let optional = if optional { "?" } else { "" };
+        let abi = abi.map_or(String::new(), |abi| format!("@{}", abi.suffix()));
+        format!("{optional}{body}{abi}")
+    }
+
+    fn part() -> impl Strategy<Value = Part> {
+        let names: Vec<&'static str> = Abi::ALL
+            .iter()
+            .flat_map(|&abi| table::calls(abi).iter().map(|&(_, name)| name))
+            .collect();
+        let classes: Vec<&'static str> = Class::ALL
+            .iter()
+            .map(|class| class.name())
+            .chain(["%stat", "%statfs"])
+            .collect();
+
+        let element = prop_oneof![
+            6 => prop::sample::select(names.clone()).prop_map(Element::Name),
+            1 => prop::sample::select(names).prop_map(Element::Regex),
+            3 => prop::sample::select(classes).prop_map(Element::Class),
+            1 => Just(Element::All),
+            1 => Just(Element::None),
+            1 => Just(Element::Missing),
+        ];
+        let abi = prop::option::of(prop::sample::select(Abi::ALL.to_vec()));
+        (element, abi, prop::bool::weighted(0.2))
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// `trace=` expressions against a set model: everything at first,
+        /// then the first plain set replaces it, later plain sets add,
+        /// and negated sets remove, whatever their order.
+        #[test]
+        fn trace_sets_combine_as_sets_do(
+            sets in prop::collection::vec(
+                (any::<bool>(), prop::collection::vec(part(), 1..4), 0usize..3),
+                1..5,
+            ),
+        ) {
+            let mut expected = Some(table::all().collect::<BTreeSet<_>>());
+            let mut replaced = false;
+            let mut expressions = Vec::new();
+
+            for (negated, parts, spelling) in &sets {
+                let mut named = Some(BTreeSet::new());
+                for part in parts {
+                    named = named.zip(model(part)).map(|(mut named, more)| {
+                        named.extend(more);
+                        named
+                    });
+                }
+
+                expected = expected.zip(named).map(|(calls, named)| {
+                    if *negated {
+                        calls.difference(&named).copied().collect()
+                    } else if replaced {
+                        calls.union(&named).copied().collect()
+                    } else {
+                        named
+                    }
+                });
+                replaced |= !negated;
+
+                let list = parts.iter().map(text).collect::<Vec<_>>().join(",");
+                let bang = if *negated { "!" } else { "" };
+                expressions.push(match spelling {
+                    0 => format!("trace={bang}{list}"),
+                    1 => format!("t={bang}{list}"),
+                    _ => format!("{bang}{list}"),
+                });
+            }
+
+            let parsed = Filter::parse(&expressions, &signal).map(|filter| filter.calls);
+            match (expected, parsed) {
+                (None, Ok(calls)) => {
+                    prop_assert!(false, "{expressions:?} parsed to {} calls", calls.len());
+                }
+                (Some(_), Err(error)) => prop_assert!(false, "{expressions:?}: {error}"),
+                (None, Err(_)) => {}
+                (Some(expected), Ok(calls)) => {
+                    prop_assert!(calls.iter().eq(expected.iter().copied()), "{} calls, expected {}", calls.len(), expected.len());
+                    prop_assert_eq!(calls.is_all(), expected.len() == table::all().count());
+
+                    for id in table::all() {
+                        prop_assert_eq!(calls.contains(id), expected.contains(&id), "{:?}", id);
+                    }
+
+                    for abi in Abi::ALL {
+                        prop_assert!(!calls.contains(SyscallId::new(abi, table::limit(abi))));
+                        prop_assert!(!calls.contains(SyscallId::new(abi, u32::MAX)));
+                    }
+                }
+            }
+        }
+    }
 }
