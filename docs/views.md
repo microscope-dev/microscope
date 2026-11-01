@@ -83,6 +83,26 @@ Without a debug session, use `microscope views explain PROGRAM TYPE` or
 session or embedded view matches no type, binds to none of its matches, or
 has an invalid visualizer. Use it to check your views in CI.
 
+`views check` groups presented types by view and rejected types by view and
+binding cause. Each group gives a count and an example. Repeated causes keep
+their expression, line, and missing member or conversion target, but ignore
+the concrete type operand when grouping. `views explain PROGRAM TYPE` keeps
+every exact candidate and rejection for that type; use the same `--views`
+files as the check.
+
+Incomplete debug declarations and unsupported type representations have
+separate sections. These labels come from the type's metadata, not its name
+or a missing member. A type with unknown size is not necessarily incomplete.
+Other rejections remain binding failures: they can mean an incompatible view,
+missing nested debug information, or an unsupported operation, not necessarily
+a wrong layout. This check does not repair missing optimized debug types or
+validate values in a running process. Built-in rejections alone do not change
+the exit status.
+
+An unused view that was tried but never bound is listed separately from one
+not tried for any type. The latter can mean its types are absent from the
+debug information or an earlier view won before it was tried.
+
 A binding failure tries the next candidate. A failure while reading a value
 does **not**: failed checks, invalid tags, or inconsistent counts report a
 problem and fall back to raw storage. An unreadable element appears as

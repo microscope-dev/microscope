@@ -1859,6 +1859,24 @@ fn symbol_versions_tell_apart_definitions_of_one_name() {
     );
 }
 
+#[test]
+fn pending_rust_function_names_offer_loaded_spellings_without_selecting_them() {
+    let output = batch(
+        &["build/test-programs/probes"],
+        &["break std::process::Command::exec", "breakpoints"],
+    );
+    assert_in_order(
+        &output,
+        &[
+            "breakpoint 1 set, pending until a module with its code loads",
+            "loaded names with the same final component (not selected):",
+            "<std::process::Command as std::os::unix::process::CommandExt>::exec",
+            "1   +      0  std::process::Command::exec  pending",
+        ],
+    );
+    assert!(!output.contains("breakpoint 2"), "{output}");
+}
+
 /// Code without debug information is broken at by its symbols: a function
 /// the program imports waits for its library, an indirect function stops
 /// in the implementation chosen for the machine, and C++ names are read
@@ -3027,8 +3045,10 @@ fn views_check_and_explain_a_programs_types_without_a_process() {
             "not presented, though views name them:",
             "point",
             "app.views:2 `c point`: line 3: `z`: `z` is neither a member",
-            "views that present no type:",
+            "views not tried for any type (absent or shadowed):",
             "app.views:5 `c widget`",
+            "views that match types but bind none:",
+            "app.views:2 `c point`",
         ],
     );
 

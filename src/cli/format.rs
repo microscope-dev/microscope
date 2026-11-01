@@ -2807,6 +2807,12 @@ pub fn type_views(name: &str, types: &[microscope::TypeViews], renderer: Rendere
             renderer.paint(Role::Metadata, views.module.display())
         ));
 
+        if let Some(problem) = view_type_problem(&views.type_info.kind) {
+            lines.push(format!(
+                "  {problem}; binding errors below are not a layout verdict"
+            ));
+        }
+
         match views.presented_by() {
             Some(view) => lines.push(format!("  presented by {view}")),
             None if views.extended_by().is_some() => {
@@ -2829,6 +2835,136 @@ pub fn type_views(name: &str, types: &[microscope::TypeViews], renderer: Rendere
     lines.join("\n")
 }
 
+const fn view_type_problem(kind: &microscope::TypeKind) -> Option<&'static str> {
+    use microscope::TypeKind;
+    match kind {
+        TypeKind::Record {
+            incomplete: true, ..
+        }
+        | TypeKind::Union {
+            incomplete: true, ..
+        }
+        | TypeKind::Variant {
+            incomplete: true, ..
+        }
+        | TypeKind::Named { target: None, .. } => Some("incomplete debug type"),
+        TypeKind::Opaque { .. } => Some("unsupported type representation"),
+        _ => None,
+    }
+}
+
+fn bound_type_lines(
+    types: Vec<(&microscope::TypeViews, &Arc<microscope::ViewName>)>,
+    renderer: Renderer,
+    lines: &mut Vec<String>,
+) {
+    let mut groups = BTreeMap::<String, Vec<&microscope::TypeViews>>::new();
+    for (views, view) in types {
+        groups.entry(view.to_string()).or_default().push(views);
+    }
+    for (view, types) in groups {
+        let example = renderer.paint(Role::Type, &types[0].type_info.name);
+        if types.len() == 1 {
+            lines.push(format!("  {example} by {view}"));
+        } else {
+            lines.push(format!(
+                "  {} types by {view}; example: {example}",
+                types.len()
+            ));
+        }
+    }
+}
+
+// Only erase type operands in the grouping key, never in the exact explanation.
+fn view_cause(rejection: &str, name: &str) -> String {
+    let mut cause = rejection.replace(&format!("`{name}`"), "`<type>`");
+    for (start, end) in [("its type is `", "`"), ("record type '", "' has no member")] {
+        if let Some((prefix, rest)) = cause.split_once(start)
+            && let Some((_, suffix)) = rest.rsplit_once(end)
+        {
+            cause = format!("{prefix}{start}<type>{end}{suffix}");
+        }
+    }
+    if let Some((prefix, suffix)) = cause.split_once("cannot be converted to")
+        && let Some(type_start) = prefix.rfind(": `")
+    {
+        cause = format!(
+            "{}: `<type>` cannot be converted to{suffix}",
+            &prefix[..type_start]
+        );
+    }
+    cause
+}
+
+fn refused_type_lines(
+    check: &microscope::ViewCheck,
+    renderer: Renderer,
+    lines: &mut Vec<String>,
+) -> bool {
+    let mut failed = false;
+    let refused = check
+        .types
+        .iter()
+        .filter(|views| views.presented_by().is_none() && views.extended_by().is_none())
+        .collect::<Vec<_>>();
+
+    if !refused.is_empty() {
+        lines.push("not presented, though views name them:".to_owned());
+        let mut groups = BTreeMap::<(u8, String), Vec<&microscope::TypeViews>>::new();
+        for views in refused {
+            let category = match view_type_problem(&views.type_info.kind) {
+                Some("incomplete debug type") => 0,
+                Some(_) => 1,
+                None => 2,
+            };
+            let cause = views
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    format!(
+                        "{}: {}",
+                        candidate.view,
+                        view_cause(
+                            candidate.rejection.as_deref().unwrap_or("binds"),
+                            &views.type_info.name
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            groups.entry((category, cause)).or_default().push(views);
+            failed |= views
+                .candidates
+                .iter()
+                .any(|candidate| !microscope::is_built_in_view(&candidate.view));
+        }
+        let mut previous = None;
+        for ((category, _), types) in groups {
+            if previous != Some(category) {
+                lines.push(
+                    match category {
+                        0 => "  incomplete debug types (not a layout verdict):",
+                        1 => "  unsupported type representations:",
+                        _ => "  binding failures:",
+                    }
+                    .to_owned(),
+                );
+                previous = Some(category);
+            }
+            lines.push(format!(
+                "    {} {}; example: {} in {}",
+                types.len(),
+                if types.len() == 1 { "type" } else { "types" },
+                renderer.paint(Role::Type, &types[0].type_info.name),
+                types[0].module.display()
+            ));
+            lines.extend(candidate_lines(&types[0].candidates, "      "));
+        }
+    }
+
+    failed
+}
+
 /// What `views check` finds, and whether any view loaded for the session
 /// or carried by a module presents no type or binds no type it names.
 pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String, bool) {
@@ -2842,12 +2978,7 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
 
     if !presented.is_empty() {
         lines.push("presented:".to_owned());
-        for (views, view) in presented {
-            lines.push(format!(
-                "  {} by {view}",
-                renderer.paint(Role::Type, &views.type_info.name)
-            ));
-        }
+        bound_type_lines(presented, renderer, &mut lines);
     }
 
     let extended = check
@@ -2858,44 +2989,44 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
 
     if !extended.is_empty() {
         lines.push("extended, with no view presenting them:".to_owned());
-        for (views, view) in extended {
-            lines.push(format!(
-                "  {} by {view}",
-                renderer.paint(Role::Type, &views.type_info.name)
-            ));
-        }
+        bound_type_lines(extended, renderer, &mut lines);
     }
 
-    let refused = check
-        .types
-        .iter()
-        .filter(|views| views.presented_by().is_none() && views.extended_by().is_none())
-        .collect::<Vec<_>>();
-
-    if !refused.is_empty() {
-        lines.push("not presented, though views name them:".to_owned());
-        for views in refused {
-            lines.push(format!(
-                "  {}",
-                renderer.paint(Role::Type, &views.type_info.name)
-            ));
-            lines.extend(candidate_lines(&views.candidates, "    "));
-            failed |= views
-                .candidates
-                .iter()
-                .any(|candidate| !microscope::is_built_in_view(&candidate.view));
-        }
-    }
+    failed |= refused_type_lines(check, renderer, &mut lines);
 
     if !check.unused.is_empty() {
         failed = true;
-        lines.push("views that present no type:".to_owned());
-        lines.extend(check.unused.iter().map(|view| format!("  {view}")));
+        for matched in [false, true] {
+            let unused = check
+                .unused
+                .iter()
+                .filter(|view| {
+                    check.types.iter().any(|ty| {
+                        ty.candidates
+                            .iter()
+                            .any(|candidate| candidate.view == **view)
+                    }) == matched
+                })
+                .collect::<Vec<_>>();
+            if !unused.is_empty() {
+                lines.push(
+                    if matched {
+                        "views that match types but bind none:"
+                    } else {
+                        "views not tried for any type (absent or shadowed):"
+                    }
+                    .to_owned(),
+                );
+                lines.extend(unused.iter().map(|view| format!("  {view}")));
+            }
+        }
     }
 
     failed |= unbound_drawings(check, &mut lines);
     if lines.is_empty() {
         lines.push("no view's pattern names any type".to_owned());
+    } else {
+        lines.push("grouped by view and cause; use `views explain TYPE` (or `microscope views explain PROGRAM TYPE`) for every exact candidate and rejection".to_owned());
     }
 
     // A kernel is shown as what it is built from, to be reviewed as that.
@@ -3223,6 +3354,168 @@ mod tests {
 
     use super::*;
     use microscope::PointerWidth;
+
+    fn missing_view_member(name: &str) -> String {
+        format!("line 3: `buf`: `buf` is neither a member of `{name}` nor a name the view declares")
+    }
+
+    async fn view_check_examples() -> microscope::ViewCheck {
+        use microscope::{RecordKind, TypeInfo, TypeKind, TypeNode};
+
+        let debugger = microscope::Debugger::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/build/test-programs/embedded-views"
+        ))
+        .expect("load the fixture");
+        let image = debugger.handle().module_image();
+        let reference = image
+            .types()
+            .find_map(|node| match node {
+                TypeNode::Resolved(info) => Some(info.reference),
+                _ => None,
+            })
+            .expect("fixture has a type");
+        debugger.shutdown().await.expect("shut down the debugger");
+
+        let view = Arc::new(microscope::ViewName {
+            source: "app.views".into(),
+            line: 2,
+            header: "rust app::Vec<T>".into(),
+            extend: false,
+        });
+        let record = |incomplete| TypeKind::Record {
+            kind: RecordKind::Struct,
+            members: Arc::from([]),
+            bases: Arc::from([]),
+            incomplete,
+        };
+        let entry = |name: &str, kind, rejection: Option<String>| microscope::TypeViews {
+            type_info: TypeInfo {
+                reference,
+                name: name.into(),
+                byte_size: None,
+                kind,
+                identity: None,
+            },
+            module: Path::new("program").into(),
+            candidates: Arc::from([microscope::ViewCandidate {
+                view: Arc::clone(&view),
+                rejection: rejection.map(Into::into),
+            }]),
+            visualizers: Arc::from([]),
+        };
+        let types = vec![
+            entry("Vec<u8>", record(false), None),
+            entry("Vec<u16>", record(false), None),
+            entry(
+                "Vec<i8>",
+                record(true),
+                Some(missing_view_member("Vec<i8>")),
+            ),
+            entry(
+                "Vec<i16>",
+                record(false),
+                Some(missing_view_member("Vec<i16>")),
+            ),
+            entry(
+                "Vec<i32>",
+                record(false),
+                Some(missing_view_member("Vec<i32>")),
+            ),
+            entry(
+                "Vec<i64>",
+                TypeKind::Opaque {
+                    description: "unsupported encoding".into(),
+                },
+                Some(missing_view_member("Vec<i64>")),
+            ),
+        ];
+        microscope::ViewCheck {
+            types: types.into(),
+            unused: Arc::from([]),
+            kernels: Arc::from([]),
+            renderers: Arc::from([]),
+        }
+    }
+
+    #[tokio::test]
+    async fn view_check_groups_causes_and_keeps_incomplete_types_separate() {
+        let check = view_check_examples().await;
+        let types = &check.types;
+        let (report, failed) = view_check(&check, Renderer::new(false));
+        assert!(failed, "custom binding failures must still fail: {report}");
+        assert!(report.contains("2 types by app.views:2"), "{report}");
+        assert!(
+            report.contains("incomplete debug types (not a layout verdict):"),
+            "{report}"
+        );
+        assert!(
+            report.contains("unsupported type representations:"),
+            "{report}"
+        );
+        assert!(report.contains("binding failures:"), "{report}");
+        assert_eq!(
+            report.matches("`buf` is neither a member").count(),
+            3,
+            "{report}"
+        );
+        assert!(report.contains("2 types; example: Vec<i16>"), "{report}");
+        assert!(report.contains("views explain"), "{report}");
+
+        let explained = type_views("Vec<i32>", &types[4..5], Renderer::new(false));
+        assert!(
+            explained.contains(&missing_view_member("Vec<i32>")),
+            "{explained}"
+        );
+        let explained = type_views("Vec<i8>", &types[2..3], Renderer::new(false));
+        assert!(explained.contains("incomplete debug type"), "{explained}");
+        assert!(
+            explained.contains(&missing_view_member("Vec<i8>")),
+            "{explained}"
+        );
+    }
+
+    #[tokio::test]
+    async fn built_in_view_rejections_remain_informational() {
+        let mut check = view_check_examples().await;
+        for ty in Arc::make_mut(&mut check.types) {
+            for candidate in Arc::make_mut(&mut ty.candidates) {
+                let view = Arc::make_mut(&mut candidate.view);
+                view.source = "rust-std.views".into();
+                view.line = 13;
+            }
+        }
+        assert!(!view_check(&check, Renderer::new(false)).1);
+    }
+
+    #[test]
+    fn view_cause_groups_type_operands_but_keeps_expressions_and_targets() {
+        for message in [
+            "line 4: `shared`: `shared` is not a pointer; its type is `*const Inner<T>`",
+            "line 4: `let chan`: `chan`: record type 'Env<T>' has no member named 'chan'",
+            "line 4: `shared as usize`: `*const Inner<T>` cannot be converted to `u64` by value",
+        ] {
+            let key = view_cause(message, "Root<T>");
+            assert_eq!(key, view_cause(&message.replace("<T>", "<U>"), "Root<U>"));
+            assert_ne!(
+                key,
+                view_cause(
+                    &message.replace("shared", "other").replace("chan", "other"),
+                    "Root<T>"
+                )
+            );
+        }
+        assert_ne!(
+            view_cause(
+                "line 4: `p`: `A` cannot be converted to `u64` by value",
+                "A"
+            ),
+            view_cause(
+                "line 4: `p`: `B` cannot be converted to `i64` by value",
+                "B"
+            )
+        );
+    }
 
     fn memory_read(
         address: u64,

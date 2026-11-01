@@ -34,6 +34,15 @@ can execute another program; then it stays pending. Misspellings of known
 names are still rejected with a suggested correction. `catch exec` stops
 after each exec.
 
+For a pending qualified function name, the terminal shows up to three loaded
+function or symbol spellings with the same final component when it finds any.
+They are guidance, not resolved locations: the original breakpoint stays pending.
+Rust methods can require an angle-qualified spelling such as
+`<module::Type>::method` or `<module::Type as module::Trait>::method`.
+Copy the exact spelling or choose a source line. A name found as a debug
+type instead points to `views explain TYPE`; a type name alone is not a
+function breakpoint.
+
 ## Attach to a process
 
 Attach by process ID or by a name that matches exactly one process:

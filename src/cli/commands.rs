@@ -1096,6 +1096,11 @@ impl Cli {
                     "(pending: nothing loaded has it, and the program may execute one that does)"
                 )
             );
+            if let BreakpointSpec::Function(name) = &breakpoint.spec
+                && let Some(guidance) = self.pending_function_guidance(name).await
+            {
+                let _ = write!(output, "\n{guidance}");
+            }
         }
 
         if address && !temporary && self.keeps_breakpoints() {
@@ -1224,6 +1229,71 @@ impl Cli {
             Some(hint) => anyhow!("{error}; {hint}"),
             None => error.into(),
         }
+    }
+
+    // Advice after the pending decision, not input to resolution or exec policy.
+    async fn pending_function_guidance(&self, name: &str) -> Option<String> {
+        let images = self.loaded_images().await;
+        if images
+            .iter()
+            .any(|image| !image.types_named(name).is_empty())
+        {
+            return Some(format!(
+                "`{name}` names a loaded debug type; `break` needs a function or source line. Use `views explain {name}` to inspect its view"
+            ));
+        }
+
+        let (_, leaf) = name.rsplit_once("::")?;
+        if leaf.is_empty() {
+            return None;
+        }
+        let suffix = format!("::{leaf}");
+        let mut candidates = std::collections::BTreeSet::new();
+        for image in &images {
+            let names = image
+                .functions()
+                .filter(|function| {
+                    function.name().starts_with(leaf)
+                        && image.instances_for_function(function.id()).next().is_some()
+                })
+                .map(|function| function.name().to_owned())
+                .chain(
+                    image
+                        .symbols()
+                        .filter(|symbol| {
+                            symbol.kind() == microscope::SymbolKind::Function
+                                && symbol.extent().is_some()
+                                && symbol.name().contains(leaf)
+                        })
+                        .filter_map(microscope::Symbol::demangled_name),
+                );
+            for shown in names {
+                if shown != name
+                    && (shown
+                        .strip_prefix(leaf)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('<'))
+                        || shown
+                            .rsplit_once(suffix.as_str())
+                            .is_some_and(|(_, rest)| rest.is_empty() || rest.starts_with('<')))
+                {
+                    candidates.insert(shown);
+                    if candidates.len() > 3 {
+                        candidates.pop_last();
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "loaded names with the same final component (not selected):\n{}\nshowing at most 3 names; use an exact spelling with `break`, including any angle brackets, or choose a source line; the original breakpoint remains pending",
+            candidates
+                .into_iter()
+                .map(|candidate| format!("  {candidate}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
     }
 
     /// What `error` suggests the user meant, if anything.
