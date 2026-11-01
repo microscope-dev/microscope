@@ -200,8 +200,15 @@ fn next_on_stack(
 ) -> Next {
     use CallerFramePointer::{Kept, Lost, Saved};
 
+    // A word below the stack pointer is free for a push, a callee, or a
+    // signal to overwrite, so a saved frame pointer freed there is lost.
     let stack = |pushed: Option<u64>, caller_frame_pointer| {
         pushed.map_or(Next::Unproved, |pushed| {
+            let caller_frame_pointer = match caller_frame_pointer {
+                Saved(offset) if offset > pushed.saturating_add(8) => Lost,
+                other => other,
+            };
+
             Next::Frame(CodeFrame::Stack {
                 pushed,
                 caller_frame_pointer,
@@ -318,12 +325,23 @@ fn next_based(
         return based(below.and_then(|below| below.checked_add(8)));
     }
 
+    // Freeing the stack past rbp, or as far as the code does not prove,
+    // may free the word that saved the caller's frame pointer, for a push
+    // or a callee to overwrite.
+    let freed = |change: i64| match below {
+        Some(below) => below
+            .checked_add_signed(change)
+            .map_or(Next::Unproved, |below| based(Some(below))),
+        None if change > 0 => based(None),
+        None => Next::Unproved,
+    };
+
     if is_pop(instruction) {
-        return based(below.and_then(|below| below.checked_sub(8)));
+        return freed(-8);
     }
 
     if let Some(change) = stack_adjustment(instruction) {
-        return based(below.and_then(|below| below.checked_add_signed(change)));
+        return freed(change);
     }
 
     if written.contains(&Register::RSP) {
@@ -632,6 +650,9 @@ fn read(
 }
 
 #[cfg(test)]
+mod emulated;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -879,6 +900,42 @@ mod tests {
 
         // ud2; call rax
         assert_eq!(CodeFrames::analyze(&[0x0f, 0x0b, 0xff, 0xd0]).at(2), None);
+    }
+
+    #[test]
+    fn a_saved_frame_pointer_freed_from_the_stack_is_lost() {
+        // push rbp; add rsp, 8; mov rbp, rsp; push rbp; push rbp: the
+        // second push overwrites the word that saved the caller's rbp.
+        let code = [0x55, 0x48, 0x83, 0xc4, 0x08, 0x48, 0x89, 0xe5, 0x55, 0x55];
+        let frames = CodeFrames::analyze(&code);
+        assert_eq!(frames.at(1), stack(8, Saved(16)));
+        assert_eq!(frames.at(5), stack(0, Lost));
+        assert_eq!(frames.at(9), stack(8, Lost));
+    }
+
+    #[test]
+    fn freeing_the_stack_past_rbp_ends_the_proof() {
+        // push rbp; nop; mov rbp, rsp; add rsp, 8; call; push rbp: the
+        // call's return address overwrites the word that saved rbp.
+        let code = [
+            0x55, 0x90, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xc4, 0x08, 0xe8, 0x00, 0x10, 0x00, 0x00,
+            0x55,
+        ];
+        let frames = CodeFrames::analyze(&code);
+        assert_eq!(
+            frames.at(5),
+            Some(Based {
+                offset: 16,
+                below: Some(0)
+            })
+        );
+        assert_eq!(frames.at(9), None);
+        assert_eq!(frames.at(14), None);
+
+        // push rbp; mov rbp, rsp; and rsp, -16; pop rax: how far rsp is
+        // below rbp is not proved, so neither is what the pop frees.
+        let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xe4, 0xf0, 0x58, 0x90];
+        assert_eq!(CodeFrames::analyze(&code).at(9), None);
     }
 
     #[test]
