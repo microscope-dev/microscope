@@ -81,6 +81,15 @@ enum Answers {
 }
 
 impl Paused {
+    /// Forgets the interrupt a pause still listing its variables would
+    /// answer, once another stop answered it. A listed pause is judged at
+    /// the all-stop under way and keeps answering it.
+    pub(super) fn interrupt_answered(&mut self) {
+        if !self.listing.is_empty() && self.answers == Answers::Interrupt {
+            self.answers = Answers::Nothing;
+        }
+    }
+
     /// Whether the pause waits to be judged: its variables are listed.
     fn ready(&self) -> bool {
         !self.judged && self.listing.is_empty()
@@ -265,11 +274,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
         // Any pause answers an interrupt: once V8 holds a thread, the
-        // all-stop that judges the pause publishes it.
+        // all-stop that judges the pause publishes it. The deadline stays,
+        // as a worker's listing passes through the main thread, which may
+        // be blocked outside JavaScript and never pass it on.
         let interrupted = self
             .inferior
-            .as_mut()
-            .is_some_and(|inferior| inferior.inspectors.end_interrupt());
+            .as_ref()
+            .is_some_and(|inferior| inferior.inspectors.interrupt.is_some());
         let Some(inspector) = self
             .inferior
             .as_mut()

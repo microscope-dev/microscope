@@ -88,10 +88,14 @@ impl Inspectors {
     }
 
     /// Ends the interrupt under way, withdrawing the pauses not yet sent.
+    /// A pause still listing its variables answers it no longer.
     pub(in crate::backend::linux) fn end_interrupt(&mut self) -> bool {
         for isolate in self.isolates_mut() {
             if isolate.pause == PauseRequest::Deferred {
                 isolate.pause = PauseRequest::None;
+            }
+            if let Some(paused) = &mut isolate.paused {
+                paused.interrupt_answered();
             }
         }
         self.interrupt.take().is_some()

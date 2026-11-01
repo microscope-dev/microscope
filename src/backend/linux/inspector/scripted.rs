@@ -1655,3 +1655,52 @@ fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
         "the thread still steps over the trap"
     );
 }
+
+/// A pause V8 reports in answer to an interrupt answers it, but must not
+/// cancel the interrupt's deadline while its scope listing is unanswered:
+/// a worker's listing passes through the main thread, which may block
+/// outside JavaScript and never pass it on. Every thread stops natively at
+/// the deadline, and the listing that comes later stops nothing again.
+#[test]
+fn a_pause_still_listing_leaves_the_interrupt_its_deadline() {
+    let mut scripted = Scripted::connected(2);
+    scripted.sent();
+    scripted.harness.start_continue();
+    scripted.actions();
+    let process = super::super::process_id(scripted.main());
+    scripted
+        .harness
+        .controller
+        .begin_pause(process)
+        .expect("the pause begins");
+    assert_eq!(scripted.sent_names(), [cdp::PAUSE]);
+
+    let mut pause = paused("other", &[], 1);
+    pause["callFrames"][0]["scopeChain"] =
+        json!([{"type": "local", "object": {"objectId": "scope"}}]);
+    scripted.inspector.event(&[], cdp::PAUSED, pause);
+    scripted.pump_event(cdp::PAUSED);
+    let listing = scripted.sent();
+    assert_eq!(listing.len(), 1);
+
+    scripted
+        .harness
+        .controller
+        .interrupt_expired(Instant::now() + Duration::from_secs(1))
+        .expect("the interrupt expires");
+    scripted.harness.settle_requested_stops();
+    assert_eq!(
+        scripted.stops(),
+        [(
+            super::super::debug_thread_id(scripted.main()),
+            StopReason::Pause
+        )]
+    );
+
+    scripted.inspector.reply(&listing[0], json!({"result": []}));
+    scripted.pump_reply();
+    scripted.resume();
+    scripted.harness.settle_requested_stops();
+    assert_eq!(scripted.stops(), [], "the pause was answered natively");
+    assert_eq!(scripted.sent_names(), [cdp::RESUME]);
+}
