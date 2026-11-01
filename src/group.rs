@@ -461,10 +461,14 @@ enum Phase {
     Running,
 
     /// Members are being paused for `first`'s stop, or for a pause of the
-    /// whole group when it is none.
+    /// whole group when it is none. `paused` is the first member that
+    /// stopped for it, and `was_stopped` whether the group was stopped
+    /// before: a stop nobody stopped for leaves the group as it was.
     Stopping {
         first: Option<(MemberNumber, StopReason)>,
         waiting: BTreeSet<MemberNumber>,
+        paused: Option<MemberNumber>,
+        was_stopped: bool,
     },
     Stopped,
 }
@@ -520,7 +524,7 @@ impl<C> Stops<C> {
         // Each member's stop is its own, and one of those a pause of the
         // whole group waits for.
         if self.scope == StopScope::Process {
-            let _ = self.paused(number, None);
+            let _ = self.paused(number, Some(reason.clone()));
             return Some(StopAction::Report(number, reason));
         }
 
@@ -557,30 +561,54 @@ impl<C> Stops<C> {
             return self.paused(0, None);
         }
 
-        self.phase = Phase::Stopping { first, waiting };
+        self.phase = Phase::Stopping {
+            paused: first.as_ref().map(|(number, _)| *number),
+            first,
+            waiting,
+            was_stopped: matches!(self.phase, Phase::Stopped),
+        };
         self.paused(0, None)
     }
 
-    /// Notes that member `number` stopped, or will not, while the group
-    /// stops, and returns the group stop to report once none is left
-    /// running.
+    /// Notes that a member was continued through its own session. Where
+    /// each member's stop is its own, the group is then no longer stopped
+    /// as a whole, so members that join are resumed.
+    fn continued(&mut self) {
+        if self.scope == StopScope::Process && matches!(self.phase, Phase::Stopped) {
+            self.phase = Phase::Running;
+        }
+    }
+
+    /// Notes that member `number` stopped for `reason`, or will not stop
+    /// when it is none, while the group stops, and returns the group stop
+    /// to report once none is left running.
     fn paused(
         &mut self,
         number: MemberNumber,
         reason: Option<StopReason>,
     ) -> Option<(MemberNumber, StopReason)> {
-        let Phase::Stopping { first, waiting } = &mut self.phase else {
+        let Phase::Stopping {
+            first,
+            waiting,
+            paused,
+            was_stopped,
+        } = &mut self.phase
+        else {
             return None;
         };
 
         waiting.remove(&number);
-        if let Some(reason) = reason
-            && reason != StopReason::Pause
-        {
-            if first.is_none() {
-                *first = Some((number, reason));
-            } else {
-                self.pending.push_back((number, reason));
+        if let Some(reason) = reason {
+            paused.get_or_insert(number);
+
+            // Where each member's stop is reported as its own, none is
+            // the group's.
+            if self.scope == StopScope::Group && reason != StopReason::Pause {
+                if first.is_none() {
+                    *first = Some((number, reason));
+                } else {
+                    self.pending.push_back((number, reason));
+                }
             }
         }
 
@@ -588,20 +616,20 @@ impl<C> Stops<C> {
             return None;
         }
 
-        let first = first.take();
-        self.phase = Phase::Stopped;
+        let stop = first
+            .take()
+            .or_else(|| paused.map(|number| (number, StopReason::Pause)));
+        self.phase = if stop.is_some() || *was_stopped {
+            Phase::Stopped
+        } else {
+            Phase::Running
+        };
 
-        // Where each member's stop is reported as its own, a pause of the
-        // whole group has none to report.
         if self.scope == StopScope::Process {
-            debug_assert!(
-                first.is_none(),
-                "a group stop for member {first:?} where each stop is its own"
-            );
             return None;
         }
 
-        Some(first.unwrap_or((1, StopReason::Pause)))
+        stop
     }
 
     /// Keeps a client's continue or resume while members are still
@@ -986,6 +1014,7 @@ impl Driver {
             }
             DebuggerEvent::InferiorContinued { .. } => {
                 self.set_running(number, true);
+                self.stops.continued();
                 self.shared
                     .update(number, |member| member.state = MemberState::Running);
             }
@@ -1419,7 +1448,7 @@ mod tests {
     use super::*;
 
     /// A driver for an unlaunched root, and the group's events.
-    fn driver() -> (Driver, broadcast::Receiver<GroupEvent>) {
+    fn driver(scope: StopScope) -> (Driver, broadcast::Receiver<GroupEvent>) {
         let root = Debugger::new(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/fork"),
         )
@@ -1430,10 +1459,7 @@ mod tests {
             copies: Mutex::default(),
         });
         let (events, received) = broadcast::channel(GROUP_EVENT_CAPACITY);
-        (
-            Driver::new(shared, events, root, StopScope::Group),
-            received,
-        )
+        (Driver::new(shared, events, root, scope), received)
     }
 
     fn breakpoint_stop() -> StopReason {
@@ -1451,10 +1477,12 @@ mod tests {
     /// part of that group stop, not a stop of its own.
     #[tokio::test]
     async fn a_resume_while_the_group_stops_waits_for_the_pauses_under_way() {
-        let (mut driver, mut received) = driver();
+        let (mut driver, mut received) = driver(StopScope::Group);
         driver.stops.phase = Phase::Stopping {
             first: Some((2, breakpoint_stop())),
             waiting: BTreeSet::from([1]),
+            paused: Some(2),
+            was_stopped: false,
         };
         let (reply, resumed) = oneshot::channel();
 
@@ -1505,6 +1533,51 @@ mod tests {
         assert_eq!(stops.paused(1, None), None, "member 1 never stopped");
     }
 
+    /// Found by the model in `stops_model`: a pause that fails for member
+    /// 1 must not report member 1 as stopped. The group stop names a
+    /// member that did stop, and with none, nothing stopped the group.
+    #[test]
+    fn a_pause_of_the_group_names_a_member_that_stopped() {
+        let mut stops = Stops::<()>::new(StopScope::Group);
+        assert_eq!(stops.pause_all(None, BTreeSet::from([1, 2])), None);
+        assert_eq!(stops.paused(1, None), None, "member 1's pause failed");
+        assert_eq!(
+            stops.stopped(2, StopReason::Pause),
+            Some(StopAction::Report(2, StopReason::Pause))
+        );
+
+        let mut stops = Stops::<()>::new(StopScope::Group);
+        assert_eq!(stops.pause_all(None, BTreeSet::from([1])), None);
+        assert_eq!(stops.paused(1, None), None, "member 1's pause failed");
+        assert!(stops.is_running(), "nothing stopped the group");
+    }
+
+    /// Where each member's stop is its own, a pause of the whole group
+    /// leaves it stopped only until a client continues a member alone:
+    /// then a fork child that joins is resumed rather than left stopped.
+    #[tokio::test]
+    async fn a_member_continued_alone_ends_a_pause_of_members_that_stop_alone() {
+        let (mut driver, _received) = driver(StopScope::Process);
+        driver.stops.phase = Phase::Stopped;
+
+        driver
+            .event(
+                2,
+                DebuggerEvent::InferiorContinued {
+                    revision: 0,
+                    process_id: ProcessId::new(2),
+                    execution_id: crate::ExecutionId::new(1),
+                    resumed: ResumeScope::Process(ProcessId::new(2)),
+                },
+            )
+            .await;
+        assert!(driver.stops.is_running(), "the group runs");
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
+            .await
+            .expect("end the root session in time")
+            .expect("end the root session");
+    }
+
     /// Found by the model in `stops_model`: a client pauses the group
     /// just as a member's breakpoint has begun to stop it.
     #[test]
@@ -1529,10 +1602,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_stop_arriving_after_a_pause_failure_is_still_reported() {
-        let (mut driver, mut received) = driver();
+        let (mut driver, mut received) = driver(StopScope::Group);
         driver.stops.phase = Phase::Stopping {
             first: Some((2, StopReason::Pause)),
             waiting: BTreeSet::from([1, 3]),
+            paused: Some(2),
+            was_stopped: false,
         };
         let breakpoint = breakpoint_stop();
 
