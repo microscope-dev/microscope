@@ -51,9 +51,8 @@ pub fn write<M: Machine>(
                 .find(|(_, value)| *value == integer)
                 .map_or_else(|| integer.to_string(), |(name, _)| name.to_string())
         }),
-        BoundFormat::Flags(enumeration) => {
-            integer(stored).map(|integer| flags(integer, &enumerators(machine, enumeration)))
-        }
+        BoundFormat::Flags(enumeration) => integer(stored)
+            .map(|integer| flags(integer, &enumerators(machine, enumeration), byte_size)),
         BoundFormat::Duration(unit) => integer(stored).map(|integer| duration(integer, unit)),
         BoundFormat::Time(unit) => integer(stored).and_then(|integer| time(integer, unit)),
         BoundFormat::Utf8 => {
@@ -201,16 +200,20 @@ fn signed(value: IntegerValue) -> Option<i128> {
 
 /// Hexadecimal, a negative value in its type's two's complement.
 fn hex(value: i128, byte_size: Option<u64>) -> String {
+    format!("{:#x}", value.cast_unsigned() & width_mask(byte_size))
+}
+
+/// The bits a value of `byte_size` bytes has, or all 128 for an unknown
+/// size.
+fn width_mask(byte_size: Option<u64>) -> u128 {
     let bits = byte_size
         .filter(|size| (1..=16).contains(size))
         .map_or(128, |size| size * 8);
-    let mask = if bits == 128 {
+    if bits == 128 {
         u128::MAX
     } else {
         (1_u128 << bits) - 1
-    };
-
-    format!("{:#x}", value.cast_unsigned() & mask)
+    }
 }
 
 /// The character a code point is, quoted.
@@ -248,19 +251,26 @@ fn enumerators<M: Machine>(
 }
 
 /// The enumerators whose bits a value sets, `A | B`, and the bits none
-/// names in hexadecimal; the enumerator of 0, or `0`, for none.
-fn flags(value: i128, enumerators: &[(Arc<str>, i128)]) -> String {
+/// names in hexadecimal; the enumerator of 0, or `0`, for none. A negative
+/// value or enumerator counts only the bits of its type's width.
+fn flags(value: i128, enumerators: &[(Arc<str>, i128)], byte_size: Option<u64>) -> String {
+    let mask = width_mask(byte_size);
+    let value = value.cast_unsigned() & mask;
+    let enumerators = enumerators
+        .iter()
+        .map(|(name, flag)| (name, flag.cast_unsigned() & mask));
+
     if value == 0 {
         return enumerators
-            .iter()
+            .clone()
             .find(|(_, flag)| *flag == 0)
             .map_or_else(|| "0".to_owned(), |(name, _)| name.to_string());
     }
 
     let mut names = Vec::new();
-    let mut covered = 0_i128;
+    let mut covered = 0_u128;
     for (name, flag) in enumerators {
-        if *flag != 0 && value & flag == *flag && covered & flag != *flag {
+        if flag != 0 && value & flag == flag && covered & flag != flag {
             names.push(name.to_string());
             covered |= flag;
         }
@@ -268,7 +278,7 @@ fn flags(value: i128, enumerators: &[(Arc<str>, i128)]) -> String {
 
     let rest = value & !covered;
     if rest != 0 {
-        names.push(format!("{:#x}", rest.cast_unsigned()));
+        names.push(format!("{rest:#x}"));
     }
 
     names.join(" | ")
@@ -503,9 +513,244 @@ mod tests {
             (Arc::from("WRITE"), 2),
             (Arc::from("READ_WRITE"), 3),
         ];
-        assert_eq!(flags(0, &enumerators), "NONE");
-        assert_eq!(flags(3, &enumerators), "READ | WRITE");
-        assert_eq!(flags(0x41, &enumerators), "READ | 0x40");
+        assert_eq!(flags(0, &enumerators, Some(4)), "NONE");
+        assert_eq!(flags(3, &enumerators, Some(4)), "READ | WRITE");
+        assert_eq!(flags(0x41, &enumerators, Some(4)), "READ | 0x40");
         assert_eq!(hex(-1, Some(2)), "0xffff");
+    }
+
+    /// Found by `flags_read_back_as_the_value`: a 32-bit value with its
+    /// top bit set printed the sign-extended 128-bit remainder.
+    #[test]
+    fn flags_of_a_negative_value_stay_within_its_type() {
+        let enumerators = [(Arc::from("A"), 1)];
+        assert_eq!(
+            flags(i128::from(i32::MIN) | 1, &enumerators, Some(4)),
+            "A | 0x80000000"
+        );
+        assert_eq!(flags(-1, &enumerators, Some(1)), "A | 0xfe");
+        assert_eq!(flags(-32_768, &[], Some(2)), "0x8000");
+    }
+
+    /// A Go duration back in nanoseconds: `1h2m3.5s`, `-250ms`, `0s`.
+    fn parse_duration(text: &str) -> i128 {
+        let (negative, mut rest) = text
+            .strip_prefix('-')
+            .map_or((false, text), |rest| (true, rest));
+        let mut total = 0_u128;
+
+        while !rest.is_empty() {
+            let digits = rest
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .expect("a unit");
+            let (number, after) = rest.split_at(digits);
+            let (unit, scale) = [
+                ("h", 3600 * SECOND),
+                ("ms", 1_000_000),
+                ("m", 60 * SECOND),
+                ("s", SECOND),
+                ("µs", 1_000),
+                ("ns", 1),
+            ]
+            .into_iter()
+            .find(|(unit, _)| after.starts_with(unit))
+            .expect("a known unit");
+            rest = &after[unit.len()..];
+
+            let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+            assert!(!fraction.ends_with('0'), "{text}: a trailing zero");
+            let places = 10_u128.pow(u32::try_from(fraction.len()).expect("short"));
+            let fraction = if fraction.is_empty() {
+                0
+            } else {
+                fraction.parse::<u128>().expect("digits")
+            };
+            assert_eq!(
+                fraction * scale % places,
+                0,
+                "{text}: a fraction below a nanosecond"
+            );
+            total += whole.parse::<u128>().expect("digits") * scale + fraction * scale / places;
+        }
+
+        let total = i128::try_from(total).unwrap_or(i128::MIN);
+        if negative {
+            total.wrapping_neg()
+        } else {
+            total
+        }
+    }
+
+    /// Howard Hinnant's `days_from_civil`: days from 1970-01-01.
+    fn days_from_civil(year: i128, month: i128, day: i128) -> i128 {
+        let year = year - i128::from(month <= 2);
+        let era = year.div_euclid(400);
+        let of_era = year - era * 400;
+        let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+        let of_era_days = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
+        era * 146_097 + of_era_days - 719_468
+    }
+
+    /// A Go UTC time back in nanoseconds since the epoch, checking each
+    /// field is in its range.
+    fn parse_time(text: &str) -> i128 {
+        let text = text.strip_suffix(" +0000 UTC").expect("UTC");
+        let (date, clock) = text.split_once(' ').expect("a date and a time");
+        let (negative, date) = date
+            .strip_prefix('-')
+            .map_or((false, date), |rest| (true, rest));
+        let fields: Vec<i128> = date
+            .split('-')
+            .map(|field| field.parse().expect("digits"))
+            .collect();
+        let [year, month, day] = fields[..] else {
+            panic!("{text}")
+        };
+        let year = if negative { -year } else { year };
+
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let length = [
+            31,
+            if leap { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ];
+        assert!((1..=12).contains(&month), "{text}");
+        assert!(
+            (1..=length[usize::try_from(month - 1).expect("a month")]).contains(&day),
+            "{text}"
+        );
+
+        let (clock, fraction) = clock.split_once('.').unwrap_or((clock, ""));
+        assert!(fraction.len() <= 9 && !fraction.ends_with('0'), "{text}");
+        let nanoseconds: i128 = format!("{fraction:0<9}").parse().expect("digits");
+        let fields: Vec<i128> = clock
+            .split(':')
+            .map(|field| field.parse().expect("digits"))
+            .collect();
+        let [hour, minute, second] = fields[..] else {
+            panic!("{text}")
+        };
+        assert!(hour < 24 && minute < 60 && second < 60, "{text}");
+
+        let seconds =
+            days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+
+        // At either end of i128 only the sum fits, so add toward zero.
+        if seconds >= 0 || nanoseconds == 0 {
+            seconds * 1_000_000_000 + nanoseconds
+        } else {
+            (seconds + 1) * 1_000_000_000 - (1_000_000_000 - nanoseconds)
+        }
+    }
+
+    fn unit() -> impl Strategy<Value = TimeUnit> {
+        prop::sample::select(vec![
+            TimeUnit::Nanoseconds,
+            TimeUnit::Microseconds,
+            TimeUnit::Milliseconds,
+            TimeUnit::Seconds,
+        ])
+    }
+
+    /// Counts of any size, near the edges, and within a few thousand years
+    /// of the epoch in each unit.
+    fn count() -> impl Strategy<Value = i128> {
+        prop_oneof![
+            crate::test_strategies::i128_edges(),
+            -100_000_000_000_000_000_000_i128..100_000_000_000_000_000_000,
+            -1_000_000_i128..1_000_000,
+        ]
+    }
+
+    /// A value of a type of `bytes` bytes, read as signed or not, as the
+    /// evaluator would give it.
+    fn of_width(bits: u128, bytes: u64, signed: bool) -> i128 {
+        let width = bytes * 8;
+        let value = bits & width_mask(Some(bytes));
+        if width < 128 && signed && value >> (width - 1) & 1 == 1 {
+            (value | !width_mask(Some(bytes))).cast_signed()
+        } else {
+            value.cast_signed()
+        }
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn durations_read_back_as_their_nanoseconds(value in count(), unit in unit()) {
+            let text = duration(value, unit);
+            let total = value.checked_mul(i128::try_from(unit.nanoseconds()).expect("small"));
+            if let Some(total) = total {
+                prop_assert_eq!(parse_duration(&text), total, "{}", text);
+            } else {
+                prop_assert_eq!(text, format!("{value}{}", unit_suffix(unit)));
+            }
+        }
+
+        /// Times read back through `days_from_civil`, the inverse of the
+        /// algorithm `time` uses, with every field in its range.
+        #[test]
+        fn times_read_back_as_their_instant(value in count(), unit in unit()) {
+            let total = value.checked_mul(i128::try_from(unit.nanoseconds()).expect("small"));
+            match (total, time(value, unit)) {
+                (Some(total), Some(text)) => prop_assert_eq!(parse_time(&text), total, "{}", text),
+                (None, None) => {}
+                (total, text) => prop_assert!(false, "{total:?} but {text:?}"),
+            }
+        }
+
+        /// The names and hex `flags` prints combine to the value, masked
+        /// to its type's width, and each name's bits are in the value.
+        #[test]
+        fn flags_read_back_as_the_value(
+            bytes in prop::sample::select(vec![1_u64, 2, 4, 8, 16]),
+            signed in any::<bool>(),
+            bits in any::<u128>(),
+            flag_bits in prop::collection::vec(
+                prop_oneof![
+                    (0_u32..128).prop_map(|bit| 1_u128 << bit),
+                    Just(0),
+                    any::<u128>(),
+                ],
+                0..8,
+            ),
+            dense in any::<bool>(),
+        ) {
+            // Dense values set most of the named bits.
+            let flag_values: Vec<i128> = flag_bits.iter().map(|&flag| of_width(flag, bytes, signed)).collect();
+            let named = flag_values.iter().fold(0, |all, flag| all | flag.cast_unsigned());
+            let value = of_width(if dense { named | bits & 1 } else { bits }, bytes, signed);
+            let enumerators: Vec<(Arc<str>, i128)> = flag_values
+                .iter()
+                .enumerate()
+                .map(|(index, &flag)| (Arc::from(format!("F{index}")), flag))
+                .collect();
+
+            let text = flags(value, &enumerators, Some(bytes));
+            let mask = width_mask(Some(bytes));
+            let read = text.split(" | ").fold(0, |all, part| {
+                let part = match part.strip_prefix("0x") {
+                    Some(hex) => u128::from_str_radix(hex, 16).expect("hex"),
+                    None if part == "0" => 0,
+                    None => {
+                        let index: usize = part[1..].parse().expect("a flag");
+                        flag_values[index].cast_unsigned() & mask
+                    }
+                };
+                all | part
+            });
+
+            prop_assert_eq!(read, value.cast_unsigned() & mask, "{}", text);
+        }
     }
 }
