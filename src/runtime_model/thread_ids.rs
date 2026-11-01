@@ -127,20 +127,54 @@ mod tests {
         assert!(ids.unwrap_err().contains("platform supplied no proven"));
     }
 
+    /// Every native id resolves to the one host that alone claims it and
+    /// claims nothing else; any other native id resolves to nothing.
+    fn resolution_is_a_proven_bijection(pairs: &[(u64, u64)]) -> Result<(), TestCaseError> {
+        let hosts = (1..=8).map(ThreadId::new).collect();
+        let ids = ThreadIds::read(hosts, |_| {
+            pairs
+                .iter()
+                .map(|&(host, target)| (ThreadId::new(host), TargetThreadId::new(target).unwrap()))
+                .collect()
+        });
+        for native in 1..=8 {
+            let matching: BTreeSet<_> = pairs
+                .iter()
+                .filter(|(host, target)| *host <= 8 && *target == native)
+                .map(|(host, _)| *host)
+                .collect();
+            let expected = if matching.len() == 1 {
+                let host = *matching.first().unwrap();
+                let targets: BTreeSet<_> = pairs
+                    .iter()
+                    .filter(|(candidate, _)| *candidate == host)
+                    .map(|(_, target)| *target)
+                    .collect();
+                (targets.len() == 1).then_some(ThreadId::new(host))
+            } else {
+                None
+            };
+            prop_assert_eq!(
+                ids.as_ref().ok().and_then(|ids| ids.resolve(native).ok()),
+                expected,
+                "native {} in {:?}",
+                native,
+                pairs
+            );
+        }
+        Ok(())
+    }
+
+    /// Found by the property below.
+    #[test]
+    fn a_host_claiming_two_target_ids_resolves_neither() {
+        resolution_is_a_proven_bijection(&[(1, 1), (1, 2)]).unwrap();
+    }
+
     proptest! {
         #[test]
         fn identity_resolution_is_a_proven_bijection(pairs in proptest::collection::vec((1u64..=12, 1u64..=8), 0..32)) {
-            let hosts = (1..=8).map(ThreadId::new).collect();
-            let ids = ThreadIds::read(hosts, |_| pairs.iter().map(|&(host, target)| (ThreadId::new(host), TargetThreadId::new(target).unwrap())).collect());
-            for native in 1..=8 {
-                let matching: BTreeSet<_> = pairs.iter().filter(|(host, target)| *host <= 8 && *target == native).map(|(host, _)| *host).collect();
-                let expected = if matching.len() == 1 {
-                    let host = *matching.first().unwrap();
-                    let targets: BTreeSet<_> = pairs.iter().filter(|(candidate, _)| *candidate == host).map(|(_, target)| *target).collect();
-                    (targets.len() == 1).then_some(ThreadId::new(host))
-                } else { None };
-                prop_assert_eq!(ids.as_ref().ok().and_then(|ids| ids.resolve(native).ok()), expected, "native {} in {:?}", native, pairs);
-            }
+            resolution_is_a_proven_bijection(&pairs)?;
         }
     }
 }

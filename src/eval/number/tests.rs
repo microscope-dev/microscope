@@ -560,14 +560,27 @@ proptest! {
 
     #[test]
     fn patterns_round_trip_through_their_values(raw in any::<u128>(), width in 1..=MAX_WIDTH, signed in any::<bool>()) {
-        let ty = int(width, signed);
-        let bits = Bits::from_raw(ty, raw);
-        prop_assert!(ty.contains(bits.value()));
-        prop_assert_eq!(Bits::truncate(ty, bits.value()), bits);
-        prop_assert_eq!(bits.not().not(), bits);
-        let flipped = int(width, !signed);
-        prop_assert_eq!(bits.cast(flipped).cast(ty), bits);
-        let wider = int(128, signed);
-        prop_assert_eq!(bits.cast(wider).cast(ty), bits);
+        patterns_round_trip(raw, width, signed)?;
     }
+}
+
+/// A bit pattern of any width and signedness reads back through its value,
+/// its complement, and casts to the other signedness and to 128 bits.
+fn patterns_round_trip(raw: u128, width: u8, signed: bool) -> Result<(), TestCaseError> {
+    let ty = int(width, signed);
+    let bits = Bits::from_raw(ty, raw);
+    prop_assert!(ty.contains(bits.value()));
+    prop_assert_eq!(Bits::truncate(ty, bits.value()), bits);
+    prop_assert_eq!(bits.not().not(), bits);
+    let flipped = int(width, !signed);
+    prop_assert_eq!(bits.cast(flipped).cast(ty), bits);
+    let wider = int(128, signed);
+    prop_assert_eq!(bits.cast(wider).cast(ty), bits);
+    Ok(())
+}
+
+/// Found by the property: a signed one-bit integer.
+#[test]
+fn a_signed_one_bit_zero_round_trips() {
+    patterns_round_trip(0, 1, true).unwrap();
 }

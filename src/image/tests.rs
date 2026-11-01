@@ -2722,10 +2722,91 @@ fn variables_read_back_as_they_were_encoded() {
     assert_eq!(view.object(ObjectId(1)).type_id(), None);
 }
 
+/// A function is found at an address as before the image held them: of
+/// the functions whose code begins at or before it, those beginning last
+/// first, the first of them whose code contains it.
+fn functions_are_found_where_their_code_holds_the_address(
+    functions: Vec<Vec<(u64, u64)>>,
+    addresses: Vec<u64>,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    use super::variables::{Function, VariableView, Variables, add_to};
+
+    let functions = functions
+        .into_iter()
+        .map(|ranges| Function {
+            ranges: ranges
+                .into_iter()
+                .map(|(start, length)| super::sample::range(start, start + length))
+                .collect(),
+            objects: Vec::new(),
+            name: None,
+            captures: Ok(Vec::new()),
+            returns: None,
+        })
+        .collect::<Vec<_>>();
+    let mut starts = std::collections::BTreeMap::<u64, Vec<usize>>::new();
+
+    for (index, function) in functions.iter().enumerate() {
+        for range in function.ranges.iter() {
+            starts.entry(range.start.get()).or_default().push(index);
+        }
+    }
+
+    let input = Variables {
+        functions: functions.clone(),
+        ..Variables::default()
+    };
+    let index = input.function_index().unwrap();
+    let mut builder = Builder::new(TARGET);
+    let mut strings = StringsBuilder::default();
+    add_to(&mut builder, &mut strings, &input).unwrap();
+    builder.bytes(TableKind::Strings, strings.into_bytes());
+    let image = builder.seal(Limits::default()).unwrap();
+    let view = VariableView::new(&image);
+
+    for address in addresses {
+        let expected = starts
+            .range(..=address)
+            .rev()
+            .flat_map(|(_, functions)| functions.iter().copied())
+            .find(|index| {
+                functions[*index]
+                    .ranges
+                    .iter()
+                    .any(|range| range.contains(ImageAddress::new(address)))
+            });
+        let found = view
+            .function_at(ImageAddress::new(address))
+            .map(|function| function.id().0 as usize);
+        proptest::prop_assert_eq!(found, expected, "at {:#x}", address);
+
+        // The loader finds functions as the image does, before sealing.
+        let before = index.function_at(ImageAddress::new(address));
+        proptest::prop_assert!(
+            match (before, expected) {
+                (Some(before), Some(found)) =>
+                    std::ptr::eq(before, std::ptr::from_ref(&input.functions[found])),
+                (before, found) => before.is_none() && found.is_none(),
+            },
+            "before sealing, at {:#x}",
+            address
+        );
+    }
+    Ok(())
+}
+
+/// Found by the property below: a function starting inside an earlier
+/// one's range, at an address past the later function's end.
+#[test]
+fn a_later_start_that_ends_first_leaves_the_earlier_function_found() {
+    functions_are_found_where_their_code_holds_the_address(
+        vec![vec![(22, 18)], vec![(18, 22), (23, 1)]],
+        vec![24],
+    )
+    .unwrap();
+}
+
 proptest::proptest! {
-    /// A function is found at an address as before the image held them:
-    /// of the functions whose code begins at or before it, those beginning
-    /// last first, the first of them whose code contains it.
     #[test]
     fn a_function_is_found_where_its_code_holds_the_address(
         functions in proptest::collection::vec(
@@ -2734,65 +2815,7 @@ proptest::proptest! {
         ),
         addresses in proptest::collection::vec(0_u64..96, 1..16),
     ) {
-        use super::variables::{Function, Variables, VariableView, add_to};
-
-        let functions = functions
-            .into_iter()
-            .map(|ranges| Function {
-                ranges: ranges
-                    .into_iter()
-                    .map(|(start, length)| super::sample::range(start, start + length))
-                    .collect(),
-                objects: Vec::new(),
-                name: None,
-                captures: Ok(Vec::new()),
-                returns: None,
-            })
-            .collect::<Vec<_>>();
-        let mut starts = std::collections::BTreeMap::<u64, Vec<usize>>::new();
-
-        for (index, function) in functions.iter().enumerate() {
-            for range in function.ranges.iter() {
-                starts.entry(range.start.get()).or_default().push(index);
-            }
-        }
-
-        let input = Variables { functions: functions.clone(), ..Variables::default() };
-        let index = input.function_index().unwrap();
-        let mut builder = Builder::new(TARGET);
-        let mut strings = StringsBuilder::default();
-        add_to(&mut builder, &mut strings, &input).unwrap();
-        builder.bytes(TableKind::Strings, strings.into_bytes());
-        let image = builder.seal(Limits::default()).unwrap();
-        let view = VariableView::new(&image);
-
-        for address in addresses {
-            let expected = starts
-                .range(..=address)
-                .rev()
-                .flat_map(|(_, functions)| functions.iter().copied())
-                .find(|index| {
-                    functions[*index]
-                        .ranges
-                        .iter()
-                        .any(|range| range.contains(ImageAddress::new(address)))
-                });
-            let found = view
-                .function_at(ImageAddress::new(address))
-                .map(|function| function.id().0 as usize);
-            proptest::prop_assert_eq!(found, expected, "at {:#x}", address);
-
-            // The loader finds functions as the image does, before sealing.
-            let before = index.function_at(ImageAddress::new(address));
-            proptest::prop_assert!(
-                match (before, expected) {
-                    (Some(before), Some(found)) => std::ptr::eq(before, std::ptr::from_ref(&input.functions[found])),
-                    (before, found) => before.is_none() && found.is_none(),
-                },
-                "before sealing, at {:#x}",
-                address
-            );
-        }
+        functions_are_found_where_their_code_holds_the_address(functions, addresses)?;
     }
 }
 

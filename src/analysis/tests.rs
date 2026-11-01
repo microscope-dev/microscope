@@ -1205,73 +1205,110 @@ fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
     builder.finish()
 }
 
+/// A sample carries the labels of the spans open on its thread at its
+/// time, and its task's: a query of a label keeps exactly the samples that
+/// carry it, and one by a key roots each at its innermost value.
+fn samples_carry_the_open_labels(
+    spans: &[(u32, i64, i64, u32)],
+    samples: &[Sample],
+    wanted: u32,
+) -> Result<(), TestCaseError> {
+    let capture = labeled(&spans, &samples);
+    let keys = Keys::new(&capture, Granularity::Function);
+
+    // The innermost route a sample carries: the latest-starting span
+    // that covers it, of two that start together the shorter, and of
+    // two alike the first recorded, which the capture nests inside.
+    let route = |&(thread, time, _, _): &Sample| {
+        spans
+            .iter()
+            .enumerate()
+            .filter(|(_, (on, start, length, _))| {
+                *on == thread && *start <= time && time < start + length
+            })
+            .max_by_key(|(order, (_, start, length, _))| {
+                (
+                    *start,
+                    std::cmp::Reverse(*length),
+                    std::cmp::Reverse(*order),
+                )
+            })
+            .map(|(_, (_, _, _, value))| *value)
+    };
+
+    let carries = |sample: &Sample, value: u32| {
+        spans.iter().any(|(on, start, length, carried)| {
+            *on == sample.0 && *start <= sample.1 && sample.1 < start + length && *carried == value
+        })
+    };
+
+    let weight = |keep: &dyn Fn(&Sample) -> bool| -> u64 {
+        samples
+            .iter()
+            .filter(|sample| keep(sample))
+            .map(|sample| sample.2)
+            .sum()
+    };
+
+    let query = |labels: Vec<(&str, String)>, by: Option<&str>| Query {
+        labels: labels
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+        by_label: by.map(str::to_owned),
+        ..Query::default()
+    };
+
+    let routed = keys.aggregate(&query(vec![("route", format!("v{wanted}"))], None));
+    prop_assert_eq!(routed.weight, weight(&|sample| carries(sample, wanted)));
+    let spun = keys.aggregate(&query(vec![("phase", "spin".to_owned())], None));
+    prop_assert_eq!(spun.weight, weight(&|sample| sample.3 == 1));
+    let by = keys.aggregate(&query(Vec::new(), Some("route")));
+    let mut roots = BTreeMap::new();
+
+    for node in (0..by.len()).filter(|&node| by.depth[node] == 0) {
+        roots.insert(keys.name(by.key[node]), by.total[node]);
+    }
+
+    let mut expected = BTreeMap::new();
+
+    for sample in samples {
+        let name = route(sample).map_or_else(
+            || "[no route]".to_owned(),
+            |value| format!("route=v{value}"),
+        );
+        *expected.entry(name).or_insert(0) += sample.2;
+    }
+
+    if spans.is_empty() {
+        // A key no label has roots every sample at its absence.
+        expected = expected
+            .into_values()
+            .map(|weight| ("[no such label]".to_owned(), weight))
+            .collect();
+    }
+
+    prop_assert_eq!(roots, expected);
+    Ok(())
+}
+
+/// Found by the property below: two spans alike but for their value, so
+/// the first recorded is the innermost.
+#[test]
+fn of_two_alike_spans_the_first_recorded_is_innermost() {
+    samples_carry_the_open_labels(&[(1, 35, 27, 0), (1, 35, 27, 1)], &[(1, 35, 1, 0)], 0).unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// A sample carries the labels of the spans open on its thread at its
-    /// time, and its task's: a query of a label keeps exactly the samples
-    /// that carry it, and one by a key roots each at its innermost value.
     #[test]
     fn samples_carry_the_labels_open_on_their_thread_and_their_tasks(
         spans in proptest::collection::vec((0..2_u32, 0..100_i64, 0..50_i64, 0..3_u32), 0..12),
         samples in proptest::collection::vec((0..2_u32, 0..160_i64, 1..5_u64, 0..4_u32), 0..40),
         wanted in 0..3_u32,
     ) {
-        let capture = labeled(&spans, &samples);
-        let keys = Keys::new(&capture, Granularity::Function);
-
-        // The innermost route a sample carries: the latest-starting span
-        // that covers it, of two that start together the shorter, and of
-        // two alike the first recorded, which the capture nests inside.
-        let route = |&(thread, time, _, _): &Sample| {
-            spans
-                .iter()
-                .enumerate()
-                .filter(|(_, (on, start, length, _))| *on == thread && *start <= time && time < start + length)
-                .max_by_key(|(order, (_, start, length, _))| (*start, std::cmp::Reverse(*length), std::cmp::Reverse(*order)))
-                .map(|(_, (_, _, _, value))| *value)
-        };
-
-        let carries = |sample: &Sample, value: u32| {
-            spans.iter().any(|(on, start, length, carried)| {
-                *on == sample.0 && *start <= sample.1 && sample.1 < start + length && *carried == value
-            })
-        };
-
-        let weight = |keep: &dyn Fn(&Sample) -> bool| -> u64 {
-            samples.iter().filter(|sample| keep(sample)).map(|sample| sample.2).sum()
-        };
-
-        let query = |labels: Vec<(&str, String)>, by: Option<&str>| Query {
-            labels: labels.into_iter().map(|(key, value)| (key.to_owned(), value)).collect(),
-            by_label: by.map(str::to_owned),
-            ..Query::default()
-        };
-
-        let routed = keys.aggregate(&query(vec![("route", format!("v{wanted}"))], None));
-        prop_assert_eq!(routed.weight, weight(&|sample| carries(sample, wanted)));
-        let spun = keys.aggregate(&query(vec![("phase", "spin".to_owned())], None));
-        prop_assert_eq!(spun.weight, weight(&|sample| sample.3 == 1));
-        let by = keys.aggregate(&query(Vec::new(), Some("route")));
-        let mut roots = BTreeMap::new();
-
-        for node in (0..by.len()).filter(|&node| by.depth[node] == 0) {
-            roots.insert(keys.name(by.key[node]), by.total[node]);
-        }
-
-        let mut expected = BTreeMap::new();
-
-        for sample in &samples {
-            let name = route(sample).map_or_else(|| "[no route]".to_owned(), |value| format!("route=v{value}"));
-            *expected.entry(name).or_insert(0) += sample.2;
-        }
-
-        if spans.is_empty() {
-            // A key no label has roots every sample at its absence.
-            expected = expected.into_values().map(|weight| ("[no such label]".to_owned(), weight)).collect();
-        }
-
-        prop_assert_eq!(roots, expected);
+        samples_carry_the_open_labels(&spans, &samples, wanted)?;
     }
 
     /// A track's blocks draw every zone in the range once, never overlap,

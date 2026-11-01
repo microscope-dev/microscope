@@ -715,6 +715,15 @@ fn expression_text() -> impl Strategy<Value = String> {
     })
 }
 
+/// Found by the round trip below: a cast of a parenthesized name inside a
+/// subtraction, and an assignment in a conditional under `sizeof`.
+#[test]
+fn printed_casts_and_nested_assignments_read_back_the_same() {
+    for text in ["(n) - ((a) as int) as int", "sizeof(a ? a = a : a)"] {
+        check_invariants(text).unwrap_or_else(|error| panic!("{text}: {error}"));
+    }
+}
+
 proptest! {
     #[test]
     fn the_normal_form_reads_back_the_same(text in expression_text()) {
