@@ -24,6 +24,11 @@ test("a profile is explored, and its address opens the same view", async ({
       "leaf",
       "--function-period",
       "1",
+      // A small copy, as the Rust tests' recordings of leaf take: six deep
+      // ones overfill the rings a recording gets while others hold perf
+      // memory, and a starved reader then loses calls made back to back.
+      "--stack-bytes",
+      "512",
       "--",
       fixture("profile-stacks-gcc-o0"),
       "1",
@@ -353,6 +358,8 @@ test("a profile is diffed with a range of its own, and with another profile", as
         symbol,
         "--function-period",
         "1",
+        "--stack-bytes",
+        "512",
         "--",
         fixture("profile-stacks-gcc-o0"),
         "1",
@@ -423,6 +430,8 @@ test("a function's samples show on its source lines and its instructions", async
       "leaf",
       "--function-period",
       "1",
+      "--stack-bytes",
+      "512",
       "--",
       fixture("profile-stacks-gcc-o0"),
       "1",
