@@ -682,6 +682,8 @@ impl CaptureBuilder {
             samples.retain(|sample| sample.time.get() >= time);
         }
 
+        // A span of no length at the cut is of the moment it begins, which
+        // this side keeps, as [`Self::forget_from`] does not.
         for intervals in &mut self.off_cpu {
             intervals.retain_mut(|interval| {
                 let start = interval.time.get();
@@ -691,16 +693,17 @@ impl CaptureBuilder {
                     interval.duration = end.abs_diff(time).into();
                 }
 
-                end > time
+                end > time || start >= time
             });
         }
 
         self.gaps.retain_mut(|gap| {
-            if gap.start.get() < time {
-                gap.start = time.min(gap.end.get()).into();
+            let (start, end) = (gap.start.get(), gap.end.get());
+            if start < time {
+                gap.start = time.min(end).into();
             }
 
-            gap.end.get() > time
+            end > time || start >= time
         });
 
         // A zone open at the cut keeps the part after it, as an interval
@@ -1083,13 +1086,17 @@ impl CaptureBuilder {
             self.count(account.kind.get(), account.value.get());
         }
 
-        // Deepest first, so that of two zones of one span, the one that
-        // holds the other comes later, as when it was recorded.
+        // In reverse of the table's order, so that zones it orders by when
+        // they were recorded come again in that order: of two of one span,
+        // the one that holds the other comes later.
         for range in capture.zone_ranges.iter().rev() {
             let thread = map.threads[range.thread.get() as usize];
             let start = range.start.get() as usize;
 
-            for zone in &capture.zones[start..start + range.count.get() as usize] {
+            for zone in capture.zones[start..start + range.count.get() as usize]
+                .iter()
+                .rev()
+            {
                 let value = self.copy_string(capture, zone.value.get());
                 let zone = Zone {
                     site: map.sites[zone.site.get() as usize].into(),
