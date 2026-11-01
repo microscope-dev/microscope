@@ -238,6 +238,19 @@ int main(int argc, char **argv) {
         signals();
         return 0;
     }
+    if (strcmp(mode, "signal-term") == 0) {
+        kill(getpid(), SIGTERM);
+        return 15;
+    }
+    if (strcmp(mode, "signal-kill") == 0) {
+        kill(getpid(), SIGKILL);
+        return 15;
+    }
+    if (strcmp(mode, "signal-ignore") == 0) {
+        struct sigaction action = {.sa_handler = SIG_IGN};
+        if (sigaction(SIGUSR1, &action, NULL) != 0) return 24;
+        return kill(getpid(), SIGUSR1) == 0 ? 0 : 25;
+    }
     if (strcmp(mode, "compat") == 0) {
         compat();
         return 0;

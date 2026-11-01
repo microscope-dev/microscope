@@ -1821,6 +1821,76 @@ mod bpf {
         assert_same(&comparable(&bpf), &comparable(&ptrace), "for signals");
     }
 
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn handled_signals_keep_their_number_and_sender() {
+        let directory = ScratchDir::new("syscalls-signal");
+        let (code, errors, trace) = traced(
+            directory.path(),
+            microscope(&["--engine", "bpf"]),
+            &["-e", "trace=kill"],
+            "signal",
+        );
+        assert_eq!(code, Some(0), "{errors}");
+        eprintln!("{trace}");
+        let kill = Regex::new(r"kill\((\d+), SIGUSR1\) += 0").expect("kill regex");
+        let pid = &kill.captures(&trace).expect("successful kill")[1];
+        let delivered = trace
+            .lines()
+            .filter(|line| line.starts_with("--- "))
+            .collect::<Vec<_>>();
+        assert_eq!(delivered.len(), 1, "{trace}");
+        assert!(
+            delivered[0].starts_with(&format!(
+                "--- SIGUSR1 {{si_signo=SIGUSR1, si_code=SI_USER, si_pid={pid}, si_uid="
+            )),
+            "wrong signal or sender: {trace}"
+        );
+        assert!(trace.ends_with("+++ exited with 0 +++\n"), "{trace}");
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn fatal_signals_do_not_report_group_exit_wakeups_as_deliveries() {
+        for (mode, signal) in [("signal-term", "SIGTERM"), ("signal-kill", "SIGKILL")] {
+            let directory = ScratchDir::new("syscalls-fatal-signal");
+            let (code, errors, trace) = traced(
+                directory.path(),
+                microscope(&["--engine", "bpf"]),
+                &["-e", "trace=kill"],
+                mode,
+            );
+            assert_eq!(
+                code,
+                Some(if signal == "SIGTERM" { 143 } else { 137 }),
+                "{errors}"
+            );
+            eprintln!("{mode}:\n{trace}");
+            assert!(trace.contains(&format!(", {signal})")), "{trace}");
+            assert!(
+                trace.ends_with(&format!("+++ killed by {signal} +++\n")),
+                "{trace}"
+            );
+            assert!(!trace.contains("--- "), "fabricated delivery: {trace}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn an_ignored_signal_is_not_a_delivery() {
+        let directory = ScratchDir::new("syscalls-ignored-signal");
+        let (code, errors, trace) = traced(
+            directory.path(),
+            microscope(&["--engine", "bpf"]),
+            &["-e", "trace=kill"],
+            "signal-ignore",
+        );
+        assert_eq!(code, Some(0), "{errors}");
+        assert!(trace.contains(", SIGUSR1)"), "{trace}");
+        assert!(trace.ends_with("+++ exited with 0 +++\n"), "{trace}");
+        assert!(!trace.contains("--- "), "ignored signal delivered: {trace}");
+    }
+
     /// A short list attaches to its calls' kernel functions, which see the
     /// calls the tracepoints do; only the tracepoints, which every call on
     /// the host passes, say what they cost.

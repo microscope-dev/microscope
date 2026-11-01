@@ -93,6 +93,7 @@ const CONFIG_GENERATION: u32 = 64;
 
 const CALL_PROCESS_EXITED: u8 = 8;
 const CALL_STACK_LOST: u8 = 32;
+const SIGNAL_INFO_LOST: u32 = 1;
 
 /// The stack of a call or signal whose own did not fit in the ring.
 fn lost_stack() -> CallStack {
@@ -618,24 +619,28 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
             let raw: RawSignalRecord = read(bytes)?;
             let word =
                 |at: usize| i32::from_le_bytes(raw.info[at..at + 4].try_into().unwrap_or_default());
-            let code = word(8);
+            let code = (raw.flags & SIGNAL_INFO_LOST == 0).then(|| word(8));
 
             // Processes send with SI_USER, SI_QUEUE, SI_TKILL, and the like.
-            let sender = (code <= 0 && code != -2)
+            let sender = code
+                .is_some_and(|code| code <= 0 && code != -2)
                 .then(|| u32::try_from(word(16)).ok().map(Pid::new))
                 .flatten();
 
             // The rest of a siginfo holds no field of any kind of signal.
-            let mut info = [0_u8; 128];
-            info[..raw.info.len()].copy_from_slice(&raw.info);
+            let info = code.map(|_| {
+                let mut info = [0_u8; 128];
+                info[..raw.info.len()].copy_from_slice(&raw.info);
+                Arc::from(&info[..])
+            });
             Ok(Record::Event(TraceEvent::Signal {
                 thread: Tid::new(header.tid),
                 process: Pid::new(header.tgid),
                 time: raw.time,
                 signal: raw.signal,
-                code: Some(code),
+                code,
                 sender,
-                info: Some(Arc::from(&info[..])),
+                info,
                 stack: (raw.flags & u32::from(CALL_STACK_LOST) != 0).then(lost_stack),
             }))
         }
@@ -2865,6 +2870,35 @@ mod tests {
         let mut bytes = record.as_bytes().to_vec();
         bytes.extend_from_slice(&tail);
         bytes
+    }
+
+    #[test]
+    fn unreadable_signal_info_stays_unknown() {
+        let raw = RawSignalRecord {
+            header: RawRecord {
+                kind: RECORD_SIGNAL,
+                size: u32::try_from(size_of::<RawSignalRecord>()).expect("small"),
+                tid: 11,
+                tgid: 10,
+            },
+            time: 250,
+            signal: 10,
+            flags: SIGNAL_INFO_LOST | u32::from(CALL_STACK_LOST),
+            info: [0; 48],
+        };
+        assert_eq!(
+            decode(raw.as_bytes()),
+            Ok(Record::Event(TraceEvent::Signal {
+                thread: Tid::new(11),
+                process: Pid::new(10),
+                time: 250,
+                signal: 10,
+                code: None,
+                sender: None,
+                info: None,
+                stack: Some(lost_stack()),
+            }))
+        );
     }
 
     /// A record of Python frames decodes whole, its bytes kept to read when

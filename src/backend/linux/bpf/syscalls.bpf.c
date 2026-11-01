@@ -1192,6 +1192,12 @@ int signal_deliver(u64 *ctx)
 	u32 tgid = ids >> 32, tid = (u32)ids;
 	if (!traced(tgid))
 		return 0;
+	s32 signal = (s32)ctx[0];
+	void *info = (void *)ctx[1];
+	// get_signal reports group-exit wakeups as SIGKILL with SEND_SIG_NOINFO.
+	// The exit record, not this synthetic signal, carries the fatal reason.
+	if (signal == 9 && !info)
+		return 0;
 	shown_current(&tid, &tgid);
 	struct config *settings = config();
 	if (!settings || !(settings->flags & CONFIG_STREAM))
@@ -1212,10 +1218,12 @@ int signal_deliver(u64 *ctx)
 	record->header.tid = tid;
 	record->header.tgid = tgid;
 	record->time = bpf_ktime_get_ns();
-	record->signal = (s32)ctx[0];
+	record->signal = signal;
 	record->flags = flags;
-	if (bpf_probe_read_kernel(record->info, sizeof(record->info), (void *)ctx[1]))
+	if (bpf_probe_read_kernel(record->info, sizeof(record->info), info)) {
 		__builtin_memset(record->info, 0, sizeof(record->info));
+		record->flags |= SIGNAL_INFO_LOST;
+	}
 	bpf_ringbuf_submit(record, 0);
 	return 0;
 }

@@ -146,6 +146,19 @@ Rules the engine keeps:
 - **Loss is reported.** Ring overflows, sampling, and calls whose return was
   never seen all become counted losses, never silent gaps.
 
+Signals come from `tp_btf/signal_deliver`, whose arguments are `int sig`,
+`struct kernel_siginfo *info`, and `struct k_sigaction *ka`. The BPF context
+starts with `sig`; the tracepoint callback's private `__data` is not an
+argument in that context. Handled signals retain their siginfo. If reading
+it fails, code, sender, and siginfo stay unknown rather than become zeros.
+
+The kernel's group-exit path also emits `SIGKILL` with `SEND_SIG_NOINFO`
+(`NULL`), even when another signal caused the exit. These internal wakeups
+are not delivery events in microscope. The exit record supplies the actual
+fatal signal. Unlike ptrace, this tracepoint does not supply the original
+fatal signal's delivery stop or its sender; the BPF engine does not invent
+them from the preceding `kill` call.
+
 How it attaches:
 
 - By default it uses `tp_btf` tracepoints, which every process on the host
