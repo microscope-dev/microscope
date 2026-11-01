@@ -1183,7 +1183,7 @@ fn target_value(bytes: &[u8], byte_order: ByteOrder) -> u64 {
 
 #[cfg(any(test, feature = "fuzzing"))]
 mod fake;
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 mod fuzz;
 #[cfg(test)]
 mod tests;
