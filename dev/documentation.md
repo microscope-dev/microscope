@@ -58,8 +58,8 @@ Do not invent a workflow to make a page appear complete.
 
 ## Tested examples
 
-Examples in `docs/expressions.md`, `docs/views.md`,
-`docs/writing-views.md`, and `docs/visualizers.md` are test inputs. Keep their
+Examples in `docs/expressions.md`, `docs/views.md`, and
+`docs/visualizers.md` are test inputs. Keep their
 fence names and expected-output syntax intact. Change the reference and the
 implementation in the same commit.
 
@@ -177,12 +177,7 @@ The important forms are:
 - `microscope-example` for expression rows;
 - `microscope-view-example` for a view definition and expected rows;
 - `microscope-renderer-example` and `microscope-live-example` for sandboxed
-  JavaScript;
-- language-plus-path fences in the writing-views tutorial, which must quote a
-  real fixture fragment.
-
-Do not reformat the body of a path fence unless the fixture changes in the
-same patch. The comparison intentionally prevents tutorial code from drifting.
+  JavaScript.
 
 ## VitePress
 

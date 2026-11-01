@@ -37,7 +37,6 @@ export default defineConfig({
         items: [
           { text: "Expressions", link: "/expressions" },
           { text: "Views", link: "/views" },
-          { text: "Writing views", link: "/writing-views" },
           { text: "Visualizers", link: "/visualizers" },
           { text: "Languages", link: "/languages" },
         ],

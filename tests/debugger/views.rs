@@ -1402,47 +1402,8 @@ async fn the_rust_sdk_embeds_a_programs_views_and_kernels() {
     scenario.shutdown().await;
 }
 
-/// The program `docs/writing-views.md` writes views for presents as its
-/// markers say, with the views it carries.
+/// The C SDK fixture's embedded views present values as its markers specify.
 #[tokio::test]
 async fn the_tutorials_program_presents_as_its_markers_say() {
     check_containers("tutorial", "c/tutorial/tutorial.c", "barrier", false).await;
-}
-
-/// Every block of `docs/writing-views.md` that names a file quotes that
-/// file as it is, so the tutorial and the fixtures it is built from never
-/// drift apart.
-#[test]
-fn the_tutorial_quotes_its_fixtures_as_they_are() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let tutorial = fs::read_to_string(format!("{root}/docs/writing-views.md"))
-        .expect("read docs/writing-views.md");
-    let mut quoted = 0;
-    let mut lines = tutorial.lines();
-
-    while let Some(line) = lines.next() {
-        let Some(path) = line
-            .strip_prefix("```")
-            .and_then(|info| info.split_once(' '))
-            .map(|(_, path)| path.trim())
-        else {
-            continue;
-        };
-
-        let block = lines
-            .by_ref()
-            .take_while(|line| *line != "```")
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let file = fs::read_to_string(format!("{root}/{path}"))
-            .unwrap_or_else(|error| panic!("{path}: {error}"));
-        assert!(
-            file.contains(&block),
-            "docs/writing-views.md quotes {path} as it is not:\n{block}"
-        );
-        quoted += 1;
-    }
-
-    assert!(quoted >= 5, "the tutorial quotes its fixtures");
 }

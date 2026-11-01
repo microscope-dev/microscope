@@ -65,9 +65,8 @@ Views turn stored representations into logical values. Parsing and matching
 live in `src/view`; built-in files live under `views`. A failed check or read
 produces an explicit problem and falls back to the stored value.
 
-View examples and tutorials are executable tests. See
-[`docs/views.md`](../docs/views.md) and
-[`docs/writing-views.md`](../docs/writing-views.md).
+View examples are executable tests. See
+[`docs/views.md`](../docs/views.md).
 
 ## Runtimes
 

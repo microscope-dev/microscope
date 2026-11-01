@@ -62,7 +62,7 @@ state is still available.
 
 Views can attach visualizers to values. The Drawings panel can show a buffer as
 an image, samples as a chart, or a mesh as an interactive model. See
-[Writing views](writing-views.md) and [Visualizers](visualizers.md).
+[Views](views.md) and [Visualizers](visualizers.md).
 
 Renderers run in a sandbox. They receive only the data selected by a view and
 cannot read arbitrary process memory.

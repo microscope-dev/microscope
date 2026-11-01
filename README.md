@@ -17,7 +17,7 @@ Protocol.
 - [Recording and reading profiles](docs/profiling.md)
 - [Tracing system calls](docs/syscalls.md)
 - [Expressions](docs/expressions.md)
-- [Views](docs/views.md) and [writing views](docs/writing-views.md)
+- [Views](docs/views.md)
 - [Supported languages](docs/languages.md)
 - [Command-line reference](docs/reference/command-line.md)
 - [Configuration reference](docs/reference/configuration.md)

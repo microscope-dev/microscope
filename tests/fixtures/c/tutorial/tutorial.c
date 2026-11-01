@@ -1,5 +1,5 @@
-// The program docs/writing-views.md writes views for, which it carries in
-// tutorial.views. Each `VIEW:` marker says what its expression shows.
+// Embedded views and a kernel built with the C SDK.
+// Each `VIEW:` marker says what its expression shows.
 
 #include <stddef.h>
 

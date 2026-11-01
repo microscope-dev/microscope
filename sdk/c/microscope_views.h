@@ -15,8 +15,7 @@
  * assembler's: relative to the directory the compiler runs in, or to a
  * directory given with -Wa,-I.
  *
- * The views language is described in microscope's docs/views.md, and how to
- * write views in docs/writing-views.md.
+ * See microscope's docs/views.md for the views language and examples.
  *
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */

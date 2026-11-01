@@ -1674,8 +1674,7 @@ if ! cmp -s "$output_dir/rust-btree.wasm" views/kernels/rust-btree.wasm; then
     exit 1
 fi
 rebuilt_outputs["$output_dir/rust-btree.wasm"]=true
-# The program docs/writing-views.md writes views for, which carries them, and
-# the kernel one of them calls, written with the C SDK.
+# A program with embedded views and a tree kernel written with the C SDK.
 zig cc --target=wasm32-freestanding -Os -nostdlib -Wl,--no-entry -Wl,-z,stack-size=16384 \
     -Isdk/c "$c_fixtures_dir/tutorial/tree.c" -o "$output_dir/tutorial-tree.wasm"
 rebuilt_outputs["$output_dir/tutorial-tree.wasm"]=true

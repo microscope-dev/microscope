@@ -47,7 +47,6 @@ conditions. `cap(v)` reads the field named `capacity`.
 
 Every file starts with `microscope-views 1`. Comments start with `#`.
 Statements start on separate lines and may continue onto the next line.
-For a longer walkthrough, see [Writing views](writing-views.md).
 
 ## Load and inspect views
 
@@ -350,8 +349,8 @@ Traps, nonzero return codes, and incorrect item sizes report a problem.
 Place `NAME.wasm` beside the view file and call `kernel("NAME", ...)`.
 Arguments are integers, pointer addresses, or booleans (0 or 1), up to 32
 per call. A file's own kernels take precedence over built-ins.
-The [kernel tutorial](writing-views.md#a-kernel) covers the ABI, SDK, and build
-command. `views record FILE EXPR` records runs;
+See the [C kernel SDK](https://github.com/microscope-dev/microscope/blob/main/sdk/c/microscope_kernel.h)
+for the interface, an example, and build flags. `views record FILE EXPR` records runs;
 `microscope views replay FILE --kernel NAME.wasm` checks a replacement offline.
 
 A **visualizer** draws a value in `microscope web`, without changing terminal

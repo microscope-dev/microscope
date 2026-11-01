@@ -39,8 +39,8 @@ Rust, Go, Zig, Odin, Fortran, D, Nim, and Ada.
 ## Learn the data model
 
 - [Write expressions](expressions.md)
-- [Understand how values are presented](views.md)
-- [Write views and visualizers](writing-views.md)
+- [Understand and write views](views.md)
+- [Write visualizers](visualizers.md)
 - [Check language support](languages.md)
 
 Exact options and settings are in the [reference](reference/command-line.md).
