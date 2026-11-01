@@ -1412,6 +1412,9 @@ fn command_line(process: ProcessId) -> String {
 }
 
 #[cfg(test)]
+mod stops_model;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1478,7 +1481,7 @@ mod tests {
             .expect("end the root session");
     }
 
-    /// Found by a model of the stop rule: where each member's stop is
+    /// Found by the model in `stops_model`: where each member's stop is
     /// its own, a pause of the whole group still ends once each member
     /// stopped or will not, reporting no stop of its own.
     #[test]
@@ -1502,7 +1505,7 @@ mod tests {
         assert_eq!(stops.paused(1, None), None, "member 1 never stopped");
     }
 
-    /// Found by a model of the stop rule: a client pauses the group
+    /// Found by the model in `stops_model`: a client pauses the group
     /// just as a member's breakpoint has begun to stop it.
     #[test]
     fn a_pause_during_a_group_stop_keeps_the_stop_it_is_for() {
