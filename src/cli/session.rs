@@ -16,7 +16,7 @@ use super::config::{
 };
 
 use super::terminal::{ColorEnvironment, Renderer, Role};
-use crate::Args;
+use crate::args::Args;
 
 /// What a session opens.
 pub enum Target {

@@ -97,7 +97,7 @@ pub struct WebArgs {
     #[arg(
         long = "env",
         value_name = "NAME=VALUE",
-        value_parser = crate::parse_environment_variable,
+        value_parser = crate::args::parse_environment_variable,
         conflicts_with_all = ["attach", "core"]
     )]
     environment: Vec<(OsString, OsString)>,
