@@ -766,14 +766,122 @@ fn expected_segments(lines: &[Vec<Written>]) -> Vec<(Position, Option<OriginalPl
     expected
 }
 
+const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// What ECMA-426 reads from the number at the start of `text`, and where
+/// it ends: digits add five bits at a time, with no limit on how many,
+/// and the sum is checked once all are read.
+fn reference_vlq(text: &[u8]) -> Option<(i64, usize)> {
+    let mut wide = 0_u128;
+    let mut past_64_bits = false;
+    for (index, byte) in text.iter().enumerate() {
+        let digit = DIGITS.iter().position(|digit| digit == byte)? as u128;
+        let shift = 5 * index;
+        if digit & 31 != 0 {
+            if shift >= 64 {
+                past_64_bits = true;
+            } else {
+                wide |= (digit & 31) << shift;
+            }
+        }
+
+        if digit & 32 == 0 {
+            if past_64_bits || wide >= 1 << 32 {
+                return None;
+            }
+
+            let magnitude = (wide >> 1) as i64;
+            let value = match (wide & 1, magnitude) {
+                (0, _) => magnitude,
+                (_, 0) => -(1 << 31),
+                _ => -magnitude,
+            };
+            return Some((value, index + 1));
+        }
+    }
+
+    None
+}
+
+/// Text that starts with a number near the edges of 32 bits, maybe padded
+/// with digits that add no bits, maybe cut, maybe with a byte that is no
+/// digit, and then whatever follows the number.
+fn vlq_text() -> impl Strategy<Value = Vec<u8>> {
+    let unsigned = prop_oneof![
+        prop::sample::select(vec![
+            0_u64,
+            1,
+            2,
+            3,
+            (1 << 31) - 1,
+            1 << 31,
+            (1 << 32) - 2,
+            (1 << 32) - 1,
+            1 << 32,
+            1 << 33,
+        ]),
+        0_u64..64,
+        0_u64..1 << 34,
+    ];
+    (
+        unsigned,
+        prop_oneof![3 => Just(0_usize), 1 => 1_usize..12],
+        prop_oneof![4 => Just(None), 1 => any::<prop::sample::Index>().prop_map(Some)],
+        prop_oneof![
+            4 => Just(None),
+            1 => (any::<prop::sample::Index>(), prop::sample::select(b"=!,; \xff-_".to_vec()))
+                .prop_map(Some),
+        ],
+        prop::sample::select(b",;AgZ".to_vec()),
+    )
+        .prop_map(|(mut unsigned, padding, cut, bad, after)| {
+            let digit = |value: u64| DIGITS[usize::try_from(value).expect("a digit")];
+            let mut text = Vec::new();
+            loop {
+                let low = unsigned & 31;
+                unsigned >>= 5;
+                text.push(digit(low | if unsigned > 0 { 32 } else { 0 }));
+                if unsigned == 0 {
+                    break;
+                }
+            }
+
+            // Continue past the last digit with digits that add nothing.
+            if padding > 0 {
+                let last = text.len() - 1;
+                let value = DIGITS
+                    .iter()
+                    .position(|d| *d == text[last])
+                    .expect("a digit");
+                text[last] = digit(value as u64 | 32);
+                text.extend(std::iter::repeat_n(b'g', padding - 1));
+                text.push(b'A');
+            }
+
+            if let Some(cut) = cut {
+                text.truncate(cut.index(text.len()));
+            }
+
+            if let Some((at, byte)) = bad.filter(|_| !text.is_empty()) {
+                let at = at.index(text.len());
+                text[at] = byte;
+            }
+
+            text.push(after);
+            text
+        })
+}
+
 proptest! {
+    /// A number is read exactly when ECMA-426 reads it: base64 digits
+    /// until one without a continuation bit, whose value fits 32 bits and
+    /// whose magnitude is below 2^31, with -0 for -2^31. Padding digits
+    /// that add no bits are allowed.
     #[test]
-    fn vlq_round_trips(value in i64::from(i32::MIN)..=i64::from(i32::MAX)) {
-        let mut text = String::new();
-        encode_vlq(value, &mut text);
+    fn vlq_reads_exactly_the_numbers_the_standard_reads(text in vlq_text()) {
         let mut at = 0;
-        prop_assert_eq!(decode_vlq(text.as_bytes(), &mut at), Ok(value));
-        prop_assert_eq!(at, text.len());
+        let read = decode_vlq(&text, &mut at).ok().map(|value| (value, at));
+        prop_assert_eq!(read, reference_vlq(&text), "{:?}", String::from_utf8_lossy(&text));
     }
 
     #[test]
@@ -809,40 +917,71 @@ proptest! {
         }
     }
 
-    /// Every generated position an original line leads to leads back to
-    /// it, and every position that leads to it is among them.
+    /// An original line leads to exactly the segment starts whose segment
+    /// maps to it, in order of original column and then position: of the
+    /// segments written at one start, the last listed covers it.
     #[test]
-    fn original_lines_and_lookups_agree(lines in written_strategy()) {
+    fn original_lines_lead_to_the_segments_that_map_to_them(lines in written_strategy()) {
         let map = parse(&written_json(&lines));
+        let mut covering: Vec<(Position, Option<OriginalPlace>)> = Vec::new();
+        for (position, original) in expected_segments(&lines) {
+            match covering.last_mut() {
+                Some(last) if last.0 == position => last.1 = original,
+                _ => covering.push((position, original)),
+            }
+        }
+
         for source in 0..SOURCES {
             let source = SourceId::new(source);
             for line in 0..20 {
                 let line = Line::from_zero_based(line);
-                let found: Vec<Position> =
-                    map.generated_for_line(source, line).map(|found| found.generated).collect();
-                for position in &found {
-                    let back = map.original_at(*position).expect("a mapped position");
-                    prop_assert_eq!((back.source, back.line), (source, line));
-                }
-
-                let mut starts: Vec<Position> = map
-                    .generated
+                let found: Vec<(Column, Position)> = map
+                    .generated_for_line(source, line)
+                    .map(|found| (found.original_column, found.generated))
+                    .collect();
+                let mut expected: Vec<(Column, Position)> = covering
                     .iter()
-                    .copied()
-                    .filter(|start| {
-                        map.original_at(*start)
-                            .is_some_and(|back| (back.source, back.line) == (source, line))
+                    .filter_map(|(position, original)| {
+                        original
+                            .filter(|original| (original.source, original.line) == (source, line))
+                            .map(|original| (original.column, *position))
                     })
                     .collect();
-                starts.dedup();
-                let mut sorted = found.clone();
-                sorted.sort_unstable();
-                prop_assert_eq!(sorted, starts);
+                expected.sort_unstable();
+                prop_assert_eq!(&found, &expected);
 
                 let chosen = map.breakpoint_positions(source, line, ColumnChoice::LineStart);
-                prop_assert!(chosen.iter().all(|position| found.contains(position)));
+                prop_assert!(chosen.iter().all(|position| found.iter().any(|(_, at)| at == position)));
                 prop_assert_eq!(chosen.is_empty(), found.is_empty());
             }
         }
+    }
+
+    /// A map whose segments name a source or a name past its lists is
+    /// refused, and one that names none is read.
+    #[test]
+    fn segments_naming_no_source_or_name_are_refused(
+        lines in prop::collection::vec(
+            prop::collection::vec(
+                (
+                    0..40u32,
+                    prop::option::weighted(
+                        0.9,
+                        (0..SOURCES + 2, 0..20u32, 0..30u32, prop::option::of(0..NAMES + 2)),
+                    ),
+                )
+                    .prop_map(|(column, original)| Written { column, original }),
+                0..6,
+            ),
+            0..6,
+        ),
+    ) {
+        let outside = lines.iter().flatten().any(|segment| {
+            segment.original.is_some_and(|(source, _, _, name)| {
+                source >= SOURCES || name.is_some_and(|name| name >= NAMES)
+            })
+        });
+        let read = SourceMap::parse(written_json(&lines).as_bytes(), &base());
+        prop_assert_eq!(read.is_err(), outside, "{:?}", lines);
     }
 }
