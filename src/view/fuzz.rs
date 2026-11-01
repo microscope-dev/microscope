@@ -4,10 +4,14 @@
 //! panics, and allocates only what its limits allow.
 #![allow(clippy::panic, reason = "a fuzz harness reports a bug by panicking")]
 
+#[cfg(feature = "fuzzing")]
 use super::run::{Child, Failure, children, element_place, length, present};
+#[cfg(feature = "fuzzing")]
 use super::scan::Checkpoints;
 use super::{ViewSet, choose};
-use crate::eval::fake::{Place, World};
+#[cfg(feature = "fuzzing")]
+use crate::eval::fake::Place;
+use crate::eval::fake::World;
 use crate::{BaseTypeEncoding as E, IntegerValue, SourceLanguage, TypeArgument, TypeReference};
 
 /// Where the harness maps the heap the containers may point into.
@@ -15,6 +19,7 @@ const HEAP: u64 = 0x10_0000;
 const HEAP_SIZE: usize = 4096;
 
 /// The most units of evaluation work one run may take.
+#[cfg(feature = "fuzzing")]
 const MAX_WORK: u64 = 65_536;
 
 /// The fuzzer's bytes for memory, read round and round, or zeros when
@@ -825,6 +830,7 @@ fn world_size(world: &World, ty: TypeReference) -> u64 {
 }
 
 /// Runs every view that binds each container over memory from `data`.
+#[cfg(feature = "fuzzing")]
 pub fn hostile(data: &[u8]) {
     // The same bytes, read as a module's embedded records, are refused or
     // read, never more than they hold.
