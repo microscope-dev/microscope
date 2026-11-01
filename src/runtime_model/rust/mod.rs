@@ -119,7 +119,7 @@ impl Payload<'_> {
     /// replaces it; a v0 symbol names the arguments, and nothing in it is
     /// a parameter's bare name.
     fn implementer(&self, vtable: u64, slot: u64) -> Result<String, Arc<str>> {
-        let method = self.word(vtable + slot)?;
+        let method = self.word(past(vtable, slot)?)?;
         let address = self
             .stop
             .load_bias()
@@ -156,7 +156,7 @@ impl Payload<'_> {
 
     /// The `&str` at `at`.
     fn str(&self, at: u64) -> Result<String, Arc<str>> {
-        self.text(self.word(at)?, self.word(at + 8)?)
+        self.text(self.word(at)?, self.word(past(at, 8)?)?)
     }
 
     /// The `Option<String>` at `at`.
@@ -166,7 +166,8 @@ impl Payload<'_> {
             return Ok(None);
         }
 
-        self.text(self.word(at + 8)?, self.word(at + 16)?).map(Some)
+        self.text(self.word(past(at, 8)?)?, self.word(past(at, 16)?)?)
+            .map(Some)
     }
 
     /// The message a value of type `ty` at `at` is, when it is text.
@@ -208,7 +209,7 @@ impl Payload<'_> {
                 ))
             }
             Some("RewrapBox") => {
-                let (inner, any) = (self.word(data)?, self.word(data + 8)?);
+                let (inner, any) = (self.word(data)?, self.word(past(data, 8)?)?);
                 let held = self.implementer(any, VTABLE_FIRST_METHOD)?;
                 let held = held.as_str();
                 Ok(RuntimeException {
@@ -225,6 +226,14 @@ impl Payload<'_> {
             _ => Err(format!("its payload is a `{ty}`, which microscope does not read").into()),
         }
     }
+}
+
+/// The address `offset` bytes past `address`, which the target's memory
+/// may place past the end of the address space.
+fn past(address: u64, offset: u64) -> Result<u64, Arc<str>> {
+    address.checked_add(offset).ok_or_else(|| {
+        format!("the panic's memory at {address:#x} + {offset} is past the address space").into()
+    })
 }
 
 /// The type `<T as Trait>::method` implements a trait for.
@@ -402,7 +411,7 @@ impl RuntimeModel for RustRuntime {
         let (data, vtable) = (argument(RDI)?, argument(RSI)?);
 
         // A payload's size bounds every read of it.
-        let size = payload.word(vtable + VTABLE_SIZE)?;
+        let size = payload.word(past(vtable, VTABLE_SIZE)?)?;
         if size > 1 << 12 {
             return Err(format!("the payload claims to be {size} bytes").into());
         }
@@ -546,7 +555,223 @@ pub fn standard_library(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::IntegerValue;
+    use crate::runtime_model::{ImageSymbol, Member};
+    use crate::test_strategies::hostile_address;
+
+    /// Where the tests' payloads lie.
+    const DATA: u64 = 0x1000;
+    const VTABLE: u64 = 0x2000;
+    const ANY_VTABLE: u64 = 0x3000;
+    const STRING: u64 = 0x4000;
+    const TEXT: u64 = 0x5000;
+
+    /// The methods the vtables point to, and the symbols that name them.
+    const METHODS: [(u64, &str); 3] = [
+        (
+            0x10_0000,
+            "<std::panicking::begin_panic_handler::FormatStringPayload as \
+             core::panic::PanicPayload>::fmt",
+        ),
+        (
+            0x10_0100,
+            "<std::panicking::begin_panic_handler::StaticStrPayload as \
+             core::panic::PanicPayload>::fmt",
+        ),
+        (
+            0x10_0200,
+            "<std::panicking::resume_unwind::RewrapBox as core::panic::PanicPayload>::fmt",
+        ),
+    ];
+    const STRING_TYPE_ID: (u64, &str) = (
+        0x10_0300,
+        "<alloc::string::String as core::any::Any>::type_id",
+    );
+
+    #[derive(Debug)]
+    struct Symbols;
+
+    impl RuntimeImage for Symbols {
+        fn producers(&self) -> Vec<&str> {
+            Vec::new()
+        }
+
+        fn constant(&self, _name: &str) -> Option<IntegerValue> {
+            None
+        }
+
+        fn symbol(&self, _name: &str) -> Option<ImageSymbol> {
+            None
+        }
+
+        fn function_answering(&self, _name: &str) -> Option<ImageSymbol> {
+            None
+        }
+
+        fn symbol_at(&self, address: ImageAddress) -> Option<Arc<str>> {
+            METHODS
+                .into_iter()
+                .chain([STRING_TYPE_ID])
+                .find(|(at, _)| *at == address.get())
+                .map(|(_, symbol)| symbol.into())
+        }
+
+        fn has_function(&self, _name: &str) -> bool {
+            false
+        }
+
+        fn function_body(&self, _name: &str) -> Option<ImageAddress> {
+            None
+        }
+
+        fn member(&self, _type_name: &str, _path: &[&str]) -> Option<Member> {
+            None
+        }
+
+        fn function_name(&self, _address: ImageAddress) -> Option<Arc<str>> {
+            None
+        }
+
+        fn thread_local(&self, _name: &str) -> Option<Result<crate::ThreadLocal, Arc<str>>> {
+            None
+        }
+    }
+
+    #[derive(Default)]
+    struct Memory(BTreeMap<u64, u8>);
+
+    impl Memory {
+        fn word(&mut self, address: u64, value: u64) {
+            self.bytes(address, &value.to_le_bytes());
+        }
+
+        fn bytes(&mut self, address: u64, bytes: &[u8]) {
+            for (at, byte) in (address..).zip(bytes) {
+                self.0.insert(at, *byte);
+            }
+        }
+    }
+
+    impl RuntimeStop for Memory {
+        fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+            for (index, byte) in (0..).zip(bytes.iter_mut()) {
+                let Some(read) = address
+                    .get()
+                    .checked_add(index)
+                    .and_then(|at| self.0.get(&at))
+                else {
+                    return false;
+                };
+                *byte = *read;
+            }
+
+            true
+        }
+
+        fn thread_pointer(&self, _thread: ThreadId) -> Option<u64> {
+            None
+        }
+
+        fn instruction(&self, _thread: ThreadId) -> Option<VirtualAddress> {
+            None
+        }
+
+        fn load_bias(&self) -> crate::LoadBias {
+            crate::LoadBias::default()
+        }
+
+        fn threads(&self) -> Vec<ThreadId> {
+            Vec::new()
+        }
+    }
+
+    /// The panic `rust_panic` reports with `data` and `vtable` in its
+    /// argument registers.
+    fn reported(memory: &Memory, data: u64, vtable: u64) -> Result<RuntimeException, Arc<str>> {
+        let runtime = RustRuntime {
+            image: Arc::new(Symbols),
+            hooks: [RuntimeHook {
+                filter: &PANIC,
+                address: ImageAddress::new(0),
+            }],
+        };
+        let registers = RegisterFile::new([(RDI, data), (RSI, vtable)]);
+        runtime.exception(memory, ImageAddress::new(0), &registers)
+    }
+
+    /// The payload of `kind`, an index of [`METHODS`], laid out with
+    /// its pointers as given: the message's text, the `String` a
+    /// `RewrapBox` holds, and the `Any` vtable that names it.
+    fn payload(kind: usize, text: u64, string: u64, any: u64) -> Memory {
+        let mut memory = Memory::default();
+        memory.word(VTABLE + VTABLE_SIZE, 24);
+        memory.word(VTABLE + VTABLE_FIRST_METHOD, METHODS[kind].0);
+        memory.word(ANY_VTABLE + VTABLE_FIRST_METHOD, STRING_TYPE_ID.0);
+        memory.bytes(TEXT, b"boom");
+        match kind {
+            0 => [5, text, 4].iter().zip(0..).for_each(|(word, index)| {
+                memory.word(DATA + 8 * index, *word);
+            }),
+            1 => [text, 4].iter().zip(0..).for_each(|(word, index)| {
+                memory.word(DATA + 8 * index, *word);
+            }),
+            _ => {
+                memory.word(DATA, string);
+                memory.word(DATA + 8, any);
+                [5, text, 4].iter().zip(0..).for_each(|(word, index)| {
+                    memory.word(STRING + 8 * index, *word);
+                });
+            }
+        }
+
+        memory
+    }
+
+    /// A vtable at the top of memory is unreadable, and is no panic of
+    /// microscope's own.
+    #[test]
+    fn a_payload_at_the_top_of_memory_is_unreadable() {
+        let memory = payload(0, TEXT, STRING, ANY_VTABLE);
+        assert!(reported(&memory, DATA, u64::MAX).is_err());
+        assert!(reported(&memory, DATA, u64::MAX - 3).is_err());
+        assert!(reported(&memory, u64::MAX - 3, VTABLE).is_err());
+    }
+
+    proptest! {
+        /// Each kind of payload reads as its message where its pointers
+        /// are where the payload says, and wherever a pointer from the
+        /// target leads otherwise, the report is a message or a reason,
+        /// never a panic of microscope's own.
+        #[test]
+        fn any_payload_pointers_give_a_report_or_a_reason(
+            kind in 0..METHODS.len(),
+            data in hostile_address(vec![DATA]),
+            vtable in hostile_address(vec![VTABLE]),
+            text in hostile_address(vec![TEXT]),
+            string in hostile_address(vec![STRING]),
+            any in hostile_address(vec![ANY_VTABLE]),
+        ) {
+            let memory = payload(kind, text, string, any);
+            let report = reported(&memory, data, vtable);
+
+            let rewrapped = kind == 2;
+            let laid_out = data == DATA
+                && vtable == VTABLE
+                && text == TEXT
+                && (!rewrapped || (string == STRING && any == ANY_VTABLE));
+            if laid_out {
+                let expected = if rewrapped { "panic resumed: boom" } else { "panicked: boom" };
+                prop_assert_eq!(report.map(|report| report.message), Ok(expected.into()));
+            } else if let Ok(report) = report {
+                prop_assert!(report.message.starts_with("panic"), "{}", report.message);
+            }
+        }
+    }
 
     #[test]
     fn methods_name_the_types_they_implement_for() {
