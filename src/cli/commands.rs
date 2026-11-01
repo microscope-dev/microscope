@@ -1,5 +1,6 @@
 //! The command table, argument parsing, and command handlers.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -1011,29 +1012,17 @@ impl Cli {
     ) -> Result<Option<Vec<CountedId>>> {
         let snapshot = self.debugger().snapshot().await?;
         let breakpoints = self.group_debugger().snapshot().await?.breakpoints;
-        let most = breakpoints.len() + snapshot.watchpoints.len();
-        let Some(ids) = parse_ids(words, watches, most, spec)? else {
-            return Ok(None);
-        };
-
-        let renderer = Renderer::new(false);
-        for &id in &ids {
-            let known = match id {
-                CountedId::Breakpoint(id) => {
-                    breakpoints.iter().any(|breakpoint| breakpoint.id == id)
-                }
-                CountedId::Watchpoint(id) => snapshot
+        let known = breakpoints
+            .iter()
+            .map(|breakpoint| CountedId::Breakpoint(breakpoint.id))
+            .chain(
+                snapshot
                     .watchpoints
                     .iter()
-                    .any(|watchpoint| watchpoint.id == id),
-            };
-
-            if !known {
-                bail!("{} was not found", id.describe(renderer));
-            }
-        }
-
-        Ok(Some(ids))
+                    .map(|watchpoint| CountedId::Watchpoint(watchpoint.id)),
+            )
+            .collect();
+        known_ids(words, watches, &known, spec)
     }
 
     /// Adds the breakpoint a `break` or `tbreak` line describes.
@@ -1045,7 +1034,7 @@ impl Cli {
     ) -> Result<String> {
         let parsed = parse_break(line, spec)?;
 
-        let location = match parsed.location {
+        let location = match parsed.location.as_deref() {
             Some(written) => match frame_line(written)? {
                 Some(line) => self.frame_source(line).await?,
                 None => parse_breakpoint_location(written)?.ok_or_else(|| spec.usage_error())?,
@@ -1183,16 +1172,29 @@ impl Cli {
     /// Writes the commands that recreate the breakpoints to `file`.
     async fn save_breakpoint_commands(&self, file: &str) -> Result<String> {
         let snapshot = self.debugger().snapshot().await?;
-        let text = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
+        let (text, refused) = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
         std::fs::write(file, text).with_context(|| format!("cannot write {file}"))?;
         let renderer = self.renderers.stdout;
 
-        Ok(format!(
+        let mut output = format!(
             "{} {} to {}",
             renderer.paint(Role::Success, "saved"),
-            plural(snapshot.breakpoints.len() as u64, "breakpoint"),
+            plural(
+                (snapshot.breakpoints.len() - refused.len()) as u64,
+                "breakpoint"
+            ),
             renderer.paint(Role::Metadata, file)
-        ))
+        );
+        for (id, reason) in refused {
+            let _ = write!(
+                output,
+                "\n{} {}: {reason}",
+                renderer.paint(Role::Warning, "not saved:"),
+                CountedId::Breakpoint(id).describe(renderer)
+            );
+        }
+
+        Ok(output)
     }
 
     /// The images of the loaded modules, or the program's before it runs.
@@ -3164,12 +3166,12 @@ fn frame_line(written: &str) -> Result<Option<FrameLine>> {
 
 /// A `break` line: its location, and the options written after it.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct BreakLine<'a> {
-    location: Option<&'a str>,
-    condition: Option<&'a str>,
-    hits: Option<&'a str>,
-    log: Option<String>,
-    disabled: bool,
+pub(super) struct BreakLine<'a> {
+    pub location: Option<Cow<'a, str>>,
+    pub condition: Option<&'a str>,
+    pub hits: Option<&'a str>,
+    pub log: Option<String>,
+    pub disabled: bool,
 }
 
 const BREAK_OPTIONS: [&str; 4] = ["if", "hits", "log", "disabled"];
@@ -3177,8 +3179,9 @@ const BREAK_OPTIONS: [&str; 4] = ["if", "hits", "log", "disabled"];
 /// Splits a `break` line into its location and its options, each of which
 /// takes the text up to the next option word outside a string or brackets.
 /// A word after the location that is no option is a hit condition, as
-/// `break counted ==3` wrote it before options had names.
-fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
+/// `break counted ==3` wrote it before options had names. A location in
+/// double quotes may hold spaces and option words.
+pub(super) fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
     let words = option_words(line);
     let starts = words
         .iter()
@@ -3191,9 +3194,9 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
 
     match &words[..first] {
         [] => {}
-        [(_, location)] => parsed.location = Some(location),
+        [(_, location)] => parsed.location = Some(unquoted_location(location)?),
         [(_, location), (_, hits)] => {
-            parsed.location = Some(location);
+            parsed.location = Some(unquoted_location(location)?);
             parsed.hits = Some(hits);
         }
         _ => return Err(spec.usage_error()),
@@ -3214,7 +3217,7 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
             "disabled" if !parsed.disabled => parsed.disabled = true,
             "if" if parsed.condition.is_none() => parsed.condition = Some(text),
             "hits" if parsed.hits.is_none() => parsed.hits = Some(text),
-            "log" if parsed.log.is_none() => parsed.log = Some(unquoted(text)?),
+            "log" if parsed.log.is_none() => parsed.log = Some(unquoted(text, "a log message")?),
             _ => return Err(twice()),
         }
     }
@@ -3222,19 +3225,21 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
     Ok(parsed)
 }
 
-/// The words of a line outside strings and brackets, with their offsets;
-/// a string or bracketed text is part of the word around it.
+/// The words of a line outside strings, character literals, backticked
+/// names, and brackets, with their offsets; such text is part of the word
+/// around it.
 fn option_words(line: &str) -> Vec<(usize, &str)> {
     let mut words = Vec::new();
-    let (mut depth, mut quoted, mut escaped) = (0_usize, false, false);
+    let (mut depth, mut quote, mut escaped) = (0_usize, None, false);
     let mut start = None;
+    let mut characters = line.char_indices();
 
-    for (offset, character) in line.char_indices() {
-        if quoted {
+    while let Some((offset, character)) = characters.next() {
+        if let Some(closing) = quote {
             match character {
                 _ if escaped => escaped = false,
-                '\\' => escaped = true,
-                '"' => quoted = false,
+                '\\' if closing == '"' => escaped = true,
+                _ if character == closing => quote = None,
                 _ => {}
             }
 
@@ -3251,7 +3256,15 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
 
         start.get_or_insert(offset);
         match character {
-            '"' => quoted = true,
+            '"' | '`' => quote = Some(character),
+            '\'' => {
+                // Only a whole literal such as `'('` or `'\''`, so that the
+                // lifetime in a name such as `Foo<'a>` opens nothing.
+                let length = char_literal_length(&line[offset..]);
+                for _ in 1..length {
+                    characters.next();
+                }
+            }
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
             _ => {}
@@ -3265,8 +3278,38 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
     words
 }
 
-/// A log message written in quotes, with `\"` and `\\` escaped, or as it is.
-fn unquoted(text: &str) -> Result<String> {
+/// How many characters the character literal at the start of `text` takes,
+/// or 1 when the quote begins none: one character or one escape, then the
+/// closing quote.
+fn char_literal_length(text: &str) -> usize {
+    let mut characters = text.chars().skip(1);
+    let length = match characters.next() {
+        Some('\\') => {
+            // An escape such as `\'` or `\u{e9}` runs to the next quote.
+            characters.next();
+            characters
+                .position(|character| character == '\'')
+                .map(|end| end + 4)
+        }
+        Some('\'') | None => None,
+        Some(_) => (characters.next() == Some('\'')).then_some(3),
+    };
+
+    length.unwrap_or(1)
+}
+
+/// A location as `break` takes it: in double quotes, escaped as a log
+/// message is, or as it is.
+fn unquoted_location(word: &str) -> Result<Cow<'_, str>> {
+    if word.starts_with('"') {
+        Ok(Cow::Owned(unquoted(word, "a location")?))
+    } else {
+        Ok(Cow::Borrowed(word))
+    }
+}
+
+/// A text, `what`, written in quotes, with `\"` and `\\` escaped, or as it is.
+fn unquoted(text: &str, what: &str) -> Result<String> {
     let Some(inner) = text.strip_prefix('"') else {
         return Ok(text.to_owned());
     };
@@ -3277,7 +3320,7 @@ fn unquoted(text: &str) -> Result<String> {
     while let Some(character) = characters.next() {
         match character {
             '"' if characters.as_str().trim().is_empty() => return Ok(message),
-            '"' => bail!("a log message in quotes ends at its closing quote"),
+            '"' => bail!("{what} in quotes ends at its closing quote"),
             '\\' => match characters.next() {
                 Some(escaped @ ('"' | '\\')) => message.push(escaped),
                 Some(other) => {
@@ -3290,7 +3333,7 @@ fn unquoted(text: &str) -> Result<String> {
         }
     }
 
-    bail!("a log message in quotes needs its closing quote")
+    bail!("{what} in quotes needs its closing quote")
 }
 
 /// Parses breakpoint and watchpoint ids, ranges of them such as `3-5` or
@@ -3336,6 +3379,24 @@ fn parse_ids(
                 ids.push(id);
             }
         }
+    }
+
+    Ok(Some(ids))
+}
+
+/// The ids `words` name, each one of `known`, or `None` for `all`.
+fn known_ids(
+    words: &[&str],
+    watches: bool,
+    known: &std::collections::BTreeSet<CountedId>,
+    spec: &CommandSpec,
+) -> Result<Option<Vec<CountedId>>> {
+    let Some(ids) = parse_ids(words, watches, known.len(), spec)? else {
+        return Ok(None);
+    };
+
+    if let Some(id) = ids.iter().find(|id| !known.contains(id)) {
+        bail!("{} was not found", id.describe(Renderer::new(false)));
     }
 
     Ok(Some(ids))
@@ -3901,6 +3962,7 @@ pub fn executes_programs(images: &[std::sync::Arc<microscope::ModuleImage>]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn spec(command: Command) -> &'static CommandSpec {
         COMMANDS
@@ -3959,7 +4021,7 @@ mod tests {
         assert_eq!(
             parsed,
             BreakLine {
-                location: Some("parse.c:12"),
+                location: Some("parse.c:12".into()),
                 condition: Some(r#"name == "log" && (a log b)"#),
                 hits: Some(">=2"),
                 log: Some(r#"said "{name}""#.to_owned()),
@@ -4104,6 +4166,137 @@ mod tests {
                 parse_memory_byte_count(Some(count), spec).is_err(),
                 "accepted invalid byte count {count:?}"
             );
+        }
+    }
+
+    /// An id near the ends of `u64`, near the small ids that exist, or
+    /// anywhere.
+    fn id() -> impl Strategy<Value = u64> {
+        prop_oneof![
+            prop::sample::select(vec![0, 1, 2, 3, 4, 5, u64::MAX - 2, u64::MAX - 1, u64::MAX]),
+            any::<u64>(),
+        ]
+    }
+
+    /// A word of ids: one, or a range, perhaps marked as watchpoints.
+    #[derive(Debug, Clone)]
+    struct Word {
+        watch: bool,
+        first: u64,
+        last: u64,
+        range: bool,
+    }
+
+    impl Word {
+        fn text(&self) -> String {
+            let mark = if self.watch { "w" } else { "" };
+            if self.range {
+                format!("{mark}{}-{}", self.first, self.last)
+            } else {
+                format!("{mark}{}", self.first)
+            }
+        }
+    }
+
+    /// What `delete` should do with `words`: the ids they name in order,
+    /// each once, or the error for the first range that is empty or else
+    /// the first id that does not exist, found without walking a range.
+    fn expected_ids(
+        words: &[Word],
+        watches: bool,
+        known: &std::collections::BTreeSet<CountedId>,
+    ) -> Result<Vec<CountedId>, String> {
+        let words = words
+            .iter()
+            .map(|word| {
+                let last = if word.range { word.last } else { word.first };
+                if word.first > last {
+                    return Err(format!("range {} is empty", word.text()));
+                }
+
+                let id = |id| {
+                    if word.watch || watches {
+                        CountedId::Watchpoint(WatchpointId::new(id))
+                    } else {
+                        CountedId::Breakpoint(BreakpointId::new(id))
+                    }
+                };
+                Ok((id(word.first), id(last)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut ids = Vec::new();
+        for (first, last) in words {
+            // The ids in the range that exist, and whether each follows the
+            // one before it without a gap.
+            let mut next = Some(first);
+            for &id in known.range(first..=last) {
+                if Some(id) != next {
+                    break;
+                }
+
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+
+                next = match id {
+                    CountedId::Breakpoint(id) => id
+                        .get()
+                        .checked_add(1)
+                        .map(|id| CountedId::Breakpoint(BreakpointId::new(id))),
+                    CountedId::Watchpoint(id) => id
+                        .get()
+                        .checked_add(1)
+                        .map(|id| CountedId::Watchpoint(WatchpointId::new(id))),
+                };
+            }
+
+            if let Some(missing) = next.filter(|&next| next <= last) {
+                return Err(format!(
+                    "{} was not found",
+                    missing.describe(Renderer::new(false))
+                ));
+            }
+        }
+
+        Ok(ids)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            // A range walked id by id hangs.
+            fork: true,
+            timeout: 5_000,
+            ..ProptestConfig::default()
+        })]
+
+        /// `delete` and the commands like it accept ids exactly when each
+        /// exists, and otherwise name the first that does not.
+        #[test]
+        fn id_ranges_name_the_first_missing_id(
+            known in prop::collection::btree_set((any::<bool>(), id()), 0..8),
+            words in prop::collection::vec(
+                (any::<bool>(), id(), id(), any::<bool>())
+                    .prop_map(|(watch, first, last, range)| Word { watch, first, last, range }),
+                1..4,
+            ),
+            watches in any::<bool>(),
+        ) {
+            let known = known
+                .into_iter()
+                .map(|(watch, id)| if watch {
+                    CountedId::Watchpoint(WatchpointId::new(id))
+                } else {
+                    CountedId::Breakpoint(BreakpointId::new(id))
+                })
+                .collect();
+            let texts = words.iter().map(Word::text).collect::<Vec<_>>();
+            let texts = texts.iter().map(String::as_str).collect::<Vec<_>>();
+
+            let ids = known_ids(&texts, watches, &known, spec(Command::Delete))
+                .map(Option::unwrap_or_default)
+                .map_err(|error| error.to_string());
+            prop_assert_eq!(ids, expected_ids(&words, watches, &known));
         }
     }
 

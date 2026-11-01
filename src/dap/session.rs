@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use super::breakpoints::{Breakpoints, Change, Entry, Group, Key, Placement, Slot, State, Want};
+use super::breakpoints::{self, Breakpoints, Change, Entry, Group, Key, Placement, State, Want};
 use super::config::{self, Configuration, Start};
 use super::handles::References;
 use super::output;
@@ -2407,123 +2407,20 @@ impl Session {
     /// Replaces a group of breakpoints and answers with its new entries in
     /// request order.
     async fn replace_group(&mut self, group: Group, wants: Vec<Want>) -> Result<Value, ErrorBody> {
-        let plan = self.breakpoints.plan(&group, wants);
-        let mut release = plan.release.into_iter();
-        while let Some(entry) = release.next() {
-            if let Err(error) = self.release_breakpoint(&entry).await {
-                self.breakpoints
-                    .abandon(group, plan.slots, std::iter::once(entry).chain(release));
-                return Err(error);
-            }
-        }
-
-        let mut entries = Vec::with_capacity(plan.slots.len());
-
-        for slot in plan.slots {
-            entries.push(match slot {
-                Slot::Keep(entry) => entry,
-                Slot::Resolve { id, want } => {
-                    let state = self.resolve(&group, &want).await;
-                    Entry { id, want, state }
-                }
-            });
-        }
-
+        let entries = breakpoints::replace_group(self, group.clone(), wants).await?;
         let body = entries
             .iter()
             .map(|entry| self.breakpoint_json(&group, entry))
             .collect::<Vec<_>>();
-        self.breakpoints.install(group, entries);
 
         Ok(json!({"breakpoints": body}))
-    }
-
-    async fn release_breakpoint(&mut self, entry: &Entry) -> Result<(), ErrorBody> {
-        let Some(breakpoint) = entry.breakpoint() else {
-            return Ok(());
-        };
-
-        if self.breakpoints.release(breakpoint)
-            && let Some(handle) = self.handle()
-        {
-            match handle.remove_breakpoint(breakpoint).await {
-                Ok(_) | Err(Error::BreakpointNotFound(_)) => {}
-                Err(error) => {
-                    // It may still be installed, and its entry still owns it.
-                    self.breakpoints.acquire(breakpoint);
-                    return Err(self::error(error));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Installs one breakpoint, or explains why it is not installed.
-    async fn resolve(&mut self, group: &Group, want: &Want) -> State {
-        let failed = |message: String| State::Unresolved {
-            message,
-            pending: false,
-        };
-
-        let Some(handle) = self.handle().cloned() else {
-            return State::Unresolved {
-                message: "the program is not loaded yet".to_owned(),
-                pending: true,
-            };
-        };
-
-        if let Key::Invalid(message) = &want.key {
-            return failed(message.clone());
-        }
-
-        let options = match breakpoint_options(want) {
-            Ok(options) => options,
-            Err(error) => return failed(error.to_string()),
-        };
-
-        let spec = match (group, &want.key) {
-            (Group::Source(path), Key::Line(line)) => {
-                let Some(line) = LineNumber::new(*line) else {
-                    return failed("line 0 does not exist".to_owned());
-                };
-
-                BreakpointSpec::Source {
-                    path: self.recorded_path(path),
-                    line,
-                }
-            }
-            (_, Key::Function(name)) => match crate::cli::commands::parse_breakpoint_location(name)
-            {
-                Ok(Some(spec)) => spec,
-                Ok(None) => {
-                    return failed(format!(
-                        "'{name}' is not a function, 0xaddress, file:line, or file:function"
-                    ));
-                }
-                Err(error) => return failed(format!("{error:#}")),
-            },
-            (_, Key::Instruction(address)) => {
-                BreakpointSpec::Address(VirtualAddress::new(*address))
-            }
-            _ => return failed("this breakpoint cannot be placed".to_owned()),
-        };
-
-        let added = handle.add_breakpoint_with(spec, options).await;
-        match added {
-            Ok(breakpoint) => {
-                self.breakpoints.acquire(breakpoint.id);
-                self.state_of(&breakpoint).await
-            }
-            Err(error) => failed(error.to_string()),
-        }
     }
 
     /// Resolves breakpoints that were waiting for the program and tells
     /// the client which now are.
     async fn resolve_unresolved(&mut self) -> Result<(), Closed> {
         for (group, entry) in self.breakpoints.unresolved() {
-            let state = self.resolve(&group, &entry.want).await;
+            let state = breakpoints::resolve(self, &group, &entry.want).await;
             let entry = Entry { state, ..entry };
             self.breakpoints.replace(&group, entry.clone());
             self.client
@@ -3309,6 +3206,79 @@ pub(super) const fn language_exception_text(
 /// A signal's name, or its number when it has none.
 pub(super) fn signal_text(code: u64) -> String {
     microscope::signal_name(code).unwrap_or_else(|| format!("signal {code}"))
+}
+
+impl breakpoints::Debugger for Session {
+    fn breakpoints(&mut self) -> &mut Breakpoints {
+        &mut self.breakpoints
+    }
+
+    async fn remove(&mut self, breakpoint: microscope::BreakpointId) -> Result<(), ErrorBody> {
+        let Some(handle) = self.handle() else {
+            return Ok(());
+        };
+
+        match handle.remove_breakpoint(breakpoint).await {
+            Ok(_) | Err(Error::BreakpointNotFound(_)) => Ok(()),
+            Err(error) => Err(self::error(error)),
+        }
+    }
+
+    async fn add(&mut self, group: &Group, want: &Want) -> State {
+        let failed = |message: String| State::Unresolved {
+            message,
+            pending: false,
+        };
+
+        let Some(handle) = self.handle().cloned() else {
+            return State::Unresolved {
+                message: "the program is not loaded yet".to_owned(),
+                pending: true,
+            };
+        };
+
+        if let Key::Invalid(message) = &want.key {
+            return failed(message.clone());
+        }
+
+        let options = match breakpoint_options(want) {
+            Ok(options) => options,
+            Err(error) => return failed(error.to_string()),
+        };
+
+        let spec = match (group, &want.key) {
+            (Group::Source(path), Key::Line(line)) => {
+                let Some(line) = LineNumber::new(*line) else {
+                    return failed("line 0 does not exist".to_owned());
+                };
+
+                BreakpointSpec::Source {
+                    path: self.recorded_path(path),
+                    line,
+                }
+            }
+            (_, Key::Function(name)) => match crate::cli::commands::parse_breakpoint_location(name)
+            {
+                Ok(Some(spec)) => spec,
+                Ok(None) => {
+                    return failed(format!(
+                        "'{name}' is not a function, 0xaddress, file:line, or file:function"
+                    ));
+                }
+                Err(error) => return failed(format!("{error:#}")),
+            },
+            (_, Key::Instruction(address)) => {
+                BreakpointSpec::Address(VirtualAddress::new(*address))
+            }
+            _ => return failed("this breakpoint cannot be placed".to_owned()),
+        };
+
+        let added = handle.add_breakpoint_with(spec, options).await;
+        match added {
+            Ok(breakpoint) => self.state_of(&breakpoint).await,
+            Err(error) => failed(error.to_string()),
+        }
+    }
 }
 
 #[cfg(test)]

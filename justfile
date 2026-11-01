@@ -347,6 +347,13 @@ sim-seed SEED *ARGS: golden
     cargo build --profile sim --features sim --bin microscope-sim
     MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" ./target/sim/microscope-sim replay "$1" "${@:2}"
 
+# Shrinks a failing seed's run to a smaller one that fails the same way and
+# writes it to target/sim/SEED/shrunk.txt, for `sim-seed SEED --shrunk FILE`.
+# Pass `--runs N` to change how many runs it may take.
+sim-shrink SEED *ARGS: golden
+    cargo build --profile sim --features sim --bin microscope-sim
+    MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" ./scripts/contained.sh ./target/sim/microscope-sim shrink "$1" "${@:2}"
+
 # Summarizes a `--timings` report, or what changed between two:
 # `just timings BASE NEW`. Pass --threads for each thread's work, and --all
 # for every phase.

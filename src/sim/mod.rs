@@ -15,7 +15,8 @@
 //! - [`faults`]: what the rest of the machine does to a session.
 //! - [`corpus`]: the golden programs, with [`facts`] about each binary and
 //!   [`markers`] in their sources.
-//! - [`report`]: traces, fingerprints, and failures.
+//! - [`report`]: traces, fingerprints, and failures, and [`shrink`], which
+//!   makes a failing run smaller.
 
 mod audit;
 mod catches;
@@ -50,6 +51,7 @@ mod samples;
 pub(crate) mod schedule;
 
 mod semantics;
+pub mod shrink;
 pub(crate) mod swarm;
 
 #[cfg(test)]
@@ -96,11 +98,15 @@ pub fn describe_failure(outcome: &Outcome) -> String {
         let _ = writeln!(text, "  {line}");
     }
 
-    let _ = writeln!(
-        text,
-        "replay   just sim-seed {:#x} --fingerprint {:#x}",
-        outcome.seed, outcome.fingerprint
-    );
+    // A run that replayed a tape needs it to run again; whoever made the
+    // tape says how.
+    if outcome.tape.is_none() {
+        let _ = writeln!(
+            text,
+            "replay   just sim-seed {:#x} --fingerprint {:#x}",
+            outcome.seed, outcome.fingerprint
+        );
+    }
 
     text
 }

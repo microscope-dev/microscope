@@ -656,43 +656,7 @@ impl Table {
 /// The width a terminal shows `text` in, without its color and link
 /// escapes.
 fn visible_width(text: &str) -> usize {
-    let mut width = 0;
-    let mut characters = text.chars().peekable();
-
-    while let Some(character) = characters.next() {
-        if character != '\u{1b}' {
-            width += 1;
-            continue;
-        }
-
-        match characters.next() {
-            // A control sequence ends at its final byte.
-            Some('[') => {
-                for character in characters.by_ref() {
-                    if ('@'..='~').contains(&character) {
-                        break;
-                    }
-                }
-            }
-
-            // An operating system command, such as a link, ends at ST.
-            Some(']') => {
-                while let Some(character) = characters.next() {
-                    if character == '\u{7}' {
-                        break;
-                    }
-
-                    if character == '\u{1b}' && characters.peek() == Some(&'\\') {
-                        characters.next();
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    width
+    super::terminal::plain(text).chars().count()
 }
 
 /// Names a watchpoint by the expression that resolved it, or by its bytes.

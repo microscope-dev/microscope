@@ -11,6 +11,8 @@ use std::path::PathBuf;
 
 use microscope::{BreakpointHit, BreakpointId};
 
+use super::protocol::ErrorBody;
+
 /// A set of breakpoints the client replaces as one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
@@ -126,14 +128,21 @@ pub struct Entry {
     pub state: State,
 }
 
+impl State {
+    /// The debugger breakpoint the client's breakpoint is installed as.
+    pub const fn breakpoint(&self) -> Option<BreakpointId> {
+        match self {
+            Self::Resolved { breakpoint, .. }
+            | Self::Pending { breakpoint, .. }
+            | Self::Disabled { breakpoint } => Some(*breakpoint),
+            Self::Unresolved { .. } => None,
+        }
+    }
+}
+
 impl Entry {
     pub const fn breakpoint(&self) -> Option<BreakpointId> {
-        match &self.state {
-            State::Resolved { breakpoint, .. }
-            | State::Pending { breakpoint, .. }
-            | State::Disabled { breakpoint } => Some(*breakpoint),
-            State::Unresolved { .. } => None,
-        }
+        self.state.breakpoint()
     }
 }
 
@@ -401,9 +410,86 @@ impl Breakpoints {
     }
 }
 
+/// The debugger as replacing a group uses it, apart from the table of
+/// entries, so that a test can stand in for it.
+pub(super) trait Debugger {
+    fn breakpoints(&mut self) -> &mut Breakpoints;
+
+    /// Removes a debugger breakpoint that nothing owns any longer.
+    async fn remove(&mut self, breakpoint: BreakpointId) -> Result<(), ErrorBody>;
+
+    /// Adds the debugger breakpoint `want` describes, which may be one
+    /// that exists, or explains why there is none.
+    async fn add(&mut self, group: &Group, want: &Want) -> State;
+}
+
+/// Replaces a group of breakpoints and returns its new entries in request
+/// order.
+pub(super) async fn replace_group(
+    debugger: &mut impl Debugger,
+    group: Group,
+    wants: Vec<Want>,
+) -> Result<Vec<Entry>, ErrorBody> {
+    let plan = debugger.breakpoints().plan(&group, wants);
+    let mut release = plan.release.into_iter();
+    while let Some(entry) = release.next() {
+        if let Err(error) = release_breakpoint(debugger, &entry).await {
+            debugger.breakpoints().abandon(
+                group,
+                plan.slots,
+                std::iter::once(entry).chain(release),
+            );
+            return Err(error);
+        }
+    }
+
+    let mut entries = Vec::with_capacity(plan.slots.len());
+
+    for slot in plan.slots {
+        entries.push(match slot {
+            Slot::Keep(entry) => entry,
+            Slot::Resolve { id, want } => {
+                let state = resolve(debugger, &group, &want).await;
+                Entry { id, want, state }
+            }
+        });
+    }
+
+    debugger.breakpoints().install(group, entries.clone());
+    Ok(entries)
+}
+
+async fn release_breakpoint(debugger: &mut impl Debugger, entry: &Entry) -> Result<(), ErrorBody> {
+    let Some(breakpoint) = entry.breakpoint() else {
+        return Ok(());
+    };
+
+    if debugger.breakpoints().release(breakpoint)
+        && let Err(error) = debugger.remove(breakpoint).await
+    {
+        // It may still be installed, and its entry still owns it.
+        debugger.breakpoints().acquire(breakpoint);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+/// Installs one breakpoint and owns it, or explains why it is not
+/// installed.
+pub(super) async fn resolve(debugger: &mut impl Debugger, group: &Group, want: &Want) -> State {
+    let state = debugger.add(group, want).await;
+    if let Some(breakpoint) = state.breakpoint() {
+        debugger.breakpoints().acquire(breakpoint);
+    }
+
+    state
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn line(number: u64) -> Want {
         Want::at(Key::Line(number))
@@ -639,5 +725,272 @@ mod tests {
         };
 
         assert!(breakpoints.sync(&[core(10), core(20), core(30)]).is_empty());
+    }
+
+    /// A debugger that merges equal breakpoints, as the real one does, and
+    /// refuses a removal when told to.
+    #[derive(Default)]
+    struct Fake {
+        table: Breakpoints,
+        installed: BTreeMap<BreakpointId, (String, Option<String>)>,
+        next: u64,
+        refuse: bool,
+    }
+
+    impl Fake {
+        /// The debugger breakpoint for a location and condition: one that
+        /// is equal, or a new one.
+        fn add_spec(&mut self, spec: (String, Option<String>)) -> BreakpointId {
+            if let Some((&id, _)) = self
+                .installed
+                .iter()
+                .find(|(_, installed)| **installed == spec)
+            {
+                return id;
+            }
+
+            self.next += 1;
+            let id = BreakpointId::new(self.next);
+            self.installed.insert(id, spec);
+            id
+        }
+
+        /// What the console sees after it changed the breakpoints.
+        fn sync(&mut self) {
+            let current = self
+                .installed
+                .keys()
+                .map(|&id| microscope::Breakpoint {
+                    pending_locations: std::sync::Arc::from([]),
+                    id,
+                    spec: microscope::BreakpointSpec::Function("f".to_owned()),
+                    locations: std::sync::Arc::from([]),
+                    hit_condition: None,
+                    condition: None,
+                    log_message: None,
+                    hit_count: 0,
+                    enabled: true,
+                    temporary: false,
+                })
+                .collect::<Vec<_>>();
+            self.table.sync(&current);
+        }
+    }
+
+    impl Debugger for Fake {
+        fn breakpoints(&mut self) -> &mut Breakpoints {
+            &mut self.table
+        }
+
+        fn remove(
+            &mut self,
+            breakpoint: BreakpointId,
+        ) -> impl std::future::Future<Output = Result<(), ErrorBody>> {
+            let removed = if std::mem::take(&mut self.refuse) {
+                Err(ErrorBody::new("refused".to_owned()))
+            } else {
+                self.installed.remove(&breakpoint);
+                Ok(())
+            };
+
+            std::future::ready(removed)
+        }
+
+        fn add(&mut self, group: &Group, want: &Want) -> impl std::future::Future<Output = State> {
+            let location = match (group, &want.key) {
+                (Group::Source(path), Key::Line(line)) => {
+                    Some(format!("{}:{line}", path.display()))
+                }
+                (_, Key::Function(name)) => Some(name.clone()),
+                _ => None,
+            };
+
+            std::future::ready(location.map_or_else(
+                || State::Unresolved {
+                    message: format!("{:?} cannot be placed", want.key),
+                    pending: false,
+                },
+                |location| State::Resolved {
+                    breakpoint: self.add_spec((location, want.condition.clone())),
+                    placement: Placement::default(),
+                    message: None,
+                },
+            ))
+        }
+    }
+
+    /// Runs a future of the fake, which never waits.
+    fn now<T>(future: impl std::future::Future<Output = T>) -> T {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::pin::pin!(future).poll(&mut context) {
+            std::task::Poll::Ready(value) => value,
+            std::task::Poll::Pending => panic!("the fake never waits"),
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Operation {
+        /// The client replaces a group: two sources and the functions.
+        Set {
+            group: u8,
+            wants: Vec<(u8, bool, Option<u8>)>,
+        },
+
+        /// The debugger refuses the next removal.
+        Refuse,
+
+        /// The console adds a function breakpoint, which may equal one the
+        /// client has.
+        ConsoleAdd { name: u8, condition: Option<u8> },
+
+        /// The console deletes any breakpoint.
+        ConsoleDelete(prop::sample::Index),
+
+        /// A stop hits one breakpoint.
+        Hit(prop::sample::Index),
+    }
+
+    fn operation() -> impl Strategy<Value = Operation> {
+        let want = (
+            0..4_u8,
+            prop::bool::weighted(0.1),
+            proptest::option::of(0..2_u8),
+        );
+        prop_oneof![
+            4 => (0..3_u8, prop::collection::vec(want, 0..5))
+                .prop_map(|(group, wants)| Operation::Set { group, wants }),
+            1 => Just(Operation::Refuse),
+            1 => (0..4_u8, proptest::option::of(0..2_u8))
+                .prop_map(|(name, condition)| Operation::ConsoleAdd { name, condition }),
+            1 => any::<prop::sample::Index>().prop_map(Operation::ConsoleDelete),
+            2 => any::<prop::sample::Index>().prop_map(Operation::Hit),
+        ]
+    }
+
+    fn group(group: u8) -> Group {
+        match group {
+            0 => Group::Source("/a.c".into()),
+            1 => Group::Source("/b c.c".into()),
+            _ => Group::Functions,
+        }
+    }
+
+    fn want(group: &Group, (key, invalid, condition): (u8, bool, Option<u8>)) -> Want {
+        let key = match group {
+            _ if invalid => Key::Invalid(format!("invalid {key}")),
+            Group::Source(_) => Key::Line(u64::from(key) + 1),
+            _ => Key::Function(format!("f{key}")),
+        };
+
+        Want::new(
+            key,
+            condition.map(|condition| format!("x == {condition}")),
+            None,
+            None,
+        )
+    }
+
+    /// The breakpoints a table's entries refer to, each with its number of
+    /// entries.
+    fn references(table: &Breakpoints) -> HashMap<BreakpointId, usize> {
+        let mut references = HashMap::new();
+        for (_, entry) in table.entries() {
+            if let Some(breakpoint) = entry.breakpoint() {
+                *references.entry(breakpoint).or_default() += 1;
+            }
+        }
+
+        references
+    }
+
+    proptest! {
+        /// Every debugger breakpoint is owned once for each entry that
+        /// refers to it, and exactly the owned ones are installed, whatever
+        /// the client sends, the console changes, and the debugger refuses.
+        /// Entries keep their ids while re-sent, answer in request order,
+        /// and a stop names exactly the entries of what it hit.
+        #[test]
+        fn breakpoint_owners_match_the_entries_through_any_requests(
+            operations in prop::collection::vec(operation(), 1..24),
+        ) {
+            let mut fake = Fake::default();
+            let mut issued = BTreeSet::new();
+
+            for operation in operations {
+                match operation {
+                    Operation::Set { group: index, wants } => {
+                        let group = group(index);
+                        let wants = wants.into_iter().map(|key| want(&group, key)).collect::<Vec<_>>();
+                        let before = fake
+                            .table
+                            .groups
+                            .get(&group)
+                            .cloned()
+                            .unwrap_or_default();
+
+                        if let Ok(entries) = now(replace_group(&mut fake, group.clone(), wants.clone())) {
+                                let keys = |entries: &[Entry]| entries.iter().map(|entry| entry.want.key.clone()).collect::<Vec<_>>();
+                                prop_assert_eq!(
+                                    keys(&entries),
+                                    wants.iter().map(|want| want.key.clone()).collect::<Vec<_>>()
+                                );
+
+                                // The k-th entry of a key keeps the id of the
+                                // k-th one before; the rest are new.
+                                let mut old = before.clone();
+                                for entry in &entries {
+                                    let kept = old.iter().position(|old| old.want.key == entry.want.key);
+                                    match kept {
+                                        Some(index) => prop_assert_eq!(entry.id, old.remove(index).id),
+                                        None => prop_assert!(!issued.contains(&entry.id), "{} reused", entry.id),
+                                    }
+                                }
+                        } else {
+                                let after = fake.table.groups.get(&group).cloned().unwrap_or_default();
+                                prop_assert!(after.iter().all(|entry| before.contains(entry)), "{:?} came from nowhere", after);
+                        }
+                    }
+                    Operation::Refuse => fake.refuse = true,
+                    Operation::ConsoleAdd { name, condition } => {
+                        fake.add_spec((format!("f{name}"), condition.map(|condition| format!("x == {condition}"))));
+                        fake.sync();
+                    }
+                    Operation::ConsoleDelete(index) => {
+                        let installed = fake.installed.keys().copied().collect::<Vec<_>>();
+                        if !installed.is_empty() {
+                            fake.installed.remove(&installed[index.index(installed.len())]);
+                        }
+
+                        fake.sync();
+                    }
+                    Operation::Hit(index) => {
+                        let installed = fake.installed.keys().copied().collect::<Vec<_>>();
+                        if !installed.is_empty() {
+                            let breakpoint = installed[index.index(installed.len())];
+                            let mut expected = fake
+                                .table
+                                .entries()
+                                .filter(|(_, entry)| entry.breakpoint() == Some(breakpoint))
+                                .map(|(_, entry)| entry.id)
+                                .collect::<Vec<_>>();
+                            expected.sort_unstable();
+                            let hit = BreakpointHit { breakpoint, hit_count: 1 };
+                            prop_assert_eq!(fake.table.hit(&[hit]).0, expected);
+                        }
+                    }
+                }
+
+                let ids = fake.table.entries().map(|(_, entry)| entry.id).collect::<Vec<_>>();
+                prop_assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), ids.len(), "ids repeat: {:?}", ids);
+                issued.extend(ids);
+
+                prop_assert_eq!(&fake.table.owners, &references(&fake.table));
+                prop_assert_eq!(fake.installed.len(), fake.table.owners.len());
+                prop_assert!(
+                    fake.installed.keys().all(|breakpoint| fake.table.owners.contains_key(breakpoint)),
+                    "{:?} are installed, but {:?} are owned", fake.installed, fake.table.owners
+                );
+            }
+        }
     }
 }

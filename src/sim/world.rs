@@ -39,7 +39,7 @@ use tokio::sync::mpsc;
 
 use super::audit::Auditor;
 use super::catches;
-use super::choices::{Choices, Stream};
+use super::choices::{Choices, Stream, Tape};
 use super::client::{Client, Observation, Script, Shared};
 use super::corpus::{Corpus, Program, Run, Variant};
 use super::faults::{Faults, Plan};
@@ -53,7 +53,7 @@ use super::report::{Failure, Trace};
 use super::samples::Sampler;
 use super::schedule::{Action, Scheduler, SessionId};
 use super::semantics::{self, Begun, Inspected, Judged, Unwound};
-use super::swarm::Swarm;
+use super::swarm::{Simpler, Swarm};
 use super::tracing::TraceModel;
 use super::views;
 use super::watches::{self, Intent};
@@ -81,6 +81,13 @@ pub struct Settings {
 
     /// Stops the run after this action, to inspect the state there.
     pub stop_at: Option<u64>,
+
+    /// Simpler choices of the run's shape than its seed makes.
+    pub simpler: Vec<Simpler>,
+
+    /// Choices to replay before the seed's, and to record what the run
+    /// draws; see [`Choices::replaying`].
+    pub tape: Option<Tape>,
 
     /// Breaks the simulation on purpose, to check that the oracles notice.
     #[cfg(test)]
@@ -208,6 +215,8 @@ impl Default for Settings {
             keep: Some(400),
             max_steps: 2_000_000,
             stop_at: None,
+            simpler: Vec::new(),
+            tape: None,
 
             #[cfg(test)]
             sabotage: None,
@@ -241,13 +250,23 @@ pub struct Outcome {
 
     /// The planned fault, if it never fired.
     pub unfired: Option<Plan>,
+
+    /// What a run that replayed a tape drew.
+    pub tape: Option<Tape>,
 }
 
 /// Runs the session `seed` names.
 #[must_use]
 pub fn run(seed: u64, corpus: &Corpus, settings: &Settings) -> Outcome {
-    let mut choices = Choices::new(seed);
-    let swarm = Swarm::choose(&mut choices, corpus);
+    let mut choices = settings
+        .tape
+        .clone()
+        .map_or_else(|| Choices::new(seed), |tape| Choices::replaying(seed, tape));
+    let mut swarm = Swarm::choose(&mut choices, corpus);
+    for simpler in &settings.simpler {
+        simpler.apply(&mut swarm);
+    }
+
     let program = &corpus.programs[swarm.program];
     let variant = &program.variants[swarm.variant];
     let run = &program.runs[swarm.run];
@@ -306,6 +325,7 @@ pub fn run(seed: u64, corpus: &Corpus, settings: &Settings) -> Outcome {
         state,
         marks: world.machine.marks.borrow().clone(),
         unfired: faults.plan.filter(|_| faults.fired.is_none()),
+        tape: world.machine.choices.borrow().drawn().cloned(),
     }
 }
 

@@ -378,32 +378,43 @@ impl Renderer {
 }
 
 /// `text` without its escape sequences: colours, and the links around
-/// locations.
+/// locations. A sequence left open at the end hides the rest.
 pub fn plain(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut rest = text;
 
     while let Some(start) = rest.find('\x1b') {
         plain.push_str(&rest[..start]);
-        let sequence = &rest[start + 1..];
-
-        let length = match sequence.chars().next() {
-            // A control sequence ends at its first final byte.
-            Some('[') => sequence[1..]
-                .find(|character: char| ('@'..='~').contains(&character))
-                .map_or(sequence.len(), |end| end + 2),
-            // An operating system command ends at the string terminator.
-            Some(']') => sequence
-                .find("\x1b\\")
-                .map_or(sequence.len(), |end| end + 2),
-            _ => 0,
+        let Some(length) = escape_length(&rest[start..]) else {
+            return plain;
         };
 
-        rest = &sequence[length..];
+        rest = &rest[start + length..];
     }
 
     plain.push_str(rest);
     plain
+}
+
+/// The length of the escape sequence `sequence` starts with, or `None` for
+/// one left open. A control sequence ends at its final byte, an operating
+/// system command such as a link at ST or BEL, and any other escape after
+/// one character, as a terminal reads them.
+pub fn escape_length(sequence: &str) -> Option<usize> {
+    debug_assert!(sequence.starts_with('\x1b'), "{sequence:?}");
+    let body = sequence.get(1..)?;
+
+    match body.chars().next()? {
+        '[' => body[1..]
+            .find(|character: char| ('@'..='~').contains(&character))
+            .map(|end| end + 3),
+        ']' => {
+            let bell = body.find('\x07').map(|end| end + 1);
+            let terminator = body.find("\x1b\\").map(|end| end + 2);
+            bell.into_iter().chain(terminator).min().map(|end| end + 1)
+        }
+        other => Some(1 + other.len_utf8()),
+    }
 }
 
 /// A `file://` URL, percent-encoding what a URL cannot hold.

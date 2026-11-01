@@ -172,30 +172,64 @@ pub fn location(spec: &BreakpointSpec, root: &Path) -> Option<String> {
     })
 }
 
-/// The `break` command that recreates a saved breakpoint.
-pub fn command(saved: &Saved) -> String {
-    let mut command = format!("break {}", saved.location);
-    if let Some(hits) = &saved.hits {
-        command.push_str(" hits ");
-        command.push_str(hits);
+/// The `break` command that recreates a saved breakpoint, or why there is
+/// none. The location is written in quotes and the condition in
+/// parentheses only where the plain line would read back as something else.
+pub fn command(saved: &Saved) -> Result<String, &'static str> {
+    let texts = [&saved.condition, &saved.hits, &saved.log];
+    if saved.location.contains(['\n', '\r'])
+        || texts
+            .into_iter()
+            .flatten()
+            .any(|text| text.contains(['\n', '\r']))
+    {
+        return Err("it holds a line break, and a command is one line");
     }
 
-    if let Some(condition) = &saved.condition {
-        command.push_str(" if ");
-        command.push_str(condition);
+    let quoted = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+    let spec = super::commands::command_named("break").ok_or("there is no break command")?;
+
+    for location in [saved.location.clone(), quoted(&saved.location)] {
+        let conditions = saved.condition.as_ref().map_or_else(
+            || vec![None],
+            |condition| vec![Some(condition.clone()), Some(format!("({condition})"))],
+        );
+        for condition in conditions {
+            let mut options = String::new();
+            if let Some(hits) = &saved.hits {
+                options.push_str(" hits ");
+                options.push_str(hits);
+            }
+
+            if let Some(condition) = &condition {
+                options.push_str(" if ");
+                options.push_str(condition);
+            }
+
+            if let Some(log) = &saved.log {
+                options.push_str(" log ");
+                options.push_str(&quoted(log));
+            }
+
+            if !saved.enabled {
+                options.push_str(" disabled");
+            }
+
+            let line = format!("{location}{options}");
+            let reads_back = super::commands::parse_break(&line, spec).is_ok_and(|parsed| {
+                parsed.location.as_deref() == Some(saved.location.as_str())
+                    && parsed.condition == condition.as_deref()
+                    && parsed.hits == saved.hits.as_deref()
+                    && parsed.log == saved.log
+                    && parsed.disabled != saved.enabled
+            });
+            if reads_back {
+                return Ok(format!("break {line}"));
+            }
+        }
     }
 
-    if let Some(log) = &saved.log {
-        command.push_str(" log \"");
-        command.push_str(&log.replace('\\', "\\\\").replace('"', "\\\""));
-        command.push('"');
-    }
-
-    if !saved.enabled {
-        command.push_str(" disabled");
-    }
-
-    command
+    Err("no command line reads back as it")
 }
 
 /// What a session that keeps its breakpoints knows of the file.
@@ -221,9 +255,14 @@ pub struct Kept {
 }
 
 /// The commands that recreate `breakpoints`, one per line, temporary and
-/// address ones included, as `-c` reads them.
-pub fn commands(breakpoints: &[Breakpoint], root: &Path) -> String {
+/// address ones included, as `-c` reads them, and the breakpoints no
+/// command recreates, with why.
+pub fn commands(
+    breakpoints: &[Breakpoint],
+    root: &Path,
+) -> (String, Vec<(microscope::BreakpointId, &'static str)>) {
     let mut text = String::new();
+    let mut refused = Vec::new();
     for breakpoint in breakpoints {
         let mut saved = saved(
             &Breakpoint {
@@ -242,7 +281,13 @@ pub fn commands(breakpoints: &[Breakpoint], root: &Path) -> String {
             line_text: None,
         });
         saved.line_text = None;
-        let line = command(&saved);
+        let line = match command(&saved) {
+            Ok(line) => line,
+            Err(reason) => {
+                refused.push((breakpoint.id, reason));
+                continue;
+            }
+        };
 
         if breakpoint.temporary {
             text.push('t');
@@ -252,7 +297,7 @@ pub fn commands(breakpoints: &[Breakpoint], root: &Path) -> String {
         text.push('\n');
     }
 
-    text
+    (text, refused)
 }
 
 /// The text of line `line` of the source file recorded at `path`, read
@@ -268,4 +313,223 @@ pub fn line_text(
         .find_map(|candidate| std::fs::read_to_string(candidate).ok())?;
     let index = usize::try_from(line.checked_sub(1)?).ok()?;
     text.lines().nth(index).map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    use crate::cli::commands::{command_named, parse_break};
+
+    /// A function name as debug information or a demangler spells it.
+    fn function() -> impl Strategy<Value = String> {
+        let part = prop::sample::select(vec![
+            "f",
+            "ns",
+            "log",
+            "hits",
+            "disabled",
+            "<impl A for B>",
+            "<T as Trait>",
+            "{closure#0}",
+            "operator()",
+            "Foo<'a>",
+            "\"q\"",
+        ]);
+        let arguments = prop::sample::select(vec!["", "(int, char)", "()", "(char const*)"]);
+        (prop::collection::vec(part, 1..4), arguments)
+            .prop_map(|(parts, arguments)| format!("{}{arguments}", parts.join("::")))
+    }
+
+    fn path() -> impl Strategy<Value = String> {
+        let part = prop::sample::select(vec!["src", "a b", "é", "if", "q\"x", "it's"]);
+        (
+            prop::collection::vec(part, 0..3),
+            prop::sample::select(vec!["a.c", "m n.rs", "log"]),
+        )
+            .prop_map(|(mut parts, file)| {
+                parts.push(file);
+                parts.join("/")
+            })
+    }
+
+    fn location() -> impl Strategy<Value = String> {
+        prop_oneof![
+            function(),
+            (path(), 1..100_u32).prop_map(|(path, line)| format!("{path}:{line}")),
+            (path(), function()).prop_map(|(path, function)| format!("{path}:{function}")),
+        ]
+    }
+
+    /// A condition as `Condition` prints it: an expression with names that
+    /// are option words, character literals of quotes and brackets, and
+    /// strings and backticked names holding option words.
+    fn condition() -> impl Strategy<Value = String> {
+        let leaf = prop::sample::select(vec![
+            "a",
+            "log",
+            "hits",
+            "disabled",
+            "b.c",
+            "'('",
+            "'\"'",
+            "'\\''",
+            "'['",
+            "\"s ) log \\\" x\"",
+            "`a if b`",
+            "3",
+        ])
+        .prop_map(str::to_owned);
+        leaf.prop_recursive(4, 16, 2, |inner| {
+            prop_oneof![
+                (
+                    inner.clone(),
+                    prop::sample::select(vec!["+", "&&", "||", "*"]),
+                    inner.clone()
+                )
+                    .prop_map(|(left, op, right)| format!("{left} {op} {right}")),
+                (
+                    inner.clone(),
+                    prop::sample::select(vec!["==", "<", ">"]),
+                    inner.clone()
+                )
+                    .prop_map(|(left, op, right)| format!("({left} {op} {right})")),
+                inner.clone().prop_map(|operand| format!("!({operand})")),
+                (inner.clone(), inner).prop_map(|(base, index)| format!("({base})[{index}]")),
+            ]
+        })
+    }
+
+    fn log() -> impl Strategy<Value = String> {
+        let piece = prop::sample::select(vec![
+            "x",
+            " ",
+            "\"",
+            "\\",
+            "{a}",
+            "{{",
+            "}}",
+            " log ",
+            " disabled",
+            "é",
+            "\n",
+            "\r",
+            "\\\"",
+        ]);
+        prop::collection::vec(piece, 0..8).prop_map(|pieces| pieces.concat())
+    }
+
+    fn hits() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(vec!["==", "!=", "<", "<=", ">", ">=", "%"]),
+            prop_oneof![Just(1_u64), Just(u64::MAX), 1..1000_u64],
+        )
+            .prop_map(|(operator, count)| format!("{operator}{count}"))
+    }
+
+    fn saved() -> impl Strategy<Value = Saved> {
+        (
+            location(),
+            proptest::option::of(condition()),
+            proptest::option::of(hits()),
+            proptest::option::of(log()),
+            any::<bool>(),
+        )
+            .prop_map(|(location, condition, hits, log, enabled)| Saved {
+                location,
+                condition,
+                hits,
+                log,
+                enabled,
+                line_text: None,
+            })
+    }
+
+    proptest! {
+        /// A saved breakpoint's command parses back to the same breakpoint,
+        /// with its condition perhaps in parentheses, or saving refuses it
+        /// because one of its texts holds a line break, which a file of
+        /// one command per line cannot hold.
+        #[test]
+        fn saved_commands_parse_back(saved in saved()) {
+            if let Some(condition) = &saved.condition {
+                prop_assert!(microscope::Condition::parse(condition).is_ok(), "{condition}");
+            }
+
+            let breaks_lines = [Some(&saved.location), saved.condition.as_ref(), saved.log.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|text| text.contains(['\n', '\r']));
+            let line = command(&saved);
+            prop_assert_eq!(line.is_err(), breaks_lines, "{:?}", line);
+
+            if let Ok(line) = line {
+                let spec = command_named("break").expect("break is a command");
+                let rest = line.strip_prefix("break ").expect("a break command");
+                let parsed = parse_break(rest, spec);
+                prop_assert!(parsed.is_ok(), "{line:?}: {parsed:?}");
+                let parsed = parsed.expect("checked");
+
+                prop_assert_eq!(parsed.location.as_deref(), Some(saved.location.as_str()), "{}", line);
+                prop_assert_eq!(parsed.hits, saved.hits.as_deref(), "{}", line);
+                prop_assert_eq!(parsed.log, saved.log.clone(), "{}", line);
+                prop_assert_eq!(parsed.disabled, !saved.enabled, "{}", line);
+                prop_assert!(
+                    parsed.condition.map(str::to_owned) == saved.condition
+                        || parsed.condition.map(str::to_owned)
+                            == saved.condition.as_ref().map(|condition| format!("({condition})")),
+                    "{line}"
+                );
+            }
+        }
+    }
+
+    /// The shrunk inputs of the property above, and the cases the review
+    /// suspected, each of which saved a line that read back as something
+    /// else or not at all.
+    #[test]
+    fn saved_commands_quote_what_would_not_read_back() {
+        let saved = |location: &str, condition: Option<&str>, log: Option<&str>, enabled| Saved {
+            location: location.to_owned(),
+            condition: condition.map(str::to_owned),
+            hits: None,
+            log: log.map(str::to_owned),
+            enabled,
+            line_text: None,
+        };
+
+        for (breakpoint, expected) in [
+            (
+                saved("<impl A for B>", None, None, false),
+                r#"break "<impl A for B>" disabled"#,
+            ),
+            (saved("a b/m.c:3", None, None, true), r#"break "a b/m.c:3""#),
+            (saved("log", None, None, true), r#"break "log""#),
+            (
+                saved("f", Some("c == '('"), Some("x"), true),
+                r#"break f if c == '(' log "x""#,
+            ),
+            (
+                saved("f", Some("c == '\"'"), None, false),
+                r#"break f if c == '"' disabled"#,
+            ),
+            (
+                saved("f", Some("log > 3"), None, true),
+                "break f if (log > 3)",
+            ),
+            (
+                saved("f", Some("`a if b`"), None, true),
+                "break f if `a if b`",
+            ),
+            (
+                saved("Foo<'a>::f", Some("x"), None, true),
+                "break Foo<'a>::f if x",
+            ),
+        ] {
+            assert_eq!(command(&breakpoint).as_deref(), Ok(expected));
+        }
+
+        assert!(command(&saved("f", None, Some("a\nb"), true)).is_err());
+    }
 }
