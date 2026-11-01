@@ -132,6 +132,7 @@ fn symbolize_writes_in_symbols_a_recording_left_for_later() {
 fn convert_writes_what_go_and_flame_graph_tools_read() {
     let scratch = support::ScratchDir::new("cli-convert");
     let profile = scratch.path().join("leaf.usprof");
+    // A small copy, as record_writes_a_profile_that_report_summarizes says.
     let recorded = microscope_command()
         .args([
             "record",
@@ -139,6 +140,8 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
             "leaf",
             "--function-period",
             "1",
+            "--stack-bytes",
+            "512",
             "-o",
         ])
         .arg(&profile)
@@ -6971,6 +6974,10 @@ fn record_writes_a_profile_that_report_summarizes() {
     let scratch = support::ScratchDir::new("cli-record");
     let profile = scratch.path().join("leaf.usprof");
     let program = fixture("build/test-programs/profile-stacks-gcc-o0");
+    // The fixture keeps frame pointers, so a small copy still completes
+    // every stack. Six deep copies fill the smaller rings a recording gets
+    // while others run beside it, and a starved reader then loses calls
+    // made back to back.
     let recorded = microscope_command()
         .args([
             "record",
@@ -6978,6 +6985,8 @@ fn record_writes_a_profile_that_report_summarizes() {
             "leaf",
             "--function-period",
             "1",
+            "--stack-bytes",
+            "512",
             "-o",
         ])
         .arg(&profile)
