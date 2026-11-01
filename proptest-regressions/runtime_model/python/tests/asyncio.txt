@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f1374fe99c81529b3cc5c4e43c3be1dd4f3a276da09ec00bf97cda5c3e48eb82 # shrinks to lists = Lists { threads: [0], exited: 0, unlinked: 0, damage: [] }, limit = 1
+cc 01575a84eb43f82e445000fef430d844ba971197da042c7576f24e3afc199b14 # shrinks to lists = Lists { threads: [1], exited: 0, unlinked: 0, damage: [Shared(Index(0), Index(9223372036854775808))] }, limit = 1
+cc ff365f77028e26e3c038f40309b4fd94735f9973031652cfa67b22dc3b4918fc # shrinks to lists = Lists { threads: [0], exited: 1, unlinked: 0, damage: [Cleared(Index(0))] }, limit = 1
