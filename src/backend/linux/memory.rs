@@ -438,17 +438,27 @@ pub(super) fn remove_site_owner(
         .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))
 }
 
-/// Replaces the byte at `address` with `byte` and returns the byte it
-/// replaced.
-fn patch_byte(
+/// The aligned word that holds the byte at `address`, and the byte's
+/// offset in it. A word at the address itself can reach into the next
+/// page, which may be unmapped; an aligned one never leaves its page.
+pub(super) const fn holding_word(address: u64) -> (u64, usize) {
+    (address & !7, (address & 7) as usize)
+}
+
+/// Replaces the byte at `address` with `byte`, through the word that holds
+/// it, and returns the byte it replaced.
+pub(super) fn patch_byte(
     address: VirtualAddress,
     byte: u8,
     read_word: impl FnOnce(u64) -> Result<u64>,
     write_word: impl FnOnce(u64, u64) -> Result<()>,
 ) -> Result<u8> {
-    let word = read_word(address.get())?;
-    write_word(address.get(), (word & !0xff) | u64::from(byte))?;
-    Ok(word.to_ne_bytes()[0])
+    let (word, offset) = holding_word(address.get());
+    let mut bytes = read_word(word)?.to_ne_bytes();
+    let original = bytes[offset];
+    bytes[offset] = byte;
+    write_word(word, u64::from_ne_bytes(bytes))?;
+    Ok(original)
 }
 
 impl MemoryReader for PtraceMemory<'_> {

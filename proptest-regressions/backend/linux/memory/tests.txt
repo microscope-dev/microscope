@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 37efb1bb495ec67834df33f3c28f2182fc6af58452e3e753f6d40a114191468d # shrinks to (initial_state, transitions, seen_counter) = (World { user: Bytes { base: 15019173490061229560, bytes: [Some(0), Some(0), Some(0), Some(0), Some(0), Some(0), Some(0), Some(0), None, None, None, None, None, None, None, None] }, sites: {} }, [Install(15019173490061229561, User(BreakpointId(1)))], None)
+cc 7c5ffe92403593fc20b2024b06f9f572723a030faadae8f07025ec0fae89ba1c # shrinks to (initial_state, transitions, seen_counter) = (World { user: Bytes { base: 18446744073709551608, bytes: [Some(0), Some(0), Some(0), Some(0), Some(0), Some(0), Some(0), Some(0)] }, sites: {} }, [Write(18446744073709551608, [0])], None)
