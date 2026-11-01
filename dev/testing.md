@@ -381,9 +381,46 @@ Avoid tests whose only assertion repeats a constructor field or private call
 sequence. Such tests make refactoring expensive without protecting a user or
 invariant.
 
-Property tests are useful for algebraic rules, round trips, and bounded input
-spaces. Keep generated cases small enough to shrink quickly and store genuine
-regressions under `proptest-regressions`.
+## Property tests
+
+Property tests are useful for algebraic rules, round trips, models, and
+bounded input spaces. A property is worth keeping when a plausible wrong
+implementation fails it:
+
+- Build the input from the expected answer where you can: lay a model list
+  out in fake memory and check the walker returns it, or render a name tree
+  and check the parser returns the tree. A second implementation of the
+  same rules shares their misreadings.
+- An assertion that only says "no panic" belongs in a fuzz target, which
+  already does that.
+- Generate valid input directly with `prop_map`, `prop_flat_map`, and
+  `prop::sample::Index`. Use `prop_assume!` only for rare exclusions:
+  proptest reports and bounds its rejects, but a reject while shrinking
+  stops the shrink. Never `return Ok(())` to skip a case; proptest counts
+  that as a pass. Where most cases cannot reach the interesting branch,
+  count the outcomes and assert a floor, as the simulator's marks do.
+- proptest draws integers uniformly, so 0, the maximum, and equal pairs
+  almost never come up. Use the strategies in `src/test_strategies.rs`,
+  such as `u64_edges()`.
+- Recursive input uses `prop_recursive` with depth and size bounds. Keep
+  cases small enough to shrink quickly.
+- A model of operations against a state machine uses
+  `proptest-state-machine` when an operation's validity depends on the
+  state. Otherwise a `vec` of operations that refer to existing state by
+  `prop::sample::Index` stays valid as it shrinks.
+- A property whose failure is a hang, an abort, or a stack overflow sets
+  `fork: true` and a `timeout` in its `ProptestConfig`, so the case still
+  shrinks.
+
+When a property finds a bug, commit its `proptest-regressions` file and
+also copy the shrunk input (the file's `# shrinks to` comment) into a named
+unit test. A stored seed replays proptest's random draws, not the value:
+once the strategy changes, the seed makes some other input.
+
+`just test` runs each property for its configured cases, a few hundred.
+`just props CASES` runs the unit tests with `CASES` cases for every
+property; `just all` runs it. `PROPTEST_CASES`, `PROPTEST_RNG_SEED`, and
+the other `PROPTEST_*` settings pass through `just dev` and the recipes.
 
 ## CLI tests
 

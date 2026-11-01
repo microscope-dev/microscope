@@ -10,6 +10,10 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 filter = 'binary(disassembly) | binary(symbols) | binary(frames) | binary(tokio)'
 priority = 50
 
+# `just props` runs each property test for thousands of cases.
+[profile.props]
+slow-timeout = { period = "60s", terminate-after = 15 }
+
 # `just stress` with SOAK_MINUTES runs one test for as long as it is told to.
 [profile.soak]
 slow-timeout = { period = "60s", terminate-after = 1440 }

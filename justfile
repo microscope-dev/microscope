@@ -20,7 +20,7 @@ check: lint test miri loom web-test docs
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
 # only between seeds 48 and 61.
-all: check (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
+all: check props (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
 
 # Enters the pinned Nix development shell, or runs a command in it, with
 # nothing of the host's environment but the user and their terminal.
@@ -104,6 +104,13 @@ lint:
 test *ARGS: cache-warm
     ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" "$@"
     if (( $# == 0 )); then cargo test --doc; CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c; fi
+
+# Runs the unit tests with every property test trying CASES cases instead
+# of its usual few hundred: the deeper search `just all` makes. The other
+# unit tests run too; they take seconds. Arguments go to nextest.
+[doc("Runs the unit tests with CASES cases for each property test.")]
+props CASES="10000" *ARGS: cache-warm
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; PROPTEST_CASES="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --profile props --test-threads "$test_threads" --lib --bins "${@:2}"
 
 # Runs the BPF engine's tests, which need CAP_BPF and CAP_PERFMON, starting
 # microscope through LAUNCHER: the microscope-bpf wrapper

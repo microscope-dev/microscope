@@ -119,7 +119,10 @@ rustc-demangle = "0.1"
 expectrl = "0.9"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 jsonschema = { version = "0.58", default-features = false }
-proptest = { version = "1.11", default-features = false, features = ["std"] }
+# fork and timeout let a case that hangs or aborts the process still
+# shrink; see dev/testing.md.
+proptest = { version = "1.11", default-features = false, features = ["fork", "std", "timeout"] }
+proptest-state-machine = "0.6"
 # Decodes the pprof profiles `convert` writes.
 prost = "0.14"
 tokio-tungstenite = "0.29"
