@@ -53,7 +53,8 @@ fn normalized(trace: &str) -> String {
     let addresses = Regex::new(r"0x[0-9a-f]+").expect("regex");
     let ids = Regex::new(r"\b\d{4,}\b").expect("regex");
     let random = Regex::new(r#"getrandom\("[^"]*""#).expect("regex");
-    let pid = Regex::new(r"^\d{4,} +").expect("regex");
+    let pid = Regex::new(r"^\d+ +").expect("regex");
+    let pid_result = Regex::new(r"^((?:N )?get(?:pid|ppid|tid)\(\) += )[1-9]\d*\b").expect("regex");
     let padding = Regex::new(r"\) +=").expect("regex");
 
     trace
@@ -62,7 +63,11 @@ fn normalized(trace: &str) -> String {
         .map(|line| {
             let line = random.replace_all(line, "getrandom(\"\"");
             let line = pid.replace(&line, "N ");
-            let varied = addresses.is_match(&line) || ids.is_match(&line) || line.starts_with("N ");
+            let varied = addresses.is_match(&line)
+                || ids.is_match(&line)
+                || line.starts_with("N ")
+                || pid_result.is_match(&line);
+            let line = pid_result.replace(&line, "${1}N");
             let line = addresses.replace_all(&line, "0x?");
             let line = ids.replace_all(&line, "N");
             if varied {
@@ -96,6 +101,51 @@ fn traces_that_differ_only_in_an_ids_width_normalize_alike() {
         normalized("close(3)                                = 0"),
         normalized("close(3)                               = 0"),
     );
+}
+
+#[test]
+fn low_pids_normalize_only_in_pid_contexts() {
+    for (ours, theirs) in [
+        (
+            "458   write(1, \"child\\n\", 6)            = 6",
+            "351   write(1, \"child\\n\", 6)            = 6",
+        ),
+        ("458   +++ exited with 4 +++", "351   +++ exited with 4 +++"),
+        (
+            "513   getppid()                         = 376",
+            "371   getppid()                         = 4194300",
+        ),
+        (
+            "1     getpid()                          = 1",
+            "12    getpid()                          = 12",
+        ),
+        (
+            "gettid()                               = 999",
+            "gettid()                               = 1000",
+        ),
+    ] {
+        assert_eq!(normalized(ours), normalized(theirs), "{ours}\n{theirs}");
+    }
+
+    for (ours, theirs) in [
+        (
+            "write(1, \"child\\n\", 6) = 6",
+            "write(1, \"child\\n\", 7) = 6",
+        ),
+        ("read(3, \"abc\", 3) = 3", "read(3, \"abc\", 3) = 2"),
+        ("close(3) = 0", "close(4) = 0"),
+        ("+++ exited with 4 +++", "+++ exited with 5 +++"),
+        (
+            "getppid() = -1 ESRCH (No such process)",
+            "getppid() = -2 ESRCH (No such process)",
+        ),
+        (
+            "write(1, \"x\", 1)             = 1",
+            "write(1, \"x\", 1)            = 1",
+        ),
+    ] {
+        assert_ne!(normalized(ours), normalized(theirs), "{ours}\n{theirs}");
+    }
 }
 
 /// Fails at the first line where the traces differ, showing both.
