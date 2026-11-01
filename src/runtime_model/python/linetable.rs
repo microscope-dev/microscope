@@ -174,7 +174,108 @@ pub(super) fn line_at(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    /// One entry as a model: its kind, its length in code units, its line
+    /// change, which only kinds 13 and 14 write, and its columns.
+    #[derive(Debug, Clone, Copy)]
+    struct Entry {
+        kind: u8,
+        units: u8,
+        change: i64,
+        extra: [u32; 3],
+    }
+
+    fn write_varint(mut value: u64, out: &mut Vec<u8>) {
+        while value >= 64 {
+            out.push(64 | u8::try_from(value & 63).unwrap());
+            value >>= 6;
+        }
+        out.push(u8::try_from(value).unwrap());
+    }
+
+    fn write_signed(value: i64, out: &mut Vec<u8>) {
+        let magnitude = value.unsigned_abs() << 1;
+        write_varint(magnitude | u64::from(value < 0), out);
+    }
+
+    /// The table `entries` write, and the runs CPython reads from it.
+    fn written(entries: &[Entry], first_line: i64) -> (Vec<u8>, Vec<Run>) {
+        let (mut table, mut runs) = (Vec::new(), Vec::new());
+        let (mut line, mut start) = (first_line, 0);
+        for entry in entries {
+            table.push(0x80 | (entry.kind << 3) | (entry.units - 1));
+            let change = match entry.kind {
+                0..=9 => {
+                    table.push(entry.extra[0].to_le_bytes()[0]);
+                    Some(0)
+                }
+                10..=12 => {
+                    table.extend([
+                        entry.extra[0].to_le_bytes()[0],
+                        entry.extra[1].to_le_bytes()[0],
+                    ]);
+                    Some(i64::from(entry.kind - 10))
+                }
+                13 => {
+                    write_signed(entry.change, &mut table);
+                    Some(entry.change)
+                }
+                14 => {
+                    write_signed(entry.change, &mut table);
+                    for extra in entry.extra {
+                        write_varint(extra.into(), &mut table);
+                    }
+                    Some(entry.change)
+                }
+                _ => None,
+            };
+
+            let end = start + u64::from(entry.units) * CODE_UNIT;
+            runs.push(Run {
+                start,
+                end,
+                line: change.map(|change| {
+                    line += change;
+                    line
+                }),
+            });
+            start = end;
+        }
+
+        (table, runs)
+    }
+
+    proptest! {
+        /// A table of entries of every kind reads back as their runs, and
+        /// the line of each byte is the line of the run that holds it.
+        #[test]
+        fn written_runs_read_back_and_place_every_unit(
+            entries in proptest::collection::vec(
+                (0..16_u8, 1..=8_u8, -(1_i64 << 20)..1 << 20, any::<[u32; 3]>()).prop_map(
+                    |(kind, units, change, extra)| Entry { kind, units, change, extra },
+                ),
+                0..24,
+            ),
+            first_line in -(1_i64 << 31)..1 << 31,
+        ) {
+            let (table, expected) = written(&entries, first_line);
+            let read: Result<Vec<Run>, Malformed> = runs(&table, first_line).collect();
+            prop_assert_eq!(read, Ok(expected.clone()));
+
+            let end = expected.last().map_or(0, |run| run.end);
+            for offset in 0..end + 4 {
+                let scanned = expected
+                    .iter()
+                    .find(|run| run.start <= offset && offset < run.end)
+                    .map(|run| run.line)
+                    .ok_or(Malformed);
+                prop_assert_eq!(line_at(&table, first_line, offset), scanned, "{}", offset);
+            }
+        }
+    }
 
     /// A table of each form, from line 10: a short entry, a one-line entry
     /// two lines on, a long entry four lines back, an entry with no columns

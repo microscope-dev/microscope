@@ -1,14 +1,17 @@
-//! The walk over futures the tests lay out by hand: coroutines awaiting
-//! one another directly, through a pinned box, and through a trait object,
-//! every way a chain can end, and memory of any content.
+//! The walk over futures the tests lay out by hand and from a model:
+//! coroutines awaiting one another directly, through a pinned box, and
+//! through a trait object, every way a chain can end, and chains whose
+//! pointers lead anywhere.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use proptest::prelude::*;
+use proptest::test_runner::TestCaseError;
 
 use super::{AsyncFrame, AsyncFrameKind, AwaitChain, ChainEnd, MAX_DEPTH, walk};
 use crate::runtime_model::{ImageSymbol, Member, RuntimeImage, RuntimeStop};
+use crate::test_strategies::hostile_address;
 use crate::{
     Accessibility, ArgumentOrigin, CoroutineInfo, CoroutineKind, CoroutineState,
     CoroutineStateKind, ImageAddress, IntegerValue, LineNumber, ModuleImageId, RecordKind,
@@ -670,28 +673,292 @@ fn a_chain_ends_at_a_cycle_and_at_its_depth() {
     assert!(deep.frames.len() < MAX_DEPTH);
 }
 
-proptest! {
-    /// Over memory of any content, the walk ends, within its depth, and
-    /// says why.
-    #[test]
-    fn any_memory_ends_the_walk(
-        words in proptest::collection::vec((any::<bool>(), any::<u8>()), 0..64),
-        root in prop_oneof![Just(OUTER), Just(PIN_OUTER), Just(PIN_DYN), Just(INNER)],
-    ) {
-        let mut memory = Memory::default();
-        for (index, (pointer, value)) in (0..).zip(&words) {
-            // Each word is a pointer back into this memory, or a small
-            // number, which a coroutine may read as its state.
-            let word = if *pointer {
-                0x1000 + u64::from(*value % 64) * 8
-            } else {
-                u64::from(*value % 12)
-            };
+/// A future that lies at the top of memory holds nothing past it: the
+/// walk never wraps to the bottom of memory and reads what lies there as
+/// the future held.
+#[test]
+fn a_held_future_never_wraps_past_the_top_of_memory() {
+    let outer = u64::MAX - 15;
+    let mut memory = Memory::default();
 
-            memory.word(0x1000 + index * 8, word);
+    // A task-local scope at the last word, whose `Some` holds its future
+    // past it, and an unrelated coroutine at 0.
+    memory.byte(outer, 12);
+    memory.byte(outer + AWAITEE, 1);
+    memory.byte(0, 0);
+    let chain = walk_from(&memory, outer, OUTER);
+    assert_eq!(chain.frames.len(), 1, "{chain:?}");
+    assert!(matches!(chain.end, ChainEnd::Broken(_)), "{chain:?}");
+
+    // A boxed trait object whose vtable would lie past the top.
+    memory.byte(outer, 5);
+    memory.word(outer + AWAITEE, 0x2000);
+    memory.word(0, VTABLE);
+    memory.byte(0x2000, 0);
+    let chain = walk_from(&memory, outer, OUTER);
+    assert_eq!(chain.frames.len(), 1, "{chain:?}");
+    assert!(matches!(chain.end, ChainEnd::Broken(_)), "{chain:?}");
+}
+
+/// Where the model's futures may lie: far enough apart that none
+/// overlaps another.
+const SLOTS: usize = 64;
+
+fn slot(index: usize) -> u64 {
+    0x1_0000 + 0x40 * index as u64
+}
+
+/// Where a chain ends, past the outer coroutines it passes through.
+#[derive(Debug, Clone, Copy)]
+enum Innermost {
+    /// An outer coroutine in a state that awaits nothing to follow:
+    /// unresumed, returned, panicked, an await its debug information does
+    /// not name, or one of a record that only looks like tracing's.
+    Outer(u8),
+
+    /// An outer coroutine in a state that reaches an inner one, in this
+    /// state, by the way that state awaits it.
+    Inner { via: u8, state: u8 },
+
+    /// tokio's task-local scope after it dropped its future.
+    Dropped,
+}
+
+fn innermost() -> impl Strategy<Value = Innermost> {
+    prop_oneof![
+        prop::sample::select(vec![0_u8, 1, 2, 6, 11]).prop_map(Innermost::Outer),
+        (
+            prop::sample::select(vec![3_u8, 4, 5, 8, 10, 12]),
+            prop::sample::select(vec![0_u8, 3]),
+        )
+            .prop_map(|(via, state)| Innermost::Inner { via, state }),
+        Just(Innermost::Dropped),
+    ]
+}
+
+/// A chain of outer coroutines, each awaiting the next through a pinned
+/// box, and its innermost future; or a cycle, whose last box points back
+/// at an earlier coroutine.
+#[derive(Debug, Clone)]
+struct Model {
+    hops: usize,
+    back: Option<prop::sample::Index>,
+    innermost: Innermost,
+    slots: Vec<usize>,
+
+    /// What each pointer written holds in place of the model's, if
+    /// anything.
+    damage: Vec<Option<u64>>,
+}
+
+fn model(damaged: bool) -> impl Strategy<Value = Model> {
+    let valid: Vec<u64> = (0..SLOTS).map(slot).chain([VTABLE]).collect();
+    let damage = proptest::option::weighted(0.2, hostile_address(valid));
+    (
+        0..20_usize,
+        proptest::option::weighted(0.2, any::<prop::sample::Index>()),
+        innermost(),
+        Just((0..SLOTS).collect::<Vec<_>>()).prop_shuffle(),
+        proptest::collection::vec(damage, if damaged { 0..24 } else { 0..1 }),
+    )
+        .prop_map(|(hops, back, innermost, slots, damage)| Model {
+            hops,
+            back,
+            innermost,
+            slots,
+            damage,
+        })
+}
+
+/// The memory a model lays out, the chain the walk must read from it,
+/// and whether any pointer it wrote differs from the model's.
+fn laid_out(model: &Model) -> (Memory, AwaitChain, bool) {
+    let mut memory = Memory::default();
+    let mut damage = model.damage.iter();
+    let mut damaged = false;
+    let mut pointer = |memory: &mut Memory, at: u64, value: u64| {
+        let written = damage.next().copied().flatten().unwrap_or(value);
+        damaged |= written != value;
+        memory.word(at, written);
+    };
+
+    let outers: Vec<u64> = model.slots[..=model.hops]
+        .iter()
+        .map(|&index| slot(index))
+        .collect();
+    let boxed = slot(model.slots[model.hops + 1]);
+
+    // Outermost first, reversed at the end.
+    let mut frames = Vec::new();
+    for (hop, &at) in outers[..model.hops].iter().enumerate() {
+        memory.byte(at, 7);
+        let next = match model.back {
+            Some(back) if hop + 1 == model.hops => outers[back.index(model.hops)],
+            _ => outers[hop + 1],
+        };
+        pointer(&mut memory, at + AWAITEE, next);
+        frames.push(coroutine_frame(at, OUTER, 7, suspended(4), 16));
+    }
+
+    let end = if model.back.is_some() && model.hops > 0 {
+        ChainEnd::Cycle
+    } else {
+        let outer = outers[model.hops];
+        match model.innermost {
+            Innermost::Outer(state) => {
+                memory.byte(outer, state);
+                let (kind, at, end) = match state {
+                    0 => (CoroutineStateKind::Unresumed, 10, ChainEnd::Unresumed),
+                    1 => (CoroutineStateKind::Returned, 19, ChainEnd::Finished),
+                    2 => (CoroutineStateKind::Panicked, 19, ChainEnd::Finished),
+                    6 => (suspended(3), 15, ChainEnd::NoAwaitee),
+                    _ => (suspended(7), 18, ChainEnd::Leaf),
+                };
+                frames.push(coroutine_frame(outer, OUTER, state.into(), kind, at));
+                if end == ChainEnd::Leaf {
+                    frames.push(leaf(outer + AWAITEE, LOOKALIKE));
+                }
+                end
+            }
+            Innermost::Dropped => {
+                memory.byte(outer, 12);
+                memory.byte(outer + AWAITEE, 0);
+                frames.push(coroutine_frame(outer, OUTER, 12, suspended(8), 18));
+                ChainEnd::Broken("it is None".into())
+            }
+            Innermost::Inner { via, state } => {
+                memory.byte(outer, via);
+                let (index, at, inner) = match via {
+                    3 => (0, 12, outer + AWAITEE),
+                    4 => (1, 13, boxed),
+                    5 => (2, 14, boxed),
+                    8 => (5, 17, outer + AWAITEE),
+                    10 => (6, 18, boxed),
+                    _ => (8, 18, outer + 2 * AWAITEE),
+                };
+                match via {
+                    4 | 10 => pointer(&mut memory, outer + AWAITEE, boxed),
+                    5 => {
+                        pointer(&mut memory, outer + AWAITEE, boxed);
+                        pointer(&mut memory, outer + 2 * AWAITEE, VTABLE);
+                    }
+                    12 => memory.byte(outer + AWAITEE, 1),
+                    _ => {}
+                }
+                frames.push(coroutine_frame(
+                    outer,
+                    OUTER,
+                    via.into(),
+                    suspended(index),
+                    at,
+                ));
+
+                memory.byte(inner, state);
+                if state == 0 {
+                    frames.push(coroutine_frame(
+                        inner,
+                        INNER,
+                        0,
+                        CoroutineStateKind::Unresumed,
+                        20,
+                    ));
+                    ChainEnd::Unresumed
+                } else {
+                    frames.push(coroutine_frame(inner, INNER, 3, suspended(0), 21));
+                    frames.push(leaf(inner + AWAITEE, SLEEP));
+                    ChainEnd::Leaf
+                }
+            }
         }
+    };
 
-        let chain = walk_from(&memory, 0x1000, root);
-        prop_assert!(chain.frames.len() <= MAX_DEPTH);
+    frames.reverse();
+    (memory, AwaitChain { frames, end }, damaged)
+}
+
+/// What holds of any chain the walk reads, whatever memory holds: it is
+/// within its depth, passes no future twice, and each future it passed
+/// awaits the one inside it; its innermost future says why it ends.
+fn check_shape(chain: &AwaitChain) -> Result<(), TestCaseError> {
+    prop_assert!(chain.frames.len() <= MAX_DEPTH);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for frame in &chain.frames {
+        prop_assert!(seen.insert((frame.object, frame.ty)), "{:?}", chain);
+    }
+
+    let awaiting = |frame: &AsyncFrame| {
+        matches!(
+            frame.kind,
+            AsyncFrameKind::Coroutine {
+                kind: CoroutineStateKind::Suspended { .. },
+                ..
+            }
+        )
+    };
+    for frame in chain.frames.iter().skip(1) {
+        prop_assert!(awaiting(frame), "{:?}", chain);
+    }
+
+    let innermost = chain.frames.first().map(|frame| &frame.kind);
+    match (&chain.end, innermost) {
+        (ChainEnd::Leaf, Some(AsyncFrameKind::Leaf))
+        | (
+            ChainEnd::Unresumed,
+            Some(AsyncFrameKind::Coroutine {
+                kind: CoroutineStateKind::Unresumed,
+                ..
+            }),
+        )
+        | (
+            ChainEnd::Finished,
+            Some(AsyncFrameKind::Coroutine {
+                kind: CoroutineStateKind::Returned | CoroutineStateKind::Panicked,
+                ..
+            }),
+        ) => {}
+        (ChainEnd::NoAwaitee, Some(_)) => prop_assert!(awaiting(&chain.frames[0])),
+        (ChainEnd::Broken(_) | ChainEnd::TooDeep | ChainEnd::Cycle, _) => {
+            prop_assert!(chain.frames.iter().all(awaiting), "{:?}", chain);
+        }
+        _ => prop_assert!(
+            false,
+            "the end disagrees with the innermost future: {:?}",
+            chain
+        ),
+    }
+
+    Ok(())
+}
+
+proptest! {
+    /// A chain laid out from a model reads as exactly the model's
+    /// futures, innermost first, and ends where the model does.
+    #[test]
+    fn a_laid_out_chain_reads_as_its_model(model in model(false)) {
+        let (memory, expected, _) = laid_out(&model);
+        let chain = walk_from(&memory, slot(model.slots[0]), OUTER);
+        check_shape(&chain)?;
+
+        prop_assert_eq!(&chain.frames, &expected.frames);
+        match (&chain.end, &expected.end) {
+            (ChainEnd::Broken(reason), ChainEnd::Broken(part)) => {
+                prop_assert!(reason.contains(&**part), "{}", reason);
+            }
+            (end, expected) => prop_assert_eq!(end, expected),
+        }
+    }
+
+    /// Wherever a pointer of a chain leads instead, the walk reads a
+    /// chain of the same shape, and exactly the model's where it leads
+    /// where the model says.
+    #[test]
+    fn a_damaged_chain_keeps_its_shape(model in model(true)) {
+        let (memory, expected, damaged) = laid_out(&model);
+        let chain = walk_from(&memory, slot(model.slots[0]), OUTER);
+        check_shape(&chain)?;
+        if !damaged && !matches!(expected.end, ChainEnd::Broken(_)) {
+            prop_assert_eq!(chain, expected);
+        }
     }
 }

@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::objects::{Object, Problem, Reader};
+use super::objects::{Object, Problem, Reader, address_at};
 use crate::image::v8::{Constant, Field};
 
 /// The most rows of each kind a table keeps before it begins again.
@@ -287,7 +287,7 @@ impl Lines {
             while index < count {
                 let batch = usize::try_from((count - index).min(ENDS_READ as u64)).unwrap_or(0);
                 let words = &mut words[..8 * batch];
-                reader.bytes_into(first + index * 8, words)?;
+                reader.bytes_into(address_at(first, index * 8)?, words)?;
                 for word in words.as_chunks::<8>().0 {
                     let end = reader
                         .smi(u64::from_le_bytes(*word))?

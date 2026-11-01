@@ -3,12 +3,17 @@
 //! shows on demand, such as a goroutine caught mid-scan, and what a damaged
 //! or incomplete runtime gives.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use object::{Object, ObjectSection};
 
-use super::super::{ImageSymbol, Member, RuntimeImage, RuntimeModel, RuntimeStop, ThreadActivity};
+use proptest::prelude::*;
+
+use super::super::{
+    ImageSymbol, Member, RuntimeImage, RuntimeModel, RuntimeStop, TaskRef, ThreadActivity,
+};
 use crate::{
     ImageAddress, IntegerValue, ModuleImage, StackSegment, TaskState, ThreadId, ThreadLocal,
     VirtualAddress,
@@ -21,6 +26,9 @@ const FIXTURE: &str = "steps-go-o2";
 /// Where the tests place the goroutines and threads they write, which the
 /// executable's file leaves unmapped.
 const HEAP: u64 = 0x7000_0000_0000;
+
+/// Where the tests place `allgs`' array.
+const ALLGS: u64 = HEAP + 0x10_0000;
 
 fn fixture_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -42,15 +50,18 @@ struct Image {
 
 impl Image {
     fn load() -> Self {
-        let module = crate::debug_info::load_module(
-            &fixture_path(),
-            crate::ModuleImageId::new(0),
-            &crate::debug_info::DebugFileSearch::default(),
-        )
-        .expect("run `just build-test-programs`")
-        .image;
+        static MODULE: OnceLock<Arc<ModuleImage>> = OnceLock::new();
+        let module = MODULE.get_or_init(|| {
+            crate::debug_info::load_module(
+                &fixture_path(),
+                crate::ModuleImageId::new(0),
+                &crate::debug_info::DebugFileSearch::default(),
+            )
+            .expect("run `just build-test-programs`")
+            .image
+        });
         Self {
-            module,
+            module: Arc::clone(module),
             hidden: Vec::new(),
             tlsg: None,
         }
@@ -117,28 +128,38 @@ impl RuntimeImage for Image {
     }
 }
 
+/// The executable's loaded sections, each at its address.
+type Sections = Arc<[(u64, Vec<u8>)]>;
+
 /// Memory as the executable's file lays it out, under what a test writes,
 /// with the threads a test stops.
 struct Memory {
-    file: Vec<(u64, Vec<u8>)>,
+    file: Sections,
     written: BTreeMap<u64, u8>,
     threads: BTreeMap<ThreadId, u64>,
+
+    /// Each read made, its address and length.
+    reads: RefCell<Vec<(u64, usize)>>,
 }
 
 impl Memory {
     fn load() -> Self {
-        let bytes = std::fs::read(fixture_path()).expect("run `just build-test-programs`");
-        let object = object::File::parse(bytes.as_slice()).expect("an executable");
-        let file = object
-            .sections()
-            .filter(|section| section.address() != 0)
-            .filter_map(|section| Some((section.address(), section.data().ok()?.to_vec())))
-            .filter(|(_, data)| !data.is_empty())
-            .collect();
+        static FILE: OnceLock<Sections> = OnceLock::new();
+        let file = FILE.get_or_init(|| {
+            let bytes = std::fs::read(fixture_path()).expect("run `just build-test-programs`");
+            let object = object::File::parse(bytes.as_slice()).expect("an executable");
+            object
+                .sections()
+                .filter(|section| section.address() != 0)
+                .filter_map(|section| Some((section.address(), section.data().ok()?.to_vec())))
+                .filter(|(_, data)| !data.is_empty())
+                .collect()
+        });
         Self {
-            file,
+            file: Arc::clone(file),
             written: BTreeMap::new(),
             threads: BTreeMap::new(),
+            reads: RefCell::default(),
         }
     }
 
@@ -164,6 +185,7 @@ impl Memory {
 
 impl RuntimeStop for Memory {
     fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address.get(), bytes.len()));
         for (at, byte) in (address.get()..).zip(bytes.iter_mut()) {
             let Some(read) = self.byte(at) else {
                 return false;
@@ -271,7 +293,7 @@ impl<'a> World<'a> {
 
     /// Publishes `gs` as `allgs`, with `published` of them in `allglen`.
     fn allgs(&mut self, gs: &[u64], published: u64) {
-        let array = HEAP + 0x10_0000;
+        let array = ALLGS;
         for (index, g) in (0..).zip(gs) {
             self.memory.word(array + 8 * index, *g);
         }
@@ -307,6 +329,22 @@ impl<'a> World<'a> {
         super::detect(Arc::new(image))
             .expect("a Go runtime")
             .expect("the runtime binds")
+    }
+
+    /// The model itself, whose own methods a test may call.
+    fn runtime(&self) -> super::GoRuntime {
+        let image = Image {
+            module: Arc::clone(&self.image.module),
+            hidden: self.image.hidden.clone(),
+            tlsg: self.image.tlsg,
+        };
+        let version = image
+            .producers()
+            .iter()
+            .find_map(|producer| super::version(producer))
+            .expect("a Go producer");
+
+        super::GoRuntime::bind(Arc::new(image), version).expect("the runtime binds")
     }
 }
 
@@ -541,4 +579,93 @@ fn a_missing_name_makes_only_what_needs_it_unavailable() {
         activity,
         ThreadActivity::Unknown("the runtime has no member runtime.g.goid".into())
     );
+}
+
+/// The statuses the model's goroutines take: dead, which a list leaves
+/// out, and each a live goroutine shows.
+const STATUSES: [&str; 5] = [
+    "_Gdead",
+    "_Grunnable",
+    "_Gwaiting",
+    "_Grunning",
+    "_Gsyscall",
+];
+
+proptest! {
+    /// However many goroutines `allgs` holds, and however many are dead,
+    /// pages of any limit join into exactly the live ones, in order: each
+    /// page reads no more of `allgs` than its scan and the one entry past
+    /// it, and each goroutine listed is found by its number, with its
+    /// locator, without, and with another goroutine's.
+    #[test]
+    fn pages_join_into_the_live_goroutines_each_found_by_its_number(
+        statuses in proptest::collection::vec(0..STATUSES.len(), 0..40),
+        limit in 1..6_usize,
+        least in 1..12_u64,
+    ) {
+        let image = Image::load();
+        let mut world = World::new(&image);
+        let gs: Vec<G> = (1..)
+            .zip(&statuses)
+            .map(|(goid, &status)| G {
+                goid,
+                status: world.status(STATUSES[status]),
+                wait_reason: 0,
+                m: 0,
+            })
+            .collect();
+        let places = world.goroutines(&gs);
+        let runtime = world.runtime();
+        let memory = &world.memory;
+
+        let (mut listed, mut start, mut pages) = (Vec::new(), Some(0), 0);
+        while let Some(at) = start {
+            pages += 1;
+            prop_assert!(pages <= gs.len() + 1, "the pages never end");
+            memory.reads.borrow_mut().clear();
+            let page = runtime.page(memory, at, limit, false, least);
+            prop_assert!(page.gaps.is_empty(), "{:?}", page.gaps);
+            prop_assert!(page.value.tasks.len() <= limit);
+
+            let read: u64 = memory
+                .reads
+                .borrow()
+                .iter()
+                .map(|&(address, length)| {
+                    let end = address + length as u64;
+                    let array = ALLGS + 8 * gs.len() as u64;
+                    end.min(array).saturating_sub(address.max(ALLGS))
+                })
+                .sum();
+            prop_assert!(read / 8 <= least.max(4 * limit as u64) + 1, "{} entries", read / 8);
+
+            listed.extend(page.value.tasks.iter().map(|task| (task.number, task.locator)));
+            start = page.value.next;
+        }
+
+        let live: Vec<(u64, u64)> = gs
+            .iter()
+            .zip(&places)
+            .filter(|(g, _)| g.status != world.status("_Gdead"))
+            .map(|(g, &place)| (g.goid, place))
+            .collect();
+        prop_assert_eq!(&listed, &live);
+
+        let found = |number: u64, locator: Option<u64>| {
+            runtime
+                .find(memory, TaskRef { number, locator })
+                .map(|found| found.map(|(g, task)| (task.number, g, task.locator)))
+        };
+        for &(number, g) in &live {
+            let expected = Ok(Some((number, g, g)));
+            prop_assert_eq!(found(number, Some(g)), expected.clone());
+            prop_assert_eq!(found(number, None), expected.clone());
+            let other = places.iter().copied().find(|&place| place != g);
+            prop_assert_eq!(found(number, other), expected);
+        }
+        for (g, _) in gs.iter().zip(&places).filter(|(g, _)| g.status == world.status("_Gdead")) {
+            prop_assert_eq!(found(g.goid, None), Ok(None));
+        }
+        prop_assert_eq!(found(gs.len() as u64 + 1, None), Ok(None));
+    }
 }

@@ -392,21 +392,15 @@ impl GoRuntime {
         }))
     }
 
-    fn names(&self, stop: &dyn RuntimeStop) -> &Names {
-        self.names.get_or_init(|| Names::read(self, stop))
-    }
-}
-
-impl RuntimeModel for GoRuntime {
-    /// A page scans at most a fixed multiple of its limit of `allgs`, so
-    /// dead goroutines and the runtime's own, which it leaves out, never
-    /// make one page read the whole list.
-    fn tasks(
+    /// A page of tasks from `start`, scanning at most `limit` times
+    /// [`SCAN_PER_TASK`] entries of `allgs`, and at least `least`.
+    fn page(
         &self,
         stop: &dyn RuntimeStop,
         start: u64,
         limit: usize,
         program_only: bool,
+        least: u64,
     ) -> Partial<TaskPage> {
         let mut page = self.partial(TaskPage {
             tasks: Vec::new(),
@@ -415,7 +409,7 @@ impl RuntimeModel for GoRuntime {
         let scanned = u64::try_from(limit)
             .unwrap_or(u64::MAX)
             .saturating_mul(SCAN_PER_TASK)
-            .max(MIN_SCAN);
+            .max(least);
 
         // One more than the scan shows whether any are left.
         let allgs = match self.allgs_from(stop, start, scanned.saturating_add(1)) {
@@ -462,6 +456,25 @@ impl RuntimeModel for GoRuntime {
         }
 
         page
+    }
+
+    fn names(&self, stop: &dyn RuntimeStop) -> &Names {
+        self.names.get_or_init(|| Names::read(self, stop))
+    }
+}
+
+impl RuntimeModel for GoRuntime {
+    /// A page scans at most a fixed multiple of its limit of `allgs`, so
+    /// dead goroutines and the runtime's own, which it leaves out, never
+    /// make one page read the whole list.
+    fn tasks(
+        &self,
+        stop: &dyn RuntimeStop,
+        start: u64,
+        limit: usize,
+        program_only: bool,
+    ) -> Partial<TaskPage> {
+        self.page(stop, start, limit, program_only, MIN_SCAN)
     }
 
     fn thread_activity(&self, stop: &dyn RuntimeStop, thread: ThreadId) -> ThreadActivity {

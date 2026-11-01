@@ -316,7 +316,7 @@ fn cached_code(reader: &Reader<'_>, function: Object) -> Result<Vec<Object>, Pro
     }
     let first = reader.field_address(vector, Field::FeedbackVectorRawFeedbackSlots)?;
     for slot in 0..length {
-        words.push(reader.word(first + slot * 8)?);
+        words.push(reader.word(super::objects::address_at(first, slot * 8)?)?);
     }
 
     let mut found = Vec::new();
@@ -507,7 +507,45 @@ fn bytecode_at(table: &[u8], bytecodes: &[u8], sizes: &[u8], offset: u64) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::bytecode_at;
+    use super::super::objects::Object;
+    use super::super::objects::tests::{Heap, layout, reader};
+    use super::{bytecode_at, cached_code};
+    use crate::image::v8::{Constant, Field};
+
+    /// A feedback vector whose slots end at the top of memory has no slot
+    /// past it: its read is a reason, not an overflow.
+    #[test]
+    fn a_feedback_vector_at_the_top_of_memory_ends_there() {
+        let layout = layout();
+        let mut heap = Heap::default();
+        let field = |field| layout.field(field).expect("the layout has the field");
+        let ty = |constant| layout.constant(constant).expect("the layout has the type");
+        let map = |heap: &mut Heap, at: u64, ty: i64| {
+            heap.word(at, at + 1);
+            heap.word(at + field(Field::MapInstanceType), ty.cast_unsigned());
+            at + 1
+        };
+
+        let cell_map = map(&mut heap, 0x1000, ty(Constant::FeedbackCellType));
+        let vector_map = map(&mut heap, 0x2000, ty(Constant::FeedbackVectorType));
+        let (function, cell) = (0x3000, 0x4000);
+
+        // The vector's first slot is the last word of memory, which reads,
+        // and it has two.
+        let vector = u64::MAX - 7 - field(Field::FeedbackVectorRawFeedbackSlots);
+        heap.word(vector, vector_map);
+        heap.word(vector + field(Field::FeedbackVectorLength), 2);
+        if let Some(code) = layout.field(Field::FeedbackVectorMaybeOptimizedCode) {
+            heap.word(vector + code, 0);
+        }
+        heap.word(u64::MAX - 7, 0);
+        heap.word(function + field(Field::JSFunctionFeedbackCell), cell + 1);
+        heap.word(cell, cell_map);
+        heap.word(cell + field(Field::FeedbackCellValue), vector + 1);
+
+        let reader = reader(&heap, &layout);
+        assert!(cached_code(&reader, Object(function + 1)).is_err());
+    }
 
     /// Sizes for a made-up set of five bytecodes at each scale: the four
     /// prefixes, then one whose operand widens from 1 byte to 2 and 4.

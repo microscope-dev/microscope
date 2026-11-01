@@ -269,10 +269,18 @@ fn follow(
                     return ChainEnd::Broken("a pinned pointer is not at a byte offset".into());
                 };
 
-                (object, ty) = (object.wrapping_add(offset), pointer);
+                let Some(inner) = object.checked_add(offset) else {
+                    return past_the_end(object);
+                };
+
+                (object, ty) = (inner, pointer);
             }
             Shape::Wrapper { future, offset } => {
-                (object, ty) = (object.wrapping_add(offset), future);
+                let Some(inner) = object.checked_add(offset) else {
+                    return past_the_end(object);
+                };
+
+                (object, ty) = (inner, future);
             }
             Shape::Holder(steps) => match held_within(image, stop, object, ty, steps) {
                 Ok(held) => (object, ty) = held,
@@ -296,6 +304,11 @@ fn follow(
     ChainEnd::TooDeep
 }
 
+/// The end of a chain whose next future would lie past the end of memory.
+fn past_the_end(object: VirtualAddress) -> ChainEnd {
+    ChainEnd::Broken(format!("the future at {object:#x} holds no address").into())
+}
+
 /// The state the coroutine at `object` is read in, as `choice` says, or
 /// why it cannot be.
 fn state_number(
@@ -312,9 +325,12 @@ fn state_number(
         StateChoice::Stored => {
             let size = usize::try_from(coroutine.state.size)
                 .map_err(|_| ChainEnd::Broken("a coroutine's state is too large".into()))?;
-            records::read(stop, object.wrapping_add(coroutine.state.offset), size).ok_or_else(
-                || ChainEnd::Broken(format!("the future at {object:#x} is unreadable").into()),
-            )
+            object
+                .checked_add(coroutine.state.offset)
+                .and_then(|state| records::read(stop, state, size))
+                .ok_or_else(|| {
+                    ChainEnd::Broken(format!("the future at {object:#x} is unreadable").into())
+                })
         }
     }
 }
@@ -328,10 +344,12 @@ fn held(
     data: u64,
     vtable: u64,
 ) -> Result<(VirtualAddress, TypeReference), ChainEnd> {
-    let (Some(pointer), Some(table)) = (
-        records::pointer(stop, object.wrapping_add(data)),
-        records::pointer(stop, object.wrapping_add(vtable)),
-    ) else {
+    let word = |offset| {
+        object
+            .checked_add(offset)
+            .and_then(|at| records::pointer(stop, at))
+    };
+    let (Some(pointer), Some(table)) = (word(data), word(vtable)) else {
         return Err(ChainEnd::Broken(
             format!("the trait object at {object:#x} is unreadable").into(),
         ));
@@ -372,7 +390,10 @@ fn held_within(
             records::field(image, ty, &[step])?
         };
 
-        (object, ty) = (object.wrapping_add(found.offset), found.ty);
+        let held = object.checked_add(found.offset).ok_or_else(|| {
+            Arc::<str>::from(format!("the future at {object:#x} holds no address"))
+        })?;
+        (object, ty) = (held, found.ty);
     }
 
     Ok((object, ty))

@@ -1380,3 +1380,116 @@ fn a_missing_attribute_of_an_instance_with_no_values_is_a_missing_key() {
         other => panic!("expected a missing key, got {other:?}"),
     }
 }
+
+/// The word at `field` of the object at `object`.
+fn field_of(process: &Process, object: u64, field: Field) -> u64 {
+    let mut bytes = [0; 8];
+    let at = VirtualAddress::new(object + process.offset(field));
+    assert!(crate::runtime_model::RuntimeStop::read(
+        &process.memory,
+        at,
+        &mut bytes
+    ));
+    u64::from_le_bytes(bytes)
+}
+
+/// A class's method resolution order whose tuple claims more items than
+/// memory holds is a reason, not a read past the address space or an
+/// allocation of all of it.
+#[test]
+fn a_class_whose_mro_claims_too_many_items_is_unreadable() {
+    // The second is the size proptest shrank the case to.
+    for size in [1 << 40, super::HEAP, 1 << 61, i64::MAX.cast_unsigned()] {
+        let mut process = Process::new(layout());
+        let (types, object) = world(&mut process);
+        let point = class(
+            &mut process,
+            &types,
+            &Spec {
+                name: "Point",
+                module: Some("geom"),
+                flags: MANAGED_DICT,
+                basicsize: 16,
+                keys: &["x"],
+                ..Spec::default()
+            },
+            &[object],
+        );
+        let x = process.int(types.int, 3);
+        let values = tagged_values(&mut process, &[(0, x)]);
+        let instance = managed_instance(&mut process, point, 16);
+        set_managed(&mut process, instance, values);
+        let mro = field_of(&process, point, Field::TypeMro);
+        process.word(mro, Field::TupleSize, size);
+
+        assert!(children_of(&process, types, instance, 0..2).is_err());
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        fork: true,
+        timeout: 10_000,
+        ..proptest::prelude::ProptestConfig::default()
+    })]
+
+    /// An instance whose class, values, or attributes memory has damaged
+    /// is presented with its attributes or a reason, and as written where
+    /// the damage left a word as it was. A damaged size may ask for more
+    /// memory than there is, which aborts, so each case runs in a process
+    /// of its own.
+    #[test]
+    fn a_damaged_instance_shows_its_attributes_or_a_reason(
+        target in 0..8_usize,
+        pointer in crate::test_strategies::hostile_address(vec![super::HEAP]),
+        size in crate::test_strategies::u64_edges(),
+        as_size in proptest::prelude::any::<bool>(),
+    ) {
+        let mut process = Process::new(layout());
+        let (types, object) = world(&mut process);
+        let point = class(
+            &mut process,
+            &types,
+            &Spec {
+                name: "Point",
+                module: Some("geom"),
+                flags: MANAGED_DICT,
+                basicsize: 16,
+                keys: &["x", "y"],
+                ..Spec::default()
+            },
+            &[object],
+        );
+        let x = process.int(types.int, 3);
+        let y = process.int(types.int, 5);
+        let values = tagged_values(&mut process, &[(1, y), (0, x)]);
+        let instance = managed_instance(&mut process, point, 16);
+        set_managed(&mut process, instance, values);
+
+        let mro = field_of(&process, point, Field::TypeMro);
+        let dict = field_of(&process, point, Field::TypeDict);
+        let keys = field_of(&process, point, Field::HeapTypeCachedKeys);
+        let (at, field) = [
+            (point, Field::TypeMro),
+            (mro, Field::TupleSize),
+            (point, Field::TypeDict),
+            (dict, Field::DictUsed),
+            (dict, Field::DictKeys),
+            (point, Field::HeapTypeCachedKeys),
+            (keys, Field::DictKeysNentries),
+            (y, Field::ObjectSize),
+        ][target];
+        let before = field_of(&process, at, field);
+        let damage = if as_size { size } else { pointer };
+        process.word(at, field, damage);
+
+        let children = children_of(&process, types, instance, 0..2);
+        if damage == before {
+            proptest::prop_assert_eq!(
+                attributes_of(&children.expect("the attributes are read")),
+                vec![("y".to_owned(), "5".to_owned()), ("x".to_owned(), "3".to_owned())]
+            );
+        }
+        let _ = value_at(&process, types, instance);
+    }
+}

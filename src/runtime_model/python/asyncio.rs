@@ -77,6 +77,7 @@ impl Values<'_, '_> {
 
         found.running = self.running_tasks(states, &mut found.gaps);
         let mut interpreters = Vec::new();
+        let mut listed = HashSet::new();
 
         for state in states {
             if !interpreters.contains(&(state.interpreter_state, state.interpreter)) {
@@ -87,6 +88,7 @@ impl Values<'_, '_> {
             self.task_list(
                 (state.address, Field::ThreadAsyncioTasksHead),
                 &whose,
+                &mut listed,
                 &mut found,
             );
         }
@@ -96,6 +98,7 @@ impl Values<'_, '_> {
             self.task_list(
                 (interpreter, Field::InterpreterAsyncioTasksHead),
                 &whose,
+                &mut listed,
                 &mut found,
             );
         }
@@ -212,9 +215,29 @@ impl Values<'_, '_> {
 
     /// Adds the tasks of the list whose head is at `field` of the state at
     /// `owner` to `found`, and why the rest cannot be read, if they cannot.
-    fn task_list(&self, (owner, field): (VirtualAddress, Field), whose: &str, found: &mut Tasks) {
-        if let Err(problem) = self.each_task((owner, field), whose, &mut found.all) {
+    /// A task `listed` already holds is listed once, and said to be in two
+    /// lists, as only damaged lists or ones read as they change put it.
+    fn task_list(
+        &self,
+        (owner, field): (VirtualAddress, Field),
+        whose: &str,
+        listed: &mut HashSet<VirtualAddress>,
+        found: &mut Tasks,
+    ) {
+        let mut tasks = Vec::new();
+        if let Err(problem) = self.each_task((owner, field), whose, &mut tasks) {
             found.gaps.push(problem);
+        }
+
+        for task in tasks {
+            if listed.insert(task) {
+                found.all.push(task);
+            } else {
+                found.gaps.push(
+                    format!("the list of {whose} tasks holds {task:#x}, which another list holds")
+                        .into(),
+                );
+            }
         }
     }
 
@@ -253,8 +276,16 @@ impl Values<'_, '_> {
                 .into());
             }
 
+            // asyncio clears a node's links as it frees the task, so a
+            // node that links nowhere holds no task, though a stale link
+            // still leads to it.
+            let after = VirtualAddress::new(reader.word(node.wrapping_add(next))?);
+            if after == VirtualAddress::new(0) {
+                return Err(format!("the list of {whose} tasks is broken").into());
+            }
+
             tasks.push(task);
-            node = VirtualAddress::new(reader.word(node.wrapping_add(next))?);
+            node = after;
         }
 
         debug_assert_eq!(

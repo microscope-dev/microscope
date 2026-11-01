@@ -454,6 +454,8 @@ impl Reader<'_> {
 pub(super) mod tests {
     use std::collections::HashMap;
 
+    use proptest::prelude::*;
+
     use super::{Object, Reader};
     use crate::image::v8::{Constant, Field, V8Layout, V8Version};
     use crate::runtime_model::RuntimeStop;
@@ -465,16 +467,20 @@ pub(super) mod tests {
 
     impl Heap {
         pub(in super::super) fn word(&mut self, address: u64, word: u64) {
-            for (at, byte) in (address..).zip(word.to_le_bytes()) {
-                self.0.insert(at, byte);
+            for (index, byte) in (0..).zip(word.to_le_bytes()) {
+                self.0.insert(address + index, byte);
             }
         }
     }
 
     impl RuntimeStop for Heap {
         fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
-            for (at, byte) in (address.get()..).zip(bytes.iter_mut()) {
-                let Some(read) = self.0.get(&at) else {
+            for (index, byte) in (0..).zip(bytes.iter_mut()) {
+                let Some(read) = address
+                    .get()
+                    .checked_add(index)
+                    .and_then(|at| self.0.get(&at))
+                else {
                     return false;
                 };
                 *byte = *read;
@@ -525,6 +531,249 @@ pub(super) mod tests {
             },
             charge: None,
             blocks: None,
+        }
+    }
+
+    /// A string as a model: its representation, and the text it is.
+    #[derive(Debug, Clone)]
+    enum Text {
+        Seq {
+            units: Vec<u16>,
+            one_byte: bool,
+        },
+        Cons(Box<Self>, Box<Self>),
+        Sliced {
+            parent: Box<Self>,
+            offset: u64,
+            length: u64,
+        },
+        Thin(Box<Self>),
+    }
+
+    impl Text {
+        fn units(&self) -> Vec<u16> {
+            match self {
+                Self::Seq { units, .. } => units.clone(),
+                Self::Cons(first, second) => [first.units(), second.units()].concat(),
+                Self::Sliced {
+                    parent,
+                    offset,
+                    length,
+                } => {
+                    let units = parent.units();
+                    let start = usize::try_from(*offset).unwrap();
+                    units[start..start + usize::try_from(*length).unwrap()].to_vec()
+                }
+                Self::Thin(actual) => actual.units(),
+            }
+        }
+    }
+
+    fn sequential() -> impl Strategy<Value = Text> {
+        prop_oneof![
+            proptest::collection::vec(0..0x100_u16, 0..12).prop_map(|units| Text::Seq {
+                units,
+                one_byte: true
+            }),
+            proptest::collection::vec(any::<u16>(), 0..12).prop_map(|units| Text::Seq {
+                units,
+                one_byte: false
+            }),
+        ]
+    }
+
+    /// Strings of every representation V8 reads in place: sequential,
+    /// cons, thin, and sliced, whose parent is sequential.
+    fn text() -> impl Strategy<Value = Text> {
+        let sliced = (
+            sequential(),
+            any::<prop::sample::Index>(),
+            any::<prop::sample::Index>(),
+        )
+            .prop_map(|(parent, start, length)| {
+                let total = parent.units().len();
+                let offset = start.index(total + 1);
+                let length = length.index(total - offset + 1);
+                Text::Sliced {
+                    parent: Box::new(parent),
+                    offset: offset as u64,
+                    length: length as u64,
+                }
+            });
+        prop_oneof![sequential(), sliced].prop_recursive(4, 16, 2, |inner| {
+            prop_oneof![
+                (inner.clone(), inner.clone())
+                    .prop_map(|(first, second)| Text::Cons(Box::new(first), Box::new(second))),
+                inner.prop_map(|actual| Text::Thin(Box::new(actual))),
+            ]
+        })
+    }
+
+    /// Lays out strings in a heap, recording each word it writes so a
+    /// test may change any of them.
+    struct Strings<'a> {
+        heap: Heap,
+        layout: &'a V8Layout,
+        next: u64,
+        maps: HashMap<i64, u64>,
+
+        /// Each word written of the strings, not of their maps: where it
+        /// is, how wide, and what it holds.
+        words: Vec<(u64, usize, u64)>,
+    }
+
+    impl Strings<'_> {
+        fn constant(&self, constant: Constant) -> i64 {
+            self.layout
+                .constant(constant)
+                .expect("the layout has the constant")
+        }
+
+        fn offset(&self, field: Field) -> u64 {
+            self.layout.field(field).expect("the layout has the field")
+        }
+
+        fn write(&mut self, at: u64, width: usize, value: u64) {
+            for (address, byte) in (at..).zip(value.to_le_bytes().into_iter().take(width)) {
+                self.heap.0.insert(address, byte);
+            }
+            self.words.push((at, width, value));
+        }
+
+        /// The tagged map of strings of `ty`.
+        fn map(&mut self, ty: i64) -> u64 {
+            if let Some(map) = self.maps.get(&ty) {
+                return *map;
+            }
+            let map = self.next;
+            self.next += 0x100;
+            self.heap.word(map, map + 1);
+            let at = map + self.offset(Field::MapInstanceType);
+            for (address, byte) in (at..).zip(ty.to_le_bytes().into_iter().take(2)) {
+                self.heap.0.insert(address, byte);
+            }
+            self.maps.insert(ty, map + 1);
+            map + 1
+        }
+
+        /// Writes `text`, returning its tagged address.
+        fn string(&mut self, text: &Text) -> u64 {
+            let at = self.next;
+            self.next += 0x100;
+            let one_byte = |text: &Text| {
+                matches!(text, Text::Seq { one_byte: true, .. } | Text::Sliced { .. })
+                    && match text {
+                        Text::Sliced { parent, .. } => {
+                            matches!(**parent, Text::Seq { one_byte: true, .. })
+                        }
+                        _ => true,
+                    }
+            };
+            let encoding = if one_byte(text) {
+                self.constant(Constant::OneByteStringTag)
+            } else {
+                self.constant(Constant::TwoByteStringTag)
+            };
+            let representation = self.constant(match text {
+                Text::Seq { .. } => Constant::SeqStringTag,
+                Text::Cons(..) => Constant::ConsStringTag,
+                Text::Sliced { .. } => Constant::SlicedStringTag,
+                Text::Thin(_) => Constant::ThinStringTag,
+            });
+            let map = self.map(representation | encoding);
+            self.write(at + self.offset(Field::HeapObjectMap), 8, map);
+            let length = text.units().len() as u64;
+            self.write(at + self.offset(Field::StringLength), 4, length);
+
+            match text {
+                Text::Seq { units, one_byte } => {
+                    let (chars, width) = if *one_byte {
+                        (Field::SeqOneByteStringChars, 1)
+                    } else {
+                        (Field::SeqTwoByteStringChars, 2)
+                    };
+                    let chars = at + self.offset(chars);
+                    for (index, unit) in (0..).zip(units) {
+                        self.write(
+                            chars + index * width,
+                            usize::try_from(width).unwrap(),
+                            u64::from(*unit),
+                        );
+                    }
+                }
+                Text::Cons(first, second) => {
+                    let (first, second) = (self.string(first), self.string(second));
+                    self.write(at + self.offset(Field::ConsStringFirst), 8, first);
+                    self.write(at + self.offset(Field::ConsStringSecond), 8, second);
+                }
+                Text::Sliced { parent, offset, .. } => {
+                    let parent = self.string(parent);
+                    self.write(at + self.offset(Field::SlicedStringParent), 8, parent);
+                    self.write(at + self.offset(Field::SlicedStringOffset), 8, offset << 32);
+                }
+                Text::Thin(actual) => {
+                    let actual = self.string(actual);
+                    self.write(at + self.offset(Field::ThinStringActual), 8, actual);
+                }
+            }
+
+            at + 1
+        }
+    }
+
+    proptest! {
+        /// A string of any representation reads as its text, and wherever
+        /// one of its words leads instead, as a text or a reason.
+        #[test]
+        fn a_string_reads_as_its_text_wherever_its_words_lead(
+            text in text(),
+            damage in proptest::option::of((
+                any::<prop::sample::Index>(),
+                prop_oneof![
+                    crate::test_strategies::hostile_address(vec![0x1_0000, 0x1_0001]),
+                    crate::test_strategies::u64_edges(),
+                ],
+            )),
+        ) {
+            // The string tags each build exports, as V8's headers define
+            // them.
+            let mut layout = layout();
+            for (constant, value) in [
+                (Constant::StringRepresentationMask, 7),
+                (Constant::SeqStringTag, 0),
+                (Constant::ConsStringTag, 1),
+                (Constant::ExternalStringTag, 2),
+                (Constant::SlicedStringTag, 3),
+                (Constant::ThinStringTag, 5),
+                (Constant::StringEncodingMask, 8),
+                (Constant::TwoByteStringTag, 0),
+                (Constant::OneByteStringTag, 8),
+                (Constant::FirstNonstringType, 128),
+            ] {
+                layout.set_constant(constant, value);
+            }
+            let mut strings = Strings {
+                heap: Heap::default(),
+                layout: &layout,
+                next: 0x1_0000,
+                maps: HashMap::new(),
+                words: Vec::new(),
+            };
+            let root = strings.string(&text);
+            let damaged = damage.is_some_and(|(index, value)| {
+                let (at, width, before) = strings.words[index.index(strings.words.len())];
+                for (address, byte) in (at..).zip(value.to_le_bytes().into_iter().take(width)) {
+                    strings.heap.0.insert(address, byte);
+                }
+                value & (u64::MAX >> (64 - 8 * width)) != before
+            });
+
+            let reader = reader(&strings.heap, &layout);
+            let object = reader.object(root).unwrap().expect("a tagged word");
+            let read = reader.string(object);
+            if !damaged {
+                prop_assert_eq!(read, Ok(String::from_utf16_lossy(&text.units())));
+            }
         }
     }
 

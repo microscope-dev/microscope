@@ -1234,9 +1234,20 @@ impl Values<'_, '_> {
             start <= end,
             "the items {start}..{end} at virtual {items:#x} are reversed"
         );
+        // A sequence's length comes from the target, so a count no list
+        // could hold is refused before its items are read.
+        let count = end - start;
+        if count > super::objects::MAX_ITEMS {
+            return Err(format!(
+                "the {count} items at {items:#x} are more than the {} read",
+                super::objects::MAX_ITEMS
+            )
+            .into());
+        }
+
         let bytes = self
             .reader
-            .bytes(items.wrapping_add(start * 8), (end - start) * 8)?;
+            .bytes(items.wrapping_add(start * 8), count * 8)?;
         let read: Vec<VirtualAddress> = bytes
             .as_chunks::<8>()
             .0
