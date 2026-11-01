@@ -202,7 +202,26 @@ fn code_without_call_frame_information_unwinds_by_its_proved_frames() {
         off_cpu: false,
         ..RecordOptions::default()
     };
-    let recording = record(command("clang-o2-nocfi", 50_000_000), &options).expect("record");
+    // Both threads add to one shared word, which costs them several times
+    // the CPU time while they run at once on two CPUs, as they seldom do on
+    // a busy machine. On one CPU they never do, so the fixture takes only
+    // the CPU time its work needs, and every run samples as little as the
+    // busiest machine would: 50 million iterations gave 104 stacks.
+    let allowed =
+        nix::sched::sched_getaffinity(nix::unistd::Pid::from_raw(0)).expect("read allowed CPUs");
+    let cpu = (0..nix::sched::CpuSet::count())
+        .find(|&cpu| allowed.is_set(cpu).unwrap_or(false))
+        .expect("an allowed CPU");
+    let fixture = command("clang-o2-nocfi", 200_000_000);
+    let mut pinned = Command::new("taskset");
+    pinned
+        .args(["-c", &cpu.to_string()])
+        .arg(fixture.get_program())
+        .args(fixture.get_args())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let recording = record(pinned, &options).expect("record");
     assert!(recording.status.success());
     let stacks = recording.profile.stacks();
     assert!(stacks.len() > 100, "{} stacks", stacks.len());
