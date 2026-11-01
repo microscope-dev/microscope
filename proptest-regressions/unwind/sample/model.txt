@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a4036ef7e5a5b1ff4fe46efc31c1dca1302c66f5c170e15c110ed9b89b84d6f5 # shrinks to stack = Stack { functions: [Function { rule: FramePointer, role: Ordinary }, Function { rule: Outermost, role: Outermost }, Function { rule: FramePointer, role: StackSwitch }, Function { rule: Signal, role: SignalTrampoline }], frames: [Frame { function: 2, offset: 16, locals: 0, garbage: 0 }, Frame { function: 3, offset: 0, locals: 0, garbage: 0 }, Frame { function: 0, offset: 16, locals: 0, garbage: 0 }, Frame { function: 1, offset: 16, locals: 0, garbage: 0 }], place: Body, copied_words: 0, limit: 2 }

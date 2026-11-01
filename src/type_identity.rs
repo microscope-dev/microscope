@@ -425,8 +425,10 @@ pub fn parse_integer(text: &str) -> Option<IntegerValue> {
     let magnitude = u128::from_str_radix(&number.replace('_', ""), radix).ok()?;
 
     if negative {
-        let magnitude = i128::try_from(magnitude).ok()?;
-        Some(IntegerValue::Signed(-magnitude))
+        // `i128::MIN`'s magnitude is past `i128::MAX`.
+        Some(IntegerValue::Signed(
+            0_i128.checked_sub_unsigned(magnitude)?,
+        ))
     } else {
         Some(IntegerValue::Unsigned(magnitude))
     }
@@ -972,21 +974,243 @@ mod tests {
 
     use super::*;
 
-    proptest! {
-        /// Names come from debug information, which may hold anything:
-        /// parsing one never panics, and returns only pieces of it.
-        #[test]
-        fn any_name_splits_into_pieces_of_itself(name in "[a-z_:<>()\\[\\],. {}#&*0-9/!é·-]{0,32}") {
-            for syntax in NameSyntax::ALL {
-                let parsed = TypeName::parse(&name, syntax);
-                prop_assert!(name.contains(parsed.base));
-                for piece in parsed.path.iter().chain(parsed.arguments.iter().flatten()) {
-                    prop_assert!(name.contains(piece));
+    /// An integer argument and how a name spells it.
+    #[derive(Debug, Clone)]
+    struct Integer {
+        value: IntegerValue,
+        hex: bool,
+        upper: bool,
+        group: Option<usize>,
+        suffix: &'static str,
+    }
+
+    impl Integer {
+        fn render(&self) -> String {
+            let (negative, magnitude) = match self.value {
+                IntegerValue::Unsigned(value) => (false, value),
+                IntegerValue::Signed(value) => (value < 0, value.unsigned_abs()),
+            };
+            let digits = match (self.hex, self.upper) {
+                (false, _) => magnitude.to_string(),
+                (true, false) => format!("{magnitude:x}"),
+                (true, true) => format!("{magnitude:X}"),
+            };
+
+            // Underscores between groups of digits, from the right.
+            let digits = self.group.map_or_else(
+                || digits.clone(),
+                |group| {
+                    let characters = digits.chars().collect::<Vec<_>>();
+                    characters
+                        .rchunks(group)
+                        .rev()
+                        .map(String::from_iter)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                },
+            );
+
+            let prefix = match (self.hex, self.upper) {
+                (false, _) => "",
+                (true, false) => "0x",
+                (true, true) => "0X",
+            };
+            let sign = if negative { "-" } else { "" };
+            format!("{sign}{prefix}{digits}{}", self.suffix)
+        }
+    }
+
+    fn integer() -> impl Strategy<Value = Integer> {
+        (
+            prop_oneof![
+                crate::test_strategies::u128_edges().prop_map(IntegerValue::Unsigned),
+                crate::test_strategies::i128_edges()
+                    .prop_map(|value| IntegerValue::Signed(value.min(-1))),
+            ],
+            any::<bool>(),
+            any::<bool>(),
+            proptest::option::of(1_usize..4),
+            prop::sample::select(vec![
+                "", "u", "U", "ul", "LL", "uLL", "i8", "i32", "u64", "i128", "usize",
+            ]),
+        )
+            .prop_map(|(value, hex, upper, group, suffix)| Integer {
+                value,
+                hex,
+                upper,
+                group,
+                suffix,
+            })
+    }
+
+    /// A type name as a tree: its path, base, and arguments.
+    #[derive(Debug, Clone)]
+    struct Name {
+        path: Vec<String>,
+        base: String,
+        arguments: Option<Vec<Argument>>,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Argument {
+        Type(Name),
+        Integer(Integer),
+    }
+
+    /// How a rendered name separates its arguments.
+    const SEPARATORS: [&str; 4] = [",", ", ", " ,", " ,  "];
+
+    impl Name {
+        fn render(&self, syntax: NameSyntax, separator: &str) -> String {
+            let arguments = |arguments: &[Argument], parameters: bool| {
+                arguments
+                    .iter()
+                    .zip(0..)
+                    .map(|(argument, index)| {
+                        let (text, marks) = match argument {
+                            Argument::Type(name) => (name.render(syntax, separator), "$"),
+                            Argument::Integer(integer) => (integer.render(), "$$"),
+                        };
+                        if parameters {
+                            format!("P{index}:{marks}{text}")
+                        } else {
+                            text
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(separator)
+            };
+
+            let (scope, open, close, parameters) = match syntax {
+                NameSyntax::Angle => ("::", "<", ">", false),
+                NameSyntax::Go => (".", "[", "]", false),
+                NameSyntax::Zig => (".", "(", ")", false),
+                NameSyntax::Odin => ("::", "(", ")", true),
+                NameSyntax::D => ("", "!(", ")", false),
+            };
+
+            // Go's path is one package, its import path's parts joined by
+            // slashes.
+            let path = if syntax == NameSyntax::Go {
+                self.path.join("/")
+            } else {
+                self.path.join(scope)
+            };
+            let mut text = if path.is_empty() {
+                self.base.clone()
+            } else {
+                format!("{path}{scope}{}", self.base)
+            };
+            if let Some(list) = &self.arguments {
+                text = format!("{text}{open}{}{close}", arguments(list, parameters));
+            }
+            text
+        }
+
+        /// Checks that `text` parses to this name, its type arguments
+        /// too, and its integer arguments to their values.
+        fn check(&self, text: &str, syntax: NameSyntax) -> Result<(), TestCaseError> {
+            let parsed = TypeName::parse(text, syntax);
+            let path = if syntax == NameSyntax::Go && !self.path.is_empty() {
+                vec![self.path.join("/")]
+            } else {
+                self.path.clone()
+            };
+            prop_assert_eq!(&parsed.path, &path, "{:?} in {:?}", text, syntax);
+            prop_assert_eq!(parsed.base, &self.base, "{:?} in {:?}", text, syntax);
+
+            let Some(arguments) = &self.arguments else {
+                prop_assert_eq!(&parsed.arguments, &None, "{:?} in {:?}", text, syntax);
+                return Ok(());
+            };
+
+            let texts = parsed.arguments.unwrap_or_default();
+            prop_assert_eq!(texts.len(), arguments.len(), "{:?} in {:?}", text, syntax);
+            for (argument, text) in arguments.iter().zip(texts) {
+                match argument {
+                    Argument::Type(name) => name.check(text, syntax)?,
+                    Argument::Integer(integer) => {
+                        prop_assert_eq!(parse_integer(text), Some(integer.value), "{:?}", text);
+                    }
                 }
             }
-
-            let _ = parse_integer(&name);
+            Ok(())
         }
+    }
+
+    fn identifier() -> impl Strategy<Value = String> {
+        "[A-Za-z_][A-Za-z0-9_]{0,4}".prop_filter("a word some syntax reserves", |word| {
+            !["map", "chan", "func", "struct", "interface"].contains(&word.as_str())
+                && !word.starts_with("proc")
+                && !["true", "false"].contains(&word.as_str())
+        })
+    }
+
+    fn name(syntax: NameSyntax) -> impl Strategy<Value = Name> {
+        // D scopes a template by its module, which its name leaves out.
+        let path = if syntax == NameSyntax::D { 0..1 } else { 0..3 };
+        let leaf = (
+            proptest::collection::vec(identifier(), path.clone()),
+            identifier(),
+        )
+            .prop_map(|(path, base)| Name {
+                path,
+                base,
+                arguments: None,
+            });
+        leaf.prop_recursive(3, 12, 3, move |inner| {
+            (
+                proptest::collection::vec(identifier(), path.clone()),
+                identifier(),
+                proptest::collection::vec(
+                    prop_oneof![
+                        inner.prop_map(Argument::Type),
+                        integer().prop_map(Argument::Integer),
+                    ],
+                    0..3,
+                ),
+            )
+                .prop_map(|(path, base, arguments)| Name {
+                    path,
+                    base,
+                    arguments: Some(arguments),
+                })
+        })
+    }
+
+    fn syntax_and_name() -> impl Strategy<Value = (NameSyntax, Name)> {
+        prop::sample::select(NameSyntax::ALL.to_vec())
+            .prop_flat_map(|syntax| (Just(syntax), name(syntax)))
+    }
+
+    proptest! {
+        /// A name rendered from a tree parses back to the tree, however
+        /// its arguments are spaced, and its integers to their values.
+        #[test]
+        fn a_rendered_name_parses_back_to_its_tree((syntax, name) in syntax_and_name()) {
+            for separator in SEPARATORS {
+                let text = name.render(syntax, separator);
+                name.check(&text, syntax)?;
+            }
+        }
+
+        #[test]
+        fn a_rendered_integer_parses_back_to_its_value(integer in integer()) {
+            prop_assert_eq!(parse_integer(&integer.render()), Some(integer.value));
+        }
+    }
+
+    /// Shrunk by the properties above.
+    #[test]
+    fn the_least_signed_integer_parses() {
+        assert_eq!(
+            parse_integer("-170141183460469231731687303715884105728"),
+            Some(IntegerValue::Signed(i128::MIN))
+        );
+        assert_eq!(
+            parse_integer("-170141183460469231731687303715884105729"),
+            None
+        );
     }
 
     fn parts(name: &str, syntax: NameSyntax) -> (Vec<&str>, &str, Option<Vec<&str>>) {

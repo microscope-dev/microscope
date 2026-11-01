@@ -2761,8 +2761,21 @@ fn functions_are_found_where_their_code_holds_the_address(
     let mut strings = StringsBuilder::default();
     add_to(&mut builder, &mut strings, &input).unwrap();
     builder.bytes(TableKind::Strings, strings.into_bytes());
-    let image = builder.seal(Limits::default()).unwrap();
-    let view = VariableView::new(&image);
+
+    // The loader drops empty ranges, and an image refuses them.
+    let empty = functions
+        .iter()
+        .any(|function| function.ranges.iter().any(|range| range.start >= range.end));
+    let sealed = builder.seal(Limits::default());
+    if empty {
+        proptest::prop_assert!(
+            matches!(&sealed, Err(ImageError::Malformed(why)) if why.contains("empty")),
+            "{:?}",
+            sealed.err()
+        );
+    }
+    let image = sealed.ok();
+    let view = image.as_ref().map(VariableView::new);
 
     for address in addresses {
         let expected = starts
@@ -2775,10 +2788,12 @@ fn functions_are_found_where_their_code_holds_the_address(
                     .iter()
                     .any(|range| range.contains(ImageAddress::new(address)))
             });
-        let found = view
-            .function_at(ImageAddress::new(address))
-            .map(|function| function.id().0 as usize);
-        proptest::prop_assert_eq!(found, expected, "at {:#x}", address);
+        if let Some(view) = view {
+            let found = view
+                .function_at(ImageAddress::new(address))
+                .map(|function| function.id().0 as usize);
+            proptest::prop_assert_eq!(found, expected, "at {:#x}", address);
+        }
 
         // The loader finds functions as the image does, before sealing.
         let before = index.function_at(ImageAddress::new(address));
@@ -2806,14 +2821,29 @@ fn a_later_start_that_ends_first_leaves_the_earlier_function_found() {
     .unwrap();
 }
 
+use proptest::strategy::{Just, Strategy as _};
+
+/// Where a case's code lies: at the bottom of the address space, or with
+/// its last range ending at `u64::MAX`.
+const REGIONS: [u64; 2] = [0, u64::MAX - 86];
+
 proptest::proptest! {
     #[test]
     fn a_function_is_found_where_its_code_holds_the_address(
-        functions in proptest::collection::vec(
-            proptest::collection::vec((0_u64..64, 1_u64..24), 0..3),
-            0..8,
-        ),
-        addresses in proptest::collection::vec(0_u64..96, 1..16),
+        (functions, addresses) in proptest::sample::select(REGIONS.to_vec()).prop_flat_map(|region| (
+            proptest::collection::vec(
+                proptest::collection::vec(
+                    (0_u64..64, proptest::prop_oneof![1 => Just(0), 15 => 1_u64..24])
+                        .prop_map(move |(offset, length)| (region + offset, length)),
+                    0..3,
+                ),
+                0..8,
+            ),
+            proptest::collection::vec(
+                (0_u64..96).prop_map(move |offset| region.saturating_add(offset)),
+                1..16,
+            ),
+        )),
     ) {
         functions_are_found_where_their_code_holds_the_address(functions, addresses)?;
     }

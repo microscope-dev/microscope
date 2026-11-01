@@ -456,6 +456,7 @@ impl Settings {
 }
 
 /// Where the group is in a group stop.
+#[derive(Debug)]
 enum Phase {
     Running,
 
@@ -466,6 +467,180 @@ enum Phase {
         waiting: BTreeSet<MemberNumber>,
     },
     Stopped,
+}
+
+/// The group's stop rule, apart from the members it pauses and resumes:
+/// where the group is in a group stop, the stops it has yet to report,
+/// and the client resumes `C` that wait for it to finish stopping. Each
+/// method says what the driver must do.
+#[derive(Debug)]
+struct Stops<C> {
+    scope: StopScope,
+    phase: Phase,
+
+    /// Stops members made while the group stopped for another's, each
+    /// reported at a later continue instead of resuming.
+    pending: VecDeque<(MemberNumber, StopReason)>,
+
+    /// Continues and resumes a client asked for while the group stopped,
+    /// served once it has: the pauses under way are part of that stop.
+    deferred: Vec<C>,
+}
+
+/// What a member's stop asks of the driver.
+#[derive(Debug, PartialEq, Eq)]
+enum StopAction {
+    /// Report a group stop.
+    Report(MemberNumber, StopReason),
+
+    /// Pause every other running member for this stop.
+    PauseOthers(MemberNumber, StopReason),
+}
+
+impl<C> Stops<C> {
+    const fn new(scope: StopScope) -> Self {
+        Self {
+            scope,
+            phase: Phase::Running,
+            pending: VecDeque::new(),
+            deferred: Vec::new(),
+        }
+    }
+
+    const fn is_running(&self) -> bool {
+        matches!(self.phase, Phase::Running)
+    }
+
+    const fn is_stopping(&self) -> bool {
+        matches!(self.phase, Phase::Stopping { .. })
+    }
+
+    /// Applies the group's stop rule to a stop member `number` published.
+    fn stopped(&mut self, number: MemberNumber, reason: StopReason) -> Option<StopAction> {
+        // Each member's stop is its own, and one of those a pause of the
+        // whole group waits for.
+        if self.scope == StopScope::Process {
+            let _ = self.paused(number, None);
+            return Some(StopAction::Report(number, reason));
+        }
+
+        match &mut self.phase {
+            Phase::Running => Some(StopAction::PauseOthers(number, reason)),
+            Phase::Stopping { .. } => self
+                .paused(number, Some(reason))
+                .map(|(member, reason)| StopAction::Report(member, reason)),
+            // A member a client resumed alone, as a step resumes it, stops
+            // again while the rest of the group stays stopped.
+            Phase::Stopped => Some(StopAction::Report(number, reason)),
+        }
+    }
+
+    /// Begins a group stop for `first`'s stop, or for a pause of the whole
+    /// group, waiting for the members being paused; returns the group
+    /// stop to report if none is.
+    fn pause_all(
+        &mut self,
+        first: Option<(MemberNumber, StopReason)>,
+        waiting: BTreeSet<MemberNumber>,
+    ) -> Option<(MemberNumber, StopReason)> {
+        // A client's pause while the group stops joins the stop under way,
+        // which keeps the stop it is for.
+        if let Phase::Stopping {
+            waiting: awaited, ..
+        } = &mut self.phase
+        {
+            debug_assert!(
+                first.is_none(),
+                "member {first:?}'s stop began a group stop inside another"
+            );
+            awaited.extend(waiting);
+            return self.paused(0, None);
+        }
+
+        self.phase = Phase::Stopping { first, waiting };
+        self.paused(0, None)
+    }
+
+    /// Notes that member `number` stopped, or will not, while the group
+    /// stops, and returns the group stop to report once none is left
+    /// running.
+    fn paused(
+        &mut self,
+        number: MemberNumber,
+        reason: Option<StopReason>,
+    ) -> Option<(MemberNumber, StopReason)> {
+        let Phase::Stopping { first, waiting } = &mut self.phase else {
+            return None;
+        };
+
+        waiting.remove(&number);
+        if let Some(reason) = reason
+            && reason != StopReason::Pause
+        {
+            if first.is_none() {
+                *first = Some((number, reason));
+            } else {
+                self.pending.push_back((number, reason));
+            }
+        }
+
+        if !waiting.is_empty() {
+            return None;
+        }
+
+        let first = first.take();
+        self.phase = Phase::Stopped;
+
+        // Where each member's stop is reported as its own, a pause of the
+        // whole group has none to report.
+        if self.scope == StopScope::Process {
+            debug_assert!(
+                first.is_none(),
+                "a group stop for member {first:?} where each stop is its own"
+            );
+            return None;
+        }
+
+        Some(first.unwrap_or((1, StopReason::Pause)))
+    }
+
+    /// Keeps a client's continue or resume while members are still
+    /// pausing, or gives it back to be served now.
+    fn defer(&mut self, command: C) -> Option<C> {
+        if self.is_stopping() {
+            self.deferred.push(command);
+            return None;
+        }
+
+        Some(command)
+    }
+
+    /// The continues and resumes that waited for the group to finish
+    /// stopping, once it has.
+    fn take_deferred(&mut self) -> Vec<C> {
+        if self.is_stopping() {
+            return Vec::new();
+        }
+
+        std::mem::take(&mut self.deferred)
+    }
+
+    /// Forgets the stops yet to report, for a client that showed them.
+    fn discard_pending(&mut self) {
+        self.pending.clear();
+    }
+
+    /// Begins a continue of the group: returns a stop to report instead,
+    /// or sets the group running, for the driver to resume its members.
+    fn continue_all(&mut self) -> Option<(MemberNumber, StopReason)> {
+        if let Some(stop) = self.pending.pop_front() {
+            self.phase = Phase::Stopped;
+            return Some(stop);
+        }
+
+        self.phase = Phase::Running;
+        None
+    }
 }
 
 enum Internal {
@@ -484,16 +659,7 @@ struct Driver {
     events: broadcast::Sender<GroupEvent>,
     members: BTreeMap<MemberNumber, Live>,
     next_number: MemberNumber,
-    phase: Phase,
-    stops: StopScope,
-
-    /// Stops members made while the group stopped for another's, each
-    /// reported at a later continue instead of resuming.
-    pending: VecDeque<(MemberNumber, StopReason)>,
-
-    /// Continues and resumes a client asked for while the group stopped,
-    /// served once it has: the pauses under way are part of that stop.
-    deferred: Vec<Command>,
+    stops: Stops<Command>,
     internal: (
         mpsc::UnboundedSender<Internal>,
         mpsc::UnboundedReceiver<Internal>,
@@ -514,10 +680,7 @@ impl Driver {
             events,
             members: BTreeMap::new(),
             next_number: 2,
-            phase: Phase::Running,
-            stops,
-            pending: VecDeque::new(),
-            deferred: Vec::new(),
+            stops: Stops::new(stops),
             internal: mpsc::unbounded_channel(),
         };
         driver.forward(1, &handle);
@@ -770,7 +933,7 @@ impl Driver {
                 MemberState::Running
             },
         };
-        let resume = !live.gone && matches!(self.phase, Phase::Running);
+        let resume = !live.gone && self.stops.is_running();
         if resume {
             live.running = continue_stopped(&handle).await.is_ok();
         } else if let Ok(snapshot) = handle.snapshot().await
@@ -897,25 +1060,14 @@ impl Driver {
 
     /// Applies the group's stop rule to a stop member `number` published.
     fn stopped(&mut self, number: MemberNumber, reason: StopReason) {
-        if self.stops == StopScope::Process {
-            self.emit(GroupEvent::GroupStopped {
-                member: number,
-                reason,
-            });
-            return;
-        }
-
-        match &mut self.phase {
-            Phase::Running => {
+        match self.stops.stopped(number, reason) {
+            Some(StopAction::Report(member, reason)) => {
+                self.emit(GroupEvent::GroupStopped { member, reason });
+            }
+            Some(StopAction::PauseOthers(number, reason)) => {
                 self.pause_all(Some((number, reason)));
             }
-            Phase::Stopping { .. } => self.paused(number, Some(reason)),
-            // A member a client resumed alone, as a step resumes it, stops
-            // again while the rest of the group stays stopped.
-            Phase::Stopped => self.emit(GroupEvent::GroupStopped {
-                member: number,
-                reason,
-            }),
+            None => {}
         }
     }
 
@@ -942,36 +1094,17 @@ impl Driver {
             });
         }
 
-        self.phase = Phase::Stopping { first, waiting };
-        self.paused(0, None);
+        if let Some((member, reason)) = self.stops.pause_all(first, waiting) {
+            self.emit(GroupEvent::GroupStopped { member, reason });
+        }
     }
 
     /// Notes that member `number` stopped, or will not, while the group
     /// stops, and reports the group stop once none is left running.
     fn paused(&mut self, number: MemberNumber, reason: Option<StopReason>) {
-        let Phase::Stopping { first, waiting } = &mut self.phase else {
-            return;
-        };
-
-        waiting.remove(&number);
-        if let Some(reason) = reason
-            && reason != StopReason::Pause
-        {
-            if first.is_none() {
-                *first = Some((number, reason));
-            } else {
-                self.pending.push_back((number, reason));
-            }
+        if let Some((member, reason)) = self.stops.paused(number, reason) {
+            self.emit(GroupEvent::GroupStopped { member, reason });
         }
-
-        if !waiting.is_empty() {
-            return;
-        }
-
-        let first = first.take();
-        self.phase = Phase::Stopped;
-        let (member, reason) = first.unwrap_or((1, StopReason::Pause));
-        self.emit(GroupEvent::GroupStopped { member, reason });
     }
 
     /// Resumes member `number` at `stop`, which a client showed from the
@@ -1004,10 +1137,7 @@ impl Driver {
     /// Serves the continues and resumes that waited for the group to
     /// finish stopping, once it has.
     async fn after_internal(&mut self) {
-        if matches!(self.phase, Phase::Stopping { .. }) {
-            return;
-        }
-        for command in std::mem::take(&mut self.deferred) {
+        for command in self.stops.take_deferred() {
             self.resume(command).await;
         }
     }
@@ -1016,16 +1146,15 @@ impl Driver {
     /// members are still pausing waits for them, or a pause under way
     /// would land after the resume and stop the group again.
     async fn resume(&mut self, command: Command) {
-        if matches!(self.phase, Phase::Stopping { .. }) {
-            self.deferred.push(command);
+        let Some(command) = self.stops.defer(command) else {
             return;
-        }
+        };
         match command {
             Command::ContinueAll(reply) => {
                 let _ = reply.send(self.continue_all().await);
             }
             Command::ResumeAll(observed, reply) => {
-                self.pending.clear();
+                self.stops.discard_pending();
                 let caught_up = match observed {
                     Some((number, stop)) => self.catch_up(number, stop).await,
                     None => false,
@@ -1042,13 +1171,11 @@ impl Driver {
     }
 
     async fn continue_all(&mut self) -> Result<()> {
-        if let Some((member, reason)) = self.pending.pop_front() {
-            self.phase = Phase::Stopped;
+        if let Some((member, reason)) = self.stops.continue_all() {
             self.emit(GroupEvent::GroupStopped { member, reason });
             return Ok(());
         }
 
-        self.phase = Phase::Running;
         let mut result = Err(Error::NotStopped);
         for live in self.members.values_mut() {
             if live.gone || live.running {
@@ -1285,6 +1412,9 @@ fn command_line(process: ProcessId) -> String {
 }
 
 #[cfg(test)]
+mod stops_model;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1322,7 +1452,7 @@ mod tests {
     #[tokio::test]
     async fn a_resume_while_the_group_stops_waits_for_the_pauses_under_way() {
         let (mut driver, mut received) = driver();
-        driver.phase = Phase::Stopping {
+        driver.stops.phase = Phase::Stopping {
             first: Some((2, breakpoint_stop())),
             waiting: BTreeSet::from([1]),
         };
@@ -1344,17 +1474,63 @@ mod tests {
             "the pause under way stops nothing more"
         );
         assert!(resumed.await.is_ok(), "the resume is answered");
-        assert!(matches!(driver.phase, Phase::Running), "the group runs");
+        assert!(driver.stops.is_running(), "the group runs");
         tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
             .await
             .expect("end the root session in time")
             .expect("end the root session");
     }
 
+    /// Found by the model in `stops_model`: where each member's stop is
+    /// its own, a pause of the whole group still ends once each member
+    /// stopped or will not, reporting no stop of its own.
+    #[test]
+    fn a_pause_of_members_that_stop_alone_ends_with_their_stops() {
+        let mut stops = Stops::new(StopScope::Process);
+        assert_eq!(stops.pause_all(None, BTreeSet::from([1, 2])), None);
+        assert_eq!(
+            stops.stopped(1, StopReason::Pause),
+            Some(StopAction::Report(1, StopReason::Pause))
+        );
+        assert_eq!(stops.paused(2, None), None, "member 2 never stopped");
+        assert_eq!(
+            stops.defer("continue"),
+            Some("continue"),
+            "a continue is served"
+        );
+
+        let mut stops = Stops::new(StopScope::Process);
+        assert_eq!(stops.defer("continue"), Some("continue"));
+        assert_eq!(stops.pause_all(None, BTreeSet::from([1])), None);
+        assert_eq!(stops.paused(1, None), None, "member 1 never stopped");
+    }
+
+    /// Found by the model in `stops_model`: a client pauses the group
+    /// just as a member's breakpoint has begun to stop it.
+    #[test]
+    fn a_pause_during_a_group_stop_keeps_the_stop_it_is_for() {
+        let mut stops = Stops::<()>::new(StopScope::Group);
+        let breakpoint = breakpoint_stop();
+        assert_eq!(
+            stops.stopped(1, breakpoint.clone()),
+            Some(StopAction::PauseOthers(1, breakpoint.clone()))
+        );
+        assert_eq!(
+            stops.pause_all(Some((1, breakpoint.clone())), BTreeSet::from([2, 4])),
+            None
+        );
+        assert_eq!(stops.pause_all(None, BTreeSet::from([2, 4])), None);
+        assert_eq!(stops.stopped(2, StopReason::Pause), None);
+        assert_eq!(
+            stops.stopped(4, StopReason::Pause),
+            Some(StopAction::Report(1, breakpoint))
+        );
+    }
+
     #[tokio::test]
     async fn a_stop_arriving_after_a_pause_failure_is_still_reported() {
         let (mut driver, mut received) = driver();
-        driver.phase = Phase::Stopping {
+        driver.stops.phase = Phase::Stopping {
             first: Some((2, StopReason::Pause)),
             waiting: BTreeSet::from([1, 3]),
         };

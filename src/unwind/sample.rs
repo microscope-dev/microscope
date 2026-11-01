@@ -468,7 +468,16 @@ fn follow_chain(
     limit: usize,
 ) -> StackEnd {
     for (position, &return_address) in chain.iter().enumerate() {
-        let address = VirtualAddress::new(return_address.wrapping_sub(1));
+        // A handler returns to a trampoline's entry, not past a call.
+        let entry = VirtualAddress::new(return_address);
+        let address = match unwind_module_at(modules, entry) {
+            Some((index, image_address))
+                if rules.role(&modules[index], image_address) == CodeRole::SignalTrampoline =>
+            {
+                entry
+            }
+            _ => VirtualAddress::new(return_address.wrapping_sub(1)),
+        };
         let Some((index, image_address)) = unwind_module_at(modules, address) else {
             return StackEnd::Truncated(Truncation::UnmappedAddress, None);
         };
@@ -518,6 +527,9 @@ fn follow_chain(
 
     StackEnd::Truncated(Truncation::ChainEnded, None)
 }
+
+#[cfg(test)]
+mod model;
 
 #[cfg(test)]
 mod tests {

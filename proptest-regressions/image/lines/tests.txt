@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6b9b109168b0fb39ffa2dc99d58a6a64cccb39926234f062fb6ac782c3878f5d # shrinks to sequences = [[Row { address: 4096, file: Some(SourceFileId(0)), line: 1, column: 0, operation_index: 0, discriminator: 0, isa: 0, statement: false, prologue_end: false, epilogue_begin: false, end_sequence: false }, Row { address: 4097, file: None, line: 0, column: 0, operation_index: 0, discriminator: 0, isa: 0, statement: false, prologue_end: false, epilogue_begin: false, end_sequence: true }]]
