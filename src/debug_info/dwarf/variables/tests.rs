@@ -1839,61 +1839,202 @@ fn inline_cycle_analysis_distinguishes_storage_from_indirection() {
     assert!(inline_storage_cycle_nodes(&pointer_recursion).is_empty());
 }
 
+/// One generated type: its kind, the types it names, and a choice that
+/// some kinds make among their parts.
+#[derive(Debug, Clone)]
+struct CycleShape {
+    kind: u8,
+    targets: Vec<u32>,
+    choice: u8,
+}
+
+const CYCLE_KINDS: u8 = 14;
+
+fn member(target: u32) -> RecordMember {
+    RecordMember {
+        name: None,
+        type_ref: reference(target),
+        layout: RecordMemberLayout::ByteOffset(0),
+        accessibility: Accessibility::Public,
+        artificial: false,
+        embedded: false,
+        declaration: None,
+    }
+}
+
+fn base_class(target: u32) -> crate::BaseClass {
+    crate::BaseClass {
+        type_ref: reference(target),
+        layout: RecordMemberLayout::ByteOffset(0),
+        accessibility: Accessibility::Public,
+        virtuality: crate::BaseClassVirtuality::None,
+    }
+}
+
+/// A variant's discriminant, by `choice`: stored in a member of the first
+/// target, the first target's tag type, or none.
+fn variant_discriminant(shape: &CycleShape) -> (Option<u32>, &[u32]) {
+    match (shape.choice % 3, shape.targets.split_first()) {
+        (0 | 1, Some((first, rest))) => (Some(*first), rest),
+        _ => (None, &shape.targets),
+    }
+}
+
+/// How many of a record's targets are members; the rest are bases.
+fn record_members(shape: &CycleShape) -> usize {
+    usize::from(shape.choice) % (shape.targets.len() + 1)
+}
+
+fn cycle_type(id: u32, shape: &CycleShape) -> TypeEntry {
+    let first = shape.targets.first().copied();
+    let first_or_outside = || reference(first.unwrap_or(99));
+    let kind = match shape.kind {
+        0 => return TypeEntry::Malformed("unbuilt".into()),
+        1 => TypeKind::Pointer {
+            target: first.map(reference),
+            address_class: 0,
+        },
+        2 => TypeKind::Reference {
+            kind: crate::ReferenceKind::Lvalue,
+            target: first_or_outside(),
+            address_class: 0,
+        },
+        3 => TypeKind::Slice {
+            element: first_or_outside(),
+            words: crate::SliceWords::POINTER_LENGTH,
+            text: false,
+        },
+        4 => TypeKind::Base(scalar_type(BaseTypeEncoding::Signed, 4)),
+        5 => TypeKind::Array {
+            element: first_or_outside(),
+            dimensions: Arc::from([ArrayDimension {
+                lower_bound: 0,
+                count: 2,
+            }]),
+            ordering: ArrayOrdering::RowMajor,
+        },
+        6 => TypeKind::Modified {
+            modifier: TypeModifier::Const,
+            target: first_or_outside(),
+        },
+        7 => TypeKind::Named {
+            target: first.map(reference),
+            relationship: NamedTypeRelationship::Synonym,
+        },
+        8 => TypeKind::Enumeration {
+            representation: scalar_type(BaseTypeEncoding::Signed, 4),
+            underlying: first.map(reference),
+            enumerators: Arc::default(),
+            origin: crate::EnumerationOrigin::Language,
+            scoped: false,
+        },
+        9 => TypeKind::Union {
+            members: shape.targets.iter().copied().map(member).collect(),
+            incomplete: false,
+        },
+        10 => {
+            let (tag, rest) = variant_discriminant(shape);
+            let part = |slot| {
+                rest.iter()
+                    .enumerate()
+                    .filter(move |(index, _)| index % 3 == slot)
+                    .map(|(_, target)| *target)
+            };
+            let discriminant = match (shape.choice % 3, tag) {
+                (0, Some(tag)) => crate::VariantDiscriminant::Stored(member(tag)),
+                (1, Some(tag)) => crate::VariantDiscriminant::TagType(reference(tag)),
+                _ => crate::VariantDiscriminant::Absent,
+            };
+
+            TypeKind::Variant {
+                storage: crate::VariantStorageKind::Struct,
+                common_members: part(0).map(member).collect(),
+                bases: part(1).map(base_class).collect(),
+                discriminant: Box::new(discriminant),
+                variants: Arc::from([Variant {
+                    name: None,
+                    selection: VariantSelection::Default,
+                    members: part(2).map(member).collect(),
+                }]),
+                incomplete: false,
+            }
+        }
+        11 => TypeKind::Signature {
+            returns: first.map(reference),
+            parameters: shape
+                .targets
+                .iter()
+                .skip(1)
+                .copied()
+                .map(reference)
+                .collect(),
+            variadic: false,
+            prototyped: true,
+        },
+        12 => TypeKind::Function,
+        _ => {
+            let (members, bases) = shape.targets.split_at(record_members(shape));
+            TypeKind::Record {
+                kind: RecordKind::Struct,
+                members: members.iter().copied().map(member).collect(),
+                bases: bases.iter().copied().map(base_class).collect(),
+                incomplete: false,
+            }
+        }
+    };
+
+    node(id, "type", Some(8), kind)
+}
+
+/// The types a generated type holds in place, by what each kind means: an
+/// array its elements, a wrapper or enumeration what it wraps, and a
+/// record, union, variant, or signature every part it names, but never a
+/// variant's tag type, nor anything a pointer, reference, or slice names.
+fn cycle_holds(shape: &CycleShape) -> Vec<u32> {
+    match shape.kind {
+        0..=4 | 12 => Vec::new(),
+        5..=8 => shape.targets.first().copied().into_iter().collect(),
+        10 if shape.choice % 3 == 1 => shape.targets.iter().skip(1).copied().collect(),
+        _ => shape.targets.clone(),
+    }
+}
+
+fn cycle_shape() -> impl proptest::strategy::Strategy<Value = CycleShape> {
+    use proptest::prelude::*;
+
+    (
+        0..CYCLE_KINDS,
+        proptest::collection::vec(0_u32..14, 0..4),
+        any::<u8>(),
+    )
+        .prop_map(|(kind, targets, choice)| CycleShape {
+            kind,
+            targets,
+            choice,
+        })
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
 
     /// A type is in an inline-storage cycle exactly when it holds itself
-    /// through storage: when it reaches itself along members, never along
-    /// a pointer, an unbuilt type, or a reference past the graph.
+    /// through storage: when it reaches itself along what it holds in
+    /// place, never along a pointer, an unbuilt type, or a reference past
+    /// the graph.
     #[test]
     fn inline_cycles_are_the_types_that_hold_themselves(
-        shapes in proptest::collection::vec(
-            (0_u8..3, proptest::collection::vec(0_u32..14, 0..4)),
-            1..12,
-        ),
+        shapes in proptest::collection::vec(cycle_shape(), 1..12),
     ) {
         let types = shapes
             .iter()
             .enumerate()
-            .map(|(index, (shape, targets))| {
-                let id = u32::try_from(index).unwrap();
-                match shape {
-                    0 => TypeEntry::Malformed("unbuilt".into()),
-                    1 => node(id, "pointer", Some(8), TypeKind::Pointer {
-                        target: targets.first().map(|target| reference(*target)),
-                        address_class: 0,
-                    }),
-                    _ => node(id, "record", Some(8), TypeKind::Record {
-                        kind: RecordKind::Struct,
-                        members: targets
-                            .iter()
-                            .map(|target| RecordMember {
-                                name: None,
-                                type_ref: reference(*target),
-                                layout: RecordMemberLayout::ByteOffset(0),
-                                accessibility: Accessibility::Public,
-                                artificial: false,
-                                embedded: false,
-                                declaration: None,
-                            })
-                            .collect(),
-                        bases: Arc::default(),
-                        incomplete: false,
-                    }),
-                }
-            })
+            .map(|(index, shape)| cycle_type(u32::try_from(index).unwrap(), shape))
             .collect::<Vec<_>>();
 
-        // What each type holds in place: a record's members that exist.
         let holds = |index: usize| -> Vec<usize> {
-            let (shape, targets) = &shapes[index];
-            if *shape < 2 {
-                return Vec::new();
-            }
-
-            targets
-                .iter()
-                .map(|target| *target as usize)
+            cycle_holds(&shapes[index])
+                .into_iter()
+                .map(|target| target as usize)
                 .filter(|target| *target < shapes.len())
                 .collect()
         };
