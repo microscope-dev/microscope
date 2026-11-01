@@ -12,8 +12,9 @@ use super::format::plural;
 use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Format, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset, ProbeSelection, Profile,
-    PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy, StackView, Watch,
+    CommandIdentity, Format, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
+    ProbeSelection, Profile, PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy,
+    StackView, Watch,
 };
 
 mod report;
@@ -76,9 +77,9 @@ pub struct RecordArgs {
     #[arg(long, value_enum)]
     off_cpu: Option<OnOff>,
 
-    /// Hold microscope's own CPU time to PERCENT of one CPU by sampling less of
-    /// each second, over the preset's: 1 in production, and otherwise
-    /// none. 0 lifts it.
+    /// Budget sampling at PERCENT of one CPU, over the preset's: 1 in
+    /// production, otherwise none. Setup and processing after exit are
+    /// not capped. 0 lifts it.
     #[arg(long, value_name = "PERCENT")]
     budget: Option<f64>,
 
@@ -240,7 +241,7 @@ pub struct ReportArgs {
     #[arg(long, value_name = "TID", conflicts_with = "base")]
     tid: Vec<u32>,
 
-    /// Report only the samples of processes whose command line holds TEXT,
+    /// Report only processes whose command line or recorded comm holds TEXT,
     /// in the --base profile too, as `--command type=renderer`.
     #[arg(long, value_name = "TEXT")]
     command: Option<String>,
@@ -1204,15 +1205,15 @@ fn selected_threads(profile: &Profile, args: &ReportArgs, base: bool) -> Result<
     let commanded = |thread: &microscope::profiler::ProfileThread| {
         args.command.as_deref().is_none_or(|text| {
             profile
-                .command(thread.process)
-                .is_some_and(|command| command.contains(text))
+                .command_identity(thread.process)
+                .is_some_and(|command| command.text().contains(text))
         })
     };
     if let Some(text) = &args.command
         && !threads.iter().any(commanded)
     {
         anyhow::bail!(
-            "no process's command line holds {text:?}{}",
+            "no process's command line or recorded comm holds {text:?}{}",
             if base { " in the --base profile" } else { "" }
         );
     }
@@ -1301,10 +1302,14 @@ fn processes(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> 
     writeln!(out, "Processes:")?;
     writeln!(out, "{:>8} {:>7} {:>7}  command", "pid", "threads", "share")?;
     for (row, (pid, weight, threads)) in rows.iter().take(limit) {
-        let command = profile.command(*row).unwrap_or("[command line not read]");
+        let command = match profile.command_identity(*row) {
+            Some(CommandIdentity::Argv(command)) => command.to_owned(),
+            Some(CommandIdentity::Comm(name)) => format!("[comm: {name}; argv not read]"),
+            None => "[command line not read]".to_owned(),
+        };
         let command = match command.char_indices().nth(WIDEST_COMMAND) {
             Some((end, _)) => format!("{}…", &command[..end]),
-            None => command.to_owned(),
+            None => command,
         };
         writeln!(
             out,
@@ -1389,18 +1394,12 @@ fn selected_report(
 const FEWEST_JUDGED_SAMPLES: usize = 20;
 const LEAST_JUDGED_CPU: u64 = 50_000_000;
 
-/// How much of the program's CPU time the samples cover, and whether the
-/// run was long enough to judge that and what recording cost.
+/// Coverage and sampling limitations, without inferring concurrent overhead.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
 )]
-fn coverage(
-    profile: &Profile,
-    unit: &str,
-    lost: u64,
-    out: &mut impl std::io::Write,
-) -> Result<bool> {
+fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Write) -> Result<()> {
     let total = profile.total_weight();
     let seconds = |value: u64| format!("{:.3} s", value as f64 / 1e9);
     let counted = profile.counted();
@@ -1421,6 +1420,12 @@ fn coverage(
                 "The run took {}, too few to judge coverage or what recording cost.",
                 plural(profile.samples() as u64, "sample")
             )?;
+            writeln!(
+                out,
+                "CPU time is sampled per thread: short-lived threads can exit before their \
+                 first sample. Try a higher --rate or --function SYMBOL --function-period 1; \
+                 repeating short-lived threads does not guarantee coverage."
+            )?;
         } else {
             writeln!(
                 out,
@@ -1439,53 +1444,56 @@ fn coverage(
         if profile.setting("kernel") != Some("on") && total < counted / 2 && !paused && lost == 0 {
             writeln!(
                 out,
-                "Low coverage may mean most CPU time was in the kernel; record with --kernel or trace with microscope syscalls -c."
+                "Low coverage may mean CPU time was in the kernel or in short-lived threads; \
+                 record with --kernel, raise --rate, or trace with microscope syscalls -c."
             )?;
         }
     }
 
-    Ok(judged)
+    Ok(())
 }
 
-/// What recording cost microscope, and how the budget held it. Only the
-/// cost after setup is a share of a CPU, and only for a run long enough
-/// that `judged` is set.
+/// Total recorder work includes processing after the target's interval.
 #[expect(
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
 )]
-fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Result<()> {
+fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let seconds = |nanoseconds: u64| nanoseconds as f64 / 1e9;
     let (start, end) = profile.span();
     let span = u64::try_from(end - start).unwrap_or(0).max(1);
     let (used, loading) = profile.recorder_cpu();
     let setup = profile.recorder_setup().min(used);
-    let running = used - setup;
-    let share = (running as f64 / span as f64, judged);
-    let share = |before: &str, after: &str| match share {
-        (share, true) => format!("{before}{:.2}% of one CPU{after}", share * 100.0),
-        (_, false) => String::new(),
-    };
 
     if used > 0 && setup > 0 {
         writeln!(
             out,
             "Recording took {:.3} s of microscope's CPU time, {:.3} s of it reading debug \
-             information: {:.3} s starting up, and {:.3} s while the program ran{}.",
+             information: {:.3} s starting up, and {:.3} s after setup, including processing after exit.",
             seconds(used),
             seconds(loading),
             seconds(setup),
-            seconds(running),
-            share(" (", ")")
+            seconds(used - setup)
         )?;
     } else if used > 0 {
         writeln!(
             out,
-            "Recording took {:.3} s of microscope's CPU time{}, {:.3} s of it reading debug \
+            "Recording took {:.3} s of microscope's CPU time including processing after exit, {:.3} s of it reading debug \
              information.",
             seconds(used),
-            share(", ", ""),
             seconds(loading)
+        )?;
+    }
+
+    if let Some(enrichment) = profile
+        .setting("final debug enrichment cpu ns")
+        .and_then(|text| text.parse::<u64>().ok())
+    {
+        writeln!(
+            out,
+            "Of that, {:.3} s read full debug metadata after collection ended; \
+             that work did not pause sampling.",
+            seconds(enrichment)
         )?;
     }
 
@@ -1497,7 +1505,7 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
             .sum();
         writeln!(
             out,
-            "Sampling paused for {:.3} s of the {:.3} s recorded, to hold microscope to {}; \
+            "Sampling paused for {:.3} s of the {:.3} s recorded, for a sampling budget of {}; \
              the share sampled changed {}.",
             seconds(paused),
             seconds(span),
@@ -1506,15 +1514,6 @@ fn cost(profile: &Profile, judged: bool, out: &mut impl std::io::Write) -> Resul
                 1 => "once".to_owned(),
                 changes => format!("{changes} times"),
             }
-        )?;
-    } else if judged
-        && profile.setting("budget") == Some("none")
-        && running as f64 > span as f64 * Budget::PRODUCTION.cpu
-    {
-        writeln!(
-            out,
-            "That is more than --preset prod allows, which holds microscope to {}% of a CPU.",
-            Budget::PRODUCTION.cpu * 100.0
         )?;
     }
 
@@ -1591,7 +1590,7 @@ fn debug_information_notes(profile: &Profile) -> Vec<String> {
 )]
 fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     let seconds = |nanoseconds: u64| nanoseconds as f64 / 1e9;
-    let (snapshots, held, _) = profile.task_snapshots();
+    let (snapshots, held, failures) = profile.task_snapshots();
     let (live, read, changed) = profile.live_snapshots();
 
     // A profile recorded before reads were counted has none.
@@ -1639,15 +1638,15 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         )?;
     }
 
+    if failures > 0 {
+        writeln!(out, "Task snapshot failures or missed reads: {failures}.")?;
+    }
     let problems = profile.task_snapshot_problems();
     if let Some((_, first)) = problems.first() {
         writeln!(
             out,
-            "Task snapshots missed tasks {}: {first}.",
-            match problems.len() {
-                1 => "once".to_owned(),
-                times => format!("{times} times; the first time"),
-            }
+            "Task snapshot diagnostics: {}; first: {first}.",
+            plural(problems.len() as u64, "note"),
         )?;
     }
 
@@ -1829,8 +1828,8 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
         writeln!(out, "The recording kept {window} it reached.")?;
     }
 
-    let judged = coverage(profile, unit, lost, out)?;
-    cost(profile, judged, out)?;
+    coverage(profile, unit, lost, out)?;
+    cost(profile, out)?;
     snapshots(profile, out)?;
 
     off_cpu(profile, out)?;

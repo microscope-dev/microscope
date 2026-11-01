@@ -668,6 +668,17 @@ pub(crate) fn load_module_bytes(
     dwarf::load_bytes(path, data, id, search)
 }
 
+/// Loads collection metadata, returning whether unit DWARF was deferred.
+#[expect(clippy::redundant_pub_crate, reason = "shared with the recorder")]
+pub(crate) fn load_profile_module_bytes(
+    path: &Path,
+    data: &[u8],
+    id: crate::ModuleImageId,
+    search: &DebugFileSearch,
+) -> Result<(DebugInfo, bool)> {
+    dwarf::load_profile_bytes(path, data, id, search)
+}
+
 /// The Python runtime the module at `path` carries, read from its own
 /// runtime section and symbols alone: only the parts of the file they
 /// take are read, and none of its debug information.

@@ -115,7 +115,7 @@ pub fn record_watched(
         perf_source(&program, &options.source, None, options.function_period)?;
 
     name_recorder(&mut command, options);
-    let mut processor = processor(options, breakpoint);
+    let mut processor = processor(options, breakpoint, watch.every == Duration::MAX);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
         source,
@@ -243,7 +243,7 @@ pub fn record_attached(
     let bias = perf::program_bias(pid);
     let (source, breakpoint) =
         perf_source(&program, &options.source, bias, options.function_period)?;
-    let mut processor = processor(options, breakpoint);
+    let mut processor = processor(options, breakpoint, watch.every == Duration::MAX);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
         source,
@@ -542,12 +542,24 @@ impl Walker {
 }
 
 /// A processor for `options`, and for a breakpoint's repeats.
-fn processor(options: &RecordOptions, breakpoint: Option<Calls>) -> record::Processor {
+fn processor(
+    options: &RecordOptions,
+    breakpoint: Option<Calls>,
+    defer_debug: bool,
+) -> record::Processor {
     let search = crate::debug_info::DebugFileSearch::new(&crate::DebugFileOptions {
         directories: options.debug_directories.clone(),
         ..crate::DebugFileOptions::default()
     });
     let mut processor = record::Processor::new(search, options.max_frames);
+    if defer_debug
+        && options.task_snapshots.is_none()
+        && options.python.is_none()
+        && options.window.is_none()
+        && options.segment.is_none()
+    {
+        processor.defer_debug_information();
+    }
     if options.symbols_later {
         processor.symbols_later();
     }
@@ -826,6 +838,9 @@ fn drive(
         walker.finish(processor);
     }
 
+    for snapshots in &mut snapshots {
+        snapshots.finish(processor);
+    }
     processor.counts(events.counts());
 }
 
@@ -912,8 +927,10 @@ struct Snapshots {
     live: bool,
     reads: Reads,
     loading: Option<std::thread::JoinHandle<Result<Snapshotter, RecordError>>>,
+    load_error: Option<String>,
     snapshotter: Option<Snapshotter>,
     next: std::time::Instant,
+    observed: bool,
 
     /// When the last snapshot, or the recording, began.
     previous: u64,
@@ -930,8 +947,14 @@ impl Snapshots {
         let program = PathBuf::from(format!("/proc/{pid}/exe"));
         let loading = std::thread::Builder::new()
             .name("microscope-snapshot-load".into())
-            .spawn(move || Snapshotter::new(pid, &program, &debug_files))
-            .ok();
+            .spawn(move || Snapshotter::new(pid, &program, &debug_files));
+        let (loading, load_error) = match loading {
+            Ok(loading) => (Some(loading), None),
+            Err(error) => (
+                None,
+                Some(format!("cannot start task snapshot loader: {error}")),
+            ),
+        };
 
         Self {
             pid,
@@ -939,8 +962,10 @@ impl Snapshots {
             live,
             reads,
             loading,
+            load_error,
             snapshotter: None,
             next: std::time::Instant::now() + every,
+            observed: false,
             previous: monotonic(),
         }
     }
@@ -955,18 +980,11 @@ impl Snapshots {
             .saturating_duration_since(std::time::Instant::now())
     }
 
-    /// Takes a snapshot when one is due, leaving the events as `sampling`
-    /// says they were.
-    fn when_due(
-        &mut self,
-        processor: &mut record::Processor,
-        events: &perf::Events,
-        sampling: bool,
-    ) {
-        if std::time::Instant::now() < self.next {
-            return;
+    fn loaded(&mut self, processor: &mut record::Processor) {
+        if let Some(error) = self.load_error.take() {
+            processor.snapshot_failed(monotonic(), &error);
+            self.observed = true;
         }
-
         if let Some(loading) = self.loading.take_if(|loading| loading.is_finished()) {
             match loading.join() {
                 Ok(Ok(snapshotter)) => {
@@ -977,17 +995,49 @@ impl Snapshots {
                 }
 
                 Ok(Err(error)) => {
+                    self.observed = true;
                     processor.snapshot_failed(
                         monotonic(),
                         &format!("task snapshots cannot read the program: {error}"),
                     );
                 }
-                Err(_) => processor.snapshot_failed(
-                    monotonic(),
-                    "task snapshots cannot read the program: reading it panicked",
-                ),
+                Err(_) => {
+                    self.observed = true;
+                    processor.snapshot_failed(
+                        monotonic(),
+                        "task snapshots cannot read the program: reading it panicked",
+                    );
+                }
             }
         }
+    }
+
+    fn finish(&mut self, processor: &mut record::Processor) {
+        self.loaded(processor);
+        if !self.observed {
+            let why = if self.loading.is_some() {
+                "debug information was still loading"
+            } else {
+                "startup or the requested interval outlasted the recording"
+            };
+            processor.snapshot_noted(
+                monotonic(),
+                &format!("no task snapshot was taken before recording ended: {why}; record a longer interval"),
+            );
+        }
+    }
+
+    /// Takes a snapshot when one is due, leaving sampling as it was.
+    fn when_due(
+        &mut self,
+        processor: &mut record::Processor,
+        events: &perf::Events,
+        sampling: bool,
+    ) {
+        if std::time::Instant::now() < self.next {
+            return;
+        }
+        self.loaded(processor);
 
         let Some(snapshotter) = &mut self.snapshotter else {
             return;
@@ -1020,6 +1070,7 @@ impl Snapshots {
             // A program that exited, with which the recording ends, has no
             // tasks.
             if let Live::Taken(snapshot) = taken {
+                self.observed = true;
                 let end = monotonic();
                 let weight = start.saturating_sub(self.previous);
                 processor.live_task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
@@ -1062,6 +1113,7 @@ impl Snapshots {
 
         match taken {
             Ok(snapshot) => {
+                self.observed = true;
                 let weight = start.saturating_sub(self.previous);
                 processor.task_snapshot(Pid::new(self.pid), (start, end), weight, &snapshot);
                 self.previous = start;
@@ -1070,6 +1122,7 @@ impl Snapshots {
             // A program that exited is not attached to, and has no tasks.
             Err(_) if tasks::exited(self.pid) => {}
             Err(error) => {
+                self.observed = true;
                 processor.task_snapshot(Pid::new(self.pid), (start, end), 0, &Snapshot::default());
                 processor.snapshot_failed(start, &format!("a task snapshot failed: {error}"));
             }
@@ -1573,6 +1626,38 @@ fn cut(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    #[test]
+    fn a_program_ending_before_its_first_task_snapshot_explains_the_empty_result() {
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-kernel");
+        let mut command = std::process::Command::new(program);
+        command.arg("0");
+        let recording = crate::profiler::record(
+            command,
+            &super::RecordOptions {
+                task_snapshots: Some(Duration::from_secs(60)),
+                ..super::RecordOptions::default()
+            },
+        )
+        .expect("record short target");
+        assert!(recording.status.success());
+        assert_eq!(recording.profile.task_snapshots().0, 0);
+        let notes = recording.profile.task_snapshot_problems();
+        assert!(
+            notes
+                .iter()
+                .any(|(_, note)| note.contains("no task snapshot")
+                    || note.contains("cannot read the program")),
+            "{notes:?}"
+        );
+        if notes
+            .iter()
+            .any(|(_, note)| note.contains("no task snapshot"))
+        {
+            assert_eq!(recording.profile.task_snapshots().2, 0);
+        }
+    }
 
     /// Processing may be busy loading debug information longer than a
     /// small ring holds calls. Collection must keep draining meanwhile.

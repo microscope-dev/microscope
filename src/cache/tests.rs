@@ -104,6 +104,35 @@ fn an_entry_reads_back_under_the_key_of_exactly_its_inputs() {
     assert_eq!(mode & 0o777, 0o700, "the cache is its user's alone");
 }
 
+#[test]
+fn live_images_share_validated_tables_and_replacements_leave_readers_intact() {
+    let dir = ScratchDir::new("cache-live-images");
+    let cache = ImageCache::open(&dir.join("images"), DEFAULT_CAPACITY).unwrap();
+    let key = Key::of(&[b"program"]);
+    cache.put(key, &image(b"original")).unwrap();
+    let Lookup::Hit { image: first, .. } = cache.get(key) else {
+        panic!("first image");
+    };
+    let Lookup::Hit { image: second, .. } = cache.get(key) else {
+        panic!("second image");
+    };
+    assert!(std::ptr::eq(first.as_ref(), second.as_ref()));
+
+    cache.put(key, &image(b"replacement")).unwrap();
+    let Lookup::Hit {
+        image: replaced, ..
+    } = cache.get(key)
+    else {
+        panic!("replacement image");
+    };
+    assert!(!std::ptr::eq(first.as_ref(), replaced.as_ref()));
+    assert_eq!(first.as_bytes(), second.as_bytes());
+    assert_ne!(first.as_bytes(), replaced.as_bytes());
+    std::fs::write(cache.path(key), b"damaged while the image is live").unwrap();
+    assert!(matches!(cache.get(key), Lookup::Corrupt(_)));
+    assert_eq!(first.as_bytes(), second.as_bytes());
+}
+
 /// An entry damaged in any way is a miss that says why, and is removed so
 /// that the next load writes a good one.
 #[test]

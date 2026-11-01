@@ -21,13 +21,14 @@
 //! `$XDG_CACHE_HOME/microscope/images` or `~/.cache/microscope/images`, or none
 //! under nextest, whose tests choose their own.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use crate::image::backing::FileStamp;
 use crate::image::{AlignedBytes, Image, ImageError, Limits};
@@ -237,7 +238,7 @@ impl Key {
 #[derive(Debug)]
 pub enum Lookup {
     /// A valid image, and the file it was read from.
-    Hit { image: Box<Image>, stamp: FileStamp },
+    Hit { image: Arc<Image>, stamp: FileStamp },
 
     /// No entry, or none that could be read.
     Miss,
@@ -265,6 +266,7 @@ static WRITES: AtomicU64 = AtomicU64::new(0);
 pub struct ImageCache {
     directory: PathBuf,
     capacity: u64,
+    live: Mutex<HashMap<Key, (FileStamp, Weak<Image>)>>,
 }
 
 const SUFFIX: &str = ".image";
@@ -287,6 +289,7 @@ impl ImageCache {
         let cache = Self {
             directory: directory.to_owned(),
             capacity,
+            live: Mutex::default(),
         };
 
         cache.evict(capacity, true).map_err(open)?;
@@ -304,11 +307,32 @@ impl ImageCache {
         self.directory.join(format!("{key}{SUFFIX}"))
     }
 
-    /// Reads and validates the entry for `key`. One that fails validation
-    /// is removed, unless another writer replaced it meanwhile.
+    /// Shares a live validated image if its file is unchanged, otherwise
+    /// reads and validates it. Unusable entries are removed.
     #[must_use]
     pub fn get(&self, key: Key) -> Lookup {
         let path = self.path(key);
+        let held = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .and_then(|(stamp, image)| image.upgrade().map(|image| (*stamp, image)));
+        if let Some((stamp, image)) = held
+            && std::fs::metadata(&path).is_ok_and(|metadata| FileStamp::of(&metadata) == stamp)
+        {
+            crate::count!("cache_live_hits", 1);
+            return Lookup::Hit { image, stamp };
+        }
+
+        // Touch before reading so the saved stamp includes our own update.
+        let _ = nix::sys::stat::utimensat(
+            nix::fcntl::AT_FDCWD,
+            &path,
+            &nix::sys::time::TimeSpec::UTIME_NOW,
+            &nix::sys::time::TimeSpec::UTIME_NOW,
+            nix::sys::stat::UtimensatFlags::FollowSymlink,
+        );
         let (bytes, stamp) = match read_entry(&path) {
             Ok(read) => read,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Lookup::Miss,
@@ -320,18 +344,12 @@ impl ImageCache {
 
         match Image::from_bytes(bytes, Limits::default()) {
             Ok(image) => {
-                // Eviction takes the entries used longest ago first.
-                let _ = nix::sys::stat::utimensat(
-                    nix::fcntl::AT_FDCWD,
-                    &path,
-                    &nix::sys::time::TimeSpec::UTIME_NOW,
-                    &nix::sys::time::TimeSpec::UTIME_NOW,
-                    nix::sys::stat::UtimensatFlags::FollowSymlink,
-                );
-                Lookup::Hit {
-                    image: Box::new(image),
-                    stamp,
-                }
+                let image = Arc::new(image);
+                let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+                live.retain(|_, (_, image)| image.strong_count() > 0);
+                live.insert(key, (stamp, Arc::downgrade(&image)));
+                drop(live);
+                Lookup::Hit { image, stamp }
             }
             Err(error) => {
                 self.discard(key, &stamp);

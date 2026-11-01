@@ -67,11 +67,27 @@ Override individual choices with `--rate`, `--stack-bytes`, `--off-cpu`, and
 `--budget`. A higher rate or deeper stack copy increases recorder work and the
 amount of data written.
 
-The report separates microscope's startup cost from its cost while the program
-ran. Startup includes loading BPF programs with `--kernel`. Only the running
-cost is expressed as a share of one CPU and compared with `prod`'s 1% budget.
+The report separates startup from the remaining recorder CPU time, including
+processing after the target exits. Startup includes loading BPF programs with
+`--kernel`. These totals are not concurrent overhead percentages: draining and
+symbolizing a queued capture can continue beyond the target's interval. The
+sampling budget does not cap startup or final processing.
+
+For ordinary native recordings, full source/inline metadata is read after
+collection ends, only for images whose frames were recorded. Symbols and
+unwind rules are available during collection. The report separates final debug-loading
+CPU time from the total. `--symbols-later` leaves that work for a later
+symbolization command. If the original file is gone or changed and no debug
+directory has its build ID, collection symbols are kept with an explanation.
+Live watched sessions, task snapshots, interpreter/runtime images, rolling windows, and continuous
+segments retain full loading during collection.
+
+Sampling is per thread. At 49 Hz, a thread with less than about 20 ms of CPU
+time can exit before its first sample. Repeating a test by creating more short
+threads does not guarantee coverage, even with substantial aggregate CPU time.
 The report warns when a run has fewer than 20 samples or under 50 ms of CPU
-time, too little to judge cost or coverage.
+time. For short-lived work, raise `--rate` or use `--function SYMBOL
+--function-period 1` to count a known function; both increase recorder work.
 
 At every rate, the recorder drains the kernel's ring buffers separately from
 unwinding stacks, using a bounded queue. If the queue reaches three quarters
@@ -142,12 +158,14 @@ under it. `--invert` needs `--tree` and does not work with `--base`.
 
 A multi-process profile lists processes by cost, highest first, with each
 process's PID, threads, share, and command line. The recorder reads the command
-line at the first sample, including any changes the program made, such as
-Chromium's `--type=renderer`. Processes that exit before that read show
+line at lifecycle events and refreshes it at the first sample, including
+changes such as Chromium's `--type=renderer`. If the process exits before
+argv can be read, the report labels its recorded kernel name as
+`[comm: NAME; argv not read]`. Comm may be truncated or renamed; it is not
+an executable path or argument list. With neither available, the report says
 `[command line not read]`. Use `--pid PID` or `--tid TID` to select processes
-or threads; both flags repeat. `--command TEXT` selects processes whose command
-line contains TEXT. It applies the same filter to a `--base` profile, where
-PIDs may differ.
+or threads; both flags repeat. `--command TEXT` matches argv when present,
+otherwise recorded comm, including in a `--base` profile where PIDs differ.
 
 Each inlined function gets its own row. When a small inlined helper takes
 most of a loop's own time, `--fold-inlines` counts it as part of the function

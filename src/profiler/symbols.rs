@@ -131,7 +131,7 @@ fn symbolize_module(builder: &mut CaptureBuilder, module: u32, info: &DebugInfo)
 /// The debug information of the module recorded at `path` with `digest`:
 /// from that file while it holds the same bytes, and otherwise from the
 /// file its build id names.
-fn locate(
+pub(super) fn locate(
     path: &str,
     build_id: Option<&str>,
     digest: [u8; 16],

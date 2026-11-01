@@ -377,6 +377,28 @@ pub struct Profile {
     capture: Capture,
 }
 
+/// The evidence available to identify a recorded process's command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandIdentity<'a> {
+    /// Arguments read from `/proc/PID/cmdline`, joined with spaces.
+    Argv(&'a str),
+
+    /// The kernel task name, which can be renamed and is often truncated
+    /// to 15 bytes. It is not an executable path or an argument list.
+    Comm(&'a str),
+}
+
+impl<'a> CommandIdentity<'a> {
+    /// The recorded text, without a source label. Renderers must label
+    /// `Comm` explicitly rather than displaying it as argv.
+    #[must_use]
+    pub const fn text(self) -> &'a str {
+        match self {
+            Self::Argv(text) | Self::Comm(text) => text,
+        }
+    }
+}
+
 /// The query of every sample, seen as `view` shows stacks.
 fn query(view: StackView) -> Query {
     Query {
@@ -692,11 +714,37 @@ impl Profile {
         threads.into_values().collect()
     }
 
-    /// The command line of the process of row `process`, as the recorder
-    /// read it at its first sample, its arguments separated by spaces.
+    /// The command line read from `/proc` for process row `process`, with
+    /// arguments separated by spaces. Lifecycle records read it early;
+    /// the first sample refreshes it if the process is still alive.
     #[must_use]
     pub fn command(&self, process: u32) -> Option<&str> {
-        self.capture.setting(&command_setting(process))
+        self.capture
+            .setting(&command_setting(process))
+            .filter(|command| !command.is_empty())
+    }
+
+    /// The command line if read, otherwise the recorded process or leader
+    /// task name. The fallback is explicitly `Comm`, never inferred argv.
+    #[must_use]
+    pub fn command_identity(&self, process: u32) -> Option<CommandIdentity<'_>> {
+        if let Some(command) = self.command(process) {
+            return Some(CommandIdentity::Argv(command));
+        }
+
+        let record = self.capture.processes.get(process as usize)?;
+        let name = self.capture.string(record.name.get());
+        if !name.is_empty() {
+            return Some(CommandIdentity::Comm(name));
+        }
+
+        self.capture
+            .threads
+            .iter()
+            .find(|thread| thread.process.get() == process && thread.tid.get() == record.pid.get())
+            .map(|thread| self.capture.string(thread.name.get()))
+            .filter(|name| !name.is_empty())
+            .map(CommandIdentity::Comm)
     }
 
     /// How many times the kernel throttled sampling.

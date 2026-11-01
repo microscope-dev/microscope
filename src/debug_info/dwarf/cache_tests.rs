@@ -93,6 +93,100 @@ fn answers(info: &DebugInfo) -> String {
     String::from_utf8(out).unwrap()
 }
 
+#[test]
+fn collection_images_never_satisfy_full_metadata_loads() {
+    let dir = ScratchDir::new("profile-cache-domain");
+    let cache = ImageCache::open(&dir.join("images"), DEFAULT_CAPACITY).unwrap();
+    for name in ["basic", "split/basic-build-id"] {
+        let path = fixture(name);
+        let data = fs::read(&path).unwrap();
+        let search = search(&[&fixture("split/debug-root")]);
+        let profile = |cache| {
+            crate::pool::install(|| {
+                load_debug_info_kind(
+                    &path,
+                    &data,
+                    crate::ModuleImageId::new(0),
+                    &search,
+                    LoadLimits::default(),
+                    cache,
+                    LoadKind::Profile,
+                )
+            })
+            .unwrap()
+            .unwrap()
+        };
+        let (uncached, _) = profile(None);
+        let (first, outcome) = profile(Some(&cache));
+        assert_eq!(outcome, CacheOutcome::Miss);
+        let (hit, outcome) = profile(Some(&cache));
+        assert_eq!(outcome, CacheOutcome::Hit);
+        assert_eq!(uncached.image.image_bytes(), first.image.image_bytes());
+        assert_eq!(first.image.image_bytes(), hit.image.image_bytes());
+        assert!(first.image.types().next().is_none());
+        assert!(first.image.symbols_named("main").next().is_some());
+        assert!(matches!(
+            first.image.debug_information(),
+            crate::DebugInformation::Incomplete { .. }
+        ));
+
+        let (full, outcome) = load(&path, 0, &search, Some(&cache));
+        assert_eq!(
+            outcome,
+            CacheOutcome::Miss,
+            "a collection image is not a full hit"
+        );
+        assert!(full.image.types().next().is_some());
+        let (full_hit, outcome) = load(&path, 0, &search, Some(&cache));
+        assert_eq!(outcome, CacheOutcome::Hit);
+        assert_eq!(full.image.image_bytes(), full_hit.image.image_bytes());
+        let (profile_hit, outcome) = profile(Some(&cache));
+        assert_eq!(outcome, CacheOutcome::Hit);
+        assert_eq!(profile_hit.image.image_bytes(), first.image.image_bytes());
+    }
+}
+
+#[test]
+fn collection_does_not_traverse_malformed_unit_dwarf() {
+    let path = fixture("basic");
+    let mut data = fs::read(&path).unwrap();
+    let object = object::File::parse(data.as_slice()).unwrap();
+    let (start, size) = object
+        .section_by_name(".debug_info")
+        .unwrap()
+        .file_range()
+        .unwrap();
+    data[usize::try_from(start).unwrap()..usize::try_from(start + size).unwrap()].fill(0xff);
+    let search = search(&[]);
+    let read = |kind| {
+        crate::pool::install(|| {
+            load_debug_info_kind(
+                &path,
+                &data,
+                crate::ModuleImageId::new(0),
+                &search,
+                LoadLimits::default(),
+                None,
+                kind,
+            )
+        })
+        .unwrap()
+        .unwrap()
+        .0
+    };
+    let profile = read(LoadKind::Profile);
+    assert!(profile.image.symbols_named("main").next().is_some());
+    assert!(matches!(
+        profile.image.debug_information(),
+        crate::DebugInformation::Incomplete { .. }
+    ));
+    let full = read(LoadKind::Full);
+    assert!(matches!(
+        full.image.debug_information(),
+        crate::DebugInformation::Unusable { .. }
+    ));
+}
+
 /// A load that hits the cache reads the bytes the load that missed wrote,
 /// and answers every question as a load without a cache does, whether the
 /// image came from the program's own file, a separate debug file, or one

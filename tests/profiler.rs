@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Attachment, CallNode, DEEP_STACK_COPY, GapReason, Granularity, MarkerKind, Preset,
-    ProbeSelection, Profile, Query, RecordError, RecordOptions, SMALL_STACK_COPY, SampleSource,
-    SampledStack, Save, StackCopy, StackEnding, StackView, Watch, record, record_attached,
-    record_watched,
+    Attachment, CallNode, CommandIdentity, DEEP_STACK_COPY, GapReason, Granularity, MarkerKind,
+    Preset, ProbeSelection, Profile, Query, RecordError, RecordOptions, SMALL_STACK_COPY,
+    SampleSource, SampledStack, Save, StackCopy, StackEnding, StackView, Watch, record,
+    record_attached, record_watched,
 };
+use nix::sys::time::TimeValLike as _;
 use support::Scenario;
 
 /// The profile-stacks fixture across languages, compilers, optimization,
@@ -911,6 +912,11 @@ fn a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span() {
 /// directory they are written to reads as all of them at once.
 #[test]
 fn segments_tile_a_recording_and_read_back_as_one() {
+    let process_cpu = || {
+        nix::time::clock_gettime(nix::time::ClockId::CLOCK_PROCESS_CPUTIME_ID)
+            .expect("process CPU clock")
+            .num_nanoseconds()
+    };
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("profile-phases"));
     command
@@ -927,6 +933,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
 
     // The first segment that saw the helper thread wait to be released.
     let mut blocked = None;
+    let began = process_cpu();
     let recording = record_watched(
         command,
         &options,
@@ -953,6 +960,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
         },
     )
     .expect("record");
+    let spent = u64::try_from(process_cpu() - began).expect("ordered CPU clock");
     assert!(recording.status.success(), "{}", recording.status);
     segments.push(recording.profile);
     assert!(segments.len() > 4, "{}", segments.len());
@@ -978,16 +986,6 @@ fn segments_tile_a_recording_and_read_back_as_one() {
                 && interval.time + i64::try_from(interval.duration).expect("short") <= end
         }));
 
-        // microscope records on one thread, which runs no longer than a span,
-        // give or take where the cut fell between drains; the first also
-        // holds what came before the program's first record.
-        let span = u64::try_from(end - start).expect("ordered");
-        let (recorder, _) = segment.recorder_cpu();
-        assert!(
-            number == 0 || recorder <= span + 20_000_000,
-            "segment {number} took {recorder} ns of microscope's CPU time in {span}"
-        );
-
         segment
             .write_segment(scratch.path(), Duration::from_hours(1))
             .expect("write the segment");
@@ -1012,6 +1010,12 @@ fn segments_tile_a_recording_and_read_back_as_one() {
     );
     assert_eq!(all.counted(), sum(Profile::counted));
 
+    // Reader and loader workers run beside the processor: bound their sum
+    // by process CPU, not elapsed time.
+    let recorder = sum(|profile| profile.recorder_cpu().0);
+    assert!(recorder > 0 && recorder <= spent, "{recorder} / {spent}");
+    assert_eq!(all.recorder_cpu().0, recorder);
+
     let off_cpu = |profile: &Profile| {
         profile
             .off_cpu()
@@ -1027,10 +1031,8 @@ fn segments_tile_a_recording_and_read_back_as_one() {
     );
 
     let functions = on_stacks(&all);
-    assert!(
-        functions.contains("first") && functions.contains("second"),
-        "{functions:?}"
-    );
+    assert!(functions.contains("first"), "{functions:?}");
+    assert!(functions.contains("second"), "{functions:?}");
 }
 
 /// Writing a segment deletes each segment that ended longer ago than is
@@ -1968,15 +1970,25 @@ fn a_forked_child_is_sampled_through_the_mappings_it_inherits() {
     // The child never executes a program or names itself, so the kernel
     // writes no name for it: it keeps the name of the thread that forked
     // it, as /proc shows.
+    let profile = Profile::from_bytes(&recording.profile.to_bytes().unwrap())
+        .unwrap()
+        .profile;
     for pid in pids {
-        let names: Vec<Option<String>> = recording
-            .profile
-            .threads()
-            .into_iter()
-            .filter(|thread| thread.pid == pid)
-            .map(|thread| thread.name)
-            .collect();
+        let threads = profile.threads();
+        let threads: Vec<_> = threads.iter().filter(|thread| thread.pid == pid).collect();
+        let names: Vec<_> = threads.iter().map(|thread| thread.name.clone()).collect();
         assert_eq!(names, [Some("fork".to_owned())], "process {pid}");
+        let process = threads[0].process;
+        match profile.command_identity(process).expect("command identity") {
+            CommandIdentity::Argv(argv) => {
+                assert_eq!(profile.command(process), Some(argv));
+                assert_eq!(std::path::Path::new(argv).file_name().unwrap(), "fork");
+            }
+            CommandIdentity::Comm(comm) => {
+                assert_eq!(profile.command(process), None);
+                assert_eq!(comm, "fork");
+            }
+        }
     }
 }
 

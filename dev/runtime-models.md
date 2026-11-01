@@ -279,6 +279,13 @@ finds each task's root future. Walking nested future fields reconstructs the
 await chain. The walker follows type and layout facts; it does not scan the
 heap for values that look like futures.
 
+Tokio has no process-wide runtime registry. Discovery starts at each thread's
+`CONTEXT` and follows its current runtime handle. A runtime no thread has
+entered, or an inactive `LocalSet` no known future reaches, may hold tasks
+that cannot be discovered. An empty enumeration is not proof that the process
+has no tasks. The debugger permits an empty list before runtime startup;
+an explicitly requested profile snapshot reports when it discovers none.
+
 A task can be running, scheduled, idle, completed, or in a state the current
 runtime provider does not understand. A running task can join its logical
 future chain to a native worker stack. A parked task may have only its future

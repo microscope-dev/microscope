@@ -116,6 +116,12 @@ pub enum Sites {
     Static(CallSites, Option<String>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DebugLoading {
+    Full,
+    AfterCollection,
+}
+
 /// A module file the recording mapped, loaded once for every mapping.
 struct Image {
     /// `None` when its debug information could not be read: its frames
@@ -135,6 +141,9 @@ struct Image {
     /// recorded, and its frames outside every function it names are frames
     /// of no module.
     anonymous: bool,
+
+    /// The file identity for full metadata deferred until collection ends.
+    deferred: Option<([u8; 16], Option<String>)>,
 
     /// Whether it is code a runtime generated, as V8's compiled
     /// JavaScript, which the runtime's frames run.
@@ -207,8 +216,8 @@ struct ProcessState {
     /// How many times the process has exec'd.
     execs: u64,
 
-    /// Whether its command line has been read since it began or last
-    /// exec'd.
+    /// Whether its command line has been refreshed at its first sample
+    /// since it began or last exec'd.
     command_read: bool,
     threads: BTreeSet<Tid>,
     jit: Jit,
@@ -342,6 +351,9 @@ pub struct Processor {
     /// Whether frames are left for a viewer to symbolize.
     symbols_later: bool,
 
+    /// Ordinary native collection reads no unit DWARF on the sample path.
+    debug_loading: DebugLoading,
+
     /// The BPF engine's Python frames, when it runs, and the record of
     /// them paired with the sample being processed.
     interpreted: Option<Interpreted>,
@@ -406,6 +418,7 @@ impl Processor {
             stacks: Stacks::default(),
             triggered: false,
             symbols_later: false,
+            debug_loading: DebugLoading::Full,
             interpreted: None,
             paired: None,
         }
@@ -538,6 +551,8 @@ impl Processor {
         if let Some(name) = name(format!("/proc/{pid}/comm")) {
             self.builder.process_name(process, &name);
         }
+
+        self.read_command(pid, at);
 
         if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
             let mut tids: Vec<Tid> = tasks
@@ -813,6 +828,14 @@ impl Processor {
                     self.probes_executed.insert(pid);
                     let process = self.builder.process(pid, at);
                     self.builder.process_name(process, &name);
+                    self.builder.setting(&super::command_setting(process), "");
+                } else if tid == pid.leader() {
+                    let process = self.builder.process(pid, at);
+                    self.builder.process_name(process, &name);
+                }
+
+                if exec || tid == pid.leader() {
+                    self.read_command(pid, at);
                 }
             }
             decode::Record::Fork {
@@ -877,17 +900,11 @@ impl Processor {
         }
     }
 
-    /// Keeps the command line of process `pid` the first time it is
-    /// sampled, when a program that rewrites its own, as Chromium's
-    /// processes do with their role, has done so. A process gone by then
-    /// has none.
+    /// Reads argv at lifecycle records, before a short-lived process may
+    /// exit. The first sample refreshes it for programs that rewrite argv,
+    /// as Chromium does to name each process's role.
     fn read_command(&mut self, pid: Pid, time: i64) {
-        let state = self.processes.entry(pid).or_default();
-        if std::mem::replace(&mut state.command_read, true) {
-            return;
-        }
-
-        // A process that began after the sample took its pid since.
+        // A process that began after the record took its pid since.
         if !began_by(pid.get(), time) {
             return;
         }
@@ -928,6 +945,9 @@ impl Processor {
         // names itself; until then it has its maker's.
         let thread = self.thread(pid, tid, at);
         self.builder.inherit_name(thread, maker);
+        if tid == pid.leader() && pid != parent {
+            self.read_command(pid, at);
+        }
     }
 
     fn thread(&mut self, pid: Pid, tid: Tid, time: i64) -> u32 {
@@ -1104,9 +1124,17 @@ impl Processor {
         let module =
             self.builder
                 .module(&path.to_string_lossy(), build_id.as_deref(), digest, size);
-        let info = data.and_then(|data| {
-            crate::debug_info::load_module_bytes(path, &data, id, &self.search).ok()
+        let loaded = data.and_then(|data| {
+            if self.debug_loading == DebugLoading::AfterCollection && path.is_absolute() {
+                crate::debug_info::load_profile_module_bytes(path, &data, id, &self.search).ok()
+            } else {
+                crate::debug_info::load_module_bytes(path, &data, id, &self.search)
+                    .ok()
+                    .map(|info| (info, false))
+            }
         });
+        let deferred = loaded.as_ref().is_some_and(|(_, deferred)| *deferred);
+        let info = loaded.map(|(info, _)| info);
 
         let probes = match probes {
             Some(Ok(table)) => table.map(Arc::new),
@@ -1133,6 +1161,7 @@ impl Processor {
         // inlines and names, as split DWARF whose `.dwo` files are gone
         // does; leaving out locals costs it nothing.
         if let Some(info) = &info
+            && !deferred
             && let crate::DebugInformation::Incomplete { reason } = info.image.debug_information()
             && info.image.locals_left_out().as_deref() != Some(&*reason)
         {
@@ -1152,6 +1181,7 @@ impl Processor {
             module,
             probes,
             anonymous: false,
+            deferred: deferred.then_some((digest, build_id)),
             generated: false,
             code_keepers: std::sync::OnceLock::new(),
             copied: None,
@@ -1423,6 +1453,7 @@ impl Processor {
             module,
             probes: None,
             anonymous: true,
+            deferred: None,
             generated: false,
             code_keepers: std::sync::OnceLock::new(),
             copied: None,
@@ -1789,7 +1820,10 @@ impl Processor {
         let kernel = self.kernel_leaf(sample);
         let time = sample.time.cast_signed();
         let thread = self.thread(sample.pid, sample.tid, time);
-        self.read_command(sample.pid, time);
+        let state = self.processes.entry(sample.pid).or_default();
+        if !std::mem::replace(&mut state.command_read, true) {
+            self.read_command(sample.pid, time);
+        }
         self.registers.clear();
         self.registers.extend(
             decode::DWARF_REGISTERS
@@ -2128,6 +2162,9 @@ impl Processor {
     pub fn snapshot(&mut self) -> Capture {
         self.symbolize_new();
         let mut builder = self.builder.clone();
+        if self.images.iter().any(|image| image.deferred.is_some()) {
+            builder.setting("symbols", "later");
+        }
         self.close(&mut builder, self.latest);
         self.cut(&mut builder);
         builder.finish()
@@ -2137,6 +2174,9 @@ impl Processor {
     pub fn finish(mut self) -> Capture {
         // Everything held back is processed now.
         self.ingest(&[], None);
+        if !self.symbols_later {
+            self.enrich();
+        }
         self.symbolize_new();
         let mut builder = std::mem::take(&mut self.builder);
         self.close(&mut builder, self.latest);
@@ -2414,9 +2454,13 @@ impl Processor {
         self.tasks(pid, (start, end), weight, snapshot);
     }
 
-    /// Records a snapshot's tasks and problems.
+    /// Records a snapshot's tasks, notes, and problems.
     fn tasks(&mut self, pid: Pid, (start, end): (u64, u64), weight: u64, snapshot: &Snapshot) {
         self.builder.count(AccountKind::Snapshots as u32, 1);
+        for note in &snapshot.notes {
+            self.snapshot_noted(start, note);
+        }
+
         if let Some(first) = snapshot.problems.first() {
             let more = snapshot.problems.len() - 1;
             let text = match more {
@@ -2697,6 +2741,60 @@ impl Processor {
         self.builder.setting("symbols", "later");
     }
 
+    /// Keeps full metadata off ordinary native collection's critical path.
+    pub const fn defer_debug_information(&mut self) {
+        self.debug_loading = DebugLoading::AfterCollection;
+    }
+
+    fn enrich(&mut self) {
+        if !self.images.iter().any(|image| image.deferred.is_some()) {
+            return;
+        }
+        let began = self.own_cpu();
+        let sampled: BTreeSet<u32> = self
+            .builder
+            .frames()
+            .iter()
+            .filter(|frame| frame.kind == FrameKind::Native as u8)
+            .map(|frame| frame.module.get())
+            .collect();
+        for image in &mut self.images {
+            if !sampled.contains(&image.module) {
+                continue;
+            }
+            let Some((digest, build_id)) = image.deferred.take() else {
+                continue;
+            };
+            let Some(info) = &image.info else { continue };
+            let path = info.image.path().to_string_lossy().into_owned();
+            match super::symbols::locate(&path, build_id.as_deref(), digest, image.id, &self.search)
+            {
+                Ok((_, info)) => {
+                    if let crate::DebugInformation::Incomplete { reason } =
+                        info.image.debug_information()
+                        && info.image.locals_left_out().as_deref() != Some(&*reason)
+                    {
+                        self.builder.setting(
+                            &format!("debug information {path}"),
+                            &format!("incomplete: {reason}"),
+                        );
+                    }
+                    image.info = Some(info);
+                }
+                Err(why) => self.builder.setting(
+                    &format!("debug information {path}"),
+                    &format!("final metadata unavailable: {why}; keeping collection symbols"),
+                ),
+            }
+        }
+        let used = self.own_cpu().saturating_sub(began);
+        self.loading += used;
+        self.builder.setting(
+            "final debug enrichment cpu ns",
+            &used.as_nanos().to_string(),
+        );
+    }
+
     /// Gives each frame not yet symbolized its lines, and the capture its
     /// span so far.
     fn symbolize_new(&mut self) {
@@ -2713,7 +2811,9 @@ impl Processor {
             .images
             .iter()
             .enumerate()
-            .filter(|(_, image)| image.anonymous || !self.symbols_later)
+            .filter(|(_, image)| {
+                image.anonymous || (!self.symbols_later && image.deferred.is_none())
+            })
             .map(|(index, image)| (image.module, index))
             .collect();
         if images.is_empty() {
@@ -2981,6 +3081,180 @@ pub use crate::backend::perf::sys::thread_cpu;
 mod tests {
     use super::*;
 
+    #[test]
+    fn command_is_captured_at_comm_before_any_sample() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(std::process::id());
+        let expected = std::fs::read(format!("/proc/{pid}/cmdline"))
+            .unwrap()
+            .split(|byte| *byte == 0)
+            .filter(|argument| !argument.is_empty())
+            .map(String::from_utf8_lossy)
+            .collect::<Vec<_>>()
+            .join(" ");
+        processor.process(decode::Record::Comm {
+            pid,
+            tid: pid.leader(),
+            name: b"test runner",
+            exec: true,
+            time: super::super::session::monotonic(),
+        });
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        assert_eq!(profile.command(0), Some(expected.as_str()));
+        assert_eq!(
+            profile.command_identity(0),
+            Some(super::super::CommandIdentity::Argv(&expected))
+        );
+    }
+
+    #[test]
+    fn command_is_captured_at_fork_before_any_sample() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(std::process::id());
+        processor.process(decode::Record::Fork {
+            pid,
+            ppid: Pid::new(1),
+            tid: pid.leader(),
+            ptid: Tid::new(1),
+            time: super::super::session::monotonic(),
+        });
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        assert!(profile.command(0).is_some());
+    }
+
+    #[test]
+    fn command_from_before_exec_is_not_kept_when_the_new_program_is_gone() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(u32::MAX);
+        let process = processor.builder.process(pid, 1_000);
+        processor
+            .builder
+            .setting(&super::super::command_setting(process), "old program --old");
+        processor.process(decode::Record::Comm {
+            pid,
+            tid: pid.leader(),
+            name: b"new program",
+            exec: true,
+            time: 2_000,
+        });
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        assert_eq!(profile.command(process), None);
+        let read = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
+            .unwrap()
+            .profile;
+        assert_eq!(
+            read.command_identity(process),
+            Some(super::super::CommandIdentity::Comm("new program"))
+        );
+    }
+
+    #[test]
+    fn command_identity_uses_only_the_process_or_leader_comm() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(u32::MAX);
+        processor.process(decode::Record::Comm {
+            pid,
+            tid: Tid::new(123),
+            name: b"worker role",
+            exec: false,
+            time: 1_000,
+        });
+        let worker_only = super::super::Profile {
+            capture: processor.snapshot(),
+        };
+        assert_eq!(worker_only.command_identity(0), None);
+
+        processor.process(decode::Record::Comm {
+            pid,
+            tid: pid.leader(),
+            name: b"truncated-comm-",
+            exec: false,
+            time: 2_000,
+        });
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        let read = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
+            .unwrap()
+            .profile;
+        assert_eq!(read.command(0), None);
+        assert_eq!(
+            read.command_identity(0),
+            Some(super::super::CommandIdentity::Comm("truncated-comm-"))
+        );
+        assert_eq!(read.command_identity(1), None);
+    }
+
+    #[test]
+    fn command_identity_of_a_fork_without_exec_uses_the_inherited_leader_comm() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let parent = Pid::new(u32::MAX - 1);
+        let child = Pid::new(u32::MAX);
+        processor.process(decode::Record::Comm {
+            pid: parent,
+            tid: parent.leader(),
+            name: b"parent name",
+            exec: true,
+            time: 1_000,
+        });
+        processor.process(decode::Record::Fork {
+            pid: child,
+            ppid: parent,
+            tid: child.leader(),
+            ptid: parent.leader(),
+            time: 2_000,
+        });
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        assert_eq!(profile.command(1), None);
+        assert_eq!(
+            profile.command_identity(1),
+            Some(super::super::CommandIdentity::Comm("parent name"))
+        );
+    }
+
+    #[test]
+    fn command_is_refreshed_at_the_first_sample_only() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(std::process::id());
+        let time = super::super::session::monotonic();
+        processor.process(decode::Record::Comm {
+            pid,
+            tid: pid.leader(),
+            name: b"test runner",
+            exec: true,
+            time,
+        });
+        processor.builder.setting("command 0", "earlier argv");
+
+        let mut bytes = 9_u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&72_u16.to_le_bytes());
+        for word in [0, u64::from(pid.get()) * 0x1_0000_0001, time, 0, 1, 0, 0, 0] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        processor.process(decode::next(&bytes).unwrap().unwrap().0);
+        let profile = super::super::Profile {
+            capture: processor.snapshot(),
+        };
+        assert!(profile.command(0).is_some());
+        assert_ne!(profile.command(0), Some("earlier argv"));
+
+        processor.builder.setting("command 0", "later argv");
+        processor.process(decode::next(&bytes).unwrap().unwrap().0);
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        assert_eq!(profile.command(0), Some("later argv"));
+    }
+
     /// What the loader's workers spend is the recording's cost too, though
     /// the processor only waits for it: loading a JIT compiler's objects
     /// once cost seconds of their CPU time that no report counted.
@@ -3062,6 +3336,47 @@ mod tests {
                 prop_assert_eq!(holding.first().map(|piece| (piece.image, piece.loaded)), expected, "page {}", page);
             }
         }
+    }
+
+    #[test]
+    fn task_snapshot_notes_are_kept_without_counting_as_failures() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let pid = Pid::new(7);
+        processor.task_snapshot(
+            pid,
+            (1_000, 1_100),
+            100,
+            &Snapshot {
+                notes: vec!["first note".to_owned(), "second note".to_owned()],
+                ..Snapshot::default()
+            },
+        );
+        processor.live_task_snapshot(
+            pid,
+            (2_000, 2_100),
+            100,
+            &Snapshot {
+                notes: vec!["live note".to_owned()],
+                problems: vec!["read failed".to_owned()],
+                ..Snapshot::default()
+            },
+        );
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        let profile = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
+            .unwrap()
+            .profile;
+        assert_eq!(profile.task_snapshots(), (2, 100, 1));
+        assert_eq!(
+            profile.task_snapshot_problems(),
+            [
+                (1_000, "first note".to_owned()),
+                (1_000, "second note".to_owned()),
+                (2_000, "live note".to_owned()),
+                (2_000, "read failed".to_owned()),
+            ]
+        );
     }
 
     #[test]

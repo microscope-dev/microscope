@@ -58,6 +58,22 @@ Collection and processing are separate. The collector owns perf resources and
 reads event buffers. The processor validates records, tracks mappings and
 threads, reconstructs stacks, and appends normalized capture rows.
 
+Ordinary native recordings load symbols and unwind information during
+collection, deferring unit DWARF until finishing. These images use a separate
+cache domain; they never satisfy a debugger's full-image lookup. Final
+enrichment loads only images referenced by native frames and verifies their
+recorded digest or build ID through the ordinary symbolization locator.
+Missing/replaced files keep their collection symbols with a diagnostic. Its
+CPU time is included in recorder loading and separately recorded as
+`final debug enrichment cpu ns`.
+
+Task snapshots, interpreter recording, runtime images (Go, CPython, V8),
+live watched sessions, rolling windows, and segmented recordings retain full
+loading. Anonymous/JIT code stays eagerly symbolized. Internal snapshots leave
+deferred frames without lines and mark symbols as later; final enrichment must
+not be invoked from a snapshot or permanently seal symbol-only lines before
+enrichment.
+
 For clock and breakpoint sources, a reader thread drains the rings into a queue
 while the processor works (`Events::read_while`). A low rate fills a ring
 slowly, but loading a program's debug information or its JIT code can keep
@@ -272,6 +288,14 @@ through the debug information the recorder loaded for the mapping. Facts that
 only a stop would give, such as a thread's thread pointer, come from memory
 instead, here from glibc's `_thread_db` descriptors and its lists of threads,
 or the tasks that need them are left out with the reason.
+
+Task snapshots require the program's debug information and, for live reads,
+the recorded mappings and their debug information. Loading runs beside the
+program, so a short run can end before the first snapshot. A longer interval
+between snapshots does not make discovery ready sooner. Check the report's
+snapshot count before interpreting an empty waits report. A snapshot that
+enumerates no tasks reports that fact unless a more specific discovery
+problem already explains it; it does not claim that the program has none.
 
 Snapshots connect sampled native activity with task identities and record
 where parked tasks wait. They do not rewrite the native sample. Analysis can

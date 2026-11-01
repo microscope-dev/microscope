@@ -6486,9 +6486,7 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
     );
 }
 
-/// Starting the recorder costs the same however long the program runs, so
-/// only the cost while it ran is a share of a CPU, and a run too short to
-/// judge gets no share or coverage hint at all.
+/// Recorder totals include work after exit, not just concurrent overhead.
 #[test]
 fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
     let scratch = support::ScratchDir::new("cli-recorder-cost");
@@ -6534,6 +6532,8 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
         "{sparse}"
     );
     assert!(!sparse.contains("too little"), "{sparse}");
+    assert!(sparse.contains("short-lived threads"), "{sparse}");
+    assert!(sparse.contains("--rate"), "{sparse}");
 
     let long = report(
         "long.usprof",
@@ -6546,8 +6546,12 @@ fn recorder_cost_keeps_starting_up_apart_and_short_runs_unjudged() {
         .find(|line| line.starts_with("Recording took"))
         .unwrap_or_default();
     assert!(cost.contains(" s starting up, and "), "{long}");
-    assert!(cost.contains(" s while the program ran ("), "{long}");
-    assert!(cost.ends_with("% of one CPU)."), "{long}");
+    assert!(
+        cost.contains(" s after setup, including processing after exit"),
+        "{long}"
+    );
+    assert!(!long.contains("while the program ran ("), "{long}");
+    assert!(!long.contains("of one CPU"), "{long}");
 }
 
 /// The report of a recording of CPython 3.14 running `source`, recorded
@@ -6963,7 +6967,8 @@ fn report_lists_processes_and_selects_them() {
     let none = microscope(&["report", &path, "--command", "no such program"]);
     assert!(!none.status.success());
     assert!(
-        String::from_utf8_lossy(&none.stderr).contains("no process's command line holds"),
+        String::from_utf8_lossy(&none.stderr)
+            .contains("no process's command line or recorded comm holds"),
         "{}",
         String::from_utf8_lossy(&none.stderr)
     );

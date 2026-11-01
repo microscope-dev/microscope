@@ -191,6 +191,10 @@ pub struct Snapshot {
     /// why.
     pub problems: Vec<String>,
 
+    /// Discovery results that do not prove a read failed, such as finding
+    /// no tasks in a program that may legitimately have none.
+    pub notes: Vec<String>,
+
     /// How many waiting tasks, or threads, a live snapshot left out
     /// because they changed while it read them.
     pub changed: u64,
@@ -206,6 +210,18 @@ pub struct Snapshot {
     /// mapped, which a lost mapping record leaves unmapped: the recording
     /// maps it for the reads after.
     pub unmapped_code: Vec<u64>,
+}
+
+impl Snapshot {
+    fn note_empty_tasks(&mut self, seen: usize) {
+        if seen == 0 && self.problems.is_empty() && self.notes.is_empty() {
+            self.notes.push(
+                "no tasks were discovered; the program may have none, or its runtime may be \
+                 unsupported or unreachable at this snapshot"
+                    .to_owned(),
+            );
+        }
+    }
 }
 
 /// Takes snapshots of one process.
@@ -566,7 +582,10 @@ async fn read_tasks(
                     .push(format!("only the first {MOST_TASKS} tasks were read"));
                 return Ok(());
             }
-            None => return Ok(()),
+            None => {
+                snapshot.note_empty_tasks(seen);
+                return Ok(());
+            }
         }
     }
 }
@@ -812,6 +831,7 @@ impl Snapshotter {
             })
             .collect::<Vec<_>>();
         let mut unlearned = BTreeSet::new();
+        let mut seen = 0;
 
         // A copy of a module's code, as V8's of its builtins, runs the
         // module's runtime, which the module itself reads.
@@ -847,7 +867,7 @@ impl Snapshotter {
                         };
 
                         if reads.tasks {
-                            live.read(&mut snapshot);
+                            seen += live.read(&mut snapshot);
                         }
 
                         if reads.threads {
@@ -874,6 +894,10 @@ impl Snapshotter {
             snapshot.problems.push(format!(
                 "the tasks of threads {threads} are not read: their thread pointers are unknown: {why}"
             ));
+        }
+
+        if reads.tasks {
+            snapshot.note_empty_tasks(seen);
         }
 
         if exited(self.pid) {
@@ -1287,15 +1311,17 @@ struct LiveRuntime<'a> {
 
 impl LiveRuntime<'_> {
     /// Adds the runtime's tasks, and where those that wait wait, to
-    /// `snapshot`.
-    fn read(&self, snapshot: &mut Snapshot) {
+    /// `snapshot`, returning how many tasks were discovered.
+    fn read(&self, snapshot: &mut Snapshot) -> usize {
         let noun = self.model.task_noun();
         let mut start = 0;
+        let mut seen = 0;
         loop {
             let page = self.model.tasks(self.stop, start, 256, false);
             snapshot
                 .problems
                 .extend(page.gaps.iter().map(ToString::to_string));
+            seen += page.value.tasks.len();
 
             for task in &page.value.tasks {
                 let labels = label_text(&task.labels);
@@ -1333,9 +1359,9 @@ impl LiveRuntime<'_> {
                     snapshot
                         .problems
                         .push(format!("only the first {MOST_TASKS} tasks were read"));
-                    return;
+                    return seen;
                 }
-                None => return,
+                None => return seen,
             }
         }
     }
@@ -1699,6 +1725,74 @@ const fn live_waits(task: &runtime_model::RuntimeTask) -> bool {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn empty_discovery_preserves_specific_problems_and_counts_unlocated_tasks() {
+        let mut snapshot = super::Snapshot::default();
+        snapshot.note_empty_tasks(1);
+        assert!(
+            snapshot.notes.is_empty(),
+            "a running task may have no object or wait"
+        );
+
+        snapshot
+            .problems
+            .push("tokio's context is unreadable".into());
+        snapshot.note_empty_tasks(0);
+        assert_eq!(snapshot.problems, ["tokio's context is unreadable"]);
+        assert!(snapshot.notes.is_empty());
+
+        snapshot.problems.clear();
+        snapshot.note_empty_tasks(0);
+        snapshot.note_empty_tasks(0);
+        assert!(snapshot.problems.is_empty());
+        assert_eq!(snapshot.notes.len(), 1);
+        assert!(snapshot.notes[0].contains("no tasks were discovered"));
+    }
+
+    #[test]
+    fn a_live_task_snapshot_without_a_discoverable_runtime_says_so() {
+        let program =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/basic");
+        let info = crate::debug_info::load_module(
+            &program,
+            crate::ModuleImageId::new(0),
+            &crate::debug_info::DebugFileSearch::default(),
+        )
+        .unwrap();
+        let loaded = crate::LoadedModule {
+            id: crate::ModuleId::new(0),
+            image: info.image.id(),
+            load_bias: crate::LoadBias::default(),
+            window: None,
+        };
+        let modules = [(loaded, info)];
+        let mut snapshotter = super::Snapshotter::new(
+            std::process::id(),
+            &program,
+            &crate::DebugFileOptions::default(),
+        )
+        .unwrap();
+        for tasks in [false, true] {
+            let super::Live::Taken(snapshot) = snapshotter.take_live(
+                super::Reads {
+                    tasks,
+                    threads: false,
+                },
+                &modules,
+                &[],
+            ) else {
+                panic!("the test process is alive");
+            };
+            assert!(snapshot.located.is_empty());
+            assert!(snapshot.waiting.is_empty());
+            assert!(snapshot.problems.is_empty(), "{snapshot:?}");
+            assert_eq!(snapshot.notes.len(), usize::from(tasks), "{snapshot:?}");
+            if tasks {
+                assert!(snapshot.notes[0].contains("no tasks were discovered"));
+            }
+        }
+    }
 
     /// A stop read through blocks hands them to the runtime models that
     /// read it, as naming sampled JavaScript frames does: what a model

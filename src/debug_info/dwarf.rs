@@ -900,6 +900,39 @@ pub fn load_bytes(
     load_bytes_on_pool(path, data, image_id, search, crate::cache::current(), false)
 }
 
+/// Native recording needs symbols and unwind rules, not unit DWARF.
+/// Runtime images retain their full metadata. The bool identifies deferral.
+pub fn load_profile_bytes(
+    path: &Path,
+    data: &[u8],
+    image_id: crate::ModuleImageId,
+    search: &super::DebugFileSearch,
+) -> Result<(DebugInfo, bool)> {
+    let _load = crate::span!("load", "{}", path.display());
+    let object = parse_object(data).map_err(Error::debug_info)?;
+    let runtime = super::cpython::carries_runtime(&object)
+        || super::cpython::is_asyncio(&object)
+        || super::v8::carries_runtime(&object)
+        || !matches!(super::gopclntab::load(&object), Ok(None));
+    if runtime {
+        return load_bytes(path, data, image_id, search).map(|info| (info, false));
+    }
+    crate::pool::install(|| {
+        load_debug_info_kind(
+            path,
+            data,
+            image_id,
+            search,
+            LoadLimits::default(),
+            crate::cache::current(),
+            LoadKind::Profile,
+        )
+    })
+    .map_err(Error::debug_info)?
+    .map(|(info, _)| (info, true))
+    .map_err(Error::debug_info)
+}
+
 /// Loads the debug information of an image that lives only as long as a
 /// process keeps it in memory, as a JIT compiler's objects do, which no
 /// other session would read from the cache.
@@ -976,6 +1009,24 @@ fn load_debug_info(
     limits: LoadLimits,
     cache: Option<&crate::cache::ImageCache>,
 ) -> std::result::Result<(DebugInfo, CacheOutcome), DwarfError> {
+    load_debug_info_kind(path, data, image_id, search, limits, cache, LoadKind::Full)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadKind {
+    Full,
+    Profile,
+}
+
+fn load_debug_info_kind(
+    path: &Path,
+    data: &[u8],
+    image_id: crate::ModuleImageId,
+    search: &super::DebugFileSearch,
+    limits: LoadLimits,
+    cache: Option<&crate::cache::ImageCache>,
+    kind: LoadKind,
+) -> std::result::Result<(DebugInfo, CacheOutcome), DwarfError> {
     let object = parse_object(data)?;
     check_object(&object)?;
     let phase = crate::span!("separate_debug_file");
@@ -985,14 +1036,18 @@ fn load_debug_info(
     } = search.find(path, &object);
 
     // The supplementary file is named by whichever file holds the DWARF.
-    let supplementary = separate.as_ref().map_or_else(
-        || search.supplementary(path, &object),
-        |file| {
-            object::File::parse(file.data.as_slice()).map_or(Supplementary::None, |debug| {
-                search.supplementary(&file.path, &debug)
-            })
-        },
-    );
+    let supplementary = if kind == LoadKind::Profile {
+        Supplementary::None
+    } else {
+        separate.as_ref().map_or_else(
+            || search.supplementary(path, &object),
+            |file| {
+                object::File::parse(file.data.as_slice()).map_or(Supplementary::None, |debug| {
+                    search.supplementary(&file.path, &debug)
+                })
+            },
+        )
+    };
     drop(phase);
     let binding = Binding {
         path: Arc::new(path.to_owned()),
@@ -1015,6 +1070,7 @@ fn load_debug_info(
             rejected.as_ref(),
             supplementary,
             limits,
+            kind,
         )
     };
 
@@ -1028,6 +1084,9 @@ fn load_debug_info(
 
     let phase = crate::span!("cache.read");
     let mut inputs = vec![data];
+    if kind == LoadKind::Profile {
+        inputs.push(b"native-recording-without-unit-dwarf-v1");
+    }
     inputs.extend(separate.as_ref().map(|file| file.data.as_slice()));
 
     // A rejected file's reason is recorded, so its bytes key the image too.
@@ -1038,14 +1097,18 @@ fn load_debug_info(
 
     // So are the `.dwo` files split DWARF keeps its units in, as found now.
     let dwarf_data = separate.as_ref().map_or(data, |file| file.data.as_slice());
-    let split = object::File::parse(dwarf_data)
-        .ok()
-        .and_then(|object| split::fingerprint(&object, path));
+    let split = (kind == LoadKind::Full)
+        .then(|| {
+            object::File::parse(dwarf_data)
+                .ok()
+                .and_then(|object| split::fingerprint(&object, path))
+        })
+        .flatten();
     inputs.extend(split.as_deref());
 
     let key = crate::cache::Key::of(&inputs);
     let outcome = match cache.get(key) {
-        crate::cache::Lookup::Hit { image, stamp } => match bind(&binding, Arc::new(*image)) {
+        crate::cache::Lookup::Hit { image, stamp } => match bind(&binding, image) {
             Ok(info) => {
                 crate::count!("cache_hits", 1);
                 return Ok((info, CacheOutcome::Hit));
@@ -1092,6 +1155,7 @@ fn read_debug_info(
     rejected: Option<&(&super::separate::DebugFile, Arc<str>)>,
     supplementary: &Supplementary,
     limits: LoadLimits,
+    kind: LoadKind,
 ) -> std::result::Result<Read, DwarfError> {
     let none_found = || {
         rejected.map_or(Separate::None, |(file, reason)| {
@@ -1102,6 +1166,14 @@ fn read_debug_info(
     let image = |separate, supplementary, dwarf| {
         load_image(program, data, separate, supplementary, dwarf, limits)
     };
+
+    if kind == LoadKind::Profile {
+        return image(
+            separate.map_or_else(none_found, Separate::Used),
+            None,
+            DwarfUse::Deferred,
+        );
+    }
 
     // The file's own DWARF, or, when it cannot be read, none.
     let own = |separate: Separate<'_>, supplementary| {
@@ -1156,6 +1228,9 @@ fn read_debug_info(
 /// Whether a load reads the DWARF of the file that holds it.
 enum DwarfUse {
     Read,
+
+    /// Collection defers unit metadata until it no longer competes with samples.
+    Deferred,
 
     /// It could not be read, for the reason given, so the image is loaded
     /// without it.
@@ -1247,7 +1322,7 @@ fn load_image(
     let phase = crate::span!("sections");
     let (sections, mut input) = match dwarf_use {
         DwarfUse::Read => load_sections(dwarf_object)?,
-        DwarfUse::Unusable(_) => (
+        DwarfUse::Deferred | DwarfUse::Unusable(_) => (
             DwarfSections::load(|_| Ok::<_, DwarfError>(Cow::Borrowed(&[][..])))?,
             0,
         ),
@@ -1634,6 +1709,9 @@ fn load_image(
             python: super::cpython::runtime(&object),
             v8: super::v8::runtime(&object),
             debug_information: match dwarf_use {
+                DwarfUse::Deferred => crate::DebugInformation::Incomplete {
+                    reason: "unit DWARF deferred until collection ends".into(),
+                },
                 DwarfUse::Unusable(reason) => crate::DebugInformation::Unusable { reason },
                 DwarfUse::Read => match (split_units(&dwarf, &catalog)?, &locals_left_out) {
                     (Some(split), Some(locals)) => crate::DebugInformation::Incomplete {
