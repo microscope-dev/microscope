@@ -21,6 +21,8 @@ enum Op {
     Allocate(u8),
     /// `add rsp, 8 * n`.
     Free(u8),
+    /// `and rsp, -n`, which aligns rsp down to `n` bytes.
+    Align(u8),
     MovRbpRsp,
     MovRspRbp,
     Leave,
@@ -41,7 +43,7 @@ impl Op {
             | Self::Leave
             | Self::Nop
             | Self::Ret => 1,
-            Self::Allocate(_) | Self::Free(_) => 4,
+            Self::Allocate(_) | Self::Free(_) | Self::Align(_) => 4,
             Self::MovRbpRsp | Self::MovRspRbp => 3,
             Self::Call => 5,
             Self::Jump(_) | Self::Branch(_) => 2,
@@ -79,6 +81,7 @@ impl Program {
                 Op::PopRbx => code.push(0x5b),
                 Op::Allocate(n) => code.extend([0x48, 0x83, 0xec, 8 * n]),
                 Op::Free(n) => code.extend([0x48, 0x83, 0xc4, 8 * n]),
+                Op::Align(n) => code.extend([0x48, 0x83, 0xe4, n.wrapping_neg()]),
                 Op::MovRbpRsp => code.extend([0x48, 0x89, 0xe5]),
                 Op::MovRspRbp => code.extend([0x48, 0x89, 0xec]),
                 Op::Leave => code.push(0xc9),
@@ -95,8 +98,9 @@ impl Program {
     }
 }
 
-/// Where the stack pointer is at the entry, which holds the return address.
-const ENTRY_RSP: u64 = 0x7000_0000;
+/// Where the stack pointer is at the entry, which holds the return address:
+/// 8 past a multiple of 16, as the ABI leaves it, so aligning moves it.
+const ENTRY_RSP: u64 = 0x7000_0038;
 const RETURN: u64 = 0x4141_4141;
 const CALLER_RBP: u64 = 0x5150_5150;
 const CALLER_RBX: u64 = 0xb0b0_b0b0;
@@ -144,6 +148,7 @@ impl Machine {
             Op::PopRbx => self.rbx = self.pop(),
             Op::Allocate(n) => self.rsp = self.rsp.wrapping_sub(8 * u64::from(n)),
             Op::Free(n) => self.rsp = self.rsp.wrapping_add(8 * u64::from(n)),
+            Op::Align(n) => self.rsp &= !(u64::from(n) - 1),
             Op::MovRbpRsp => self.rbp = self.rsp,
             Op::MovRspRbp => self.rsp = self.rbp,
             Op::Leave => {
@@ -235,6 +240,7 @@ fn op(length: usize) -> impl Strategy<Value = Op> {
         1 => Just(Op::PopRbx),
         2 => (1_u8..=4).prop_map(Op::Allocate),
         2 => (1_u8..=4).prop_map(Op::Free),
+        2 => prop::sample::select(vec![16_u8, 32, 64]).prop_map(Op::Align),
         3 => Just(Op::MovRbpRsp),
         2 => Just(Op::MovRspRbp),
         2 => Just(Op::Leave),

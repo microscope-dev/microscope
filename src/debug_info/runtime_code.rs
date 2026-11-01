@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Mnemonic};
 
-use super::x86_64::frames::{CallerFramePointer, CodeFrame, frame_caller, frame_cfa};
+use super::x86_64::frames::{Below, CallerFramePointer, CodeFrame, frame_caller, frame_cfa};
 use super::{DebugInfo, UnwindInfo};
 use crate::unwind::{MemoryReader, RegisterFile, UnwindStep};
 use crate::{AddressRange, ImageAddress, ModuleImageId, UnwindTermination, VirtualAddress};
@@ -105,7 +105,7 @@ fn frame(address: VirtualAddress, memory: &mut dyn MemoryReader) -> CodeFrame {
     let address = address.get();
     let based = CodeFrame::Based {
         offset: 16,
-        below: None,
+        below: Below::Unknown,
     };
     let Some(start) = address.checked_sub(BEFORE) else {
         return based;
