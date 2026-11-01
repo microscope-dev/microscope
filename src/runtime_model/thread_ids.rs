@@ -127,20 +127,80 @@ mod tests {
         assert!(ids.unwrap_err().contains("platform supplied no proven"));
     }
 
+    /// Every native id resolves to the one listed host that alone claims
+    /// it and claims nothing else, is ambiguous where any other listed
+    /// host or id is involved, and is missing where no listed host claims
+    /// it. Claims by hosts not listed count for nothing, and a list of
+    /// hosts none of which claims anything is no evidence at all.
+    fn resolution_is_a_proven_bijection(
+        hosts: &[u64],
+        pairs: &[(u64, u64)],
+    ) -> Result<(), TestCaseError> {
+        let ids = ThreadIds::read(hosts.iter().copied().map(ThreadId::new).collect(), |_| {
+            pairs
+                .iter()
+                .map(|&(host, target)| (ThreadId::new(host), TargetThreadId::new(target).unwrap()))
+                .collect()
+        });
+
+        let listed: Vec<_> = pairs
+            .iter()
+            .filter(|(host, _)| hosts.contains(host))
+            .collect();
+        if !hosts.is_empty() && listed.is_empty() {
+            prop_assert!(ids.is_err(), "{:?} in {:?}", hosts, pairs);
+            return Ok(());
+        }
+
+        let ids = ids.map_err(|problem| TestCaseError::fail(problem.to_string()))?;
+        prop_assert_eq!(ids.lookup(0), Err(IdentityError::Zero));
+        for native in 1..=8 {
+            let target = TargetThreadId::new(native).unwrap();
+            let claimants: BTreeSet<_> = listed
+                .iter()
+                .filter(|(_, claimed)| *claimed == native)
+                .map(|(host, _)| *host)
+                .collect();
+            let expected = match claimants.first() {
+                None => Err(IdentityError::Missing(target)),
+                Some(&host) => {
+                    let claimed: BTreeSet<_> = listed
+                        .iter()
+                        .filter(|(claimant, _)| *claimant == host)
+                        .map(|(_, claimed)| *claimed)
+                        .collect();
+                    if claimants.len() == 1 && claimed.len() == 1 {
+                        Ok(ThreadId::new(host))
+                    } else {
+                        Err(IdentityError::Ambiguous(target))
+                    }
+                }
+            };
+            prop_assert_eq!(
+                ids.lookup(native),
+                expected,
+                "native {} for hosts {:?} in {:?}",
+                native,
+                hosts,
+                pairs
+            );
+        }
+        Ok(())
+    }
+
+    /// Found by the property below.
+    #[test]
+    fn a_host_claiming_two_target_ids_resolves_neither() {
+        resolution_is_a_proven_bijection(&[1, 2, 3, 4, 5, 6, 7, 8], &[(1, 1), (1, 2)]).unwrap();
+    }
+
     proptest! {
         #[test]
-        fn identity_resolution_is_a_proven_bijection(pairs in proptest::collection::vec((1u64..=12, 1u64..=8), 0..32)) {
-            let hosts = (1..=8).map(ThreadId::new).collect();
-            let ids = ThreadIds::read(hosts, |_| pairs.iter().map(|&(host, target)| (ThreadId::new(host), TargetThreadId::new(target).unwrap())).collect());
-            for native in 1..=8 {
-                let matching: BTreeSet<_> = pairs.iter().filter(|(host, target)| *host <= 8 && *target == native).map(|(host, _)| *host).collect();
-                let expected = if matching.len() == 1 {
-                    let host = *matching.first().unwrap();
-                    let targets: BTreeSet<_> = pairs.iter().filter(|(candidate, _)| *candidate == host).map(|(_, target)| *target).collect();
-                    (targets.len() == 1).then_some(ThreadId::new(host))
-                } else { None };
-                prop_assert_eq!(ids.as_ref().ok().and_then(|ids| ids.resolve(native).ok()), expected, "native {} in {:?}", native, pairs);
-            }
+        fn identity_resolution_is_a_proven_bijection(
+            hosts in proptest::collection::vec(1u64..=12, 0..10),
+            pairs in proptest::collection::vec((1u64..=12, 1u64..=8), 0..32),
+        ) {
+            resolution_is_a_proven_bijection(&hosts, &pairs)?;
         }
     }
 }

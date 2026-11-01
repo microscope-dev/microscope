@@ -1104,4 +1104,119 @@ mod tests {
             assert_eq!(path, expected, "{case}");
         }
     }
+
+    /// What a chain of tail calls from `from` to `to` must be, from every
+    /// chain written out: the one chain if there is exactly one, or why not.
+    fn expected_tail_path(
+        described: &[bool],
+        tail_calls: &[(u32, Option<u32>)],
+        from: u32,
+        to: u32,
+    ) -> Result<Vec<u32>, EntryValueUnavailableReason> {
+        use EntryValueUnavailableReason::{TailCalls, TargetMismatch};
+
+        let calls_from = |function: u32| {
+            (0_u32..)
+                .zip(tail_calls)
+                .filter(move |(_, (caller, _))| *caller == function)
+                .map(|(site, (_, enters))| (site, *enters))
+        };
+
+        // Every function a chain may reach must say where its tail calls go,
+        // and each must go to a function of the module.
+        let mut reached = vec![from];
+        let mut next = 0;
+        while let Some(&function) = reached.get(next) {
+            next += 1;
+            if !described[function as usize] {
+                return Err(TailCalls);
+            }
+
+            for (_, enters) in calls_from(function) {
+                let enters = enters.ok_or(TailCalls)?;
+                if !reached.contains(&enters) {
+                    reached.push(enters);
+                }
+            }
+        }
+
+        if !reached.contains(&to) {
+            return Err(TargetMismatch);
+        }
+
+        // A chain longer than the functions it may pass repeats one, so
+        // goes around a cycle as often as it likes. One around a cycle and
+        // on to `to` is no longer than three calls per function.
+        let functions = described.len();
+        let mut chains = Vec::new();
+        let mut work = vec![(from, Vec::new())];
+        while let Some((function, chain)) = work.pop() {
+            if function == to {
+                chains.push(chain.clone());
+            }
+
+            if chain.len() < 3 * functions && chains.len() < 2 {
+                for (site, enters) in calls_from(function) {
+                    let mut longer = chain.clone();
+                    longer.push(site);
+                    work.push((enters.expect("checked above"), longer));
+                }
+            }
+        }
+
+        match chains.as_slice() {
+            [only] if only.len() < functions => Ok(only.clone()),
+            _ => Err(TailCalls),
+        }
+    }
+
+    /// Up to six functions, most of which describe their tail calls, the
+    /// tail calls they make, and two of them.
+    #[expect(
+        clippy::type_complexity,
+        reason = "what catalog takes, and two functions"
+    )]
+    fn tail_catalog()
+    -> impl proptest::strategy::Strategy<Value = (Vec<bool>, Vec<(u32, Option<u32>)>, u32, u32)>
+    {
+        use proptest::prelude::*;
+
+        (1_u32..=6).prop_flat_map(|functions| {
+            (
+                proptest::collection::vec(prop::bool::weighted(0.9), functions as usize),
+                proptest::collection::vec(
+                    (
+                        0..functions,
+                        prop_oneof![12 => (0..functions).prop_map(Some), 1 => Just(None)],
+                    ),
+                    0..10,
+                ),
+                0..functions,
+                0..functions,
+            )
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// A chain of tail calls is followed exactly when it is the only
+        /// one, and refused for the reason the chains written out give.
+        #[test]
+        fn a_tail_path_is_the_only_chain_there_is(
+            (described, tail_calls, from, to) in tail_catalog(),
+        ) {
+            let catalog = catalog(&described, &tail_calls);
+            let path = tail_path(CallView::new(&catalog), from, to)
+                .map(|path| path.into_iter().map(|site| site.0).collect::<Vec<_>>())
+                .map_err(|error| match error {
+                    VariableRuntimeError::Unavailable(VariableUnavailableReason::EntryValue(
+                        reason,
+                    )) => Ok(reason),
+                    _ => Err("refused for no reason of entry values"),
+                });
+            let expected = expected_tail_path(&described, &tail_calls, from, to).map_err(Ok);
+            proptest::prop_assert_eq!(path, expected);
+        }
+    }
 }

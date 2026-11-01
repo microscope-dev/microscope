@@ -751,8 +751,8 @@ fn zone(open: Open, end: i64, flags: u32) -> Zone {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::float_cmp,
-    reason = "a test's counts are small, and a value read back is the bits written"
+    clippy::cast_sign_loss,
+    reason = "a test's counts and times are small and not negative"
 )]
 mod tests {
     use proptest::prelude::*;
@@ -760,34 +760,29 @@ mod tests {
     use super::*;
     use crate::capture::records::ZONE_FLAGS;
 
-    /// One event a reference writer of the ABI writes, by its index.
+    /// One event a reference writer of the ABI writes: its kind and key,
+    /// and a plot's value or a message's or label's text.
     #[derive(Debug, Clone)]
-    enum Written {
-        Zone(bool),
-        Plot(f64),
-        Message(Vec<u8>),
+    struct Written {
+        kind: u8,
+        key: u32,
+        value: f64,
+        text: Vec<u8>,
     }
 
-    /// The records of event `index`, as the ABI lays them out.
+    /// The records of event `index`, as the ABI lays them out, its time
+    /// its index.
     fn records(index: usize, event: &Written) -> Vec<[u8; abi::RECORD]> {
-        let (kind, argument, more): (u8, u32, Vec<u8>) = match event {
-            Written::Zone(begin) => (
-                if *begin {
-                    abi::ZONE_BEGIN
-                } else {
-                    abi::ZONE_END
-                },
-                0,
-                Vec::new(),
-            ),
-            Written::Plot(value) => (abi::PLOT, 0, value.to_le_bytes().to_vec()),
-            Written::Message(text) => (abi::MESSAGE, text.len() as u32, text.clone()),
+        let (argument, more) = match event.kind {
+            abi::PLOT => (0, event.value.to_le_bytes().to_vec()),
+            abi::MESSAGE | abi::LABEL_BEGIN => (event.text.len() as u32, event.text.clone()),
+            _ => (0, Vec::new()),
         };
 
         let mut first = [0; abi::RECORD];
         first[..8].copy_from_slice(&(index as u64).to_le_bytes());
-        first[8..12].copy_from_slice(&7_u32.to_le_bytes());
-        first[12..].copy_from_slice(&(u32::from(kind) | argument << 8).to_le_bytes());
+        first[8..12].copy_from_slice(&event.key.to_le_bytes());
+        first[12..].copy_from_slice(&(u32::from(event.kind) | argument << 8).to_le_bytes());
         let mut all = vec![first];
         for chunk in more.chunks(15) {
             let mut record = [0; abi::RECORD];
@@ -801,11 +796,62 @@ mod tests {
         all
     }
 
+    /// Text of any length a record holds, some of it of characters of
+    /// more than a byte.
+    fn text() -> impl Strategy<Value = Vec<u8>> {
+        let text = prop_oneof![
+            3 => "[a-z]{0,20}",
+            1 => "[a-zé€😀]{0,90}",
+        ];
+        text.prop_map(|text: String| {
+            let mut end = text.len().min(abi::MOST_TEXT);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+
+            text.as_bytes()[..end].to_vec()
+        })
+    }
+
     fn written() -> impl Strategy<Value = Written> {
+        let key = crate::test_strategies::u32_edges();
+        let bare = prop::sample::select(vec![
+            abi::ZONE_BEGIN,
+            abi::ZONE_END,
+            abi::LABEL_END,
+            abi::FRAME,
+            abi::TRIGGER,
+        ]);
         prop_oneof![
-            any::<bool>().prop_map(Written::Zone),
-            (-1e9..1e9_f64).prop_map(Written::Plot),
-            proptest::collection::vec(b'a'..=b'z', 0..=abi::MOST_TEXT).prop_map(Written::Message),
+            (bare, key.clone()).prop_map(|(kind, key)| Written {
+                kind,
+                key,
+                value: 0.0,
+                text: Vec::new()
+            }),
+            ((-1e9..1e9_f64), key.clone()).prop_map(|(value, key)| Written {
+                kind: abi::PLOT,
+                key,
+                value,
+                text: Vec::new()
+            }),
+            (
+                prop::sample::select(vec![abi::MESSAGE, abi::LABEL_BEGIN]),
+                key,
+                text()
+            )
+                .prop_map(|(kind, key, text)| Written {
+                    kind,
+                    key,
+                    value: 0.0,
+                    text
+                }),
+            Just(Written {
+                kind: abi::MESSAGE,
+                key: 1,
+                value: 0.0,
+                text: vec![b'x'; abi::MOST_TEXT]
+            }),
         ]
     }
 
@@ -843,21 +889,25 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
         /// A ring read while its thread writes it, however the two
-        /// interleave, yields only whole events, each as it was written,
-        /// and every position is read or counted lost.
+        /// interleave, yields every event of the span it reads that the
+        /// thread cannot have reached by the time the head is read again,
+        /// and only events whose slots it did not write over while they
+        /// were copied, each as it was written; every position it does not
+        /// yield is counted lost.
         #[test]
         fn a_ring_read_as_it_is_written_yields_whole_events_and_counts_the_rest(
             events in proptest::collection::vec(written(), 0..120),
             schedule in proptest::collection::vec((0..80_usize, 0..4_usize), 1..40),
         ) {
             let size = abi::LEAST_RING_SIZE as u8;
+            let capacity = 1_u64 << size;
             let encoded: Vec<_> = events.iter().enumerate().map(|(index, event)| records(index, event)).collect();
             let starts: Vec<u64> = encoded.iter().scan(0, |at, records| {
                 let start = *at;
                 *at += records.len() as u64;
                 Some(start)
             }).collect();
-            let total: u64 = encoded.iter().map(|records| records.len() as u64).sum();
+            let total = encoded.iter().map(Vec::len).sum();
             let mut writer = Writer {
                 slots: vec![[0; abi::RECORD]; 1 << size],
                 pending: std::collections::VecDeque::new(),
@@ -866,49 +916,78 @@ mod tests {
                 head: 0,
             };
 
-            let (mut tail, mut accounted, mut decoder) = (0, 0, Decoder::default());
+            let (mut tail, mut decoder) = (0, Decoder::default());
             let rounds = schedule.iter().copied().chain(std::iter::once((usize::MAX, 0)));
 
             for (before, during) in rounds {
-                for _ in 0..before.min(1 << 20) {
+                for _ in 0..before.min(total) {
                     writer.step();
                 }
 
+                // Copied as the collector copies it, a slot at a time, the
+                // thread writing on between; and whether each position's
+                // slot still held it when copied.
                 let header = RingHeader { size, clock: 0, thread: Tid::new(0), state: abi::RING_ACTIVE, interrupted: 0, head: writer.head };
                 let (span, mut lost) = copy_span(tail, header);
                 let mut copied = Vec::new();
+                let mut intact = Vec::new();
 
-                for position in span.clone() {
-                    copied.extend_from_slice(&writer.slots[(position % (1 << size)) as usize]);
-                    for _ in 0..during {
-                        writer.step();
+                for run in slots(&span, size) {
+                    for slot in run.step_by(abi::RECORD) {
+                        let position = span.start + intact.len() as u64;
+                        intact.push(writer.written <= position + capacity);
+                        copied.extend_from_slice(&writer.slots[slot / abi::RECORD]);
+                        for _ in 0..during {
+                            writer.step();
+                        }
                     }
                 }
 
+                prop_assert_eq!(intact.len() as u64, span.end - span.start);
                 let first = first_whole(writer.head, size).max(span.start).min(span.end);
                 lost += first - span.start;
+                let orphaned = decoder.orphaned;
                 decoder.clear();
                 decoder.decode(&copied[(first - span.start) as usize * abi::RECORD..]);
                 prop_assert_eq!(decoder.malformed, 0);
-                let expected: Vec<usize> = (0..events.len())
-                    .filter(|&index| (first..span.end).contains(&starts[index]))
-                    .collect();
-                let found: Vec<usize> = decoder.events.iter().map(|event| event.time as usize).collect();
-                prop_assert_eq!(&found, &expected);
 
-                for (event, &index) in decoder.events.iter().zip(&expected) {
-                    match &events[index] {
-                        Written::Plot(value) => prop_assert_eq!(event.value, *value),
-                        Written::Message(text) => prop_assert_eq!(decoder.text(event).as_bytes(), text.as_slice()),
-                        Written::Zone(_) => {}
+                let whole = |index: usize| {
+                    let mut positions = starts[index]..starts[index] + encoded[index].len() as u64;
+                    span.contains(&positions.start)
+                        && positions.end <= span.end
+                        && positions.all(|position| intact[(position - span.start) as usize])
+                };
+
+                for event in &decoder.events {
+                    let index = event.time as usize;
+                    let written = &events[index];
+                    prop_assert!(whole(index), "event {} was written over while it was copied", index);
+                    prop_assert_eq!((event.kind, event.key), (written.kind, written.key), "event {}", index);
+                    match written.kind {
+                        abi::PLOT => prop_assert_eq!(event.value.to_bits(), written.value.to_bits()),
+                        abi::MESSAGE | abi::LABEL_BEGIN => prop_assert_eq!(decoder.text(event).as_bytes(), written.text.as_slice()),
+                        _ => {}
                     }
                 }
 
-                accounted += lost + expected.iter().map(|&index| encoded[index].len() as u64).sum::<u64>();
+                // A pending event holds at most so many records: the thread
+                // has reached no slot of a position this far below the head.
+                let reach = (writer.head + MOST_EVENT_RECORDS).saturating_sub(capacity);
+                let yielded: Vec<usize> = decoder.events.iter().map(|event| event.time as usize).collect();
+                let expected: Vec<usize> = (0..events.len())
+                    .filter(|&index| starts[index] >= reach && whole(index))
+                    .collect();
+                prop_assert!(expected.iter().all(|index| yielded.contains(index)), "{:?} of {:?}", yielded, expected);
+                prop_assert!(yielded.windows(2).all(|pair| pair[0] < pair[1]));
+
+                // Every position from the last read is yielded or lost.
+                let read: u64 = yielded.iter().map(|&index| encoded[index].len() as u64).sum();
+                lost += decoder.orphaned - orphaned;
+                prop_assert_eq!(read + lost, span.end - tail);
                 tail = span.end;
             }
 
-            prop_assert_eq!(accounted + decoder.orphaned, total);
+            prop_assert_eq!(tail, starts.last().map_or(0, |start| start + encoded[encoded.len() - 1].len() as u64));
         }
     }
 
@@ -931,18 +1010,28 @@ mod tests {
         /// Whatever a thread's records lose, and however its ends fail to
         /// nest, its zones are a valid capture's: each event read is in
         /// exactly one zone, and a zone is whole exactly when its begin and
-        /// end were read with nothing lost between them.
+        /// end were read with nothing lost between them. Where two ends
+        /// came in the wrong order, a zone is whole only where a begin and
+        /// an end of its site were read with nothing lost between them.
         #[test]
         fn zones_are_whole_exactly_where_nothing_between_was_lost(
             roots in proptest::collection::vec(trace(), 1..4),
-            lost in proptest::collection::vec(any::<bool>(), 0..200),
-            swap in proptest::option::of(0..200_usize),
+            lost in prop_oneof![
+                1 => Just(Vec::new()),
+                3 => proptest::collection::vec(proptest::bool::weighted(0.1), 0..200),
+            ],
+            swap in proptest::option::weighted(0.3, any::<proptest::sample::Index>()),
         ) {
             let mut events: Vec<(bool, u32)> = roots.into_iter().flatten().collect();
-            let swapped = swap.filter(|&at| at + 1 < events.len() && !events[at].0 && !events[at + 1].0);
+            let ends: Vec<usize> = (0..events.len().saturating_sub(1))
+                .filter(|&at| !events[at].0 && !events[at + 1].0)
+                .collect();
+            let swapped = swap.filter(|_| !ends.is_empty()).map(|swap| *swap.get(&ends));
             if let Some(at) = swapped {
                 events.swap(at, at + 1);
             }
+
+            let lost_at = |index: usize| lost.get(index).copied().unwrap_or(false);
 
             let mut builder = CaptureBuilder::new();
             let thread = builder.thread(crate::model::Pid::new(1), Tid::new(1), 0);
@@ -957,7 +1046,7 @@ mod tests {
 
             for (index, &(begin, site)) in events.iter().enumerate() {
                 let time = index as i64 * 10;
-                if lost.get(index).copied().unwrap_or(false) {
+                if lost_at(index) {
                     stacks.lost(thread);
                     for zone in &mut open {
                         zone.2 = false;
@@ -995,13 +1084,20 @@ mod tests {
                 Ok(u64::from(flags & ZONE_BEGAN_UNSEEN == 0) + u64::from(flags & ZONE_ENDED_UNSEEN == 0))
             }).sum::<Result<u64, TestCaseError>>()?;
             prop_assert_eq!(halves, read);
+            let flagless: std::collections::BTreeSet<_> = zones
+                .iter()
+                .filter(|zone| zone.flags.get() == 0)
+                .map(|zone| (zone.site.get(), zone.start.get(), zone.end.get()))
+                .collect();
             if swapped.is_none() {
-                let flagless: std::collections::BTreeSet<_> = zones
-                    .iter()
-                    .filter(|zone| zone.flags.get() == 0)
-                    .map(|zone| (zone.site.get(), zone.start.get(), zone.end.get()))
-                    .collect();
                 prop_assert_eq!(flagless, whole);
+            } else {
+                for &(site, start, end) in &flagless {
+                    let (begin, end) = ((start / 10) as usize, (end / 10) as usize);
+                    let site = sites.iter().position(|known| *known == site).unwrap_or_default() as u32;
+                    prop_assert!(events[begin] == (true, site) && events[end] == (false, site), "{:?}", (site, begin, end));
+                    prop_assert!((begin..=end).all(|index| !lost_at(index)), "{:?}", (site, begin, end));
+                }
             }
         }
     }

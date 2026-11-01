@@ -151,6 +151,13 @@ Add `if EXPRESSION` for a condition:
 break handle_request if request.id == 42
 ```
 
+Put a location that holds spaces, or that is one of the words `if`, `hits`,
+`log`, and `disabled`, in double quotes:
+
+```text
+break "<impl Display for Point>::fmt"
+```
+
 Use `info breakpoints` to list breakpoints, and `disable`, `enable`, or
 `delete` with a breakpoint number to manage one. `tbreak` creates a temporary
 breakpoint removed after its first hit.

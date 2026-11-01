@@ -448,10 +448,29 @@ impl LineTables {
 
         // Stable, so rows at one address keep line-program order.
         order.sort_by_key(|(index, _)| self.addresses[*index as usize].address.get());
+        let mut reach = 0;
+        let reaches = order
+            .iter()
+            .map(|(_, sequence)| {
+                reach = reach.max(self.sequence_end(*sequence));
+                reach
+            })
+            .collect();
         StatementsByAddress {
             tables: self,
             order,
+            reaches,
         }
+    }
+
+    /// Where sequence `sequence`'s code ends: at its last row, which ends
+    /// it, or nowhere for one whose rows were given without such a row.
+    fn sequence_end(&self, sequence: u32) -> u64 {
+        let run = &self.sequences[sequence as usize];
+        let last = (run.first.get() + run.rows.get()).checked_sub(1);
+        last.map(|last| last as usize)
+            .filter(|last| self.rows[*last].flags & row_flags::END_SEQUENCE != 0)
+            .map_or(u64::MAX, |last| self.addresses[last].address.get())
     }
 
     /// Every line range, decoded, in order.
@@ -475,6 +494,10 @@ pub struct StatementsByAddress<'a> {
 
     /// Each public row's index and its sequence's.
     order: Vec<(u32, u32)>,
+
+    /// The greatest end of the sequences of each row of `order` and every
+    /// row before it, which ends a backward search for a covering row.
+    reaches: Vec<u64>,
 }
 
 impl StatementsByAddress<'_> {
@@ -495,13 +518,29 @@ impl StatementsByAddress<'_> {
     }
 
     /// The line of the row whose code holds `address`: the last row at or
-    /// before it, unless that row has no line.
+    /// before it of a sequence whose code reaches past it, unless that row
+    /// has no line. Code between sequences, or past them, has no line: the
+    /// row before it describes other code.
     pub fn line_at(&self, address: ImageAddress) -> Option<crate::LineNumber> {
-        let after = self
+        let mut at = self
             .order
             .partition_point(|at| self.address(*at) <= address);
-        let row = self.row(*self.order.get(after.checked_sub(1)?)?);
-        row.location.map(|location| location.line)
+        while at > 0 {
+            at -= 1;
+            if self.reaches[at] <= address.get() {
+                return None;
+            }
+
+            let (_, sequence) = self.order[at];
+            if address.get() < self.tables.sequence_end(sequence) {
+                return self
+                    .row(self.order[at])
+                    .location
+                    .map(|location| location.line);
+            }
+        }
+
+        None
     }
 
     /// The rows in `range`, by address.
@@ -1018,3 +1057,6 @@ impl<'a> LineView<'a> {
         ImageAddress::new(self.addresses[index as usize].address.get())
     }
 }
+
+#[cfg(test)]
+mod tests;

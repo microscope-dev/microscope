@@ -274,6 +274,12 @@ fn read_composite(
         .ok_or_else(|| {
             EvaluateError::Malformed("selected value extends beyond its containing storage".into())
         })?;
+
+    // No bits are none of them undefined, even inside an undefined piece.
+    if bits == 0 {
+        return Ok(Vec::new());
+    }
+
     let overlapping = || {
         composite
             .pieces

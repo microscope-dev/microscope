@@ -8,7 +8,7 @@ use crate::protocol::{BreakpointSpec, DebuggerEvent, ExecutionId, Reply, StopId,
 use crate::runtime_model::RuntimeWrite;
 use crate::{CodeInstanceId, Error, ModuleId, ProcessId, Result, VirtualAddress};
 
-use super::memory::read_logical_memory;
+use super::memory::{read_logical_memory, write_logical_memory_with};
 use super::native::LinuxTraceOps;
 use super::{
     Controller, LinuxError, backend_error, debug_thread_id, process_id, validate_process,
@@ -17,7 +17,6 @@ use super::{
 
 /// The most bytes one request writes.
 pub(super) const MAX_PUBLIC_MEMORY_WRITE: u64 = 64 * 1024;
-const WORD: u64 = 8;
 
 impl<P: LinuxTraceOps> Controller<P> {
     /// Writes bytes into the stopped process and returns how many were
@@ -149,65 +148,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        let end = address
-            .get()
-            .checked_add(length)
-            .ok_or(Error::AddressOverflow)?;
         let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
-        let mut word = address.get() & !(WORD - 1);
-        let mut written = 0;
-
-        while word < end {
-            let Ok(current) = self.ptrace.read_word(pid, word) else {
-                break;
-            };
-
-            let mut physical = current.to_ne_bytes();
-            let mut hidden = Vec::new();
-            let mut count = 0;
-
-            for (offset, byte) in physical.iter_mut().enumerate() {
-                let target = word + offset as u64;
-                if !(address.get()..end).contains(&target) {
-                    continue;
-                }
-
-                let user = usize::try_from(target - address.get())
-                    .ok()
-                    .and_then(|offset| bytes.get(offset))
-                    .copied()
-                    .ok_or_else(|| Error::internal("a write covers the bytes it stores"))?;
-                count += 1;
-
-                match inferior.breakpoints.get(&VirtualAddress::new(target)) {
-                    Some(site) if site.installed => hidden.push((target, user)),
-                    _ => *byte = user,
-                }
-            }
-
-            if self
-                .ptrace
-                .write_word(pid, word, u64::from_ne_bytes(physical))
-                .is_err()
-            {
-                break;
-            }
-
-            for (target, byte) in hidden {
-                if let Some(site) = inferior.breakpoints.get_mut(&VirtualAddress::new(target)) {
-                    site.original_byte = byte;
-                }
-            }
-
-            written += count;
-            word += WORD;
-        }
-
-        if written == 0 && length != 0 {
-            return Err(Error::MemoryNotWritable(address));
-        }
-
-        Ok(written)
+        write_logical_memory_with(
+            &mut inferior.breakpoints,
+            address,
+            bytes,
+            |word| self.ptrace.read_word(pid, word),
+            |word, value| self.ptrace.write_word(pid, word, value),
+        )
     }
 
     /// Writes the low bytes of a register of the innermost frame. A thread

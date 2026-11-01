@@ -12,6 +12,7 @@ use nix::unistd::Pid;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::debug_registers::CONTROL_REGISTER;
+use super::memory::holding_word;
 use super::native::LinuxTraceOps;
 use super::{
     BREAKPOINT_OPCODE, Controller, ControllerMessage, Inferior, InferiorOrigin, Signal, WaitEvent,
@@ -235,16 +236,17 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// kills the child instead.
     fn restore_every_trap(&self, pid: Pid, sites: &[(VirtualAddress, u8)]) {
         for &(address, original) in sites {
-            let Ok(word) = self.ptrace.read_memory_word(pid, address.get()) else {
+            let (word_address, offset) = holding_word(address.get());
+            let Ok(word) = self.ptrace.read_memory_word(pid, word_address) else {
                 continue;
             };
 
             let mut bytes = word.to_ne_bytes();
-            if bytes[0] == BREAKPOINT_OPCODE {
-                bytes[0] = original;
+            if bytes[offset] == BREAKPOINT_OPCODE {
+                bytes[offset] = original;
                 let _ = self
                     .ptrace
-                    .write_word(pid, address.get(), u64::from_ne_bytes(bytes));
+                    .write_word(pid, word_address, u64::from_ne_bytes(bytes));
             }
         }
     }

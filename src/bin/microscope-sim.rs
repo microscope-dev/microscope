@@ -2,7 +2,8 @@
 //!
 //! `microscope-sim sweep` runs random seeds on every core for a while and
 //! reports each kind of failure once, with its shortest run. `microscope-sim
-//! replay SEED` reruns one seed and prints its whole trace.
+//! replay SEED` reruns one seed and prints its whole trace. `microscope-sim
+//! shrink SEED` finds a smaller run that fails as the seed's does.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -53,6 +54,22 @@ enum Command {
         /// The fingerprint the seed's run had, which the replay must match.
         #[arg(long, value_parser = parse_seed)]
         fingerprint: Option<u64>,
+
+        /// A run `shrink` wrote, whose simpler shape and choices the replay
+        /// takes.
+        #[arg(long)]
+        shrunk: Option<PathBuf>,
+    },
+
+    /// Finds a smaller run that fails as the seed's does, and writes it
+    /// for `replay --shrunk`.
+    Shrink {
+        #[arg(value_parser = parse_seed)]
+        seed: u64,
+
+        /// The most runs to make while shrinking.
+        #[arg(long, default_value_t = 2000)]
+        runs: u64,
     },
 }
 
@@ -81,8 +98,55 @@ fn main() -> Result<ExitCode> {
             seed,
             at,
             fingerprint,
-        } => replay(&corpus, seed, at, fingerprint),
+            shrunk,
+        } => replay(&corpus, seed, at, fingerprint, shrunk),
+        Command::Shrink { seed, runs } => shrink(&corpus, seed, runs),
     }
+}
+
+/// Where a seed's replays and shrunk runs are written.
+fn directory(seed: u64) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/sim")
+        .join(format!("{seed:#x}"))
+}
+
+fn shrink(corpus: &Corpus, seed: u64, runs: u64) -> Result<ExitCode> {
+    let Some(shrunk) = microscope::sim::shrink::shrink(seed, corpus, &Settings::default(), runs)
+    else {
+        println!("seed {seed:#x} passes; there is nothing to shrink");
+        return Ok(ExitCode::FAILURE);
+    };
+
+    let directory = directory(seed);
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("shrunk.txt");
+    std::fs::write(&path, shrunk.to_text())?;
+
+    print!("{}", describe_failure(&shrunk.outcome));
+    let simpler = shrunk
+        .simpler
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    println!(
+        "shrunk in {} runs to {} actions and {} choices{}",
+        shrunk.runs,
+        shrunk.outcome.steps,
+        shrunk.tape.len(),
+        if simpler.is_empty() {
+            String::new()
+        } else {
+            format!(", with {}", simpler.join(" "))
+        }
+    );
+    println!(
+        "replay   just sim-seed {seed:#x} --shrunk {} --fingerprint {:#x}",
+        path.display(),
+        shrunk.outcome.fingerprint
+    );
+
+    Ok(ExitCode::SUCCESS)
 }
 
 /// One kind of failure: how often it happened, and the report of its
@@ -284,19 +348,36 @@ fn replay(
     seed: u64,
     at: Option<u64>,
     fingerprint: Option<u64>,
+    shrunk: Option<PathBuf>,
 ) -> Result<ExitCode> {
+    let (simpler, tape) = match shrunk {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let (shrunk_seed, simpler, tape) = microscope::sim::shrink::read(&text)
+                .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))?;
+            anyhow::ensure!(
+                shrunk_seed == seed,
+                "{} shrank seed {shrunk_seed:#x}, not {seed:#x}",
+                path.display()
+            );
+            (simpler, Some(tape))
+        }
+        None => (Vec::new(), None),
+    };
+
     let settings = Settings {
         keep: None,
         stop_at: at,
+        simpler,
+        tape,
         ..Settings::default()
     };
 
     let outcome = run(seed, corpus, &settings);
     let text = report(&outcome);
     print!("{text}");
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/sim")
-        .join(format!("{seed:#x}"));
+    let directory = directory(seed);
     std::fs::create_dir_all(&directory)?;
     std::fs::write(directory.join("trace.log"), &text)?;
     println!("written to {}", directory.join("trace.log").display());

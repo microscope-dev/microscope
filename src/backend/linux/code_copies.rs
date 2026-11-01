@@ -67,8 +67,8 @@ struct Proven {
 /// A trap of the debugger's that the program copied, and the byte the
 /// code holds there.
 pub(super) struct CopiedTrap {
-    address: u64,
-    original: u8,
+    pub(super) address: u64,
+    pub(super) original: u8,
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -77,16 +77,24 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// copy holds come out of it before it becomes a module.
     pub(super) fn observe_code_copies(&mut self, pid: Pid, anonymous: &[AnonymousCode]) {
         self.observe_code_copies_with(pid, anonymous, |controller, traps| {
-            for trap in traps {
-                let word = controller.ptrace.read_word(pid, trap.address).ok()?;
-                let restored = (word & !0xff) | u64::from(trap.original);
-                controller
-                    .ptrace
-                    .write_word(pid, trap.address, restored)
-                    .ok()?;
-            }
-            Some(())
+            controller.restore_copied_traps(pid, traps)
         });
+    }
+
+    /// Puts back the code's own byte where each of `traps` lies in a copy.
+    pub(super) fn restore_copied_traps(&self, pid: Pid, traps: &[CopiedTrap]) -> Option<()> {
+        for trap in traps {
+            // Through the aligned word that holds the trap: an unaligned
+            // word at a mapping's last bytes would reach the next page.
+            super::memory::patch_byte(
+                VirtualAddress::new(trap.address),
+                trap.original,
+                |word| self.ptrace.read_word(pid, word),
+                |word, value| self.ptrace.write_word(pid, word, value),
+            )
+            .ok()?;
+        }
+        Some(())
     }
 
     /// Whether the trap a thread `pid` stopped after is one the program

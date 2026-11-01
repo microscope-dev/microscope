@@ -30,7 +30,10 @@ fn group_name(choice: u32) -> String {
 /// A capture of `stacks` (frame choices, innermost first, and whether a
 /// truncation ends them), `samples` (thread, time, weight, stack, task
 /// choice), and `waits` (time, weight, stack, task choice). Frame 5 has no
-/// symbols, and frames 6 and 7 inline one function into another.
+/// symbols, frames 6 and 7 inline one function into another, frame 8 is
+/// `a` again in the module made again at the same path, as node's perf
+/// map makes it, and frame 9 is another `a`, of another module. Each
+/// frame's lines are at lines of their own.
 fn capture(
     stacks: &[(Vec<usize>, bool)],
     samples: &[(u32, i64, u64, usize, u32)],
@@ -38,18 +41,33 @@ fn capture(
 ) -> Capture {
     let mut builder = CaptureBuilder::new();
     let module = builder.module("/bin/app", None, [0; 16], 0);
+    let at = |function, number| LineInput {
+        line: number,
+        ..line(function)
+    };
 
     let mut frames = Vec::new();
-    for (index, name) in FUNCTIONS.iter().enumerate() {
-        let frame = builder.frame(FrameKind::Native, module, 0x10 * index as u64, 0);
-        builder.symbolize(frame, module, &[line(name)]);
+    for (index, name) in (0..).zip(FUNCTIONS) {
+        let frame = builder.frame(FrameKind::Native, module, 0x10 * u64::from(index), 0);
+        builder.symbolize(frame, module, &[at(name, index + 1)]);
         frames.push(frame);
     }
 
     frames.push(builder.frame(FrameKind::Native, module, 0x500, 0));
-    for (address, (inner, outer)) in [(0x600, ("b", "a")), (0x700, ("a", "c"))] {
+    for (address, lines) in [
+        (0x600, [at("b", 7), at("a", 8)]),
+        (0x700, [at("a", 1), at("c", 9)]),
+    ] {
         let frame = builder.frame(FrameKind::Native, module, address, 0);
-        builder.symbolize(frame, module, &[line(inner), line(outer)]);
+        builder.symbolize(frame, module, &lines);
+        frames.push(frame);
+    }
+
+    let remade = builder.module("/bin/app", None, [1; 16], 0);
+    let other = builder.module("/lib/libz.so", None, [2; 16], 0);
+    for (module, address) in [(remade, 0x800), (other, 0x10)] {
+        let frame = builder.frame(FrameKind::Native, module, address, 0);
+        builder.symbolize(frame, module, &[at("a", 1)]);
         frames.push(frame);
     }
 
@@ -105,13 +123,13 @@ fn line(function: &str) -> LineInput<'_> {
     }
 }
 
-/// A transform of a function, by its name.
+/// A transform of a key, by what views show of it.
 #[derive(Debug, Clone)]
 enum Named {
-    Focus(&'static str),
-    Merge(&'static str),
-    Drop(&'static str),
-    Collapse(&'static str),
+    Focus(String),
+    Merge(String),
+    Drop(String),
+    Collapse(String),
     Cycles,
 }
 
@@ -129,32 +147,72 @@ fn loop_erased(path: &[String]) -> Vec<String> {
     kept
 }
 
-/// The names of a sample's path, computed from the capture's tables alone.
+/// What views show of a key: its name and its module's.
+fn shown(keys: &Keys<'_>, key: u32) -> String {
+    format!(
+        "{} [{}]",
+        keys.name(key),
+        keys.module(key).unwrap_or_default()
+    )
+}
+
+/// What views show of each key of a frame, innermost first, worked out
+/// from the capture's tables alone: a function by its name, a line by its
+/// function's name, file, and number, and code no symbols describe, or
+/// any code at address granularity, by its module and address. Each shows
+/// its module's file name, so that a module made again at one path is one
+/// module.
+fn naive_frame(capture: &Capture, frame: u32, granularity: Granularity) -> Vec<String> {
+    let record = &capture.frames[frame as usize];
+    if record.kind == FrameKind::Truncated as u8 {
+        return vec!["[frame pointer not kept] []".to_owned()];
+    }
+
+    let module = |module: u32| {
+        let path = capture.string(capture.modules[module as usize].path.get());
+        path.rsplit('/').next().unwrap_or(path)
+    };
+
+    let lines = capture.frame_lines(frame);
+    let lines = match granularity {
+        Granularity::Address => &[][..],
+        Granularity::PhysicalFunction => &lines[lines.len().saturating_sub(1)..],
+        Granularity::Function | Granularity::Line => lines,
+    };
+
+    if lines.is_empty() {
+        let module = module(record.module.get());
+        return vec![format!("{module}+{:#x} [{module}]", record.address.get())];
+    }
+
+    lines
+        .iter()
+        .map(|line| {
+            let function = &capture.functions[line.function.get() as usize];
+            let name = capture.string(function.name.get());
+            let module = module(function.module.get());
+            if granularity == Granularity::Line {
+                let file = capture.string(line.file.get());
+                format!("{name} {file}:{} [{module}]", line.number.get())
+            } else {
+                format!("{name} [{module}]")
+            }
+        })
+        .collect()
+}
+
+/// The keys of a sample's path, as views show them, computed from the
+/// capture's tables alone.
 fn naive_path(
     capture: &Capture,
-    stack: u32,
+    (stack, granularity): (u32, Granularity),
     invert: bool,
     transforms: &[Named],
 ) -> Option<Vec<String>> {
-    let mut path = Vec::new();
-
-    for frame in capture.stack_frames(stack) {
-        let record = &capture.frames[frame as usize];
-        if record.kind == FrameKind::Truncated as u8 {
-            path.push("[frame pointer not kept]".to_owned());
-            continue;
-        }
-
-        let lines = capture.frame_lines(frame);
-        if lines.is_empty() {
-            path.push(format!("app+{:#x}", record.address.get()));
-        }
-
-        for line in lines {
-            let function = &capture.functions[line.function.get() as usize];
-            path.push(capture.string(function.name.get()).to_owned());
-        }
-    }
+    let mut path: Vec<String> = capture
+        .stack_frames(stack)
+        .flat_map(|frame| naive_frame(capture, frame, granularity))
+        .collect();
 
     if !invert {
         path.reverse();
@@ -203,16 +261,26 @@ type Stacks = Vec<(Vec<usize>, bool)>;
 type Samples = Vec<(u32, i64, u64, usize, u32)>;
 type Waits = Vec<(i64, u64, usize, u32)>;
 
-/// A range, threads, transforms by kind and function, and inversion; and
-/// whether waits are queried, tasks by choice, and whether by task.
+/// A range, threads, transforms by kind and key, and inversion; whether
+/// waits are queried, tasks by choice, and whether by task; and the
+/// granularity.
 type Selection = (
-    (Option<(i64, i64)>, Option<Vec<u32>>, Vec<(u8, usize)>, bool),
+    (
+        Option<(i64, i64)>,
+        Option<Vec<u32>>,
+        Vec<(u8, prop::sample::Index)>,
+        bool,
+    ),
     (bool, Option<Vec<u32>>, bool),
+    Granularity,
 );
+
+/// How many frames [`capture`] makes.
+const FRAMES: usize = 10;
 
 fn strategy() -> impl Strategy<Value = (Stacks, (Samples, Waits), Selection)> {
     let stacks = prop::collection::vec(
-        (prop::collection::vec(0..8_usize, 1..7), any::<bool>()),
+        (prop::collection::vec(0..FRAMES, 1..7), any::<bool>()),
         1..6,
     );
     stacks.prop_flat_map(|stacks| {
@@ -222,16 +290,24 @@ fn strategy() -> impl Strategy<Value = (Stacks, (Samples, Waits), Selection)> {
             0..40,
         );
         let waits = prop::collection::vec((0..100_i64, 1..5_u64, 0..count, 0..UNNAMED), 0..10);
-        let range = prop::option::of((0..100_i64, 0..100_i64));
+        let range = prop::option::of((0..100_i64, 1..=100_i64))
+            .prop_map(|range| range.map(|(start, length)| (start, start + length)));
         let threads = prop::option::of(prop::collection::vec(0..3_u32, 0..3));
-        let transforms = prop::collection::vec((0..5_u8, 0..FUNCTIONS.len()), 0..3);
+        let transforms = prop::collection::vec((0..5_u8, any::<prop::sample::Index>()), 0..3);
         let tasks = prop::option::of(prop::collection::vec(0..=UNNAMED, 0..3));
+        let granularity = prop::sample::select(vec![
+            Granularity::Function,
+            Granularity::PhysicalFunction,
+            Granularity::Line,
+            Granularity::Address,
+        ]);
         (
             Just(stacks),
             (samples, waits),
             (
                 (range, threads, transforms, any::<bool>()),
                 (any::<bool>(), tasks, any::<bool>()),
+                granularity,
             ),
         )
     })
@@ -278,31 +354,26 @@ fn selected(
 proptest! {
     /// The engine agrees with a naive oracle that follows each sample
     /// alone: the same weight reaches every path of the tree and every
-    /// function, under any selection and transforms, inverted or not.
+    /// key, under any selection and transforms of the keys the capture
+    /// has, at any granularity, inverted or not.
     #[test]
     fn aggregation_agrees_with_a_sample_by_sample_oracle(
-        (stacks, (samples, waits), ((range, threads, transforms, invert), (of_waits, tasks, by_task))) in strategy()
+        (stacks, (samples, waits), ((range, threads, transforms, invert), (of_waits, tasks, by_task), granularity)) in strategy()
     ) {
         let capture = capture(&stacks, &samples, &waits);
         prop_assert_eq!(capture.validate(), Ok(()));
-        let keys = Keys::new(&capture, Granularity::Function);
-        let named: Vec<Named> = transforms
-            .iter()
-            .map(|(kind, function)| {
-                let name = FUNCTIONS[*function];
-                match kind {
-                    0 => Named::Focus(name),
-                    1 => Named::Merge(name),
-                    2 => Named::Drop(name),
-                    3 => Named::Collapse(name),
-                    _ => Named::Cycles,
-                }
-            })
-            .collect();
+        let keys = Keys::new(&capture, granularity);
 
-        // A transform of a function no frame has removes nothing, or, as a
-        // focus, everything; the engine can only name functions it has.
-        let known = |name: &str| key_named(&keys, name);
+        // Every key a frame has, by what views show of it: one key each.
+        let mut shown_keys: BTreeMap<String, u32> = BTreeMap::new();
+        for frame in 0..index(capture.frames.len()) {
+            for &key in keys.frame(frame) {
+                let earlier = shown_keys.insert(shown(&keys, key), key);
+                prop_assert!(earlier.is_none_or(|earlier| earlier == key), "{} is two keys", shown(&keys, key));
+            }
+        }
+
+        let shown_keys: Vec<(String, u32)> = shown_keys.into_iter().collect();
         let mut query = Query {
             source: if of_waits { Source::Waits } else { Source::Samples },
             range,
@@ -315,21 +386,17 @@ proptest! {
 
         let mut naive_transforms = Vec::new();
 
-        for transform in &named {
-            let (Named::Focus(name) | Named::Merge(name) | Named::Drop(name) | Named::Collapse(name)) = transform else {
-                naive_transforms.push(Named::Cycles);
-                query.transforms.push(Transform::CollapseCycles);
-                continue;
+        for (kind, chosen) in &transforms {
+            let (name, key) = chosen.get(&shown_keys).clone();
+            let (named, transform) = match kind {
+                0 => (Named::Focus(name), Transform::Focus(key)),
+                1 => (Named::Merge(name), Transform::Merge(key)),
+                2 => (Named::Drop(name), Transform::Drop(key)),
+                3 => (Named::Collapse(name), Transform::CollapseRecursion(key)),
+                _ => (Named::Cycles, Transform::CollapseCycles),
             };
-            let Some(key) = known(name) else { continue };
-            naive_transforms.push(transform.clone());
-            query.transforms.push(match transform {
-                Named::Focus(_) => Transform::Focus(key),
-                Named::Merge(_) => Transform::Merge(key),
-                Named::Drop(_) => Transform::Drop(key),
-                Named::Collapse(_) => Transform::CollapseRecursion(key),
-                Named::Cycles => Transform::CollapseCycles,
-            });
+            naive_transforms.push(named);
+            query.transforms.push(transform);
         }
 
         // The oracle: each selected sample alone.
@@ -338,36 +405,35 @@ proptest! {
         let mut expected_weight = 0;
 
         for (task, stack, weight) in selected(&capture, range, threads.as_ref(), (of_waits, tasks.as_ref())) {
-            {
-                let Some(mut path) = naive_path(&capture, stack, invert, &naive_transforms) else {
-                    continue;
-                };
+            let Some(mut path) = naive_path(&capture, (stack, granularity), invert, &naive_transforms) else {
+                continue;
+            };
 
-                if by_task {
-                    let choice = if task == NONE { UNNAMED } else { task };
-                    if invert {
-                        path.push(group_name(choice));
-                    } else {
-                        path.insert(0, group_name(choice));
-                    }
+            if by_task {
+                let choice = if task == NONE { UNNAMED } else { task };
+                let group = format!("{} []", group_name(choice));
+                if invert {
+                    path.push(group);
+                } else {
+                    path.insert(0, group);
                 }
+            }
 
-                expected_weight += weight;
-                for depth in 1..=path.len() {
-                    *expected_totals.entry(path[..depth].to_vec()).or_default() += weight;
-                }
+            expected_weight += weight;
+            for depth in 1..=path.len() {
+                *expected_totals.entry(path[..depth].to_vec()).or_default() += weight;
+            }
 
-                let innermost = if invert { path.first() } else { path.last() };
-                if let Some(innermost) = innermost {
-                    expected_functions.entry(innermost.clone()).or_default().0 += weight;
-                }
+            let innermost = if invert { path.first() } else { path.last() };
+            if let Some(innermost) = innermost {
+                expected_functions.entry(innermost.clone()).or_default().0 += weight;
+            }
 
-                let mut seen: Vec<&String> = Vec::new();
-                for step in &path {
-                    if !seen.contains(&step) {
-                        seen.push(step);
-                        expected_functions.entry(step.clone()).or_default().1 += weight;
-                    }
+            let mut seen: Vec<&String> = Vec::new();
+            for step in &path {
+                if !seen.contains(&step) {
+                    seen.push(step);
+                    expected_functions.entry(step.clone()).or_default().1 += weight;
                 }
             }
         }
@@ -380,12 +446,13 @@ proptest! {
             let mut path = Vec::new();
             let mut at = index(node);
             while at != NONE {
-                path.push(keys.name(tree.key[at as usize]));
+                path.push(shown(&keys, tree.key[at as usize]));
                 at = tree.parent[at as usize];
             }
 
             path.reverse();
-            totals.insert(path, tree.total[node]);
+            let earlier = totals.insert(path.clone(), tree.total[node]);
+            prop_assert!(earlier.is_none(), "{:?} is two nodes", path);
 
             // A node's subtree is the run of deeper nodes after it.
             let end = tree.end[node] as usize;
@@ -401,7 +468,7 @@ proptest! {
         let costs: BTreeMap<String, (u64, u64)> = costs
             .rows
             .into_iter()
-            .map(|cost| (keys.name(cost.key), (cost.own, cost.total)))
+            .map(|cost| (shown(&keys, cost.key), (cost.own, cost.total)))
             .collect();
         let expected_functions: BTreeMap<String, (u64, u64)> = expected_functions
             .into_iter()
@@ -1205,77 +1272,116 @@ fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
     builder.finish()
 }
 
+/// A sample carries the labels of the spans open on its thread at its
+/// time, and its task's: a query of a label keeps exactly the samples that
+/// carry it, and one by a key roots each at its innermost value.
+fn samples_carry_the_open_labels(
+    spans: &[(u32, i64, i64, u32)],
+    samples: &[Sample],
+    wanted: u32,
+) -> Result<(), TestCaseError> {
+    let capture = labeled(spans, samples);
+    let keys = Keys::new(&capture, Granularity::Function);
+
+    // The innermost route a sample carries: the latest-starting span
+    // that covers it, of two that start together the shorter, and of
+    // two alike the first recorded, which the capture nests inside.
+    let route = |&(thread, time, _, _): &Sample| {
+        spans
+            .iter()
+            .enumerate()
+            .filter(|(_, (on, start, length, _))| {
+                *on == thread && *start <= time && time < start + length
+            })
+            .max_by_key(|(order, (_, start, length, _))| {
+                (
+                    *start,
+                    std::cmp::Reverse(*length),
+                    std::cmp::Reverse(*order),
+                )
+            })
+            .map(|(_, (_, _, _, value))| *value)
+    };
+
+    let carries = |sample: &Sample, value: u32| {
+        spans.iter().any(|(on, start, length, carried)| {
+            *on == sample.0 && *start <= sample.1 && sample.1 < start + length && *carried == value
+        })
+    };
+
+    let weight = |keep: &dyn Fn(&Sample) -> bool| -> u64 {
+        samples
+            .iter()
+            .filter(|sample| keep(sample))
+            .map(|sample| sample.2)
+            .sum()
+    };
+
+    let query = |labels: Vec<(&str, String)>, by: Option<&str>| Query {
+        labels: labels
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+        by_label: by.map(str::to_owned),
+        ..Query::default()
+    };
+
+    let routed = keys.aggregate(&query(vec![("route", format!("v{wanted}"))], None));
+    prop_assert_eq!(routed.weight, weight(&|sample| carries(sample, wanted)));
+    let spun = keys.aggregate(&query(vec![("phase", "spin".to_owned())], None));
+    prop_assert_eq!(spun.weight, weight(&|sample| sample.3 == 1));
+    let by = keys.aggregate(&query(Vec::new(), Some("route")));
+    let mut roots = BTreeMap::new();
+
+    for node in (0..by.len()).filter(|&node| by.depth[node] == 0) {
+        roots.insert(keys.name(by.key[node]), by.total[node]);
+    }
+
+    let mut expected = BTreeMap::new();
+
+    for sample in samples {
+        let name = route(sample).map_or_else(
+            || "[no route]".to_owned(),
+            |value| format!("route=v{value}"),
+        );
+        *expected.entry(name).or_insert(0) += sample.2;
+    }
+
+    if spans.is_empty() {
+        // A key no label has roots every sample at its absence.
+        expected = expected
+            .into_values()
+            .map(|weight| ("[no such label]".to_owned(), weight))
+            .collect();
+    }
+
+    prop_assert_eq!(roots, expected);
+    Ok(())
+}
+
+/// Found by the property below: two spans alike but for their value, so
+/// the first recorded is the innermost.
+#[test]
+fn of_two_alike_spans_the_first_recorded_is_innermost() {
+    samples_carry_the_open_labels(&[(1, 35, 27, 0), (1, 35, 27, 1)], &[(1, 35, 1, 0)], 0).unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// A sample carries the labels of the spans open on its thread at its
-    /// time, and its task's: a query of a label keeps exactly the samples
-    /// that carry it, and one by a key roots each at its innermost value.
     #[test]
     fn samples_carry_the_labels_open_on_their_thread_and_their_tasks(
         spans in proptest::collection::vec((0..2_u32, 0..100_i64, 0..50_i64, 0..3_u32), 0..12),
         samples in proptest::collection::vec((0..2_u32, 0..160_i64, 1..5_u64, 0..4_u32), 0..40),
         wanted in 0..3_u32,
     ) {
-        let capture = labeled(&spans, &samples);
-        let keys = Keys::new(&capture, Granularity::Function);
-
-        // The innermost route a sample carries: the latest-starting span
-        // that covers it, of two that start together the shorter, and of
-        // two alike the first recorded, which the capture nests inside.
-        let route = |&(thread, time, _, _): &Sample| {
-            spans
-                .iter()
-                .enumerate()
-                .filter(|(_, (on, start, length, _))| *on == thread && *start <= time && time < start + length)
-                .max_by_key(|(order, (_, start, length, _))| (*start, std::cmp::Reverse(*length), std::cmp::Reverse(*order)))
-                .map(|(_, (_, _, _, value))| *value)
-        };
-
-        let carries = |sample: &Sample, value: u32| {
-            spans.iter().any(|(on, start, length, carried)| {
-                *on == sample.0 && *start <= sample.1 && sample.1 < start + length && *carried == value
-            })
-        };
-
-        let weight = |keep: &dyn Fn(&Sample) -> bool| -> u64 {
-            samples.iter().filter(|sample| keep(sample)).map(|sample| sample.2).sum()
-        };
-
-        let query = |labels: Vec<(&str, String)>, by: Option<&str>| Query {
-            labels: labels.into_iter().map(|(key, value)| (key.to_owned(), value)).collect(),
-            by_label: by.map(str::to_owned),
-            ..Query::default()
-        };
-
-        let routed = keys.aggregate(&query(vec![("route", format!("v{wanted}"))], None));
-        prop_assert_eq!(routed.weight, weight(&|sample| carries(sample, wanted)));
-        let spun = keys.aggregate(&query(vec![("phase", "spin".to_owned())], None));
-        prop_assert_eq!(spun.weight, weight(&|sample| sample.3 == 1));
-        let by = keys.aggregate(&query(Vec::new(), Some("route")));
-        let mut roots = BTreeMap::new();
-
-        for node in (0..by.len()).filter(|&node| by.depth[node] == 0) {
-            roots.insert(keys.name(by.key[node]), by.total[node]);
-        }
-
-        let mut expected = BTreeMap::new();
-
-        for sample in &samples {
-            let name = route(sample).map_or_else(|| "[no route]".to_owned(), |value| format!("route=v{value}"));
-            *expected.entry(name).or_insert(0) += sample.2;
-        }
-
-        if spans.is_empty() {
-            // A key no label has roots every sample at its absence.
-            expected = expected.into_values().map(|weight| ("[no such label]".to_owned(), weight)).collect();
-        }
-
-        prop_assert_eq!(roots, expected);
+        samples_carry_the_open_labels(&spans, &samples, wanted)?;
     }
 
-    /// A track's blocks draw every zone in the range once, never overlap,
-    /// and fold only zones narrower than the fold.
+    /// A track's blocks draw every zone in the range once, fold only zones
+    /// narrower than the fold, and never overlap in a row; a zone drawn
+    /// alone is one that was recorded, below every zone it begins inside,
+    /// however the zones cross.
     #[test]
     fn zone_blocks_draw_each_zone_once_and_fold_only_narrow_ones(
         spans in proptest::collection::vec((0..2_u32, 0..400_i64, 0..60_i64, 0..3_u32), 0..40),
@@ -1285,7 +1391,7 @@ proptest! {
         let capture = labeled(&spans, &[]);
         let range = (range.0, range.0 + range.1);
         let blocks = zone_blocks(&capture, range, None, fold);
-        let mut drawn: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        let mut drawn: BTreeMap<u32, u32> = BTreeMap::new();
 
         for pair in blocks.windows(2) {
             if (pair[0].thread, pair[0].depth) == (pair[1].thread, pair[1].depth) {
@@ -1294,21 +1400,41 @@ proptest! {
         }
 
         for block in &blocks {
-            *drawn.entry((block.thread, block.depth)).or_default() += block.count;
+            *drawn.entry(block.thread).or_default() += block.count;
             prop_assert!(block.count == 1 || block.end - block.start < fold * i64::from(2 * block.count));
         }
 
-        let mut expected: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-        for zones in &capture.zone_ranges {
-            let start = zones.start.get() as usize;
-            for zone in &capture.zones[start..start + zones.count.get() as usize] {
-                if zone.end.get() > range.0 && zone.start.get() < range.1 {
-                    *expected.entry((zones.thread.get(), zones.depth.get())).or_default() += 1;
-                }
+        // The spans in the range, as recorded, each thread's choice its row.
+        let mut expected: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut recorded: Vec<(u32, i64, i64, String)> = Vec::new();
+        for &(thread, start, length, value) in &spans {
+            if start + length > range.0 && start < range.1 {
+                *expected.entry(thread).or_default() += 1;
+                recorded.push((thread, start, start + length, format!("v{value}")));
             }
         }
 
         prop_assert_eq!(drawn, expected);
+
+        let alone: Vec<_> = blocks.iter().filter(|block| block.count == 1).collect();
+        for block in &alone {
+            let zone = (block.thread, block.start, block.end, capture.string(block.value).to_owned());
+            let found = recorded.iter().position(|recorded| *recorded == zone);
+            prop_assert!(found.is_some(), "{:?} was not recorded", zone);
+            recorded.swap_remove(found.unwrap_or_default());
+        }
+
+        // Of two zones, the one that begins first, or of two that begin
+        // together the longer, holds the other where the other begins
+        // inside it, and is drawn above it.
+        for outer in &alone {
+            for inner in alone.iter().filter(|inner| inner.thread == outer.thread) {
+                let first = (outer.start, std::cmp::Reverse(outer.end)) < (inner.start, std::cmp::Reverse(inner.end));
+                if first && inner.start < outer.end {
+                    prop_assert!(outer.depth < inner.depth, "{:?} holds {:?}", outer, inner);
+                }
+            }
+        }
     }
 }
 
@@ -1387,134 +1513,335 @@ fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
     );
 }
 
-/// A capture of one thread's samples of stacks of [`FUNCTIONS`], innermost
-/// first.
-fn stacks_of(samples: &[(Vec<usize>, u64)]) -> Capture {
+/// The functions diffs' stacks choose from: a name and its module. Two
+/// names are each two functions, of two modules, as views name them alike.
+const NAMED: [(&str, &str); 6] = [
+    ("a", "/bin/app"),
+    ("b", "/bin/app"),
+    ("c", "/bin/app"),
+    ("a", "/lib/libz.so"),
+    ("d", "/lib/libz.so"),
+    ("b", "/lib/libz.so"),
+];
+
+/// A stack of indices into [`NAMED`], innermost first, and its weight.
+type WeightedStack = (Vec<usize>, u64);
+
+/// A capture of one thread's samples of stacks of [`NAMED`], innermost
+/// first, its functions made in `order`, so that their keys are in that
+/// order.
+fn stacks_of(samples: &[WeightedStack], order: &[usize]) -> Capture {
     let mut builder = CaptureBuilder::new();
-    let module = builder.module("/bin/app", None, [0; 16], 0);
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let mut frames = [NONE; NAMED.len()];
 
-    let frames: Vec<u32> = (0..FUNCTIONS.len())
-        .map(|at| {
-            let frame = builder.frame(FrameKind::Native, module, 0x10 * at as u64, 0);
-            builder.symbolize(frame, module, &[line(FUNCTIONS[at])]);
-            frame
-        })
-        .collect();
+    for &at in order {
+        let (name, path) = NAMED[at];
+        let module = builder.module(path, None, [0; 16], 0);
+        let frame = builder.frame(FrameKind::Native, module, 0x10 * at as u64, 0);
+        builder.symbolize(frame, module, &[line(name)]);
+        frames[at] = frame;
+    }
 
-    for (time, (stack, weight)) in samples.iter().enumerate() {
+    for (time, (stack, weight)) in (0..).zip(samples) {
         let stack: Vec<u32> = stack.iter().map(|&at| frames[at]).collect();
         let stack = builder.stack(&stack);
-        builder.sample(
-            thread,
-            i64::try_from(time).unwrap_or(0),
-            *weight,
-            stack,
-            NONE,
-        );
+        builder.sample(thread, time, *weight, stack, NONE);
     }
 
     builder.finish()
 }
 
-/// Each path's weight, outermost name first.
-fn path_weights(samples: &[(Vec<usize>, u64)]) -> BTreeMap<Vec<&'static str>, u64> {
-    let mut paths = BTreeMap::new();
+/// The weight of the samples whose path of names, outermost first, is
+/// each path, and of those whose path begins with it.
+fn path_weights(samples: &[WeightedStack]) -> BTreeMap<Vec<&'static str>, (u64, u64)> {
+    let mut paths: BTreeMap<Vec<&'static str>, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in samples {
-        let path = stack.iter().rev().map(|&at| FUNCTIONS[at]).collect();
-        *paths.entry(path).or_default() += weight;
+        let path: Vec<&str> = stack.iter().rev().map(|&at| NAMED[at].0).collect();
+        paths.entry(path.clone()).or_default().0 += weight;
+        for depth in 1..=path.len() {
+            paths.entry(path[..depth].to_vec()).or_default().1 += weight;
+        }
     }
 
     paths
 }
 
-fn weighted_stacks() -> impl Strategy<Value = Vec<(Vec<usize>, u64)>> {
+/// Each name's own and total weight, summed over the functions of that
+/// name: a sample is in a function's total once however often it calls
+/// it.
+fn name_costs(samples: &[WeightedStack]) -> BTreeMap<&'static str, (u64, u64)> {
+    let mut costs: BTreeMap<&'static str, (u64, u64)> = BTreeMap::new();
+    for (stack, weight) in samples {
+        costs.entry(NAMED[stack[0]].0).or_default().0 += weight;
+        let mut functions = stack.clone();
+        functions.sort_unstable();
+        functions.dedup();
+        for at in functions {
+            costs.entry(NAMED[at].0).or_default().1 += weight;
+        }
+    }
+
+    costs
+}
+
+/// How many functions of each name the samples call.
+fn named_functions(samples: &[WeightedStack]) -> BTreeMap<&'static str, usize> {
+    let called: std::collections::BTreeSet<usize> = samples
+        .iter()
+        .flat_map(|(stack, _)| stack.iter().copied())
+        .collect();
+    let mut count = BTreeMap::new();
+    for at in called {
+        *count.entry(NAMED[at].0).or_default() += 1;
+    }
+
+    count
+}
+
+fn weighted_stacks() -> impl Strategy<Value = Vec<WeightedStack>> {
     proptest::collection::vec(
-        (
-            proptest::collection::vec(0..FUNCTIONS.len(), 1..5),
-            1..100_u64,
-        ),
+        (proptest::collection::vec(0..NAMED.len(), 1..5), 1..100_u64),
         0..20,
     )
+}
+
+/// Every function's place, in some order.
+fn order() -> impl Strategy<Value = Vec<usize>> {
+    Just((0..NAMED.len()).collect::<Vec<_>>()).prop_shuffle()
+}
+
+/// Two profiles' trees merge into one whose every path holds exactly each
+/// profile's own and total weight there, whichever has it, nested as trees
+/// are, however each made its functions and wherever two share a name, a
+/// function paired with itself where both have it; and their costs merge
+/// so that each function of each profile has one row, and each name's are
+/// each profile's.
+#[expect(
+    clippy::too_many_lines,
+    reason = "each check reads against the two profiles built above it"
+)]
+fn a_diff_holds_each_profiles_weight(
+    (ours, theirs): (&[WeightedStack], &[WeightedStack]),
+    (our_order, their_order): (&[usize], &[usize]),
+) -> Result<(), TestCaseError> {
+    let (current, base) = (stacks_of(ours, our_order), stacks_of(theirs, their_order));
+    let (current_keys, base_keys) = (
+        Keys::new(&current, Granularity::Function),
+        Keys::new(&base, Granularity::Function),
+    );
+    let everything = Query::default();
+    let diff = diff_trees(
+        (&current_keys, &current_keys.aggregate(&everything)),
+        (&base_keys, &base_keys.aggregate(&everything)),
+    );
+    let name = |node: usize| match diff.side[node] {
+        Side::Current => current_keys.name(diff.key[node]),
+        Side::Base => base_keys.name(diff.key[node]),
+    };
+
+    // Each path's own and total weight now and before, over every node
+    // of that path of names.
+    let mut paths: BTreeMap<Vec<&'static str>, [(u64, u64); 2]> = BTreeMap::new();
+
+    for node in 0..diff.len() {
+        let mut path = Vec::new();
+        let mut at = index(node);
+        while at != NONE {
+            path.push(name(at as usize));
+            at = diff.parent[at as usize];
+        }
+
+        path.reverse();
+        let shown: Vec<&'static str> = path
+            .iter()
+            .map(|name| {
+                NAMED
+                    .iter()
+                    .find(|(known, _)| known == name)
+                    .expect("a function")
+                    .0
+            })
+            .collect();
+        let weights = paths.entry(shown).or_default();
+        weights[0].0 += diff.own[node];
+        weights[0].1 += diff.total[node];
+        weights[1].0 += diff.base_own[node];
+        weights[1].1 += diff.base_total[node];
+
+        let inner =
+            (node + 1..diff.end[node] as usize).filter(|&child| diff.parent[child] == index(node));
+        let (total, base_total) = inner
+            .fold((diff.own[node], diff.base_own[node]), |sum, child| {
+                (sum.0 + diff.total[child], sum.1 + diff.base_total[child])
+            });
+        prop_assert_eq!(
+            (diff.total[node], diff.base_total[node]),
+            (total, base_total)
+        );
+        prop_assert!(
+            (node + 1..diff.end[node] as usize).all(|inside| diff.depth[inside] > diff.depth[node])
+        );
+    }
+
+    // A path the base has too, function for function, is paired with
+    // it, not with another function of the same names.
+    let mut functions_before: BTreeMap<Vec<usize>, (u64, u64)> = BTreeMap::new();
+    for (stack, weight) in theirs {
+        let path: Vec<usize> = stack.iter().rev().copied().collect();
+        functions_before.entry(path.clone()).or_default().0 += weight;
+        for depth in 1..=path.len() {
+            functions_before
+                .entry(path[..depth].to_vec())
+                .or_default()
+                .1 += weight;
+        }
+    }
+
+    let function = |key: u32| {
+        let name = current_keys.name(key);
+        let module = current_keys.module(key).unwrap_or_default();
+        NAMED
+            .iter()
+            .position(|(known, path)| *known == name && path.ends_with(module))
+            .expect("a function")
+    };
+
+    for node in (0..diff.len()).filter(|&node| diff.side[node] == Side::Current) {
+        let mut path = Vec::new();
+        let mut at = index(node);
+        while at != NONE {
+            path.push(function(diff.key[at as usize]));
+            at = diff.parent[at as usize];
+        }
+
+        path.reverse();
+        if let Some(&weights) = functions_before.get(&path) {
+            prop_assert_eq!(
+                (diff.base_own[node], diff.base_total[node]),
+                weights,
+                "{:?}",
+                path
+            );
+        }
+    }
+
+    let side = |side: usize| -> BTreeMap<Vec<&'static str>, (u64, u64)> {
+        paths
+            .iter()
+            .map(|(path, weights)| (path.clone(), weights[side]))
+            .filter(|(_, weights)| *weights != (0, 0))
+            .collect()
+    };
+    prop_assert_eq!(side(0), path_weights(ours));
+    prop_assert_eq!(side(1), path_weights(theirs));
+
+    let costs = diff_costs(
+        (&current_keys, &current_keys.functions(&everything)),
+        (&base_keys, &base_keys.functions(&everything)),
+    );
+
+    let mut rows: BTreeMap<String, usize> = BTreeMap::new();
+    let mut summed: [BTreeMap<String, (u64, u64)>; 2] = Default::default();
+    let mut current_rows = Vec::new();
+
+    // A function the base calls too is paired with itself.
+    let mut costs_before: BTreeMap<usize, (u64, u64)> = BTreeMap::new();
+    for (stack, weight) in theirs {
+        costs_before.entry(stack[0]).or_default().0 += weight;
+        let mut called = stack.clone();
+        called.sort_unstable();
+        called.dedup();
+        for at in called {
+            costs_before.entry(at).or_default().1 += weight;
+        }
+    }
+
+    for cost in costs {
+        let name = match cost.side {
+            Side::Current => {
+                current_rows.push(cost.key);
+                if let Some(&before) = costs_before.get(&function(cost.key)) {
+                    prop_assert_eq!(
+                        (cost.base_own, cost.base_total),
+                        before,
+                        "{}",
+                        current_keys.qualified(cost.key)
+                    );
+                }
+
+                current_keys.name(cost.key)
+            }
+            Side::Base => base_keys.name(cost.key),
+        };
+
+        *rows.entry(name.clone()).or_default() += 1;
+        let now = summed[0].entry(name.clone()).or_default();
+        (now.0, now.1) = (now.0 + cost.own, now.1 + cost.total);
+        let before = summed[1].entry(name).or_default();
+        (before.0, before.1) = (before.0 + cost.base_own, before.1 + cost.base_total);
+    }
+
+    let named = |costs: BTreeMap<&str, (u64, u64)>| -> BTreeMap<String, (u64, u64)> {
+        costs
+            .into_iter()
+            .map(|(name, cost)| (name.to_owned(), cost))
+            .collect()
+    };
+    let [now, before] = summed.map(|side| {
+        side.into_iter()
+            .filter(|(_, cost)| *cost != (0, 0))
+            .collect::<BTreeMap<_, _>>()
+    });
+    prop_assert_eq!(now, named(name_costs(ours)));
+    prop_assert_eq!(before, named(name_costs(theirs)));
+
+    // Every function has a row, and a row pairs at most one of each.
+    current_rows.sort_unstable();
+    let rows_now = current_rows.len();
+    current_rows.dedup();
+    prop_assert_eq!(current_rows.len(), rows_now, "a function has two rows");
+    let (ours_named, theirs_named) = (named_functions(ours), named_functions(theirs));
+    for (name, count) in &rows {
+        let most = ours_named
+            .get(name.as_str())
+            .copied()
+            .unwrap_or(0)
+            .max(theirs_named.get(name.as_str()).copied().unwrap_or(0));
+        prop_assert_eq!(*count, most, "rows of {}", name);
+    }
+    prop_assert_eq!(
+        rows.len(),
+        ours_named
+            .keys()
+            .chain(theirs_named.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    );
+    Ok(())
+}
+
+/// Found by the property below: the current profile's `b` paired with the
+/// base's other `b`, which came first, rather than with itself.
+#[test]
+fn a_diff_pairs_a_function_with_itself_before_another_of_its_name() {
+    let order: Vec<usize> = (0..NAMED.len()).collect();
+    a_diff_holds_each_profiles_weight(
+        (&[(vec![1], 1)], &[(vec![5], 12), (vec![1], 1)]),
+        (&order, &order),
+    )
+    .unwrap();
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Two profiles' trees merge into one whose every path holds exactly
-    /// each profile's weight there, whichever has it, nested as trees are;
-    /// and their costs merge so that each function's are each profile's.
     #[test]
     fn a_diff_holds_each_profiles_weight_on_every_path(
         ours in weighted_stacks(),
         theirs in weighted_stacks(),
+        (our_order, their_order) in (order(), order()),
     ) {
-        let (current, base) = (stacks_of(&ours), stacks_of(&theirs));
-        let (current_keys, base_keys) = (
-            Keys::new(&current, Granularity::Function),
-            Keys::new(&base, Granularity::Function),
-        );
-        let everything = Query::default();
-        let diff = diff_trees(
-            (&current_keys, &current_keys.aggregate(&everything)),
-            (&base_keys, &base_keys.aggregate(&everything)),
-        );
-        let name = |node: usize| match diff.side[node] {
-            Side::Current => current_keys.name(diff.key[node]),
-            Side::Base => base_keys.name(diff.key[node]),
-        };
-
-        let (mut now, mut before) = (BTreeMap::new(), BTreeMap::new());
-
-        for node in 0..diff.len() {
-            let mut path = Vec::new();
-            let mut at = index(node);
-            while at != NONE {
-                path.push(name(at as usize));
-                at = diff.parent[at as usize];
-            }
-
-            path.reverse();
-            let shown: Vec<&'static str> = path
-                .iter()
-                .map(|name| *FUNCTIONS.iter().find(|known| *known == name).expect("a function"))
-                .collect();
-            prop_assert!(!now.contains_key(&shown), "{:?} is merged once", shown);
-            if diff.own[node] > 0 {
-                now.insert(shown.clone(), diff.own[node]);
-            }
-
-            if diff.base_own[node] > 0 {
-                before.insert(shown, diff.base_own[node]);
-            }
-
-            let inner = (node + 1..diff.end[node] as usize).filter(|&child| diff.parent[child] == index(node));
-            let (total, base_total) = inner.fold((diff.own[node], diff.base_own[node]), |sum, child| {
-                (sum.0 + diff.total[child], sum.1 + diff.base_total[child])
-            });
-            prop_assert_eq!((diff.total[node], diff.base_total[node]), (total, base_total));
-            prop_assert!((node + 1..diff.end[node] as usize).all(|inside| diff.depth[inside] > diff.depth[node]));
-        }
-
-        prop_assert_eq!(now, path_weights(&ours));
-        prop_assert_eq!(before, path_weights(&theirs));
-
-        let costs = diff_costs(
-            (&current_keys, &current_keys.functions(&everything)),
-            (&base_keys, &base_keys.functions(&everything)),
-        );
-
-        for cost in costs {
-            let name = match cost.side {
-                Side::Current => current_keys.name(cost.key),
-                Side::Base => base_keys.name(cost.key),
-            };
-
-            let own = |samples: &[(Vec<usize>, u64)]| -> u64 {
-                samples.iter().filter(|(stack, _)| FUNCTIONS[stack[0]] == name).map(|(_, weight)| weight).sum()
-            };
-
-            prop_assert_eq!((cost.own, cost.base_own), (own(&ours), own(&theirs)), "{}", name);
-        }
+        a_diff_holds_each_profiles_weight((&ours, &theirs), (&our_order, &their_order))?;
     }
 }

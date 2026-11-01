@@ -74,6 +74,8 @@ pub mod syscalls;
 pub use backend::syscall_engines;
 #[cfg(test)]
 mod test_memory;
+#[cfg(test)]
+pub(crate) mod test_strategies;
 pub mod timings;
 
 /// Exports for `tests/miri.rs`, a separate target so Miri need not run the

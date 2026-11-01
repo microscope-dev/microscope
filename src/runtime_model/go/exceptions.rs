@@ -444,7 +444,9 @@ impl Reader<'_> {
                 )))
             }
             kind if kind == kinds.complex128 => {
-                let imaginary = read_unsigned(self.stop, VirtualAddress::new(data + 8), 8)
+                let imaginary = data
+                    .checked_add(8)
+                    .and_then(|at| read_unsigned(self.stop, VirtualAddress::new(at), 8))
                     .ok_or("the panic's value is unreadable")?;
                 Some(Scalar::Number(go_complex(
                     f64::from_bits(read(8)?),
@@ -642,7 +644,219 @@ fn go_complex(real: f64, imaginary: f64, single: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{go_complex, go_float};
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+
+    use proptest::prelude::*;
+
+    use super::{Layout, Reader, Scalar, go_complex, go_float};
+    use crate::runtime_model::RuntimeStop;
+    use crate::test_strategies::hostile_address;
+    use crate::{ThreadId, VirtualAddress};
+
+    /// Where the tests' values and panics lie.
+    const DATA: u64 = 0x1000;
+    const PANICS: u64 = 0x1_0000;
+
+    /// The layout of the Go runtime the Go model's tests read.
+    fn layout() -> &'static Layout {
+        static LAYOUT: OnceLock<Layout> = OnceLock::new();
+        LAYOUT.get_or_init(|| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("build/test-programs/steps-go-o2");
+            let image = crate::debug_info::load_module(
+                &path,
+                crate::ModuleImageId::new(0),
+                &crate::debug_info::DebugFileSearch::default(),
+            )
+            .expect("run `just build-test-programs`")
+            .image;
+            Layout::bind(image.as_ref()).expect("the runtime's layout")
+        })
+    }
+
+    #[derive(Default)]
+    struct Memory(BTreeMap<u64, u8>);
+
+    impl Memory {
+        fn bytes(&mut self, address: u64, bytes: &[u8]) {
+            for (at, byte) in (address..).zip(bytes) {
+                self.0.insert(at, *byte);
+            }
+        }
+
+        fn word(&mut self, address: u64, value: u64) {
+            self.bytes(address, &value.to_le_bytes());
+        }
+    }
+
+    impl RuntimeStop for Memory {
+        fn read(&self, address: VirtualAddress, bytes: &mut [u8]) -> bool {
+            for (index, byte) in (0..).zip(bytes.iter_mut()) {
+                let Some(read) = address
+                    .get()
+                    .checked_add(index)
+                    .and_then(|at| self.0.get(&at))
+                else {
+                    return false;
+                };
+                *byte = *read;
+            }
+
+            true
+        }
+
+        fn thread_pointer(&self, _thread: ThreadId) -> Option<u64> {
+            None
+        }
+
+        fn instruction(&self, _thread: ThreadId) -> Option<VirtualAddress> {
+            None
+        }
+
+        fn load_bias(&self) -> crate::LoadBias {
+            crate::LoadBias::default()
+        }
+
+        fn threads(&self) -> Vec<ThreadId> {
+            Vec::new()
+        }
+    }
+
+    /// Each kind `printpanicval` prints by value, with what it prints for
+    /// these 16 bytes, read as Rust reads its own types.
+    fn printed(bytes: [u8; 16]) -> Vec<(u64, Option<String>)> {
+        let kinds = layout().kinds;
+        let at = |range: std::ops::Range<usize>| &bytes[range];
+        let word = |start: usize| u64::from_le_bytes(at(start..start + 8).try_into().unwrap());
+        let single =
+            |start: usize| f64::from(f32::from_le_bytes(at(start..start + 4).try_into().unwrap()));
+        vec![
+            (kinds.boolean, Some((bytes[0] != 0).to_string())),
+            (kinds.int, Some(word(0).cast_signed().to_string())),
+            (kinds.int64, Some(word(0).cast_signed().to_string())),
+            (kinds.int8, Some(i8::from_le_bytes([bytes[0]]).to_string())),
+            (
+                kinds.int16,
+                Some(i16::from_le_bytes([bytes[0], bytes[1]]).to_string()),
+            ),
+            (
+                kinds.int32,
+                Some(i32::from_le_bytes(at(0..4).try_into().unwrap()).to_string()),
+            ),
+            (kinds.uint, Some(word(0).to_string())),
+            (kinds.uint64, Some(word(0).to_string())),
+            (kinds.uintptr, Some(word(0).to_string())),
+            (kinds.uint8, Some(bytes[0].to_string())),
+            (
+                kinds.uint16,
+                Some(u16::from_le_bytes([bytes[0], bytes[1]]).to_string()),
+            ),
+            (
+                kinds.uint32,
+                Some(u32::from_le_bytes(at(0..4).try_into().unwrap()).to_string()),
+            ),
+            (kinds.float32, Some(go_float(single(0), true))),
+            (
+                kinds.float64,
+                Some(go_float(f64::from_bits(word(0)), false)),
+            ),
+            (
+                kinds.complex64,
+                Some(go_complex(single(0), single(4), true)),
+            ),
+            (
+                kinds.complex128,
+                Some(go_complex(
+                    f64::from_bits(word(0)),
+                    f64::from_bits(word(8)),
+                    false,
+                )),
+            ),
+            // A string's words are a pointer and a length, which these
+            // bytes rarely make readable.
+            (kinds.string, None),
+        ]
+    }
+
+    /// A complex128 at the top of memory is unreadable, and is no panic
+    /// of microscope's own.
+    #[test]
+    fn a_value_at_the_top_of_memory_is_unreadable() {
+        let memory = Memory::default();
+        let reader = Reader {
+            stop: &memory,
+            layout: layout(),
+        };
+        assert!(
+            reader
+                .scalar(layout().kinds.complex128, u64::MAX - 7)
+                .is_err()
+        );
+    }
+
+    proptest! {
+        /// A value of each kind reads as Rust reads the same bytes where
+        /// the panic's data pointer is where the value is, and wherever
+        /// the pointer leads otherwise, it reads as a value or a reason.
+        #[test]
+        fn a_panic_value_reads_its_bytes_wherever_its_pointer_leads(
+            bytes in any::<[u8; 16]>(),
+            kind in 0..17_usize,
+            data in hostile_address(vec![DATA]),
+        ) {
+            let mut memory = Memory::default();
+            memory.bytes(DATA, &bytes);
+            let reader = Reader { stop: &memory, layout: layout() };
+            let (kind, expected) = printed(bytes).swap_remove(kind);
+
+            let value = reader.scalar(kind, data);
+            if let (true, Some(expected)) = (data == DATA, expected) {
+                let Ok(Some(Scalar::Number(number))) = value else {
+                    panic!("kind {kind} is no number");
+                };
+                prop_assert_eq!(number, expected);
+            }
+        }
+
+        /// A chain of panics prints oldest first, each after the first
+        /// indented, up to the most chained; wherever a link leads
+        /// otherwise, the chain prints or says why it cannot.
+        #[test]
+        fn a_chain_of_panics_prints_wherever_its_links_lead(
+            links in proptest::collection::vec(
+                (any::<bool>(), hostile_address(vec![0])),
+                1..70,
+            ),
+            first in hostile_address(vec![PANICS]),
+        ) {
+            let layout = layout();
+            let mut memory = Memory::default();
+            let mut sound = first == PANICS;
+            for (index, (hostile, link)) in (0..).zip(&links) {
+                let panic = PANICS + 0x100 * index;
+                let next = if index + 1 == links.len() as u64 { 0 } else { panic + 0x100 };
+                let link = if *hostile { *link } else { next };
+                sound &= link == next;
+                memory.word(panic + layout.link, link);
+                memory.word(panic + layout.arg, 0);
+                memory.word(panic + layout.arg + 8, 0);
+                for flag in [layout.recovered, layout.repanicked, layout.goexit] {
+                    memory.bytes(panic + flag, &[0]);
+                }
+            }
+
+            let reader = Reader { stop: &memory, layout };
+            let printed = reader.panics(first, 0);
+            if sound && links.len() <= super::MAX_PANICS {
+                let mut expected = "panic: nil\n".to_owned();
+                expected.push_str(&"\tpanic: nil\n".repeat(links.len() - 1));
+                prop_assert_eq!(printed, Ok(expected));
+            } else if sound {
+                prop_assert!(printed.is_err());
+            }
+        }
+    }
 
     /// Each case is what Go 1.27's `print` writes for the value.
     #[test]

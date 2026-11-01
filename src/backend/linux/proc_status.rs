@@ -469,6 +469,8 @@ fn thread_in_status(status: &[u8], process: u32, thread: u32) -> Option<TargetTh
 
 #[cfg(test)]
 mod tests {
+    use proptest::strategy::Strategy as _;
+
     use super::*;
 
     #[test]
@@ -685,9 +687,15 @@ mod tests {
     }
 
     fn stat_record(comm: &[u8], flags: u64, start: &str) -> Vec<u8> {
+        stat_record_in(comm, b'R', flags, start)
+    }
+
+    fn stat_record_in(comm: &[u8], state: u8, flags: u64, start: &str) -> Vec<u8> {
         let mut record = b"42 (".to_vec();
         record.extend_from_slice(comm);
-        record.extend_from_slice(b") R 1 42 42 0 -1 ");
+        record.extend_from_slice(b") ");
+        record.push(state);
+        record.extend_from_slice(b" 1 42 42 0 -1 ");
         record.extend_from_slice(format!("{flags} ").as_bytes());
         record.extend_from_slice(b"0 0 0 0 0 0 0 0 0 0 0 0 ");
         record.extend_from_slice(start.as_bytes());
@@ -782,17 +790,41 @@ mod tests {
         );
     }
 
+    /// A command name that reads as the rest of a record: a closing
+    /// parenthesis, then a zombie's state and fields.
+    #[test]
+    fn a_command_that_mimics_the_fields_after_it_is_still_the_command() {
+        let record = stat_record_in(b"x) Z 1 2 3 4 5 6 7 8 9", b'S', 0, "99");
+        assert_eq!(stat_state(&record), Some(b'S'));
+        assert_eq!(stat_start_time(&record), Some(99));
+        assert!(!stat_exited(&record));
+    }
+
     proptest::proptest! {
+        /// The command can hold any bytes, parentheses and digits and
+        /// states among them, and the fields after it still read as they
+        /// were written: a zombie or a dead task, or one whose flags say
+        /// it is exiting, has exited.
         #[test]
         fn arbitrary_command_bytes_do_not_change_numeric_stat_fields(
-            comm in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64),
-            start in proptest::prelude::any::<u64>(),
-            flags in proptest::prelude::any::<u64>(),
+            comm in proptest::prop_oneof![
+                proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64),
+                proptest::collection::vec(
+                    proptest::sample::select(b"() RZX0123456789".to_vec()),
+                    0..32,
+                ),
+            ],
+            state in proptest::sample::select(b"RSDTtZXPI".to_vec()),
+            start in crate::test_strategies::u64_edges(),
+            flags in crate::test_strategies::u64_edges(),
         ) {
-            let record = stat_record(&comm, flags, &start.to_string());
+            let record = stat_record_in(&comm, state, flags, &start.to_string());
             proptest::prop_assert_eq!(stat_start_time(&record), Some(start));
-            proptest::prop_assert_eq!(stat_state(&record), Some(b'R'));
-            proptest::prop_assert_eq!(stat_exited(&record), flags & 4 != 0);
+            proptest::prop_assert_eq!(stat_state(&record), Some(state));
+            proptest::prop_assert_eq!(
+                stat_exited(&record),
+                matches!(state, b'Z' | b'X') || flags & 4 != 0
+            );
         }
     }
 
@@ -900,14 +932,88 @@ mod tests {
         assert!(read(std::io::Cursor::new(huge)).unwrap().is_empty());
     }
 
+    /// A status record's `Tgid` and `NSpid` fields, as the kernel writes
+    /// them or damaged: an id may be zero, past `i32::MAX`, or past
+    /// `u32::MAX`, and there may be too many.
+    #[derive(Debug, Clone)]
+    struct Status {
+        tgid: u64,
+        ids: Vec<u64>,
+    }
+
+    /// A pid, or one of the values no pid has.
+    fn id(bad: bool) -> impl proptest::strategy::Strategy<Value = u64> {
+        let pid = 1_u64..=i32::MAX as u64;
+        let not_pid = proptest::sample::select(vec![
+            0,
+            i32::MAX as u64 + 1,
+            u64::from(u32::MAX),
+            u64::from(u32::MAX) + 1,
+        ]);
+        if bad { not_pid.boxed() } else { pid.boxed() }
+    }
+
+    /// A record's ids: a few, or about as many as are allowed, and now and
+    /// then one that is no pid.
+    fn status() -> impl proptest::strategy::Strategy<Value = Status> {
+        let length = proptest::prop_oneof![
+            3 => 1..=4_usize,
+            1 => MAX_ID_VALUES - 1..=MAX_ID_VALUES + 2,
+        ];
+        let bad = proptest::prelude::prop::bool::weighted(0.15);
+        (
+            bad,
+            length,
+            proptest::prelude::any::<proptest::sample::Index>(),
+            bad,
+        )
+            .prop_flat_map(|(bad_tgid, length, at, bad_id)| {
+                let at = at.index(length);
+                let ids = (0..length)
+                    .map(|index| id(bad_id && index == at))
+                    .collect::<Vec<_>>();
+                (id(bad_tgid), ids)
+            })
+            .prop_map(|(tgid, ids)| Status { tgid, ids })
+    }
+
+    /// An id a caller asks about, which `target_thread_ids` has checked is
+    /// a pid: mostly the one in the record, where that is one.
+    fn asked(id: u64) -> impl proptest::strategy::Strategy<Value = u32> {
+        let other = 1..=i32::MAX.cast_unsigned();
+        match u32::try_from(id).ok().filter(|id| valid_pid(*id)) {
+            Some(id) => {
+                proptest::prop_oneof![3 => proptest::strategy::Just(id), 1 => other].boxed()
+            }
+            None => other.boxed(),
+        }
+    }
+
     proptest::proptest! {
+        /// A status names the controlled thread's innermost id only when
+        /// its process and the thread's outermost id are the ones asked
+        /// about, and every id is a valid pid within the bound.
         #[test]
-        fn namespace_hierarchies_round_trip(
-            process in 1u32..=i32::MAX as u32,
-            ids in proptest::collection::vec(1u32..=i32::MAX as u32, 1..=MAX_ID_VALUES),
+        fn namespace_hierarchies_name_the_asked_thread_or_nothing(
+            (status, process, thread) in status().prop_flat_map(|status| {
+                let (process, thread) = (asked(status.tgid), asked(status.ids[0]));
+                (proptest::strategy::Just(status), process, thread)
+            })
         ) {
-            let status = format!("Tgid: {process}\nNSpid: {}\n", ids.iter().map(u32::to_string).collect::<Vec<_>>().join(" "));
-            proptest::prop_assert_eq!(thread_in_status(status.as_bytes(), process, ids[0]).map(TargetThreadId::get), ids.last().copied().map(u64::from));
+            let line = |ids: &[u64]| ids.iter().map(u64::to_string).collect::<Vec<_>>().join(" ");
+            let text = format!("Tgid:\t{}\nNSpid:\t{}\n", status.tgid, line(&status.ids));
+
+            let valid = |id: u64| (1..=i32::MAX as u64).contains(&id);
+            let expected = (u64::from(process) == status.tgid
+                && u64::from(thread) == status.ids[0]
+                && status.ids.len() <= MAX_ID_VALUES
+                && valid(status.tgid)
+                && status.ids.iter().all(|id| valid(*id)))
+                .then(|| status.ids[status.ids.len() - 1]);
+            proptest::prop_assert_eq!(
+                thread_in_status(text.as_bytes(), process, thread).map(TargetThreadId::get),
+                expected
+            );
         }
     }
 

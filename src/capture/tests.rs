@@ -472,6 +472,94 @@ fn validation_rejects_every_out_of_bounds_reference() {
     assert!(broken.validate().is_err(), "an unterminated string pool");
 }
 
+/// A tid reused at the moment its earlier thread ended names that thread
+/// still, as an event then may be either's; one reused a moment later is a
+/// thread of its own. A recording cut there and merged again agrees, as
+/// spans that share a moment overlap.
+#[test]
+fn a_tid_reused_as_its_thread_ends_is_that_thread() {
+    for (reused, threads) in [(40, 1), (41, 2)] {
+        let mut builder = CaptureBuilder::new();
+        let first = builder.thread(Pid::new(1), Tid::new(7), 0);
+        builder.thread_exit(Tid::new(7), 40);
+        let again = builder.thread(Pid::new(1), Tid::new(7), reused);
+        assert_eq!(first == again, threads == 1, "reused at {reused}");
+
+        let frame = builder.frame(FrameKind::Native, NONE, 0x10, 0);
+        let stack = builder.stack(&[frame]);
+        builder.sample(first, 30, 1, stack, NONE);
+        builder.sample(again, reused, 1, stack, NONE);
+
+        let mut before = builder.clone();
+        before.forget_from(reused);
+        builder.forget_before(reused);
+        let mut merged = CaptureBuilder::new();
+        merged.absorb(&before.finish());
+        merged.absorb(&builder.finish());
+        let merged = merged.finish();
+        assert_eq!(merged.threads.len(), threads, "reused at {reused}");
+        assert_eq!(merged.sample_ranges.len(), threads, "reused at {reused}");
+    }
+}
+
+/// A capture of one sample of `weight`, its string pool `padding` longer.
+fn weighing(weight: u64, padding: usize) -> Capture {
+    let mut builder = CaptureBuilder::new();
+    builder.string(&"p".repeat(padding));
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let frame = builder.frame(FrameKind::Native, NONE, 0x10, 0);
+    let stack = builder.stack(&[frame]);
+    builder.sample(thread, 1, weight, stack, NONE);
+    builder.finish()
+}
+
+fn file_of(captures: &[Capture]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut writer = file::Writer::new(&mut bytes).expect("header");
+    for capture in captures {
+        writer.chunk(&capture.seal().expect("seal")).expect("chunk");
+    }
+
+    writer.finish().expect("index");
+    bytes
+}
+
+/// Chunks that each weigh what a capture may can weigh more together:
+/// the merged capture is refused, as one chunk of that weight is.
+#[test]
+fn chunks_whose_weights_add_up_past_a_count_are_refused() {
+    let half = weighing(u64::MAX / 2 + 1, 0);
+    let bytes = file_of(&[half.clone(), half]);
+    assert!(
+        matches!(file::read(&bytes), Err(file::FileError::Chunk(_))),
+        "the merged weight overflows"
+    );
+}
+
+/// An index is used only where its entries lay the chunks out one after
+/// another, as the writer does: one that names other bytes, or a chunk
+/// twice, is damaged, and the chunks, each checked by its own checksum,
+/// are found by scanning instead. The read says the index was not whole.
+#[test]
+fn a_damaged_index_is_passed_over_for_the_chunks() {
+    let captures: Vec<Capture> = (1..=3).map(|weight| weighing(weight, 0)).collect();
+    let bytes = file_of(&captures);
+    let whole = file::read(&bytes).expect("the file");
+    assert_eq!((whole.chunks, whole.truncated), (3, false));
+    let entries = bytes.len() - 16 - 3 * 16;
+
+    let mut moved = bytes.clone();
+    moved[entries + 16] ^= 0x40;
+    let mut doubled = bytes;
+    doubled.copy_within(entries..entries + 16, entries + 32);
+
+    for damaged in [moved, doubled] {
+        let read = file::read(&damaged).expect("the chunks, found by scanning");
+        assert_eq!((read.chunks, read.truncated), (3, true));
+        assert_eq!(read.capture, whole.capture);
+    }
+}
+
 /// The capture fuzzer's seed is a whole file of this revision, so that
 /// the fuzzer starts past validation. `MICROSCOPE_UPDATE_SEED=1` rewrites it.
 #[test]

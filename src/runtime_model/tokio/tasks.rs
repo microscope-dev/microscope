@@ -99,6 +99,7 @@ impl TokioRuntime {
 
     /// Lists one runtime's tasks from a shard, at a task or the shard's
     /// head, until the page is full, which it says.
+    #[expect(clippy::too_many_lines, reason = "one walk over every shard")]
     fn list_page(
         &self,
         stop: &dyn RuntimeStop,
@@ -167,7 +168,23 @@ impl TokioRuntime {
                     break;
                 }
 
-                match self.node(stop, tasks, &list, at, previous) {
+                // tokio keeps each task in the shard its id picks, where
+                // a later page and a search by number look for it.
+                let found = self
+                    .node(stop, tasks, &list, at, previous)
+                    .and_then(|found| {
+                        let picked = found.id & (list.length - 1);
+                        if picked == shard {
+                            Ok(found)
+                        } else {
+                            Err(format!(
+                                "the task at {at:#x} is numbered {}, which shard {picked} holds",
+                                found.id
+                            )
+                            .into())
+                        }
+                    });
+                match found {
                     // A page ends only before a task the next can list.
                     Ok(_) if page.value.tasks.len() == limit => {
                         page.value.next = Some(Cursor::Node(at).encode());

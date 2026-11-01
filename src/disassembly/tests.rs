@@ -1,3 +1,5 @@
+use proptest::prelude::*;
+
 use super::fake::FakeSource;
 use super::*;
 use crate::{ByteOrder, PointerWidth};
@@ -564,4 +566,40 @@ fn indirect_targets_are_read_from_the_stopped_state() {
         indirect_target(&[0xff, 0x24, 0xc5, 0x08, 0x20, 0, 0], Some(&unknown)),
         needs
     );
+}
+
+/// A byte of code: often one that begins or shapes a branch, a call, or a
+/// load through memory, so that the oracles see indirect targets.
+fn code_byte() -> impl Strategy<Value = u8> {
+    prop_oneof![
+        prop::sample::select(vec![
+            0xff, 0xe8, 0xe9, 0xeb, 0xc3, 0x48, 0x8b, 0x90, 0x0f, 0x84, 0x24, 0x25, 0xc5, 0x15,
+            0x05, 0xcc,
+        ]),
+        any::<u8>(),
+    ]
+}
+
+proptest::proptest! {
+    /// The fuzz target's oracles: blocks stay in their ranges, indirect
+    /// targets loaded from memory are the bytes there, and windows hold
+    /// what they were asked for. Its header picks how many starts follow
+    /// it, and every case has code after them.
+    #[test]
+    fn decoding_any_bytes_keeps_the_fuzz_oracles(
+        (header, starts, code) in (any::<[u8; 8]>(), 0_u8..16)
+            .prop_flat_map(|(header, starts)| {
+                (
+                    Just(header),
+                    proptest::collection::vec(any::<u8>(), usize::from(starts) * 2),
+                    proptest::collection::vec(code_byte(), 1..64),
+                )
+            })
+    ) {
+        let mut data = header.to_vec();
+        data[0] = (header[0] & 0xf0) | u8::try_from(starts.len() / 2).expect("below 16");
+        data.extend(starts);
+        data.extend(code);
+        fuzz::run(&data);
+    }
 }

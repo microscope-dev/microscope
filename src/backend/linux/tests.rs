@@ -3535,6 +3535,91 @@ fn a_fork_child_loses_each_trap_it_inherited_even_one_lifted_since() {
     );
 }
 
+/// A trap in the last bytes of a mapping comes out of a fork child too.
+/// The word at the trap's own address would reach into the next page,
+/// which may be unmapped, so the scrub reads the aligned word holding it.
+#[test]
+fn a_fork_child_loses_a_trap_whose_word_reaches_an_unmapped_page() {
+    let mut harness = hit_harness(1, ">=1");
+    let parent = harness.threads[0];
+    let child = Pid::from_raw(6000);
+    let site = VirtualAddress::new(0x1ffd);
+    harness.inferior().breakpoints.insert(
+        site,
+        BreakpointSite {
+            original_byte: 0x55,
+            installed: true,
+            owners: BTreeSet::from([BreakpointOwner::Runtime]),
+        },
+    );
+    harness.store(0x1ff8, 0xcc00_0000_0000);
+    harness.trace().unreadable.borrow_mut().insert(site.get());
+
+    harness.trace().clone.replace(Some((child, child)));
+    harness
+        .event(parent, libc::PTRACE_EVENT_FORK)
+        .expect("fork event");
+    harness.trace().take_actions();
+    harness
+        .controller
+        .process_wait(WaitEvent::Stopped(child, Signal::SIGSTOP))
+        .expect("child's first stop");
+
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("write_word {child} 0x1ff8 0x550000000000")),
+        "the child loses the trap at {site}: {actions:?}"
+    );
+    assert!(
+        actions.contains(&format!("detach {child} None")),
+        "{actions:?}"
+    );
+}
+
+/// The program's own `int3` in a mapping's last bytes, before an unmapped
+/// page, is found through the aligned word that holds it.
+#[test]
+fn a_programs_trap_before_an_unmapped_page_is_its_own() {
+    let harness = hit_harness(1, ">=1");
+    let thread = harness.threads[0];
+    harness
+        .trace()
+        .program_counters
+        .borrow_mut()
+        .insert(thread, 0x1ffb);
+    harness.store(0x1ff8, 0x0000_0000_00cc_0000);
+    harness.trace().unreadable.borrow_mut().insert(0x1ffa);
+
+    assert_eq!(
+        harness.controller.program_trap(thread),
+        Some(VirtualAddress::new(0x1ffa))
+    );
+}
+
+/// A trap copied into a mapping's last bytes, before an unmapped page,
+/// comes out through the aligned word that holds it.
+#[test]
+fn a_copied_trap_before_an_unmapped_page_is_restored() {
+    let harness = hit_harness(1, ">=1");
+    let thread = harness.threads[0];
+    harness.store(0x1ff8, 0x11cc_0000_0000_0000);
+    harness.trace().unreadable.borrow_mut().insert(0x1ffe);
+
+    let trap = super::code_copies::CopiedTrap {
+        address: 0x1ffe,
+        original: 0x55,
+    };
+    assert_eq!(
+        harness.controller.restore_copied_traps(thread, &[trap]),
+        Some(())
+    );
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("write_word {thread} 0x1ff8 0x1155000000000000")),
+        "{actions:?}"
+    );
+}
+
 #[test]
 fn a_fork_whose_parent_is_killed_before_its_event_still_cleans_the_child() {
     let mut harness = hit_harness(1, ">=1");
@@ -3740,6 +3825,36 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
     }
 
     assert!(harness.controller.inferior.is_none());
+}
+
+/// After a panic, a trap in the last bytes of a mapping is given back its
+/// instruction through the aligned word that holds it: the word at the
+/// trap's own address would reach into the next page.
+#[test]
+fn a_panic_restores_a_trap_whose_word_reaches_an_unmapped_page() {
+    let mut harness = watch_harness(1);
+    harness.attached();
+    let thread = harness.threads[0];
+    let site = VirtualAddress::new(0x1ffd);
+    harness.inferior().breakpoints.insert(
+        site,
+        BreakpointSite {
+            original_byte: 0x55,
+            installed: true,
+            owners: BTreeSet::from([BreakpointOwner::Runtime]),
+        },
+    );
+    harness.store(0x1ff8, 0xcc00_0000_0000);
+    harness.trace().unreadable.borrow_mut().insert(site.get());
+    harness.trace().take_actions();
+
+    harness.controller.release_after_panic();
+
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("write_word {thread} 0x1ff8 0x550000000000")),
+        "the trap at {site} is restored: {actions:#?}"
+    );
 }
 
 /// The controller's invariant check fires on state that contradicts

@@ -12,7 +12,7 @@ use microscope::{
 };
 
 use super::format::register_bytes;
-use super::terminal::{Renderer, Role};
+use super::terminal::{Renderer, Role, escape_length};
 
 /// The most bytes one command renders.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
@@ -21,8 +21,12 @@ pub const OUTPUT_TRUNCATION_MARKER: &str = "<truncated: OutputBytes>";
 
 const ANSI_RESET: &str = "\u{1b}[0m";
 
+/// The OSC 8 sequence that ends a link.
+const LINK_END: &str = "\u{1b}]8;;\u{1b}\\";
+
 /// A string that stops growing at a byte limit, ending with a marker when
-/// truncated. Truncation never splits a UTF-8 character or an ANSI sequence.
+/// truncated. Truncation keeps a prefix of the input that splits no UTF-8
+/// character or escape sequence, and closes the link and style it cuts.
 struct BoundedOutput {
     value: String,
     limit: usize,
@@ -48,23 +52,27 @@ impl BoundedOutput {
             return;
         }
 
+        // Cut the input as a whole, so that what is kept is a prefix of it.
+        let room = self.limit - self.value.len();
+        self.value
+            .push_str(&text[..floor_char_boundary(text, room)]);
+
         let marker_bytes = OUTPUT_TRUNCATION_MARKER.len().min(self.limit);
-        let ansi = self.value.contains('\u{1b}') || text.contains('\u{1b}');
-        let reset_bytes = if ansi && self.limit >= marker_bytes + ANSI_RESET.len() {
-            ANSI_RESET.len()
+        let closing_bytes = if self.value.contains('\u{1b}') {
+            LINK_END.len() + ANSI_RESET.len()
         } else {
             0
         };
 
-        let content_limit = self.limit - marker_bytes - reset_bytes;
-        if self.value.len() > content_limit {
-            let end = safe_ansi_prefix_end(&self.value, content_limit);
-            self.value.truncate(end);
+        let content_limit = self.limit.saturating_sub(marker_bytes + closing_bytes);
+        let end = safe_ansi_prefix_end(&self.value, content_limit);
+        self.value.truncate(end);
+
+        if leaves_link_open(&self.value) {
+            self.value.push_str(LINK_END);
         }
 
-        let end = safe_ansi_prefix_end(text, content_limit - self.value.len());
-        self.value.push_str(&text[..end]);
-        if reset_bytes != 0 {
+        if self.value.contains("\u{1b}[") {
             self.value.push_str(ANSI_RESET);
         }
 
@@ -101,23 +109,52 @@ fn floor_char_boundary(text: &str, limit: usize) -> usize {
 }
 
 /// Returns the longest prefix length within `limit` that does not end inside
-/// a character or an incomplete ANSI escape sequence.
+/// a character or an escape sequence.
 fn safe_ansi_prefix_end(text: &str, limit: usize) -> usize {
-    let end = floor_char_boundary(text, limit);
-    let Some(escape) = text[..end].rfind('\u{1b}') else {
-        return end;
-    };
+    let mut end = 0;
 
-    let sequence = &text.as_bytes()[escape..end];
-    if sequence.get(1) != Some(&b'[')
-        || !sequence
-            .get(2..)
-            .is_some_and(|body| body.iter().any(|byte| (0x40..=0x7e).contains(byte)))
-    {
-        return escape;
+    while let Some(character) = text[end..].chars().next() {
+        let length = if character == '\u{1b}' {
+            escape_length(&text[end..])
+        } else {
+            Some(character.len_utf8())
+        };
+
+        match length {
+            Some(length) if end + length <= limit => end += length,
+            _ => break,
+        }
     }
 
     end
+}
+
+/// Whether `text` ends inside an OSC 8 link: its last link sequence names
+/// a target.
+fn leaves_link_open(text: &str) -> bool {
+    let mut open = false;
+    let mut rest = text;
+
+    while let Some(start) = rest.find('\u{1b}') {
+        let Some(length) = escape_length(&rest[start..]) else {
+            break;
+        };
+
+        let sequence = &rest[start..start + length];
+        if let Some(link) = sequence.strip_prefix("\u{1b}]8;") {
+            let link = link
+                .strip_suffix("\u{1b}\\")
+                .or_else(|| link.strip_suffix('\u{7}'))
+                .unwrap_or(link);
+            open = link
+                .split_once(';')
+                .is_some_and(|(_, target)| !target.is_empty());
+        }
+
+        rest = &rest[start + length..];
+    }
+
+    open
 }
 
 /// Truncates already rendered text to the output budget.
@@ -1297,6 +1334,242 @@ pub fn type_definition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    use crate::cli::terminal::{Look, Palette, PathStyle, ThemeName, ThemeOverrides, plain};
+
+    fn links() -> Renderer {
+        static LOOK: std::sync::OnceLock<Look> = std::sync::OnceLock::new();
+        let look = LOOK.get_or_init(|| Look {
+            palette: Palette::new(ThemeName::Default, &ThemeOverrides::default()),
+            paths: PathStyle::Absolute,
+            root: None,
+            unicode: false,
+            hyperlinks: true,
+        });
+        Renderer::with_look(true, look)
+    }
+
+    /// A piece of rendered output: text, painted text, a link, or another
+    /// whole escape sequence a terminal reads.
+    fn segment() -> impl Strategy<Value = String> {
+        let text = prop::collection::vec(
+            prop::sample::select(vec!["a", "b", " ", "é", "日本", "🦀", "\\", "\n"]),
+            0..8,
+        )
+        .prop_map(|pieces| pieces.concat());
+        prop_oneof![
+            3 => text.clone(),
+            2 => (prop::sample::select(Role::ALL.to_vec()), text.clone())
+                .prop_map(|(role, text)| Renderer::new(true).paint(role, text).to_string()),
+            2 => (prop::sample::select(vec!["/a b/é.c", "/src/x.rs"]), 1..1000_u32)
+                .prop_map(|(path, line)| links().location(std::path::Path::new(path), line)),
+            1 => Just("\u{1b}7".to_owned()),
+            1 => text.prop_map(|title| format!("\u{1b}]0;{title}\u{7}")),
+        ]
+    }
+
+    /// The text a terminal shows for `text`, or an error naming an escape
+    /// sequence or link left open: a control sequence ends at its final
+    /// byte, an operating system command at ST or BEL, and any other
+    /// escape after one character.
+    fn shown(text: &str) -> Result<String, String> {
+        let mut shown = String::new();
+        let mut characters = text.char_indices().peekable();
+        let mut link_open = false;
+
+        while let Some((start, character)) = characters.next() {
+            if character != '\u{1b}' {
+                shown.push(character);
+                continue;
+            }
+
+            match characters.next() {
+                Some((_, '[')) => {
+                    if !characters.any(|(_, character)| matches!(character, '@'..='~')) {
+                        return Err(format!("control sequence at {start} is open"));
+                    }
+                }
+                Some((body, ']')) => {
+                    let mut end = None;
+                    while let Some((index, character)) = characters.next() {
+                        if character == '\u{7}' {
+                            end = Some(index);
+                            break;
+                        }
+
+                        if character == '\u{1b}'
+                            && characters.next_if(|(_, next)| *next == '\\').is_some()
+                        {
+                            end = Some(index);
+                            break;
+                        }
+                    }
+
+                    let end = end.ok_or_else(|| format!("command at {start} is open"))?;
+                    if let Some(link) = text[body + 1..end].strip_prefix("8;") {
+                        link_open = link.split_once(';').is_some_and(|(_, url)| !url.is_empty());
+                    }
+                }
+                Some(_) => {}
+                None => return Err(format!("escape at {start} ends the text")),
+            }
+        }
+
+        if link_open {
+            return Err("a link is left open".to_owned());
+        }
+
+        Ok(shown)
+    }
+
+    proptest! {
+        /// Bounded output keeps to its limit, marks exactly the output it
+        /// cut, and cuts only where the plain text keeps a prefix of the
+        /// input and every escape and link is whole.
+        #[test]
+        fn bounded_output_is_a_whole_prefix_within_its_limit(
+            segments in prop::collection::vec(segment(), 0..=6),
+            limit in 1..80_usize,
+        ) {
+            let mut output = BoundedOutput::new(limit);
+            for segment in &segments {
+                output.push_str(segment);
+            }
+
+            let truncated = output.is_truncated();
+            let rendered = output.into_string();
+            let input = segments.concat();
+            let marker = &OUTPUT_TRUNCATION_MARKER[..OUTPUT_TRUNCATION_MARKER.len().min(limit)];
+
+            prop_assert!(rendered.len() <= limit, "{:?}", rendered);
+            prop_assert_eq!(truncated, input.len() > limit);
+            prop_assert_eq!(Ok(plain(&input)), shown(&input));
+            if truncated {
+                let content = rendered.strip_suffix(marker);
+                prop_assert!(content.is_some(), "{:?}", rendered);
+                let content = shown(content.unwrap_or_default());
+                prop_assert!(content.is_ok(), "{:?}: {:?}", rendered, content);
+                let content = content.unwrap_or_default();
+                prop_assert!(
+                    plain(&input).starts_with(&content),
+                    "{:?} is no prefix of {:?}", content, input
+                );
+            } else {
+                prop_assert_eq!(&rendered, &input);
+            }
+        }
+    }
+
+    /// A value's layout: leaves without commas or spaces, and groups in
+    /// the brackets values print with.
+    fn docs() -> impl Strategy<Value = Vec<Doc>> {
+        let leaf = prop::sample::select(vec!["a", "bb", "x=", "0x7f", "longer_leaf_text", "é"])
+            .prop_map(|text| Doc::Text(text.to_owned()));
+        let doc = leaf.prop_recursive(4, 40, 4, |inner| {
+            (
+                prop::sample::select(vec![
+                    ("{", "}"),
+                    ("[", "]"),
+                    ("Some(", ")"),
+                    ("{", "} <active member unknown>"),
+                ]),
+                prop::collection::vec(prop::collection::vec(inner, 1..3), 0..5),
+            )
+                .prop_map(|((open, close), items)| Doc::Group {
+                    open: open.to_owned(),
+                    items,
+                    close: close.to_owned(),
+                })
+        });
+        prop::collection::vec(doc, 1..3)
+    }
+
+    fn layout(width: usize, indent: usize) -> Layout {
+        Layout {
+            lines: Lines::Pretty,
+            width,
+            indent,
+            hexadecimal: false,
+            raw: false,
+            max_depth: 0,
+            max_elements: 0,
+        }
+    }
+
+    proptest! {
+        /// A pretty value is the compact one when it fits, and otherwise
+        /// the same text broken into lines that fit, but for a line no
+        /// break can shorten, which holds no two items side by side.
+        #[test]
+        fn pretty_layout_breaks_the_compact_form_into_lines_that_fit(
+            docs in docs(),
+            width in 1..80_usize,
+            indent in 1..5_usize,
+            start in 0..20_usize,
+        ) {
+            let mut flat = BoundedOutput::new(OUTPUT_LIMIT);
+            compact(&docs, &mut flat);
+            let flat = flat.into_string();
+            let mut broken = BoundedOutput::new(OUTPUT_LIMIT);
+            let mut column = start;
+            pretty(&docs, layout(width, indent), 0, 0, &mut column, &mut broken);
+            let broken = broken.into_string();
+
+            if start + flat.chars().count() <= width {
+                prop_assert_eq!(&broken, &flat);
+            }
+
+            let bare = |text: &str| text.chars().filter(|c| *c != ',' && !c.is_whitespace()).collect::<String>();
+            prop_assert_eq!(bare(&broken), bare(&flat));
+
+            for (index, line) in broken.split('\n').enumerate() {
+                let columns = line.chars().count() + if index == 0 { start } else { 0 };
+                prop_assert!(
+                    columns <= width || !line.contains(", "),
+                    "line {} of {:?} is {} columns wide", index, broken, columns
+                );
+            }
+
+            prop_assert_eq!(column, broken.rsplit('\n').next().unwrap_or_default().chars().count()
+                + if broken.contains('\n') { 0 } else { start });
+        }
+    }
+
+    /// The property's shrunk failures: a cut in the earlier text followed
+    /// by the start of the later one, and a cut inside a link's closing
+    /// sequence that left the link open.
+    #[test]
+    fn bounded_output_keeps_a_prefix_and_closes_the_link_it_cuts() {
+        let mut output = BoundedOutput::new(26);
+        output.push_str("aé");
+        output.push_str(&"x".repeat(30));
+        assert_eq!(output.into_string(), format!("a{OUTPUT_TRUNCATION_MARKER}"));
+
+        let start = "\u{1b}]8;;file:///a%20b/%C3%A9.c\u{1b}\\";
+        let link = format!("{start}/a b/é.c:1{LINK_END}");
+        let mut output = BoundedOutput::new(56);
+        output.push_str(&link);
+        output.push_str(&link);
+        assert_eq!(output.into_string(), OUTPUT_TRUNCATION_MARKER);
+
+        let mut output = BoundedOutput::new(68);
+        output.push_str(&link);
+        output.push_str(&link);
+        assert_eq!(
+            output.into_string(),
+            format!("{start}/a b{LINK_END}{OUTPUT_TRUNCATION_MARKER}")
+        );
+    }
+
+    /// Escapes that are neither colors nor links still end where a
+    /// terminal ends them.
+    #[test]
+    fn plain_text_drops_every_whole_escape() {
+        assert_eq!(plain("\u{1b}7a"), "a");
+        assert_eq!(plain("\u{1b}]0;title\u{7}ab"), "ab");
+        assert_eq!(plain("a\u{1b}[3"), "a");
+    }
 
     #[test]
     fn bounded_output_is_utf8_safe_and_never_exceeds_its_limit() {
@@ -1314,14 +1587,15 @@ mod tests {
         let styled = Renderer::new(true)
             .paint(Role::Value, "é".repeat(32))
             .to_string();
-        let mut output = BoundedOutput::new(32);
+        let mut output = BoundedOutput::new(48);
         output.push_str(&styled);
         let rendered = output.into_string();
         let content = rendered
             .strip_suffix(OUTPUT_TRUNCATION_MARKER)
             .expect("truncated output ends with its marker");
 
-        assert!(rendered.len() <= 32, "{rendered:?}");
+        assert!(rendered.len() <= 48, "{rendered:?}");
+        assert!(plain(content).starts_with('é'), "{rendered:?}");
         assert!(content.ends_with(ANSI_RESET), "{rendered:?}");
     }
 

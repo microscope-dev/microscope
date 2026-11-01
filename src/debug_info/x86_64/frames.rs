@@ -37,9 +37,23 @@ pub(in crate::debug_info) enum CodeFrame {
     /// Found from the frame pointer, which holds the address of the word
     /// that saved the caller's, `offset` bytes below the canonical frame
     /// address. Standard code saves it right below the return address, 16
-    /// bytes below. `below` is how far the stack pointer is below rbp,
-    /// when the code proves it.
-    Based { offset: u64, below: Option<u64> },
+    /// bytes below. `below` is what the code proves of how far the stack
+    /// pointer is below rbp.
+    Based { offset: u64, below: Below },
+}
+
+/// How far the stack pointer is below rbp, in a frame found from rbp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::debug_info) enum Below {
+    /// Exactly this many bytes.
+    Exact(u64),
+
+    /// At least this many bytes: code that only moves the stack pointer
+    /// down, such as `and rsp, -32`, keeps the bound it had.
+    AtLeast(u64),
+
+    /// Nothing the code proves.
+    Unknown,
 }
 
 /// Where the caller's frame pointer is, in a frame found from the stack
@@ -200,8 +214,15 @@ fn next_on_stack(
 ) -> Next {
     use CallerFramePointer::{Kept, Lost, Saved};
 
+    // A word below the stack pointer is free for a push, a callee, or a
+    // signal to overwrite, so a saved frame pointer freed there is lost.
     let stack = |pushed: Option<u64>, caller_frame_pointer| {
         pushed.map_or(Next::Unproved, |pushed| {
+            let caller_frame_pointer = match caller_frame_pointer {
+                Saved(offset) if offset > pushed.saturating_add(8) => Lost,
+                other => other,
+            };
+
             Next::Frame(CodeFrame::Stack {
                 pushed,
                 caller_frame_pointer,
@@ -249,7 +270,7 @@ fn next_on_stack(
     {
         return Next::Frame(CodeFrame::Based {
             offset: top,
-            below: Some(0),
+            below: Below::Exact(0),
         });
     }
 
@@ -270,7 +291,7 @@ fn next_on_stack(
 /// The frame after `instruction` of a frame found from the frame pointer.
 fn next_based(
     offset: u64,
-    below: Option<u64>,
+    below: Below,
     instruction: &Instruction,
     factory: &mut InstructionInfoFactory,
 ) -> Next {
@@ -284,10 +305,10 @@ fn next_based(
             })
         })
     };
-    let based = |below: Option<u64>| Next::Frame(CodeFrame::Based { offset, below });
+    let based = |below: Below| Next::Frame(CodeFrame::Based { offset, below });
 
     if instruction.mnemonic() == Mnemonic::Leave
-        || (is_pop_register(instruction, Register::RBP) && below == Some(0))
+        || (is_pop_register(instruction, Register::RBP) && below == Below::Exact(0))
     {
         return offset.checked_sub(16).map_or(Next::Unproved, |pushed| {
             Next::Frame(CodeFrame::Stack {
@@ -315,22 +336,51 @@ fn next_based(
     }
 
     if is_push(instruction) {
-        return based(below.and_then(|below| below.checked_add(8)));
+        return freed(below, 8).map_or(Next::Unproved, based);
     }
 
     if is_pop(instruction) {
-        return based(below.and_then(|below| below.checked_sub(8)));
+        return freed(below, -8).map_or(Next::Unproved, based);
     }
 
     if let Some(change) = stack_adjustment(instruction) {
-        return based(below.and_then(|below| below.checked_add_signed(change)));
+        return freed(below, change).map_or(Next::Unproved, based);
+    }
+
+    if is_realignment(instruction) {
+        return based(match below {
+            Below::Exact(below) | Below::AtLeast(below) => Below::AtLeast(below),
+            Below::Unknown => Below::Unknown,
+        });
     }
 
     if written.contains(&Register::RSP) {
-        return based(None);
+        return based(Below::Unknown);
     }
 
     based(below)
+}
+
+/// How far the stack pointer is below rbp once it moves down by `change`
+/// bytes from `below`, or `None` when that may free the word below rbp that
+/// saved the caller's frame pointer, for a push or a callee to overwrite.
+fn freed(below: Below, change: i64) -> Option<Below> {
+    match below {
+        Below::Exact(below) => below.checked_add_signed(change).map(Below::Exact),
+        Below::AtLeast(below) => below.checked_add_signed(change).map(Below::AtLeast),
+        Below::Unknown => (change > 0).then_some(Below::Unknown),
+    }
+}
+
+/// Whether `instruction` is `and rsp, imm` with a negative immediate,
+/// which aligns the stack pointer down and never moves it up.
+fn is_realignment(instruction: &Instruction) -> bool {
+    instruction.mnemonic() == Mnemonic::And
+        && instruction.op_count() == 2
+        && instruction.op0_kind() == OpKind::Register
+        && instruction.op0_register() == Register::RSP
+        && is_immediate(instruction.op1_kind())
+        && instruction.immediate(1).cast_signed() < 0
 }
 
 /// The full registers `instruction` writes, implicitly or not.
@@ -451,7 +501,7 @@ impl CodeFrame {
             (2, 0) => Some(stack(CallerFramePointer::Lost)),
             (3, 0) => Some(Self::Based {
                 offset: first,
-                below: None,
+                below: Below::Unknown,
             }),
             _ => None,
         }
@@ -530,7 +580,7 @@ pub(in crate::debug_info) fn runtime_frames(
 
     let held = CodeFrame::Based {
         offset: 16,
-        below: None,
+        below: Below::Unknown,
     }
     .encode();
     if let Some(held) = held.filter(|_| convention) {
@@ -632,6 +682,9 @@ fn read(
 }
 
 #[cfg(test)]
+mod emulated;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -675,7 +728,7 @@ mod tests {
             },
             Based {
                 offset: 16,
-                below: None,
+                below: Below::Unknown,
             },
         ] {
             let encoded = frame.encode().expect("it fits");
@@ -684,13 +737,13 @@ mod tests {
         // `below` is not kept, and a count past 15 bits has no encoding.
         let based = Based {
             offset: 16,
-            below: Some(8),
+            below: Below::Exact(8),
         };
         assert_eq!(
             based.encode().and_then(CodeFrame::decode),
             Some(Based {
                 offset: 16,
-                below: None
+                below: Below::Unknown
             })
         );
         assert_eq!(stack(1 << 15, Kept).and_then(CodeFrame::encode), None);
@@ -714,7 +767,7 @@ mod tests {
         let entry = stack(0, Kept).and_then(CodeFrame::encode).expect("entry");
         let convention = Based {
             offset: 16,
-            below: None,
+            below: Below::Unknown,
         }
         .encode()
         .expect("convention");
@@ -740,7 +793,7 @@ mod tests {
         let frames = CodeFrames::analyze(&code);
         let based = Some(Based {
             offset: 16,
-            below: Some(0),
+            below: Below::Exact(0),
         });
         assert_eq!(frames.at(4), based, "at the jump");
         assert_eq!(frames.at(6), None, "no path reaches ud2");
@@ -784,7 +837,7 @@ mod tests {
         let pushed = stack(8, Saved(16));
         let based = Some(Based {
             offset: 16,
-            below: Some(0),
+            below: Below::Exact(0),
         });
         assert_eq!(
             frames(&code),
@@ -812,8 +865,8 @@ mod tests {
         ];
         let frames = CodeFrames::analyze(&code);
         let based = |below| Some(Based { offset: 16, below });
-        assert_eq!(frames.at(8), based(Some(0)), "at push rbx");
-        assert_eq!(frames.at(13), based(Some(32)), "at the call");
+        assert_eq!(frames.at(8), based(Below::Exact(0)), "at push rbx");
+        assert_eq!(frames.at(13), based(Below::Exact(32)), "at the call");
         assert_eq!(frames.at(19), stack(16, Saved(16)), "at pop rbx");
         assert_eq!(frames.at(20), stack(8, Saved(16)), "at pop rbp");
         assert_eq!(frames.at(21), stack(0, Kept), "at ret");
@@ -822,7 +875,7 @@ mod tests {
         let based = |below| Some(Based { offset: 16, below });
         let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0xc9, 0xc3];
         let frames = CodeFrames::analyze(&code);
-        assert_eq!(frames.at(8), based(Some(32)), "at leave");
+        assert_eq!(frames.at(8), based(Below::Exact(32)), "at leave");
         assert_eq!(frames.at(9), stack(0, Kept), "at ret");
     }
 
@@ -836,7 +889,7 @@ mod tests {
             frames.at(5),
             Some(Based {
                 offset: 24,
-                below: Some(0)
+                below: Below::Exact(0)
             })
         );
     }
@@ -862,7 +915,7 @@ mod tests {
         // push rbp; mov rbp, rsp; je +0; call rax
         let based = Some(Based {
             offset: 16,
-            below: Some(0),
+            below: Below::Exact(0),
         });
         let frames = CodeFrames::analyze(&[0x55, 0x48, 0x89, 0xe5, 0x74, 0x00, 0xff, 0xd0]);
         assert_eq!(frames.at(6), based);
@@ -879,6 +932,65 @@ mod tests {
 
         // ud2; call rax
         assert_eq!(CodeFrames::analyze(&[0x0f, 0x0b, 0xff, 0xd0]).at(2), None);
+    }
+
+    #[test]
+    fn a_saved_frame_pointer_freed_from_the_stack_is_lost() {
+        // push rbp; add rsp, 8; mov rbp, rsp; push rbp; push rbp: the
+        // second push overwrites the word that saved the caller's rbp.
+        let code = [0x55, 0x48, 0x83, 0xc4, 0x08, 0x48, 0x89, 0xe5, 0x55, 0x55];
+        let frames = CodeFrames::analyze(&code);
+        assert_eq!(frames.at(1), stack(8, Saved(16)));
+        assert_eq!(frames.at(5), stack(0, Lost));
+        assert_eq!(frames.at(9), stack(8, Lost));
+    }
+
+    #[test]
+    fn freeing_the_stack_past_rbp_ends_the_proof() {
+        // push rbp; nop; mov rbp, rsp; add rsp, 8; call; push rbp: the
+        // call's return address overwrites the word that saved rbp.
+        let code = [
+            0x55, 0x90, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xc4, 0x08, 0xe8, 0x00, 0x10, 0x00, 0x00,
+            0x55,
+        ];
+        let frames = CodeFrames::analyze(&code);
+        assert_eq!(
+            frames.at(5),
+            Some(Based {
+                offset: 16,
+                below: Below::Exact(0)
+            })
+        );
+        assert_eq!(frames.at(9), None);
+        assert_eq!(frames.at(14), None);
+
+        // push rbp; mov rbp, rsp; and rsp, -16; pop rax: how far rsp is
+        // below rbp is not proved, so neither is what the pop frees.
+        let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xe4, 0xf0, 0x58, 0x90];
+        assert_eq!(CodeFrames::analyze(&code).at(9), None);
+    }
+
+    #[test]
+    fn a_realigned_frame_frees_its_arguments_within_the_bound_it_keeps() {
+        // push rbp; mov rbp, rsp; and rsp, -32; sub rsp, 64; push rax;
+        // push rcx; call rel32; add rsp, 16; leave; ret: aligning only moves
+        // rsp down, so freeing the call's two arguments frees nothing above
+        // the 64 bytes rsp is at least below rbp.
+        let code = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xe4, 0xe0, 0x48, 0x83, 0xec, 0x40, 0x50, 0x51,
+            0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xc4, 0x10, 0xc9, 0xc3,
+        ];
+        let frames = CodeFrames::analyze(&code);
+        let based = |below| Some(Based { offset: 16, below });
+        assert_eq!(frames.at(8), based(Below::AtLeast(0)), "after and");
+        assert_eq!(frames.at(14), based(Below::AtLeast(80)), "at the call");
+        assert_eq!(frames.at(23), based(Below::AtLeast(64)), "at leave");
+        assert_eq!(frames.at(24), stack(0, Kept), "at ret");
+
+        // add rsp, 88 instead frees past the bound.
+        let mut code = code;
+        code[22] = 0x58;
+        assert_eq!(CodeFrames::analyze(&code).at(23), None);
     }
 
     #[test]
@@ -902,7 +1014,7 @@ mod tests {
             frames.at(8),
             Some(Based {
                 offset: 16,
-                below: None
+                below: Below::AtLeast(0)
             })
         );
         assert_eq!(frames.at(9), None);

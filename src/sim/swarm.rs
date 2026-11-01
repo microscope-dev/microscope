@@ -172,3 +172,100 @@ impl fmt::Display for Swarm {
         )
     }
 }
+
+/// A simpler choice than a seed's for one part of a run's shape, which the
+/// shrinker tries in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Simpler {
+    Requests(u64),
+    OneLaunch,
+    NoFault,
+    NoPreemption,
+    OneInstructionBursts,
+    FaithfulDebugRegisters,
+    NoWatching,
+    NoAttach,
+    NoCatching,
+}
+
+impl Simpler {
+    pub const fn apply(self, swarm: &mut Swarm) {
+        match self {
+            Self::Requests(requests) => swarm.requests = requests,
+            Self::OneLaunch => swarm.launches = 1,
+            Self::NoFault => swarm.fault = None,
+            Self::NoPreemption => swarm.preempt = 0,
+            Self::OneInstructionBursts => swarm.burst = 1,
+            Self::FaithfulDebugRegisters => swarm.debug = DebugBehavior::Faithful,
+            Self::NoWatching => swarm.watching = false,
+            Self::NoAttach => swarm.attach = None,
+            Self::NoCatching => swarm.catching = false,
+        }
+    }
+
+    /// The simpler choices that would change `swarm`, in the order the
+    /// shrinker tries them: fewer requests first, the fewest first.
+    #[must_use]
+    pub fn for_swarm(swarm: &Swarm) -> Vec<Self> {
+        let fewer = std::iter::successors(Some(1_u64), |requests| requests.checked_mul(2))
+            .take_while(|&requests| requests < swarm.requests)
+            .map(Self::Requests);
+        let others = [
+            Self::OneLaunch,
+            Self::NoFault,
+            Self::NoPreemption,
+            Self::OneInstructionBursts,
+            Self::FaithfulDebugRegisters,
+            Self::NoWatching,
+            Self::NoAttach,
+            Self::NoCatching,
+        ];
+
+        fewer
+            .chain(others)
+            .filter(|simpler| {
+                let mut simplified = swarm.clone();
+                simpler.apply(&mut simplified);
+                simplified != *swarm
+            })
+            .collect()
+    }
+}
+
+impl fmt::Display for Simpler {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Requests(requests) => write!(formatter, "requests={requests}"),
+            Self::OneLaunch => formatter.write_str("launches=1"),
+            Self::NoFault => formatter.write_str("fault=none"),
+            Self::NoPreemption => formatter.write_str("preempt=0"),
+            Self::OneInstructionBursts => formatter.write_str("burst=1"),
+            Self::FaithfulDebugRegisters => formatter.write_str("debug=faithful"),
+            Self::NoWatching => formatter.write_str("watching=false"),
+            Self::NoAttach => formatter.write_str("attach=none"),
+            Self::NoCatching => formatter.write_str("catching=false"),
+        }
+    }
+}
+
+impl std::str::FromStr for Simpler {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        Ok(match text {
+            "launches=1" => Self::OneLaunch,
+            "fault=none" => Self::NoFault,
+            "preempt=0" => Self::NoPreemption,
+            "burst=1" => Self::OneInstructionBursts,
+            "debug=faithful" => Self::FaithfulDebugRegisters,
+            "watching=false" => Self::NoWatching,
+            "attach=none" => Self::NoAttach,
+            "catching=false" => Self::NoCatching,
+            _ => text
+                .strip_prefix("requests=")
+                .and_then(|requests| requests.parse().ok())
+                .map(Self::Requests)
+                .ok_or_else(|| format!("'{text}' is no simpler choice of a run's shape"))?,
+        })
+    }
+}

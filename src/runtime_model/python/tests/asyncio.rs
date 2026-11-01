@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use proptest::prelude::*;
+
 use super::super::asyncio::{Awaits, Tasks};
 use super::super::code::CodeTable;
 use super::super::frames::Walk;
@@ -757,4 +759,255 @@ fn a_tasks_context_is_its_own_node_and_the_running_tasks() {
             .is_err_and(|problem| problem.contains("no asyncio.Task")),
         "{unknown:?}"
     );
+}
+
+/// A change to the lists a model lays out: the node of the task at the
+/// first index has its own link changed, or another list's head is made
+/// to point at it, as lists caught mid-change or overwritten may be.
+#[derive(Debug, Clone)]
+enum Damage {
+    /// Both of the node's links cleared, as asyncio clears a freed task's.
+    Cleared(usize),
+
+    /// Its link back points elsewhere: at another node, or anywhere.
+    Prev(usize, usize, Option<u64>),
+
+    /// Its link on points elsewhere.
+    Next(usize, usize, Option<u64>),
+
+    /// The list of another owner begins at it.
+    Shared(usize, usize),
+}
+
+/// The tasks of each thread state's list, then the exited threads', and
+/// of tasks no list holds, with the damage done to them.
+#[derive(Debug, Clone)]
+struct Lists {
+    threads: Vec<usize>,
+    exited: usize,
+    unlinked: usize,
+    damage: Vec<Damage>,
+}
+
+fn lists(damaged: bool) -> impl Strategy<Value = Lists> {
+    let index = || 0..64_usize;
+    let elsewhere =
+        || proptest::option::of(crate::test_strategies::hostile_address(vec![super::HEAP]));
+    let damage = prop_oneof![
+        index().prop_map(Damage::Cleared),
+        (index(), index(), elsewhere()).prop_map(|(at, to, any)| Damage::Prev(at, to, any)),
+        (index(), index(), elsewhere()).prop_map(|(at, to, any)| Damage::Next(at, to, any)),
+        (index(), index()).prop_map(|(at, owner)| Damage::Shared(at, owner)),
+    ];
+    (
+        proptest::collection::vec(0..5_usize, 1..4),
+        0..5_usize,
+        0..3_usize,
+        proptest::collection::vec(damage, if damaged { 1..4 } else { 0..1 }),
+    )
+        .prop_map(|(threads, exited, unlinked, damage)| Lists {
+            threads,
+            exited,
+            unlinked,
+            damage,
+        })
+}
+
+/// A 3.14 process holding `lists`: the model of it, the tasks each list
+/// holds in order, and the tasks none does.
+struct Laid {
+    process: Process,
+    types: Types,
+    runtime: u64,
+    listed: Vec<u64>,
+    unlinked: Vec<u64>,
+}
+
+fn lay_out(lists: &Lists) -> Laid {
+    let (mut process, types, ty) = world(TASK_SIZE);
+    process.layout.set_field(Field::ThreadSize, STATE_SIZE);
+    let code = process.code("leaf", 1, &[(1, 0)]);
+    let resting = process.coroutine(&types, Constant::GeneratorCreated, code, None);
+
+    // Thread states are listed from the first, each linking to the next.
+    let mut states = Vec::new();
+    let mut next_state = 0;
+    for native in (1..=lists.threads.len() as u64).rev() {
+        next_state = process.thread_state(next_state, 0, native);
+        states.push(next_state);
+    }
+    states.reverse();
+    // The interpreter's state holds its list's head whole, both links.
+    let interpreter = process.alloc(STATE_SIZE);
+    process.word(interpreter, Field::InterpreterId, 0);
+    process.word(interpreter, Field::InterpreterNext, 0);
+    process.word(interpreter, Field::InterpreterThreadsHead, states[0]);
+    let runtime = process.runtime(interpreter);
+    process.memory.threads = (1..=lists.threads.len() as u64)
+        .map(ThreadId::new)
+        .collect();
+
+    let owners: Vec<(u64, Field, usize)> = states
+        .iter()
+        .zip(&lists.threads)
+        .map(|(&state, &count)| (state, Field::ThreadAsyncioTasksHead, count))
+        .chain([(
+            interpreter,
+            Field::InterpreterAsyncioTasksHead,
+            lists.exited,
+        )])
+        .collect();
+    let mut heads = Vec::new();
+    let mut listed = Vec::new();
+    for (owner, field, count) in owners {
+        let tasks: Vec<u64> = (0..count).map(|_| process.task(ty, resting, 0)).collect();
+        let head = process.empty_list(owner, field);
+        process.link(head, &tasks);
+        heads.push(head);
+        listed.extend(tasks);
+    }
+    let unlinked = (0..lists.unlinked)
+        .map(|_| process.task(ty, resting, 0))
+        .collect();
+
+    let node = process.offset(Field::TaskNode);
+    let next = process.offset(Field::LlistNext);
+    let prev = process.offset(Field::LlistPrev);
+    if !listed.is_empty() {
+        let pick = |index: &usize| listed[index % listed.len()] + node;
+        for damage in &lists.damage {
+            match damage {
+                Damage::Cleared(at) => {
+                    process.memory.write(pick(at) + next, 0, 8);
+                    process.memory.write(pick(at) + prev, 0, 8);
+                }
+                Damage::Prev(at, to, any) => {
+                    process
+                        .memory
+                        .write(pick(at) + prev, any.unwrap_or_else(|| pick(to)), 8);
+                }
+                Damage::Next(at, to, any) => {
+                    process
+                        .memory
+                        .write(pick(at) + next, any.unwrap_or_else(|| pick(to)), 8);
+                }
+                Damage::Shared(at, owner) => {
+                    let head = heads[owner % heads.len()];
+                    process.memory.write(head + next, pick(at), 8);
+                }
+            }
+        }
+    }
+
+    Laid {
+        process,
+        types,
+        runtime,
+        listed,
+        unlinked,
+    }
+}
+
+/// A task another list's head is made to point at is listed once, and
+/// one whose node asyncio cleared as it freed it is not listed, though a
+/// stale link leads to it: proptest's shrunk cases.
+#[test]
+fn a_task_two_lists_lead_to_or_one_freed_is_listed_once_or_not_at_all() {
+    let shared = Lists {
+        threads: vec![1],
+        exited: 0,
+        unlinked: 0,
+        damage: vec![Damage::Shared(0, 1)],
+    };
+    let laid = lay_out(&shared);
+    let (numbers, gaps) = paged(&laid, 1);
+    assert_eq!(numbers, laid.listed);
+    assert!(
+        gaps.iter().any(|gap| gap.contains("another list")),
+        "{gaps:?}"
+    );
+
+    let cleared = Lists {
+        threads: vec![0],
+        exited: 1,
+        unlinked: 0,
+        damage: vec![Damage::Cleared(0)],
+    };
+    let laid = lay_out(&cleared);
+    let (numbers, gaps) = paged(&laid, 1);
+    assert!(numbers.is_empty(), "{numbers:x?}");
+    assert!(gaps.iter().any(|gap| gap.contains("broken")), "{gaps:?}");
+    assert!(matches!(context(&laid, laid.listed[0]), Ok(None)));
+}
+
+/// The tasks pages of `limit` list, joined, with each page's gaps.
+fn paged(laid: &Laid, limit: usize) -> (Vec<u64>, Vec<String>) {
+    use crate::runtime_model::RuntimeModel as _;
+    let model = model(&laid.process, &laid.types, laid.runtime);
+    let (mut numbers, mut gaps) = (Vec::new(), Vec::new());
+    let mut start = Some(0);
+    let mut pages = 0;
+    while let Some(at) = start {
+        pages += 1;
+        assert!(pages < 100, "the pages never end");
+        let page = model.tasks(&laid.process.memory, at, limit, false);
+        assert!(page.value.tasks.len() <= limit);
+        numbers.extend(page.value.tasks.iter().map(|task| task.number));
+        gaps.extend(page.gaps.iter().map(ToString::to_string));
+        start = page.value.next;
+    }
+    (numbers, gaps)
+}
+
+fn context(laid: &Laid, task: u64) -> Result<Option<crate::runtime_model::TaskContext>, Arc<str>> {
+    use crate::runtime_model::RuntimeModel as _;
+    model(&laid.process, &laid.types, laid.runtime).task_context(
+        &laid.process.memory,
+        crate::runtime_model::TaskRef {
+            number: task,
+            locator: Some(task),
+        },
+    )
+}
+
+proptest! {
+    /// Undamaged lists page, at any limit, into every listed task once,
+    /// in the order of the lists, and each listed task, and no other, is
+    /// one whose context is its chain of awaits.
+    #[test]
+    fn undamaged_lists_page_into_every_task_once(lists in lists(false), limit in 1..8_usize) {
+        let laid = lay_out(&lists);
+        let (numbers, gaps) = paged(&laid, limit);
+        prop_assert!(gaps.is_empty(), "{:?}", gaps);
+        prop_assert_eq!(&numbers, &laid.listed);
+
+        for &task in &laid.listed {
+            prop_assert!(
+                matches!(context(&laid, task), Ok(Some(crate::runtime_model::TaskContext::Interpreted { .. }))),
+                "{:#x}",
+                task
+            );
+        }
+        for &task in &laid.unlinked {
+            prop_assert!(matches!(context(&laid, task), Ok(None)), "{:#x}", task);
+        }
+    }
+
+    /// However the lists are damaged, pages of any limit list no task
+    /// twice, and each task listed has a context or says why it has none.
+    #[test]
+    fn damaged_lists_list_each_task_once_with_a_context_or_a_reason(
+        lists in lists(true),
+        limit in 1..8_usize,
+    ) {
+        let laid = lay_out(&lists);
+        let (numbers, _) = paged(&laid, limit);
+        prop_assert_eq!(&numbers, &paged(&laid, usize::MAX).0);
+        let unique: std::collections::BTreeSet<_> = numbers.iter().collect();
+        prop_assert_eq!(unique.len(), numbers.len(), "{:x?}", numbers);
+
+        for &task in &numbers {
+            prop_assert!(!matches!(context(&laid, task), Ok(None)), "{:#x}", task);
+        }
+    }
 }

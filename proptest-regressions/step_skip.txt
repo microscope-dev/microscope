@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e7f8ebc5dcb9ee02e3ab7726d7beeaa99b68005d86f033645be5dd922ac3634c # shrinks to (parts, made, other) = ([Literal('a'), Stars], "a", "/a.\n"), directories = []

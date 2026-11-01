@@ -112,7 +112,8 @@ pub struct Read {
     /// Chunks read.
     pub chunks: usize,
 
-    /// Whether the file ended without its index, as one cut short does.
+    /// Whether the file ended without its index, as one cut short does,
+    /// or its index was damaged.
     pub truncated: bool,
 }
 
@@ -164,7 +165,9 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
                 builder.absorb(capture);
             }
 
-            builder.finish()
+            builder
+                .finish_read()
+                .map_err(|error| FileError::Chunk(ImageError::Malformed(error)))?
         }
     };
 
@@ -207,14 +210,19 @@ fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
         })
         .collect::<Option<_>>()?;
 
-    spans
-        .iter()
-        .all(|(offset, length)| {
-            offset
-                .checked_add(*length)
-                .is_some_and(|end| end <= start as u64)
-        })
-        .then_some(spans)
+    // The writer lays the chunks out one after another, from the header to
+    // the index: an index that says otherwise is damaged, and the chunks,
+    // each with its own checksum, are found by scanning.
+    let mut next = Some(HEADER as u64);
+    for &(offset, length) in &spans {
+        if next.and_then(|next| next.checked_add(8)) != Some(offset) {
+            return None;
+        }
+
+        next = offset.checked_add(length);
+    }
+
+    (next == Some(start as u64)).then_some(spans)
 }
 
 /// The complete chunks from the header on, for a file without its index.

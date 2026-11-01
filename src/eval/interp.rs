@@ -477,11 +477,13 @@ impl<M: Machine> Interpreter<'_, M> {
                 let left_value = self.integer(left)?;
                 let right_value = self.integer(right)?;
                 let combined = left_value.bitwise(*op, right_value).map_err(|error| {
-                    // Point at the exact operand that does not fit.
-                    let culprit = if matches!(left_value, Integer::Exact(_)) {
-                        left.span
-                    } else {
-                        right.span
+                    // Point at the exact operand that does not fit a typed
+                    // one, or at the operation when both are exact and only
+                    // the result is out of range.
+                    let culprit = match (left_value, right_value) {
+                        (Integer::Exact(_), Integer::Exact(_)) => span,
+                        (Integer::Exact(_), Integer::Typed(_)) => left.span,
+                        _ => right.span,
                     };
 
                     Self::arithmetic(culprit, error)

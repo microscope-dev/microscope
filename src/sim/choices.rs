@@ -39,7 +39,7 @@ pub enum Stream {
 }
 
 impl Stream {
-    const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Swarm,
         Self::Schedule,
         Self::Client,
@@ -50,7 +50,7 @@ impl Stream {
         Self::Sample,
     ];
 
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Swarm => "swarm",
             Self::Schedule => "schedule",
@@ -63,14 +63,45 @@ impl Stream {
         }
     }
 
-    const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self as usize
     }
+}
+
+/// The results of [`Choices::below`], stream by stream, in the order a run
+/// drew them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tape {
+    pub streams: [Vec<u64>; Stream::ALL.len()],
+}
+
+impl Tape {
+    /// How many choices the tape holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.streams.iter().map(Vec::len).sum()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A tape a run replays, and what it draws.
+struct Replay {
+    given: Tape,
+    used: [usize; Stream::ALL.len()],
+    drawn: Tape,
 }
 
 /// Every random choice a run makes, one generator per stream.
 pub struct Choices {
     streams: [Xoshiro256StarStar; Stream::ALL.len()],
+
+    /// When the run replays a tape: a stream's choices come from it until
+    /// it runs out, and then from the stream's generator.
+    replay: Option<Box<Replay>>,
 }
 
 impl Choices {
@@ -81,7 +112,28 @@ impl Choices {
                 let mut expand = SplitMix64(seed ^ fnv1a(stream.name().as_bytes()));
                 Xoshiro256StarStar([expand.next(), expand.next(), expand.next(), expand.next()])
             }),
+            replay: None,
         }
+    }
+
+    /// Choices that replay `tape`, each value held below the bound it is
+    /// drawn for, and record what they draw.
+    #[must_use]
+    pub fn replaying(seed: u64, tape: Tape) -> Self {
+        Self {
+            replay: Some(Box::new(Replay {
+                given: tape,
+                used: [0; Stream::ALL.len()],
+                drawn: Tape::default(),
+            })),
+            ..Self::new(seed)
+        }
+    }
+
+    /// What a replaying run drew, or `None` for one that replays nothing.
+    #[must_use]
+    pub fn drawn(&self) -> Option<&Tape> {
+        self.replay.as_ref().map(|replay| &replay.drawn)
     }
 
     /// A uniformly distributed integer in `0..bound`.
@@ -92,21 +144,21 @@ impl Choices {
     pub fn below(&mut self, stream: Stream, bound: u64) -> u64 {
         assert!(bound > 0, "an empty range has nothing to choose");
 
-        // Lemire's method: the high half of a 128-bit product, rejecting
-        // the few low halves that would bias it.
-        let threshold = bound.wrapping_neg() % bound;
+        let Some(replay) = &mut self.replay else {
+            return self.streams[stream.index()].below(bound);
+        };
 
-        loop {
-            let product = u128::from(self.streams[stream.index()].next()) * u128::from(bound);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the low half of the product is wanted"
-            )]
-            let low = product as u64;
-            if low >= threshold {
-                return (product >> 64) as u64;
+        let index = stream.index();
+        let value = match replay.given.streams[index].get(replay.used[index]) {
+            Some(&value) => {
+                replay.used[index] += 1;
+                value.min(bound - 1)
             }
-        }
+            None => self.streams[index].below(bound),
+        };
+
+        replay.drawn.streams[index].push(value);
+        value
     }
 
     /// Whether an event with a chance of `per_mille` in a thousand happens.
@@ -169,6 +221,25 @@ impl SplitMix64 {
 struct Xoshiro256StarStar([u64; 4]);
 
 impl Xoshiro256StarStar {
+    /// A uniformly distributed integer in `0..bound`, which is not zero.
+    fn below(&mut self, bound: u64) -> u64 {
+        // Lemire's method: the high half of a 128-bit product, rejecting
+        // the few low halves that would bias it.
+        let threshold = bound.wrapping_neg() % bound;
+
+        loop {
+            let product = u128::from(self.next()) * u128::from(bound);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the low half of the product is wanted"
+            )]
+            let low = product as u64;
+            if low >= threshold {
+                return (product >> 64) as u64;
+            }
+        }
+    }
+
     const fn next(&mut self) -> u64 {
         let state = &mut self.0;
         let result = state[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);

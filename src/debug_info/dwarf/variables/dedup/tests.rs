@@ -480,29 +480,51 @@ fn named_types(
     (entries, pending)
 }
 
+/// Resolving the arguments names spell while merging, searching one type
+/// of each class, gives the types and merges that resolving them first,
+/// searching every type, gives.
+fn arguments_resolve_while_merging(types: &[NamedType]) -> Result<(), TestCaseError> {
+    let (entries, pending) = named_types(types);
+    let mut first = entries.clone();
+    super::super::identity::resolve_parsed_arguments(
+        &mut first,
+        ModuleImageId::new(3),
+        &pending,
+        None,
+    );
+
+    let mut before = built(first);
+    let expected = before.deduplicate().as_ref().map(ids);
+    let mut merging = BuiltTypes {
+        pending_arguments: pending,
+        ..built(entries)
+    };
+
+    prop_assert_eq!(merging.deduplicate().as_ref().map(ids), expected);
+    prop_assert_eq!(
+        format!("{:?}", merging.entries),
+        format!("{:?}", before.entries)
+    );
+    Ok(())
+}
+
+/// Found by the property below: two types of one label whose names spell
+/// the same arguments.
+#[test]
+fn two_types_spelling_the_same_arguments_resolve_while_merging() {
+    arguments_resolve_while_merging(&[
+        (1, vec![], vec![]),
+        (1, vec![], vec![]),
+        (0, vec![], vec![Err(0), Ok(2)]),
+        (1, vec![], vec![]),
+        (0, vec![], vec![Err(0), Ok(2)]),
+    ])
+    .unwrap();
+}
+
 proptest! {
-    /// Resolving the arguments names spell while merging, searching one
-    /// type of each class, gives the types and merges that resolving them
-    /// first, searching every type, gives.
     #[test]
     fn arguments_resolve_while_merging_as_they_would_before(types in named_graph()) {
-        let (entries, pending) = named_types(&types);
-        let mut first = entries.clone();
-        super::super::identity::resolve_parsed_arguments(
-            &mut first,
-            ModuleImageId::new(3),
-            &pending,
-            None,
-        );
-
-        let mut before = built(first);
-        let expected = before.deduplicate().as_ref().map(ids);
-        let mut merging = BuiltTypes {
-            pending_arguments: pending,
-            ..built(entries)
-        };
-
-        prop_assert_eq!(merging.deduplicate().as_ref().map(ids), expected);
-        prop_assert_eq!(format!("{:?}", merging.entries), format!("{:?}", before.entries));
+        arguments_resolve_while_merging(&types)?;
     }
 }

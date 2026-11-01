@@ -255,26 +255,32 @@ impl World {
         source: Option<&'static str>,
         overlay: Vec<TypeInfo>,
     ) -> Self {
+        // Finding them demangles every symbol, so each test process does
+        // it once.
+        static POLLS: OnceLock<(u64, u64)> = OnceLock::new();
         let module = module();
-        let polls = module
-            .symbols()
-            .filter_map(|symbol| {
-                let name = crate::demangle::demangle(symbol.name())?;
-                name.starts_with(POLL).then(|| {
-                    let launch = super::LAUNCH.iter().any(|launch| name.contains(launch));
-                    (launch, symbol.address().get())
-                })
-            })
-            .collect::<Vec<_>>();
-        let find = |launch: bool| {
-            polls
-                .iter()
-                .find(|(is_launch, _)| *is_launch == launch)
-                .expect("a task's poll function")
-                .1
-        };
 
-        let (poll, launch) = (find(false), find(true));
+        let &(poll, launch) = POLLS.get_or_init(|| {
+            let polls = module
+                .symbols()
+                .filter_map(|symbol| {
+                    let name = crate::demangle::demangle(symbol.name())?;
+                    name.starts_with(POLL).then(|| {
+                        let launch = super::LAUNCH.iter().any(|launch| name.contains(launch));
+                        (launch, symbol.address().get())
+                    })
+                })
+                .collect::<Vec<_>>();
+            let find = |launch: bool| {
+                polls
+                    .iter()
+                    .find(|(is_launch, _)| *is_launch == launch)
+                    .expect("a task's poll function")
+                    .1
+            };
+            (find(false), find(true))
+        });
+
         let image = Image {
             module,
             hidden: hidden.to_vec(),
@@ -1358,7 +1364,7 @@ fn locks_are_held_as_their_mutex_says() {
 }
 
 /// How a test damages one task of a list.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Damage {
     /// The task names another list as its owner.
     ForeignOwner,
@@ -1375,8 +1381,21 @@ enum Damage {
     /// The shard's lock is held.
     HeldLock,
 
+    /// The shard's lock is held, and the task's back link names another
+    /// task, as a shard caught mid-change has.
+    HeldLockBrokenBack,
+
     /// The list's count is one more than it holds.
     WrongCount,
+
+    /// The list's count is one less than it holds.
+    ShortCount,
+
+    /// The task's id picks another shard than the one that holds it.
+    MisplacedId,
+
+    /// Another shard's head is the shard's first task.
+    SharedHead,
 }
 
 fn damage() -> impl Strategy<Value = Option<Damage>> {
@@ -1387,8 +1406,25 @@ fn damage() -> impl Strategy<Value = Option<Damage>> {
         Just(Some(Damage::Cycle)),
         Just(Some(Damage::DataVtable)),
         Just(Some(Damage::HeldLock)),
+        Just(Some(Damage::HeldLockBrokenBack)),
         Just(Some(Damage::WrongCount)),
+        Just(Some(Damage::ShortCount)),
+        Just(Some(Damage::MisplacedId)),
+        Just(Some(Damage::SharedHead)),
     ]
+}
+
+/// A task's state: any lifecycle bits, with any of the bits beside them
+/// and some references.
+fn task_state() -> impl Strategy<Value = u64> {
+    (
+        prop::sample::subsequence(vec![RUNNING, COMPLETE, NOTIFIED, CANCELLED], 0..=2),
+        prop::sample::subsequence(vec![JOIN_INTEREST, JOIN_WAKER], 0..=2),
+        0..4_u64,
+    )
+        .prop_map(|(lifecycle, beside, references)| {
+            lifecycle.into_iter().chain(beside).sum::<u64>() + references * REF_ONE
+        })
 }
 
 /// Whether a future that cannot be read may run a `LocalSet` is in its
@@ -1510,13 +1546,237 @@ fn a_shard_being_changed_is_one_gap_however_its_links_disagree() {
     );
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+/// On a list of any shape, and its tasks in any state, every task is
+/// listed once, whatever the page size, and found by its number with its
+/// locator and without, as it was listed; damage is reported with its
+/// shard, never listed past, and leaves every other shard listed; a wrong
+/// count is reported when one page reads the whole list.
+#[expect(clippy::too_many_lines, reason = "one model per kind of damage")]
+fn pages_list_every_task_once(
+    shard_bits: u32,
+    sizes: &[usize],
+    damage: Option<Damage>,
+    pick: &dyn Fn(usize) -> usize,
+    page: usize,
+    states: &[u64],
+) -> Result<(), TestCaseError> {
+    let _serial = shared_world().lock();
+    let shards = 1_usize << shard_bits;
 
-    /// On a list of any shape, every task is listed once, whatever the page
-    /// size; damage is reported with its shard, never listed past, and
-    /// leaves every other shard listed; a wrong count is reported when one
-    /// page reads the whole list.
+    // tokio keeps each task in the shard its id picks.
+    let lists = (0..shards)
+        .map(|shard| {
+            (1..=sizes[shard % sizes.len()])
+                .map(|nth| {
+                    let id = u64::try_from(nth * 64 + shard).expect("small");
+                    let state = states.get(nth % states.len().max(1)).copied().unwrap_or(0);
+                    (id, state)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let total = lists.iter().map(Vec::len).sum::<usize>();
+    let mut world = World::new(&[]);
+    let runtime = world.runtime(Flavor::MultiThread, 9, &lists);
+    world.thread(1, Some(&runtime), false, None);
+
+    // The damaged shard and task: the shard's index, and how many of
+    // its tasks precede the damage. Damage that moves a task to another
+    // shard needs two.
+    let nonempty = (0..shards)
+        .filter(|shard| !lists[*shard].is_empty())
+        .collect::<Vec<_>>();
+    let moves = matches!(damage, Some(Damage::MisplacedId | Damage::SharedHead));
+    let damaged = damage
+        .filter(|_| !nonempty.is_empty() && (!moves || shards > 1))
+        .map(|damage| {
+            let shard = nonempty[pick(nonempty.len())];
+            let node = pick(lists[shard].len());
+            (damage, shard, node)
+        });
+    let tasks = world.model.layout.tasks.as_ref().expect("Header binds");
+    let (owner, prev, next, vtable) = (tasks.owner, tasks.prev, tasks.next, tasks.vtable);
+    let shard_layout = &world.runtime_layout(Flavor::MultiThread).owned;
+    let (shard_size, lock, count, head) = (
+        shard_layout.shard_size,
+        shard_layout.shard_lock,
+        shard_layout.count,
+        shard_layout.head,
+    );
+    let shard_at =
+        |shard: usize| runtime.shards + u64::try_from(shard).expect("small") * shard_size;
+    let counted_at = runtime.handle + world.runtime_layout(Flavor::MultiThread).owned.at + count;
+
+    // The shard that reports the damage, and how many of each shard's
+    // tasks are listed.
+    let mut reported_in = None;
+    let mut cut = None;
+    if let Some((damage, shard, node)) = damaged {
+        let header = runtime.headers[shard][node];
+        reported_in = Some(shard);
+        match damage {
+            Damage::ForeignOwner => {
+                world.memory.word(header + owner, runtime.list + 1);
+                cut = Some((shard, node));
+            }
+            Damage::BrokenBack => {
+                world.memory.word(header + TRAILER + prev, header + 1);
+                cut = Some((shard, node));
+            }
+            Damage::Cycle => {
+                let last = *runtime.headers[shard].last().expect("a task");
+                world
+                    .memory
+                    .word(last + TRAILER + next, runtime.headers[shard][0]);
+                cut = Some((shard, lists[shard].len()));
+            }
+            Damage::DataVtable => {
+                let data = world.vtable(world.poll + 1);
+                world.memory.word(header + vtable, data);
+                cut = Some((shard, node));
+            }
+            Damage::HeldLock => world
+                .memory
+                .write(shard_at(shard) + lock.offset, 1, lock.size),
+            Damage::HeldLockBrokenBack => {
+                world
+                    .memory
+                    .write(shard_at(shard) + lock.offset, 1, lock.size);
+                world.memory.word(header + TRAILER + prev, header + 1);
+                cut = Some((shard, node));
+            }
+            Damage::WrongCount => {
+                world
+                    .memory
+                    .word(counted_at, u64::try_from(total + 1).expect("small"));
+                reported_in = None;
+            }
+
+            // The count bounds each page's walk of a shard, so a shard
+            // that holds more is read only that far by a page that can
+            // walk that far; pages too small to each walk less.
+            Damage::ShortCount => {
+                let short = total - 1;
+                world
+                    .memory
+                    .word(counted_at, u64::try_from(short).expect("small"));
+                reported_in = lists
+                    .iter()
+                    .position(|tasks| tasks.len() > short && page >= short);
+                cut = reported_in.map(|shard| (shard, short));
+            }
+            Damage::MisplacedId => {
+                let id = u64::try_from((100 + node) * 64 + (shard ^ 1)).expect("small");
+                world.memory.word(header + ID, id);
+                cut = Some((shard, node));
+            }
+            Damage::SharedHead => {
+                let other = (shard + 1 + pick(shards - 1)) % shards;
+                world
+                    .memory
+                    .word(shard_at(other) + head, runtime.headers[shard][0]);
+                reported_in = Some(other);
+                cut = Some((other, 0));
+            }
+        }
+    }
+
+    let (listed, gaps) = world.tasks(page, true);
+    let numbers = listed.iter().map(|task| task.number).collect::<Vec<_>>();
+
+    let expected = lists
+        .iter()
+        .enumerate()
+        .flat_map(|(shard, tasks)| {
+            let keep = match cut {
+                Some((damaged, node)) if damaged == shard => node,
+                _ => tasks.len(),
+            };
+
+            tasks[..keep].iter().map(|(id, _)| *id)
+        })
+        .collect::<Vec<_>>();
+    prop_assert_eq!(&numbers, &expected);
+    let unique = numbers.iter().collect::<BTreeSet<_>>();
+    prop_assert_eq!(unique.len(), numbers.len());
+
+    let states: BTreeMap<u64, u64> = lists.iter().flatten().copied().collect();
+    let census = world.model.census(&world.memory).expect("the census binds");
+    for task in &listed {
+        let complete = states[&task.number] & COMPLETE != 0;
+        prop_assert_eq!(task.state == TaskState::Exited, complete, "{:?}", task);
+
+        for locator in [Some(task.locator), None] {
+            let found = world
+                .model
+                .find(
+                    &world.memory,
+                    &census,
+                    TaskRef {
+                        number: task.number,
+                        locator,
+                    },
+                )
+                .map_err(|reason| TestCaseError::fail(reason.to_string()))?;
+            prop_assert_eq!(found.as_ref(), Some(task), "{:?}", locator);
+        }
+    }
+
+    let reported = gaps;
+    match (damaged, reported_in) {
+        (None, _) => prop_assert!(reported.is_empty(), "{:?}", reported),
+        (Some(_), Some(shard)) => prop_assert!(
+            reported
+                .iter()
+                .any(|gap| gap.contains(&format!("shard {shard} "))),
+            "{:?}",
+            reported
+        ),
+        // Only a list one page reads whole is counted: counting one read
+        // over several pages would read it all again.
+        (Some(_), None) if total > page => {
+            prop_assert!(reported.is_empty(), "{:?}", reported);
+        }
+        (Some(_), None) => {
+            prop_assert!(
+                reported.iter().any(|gap| gap.contains("counts")),
+                "{:?}",
+                reported
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Found by the property below: a shard with a wrong count, read over
+/// two pages.
+#[test]
+fn a_wrong_count_read_over_two_pages_lists_every_task() {
+    pages_list_every_task_once(
+        1,
+        &[3, 4, 0, 0, 0, 0, 0, 0],
+        Some(Damage::WrongCount),
+        &|_| 0,
+        1,
+        &[],
+    )
+    .unwrap();
+}
+
+/// Found by the property below: a task whose id picks another shard
+/// than the one that holds it is not listed, since a later page and a
+/// search by its number would look for it there; and a shard whose head
+/// is another shard's first task lists none of them twice.
+#[test]
+fn a_task_in_another_shard_than_its_id_picks_is_not_listed() {
+    let sizes = [0, 1, 0, 0, 0, 0, 0, 0];
+    pages_list_every_task_once(1, &sizes, Some(Damage::MisplacedId), &|_| 0, 1, &[0]).unwrap();
+    let sizes = [2, 2, 0, 0, 0, 0, 0, 0];
+    pages_list_every_task_once(1, &sizes, Some(Damage::MisplacedId), &|_| 1, 1, &[0]).unwrap();
+    pages_list_every_task_once(1, &sizes, Some(Damage::SharedHead), &|_| 0, 1, &[0]).unwrap();
+}
+
+proptest! {
     #[test]
     fn pages_list_every_task_once_and_report_damage(
         shard_bits in 0_u32..4,
@@ -1524,102 +1784,16 @@ proptest! {
         damage in damage(),
         target in any::<prop::sample::Index>(),
         page in 1_usize..12,
+        states in proptest::collection::vec(task_state(), 1..4),
     ) {
-        let _serial = shared_world().lock();
-        let shards = 1_usize << shard_bits;
-
-        // tokio keeps each task in the shard its id picks.
-        let lists = (0..shards)
-            .map(|shard| {
-                (1..=sizes[shard % sizes.len()])
-                    .map(|nth| (u64::try_from(nth * 64 + shard).expect("small"), 0))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let total = lists.iter().map(Vec::len).sum::<usize>();
-        let mut world = World::new(&[]);
-        let runtime = world.runtime(Flavor::MultiThread, 9, &lists);
-        world.thread(1, Some(&runtime), false, None);
-
-        // The damaged shard and task: the shard's index, and how many of
-        // its tasks precede the damage.
-        let nonempty = (0..shards).filter(|shard| !lists[*shard].is_empty()).collect::<Vec<_>>();
-
-        let damaged = damage.filter(|_| !nonempty.is_empty()).map(|damage| {
-            let shard = nonempty[target.index(nonempty.len())];
-            let node = target.index(lists[shard].len());
-            (damage, shard, node)
-        });
-        let tasks = world.model.layout.tasks.as_ref().expect("Header binds");
-        let (owner, prev, next, vtable) = (tasks.owner, tasks.prev, tasks.next, tasks.vtable);
-        let owned = &world.runtime_layout(Flavor::MultiThread).owned;
-        let (shard_size, lock, count) = (owned.shard_size, owned.shard_lock, owned.count);
-        let mut cut = None;
-        if let Some((damage, shard, node)) = damaged {
-            let header = runtime.headers[shard][node];
-            let shard_at = runtime.shards + u64::try_from(shard).expect("small") * shard_size;
-            match damage {
-                Damage::ForeignOwner => {
-                    world.memory.word(header + owner, runtime.list + 1);
-                    cut = Some((shard, node));
-                }
-                Damage::BrokenBack => {
-                    world.memory.word(header + TRAILER + prev, header + 1);
-                    cut = Some((shard, node));
-                }
-                Damage::Cycle => {
-                    let last = *runtime.headers[shard].last().expect("a task");
-                    world.memory.word(last + TRAILER + next, runtime.headers[shard][0]);
-                    cut = Some((shard, lists[shard].len()));
-                }
-                Damage::DataVtable => {
-                    let data = world.vtable(world.poll + 1);
-                    world.memory.word(header + vtable, data);
-                    cut = Some((shard, node));
-                }
-                Damage::HeldLock => world.memory.write(shard_at + lock.offset, 1, lock.size),
-                Damage::WrongCount => {
-                    let at = runtime.handle + world.runtime_layout(Flavor::MultiThread).owned.at;
-                    world.memory.word(at + count, u64::try_from(total + 1).expect("small"));
-                }
-            }
-        }
-
-        let (listed, gaps) = world.tasks(page, true);
-        let listed = listed.iter().map(|task| task.number).collect::<Vec<_>>();
-
-        let expected = lists
-            .iter()
-            .enumerate()
-            .flat_map(|(shard, tasks)| {
-                let keep = match cut {
-                    Some((damaged, node)) if damaged == shard => node,
-                    _ => tasks.len(),
-                };
-
-                tasks[..keep].iter().map(|(id, _)| *id)
-            })
-            .collect::<Vec<_>>();
-        prop_assert_eq!(&listed, &expected);
-        let unique = listed.iter().collect::<BTreeSet<_>>();
-        prop_assert_eq!(unique.len(), listed.len());
-        let reported = gaps;
-        match damaged {
-            None => prop_assert!(reported.is_empty(), "{:?}", reported),
-            // Only a list one page reads whole is counted: counting one
-            // read over several pages would read it all again.
-            Some((Damage::WrongCount, ..)) if total > page => {
-                prop_assert!(reported.is_empty(), "{:?}", reported);
-            }
-            Some((Damage::WrongCount, ..)) => {
-                prop_assert!(reported.iter().any(|gap| gap.contains("counts")), "{:?}", reported);
-            }
-            Some((_, shard, _)) => prop_assert!(
-                reported.iter().any(|gap| gap.contains(&format!("shard {shard} "))),
-                "{:?}",
-                reported
-            ),
-        }
+        pages_list_every_task_once(
+            shard_bits,
+            &sizes,
+            damage,
+            &|len| target.index(len),
+            page,
+            &states,
+        )?;
     }
 }
 

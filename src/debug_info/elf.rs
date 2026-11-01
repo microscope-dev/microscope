@@ -962,6 +962,14 @@ fn collect_plt(
             continue;
         };
 
+        let SectionFlags::Elf { sh_flags } = section.flags() else {
+            continue;
+        };
+
+        if !is_code(sh_flags) {
+            continue;
+        }
+
         let Ok(code) = section.data() else {
             continue;
         };
@@ -1298,7 +1306,7 @@ fn extent(
 /// Normalizes the symbol tables of either a raw ELF file or an object
 /// synthesized from structured input, then checks catalog and lookup
 /// invariants at every symbol boundary and at input-chosen addresses.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
     reason = "a fuzz harness reports a bug by panicking"
@@ -1389,7 +1397,7 @@ pub(super) fn fuzz(data: &[u8]) {
 /// Checks lookups at every extent boundary and at input-chosen addresses: a
 /// result contains its address and outranks every other containing extent,
 /// and no address inside an extent goes unnamed.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
     reason = "a fuzz harness reports a bug by panicking"
@@ -1446,7 +1454,7 @@ fn fuzz_lookups(image: &crate::ModuleImage, symbols: &[SymbolInfo], data: &[u8])
 
 /// Checks that a description names its address's section and prefers a
 /// code symbol, naming data only through declared storage.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
     reason = "a fuzz harness reports a bug by panicking"
@@ -1487,7 +1495,7 @@ fn assert_description(image: &crate::ModuleImage, symbols: &[SymbolInfo], addres
 /// Synthesizes a relocatable x86-64 object: one byte sizes the executable
 /// section, and each following six-byte record defines a symbol or a
 /// call-frame entry from a small pool of colliding names.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 fn fuzz_object(data: &[u8]) -> (Vec<u8>, Vec<AddressRange<ImageAddress>>) {
     use object::write;
 
@@ -1574,8 +1582,60 @@ fn fuzz_object(data: &[u8]) -> (Vec<u8>, Vec<AddressRange<ImageAddress>>) {
 mod tests {
     use object::write;
     use object::{Architecture, BinaryFormat, Endianness};
+    use proptest::strategy::Strategy as _;
 
     use super::*;
+
+    /// Bytes with up to eight of them overwritten and the rest maybe cut,
+    /// as damage to a file.
+    fn damaged(bytes: &[u8]) -> impl proptest::strategy::Strategy<Value = Vec<u8>> + use<> {
+        use proptest::prelude::*;
+
+        let bytes = bytes.to_vec();
+        (
+            proptest::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..8),
+            prop_oneof![3 => Just(None), 1 => any::<prop::sample::Index>().prop_map(Some)],
+        )
+            .prop_map(move |(writes, cut)| {
+                let mut bytes = bytes.clone();
+                for (at, byte) in writes {
+                    let at = at.index(bytes.len());
+                    bytes[at] = byte;
+                }
+                if let Some(cut) = cut {
+                    bytes.truncate(cut.index(bytes.len() + 1));
+                }
+                bytes
+            })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Symbols of a synthesized object, read from its structure or as
+        /// a file, damaged or not, keep the catalog's invariants, and every
+        /// lookup agrees with a scan of the extents that contain it.
+        #[test]
+        fn symbol_lookups_agree_with_a_scan_of_their_extents(
+            (data, damage) in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..160)
+                .prop_flat_map(|data| {
+                    let object = fuzz_object(&data).0;
+                    (proptest::strategy::Just(data), damaged(&object))
+                }),
+        ) {
+            fuzz(&data);
+            fuzz(&damage);
+        }
+
+        /// The same for a damaged real library, with symbols in its
+        /// MiniDebugInfo.
+        #[test]
+        fn a_damaged_librarys_lookups_agree_with_a_scan_of_their_extents(
+            data in damaged(include_bytes!("../../fuzz/corpus/elf-symbols/minidebuginfo-library")),
+        ) {
+            fuzz(&data);
+        }
+    }
 
     /// Each accessor of the TLS fixture reads, by the model its code
     /// uses, the variable the symbols place where the decode does.
@@ -2184,6 +2244,42 @@ mod tests {
             [],
             "more pushes than any stub makes"
         );
+    }
+
+    /// A PLT section whose flags say it holds no code names no stubs, as
+    /// no other symbol is placed outside code.
+    #[test]
+    fn a_plt_that_is_not_code_has_no_stubs() {
+        let mut data =
+            include_bytes!("../../fuzz/corpus/elf-symbols/minidebuginfo-library").to_vec();
+        let (header, start, end) = {
+            let object = object::File::parse(data.as_slice()).expect("the library");
+            let object::File::Elf64(elf) = &object else {
+                panic!("a 64-bit library");
+            };
+            let section = object.section_by_name(".plt.got").expect("a .plt.got");
+            let shoff = elf.elf_header().e_shoff(Endianness::Little);
+            let header = shoff + section.index().0 as u64 * 64;
+            (
+                header,
+                section.address(),
+                section.address() + section.size(),
+            )
+        };
+
+        // sh_flags is the third field of the section header.
+        let flags = usize::try_from(header + 8).expect("an offset");
+        data[flags..flags + 8].fill(0);
+
+        let object = object::File::parse(data.as_slice()).expect("the library");
+        let table = load_symbols(&object, None, &[]);
+        let inside: Vec<_> = table
+            .symbols
+            .iter()
+            .filter(|symbol| (start..end).contains(&symbol.address.get()))
+            .map(|symbol| symbol.name.clone())
+            .collect();
+        assert!(inside.is_empty(), "{inside:?}");
     }
 
     /// A malformed section whose code runs past the last address holds no

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ba0ee4f008b9105c22f939aec377583ef10795a3df28843094bbaeab72dd739b # shrinks to cpp = Cpp { scopes: [], class_arguments: [], last: Function("a"), template: Some(([0], 0)), parameters: [], constant: false }
+cc 851e920993dbdad01534215dfa9f07588b69a3513ff52719b2f3262a201a53e8 # shrinks to (mangled, path) = ("_RNvMCsdHzz05DFzbQ_1aNtCsdHzz05DFzbQ_1a1a1a", ["a", "a", "a"])

@@ -17,7 +17,7 @@ use crate::{
     BreakpointLocation, Error, LineNumber, ManagedLocation, Result, TrapAddress, VirtualAddress,
 };
 
-use super::memory::MemoryAccessError;
+use super::memory::{MemoryAccessError, holding_word, patch_byte, remove_site_owner};
 use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
 use super::{BREAKPOINT_OPCODE, BreakpointOwner, Controller, Inferior, LinuxError, backend_error};
 
@@ -1134,11 +1134,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             if site.original_byte != BREAKPOINT_OPCODE
                 && memory_byte(&self.ptrace, pid, destination)? == Some(BREAKPOINT_OPCODE)
             {
-                let word = self.ptrace.read_word(pid, destination)?;
-                self.ptrace.write_word(
-                    pid,
-                    destination,
-                    (word & !0xff) | u64::from(site.original_byte),
+                patch_byte(
+                    VirtualAddress::new(destination),
+                    site.original_byte,
+                    |word| self.ptrace.read_word(pid, word),
+                    |word, value| self.ptrace.write_word(pid, word, value),
                 )?;
             }
 
@@ -1269,14 +1269,18 @@ impl MovedCode {
 const PAGE_BYTES: u64 = 4096;
 
 /// The byte at `address`, or `None` where no memory is mapped.
-fn memory_byte(ptrace: &impl LinuxTraceOps, pid: Pid, address: u64) -> Result<Option<u8>> {
-    match ptrace.read_memory_word(pid, address) {
-        Ok(word)
-        | Err(MemoryAccessError::Partial {
-            word,
-            readable: 1..,
-        }) => Ok(Some(word.to_ne_bytes()[0])),
-        Err(MemoryAccessError::Inaccessible | MemoryAccessError::Partial { .. }) => Ok(None),
+pub(super) fn memory_byte(
+    ptrace: &impl LinuxTraceOps,
+    pid: Pid,
+    address: u64,
+) -> Result<Option<u8>> {
+    let (word, offset) = holding_word(address);
+    match ptrace.read_memory_word(pid, word) {
+        Ok(word) => Ok(Some(word.to_ne_bytes()[offset])),
+        Err(MemoryAccessError::Partial { word, readable }) => {
+            Ok((offset < readable).then(|| word.to_ne_bytes()[offset]))
+        }
+        Err(MemoryAccessError::Inaccessible) => Ok(None),
         Err(MemoryAccessError::Fatal(error)) => Err(error),
     }
 }
@@ -1729,36 +1733,12 @@ pub(super) fn remove_breakpoint_owner_from(
     address: VirtualAddress,
     owner: BreakpointOwner,
 ) -> Result<()> {
-    let remove_site = {
-        let site = inferior
-            .breakpoints
-            .get_mut(&address)
-            .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
-        if !site.owners.contains(&owner) {
-            return Err(backend_error(LinuxError::BreakpointOwnerMissing(address)));
-        }
-
-        site.owners.len() == 1
-    };
-
-    if remove_site {
-        let pid = inferior.memory_thread();
-        ptrace.remove_breakpoint(pid, &mut inferior.breakpoints, address)?;
-        let removed = inferior
-            .breakpoints
-            .remove(&address)
-            .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
+    let pid = inferior.memory_thread();
+    let removed = remove_site_owner(&mut inferior.breakpoints, address, owner, |sites| {
+        ptrace.remove_breakpoint(pid, sites, address)
+    })?;
+    if let Some(removed) = removed {
         forget_removed_site(inferior, address, removed.original_byte);
-    } else {
-        let site = inferior
-            .breakpoints
-            .get_mut(&address)
-            .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
-        let removed = site.owners.remove(&owner);
-        debug_assert!(
-            removed,
-            "{owner:?} owned the site at {address}, then did not"
-        );
     }
 
     Ok(())

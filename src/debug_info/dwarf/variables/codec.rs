@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gimli::{Reader as _, RunTimeEndian, Value};
+use gimli::{Reader as _, RunTimeEndian};
 
 use crate::debug_info::VariableRuntime;
 use crate::debug_info::dwarf::Reader;
@@ -215,6 +215,12 @@ pub(super) fn read_sleb128_i128(
     let mut value = 0_u128;
     let mut shift = 0_u32;
 
+    // The number fits only if every bit from bit 127 up repeats the sign,
+    // which only the last byte gives. Until then, note whether those bits
+    // were all zero or all one.
+    let mut high_zeros = true;
+    let mut high_ones = true;
+
     loop {
         let byte = *bytes
             .get(*cursor)
@@ -224,39 +230,26 @@ pub(super) fn read_sleb128_i128(
             .ok_or_else(|| Arc::from("discriminant-list cursor overflows"))?;
         let payload = u128::from(byte & 0x7f);
         if shift < 128 {
-            let available = 128 - shift;
-            value |= (payload & low_bits_mask(available.min(7) as usize)) << shift;
+            value |= payload << shift;
+        }
+
+        let sign_bit = 127_u32.saturating_sub(shift);
+        if sign_bit < 7 {
+            let high = payload >> sign_bit;
+            high_zeros &= high == 0;
+            high_ones &= high == low_bits_mask((7 - sign_bit) as usize);
         }
 
         if byte & 0x80 == 0 {
             let negative = byte & 0x40 != 0;
-            if shift >= 128 {
-                let canonical = if negative {
-                    payload == 0x7f
-                } else {
-                    payload == 0
-                };
+            let consumed = shift + 7;
+            let repeats_sign = if negative { high_ones } else { high_zeros };
+            if consumed >= 128 && !repeats_sign {
+                return Err("signed discriminant LEB128 exceeds 128 bits".into());
+            }
 
-                if !canonical {
-                    return Err("signed discriminant LEB128 exceeds 128 bits".into());
-                }
-            } else {
-                let consumed = shift + 7;
-                if negative && consumed < 128 {
-                    value |= u128::MAX << consumed;
-                } else if consumed > 128 {
-                    let used = 128 - shift;
-                    let high = payload >> used;
-                    let expected = if negative {
-                        low_bits_mask((7 - used) as usize)
-                    } else {
-                        0
-                    };
-
-                    if high != expected {
-                        return Err("signed discriminant LEB128 exceeds 128 bits".into());
-                    }
-                }
+            if negative && consumed < 128 {
+                value |= u128::MAX << consumed;
             }
 
             return Ok(value.cast_signed());
@@ -332,30 +325,6 @@ pub(super) fn wrapping_integer_bytes(
     }
 
     integer_bytes(value & low_bits_mask(size * 8), size, target)
-}
-
-pub(super) fn dwarf_address_bytes(
-    value: Value,
-    size: usize,
-    target: TargetDescription,
-) -> std::result::Result<Arc<[u8]>, EvaluateError> {
-    let address = match value {
-        Value::Generic(value) | Value::U64(value) => value,
-        Value::U8(value) => u64::from(value),
-        Value::U16(value) => u64::from(value),
-        Value::U32(value) => u64::from(value),
-        Value::I8(value) => i64::from(value).cast_unsigned(),
-        Value::I16(value) => i64::from(value).cast_unsigned(),
-        Value::I32(value) => i64::from(value).cast_unsigned(),
-        Value::I64(value) => value.cast_unsigned(),
-        Value::F32(_) | Value::F64(_) => {
-            return Err(EvaluateError::Malformed(
-                "floating-point value cannot represent an address".into(),
-            ));
-        }
-    };
-
-    wrapping_integer_bytes(u128::from(address), size, target)
 }
 
 pub(super) fn decode_address(
@@ -648,3 +617,6 @@ fn decode_float(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests;

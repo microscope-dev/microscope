@@ -377,6 +377,8 @@ pub fn collect_frames<P: CallerProvider, F>(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     /// Returns its callers last first, then finishes.
@@ -433,6 +435,73 @@ mod tests {
             file.iter().collect::<Vec<_>>(),
             [(register(6), 60), (register(64), 2), (register(700), 70)]
         );
+    }
+
+    #[derive(Debug, Clone)]
+    enum Change {
+        Set(u16, u64),
+        Remove(u16),
+
+        /// Keep the registers whose numbers leave this remainder by 3.
+        Retain(u16),
+    }
+
+    /// Register numbers at the edges of the array and past it.
+    fn number() -> impl Strategy<Value = u16> {
+        prop_oneof![
+            prop::sample::select(vec![0, 1, 6, 16, 62, 63, 64, 65, 700, u16::MAX]),
+            0_u16..80,
+            any::<u16>(),
+        ]
+    }
+
+    proptest::proptest! {
+        /// A file holds what a map of the same changes holds, and two
+        /// files of the same registers are equal however they got them.
+        #[test]
+        fn a_register_file_is_a_map_by_number(
+            changes in proptest::collection::vec(
+                prop_oneof![
+                    4 => (number(), crate::test_strategies::u64_edges())
+                        .prop_map(|(number, value)| Change::Set(number, value)),
+                    2 => number().prop_map(Change::Remove),
+                    1 => (0_u16..3).prop_map(Change::Retain),
+                ],
+                0..24,
+            ),
+        ) {
+            let mut file = RegisterFile::new([]);
+            let mut model = std::collections::BTreeMap::new();
+            for change in changes {
+                match change {
+                    Change::Set(number, value) => {
+                        file.set(DwarfRegister::new(number), value);
+                        model.insert(number, value);
+                    }
+                    Change::Remove(number) => {
+                        file.remove(DwarfRegister::new(number));
+                        model.remove(&number);
+                    }
+                    Change::Retain(remainder) => {
+                        file.retain(|register| register.number() % 3 == remainder);
+                        model.retain(|number, _| number % 3 == remainder);
+                    }
+                }
+
+                let held = model
+                    .iter()
+                    .map(|(number, value)| (DwarfRegister::new(*number), *value))
+                    .collect::<Vec<_>>();
+                prop_assert_eq!(file.iter().collect::<Vec<_>>(), held.clone());
+                for number in [0, 63, 64, u16::MAX].into_iter().chain(model.keys().copied()) {
+                    prop_assert_eq!(
+                        file.get(DwarfRegister::new(number)),
+                        model.get(&number).copied()
+                    );
+                }
+                prop_assert_eq!(&file, &RegisterFile::new(held));
+            }
+        }
     }
 
     #[test]

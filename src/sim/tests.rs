@@ -2,7 +2,8 @@
 //! a check that a seed always names the same run.
 
 use super::marks::Reach;
-use super::report::FailureKind;
+use super::report::{Failure, FailureKind};
+use super::shrink;
 use super::world::Sabotage;
 use super::{Corpus, Settings, describe_failure, run};
 
@@ -65,6 +66,52 @@ fn a_seed_always_names_the_same_run() {
         .rev()
         .collect::<Vec<_>>();
     assert_eq!(first, again);
+}
+
+/// A planted bug's failing seed shrinks to a run that fails the same way
+/// and is no larger, and the file the shrinker writes runs it again.
+#[test]
+fn shrinking_keeps_the_failure_and_makes_the_run_no_larger() {
+    let corpus = Corpus::load().expect("load the golden corpus");
+    let settings = Settings {
+        sabotage: Some(Sabotage::LosePokes),
+        ..Settings::default()
+    };
+    let original = (0..GATE_SEEDS)
+        .map(|seed| run(seed, &corpus, &settings))
+        .find(|outcome| outcome.failure.is_some())
+        .expect("a sabotaged run fails");
+    let signature = original.failure.as_ref().map(Failure::signature);
+
+    let shrunk = shrink::shrink(original.seed, &corpus, &settings, 120).expect("the seed fails");
+    assert_eq!(
+        shrunk.outcome.failure.as_ref().map(Failure::signature),
+        signature
+    );
+    assert!(
+        shrunk.outcome.steps <= original.steps,
+        "{} actions, from {}",
+        shrunk.outcome.steps,
+        original.steps
+    );
+    assert!(shrunk.outcome.swarm.requests <= original.swarm.requests);
+    assert!(
+        shrunk.outcome.steps < original.steps || !shrunk.simpler.is_empty(),
+        "shrinking {} actions found nothing simpler",
+        original.steps
+    );
+
+    let (seed, simpler, tape) = shrink::read(&shrunk.to_text()).expect("a shrunk run reads back");
+    let again = run(
+        seed,
+        &corpus,
+        &Settings {
+            simpler,
+            tape: Some(tape),
+            ..settings
+        },
+    );
+    assert_eq!(again.fingerprint, shrunk.outcome.fingerprint);
 }
 
 /// Runs fixed seeds with `sabotage` until one fails, returning its

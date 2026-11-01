@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4d3ac0346f6acd52fba3b79cf0bf7d61f935c5b94a75d31780cd8028b7d216a1 # shrinks to first = 9223372036854775807, count = 1, decoded = Decoded { address: 1, instructions: [DisassembledInstruction { address: VirtualAddress(0x0), bytes: [144], content: Invalid, location: AddressDescription { address: VirtualAddress(0x0), module: None }, source: None }], anchor: 1 }

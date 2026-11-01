@@ -94,7 +94,13 @@ pub(super) fn unsigned(bytes: &[u8], at: &mut usize) -> Result<u64, Problem> {
             .get(*at)
             .ok_or("a position table ends inside an entry")?;
         *at += 1;
-        value |= u64::from(byte & 0x7f) << shift;
+        // A group whose bits reach past the 64th names no value.
+        let bits = u64::from(byte & 0x7f);
+        if (bits << shift) >> shift != bits {
+            return Err("a position table holds an integer too large".into());
+        }
+
+        value |= bits << shift;
         if byte & 0x80 == 0 {
             return Ok(value);
         }
@@ -174,6 +180,8 @@ pub(super) fn byte_array(reader: &Reader<'_>, array: Object) -> Result<Vec<u8>, 
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn varint(mut value: u64, out: &mut Vec<u8>) {
@@ -200,9 +208,19 @@ mod tests {
     /// Entries as (code offset, script offset, statement), as each
     /// version writes them.
     fn encode(entries: &[(i64, i64, bool)], encoding: Encoding) -> Vec<u8> {
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|&(at, offset, statement)| (at, position(offset), statement))
+            .collect();
+        encode_positions(&entries, encoding)
+    }
+
+    /// Entries as (code offset, source position, statement), as each
+    /// version writes them.
+    fn encode_positions(entries: &[(i64, i64, bool)], encoding: Encoding) -> Vec<u8> {
         let mut bytes = Vec::new();
         let (mut code, mut source) = (FUNCTION_ENTRY, 0);
-        for &(at, offset, statement) in entries {
+        for &(at, position, statement) in entries {
             let delta = at - code;
             match encoding {
                 Encoding::SignedStatement => {
@@ -215,10 +233,141 @@ mod tests {
                     );
                 }
             }
-            varint(zig(position(offset) - source), &mut bytes);
-            (code, source) = (at, position(offset));
+            varint(zig(position - source), &mut bytes);
+            (code, source) = (at, position);
         }
         bytes
+    }
+
+    /// The varint at `at` as the format defines it, read into 128 bits:
+    /// at most ten groups, and `None` for one cut short, longer, or past
+    /// 64 bits.
+    fn reference_unsigned(bytes: &[u8], at: &mut usize) -> Option<u64> {
+        let mut value = 0_u128;
+        for group in 0..10 {
+            let byte = *bytes.get(*at)?;
+            *at += 1;
+            value |= u128::from(byte & 0x7f) << (7 * group);
+            if byte & 0x80 == 0 {
+                return u64::try_from(value).ok();
+            }
+        }
+        None
+    }
+
+    /// A table's entries as the format defines them, with every sum in
+    /// 128 bits, or `None` where the bytes are no table or a value does
+    /// not fit.
+    fn reference_decode(bytes: &[u8], encoding: Encoding) -> Option<Vec<Entry>> {
+        let mut entries = Vec::new();
+        let mut at = 0;
+        let (mut code_offset, mut position) = (i128::from(FUNCTION_ENTRY), 0_i128);
+        while at < bytes.len() {
+            let value = i128::from(reference_unsigned(bytes, &mut at)?);
+            let delta = match encoding {
+                Encoding::SignedStatement => {
+                    let signed = if value % 2 == 0 {
+                        value / 2
+                    } else {
+                        -(value + 1) / 2
+                    };
+                    if signed >= 0 { signed } else { -signed - 1 }
+                }
+                Encoding::FlagBits => {
+                    let bits = u32::try_from(value).ok()?;
+                    (i128::from(bits) - if bits >> 31 == 1 { 1 << 32 } else { 0 }) >> 2
+                }
+            };
+            let value = i128::from(reference_unsigned(bytes, &mut at)?);
+            let change = if value % 2 == 0 {
+                value / 2
+            } else {
+                -(value + 1) / 2
+            };
+            code_offset += delta;
+            position += change;
+            entries.push(Entry {
+                code_offset: i64::try_from(code_offset).ok()?,
+                position: i64::try_from(position).ok()?,
+            });
+        }
+        Some(entries)
+    }
+
+    fn encoding() -> impl Strategy<Value = Encoding> {
+        prop_oneof![Just(Encoding::SignedStatement), Just(Encoding::FlagBits)]
+    }
+
+    /// A varint's group past the 64th bit is no value, not one with its
+    /// high bits dropped.
+    #[test]
+    fn a_varint_past_64_bits_is_too_long() {
+        let mut wide = vec![0x80; 9];
+        wide.push(0x02);
+        assert!(unsigned(&wide, &mut 0).is_err());
+
+        // The table proptest shrank the case to.
+        let mut table = vec![0x00];
+        table.extend(wide);
+        assert!(decode(&table, Encoding::SignedStatement).is_err());
+
+        let mut widest = vec![0xff; 9];
+        widest.push(0x01);
+        assert_eq!(unsigned(&widest, &mut 0), Ok(u64::MAX));
+    }
+
+    proptest! {
+        /// Entries whose offsets rise from the function's entry decode as
+        /// they were written, in each version's encoding.
+        #[test]
+        fn written_tables_decode_to_their_entries(
+            encoding in encoding(),
+            written in proptest::collection::vec(
+                (0_i64..1 << 20, -(1_i64 << 40)..1 << 40, any::<bool>()),
+                0..24,
+            ),
+        ) {
+            let mut code = FUNCTION_ENTRY;
+            let written: Vec<_> = written
+                .into_iter()
+                .map(|(delta, position, statement)| {
+                    code += delta;
+                    (code, position, statement)
+                })
+                .collect();
+
+            let decoded = decode(&encode_positions(&written, encoding), encoding);
+            let expected: Vec<_> = written
+                .iter()
+                .map(|&(code_offset, position, _)| Entry { code_offset, position })
+                .collect();
+            prop_assert_eq!(decoded, Ok(expected));
+        }
+
+        /// Any bytes are a table exactly when the format reads them as
+        /// one whose values fit, and then the same table.
+        #[test]
+        fn any_bytes_decode_as_the_format_reads_them(
+            encoding in encoding(),
+            varints in proptest::collection::vec(
+                (
+                    0..12_usize,
+                    prop_oneof![Just(0x80_u8), Just(0xff), any::<u8>().prop_map(|byte| byte | 0x80)],
+                    any::<u8>(),
+                ),
+                0..8,
+            ),
+        ) {
+            // Runs of continuation bytes, each ended by any byte, reach
+            // every length of varint.
+            let bytes: Vec<u8> = varints
+                .into_iter()
+                .flat_map(|(groups, fill, last)| {
+                    std::iter::repeat_n(fill, groups).chain([last])
+                })
+                .collect();
+            prop_assert_eq!(decode(&bytes, encoding).ok(), reference_decode(&bytes, encoding));
+        }
     }
 
     /// Each version's table decodes to its own offsets, and read as the

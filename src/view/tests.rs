@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use proptest::test_runner::TestCaseError;
+
 use super::bind::BoundView;
 use super::run::{Child, Failure, Presented, children, present};
 use super::scan::Checkpoints;
@@ -636,16 +638,315 @@ fn the_hostile_harness_exercises_every_library() {
     assert!(unbound.is_empty(), "{unbound:?}");
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+/// What a model container holds, to be laid out as a library lays it out.
+#[derive(Debug, Clone)]
+struct Contents {
+    elements: Vec<i32>,
+    entries: std::collections::BTreeMap<i32, i32>,
+    bytes: Vec<u8>,
+    text: String,
 
-    /// Whatever memory holds, and whatever views a file says, presenting
-    /// ends in a value or a typed problem within its budget.
+    /// Room past the elements or bytes, as a container's capacity leaves.
+    spare: u64,
+}
+
+/// The types of libstdc++'s `vector<int>`, `string`, and `map<int, int>`,
+/// and Rust's `Vec<i32>` and `String`, as `fuzz.rs` lays them out.
+struct Library {
+    vector: TypeReference,
+    string: TypeReference,
+    map: TypeReference,
+    rust_vector: TypeReference,
+    rust_string: TypeReference,
+}
+
+#[expect(clippy::too_many_lines, reason = "one type graph per library")]
+fn library(world: &mut World) -> Library {
+    let int = world.base("int", E::Signed, 4);
+    let char = world.base("char", E::SignedCharacter, 1);
+    let size = world.base("unsigned long", E::Unsigned, 8);
+    let i32 = world.base("i32", E::Signed, 4);
+    let u8 = world.base("u8", E::Unsigned, 1);
+    let usize = world.base("usize", E::Unsigned, 8);
+    let int_pointer = world.pointer(Some(int));
+    let char_pointer = world.pointer(Some(char));
+    let byte_pointer = world.pointer(Some(u8));
+    let unknown = |text: &str| TypeArgument::Unknown(text.into());
+
+    let implementation = world.record(
+        "_Vector_impl",
+        24,
+        &[
+            ("_M_start", int_pointer, 0),
+            ("_M_finish", int_pointer, 8),
+            ("_M_end_of_storage", int_pointer, 16),
+        ],
+    );
+    let vector = world.record("vector<int>", 24, &[("_M_impl", implementation, 0)]);
+    let arguments = vec![TypeArgument::Type(int), unknown("allocator")];
+    world.identify(vector, SourceLanguage::Cpp, &["std"], "vector", arguments);
+
+    let hider = world.record("_Alloc_hider", 8, &[("_M_p", char_pointer, 0)]);
+    let buffer = world.array(char, &[16]);
+    let string = world.record(
+        "string",
+        32,
+        &[
+            ("_M_dataplus", hider, 0),
+            ("_M_string_length", size, 8),
+            ("_M_local_buf", buffer, 16),
+            ("_M_allocated_capacity", size, 16),
+        ],
+    );
+    let arguments = vec![
+        TypeArgument::Type(char),
+        unknown("traits"),
+        unknown("allocator"),
+    ];
+    world.identify(
+        string,
+        SourceLanguage::Cpp,
+        &["std"],
+        "basic_string",
+        arguments,
+    );
+
+    let node_base = world.record("_Rb_tree_node_base", 32, &[]);
+    let base_pointer = world.pointer(Some(node_base));
+    let links = [
+        ("_M_color", int, 0),
+        ("_M_parent", base_pointer, 8),
+        ("_M_left", base_pointer, 16),
+        ("_M_right", base_pointer, 24),
+    ];
+    world.set_members(node_base, &links);
+    let pair = world.record(
+        "pair<int const, int>",
+        8,
+        &[("first", int, 0), ("second", int, 4)],
+    );
+    let arguments = vec![TypeArgument::Type(int), TypeArgument::Type(int)];
+    world.identify(pair, SourceLanguage::Cpp, &["std"], "pair", arguments);
+    let tree_impl = world.record(
+        "_Rb_tree_impl",
+        40,
+        &[("_M_header", node_base, 0), ("_M_node_count", size, 32)],
+    );
+    let tree = world.record("_Rb_tree<int, pair>", 40, &[("_M_impl", tree_impl, 0)]);
+    let arguments = vec![TypeArgument::Type(int), TypeArgument::Type(pair)];
+    world.identify(tree, SourceLanguage::Cpp, &["std"], "_Rb_tree", arguments);
+    let map = world.record("map<int, int>", 40, &[("_M_t", tree, 0)]);
+    let arguments = vec![
+        TypeArgument::Type(int),
+        TypeArgument::Type(int),
+        unknown("less"),
+        unknown("allocator"),
+    ];
+    world.identify(map, SourceLanguage::Cpp, &["std"], "map", arguments);
+    let mut node_members = links.to_vec();
+    node_members.push(("_M_storage", pair, 32));
+    let node = world.record("_Rb_tree_node<pair>", 40, &node_members);
+    let arguments = vec![TypeArgument::Type(pair)];
+    world.identify(
+        node,
+        SourceLanguage::Cpp,
+        &["std"],
+        "_Rb_tree_node",
+        arguments,
+    );
+
+    let marker = world.record("PhantomData", 0, &[]);
+    let global = world.record("Global", 0, &[]);
+    let non_null = world.record("NonNull<u8>", 8, &[("pointer", byte_pointer, 0)]);
+    let unique = world.record(
+        "Unique<u8>",
+        8,
+        &[("pointer", non_null, 0), ("_marker", marker, 0)],
+    );
+    let cap = world.record("Cap", 8, &[("__0", usize, 0)]);
+    let raw_inner = world.record(
+        "RawVecInner",
+        16,
+        &[("ptr", unique, 0), ("cap", cap, 8), ("alloc", global, 0)],
+    );
+    let raw = world.record(
+        "RawVec",
+        16,
+        &[("inner", raw_inner, 0), ("_marker", marker, 0)],
+    );
+    let mut rust_vector = |element| {
+        let vector = world.record("Vec", 24, &[("buf", raw, 0), ("len", usize, 16)]);
+        let arguments = vec![TypeArgument::Type(element), TypeArgument::Type(global)];
+        world.identify(
+            vector,
+            SourceLanguage::Rust,
+            &["alloc", "vec"],
+            "Vec",
+            arguments,
+        );
+        vector
+    };
+    let ints = rust_vector(i32);
+    let bytes = rust_vector(u8);
+    let rust_string = world.record("String", 24, &[("vec", bytes, 0)]);
+    world.identify(
+        rust_string,
+        SourceLanguage::Rust,
+        &["alloc", "string"],
+        "String",
+        Vec::new(),
+    );
+
+    Library {
+        vector,
+        string,
+        map,
+        rust_vector: ints,
+        rust_string,
+    }
+}
+
+/// Nodes of a balanced binary search tree over sorted entries, each a
+/// `_Rb_tree_node`; its root.
+fn tree(world: &mut World, entries: &[(i32, i32)]) -> u64 {
+    if entries.is_empty() {
+        return 0;
+    }
+
+    let middle = entries.len() / 2;
+    let left = tree(world, &entries[..middle]);
+    let right = tree(world, &entries[middle + 1..]);
+    let mut node = bytes(&[0, 0, left, right]);
+    node.extend(ints(<[i32; 2]>::from(entries[middle])));
+    world.allocate(&node)
+}
+
+/// A world of every container laid out from `contents`.
+fn laid_out(contents: &Contents) -> World {
+    let mut world = World::new();
+    let library = library(&mut world);
+    let count = |items: usize| u64::try_from(items).expect("small");
+    let spare = contents.spare;
+
+    // libstdc++'s vector: three pointers, all null when it never allocated.
+    let n = count(contents.elements.len());
+    let start = if n + spare == 0 {
+        0
+    } else {
+        let mut storage = ints(contents.elements.iter().copied());
+        storage.resize(
+            storage.len() + usize::try_from(spare * 4).expect("small"),
+            0xee,
+        );
+        world.allocate(&storage)
+    };
+    let end = |items: u64| if start == 0 { 0 } else { start + 4 * items };
+    world.variable(
+        "vector",
+        library.vector,
+        &bytes(&[start, end(n), end(n + spare)]),
+    );
+
+    // Rust's Vec: its pointer is dangling but aligned when empty.
+    let data = if n + spare == 0 { 4 } else { start };
+    world.variable(
+        "rust_vector",
+        library.rust_vector,
+        &bytes(&[data, n + spare, n]),
+    );
+
+    // libstdc++'s string, in its own buffer when short enough.
+    let length = count(contents.bytes.len());
+    let address = world.variable("string", library.string, &[0; 32]);
+    let mut object = if length < 16 && spare.is_multiple_of(2) {
+        let mut object = bytes(&[address + 16, length]);
+        object.extend(&contents.bytes);
+        object
+    } else {
+        let mut text = contents.bytes.clone();
+        text.push(0);
+        bytes(&[world.allocate(&text), length, length + spare])
+    };
+    object.resize(32, 0);
+    world.map(address, &object);
+
+    let text = count(contents.text.len());
+    let pointer = if text == 0 {
+        1
+    } else {
+        world.allocate(contents.text.as_bytes())
+    };
+    world.variable(
+        "rust_string",
+        library.rust_string,
+        &bytes(&[pointer, text, text]),
+    );
+
+    // libstdc++'s map: the header's parent is the root.
+    let entries: Vec<(i32, i32)> = contents.entries.iter().map(|(&k, &v)| (k, v)).collect();
+    let root = tree(&mut world, &entries);
+    let header = bytes(&[0, root, 0, 0, count(entries.len())]);
+    world.variable("map", library.map, &header);
+
+    world
+}
+
+fn contents() -> impl proptest::strategy::Strategy<Value = Contents> {
+    use proptest::prelude::*;
+
+    let int = prop_oneof![-3..3_i32, any::<i32>()];
+    (
+        prop::collection::vec(int.clone(), 0..24),
+        prop::collection::btree_map(int.clone(), int, 0..16),
+        prop::collection::vec(any::<u8>(), 0..40),
+        "\\PC{0,24}",
+        0_u64..4,
+    )
+        .prop_map(|(elements, entries, bytes, text, spare)| Contents {
+            elements,
+            entries,
+            bytes,
+            text,
+            spare,
+        })
+}
+
+proptest::proptest! {
+    /// Containers laid out from a model list, as their libraries lay them
+    /// out, present the list through the built-in views: its count, its
+    /// elements or entries in order in pages of any size, and its text.
     #[test]
-    fn views_over_arbitrary_memory_end_in_values_or_problems(
-        data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..6000),
+    fn built_in_views_present_what_containers_hold(
+        contents in contents(),
+        page in 1_u64..6,
     ) {
-        super::fuzz::hostile(&data);
+        let views = ViewSet::built_in();
+        let mut world = laid_out(&contents);
+        let count = |items: usize| Some(crate::PresentedCount::Exact(u64::try_from(items).expect("small")));
+
+        let elements: Vec<String> = contents
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(index, value)| format!("[{index}] = {value}"))
+            .collect();
+        for name in ["vector", "rust_vector"] {
+            let shown = presented(&mut world, &views, name).map_err(TestCaseError::fail)?;
+            proptest::prop_assert_eq!(shown.count, count(elements.len()), "{}", name);
+            proptest::prop_assert_eq!(&paged(&mut world, &views, name, page), &elements, "{}", name);
+        }
+
+        let entries: Vec<String> = contents.entries.iter().map(|(key, value)| format!("{key}: {value}")).collect();
+        let shown = presented(&mut world, &views, "map").map_err(TestCaseError::fail)?;
+        proptest::prop_assert_eq!(shown.count, count(entries.len()));
+        proptest::prop_assert_eq!(paged(&mut world, &views, "map", page), entries);
+
+        for (name, expected) in [("string", &contents.bytes[..]), ("rust_string", contents.text.as_bytes())] {
+            let shown = presented(&mut world, &views, name).map_err(TestCaseError::fail)?;
+            let text = shown.text.ok_or_else(|| TestCaseError::fail(format!("{name} shows no text")))?;
+            proptest::prop_assert_eq!(&text.bytes[..], expected, "{}", name);
+            proptest::prop_assert_eq!(text.completion, TextCompletion::Complete, "{}", name);
+        }
     }
 }
 

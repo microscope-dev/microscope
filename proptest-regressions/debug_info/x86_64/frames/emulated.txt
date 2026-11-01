@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 74bedec509cad74ee2a1186b431fa7ff8eeeb597801706da38b41d701d289227 # shrinks to program = Program { ops: [PushRbp, Free(1), MovRbpRsp, PushRbp, PushRbp, PushRbp], offsets: [0, 1, 5, 8, 9, 10, 11], code: [85, 72, 131, 196, 8, 72, 137, 229, 85, 85, 85] }

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0b174f6743158601a702aed2cf675bc7ba412ce090b240fc896e7adcc9a38833 # shrinks to (initial_state, transitions, seen_counter) = (Reference { scope: Group, members: [Running, Running], phase: Running, pending: 0, deferred: [] }, [Stopped { member: 2, pause: false }, Gone(2), Client(Continue)], None)
+cc 60d6961b43c3b5a6e2784fd46342636ed19a3e66a6eb722ce46aa4280a026daa # shrinks to (initial_state, transitions, seen_counter) = (Reference { scope: Group, members: [Running, Running], phase: Running, pending: 0, deferred: [] }, [Stopped { member: 2, pause: false }, Stopped { member: 1, pause: false }, Client(Resume), PauseAll, PauseFailed(1)], None)
+cc 786a54ae230bd830668d3b19abee426f4f5012a6f9b592e88b3d27946aff72c4 # shrinks to (initial_state, transitions, seen_counter) = (Reference { scope: Process, members: [Running, Running, Running], phase: Running, pending: 0, deferred: [] }, [Client(Continue), Client(Continue), Client(Continue), Stopped { member: 1, pause: false }, Stopped { member: 2, pause: false }, ContinueMember(2), PauseAll, Stopped { member: 2, pause: false }, Stopped { member: 3, pause: false }, ContinueMember(2)], None)
