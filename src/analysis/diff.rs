@@ -72,8 +72,9 @@ struct Pair {
 }
 
 /// Merges two trees path by path, a path matching where its names do. Of
-/// siblings that share a name, the first of each tree's are paired, then
-/// the second.
+/// siblings that share a name, each is paired with the same function, by
+/// its module and place, where the other tree has it, and the rest in
+/// order, the first of each tree's left, then the second.
 #[must_use]
 pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree)) -> DiffTree {
     let mut names = Names::default();
@@ -141,32 +142,35 @@ fn pairs(
         .map(|node| children(base.1, node))
         .unwrap_or_default();
 
-    let mut unmatched: BTreeMap<String, VecDeque<u32>> = BTreeMap::new();
-    for &node in &theirs {
-        let name = names.of(Side::Base, base, node);
-        unmatched.entry(name).or_default().push_back(node);
-    }
+    let named = |names: &mut Names, side, keys, nodes: &[u32]| -> Vec<(String, String)> {
+        nodes
+            .iter()
+            .map(|&node| names.of(side, keys, node))
+            .collect()
+    };
+    let (matched, taken) = pair(
+        &named(names, Side::Current, current, &ours),
+        &named(names, Side::Base, base, &theirs),
+    );
 
     let mut paired = Vec::with_capacity(ours.len() + theirs.len());
-    for &node in &ours {
-        let name = names.of(Side::Current, current, node);
-        let matched = unmatched.get_mut(&name).and_then(VecDeque::pop_front);
+    for (&node, matched) in ours.iter().zip(matched) {
         paired.push(Pair {
             key: current.1.key[node as usize],
             side: Side::Current,
             current: Some(node),
-            base: matched,
+            base: matched.map(|matched| theirs[matched]),
             parent,
             depth,
         });
     }
 
-    let left: std::collections::BTreeSet<u32> = unmatched.into_values().flatten().collect();
     paired.extend(
         theirs
             .into_iter()
-            .filter(|node| left.contains(node))
-            .map(|node| Pair {
+            .zip(taken)
+            .filter(|(_, taken)| !taken)
+            .map(|(node, _)| Pair {
                 key: base.1.key[node as usize],
                 side: Side::Base,
                 current: None,
@@ -178,20 +182,56 @@ fn pairs(
     paired
 }
 
-/// Each key's name, by side, as views show it, found once.
+/// Each key's name, by side, as views show it, and with its module and
+/// place, found once.
 #[derive(Default)]
 struct Names {
-    known: BTreeMap<(bool, u32), String>,
+    known: BTreeMap<(bool, u32), (String, String)>,
 }
 
 impl Names {
-    fn of(&mut self, side: Side, (keys, tree): (&Keys<'_>, &CallTree), node: u32) -> String {
+    fn of(
+        &mut self,
+        side: Side,
+        (keys, tree): (&Keys<'_>, &CallTree),
+        node: u32,
+    ) -> (String, String) {
         let key = tree.key[node as usize];
         self.known
             .entry((side == Side::Base, key))
-            .or_insert_with(|| keys.name(key))
+            .or_insert_with(|| (keys.name(key), keys.qualified(key)))
             .clone()
     }
+}
+
+/// Pairs each of `ours` with one of `theirs`, each named and named with
+/// its module and place: with the same function where `theirs` has it,
+/// and otherwise with the first left of the same name. Returns the one
+/// each of `ours` is paired with, and which of `theirs` are paired.
+fn pair(ours: &[(String, String)], theirs: &[(String, String)]) -> (Vec<Option<usize>>, Vec<bool>) {
+    let mut taken = vec![false; theirs.len()];
+    let mut by = |matched: &mut [Option<usize>], name: fn(&(String, String)) -> &str| {
+        let mut left: BTreeMap<&str, VecDeque<usize>> = BTreeMap::new();
+        for (at, theirs) in theirs.iter().enumerate().filter(|(at, _)| !taken[*at]) {
+            left.entry(name(theirs)).or_default().push_back(at);
+        }
+
+        for (matched, ours) in matched
+            .iter_mut()
+            .zip(ours)
+            .filter(|(matched, _)| matched.is_none())
+        {
+            *matched = left.get_mut(name(ours)).and_then(VecDeque::pop_front);
+            if let Some(at) = *matched {
+                taken[at] = true;
+            }
+        }
+    };
+
+    let mut matched = vec![None; ours.len()];
+    by(&mut matched, |(_, qualified)| qualified);
+    by(&mut matched, |(name, _)| name);
+    (matched, taken)
 }
 
 /// One key's cost now and in the base.
@@ -206,23 +246,22 @@ pub struct DiffCost {
 }
 
 /// Merges two aggregates' costs by name, current's rows first, then the
-/// base's that it lacks. Keys that share a name pair in order.
+/// base's that it lacks. Keys that share a name pair as siblings of a tree
+/// do.
 #[must_use]
 pub fn diff_costs(current: (&Keys<'_>, &Costs), base: (&Keys<'_>, &Costs)) -> Vec<DiffCost> {
-    let mut unmatched: BTreeMap<String, VecDeque<usize>> = BTreeMap::new();
-    for (row, cost) in base.1.rows.iter().enumerate() {
-        unmatched
-            .entry(base.0.name(cost.key))
-            .or_default()
-            .push_back(row);
-    }
+    let named = |(keys, costs): (&Keys<'_>, &Costs)| -> Vec<(String, String)> {
+        costs
+            .rows
+            .iter()
+            .map(|cost| (keys.name(cost.key), keys.qualified(cost.key)))
+            .collect()
+    };
+    let (matched, taken) = pair(&named(current), &named(base));
 
     let mut rows = Vec::with_capacity(current.1.rows.len() + base.1.rows.len());
-    for cost in &current.1.rows {
-        let matched = unmatched
-            .get_mut(&current.0.name(cost.key))
-            .and_then(VecDeque::pop_front)
-            .map(|row| base.1.rows[row]);
+    for (cost, matched) in current.1.rows.iter().zip(matched) {
+        let matched = matched.map(|row| base.1.rows[row]);
         rows.push(DiffCost {
             key: cost.key,
             side: Side::Current,
@@ -233,18 +272,14 @@ pub fn diff_costs(current: (&Keys<'_>, &Costs), base: (&Keys<'_>, &Costs)) -> Ve
         });
     }
 
-    let mut left: Vec<usize> = unmatched.into_values().flatten().collect();
-    left.sort_unstable();
-    rows.extend(left.into_iter().map(|row| {
-        let cost = base.1.rows[row];
-        DiffCost {
-            key: cost.key,
-            side: Side::Base,
-            own: 0,
-            total: 0,
-            base_own: cost.own,
-            base_total: cost.total,
-        }
+    let left = base.1.rows.iter().zip(taken).filter(|(_, taken)| !taken);
+    rows.extend(left.map(|(&cost, _)| DiffCost {
+        key: cost.key,
+        side: Side::Base,
+        own: 0,
+        total: 0,
+        base_own: cost.own,
+        base_total: cost.total,
     }));
     rows
 }
