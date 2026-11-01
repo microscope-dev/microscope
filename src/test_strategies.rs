@@ -31,6 +31,7 @@ macro_rules! edges {
 }
 
 edges! {
+    u32_edges: u32,
     u64_edges: u64,
 }
 
