@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 85f261903483adc6fd4578c57efb561ed40729f7eb51660f65bbe57f1db1675d # shrinks to encoding = SignedStatement, varints = [(0, 128, 0), (1, 128, 128), (7, 128, 2)]
