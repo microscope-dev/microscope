@@ -1524,10 +1524,13 @@ const NAMED: [(&str, &str); 6] = [
     ("b", "/lib/libz.so"),
 ];
 
+/// A stack of indices into [`NAMED`], innermost first, and its weight.
+type WeightedStack = (Vec<usize>, u64);
+
 /// A capture of one thread's samples of stacks of [`NAMED`], innermost
 /// first, its functions made in `order`, so that their keys are in that
 /// order.
-fn stacks_of(samples: &[(Vec<usize>, u64)], order: &[usize]) -> Capture {
+fn stacks_of(samples: &[WeightedStack], order: &[usize]) -> Capture {
     let mut builder = CaptureBuilder::new();
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
     let mut frames = [NONE; NAMED.len()];
@@ -1551,7 +1554,7 @@ fn stacks_of(samples: &[(Vec<usize>, u64)], order: &[usize]) -> Capture {
 
 /// The weight of the samples whose path of names, outermost first, is
 /// each path, and of those whose path begins with it.
-fn path_weights(samples: &[(Vec<usize>, u64)]) -> BTreeMap<Vec<&'static str>, (u64, u64)> {
+fn path_weights(samples: &[WeightedStack]) -> BTreeMap<Vec<&'static str>, (u64, u64)> {
     let mut paths: BTreeMap<Vec<&'static str>, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in samples {
         let path: Vec<&str> = stack.iter().rev().map(|&at| NAMED[at].0).collect();
@@ -1567,7 +1570,7 @@ fn path_weights(samples: &[(Vec<usize>, u64)]) -> BTreeMap<Vec<&'static str>, (u
 /// Each name's own and total weight, summed over the functions of that
 /// name: a sample is in a function's total once however often it calls
 /// it.
-fn name_costs(samples: &[(Vec<usize>, u64)]) -> BTreeMap<&'static str, (u64, u64)> {
+fn name_costs(samples: &[WeightedStack]) -> BTreeMap<&'static str, (u64, u64)> {
     let mut costs: BTreeMap<&'static str, (u64, u64)> = BTreeMap::new();
     for (stack, weight) in samples {
         costs.entry(NAMED[stack[0]].0).or_default().0 += weight;
@@ -1583,7 +1586,7 @@ fn name_costs(samples: &[(Vec<usize>, u64)]) -> BTreeMap<&'static str, (u64, u64
 }
 
 /// How many functions of each name the samples call.
-fn named_functions(samples: &[(Vec<usize>, u64)]) -> BTreeMap<&'static str, usize> {
+fn named_functions(samples: &[WeightedStack]) -> BTreeMap<&'static str, usize> {
     let called: std::collections::BTreeSet<usize> = samples
         .iter()
         .flat_map(|(stack, _)| stack.iter().copied())
@@ -1596,7 +1599,7 @@ fn named_functions(samples: &[(Vec<usize>, u64)]) -> BTreeMap<&'static str, usiz
     count
 }
 
-fn weighted_stacks() -> impl Strategy<Value = Vec<(Vec<usize>, u64)>> {
+fn weighted_stacks() -> impl Strategy<Value = Vec<WeightedStack>> {
     proptest::collection::vec(
         (proptest::collection::vec(0..NAMED.len(), 1..5), 1..100_u64),
         0..20,
@@ -1614,8 +1617,12 @@ fn order() -> impl Strategy<Value = Vec<usize>> {
 /// function paired with itself where both have it; and their costs merge
 /// so that each function of each profile has one row, and each name's are
 /// each profile's.
+#[expect(
+    clippy::too_many_lines,
+    reason = "each check reads against the two profiles built above it"
+)]
 fn a_diff_holds_each_profiles_weight(
-    (ours, theirs): (&[(Vec<usize>, u64)], &[(Vec<usize>, u64)]),
+    (ours, theirs): (&[WeightedStack], &[WeightedStack]),
     (our_order, their_order): (&[usize], &[usize]),
 ) -> Result<(), TestCaseError> {
     let (current, base) = (stacks_of(ours, our_order), stacks_of(theirs, their_order));

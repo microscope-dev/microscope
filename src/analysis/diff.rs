@@ -71,9 +71,10 @@ struct Pair {
     depth: u32,
 }
 
-/// Merges two trees path by path, a path matching where its names do. Of
-/// siblings that share a name, each is paired with the same function, by
-/// its module and place, where the other tree has it, and the rest in
+/// Merges two trees path by path, a path matching where its names do.
+///
+/// Of siblings that share a name, each is paired with the same function,
+/// by its module and place, where the other tree has it, and the rest in
 /// order, the first of each tree's left, then the second.
 #[must_use]
 pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree)) -> DiffTree {
@@ -142,15 +143,15 @@ fn pairs(
         .map(|node| children(base.1, node))
         .unwrap_or_default();
 
-    let named = |names: &mut Names, side, keys, nodes: &[u32]| -> Vec<(String, String)> {
+    let shown = |names: &mut Names, side, keys, nodes: &[u32]| -> Vec<(String, String)> {
         nodes
             .iter()
             .map(|&node| names.of(side, keys, node))
             .collect()
     };
     let (matched, taken) = pair(
-        &named(names, Side::Current, current, &ours),
-        &named(names, Side::Base, base, &theirs),
+        &shown(names, Side::Current, current, &ours),
+        &shown(names, Side::Base, base, &theirs),
     );
 
     let mut paired = Vec::with_capacity(ours.len() + theirs.len());

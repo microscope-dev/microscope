@@ -242,15 +242,15 @@ type Ids = (
 /// A profile whose ids name what it has, numbered from 1, with up to two
 /// of its ids or values then changed to any number, often one of its ids.
 fn ids() -> impl Strategy<Value = Ids> {
-    let valid = (1..4_u64, 1..5_u64).prop_flat_map(|(functions, locations)| {
+    let valid = (1..4_usize, 1..5_usize).prop_flat_map(|(functions, locations)| {
         (
-            prop::collection::vec(0..3_usize, functions as usize),
+            prop::collection::vec(0..3_usize, functions),
+            prop::collection::vec(prop::collection::vec(1..=functions as u64, 0..3), locations),
             prop::collection::vec(
-                prop::collection::vec(1..=functions, 0..3),
-                locations as usize,
-            ),
-            prop::collection::vec(
-                (prop::collection::vec(1..=locations, 0..4), 0..100_u64),
+                (
+                    prop::collection::vec(1..=locations as u64, 0..4),
+                    0..100_u64,
+                ),
                 0..6,
             ),
         )

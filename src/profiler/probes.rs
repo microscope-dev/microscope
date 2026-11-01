@@ -751,8 +751,8 @@ fn zone(open: Open, end: i64, flags: u32) -> Zone {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::float_cmp,
-    reason = "a test's counts are small, and a value read back is the bits written"
+    clippy::cast_sign_loss,
+    reason = "a test's counts and times are small and not negative"
 )]
 mod tests {
     use proptest::prelude::*;
@@ -952,10 +952,10 @@ mod tests {
                 prop_assert_eq!(decoder.malformed, 0);
 
                 let whole = |index: usize| {
-                    let positions = starts[index]..starts[index] + encoded[index].len() as u64;
+                    let mut positions = starts[index]..starts[index] + encoded[index].len() as u64;
                     span.contains(&positions.start)
                         && positions.end <= span.end
-                        && positions.clone().all(|position| intact[(position - span.start) as usize])
+                        && positions.all(|position| intact[(position - span.start) as usize])
                 };
 
                 for event in &decoder.events {
