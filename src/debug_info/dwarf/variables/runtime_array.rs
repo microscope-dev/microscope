@@ -467,7 +467,7 @@ impl Parts<'_, '_, '_> {
 /// Each dimension's stride: its own, or else the one that makes the
 /// elements adjacent in the array's order. Only the outermost dimension
 /// may go on without end.
-fn adjacent_strides(
+pub(super) fn adjacent_strides(
     bounds: &[Bound],
     strides: &[Option<i64>],
     ordering: ArrayOrdering,

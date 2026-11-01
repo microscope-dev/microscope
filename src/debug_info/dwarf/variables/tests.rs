@@ -51,6 +51,7 @@ use super::*;
 use crate::image::locations::{ExpressionId, LocationListId};
 use crate::model::{ArrayOrdering, ValueStorage};
 
+mod arrays;
 mod pieces;
 
 #[test]
