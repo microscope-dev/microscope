@@ -642,6 +642,17 @@ fn assigns(text: &str) -> bool {
     text.replace("==", "").contains('=')
 }
 
+/// An operand of `op`, parenthesized where it may hold a comparison and
+/// `op` is one: comparisons do not chain.
+fn operand_of(op: &str, text: String) -> String {
+    let compares = text.contains("==") || text.replace("<<", "").contains('<');
+    if matches!(op, "==" | "<") && compares {
+        format!("({text})")
+    } else {
+        text
+    }
+}
+
 /// Text from a small grammar of the language, with random spacing and
 /// parentheses.
 fn expression_text() -> impl Strategy<Value = String> {
@@ -692,6 +703,7 @@ fn expression_text() -> impl Strategy<Value = String> {
         prop_oneof![
             (inner.clone(), gap(), binary, inner.clone()).prop_flat_map(
                 |(left, before, op, right)| {
+                    let (left, right) = (operand_of(op, left), operand_of(op, right));
                     gap_before(&right)
                         .prop_map(move |after| format!("{left}{before}{op}{after}{right}"))
                 }
