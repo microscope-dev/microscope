@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0a8f47f52e34e96fecd63b25c99fb50d5cfddcb571c017a5d98fcd0af88d8bbb # shrinks to text = Thin(Cons(Sliced { parent: Seq { units: [], one_byte: true }, offset: 0, length: 0 }, Seq { units: [55123, 61480], one_byte: false })), damage = None
