@@ -1217,10 +1217,10 @@ fn split_dwarf_inlines_are_read_from_the_dwo_file() {
         scratch.path().join("images"),
     )))
     .expect("an image cache");
-    let inlined = |program: &std::path::Path| {
+    let inlined = |program: &std::path::Path, iterations: u64, options: &RecordOptions| {
         let mut command = Command::new(program);
-        command.arg("20").stdout(Stdio::null());
-        let recording = record(command, &RecordOptions::default()).expect("record");
+        command.arg(iterations.to_string()).stdout(Stdio::null());
+        let recording = record(command, options).expect("record");
         assert!(recording.status.success(), "{}", recording.status);
         let stacks = recording.profile.stacks();
         let inside = stacks
@@ -1238,24 +1238,37 @@ fn split_dwarf_inlines_are_read_from_the_dwo_file() {
             .filter(|(key, _)| key.starts_with("debug information "))
             .map(|(key, value)| format!("{key}: {value}"))
             .collect();
-        (inside, stacks.len(), incomplete)
+        let context = format!(
+            "samples={}, counted={}, lost_samples={}, lost_records={}, stacks={stacks:?}, settings={:?}",
+            recording.profile.samples(),
+            recording.profile.counted(),
+            recording.profile.lost_samples(),
+            recording.profile.lost_records(),
+            recording.profile.settings(),
+        );
+        (inside, incomplete, recording.profile, context)
     };
 
     let program = Scenario::fixture("profile-inline-clang-split");
-    let (inside, total, incomplete) = inlined(&program);
+    let (inside, incomplete, profile, context) = inlined(&program, 20, &RecordOptions::default());
+    let total = profile.samples();
     assert!(
-        inside * 2 >= total,
-        "{inside} of {total} stacks in step inside scan"
+        inside > 0 && inside * 2 >= total,
+        "{inside} of {total} stacks in step inside scan; {context}"
     );
-    assert_eq!(incomplete, Vec::<String>::new());
+    assert_eq!(incomplete, Vec::<String>::new(), "{context}");
 
     let alone = scratch.path().join("profile-inline-clang-split");
     std::fs::copy(&program, &alone).expect("copy the program");
-    let (inside, _, incomplete) = inlined(&alone);
-    assert_eq!(inside, 0);
+    let (inside, incomplete, profile, context) = inlined(&alone, 1, &calls_of("scan"));
+    assert_eq!(profile.samples(), 1, "{context}");
+    assert_eq!(profile.counted(), 1, "{context}");
+    assert_eq!(profile.lost_samples(), 0, "{context}");
+    assert_eq!(profile.lost_records(), 0, "{context}");
+    assert_eq!(inside, 0, "{context}");
     assert!(
         matches!(&incomplete[..], [one] if one.contains("profile-inline-clang-split-profile-inline.dwo that was not found")),
-        "{incomplete:?}"
+        "{context}"
     );
 }
 
