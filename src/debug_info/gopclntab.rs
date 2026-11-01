@@ -1324,7 +1324,7 @@ fn go_release(object: &object::File<'_>) -> Option<GoRelease> {
 
 /// Exercises the table reader on arbitrary bytes, for the fuzz harness: as
 /// an ELF image to locate the table in, or as a table itself.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
     reason = "a fuzz harness reports a bug by panicking"
@@ -1362,7 +1362,7 @@ pub fn fuzz(data: &[u8]) {
 
 /// Decodes everything a table holds, checking what every decoding promises.
 /// `code` stands in for the image's code bytes.
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 #[allow(
     clippy::expect_used,
     reason = "a fuzz harness reports a bug by panicking"
@@ -1456,6 +1456,59 @@ fn fuzz_table(table: &GoTable, code: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SEED: &[u8] = include_bytes!("../../fuzz/corpus/gopclntab/inlined-call");
+
+    /// The seed is a table with functions, so damage to it reaches what
+    /// its decodings promise.
+    #[test]
+    fn the_fuzz_seed_is_a_table_of_functions() {
+        // As `fuzz` parses it.
+        let word = SEED[8..16].try_into().expect("eight bytes");
+        let gofunc = 0x1000 + u64::from_le_bytes(word) % 0x1_0000;
+        let release = GoRelease {
+            major: 1,
+            minor: 27,
+        };
+        let table = GoTable::parse(SEED.into(), 0x1000, 0x40_0000, Some(gofunc), Some(release))
+            .expect("the seed parses");
+        assert!(!table.functions().is_empty());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Everything a damaged table decodes keeps what its decoding
+        /// promises: ranges within their functions, lookups that find the
+        /// function holding an address, and line tables that seal.
+        #[test]
+        fn a_damaged_tables_decodings_keep_their_promises(
+            writes in proptest::collection::vec(
+                (proptest::prelude::any::<proptest::sample::Index>(), proptest::prelude::any::<u8>()),
+                0..6,
+            ),
+            cut in proptest::prelude::any::<proptest::sample::Index>(),
+            whole in proptest::prelude::any::<bool>(),
+        ) {
+            let mut bytes = SEED.to_vec();
+            for (at, byte) in writes {
+                let at = at.index(bytes.len());
+                bytes[at] = byte;
+            }
+            if !whole {
+                bytes.truncate(cut.index(bytes.len() + 1));
+            }
+
+            fuzz(&bytes);
+        }
+
+        #[test]
+        fn any_tables_decodings_keep_their_promises(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+        ) {
+            fuzz(&bytes);
+        }
+    }
 
     fn fixture(name: &str) -> Vec<u8> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
