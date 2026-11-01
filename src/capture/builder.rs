@@ -1186,6 +1186,28 @@ impl CaptureBuilder {
     /// The finished capture: each thread's rows in time order, zones by
     /// thread and depth.
     pub fn finish(self) -> Capture {
+        let capture = self.assemble();
+
+        // A saved capture is read back through the same check.
+        if cfg!(debug_assertions)
+            && let Err(error) = capture.validate()
+        {
+            debug_assert!(false, "the builder's capture is invalid: {error}");
+        }
+
+        capture
+    }
+
+    /// The finished capture of captures read and absorbed, checked as a
+    /// file's capture is: each was valid, but together they may not be, as
+    /// weights that add up past what a count holds.
+    pub fn finish_read(self) -> Result<Capture, String> {
+        let capture = self.assemble();
+        capture.validate()?;
+        Ok(capture)
+    }
+
+    fn assemble(self) -> Capture {
         let (samples, sample_ranges) = grouped(self.samples);
         let (off_cpu, off_cpu_ranges) = grouped(self.off_cpu);
         let frame_symbols = if self.symbols.is_empty() {
@@ -1246,7 +1268,7 @@ impl CaptureBuilder {
                 }
             })
             .collect();
-        let capture = Capture {
+        Capture {
             strings: strings.into_bytes(),
             settings,
             modules: self.modules,
@@ -1284,16 +1306,7 @@ impl CaptureBuilder {
             syscall_notes: self.syscall_notes,
             syscall_stats: self.syscall_stats,
             syscall_errnos: self.syscall_errnos,
-        };
-
-        // A saved capture is read back through the same check.
-        if cfg!(debug_assertions)
-            && let Err(error) = capture.validate()
-        {
-            debug_assert!(false, "the builder's capture is invalid: {error}");
         }
-
-        capture
     }
 }
 
