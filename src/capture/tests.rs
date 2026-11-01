@@ -472,6 +472,36 @@ fn validation_rejects_every_out_of_bounds_reference() {
     assert!(broken.validate().is_err(), "an unterminated string pool");
 }
 
+/// A tid reused at the moment its earlier thread ended names that thread
+/// still, as an event then may be either's; one reused a moment later is a
+/// thread of its own. A recording cut there and merged again agrees, as
+/// spans that share a moment overlap.
+#[test]
+fn a_tid_reused_as_its_thread_ends_is_that_thread() {
+    for (reused, threads) in [(40, 1), (41, 2)] {
+        let mut builder = CaptureBuilder::new();
+        let first = builder.thread(Pid::new(1), Tid::new(7), 0);
+        builder.thread_exit(Tid::new(7), 40);
+        let again = builder.thread(Pid::new(1), Tid::new(7), reused);
+        assert_eq!(first == again, threads == 1, "reused at {reused}");
+
+        let frame = builder.frame(FrameKind::Native, NONE, 0x10, 0);
+        let stack = builder.stack(&[frame]);
+        builder.sample(first, 30, 1, stack, NONE);
+        builder.sample(again, reused, 1, stack, NONE);
+
+        let mut before = builder.clone();
+        before.forget_from(reused);
+        builder.forget_before(reused);
+        let mut merged = CaptureBuilder::new();
+        merged.absorb(&before.finish());
+        merged.absorb(&builder.finish());
+        let merged = merged.finish();
+        assert_eq!(merged.threads.len(), threads, "reused at {reused}");
+        assert_eq!(merged.sample_ranges.len(), threads, "reused at {reused}");
+    }
+}
+
 /// A capture of one sample of `weight`, its string pool `padding` longer.
 fn weighing(weight: u64, padding: usize) -> Capture {
     let mut builder = CaptureBuilder::new();

@@ -153,7 +153,7 @@ fn build(model: &Model, counted: bool) -> CaptureBuilder {
         .collect();
 
     let tasks: Vec<u32> = (0..3)
-        .map(|number| builder.task("goroutine", number + 1, 0))
+        .map(|number| builder.task("green", number + 1, 0))
         .collect();
     for (task, label) in tasks.iter().zip(model.labels) {
         if let Some(label) = label {
@@ -614,7 +614,7 @@ fn expected(model: &Model, (lo, hi): (i64, i64)) -> Rows {
             .zip(1..)
             .map(|(label, number)| {
                 let label = label.map_or_else(String::new, |label| format!("phase=p{label}"));
-                ("goroutine".to_owned(), number, label)
+                ("green".to_owned(), number, label)
             })
             .collect(),
         ..Rows::default()
