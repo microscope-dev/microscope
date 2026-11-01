@@ -1,6 +1,7 @@
-//! Target memory access that hides installed breakpoint traps.
+//! Target memory access that hides installed breakpoint traps, and the
+//! word patches that install and lift them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
 
@@ -12,8 +13,9 @@ use crate::{
 
 use super::native::InspectionOps;
 use super::{
-    BreakpointSite, Controller, LinuxError, MAX_LOGICAL_MEMORY_READ, MAX_PUBLIC_MEMORY_READ,
-    backend_error, validate_process, validate_public_stop,
+    BREAKPOINT_OPCODE, BreakpointOwner, BreakpointSite, Controller, LinuxError,
+    MAX_LOGICAL_MEMORY_READ, MAX_PUBLIC_MEMORY_READ, backend_error, validate_process,
+    validate_public_stop,
 };
 
 impl<P: InspectionOps> Controller<P> {
@@ -267,8 +269,190 @@ fn check_traps_hidden(
     }
 }
 
+/// Writes `bytes` at `address` a word at a time and returns how many were
+/// written: all of them, or those before the first word that cannot be
+/// read or written. Installed traps stay in place; the bytes they hide
+/// become the bytes written there.
+pub(super) fn write_logical_memory_with(
+    sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+    address: VirtualAddress,
+    bytes: &[u8],
+    mut read_word: impl FnMut(u64) -> Result<u64>,
+    mut write_word: impl FnMut(u64, u64) -> Result<()>,
+) -> Result<u64> {
+    const WORD: u64 = 8;
+
+    let length = bytes.len() as u64;
+    let end = address
+        .get()
+        .checked_add(length)
+        .ok_or(Error::AddressOverflow)?;
+    let mut word = address.get() & !(WORD - 1);
+    let mut written = 0;
+
+    while word < end {
+        let Ok(current) = read_word(word) else {
+            break;
+        };
+
+        let mut physical = current.to_ne_bytes();
+        let mut hidden = Vec::new();
+        let mut count = 0;
+
+        for (offset, byte) in physical.iter_mut().enumerate() {
+            let target = word + offset as u64;
+            if !(address.get()..end).contains(&target) {
+                continue;
+            }
+
+            let user = usize::try_from(target - address.get())
+                .ok()
+                .and_then(|offset| bytes.get(offset))
+                .copied()
+                .ok_or_else(|| Error::internal("a write covers the bytes it stores"))?;
+            count += 1;
+
+            match sites.get(&VirtualAddress::new(target)) {
+                Some(site) if site.installed => hidden.push((target, user)),
+                _ => *byte = user,
+            }
+        }
+
+        if write_word(word, u64::from_ne_bytes(physical)).is_err() {
+            break;
+        }
+
+        for (target, byte) in hidden {
+            if let Some(site) = sites.get_mut(&VirtualAddress::new(target)) {
+                site.original_byte = byte;
+            }
+        }
+
+        written += count;
+        word += WORD;
+    }
+
+    if written == 0 && length != 0 {
+        return Err(Error::MemoryNotWritable(address));
+    }
+
+    Ok(written)
+}
+
+/// Adds `owner` to the site at `address`, writing a trap there if no site
+/// exists yet.
+pub(super) fn install_site(
+    sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+    address: VirtualAddress,
+    owner: BreakpointOwner,
+    read_word: impl FnOnce(u64) -> Result<u64>,
+    write_word: impl FnOnce(u64, u64) -> Result<()>,
+) -> Result<()> {
+    if let Some(site) = sites.get_mut(&address) {
+        site.owners.insert(owner);
+        return Ok(());
+    }
+
+    let original_byte = patch_byte(address, BREAKPOINT_OPCODE, read_word, write_word)?;
+    sites.insert(
+        address,
+        BreakpointSite {
+            original_byte,
+            installed: true,
+            owners: BTreeSet::from([owner]),
+        },
+    );
+
+    Ok(())
+}
+
+/// Restores the original byte of an installed site, keeping the site.
+pub(super) fn lift_site(
+    sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+    address: VirtualAddress,
+    read_word: impl FnOnce(u64) -> Result<u64>,
+    write_word: impl FnOnce(u64, u64) -> Result<()>,
+) -> Result<()> {
+    let site = sites
+        .get_mut(&address)
+        .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
+    if !site.installed {
+        return Ok(());
+    }
+
+    patch_byte(address, site.original_byte, read_word, write_word)?;
+    site.installed = false;
+    Ok(())
+}
+
+/// Writes the trap of a site [`lift_site`] lifted back in place.
+pub(super) fn reinstall_site(
+    sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+    address: VirtualAddress,
+    read_word: impl FnOnce(u64) -> Result<u64>,
+    write_word: impl FnOnce(u64, u64) -> Result<()>,
+) -> Result<()> {
+    let site = sites
+        .get_mut(&address)
+        .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
+    if site.installed {
+        return Ok(());
+    }
+
+    patch_byte(address, BREAKPOINT_OPCODE, read_word, write_word)?;
+    site.installed = true;
+    Ok(())
+}
+
+/// Takes `owner` off the site at `address`. The last owner's removal lifts
+/// the trap through `lift` and forgets the site, which is returned.
+pub(super) fn remove_site_owner(
+    sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+    address: VirtualAddress,
+    owner: BreakpointOwner,
+    lift: impl FnOnce(&mut BTreeMap<VirtualAddress, BreakpointSite>) -> Result<()>,
+) -> Result<Option<BreakpointSite>> {
+    let site = sites
+        .get_mut(&address)
+        .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
+    if !site.owners.contains(&owner) {
+        return Err(backend_error(LinuxError::BreakpointOwnerMissing(address)));
+    }
+
+    if site.owners.len() > 1 {
+        let removed = site.owners.remove(&owner);
+        debug_assert!(
+            removed,
+            "{owner:?} owned the site at {address}, then did not"
+        );
+        return Ok(None);
+    }
+
+    lift(sites)?;
+    sites
+        .remove(&address)
+        .map(Some)
+        .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))
+}
+
+/// Replaces the byte at `address` with `byte` and returns the byte it
+/// replaced.
+fn patch_byte(
+    address: VirtualAddress,
+    byte: u8,
+    read_word: impl FnOnce(u64) -> Result<u64>,
+    write_word: impl FnOnce(u64, u64) -> Result<()>,
+) -> Result<u8> {
+    let word = read_word(address.get())?;
+    write_word(address.get(), (word & !0xff) | u64::from(byte))?;
+    Ok(word.to_ne_bytes()[0])
+}
+
 impl MemoryReader for PtraceMemory<'_> {
     fn read_u64(&mut self, address: VirtualAddress) -> Option<u64> {
         self.ptrace.read_word(self.pid, address.get()).ok()
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -17,7 +17,7 @@ use crate::{
     BreakpointLocation, Error, LineNumber, ManagedLocation, Result, TrapAddress, VirtualAddress,
 };
 
-use super::memory::MemoryAccessError;
+use super::memory::{MemoryAccessError, remove_site_owner};
 use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
 use super::{BREAKPOINT_OPCODE, BreakpointOwner, Controller, Inferior, LinuxError, backend_error};
 
@@ -1729,36 +1729,12 @@ pub(super) fn remove_breakpoint_owner_from(
     address: VirtualAddress,
     owner: BreakpointOwner,
 ) -> Result<()> {
-    let remove_site = {
-        let site = inferior
-            .breakpoints
-            .get_mut(&address)
-            .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
-        if !site.owners.contains(&owner) {
-            return Err(backend_error(LinuxError::BreakpointOwnerMissing(address)));
-        }
-
-        site.owners.len() == 1
-    };
-
-    if remove_site {
-        let pid = inferior.memory_thread();
-        ptrace.remove_breakpoint(pid, &mut inferior.breakpoints, address)?;
-        let removed = inferior
-            .breakpoints
-            .remove(&address)
-            .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
+    let pid = inferior.memory_thread();
+    let removed = remove_site_owner(&mut inferior.breakpoints, address, owner, |sites| {
+        ptrace.remove_breakpoint(pid, sites, address)
+    })?;
+    if let Some(removed) = removed {
         forget_removed_site(inferior, address, removed.original_byte);
-    } else {
-        let site = inferior
-            .breakpoints
-            .get_mut(&address)
-            .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))?;
-        let removed = site.owners.remove(&owner);
-        debug_assert!(
-            removed,
-            "{owner:?} owned the site at {address}, then did not"
-        );
     }
 
     Ok(())
