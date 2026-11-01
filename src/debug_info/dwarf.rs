@@ -5173,6 +5173,252 @@ mod tests {
         assert_eq!(lines[0].range.end, ImageAddress::new(0x104));
     }
 
+    /// One row of a generated line program: how far past the previous row
+    /// it is, its line (0 for none), and whether it is a statement.
+    #[derive(Debug, Clone, Copy)]
+    struct ModelRow {
+        advance: u64,
+        line: u64,
+        statement: bool,
+    }
+
+    /// A generated sequence: its rows, how far past the last row it ends,
+    /// and whether it lies in the image's code.
+    #[derive(Debug, Clone)]
+    struct ModelSequence {
+        rows: Vec<ModelRow>,
+        tail: u64,
+        in_code: bool,
+    }
+
+    /// Where sequence `index` starts; sequences are far enough apart not to
+    /// touch.
+    fn model_sequence_start(index: usize) -> u64 {
+        0x1000 * (index as u64 + 1)
+    }
+
+    /// Loads the line tables of one unit whose program holds `sequences`.
+    /// Each row's column is its position among all rows plus one, which
+    /// names the row a range takes its location from.
+    fn load_model_lines(version: u16, sequences: &[ModelSequence]) -> LineTables {
+        let encoding = Encoding {
+            format: Format::Dwarf32,
+            version,
+            address_size: 8,
+        };
+
+        let mut program = LineProgram::new(
+            encoding,
+            LineEncoding::default(),
+            LineString::String(b"/test".to_vec()),
+            None,
+            LineString::String(b"model.c".to_vec()),
+            None,
+        );
+        let file = program.add_file(
+            LineString::String(b"model.c".to_vec()),
+            program.default_directory(),
+            None,
+        );
+
+        let mut column = 0;
+        for (index, sequence) in sequences.iter().enumerate() {
+            program.begin_sequence(Some(Address::Constant(model_sequence_start(index))));
+            let mut offset = 0;
+            for row in &sequence.rows {
+                offset += row.advance;
+                column += 1;
+                program.row().address_offset = offset;
+                program.row().file = file;
+                program.row().line = row.line;
+                program.row().column = column;
+                program.row().is_statement = row.statement;
+                program.generate_row();
+            }
+            program.end_sequence(offset + sequence.tail);
+        }
+
+        let mut written = WriteDwarf::new();
+        written.units.add(Unit::new(encoding, program));
+        let mut sections = Sections::new(EndianVec::new(LittleEndian));
+        written.write(&mut sections).expect("write test DWARF");
+        let dwarf = gimli::Dwarf::load(|id| {
+            let bytes = sections.get(id).map(EndianVec::slice).unwrap_or_default();
+            Ok::<_, gimli::Error>(EndianSlice::new(bytes, RunTimeEndian::Little))
+        })
+        .expect("read test DWARF");
+        let dwarf = DwarfSet::from(dwarf);
+        let header = dwarf.units().next().unwrap().expect("one test unit");
+        let unit = dwarf.unit(header).expect("read test unit");
+
+        let code = CodeRanges(
+            sequences
+                .iter()
+                .enumerate()
+                .filter(|(_, sequence)| sequence.in_code)
+                .map(|(index, sequence)| {
+                    let start = model_sequence_start(index);
+                    let length = sequence.rows.iter().map(|row| row.advance).sum::<u64>();
+                    AddressRange {
+                        start: ImageAddress::new(start),
+                        end: ImageAddress::new(start + length + sequence.tail + 1),
+                    }
+                })
+                .collect(),
+        );
+
+        let mut tables = LineTables::default();
+        load_lines(&dwarf, &unit, &code, &mut Files::default(), &mut tables)
+            .expect("load test line program");
+        tables
+    }
+
+    /// Each line range as its start, end, the column of the row whose
+    /// location it has, and whether it starts at a statement.
+    fn loaded_ranges(tables: &LineTables) -> Vec<(u64, u64, u64, bool)> {
+        tables
+            .ranges
+            .iter()
+            .map(|range| {
+                let row = tables.row(range.row.get() as usize);
+                (
+                    range.start.get(),
+                    range.end.get(),
+                    row.column,
+                    range.statement != 0,
+                )
+            })
+            .collect()
+    }
+
+    /// The line ranges a program of `sequences` describes. At each address,
+    /// only the rows after the last one without a line count. With none,
+    /// the address has no line; a line-0 row means code no source line
+    /// owns, and naming the line an earlier row gave would be a guess.
+    /// Otherwise the range runs to the next address, has the location of
+    /// the last statement row that counts, or of the last row if none is a
+    /// statement, and is a statement boundary if any is one.
+    fn model_ranges(sequences: &[ModelSequence]) -> Vec<(u64, u64, u64, bool)> {
+        let mut ranges = Vec::new();
+        let mut column = 0;
+        for (index, sequence) in sequences.iter().enumerate() {
+            let start = model_sequence_start(index);
+            let mut rows = Vec::new();
+            let mut offset = 0;
+            for row in &sequence.rows {
+                offset += row.advance;
+                column += 1;
+                rows.push((start + offset, column, *row));
+            }
+
+            let end = start + offset + sequence.tail;
+            if !sequence.in_code {
+                continue;
+            }
+
+            let groups = rows
+                .chunk_by(|left, right| left.0 == right.0)
+                .collect::<Vec<_>>();
+            for (at, group) in groups.iter().enumerate() {
+                let address = group[0].0;
+                let next = groups.get(at + 1).map_or(end, |next| next[0].0);
+                let after = group
+                    .iter()
+                    .rposition(|(_, _, row)| row.line == 0)
+                    .map_or(0, |last| last + 1);
+                let counted = &group[after..];
+                let Some(last) = counted.last() else {
+                    continue;
+                };
+
+                if address < next {
+                    let location = counted
+                        .iter()
+                        .rev()
+                        .find(|(_, _, row)| row.statement)
+                        .unwrap_or(last);
+                    let statement = counted.iter().any(|(_, _, row)| row.statement);
+                    ranges.push((address, next, location.1, statement));
+                }
+            }
+        }
+
+        ranges
+    }
+
+    #[test]
+    fn a_line_0_row_after_a_statement_at_one_address_leaves_it_without_a_line() {
+        let row = |advance, line, statement| ModelRow {
+            advance,
+            line,
+            statement,
+        };
+        let sequence = ModelSequence {
+            rows: vec![row(0, 7, true), row(0, 0, false), row(4, 8, true)],
+            tail: 4,
+            in_code: true,
+        };
+
+        let tables = load_model_lines(5, std::slice::from_ref(&sequence));
+        assert_eq!(loaded_ranges(&tables), [(0x1004, 0x1008, 3, true)]);
+    }
+
+    fn model_sequence() -> impl proptest::strategy::Strategy<Value = ModelSequence> {
+        use proptest::prelude::*;
+
+        let row = (
+            prop_oneof![3 => Just(0_u64), 2 => 1_u64..5],
+            prop_oneof![1 => Just(0_u64), 3 => 1_u64..6],
+            any::<bool>(),
+        )
+            .prop_map(|(advance, line, statement)| ModelRow {
+                advance,
+                line,
+                statement,
+            });
+
+        (
+            proptest::collection::vec(row, 1..12),
+            prop_oneof![1 => Just(0_u64), 3 => 1_u64..5],
+            prop_oneof![1 => Just(false), 4 => Just(true)],
+        )
+            .prop_map(|(rows, tail, in_code)| ModelSequence {
+                rows,
+                tail,
+                in_code,
+            })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// Line ranges are what the model above says, they never overlap,
+        /// and a sequence outside the image's code leaves no rows.
+        #[test]
+        fn line_ranges_follow_the_rows_at_each_address(
+            version in proptest::sample::select(vec![4_u16, 5]),
+            sequences in proptest::collection::vec(model_sequence(), 1..4),
+        ) {
+            let tables = load_model_lines(version, &sequences);
+            let ranges = loaded_ranges(&tables);
+            proptest::prop_assert_eq!(&ranges, &model_ranges(&sequences));
+
+            let mut sorted = ranges.clone();
+            sorted.sort_unstable();
+            for pair in sorted.windows(2) {
+                proptest::prop_assert!(pair[0].1 <= pair[1].0, "{:x?} overlap", pair);
+            }
+
+            // Every row of a sequence in the code, and its end.
+            let rows = sequences
+                .iter()
+                .filter(|sequence| sequence.in_code)
+                .map(|sequence| sequence.rows.len() + 1)
+                .sum::<usize>();
+            proptest::prop_assert_eq!(tables.rows.len(), rows);
+        }
+    }
+
     fn analyzed_entry_row(address: u64, line: u64, sequence: u32, ordinal: u32) -> StatementRow {
         StatementRow {
             address: ImageAddress::new(address),
