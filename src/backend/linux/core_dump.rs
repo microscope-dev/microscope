@@ -2580,4 +2580,69 @@ mod tests {
             }
         }
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// A verified image backs the bytes of its mappings that lie in its
+        /// read-only segments, each from the file offset its mapping gives.
+        #[test]
+        fn an_image_backs_the_read_only_parts_of_its_mappings(
+            (base, mappings, read_only, length, seed) in crate::test_strategies::u64_edges()
+                .prop_map(|edge| edge.min(u64::MAX - SPAN))
+                .prop_flat_map(|base| {
+                    let mappings = ranges(base, 1, 2).prop_flat_map(|ranges| {
+                        ranges
+                            .into_iter()
+                            .map(|range| {
+                                prop_oneof![4 => 0..16_u64, 1 => Just(u64::MAX - 4)]
+                                    .prop_map(move |file_offset| (range.clone(), file_offset))
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                    (Just(base), mappings, ranges(base, 1, 2), 0..=2 * SPAN, any::<u8>())
+                })
+        ) {
+            let data: Arc<[u8]> = pattern(seed, usize::try_from(length).unwrap()).into();
+            let image = ImageMappings {
+                path: "/lib/a.so".into(),
+                mappings: mappings
+                    .iter()
+                    .map(|(range, file_offset)| CoreFileMapping {
+                        start: range.start,
+                        end: range.end,
+                        file_offset: *file_offset,
+                        path: "/lib/a.so".into(),
+                    })
+                    .collect(),
+            };
+            let model = Model {
+                segments: Vec::new(),
+                core: vec![0; usize::try_from(HEADER).unwrap()],
+                backings: FileBacking::for_image(&image, &data, &read_only),
+            };
+            let memory = model.memory();
+
+            for address in base..base + SPAN {
+                let expected = mappings
+                    .iter()
+                    .find(|(range, _)| range.contains(&address))
+                    .filter(|_| read_only.iter().any(|range| range.contains(&address)))
+                    .and_then(|(range, file_offset)| {
+                        let offset = file_offset.checked_add(address - range.start)?;
+                        data.get(usize::try_from(offset).ok()?).copied()
+                    });
+                let mut byte = [0];
+                let read = memory.read(address, &mut byte).map(|()| byte[0]);
+                match (expected, read) {
+                    (Some(expected), Ok(read)) => prop_assert_eq!(read, expected),
+                    (None, Err(CoreMemoryError::Unavailable)) => {}
+                    (expected, read) => prop_assert!(
+                        false,
+                        "the byte at {address:#x}: expected {expected:?}, got {read:?}"
+                    ),
+                }
+            }
+        }
+    }
 }
