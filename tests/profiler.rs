@@ -1875,14 +1875,23 @@ fn a_functions_samples_land_on_its_lines_and_its_instructions() {
     std::fs::copy(Scenario::fixture("profile-stacks-gcc-o0"), &program).expect("copy");
     let mut command = Command::new(&program);
     command.arg("1").stdout(Stdio::null());
-    let profile = record(command, &calls_of("leaf")).expect("record").profile;
+    let recording = record(command, &calls_of("leaf")).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+    let profile = recording.profile;
     let everything = Query::default();
 
+    // Rings can shrink under contention. Place every retained call, and
+    // require retained plus reported loss to account for all six calls.
+    assert_eq!(profile.counted(), 6);
+    assert!(profile.lost_samples() < 6, "some samples must remain");
+    let expected = 6 - profile.lost_samples();
+    assert_eq!(profile.samples() as u64, expected);
     let lines = profile.line_costs(&everything, "leaf").lines;
     assert_eq!(
         lines.iter().map(|line| line.own).sum::<u64>(),
-        6,
-        "{lines:?}"
+        expected,
+        "{lines:?}; stacks={:?}",
+        profile.stacks(),
     );
     assert_eq!(
         lines.iter().filter(|line| line.own > 0).count(),
@@ -1898,7 +1907,7 @@ fn a_functions_samples_land_on_its_lines_and_its_instructions() {
     };
 
     assert_eq!(leaf.symbol, "leaf");
-    assert_eq!(leaf.instructions[0].own, 6, "{leaf:?}");
+    assert_eq!(leaf.instructions[0].own, expected, "{leaf:?}");
     assert!(
         leaf.instructions[1..]
             .iter()
@@ -1927,7 +1936,7 @@ fn a_functions_samples_land_on_its_lines_and_its_instructions() {
             .iter()
             .map(|instruction| instruction.total)
             .sum::<u64>(),
-        6
+        expected
     );
 
     let mut file = std::fs::OpenOptions::new()
