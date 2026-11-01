@@ -112,15 +112,14 @@ impl Reference {
             .into_iter()
             .filter(|number| Some(*number) != first)
             .collect::<BTreeSet<_>>();
-        match &mut self.phase {
-            Phase::Stopping { awaited, .. } => awaited.extend(running),
-            _ => {
-                self.phase = Phase::Stopping {
-                    awaited: running,
-                    first: first.is_some(),
-                };
-                self.settled(0);
-            }
+        if let Phase::Stopping { awaited, .. } = &mut self.phase {
+            awaited.extend(running);
+        } else {
+            self.phase = Phase::Stopping {
+                awaited: running,
+                first: first.is_some(),
+            };
+            self.settled(0);
         }
     }
 
