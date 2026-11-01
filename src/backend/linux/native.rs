@@ -1,7 +1,7 @@
 //! The ptrace, waitpid, and /proc edge every controller operation goes through.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use crate::debug_info::DebugInfo;
 use crate::protocol::{LaunchOptions, StopId};
 use crate::{Error, Result, VirtualAddress};
 
-use super::memory::MemoryAccessError;
+use super::memory::{MemoryAccessError, install_site, lift_site, reinstall_site};
 #[path = "signal_action.rs"]
 mod signal_action;
 use super::modules::{
@@ -37,8 +37,8 @@ use super::modules::{
 use super::registers::Fxsave;
 use super::signals::{Signal, WaitEvent};
 use super::{
-    BREAKPOINT_OPCODE, BreakpointOwner, BreakpointSite, LinuxError, SignalMetadata,
-    WAITER_THREAD_NAME, Waiter, WaiterThread, allocate_stop_id, backend_error,
+    BreakpointOwner, BreakpointSite, LinuxError, SignalMetadata, WAITER_THREAD_NAME, Waiter,
+    WaiterThread, allocate_stop_id, backend_error,
 };
 
 /// The program a process runs, as `/proc` shows it after an exec.
@@ -361,28 +361,13 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         address: VirtualAddress,
         owner: BreakpointOwner,
     ) -> Result<()> {
-        if let Some(site) = sites.get_mut(&address) {
-            site.owners.insert(owner);
-            return Ok(());
-        }
-
-        let word = self.read_word(pid, address.get())?;
-        let original_byte = word.to_ne_bytes()[0];
-        self.write_word(
-            pid,
-            address.get(),
-            (word & !0xff) | u64::from(BREAKPOINT_OPCODE),
-        )?;
-        sites.insert(
+        install_site(
+            sites,
             address,
-            BreakpointSite {
-                original_byte,
-                installed: true,
-                owners: BTreeSet::from([owner]),
-            },
-        );
-
-        Ok(())
+            owner,
+            |word| self.read_word(pid, word),
+            |word, value| self.write_word(pid, word, value),
+        )
     }
 
     /// Restores the original byte of an installed site, keeping the site.
@@ -392,21 +377,12 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
         address: VirtualAddress,
     ) -> Result<()> {
-        let site = sites
-            .get_mut(&address)
-            .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
-        if !site.installed {
-            return Ok(());
-        }
-
-        let word = self.read_word(pid, address.get())?;
-        self.write_word(
-            pid,
-            address.get(),
-            (word & !0xff) | u64::from(site.original_byte),
-        )?;
-        site.installed = false;
-        Ok(())
+        lift_site(
+            sites,
+            address,
+            |word| self.read_word(pid, word),
+            |word, value| self.write_word(pid, word, value),
+        )
     }
 
     /// Writes the trap of a site its removal lifted back in place.
@@ -416,21 +392,12 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
         address: VirtualAddress,
     ) -> Result<()> {
-        let site = sites
-            .get_mut(&address)
-            .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
-        if site.installed {
-            return Ok(());
-        }
-
-        let word = self.read_word(pid, address.get())?;
-        self.write_word(
-            pid,
-            address.get(),
-            (word & !0xff) | u64::from(BREAKPOINT_OPCODE),
-        )?;
-        site.installed = true;
-        Ok(())
+        reinstall_site(
+            sites,
+            address,
+            |word| self.read_word(pid, word),
+            |word, value| self.write_word(pid, word, value),
+        )
     }
 }
 

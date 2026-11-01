@@ -113,6 +113,47 @@ impl CoreTarget {
     }
 }
 
+/// Reads the word at `address`, or as much of it as is readable from its
+/// start: saved and file-backed memory need not end on a word boundary.
+pub(super) fn read_word(
+    memory: &CoreMemory,
+    address: u64,
+) -> std::result::Result<u64, MemoryAccessError> {
+    let mut bytes = [0; 8];
+
+    match memory.read(address, &mut bytes) {
+        Ok(()) => Ok(u64::from_le_bytes(bytes)),
+        Err(CoreMemoryError::Unavailable) => {
+            let mut readable = 0;
+            while readable < bytes.len() {
+                let Some(current) = address.checked_add(readable as u64) else {
+                    break;
+                };
+
+                match memory.read(current, &mut bytes[readable..=readable]) {
+                    Ok(()) => readable += 1,
+                    Err(CoreMemoryError::Unavailable) => break,
+                    Err(CoreMemoryError::Io(error)) => {
+                        return Err(MemoryAccessError::Fatal(error.into()));
+                    }
+                }
+            }
+
+            bytes[readable..].fill(0);
+
+            if readable == 0 {
+                Err(MemoryAccessError::Inaccessible)
+            } else {
+                Err(MemoryAccessError::Partial {
+                    word: u64::from_le_bytes(bytes),
+                    readable,
+                })
+            }
+        }
+        Err(CoreMemoryError::Io(error)) => Err(MemoryAccessError::Fatal(error.into())),
+    }
+}
+
 impl InspectionOps for CoreTarget {
     fn target_thread_id(
         &self,
@@ -174,41 +215,7 @@ impl InspectionOps for CoreTarget {
         _pid: Pid,
         address: u64,
     ) -> std::result::Result<u64, MemoryAccessError> {
-        let mut bytes = [0; 8];
-
-        match self.memory.read(address, &mut bytes) {
-            Ok(()) => Ok(u64::from_le_bytes(bytes)),
-            // Saved and file-backed memory need not end on a word boundary,
-            // so find how much of the word is readable.
-            Err(CoreMemoryError::Unavailable) => {
-                let mut readable = 0;
-                while readable < bytes.len() {
-                    let Some(current) = address.checked_add(readable as u64) else {
-                        break;
-                    };
-
-                    match self.memory.read(current, &mut bytes[readable..=readable]) {
-                        Ok(()) => readable += 1,
-                        Err(CoreMemoryError::Unavailable) => break,
-                        Err(CoreMemoryError::Io(error)) => {
-                            return Err(MemoryAccessError::Fatal(error.into()));
-                        }
-                    }
-                }
-
-                bytes[readable..].fill(0);
-
-                if readable == 0 {
-                    Err(MemoryAccessError::Inaccessible)
-                } else {
-                    Err(MemoryAccessError::Partial {
-                        word: u64::from_le_bytes(bytes),
-                        readable,
-                    })
-                }
-            }
-            Err(CoreMemoryError::Io(error)) => Err(MemoryAccessError::Fatal(error.into())),
-        }
+        read_word(&self.memory, address)
     }
 
     fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {

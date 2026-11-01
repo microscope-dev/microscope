@@ -17,6 +17,7 @@ use crate::protocol::{
 use crate::{Error, Result, VirtualAddress};
 
 use super::breakpoints::{install_logical_breakpoint, lift_all_traps, reinstall_all_traps};
+use super::memory::holding_word;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::{
     ActiveExecution, ActiveKind, BREAKPOINT_OPCODE, ClassifiedStop, Controller, ExpectedStop,
@@ -1183,7 +1184,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut cleaned = Ok(());
 
         for &(address, original_byte) in sites {
-            let word = match self.ptrace.read_memory_word(child, address.get()) {
+            let (word_address, offset) = holding_word(address.get());
+            let word = match self.ptrace.read_memory_word(child, word_address) {
                 Ok(word) => word,
                 // Memory the child cannot read, such as a library unloaded
                 // since, holds no trap it could execute.
@@ -1205,14 +1207,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             // Only a trap is ours to remove. A site removed before the fork,
             // or whose memory was remapped since, such as an unloaded
             // library's, holds code the child must keep.
-            if bytes[0] != BREAKPOINT_OPCODE {
+            if bytes[offset] != BREAKPOINT_OPCODE {
                 continue;
             }
 
-            bytes[0] = original_byte;
+            bytes[offset] = original_byte;
             cleaned = self
                 .ptrace
-                .write_word(child, address.get(), u64::from_ne_bytes(bytes));
+                .write_word(child, word_address, u64::from_ne_bytes(bytes));
             if cleaned.is_err() {
                 break;
             }

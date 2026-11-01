@@ -1184,4 +1184,52 @@ mod tests {
             assert_eq!(matches_glob(pattern, name), matches, "{pattern} {name}");
         }
     }
+
+    /// The glob rules, one character at a time: `*` takes any number of
+    /// characters, `?` any one, and anything else itself.
+    fn glob_reference(pattern: &[char], name: &[char]) -> bool {
+        match pattern.split_first() {
+            None => name.is_empty(),
+            Some(('*', rest)) => (0..=name.len()).any(|taken| glob_reference(rest, &name[taken..])),
+            Some((&first, rest)) => name.split_first().is_some_and(|(&character, name)| {
+                (first == '?' || first == character) && glob_reference(rest, name)
+            }),
+        }
+    }
+
+    /// Every pattern of `a`, `b`, `*`, and `?` up to 5 characters agrees
+    /// with the reference on every name of `a` and `b` up to 6.
+    #[test]
+    fn globs_match_as_the_reference_does_on_every_short_input() {
+        fn words(alphabet: &[char], longest: usize) -> Vec<Vec<char>> {
+            let mut words = vec![Vec::new()];
+            let mut last = vec![Vec::new()];
+            for _ in 0..longest {
+                last = last
+                    .iter()
+                    .flat_map(|word: &Vec<char>| {
+                        alphabet.iter().map(move |&character| {
+                            let mut longer = word.clone();
+                            longer.push(character);
+                            longer
+                        })
+                    })
+                    .collect();
+                words.extend(last.iter().cloned());
+            }
+            words
+        }
+
+        let names = words(&['a', 'b'], 6);
+        for pattern in words(&['a', 'b', '*', '?'], 5) {
+            let text = pattern.iter().collect::<String>();
+            for name in &names {
+                assert_eq!(
+                    matches_glob(&text, &name.iter().collect::<String>()),
+                    glob_reference(&pattern, name),
+                    "{text:?} against {name:?}"
+                );
+            }
+        }
+    }
 }
