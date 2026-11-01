@@ -1,7 +1,6 @@
 # Getting started
 
-This page takes you from a program with debug information to a stopped
-microscope session.
+Compile a program with debug information, then launch it in microscope.
 
 ## Install microscope
 
@@ -14,20 +13,16 @@ end-user installation method.
 
 ## Build a program for debugging
 
-Compile the program with debug information. Optimized programs can be
-debugged, but their variables and control flow may no longer match the source
-exactly. Start without optimization when learning the tool.
-
-For example:
+Start with debug information and no optimization. Optimized builds also work,
+but variables and control flow may no longer match the source:
 
 ```sh
 cc -g -O0 -o hello hello.c
 ```
 
-microscope reads DWARF debug information from the executable or from a separate
-debug file. A stripped program without available debug information can still
-be inspected by address and instruction, but source lines, types, and local
-variables may be missing.
+microscope reads DWARF from the executable or a separate debug file. Without
+it, you can inspect addresses and instructions, but source lines, types, and
+local variables may be missing.
 
 ## Start a terminal session
 
@@ -37,10 +32,9 @@ Launch a program by passing its executable and arguments:
 microscope ./hello -- first second
 ```
 
-A program named without a directory, such as `python3`, is found as gdb finds
-it: a file of that name in the current directory, or else the first one on
-`PATH`. It runs by the path it was named by, so the `python` of an activated
-virtual environment runs in that environment.
+A name without a directory, such as `python3`, is resolved in the current
+directory first, then on `PATH`. microscope preserves that path, so `python`
+from an activated virtual environment runs in that environment.
 
 microscope loads the program and opens a prompt:
 
@@ -81,7 +75,6 @@ Start the browser interface with:
 microscope web ./hello
 ```
 
-See [Browser](browser.md) for its views and sharing model.
+See [Browser](browser.md) for navigation and shared sessions.
 
-microscope also speaks the Debug Adapter Protocol. See [Editors](editors.md) for
-client setup and supported behavior.
+For an editor, see [DAP client setup](editors.md).

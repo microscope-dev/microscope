@@ -10,8 +10,7 @@ microscope [OPTIONS] --launch NAME [-- ARGS...]
 microscope TOOL
 ```
 
-Use `microscope --help` for the complete current option list and `microscope
-TOOL --help` for one tool.
+Use `microscope --help` for all options or `microscope TOOL --help` for a tool.
 
 ## Tools
 
@@ -36,7 +35,7 @@ TOOL --help` for one tool.
 | `-l, --launch NAME` | Use a project launch configuration |
 | `--cwd DIR` | Working directory for a launched program |
 | `--env NAME=VALUE` | Add an environment value; repeatable |
-| `--follow MODE\|PROGRAM` | Which processes the program starts are debugged too: `auto`, `all`, or `none`, or a program to debug by file name, such as `node` or `'py*'`; repeatable. Overrides [`[follow]`](configuration.md#processes-the-program-starts); not with `--core` |
+| `--follow MODE\|PROGRAM` | Debug child processes by mode (`auto`, `all`, `none`) or filename pattern (`node`, `'py*'`); repeatable. Overrides [`[follow]`](configuration.md#processes-the-program-starts); incompatible with `--core` |
 | `--sysroot DIR` | Root used to find files named by a core dump |
 | `--module-path DIR` | Search for missing core-dump modules; repeatable |
 | `--allow-module-mismatch` | Accept a module that cannot be proven to match the dump |
@@ -57,7 +56,7 @@ TOOL --help` for one tool.
 |---|---|
 | `-c, --command FILE` | Run commands from a file; repeatable |
 | `-e, --eval COMMAND` | Run one command; repeatable |
-| `--batch` | Exit after commands instead of opening the REPL. Fails when the program replaced itself with another program microscope did not follow, or a process it started executed a program the follow policy debugs but microscope could not load |
+| `--batch` | Exit after commands instead of opening the REPL. Fails on unfollowed execs or child execs the follow policy selects but microscope cannot load |
 | `--config FILE` | Use this user configuration file |
 | `--no-config` | Read no configuration files |
 | `--trust-project` | Use active project commands for this session |
@@ -121,7 +120,7 @@ IDs such as `c1`, or `all` where the command permits it.
 
 | Command | Purpose |
 |---|---|
-| `bt [-r]` | Show the selected stack; `-r` shows the runtime and interpreter frames it folds |
+| `bt [-r]` | Show the selected stack; `-r` expands runtime and interpreter frames |
 | `frame N`, `up`, `down` | Select a frame |
 | `threads`, `thread ID` | List or select native threads |
 | `goroutines`, `goroutine ID` | List or select Go goroutines |
@@ -130,15 +129,14 @@ IDs such as `c1`, or `all` where the command permits it.
 
 ### Processes
 
-These commands act on the processes a program starts that microscope
-debugs with it; see
+These commands select and manage debugged child processes; see
 [Debug the processes a program starts](../debugging.md#debug-the-processes-a-program-starts).
 
 | Command | Purpose |
 |---|---|
-| `processes` | List the debugged processes, their numbers, and where each is; `*` marks the selected one |
+| `processes` | List process numbers and states; `*` marks the selected process |
 | `process N` | Select process `N`, which later commands act on |
-| `detach process N` | Let stopped process `N` run on without microscope; the others stay debugged |
+| `detach process N` | Release stopped process `N`; keep debugging the others |
 
 ### Values and machine state
 
@@ -162,7 +160,7 @@ debugs with it; see
 |---|---|
 | `set NAME VALUE` | Change a session setting |
 | `show NAME` | Show a session setting |
-| `set runtime-frames on\|off` | Show a runtime's and an interpreter's own frames in backtraces, or fold them |
+| `set runtime-frames on\|off` | Show or fold runtime and interpreter frames in backtraces |
 | `handle SIGNAL ...` | Set stop, print, and delivery policy |
 | `signals` | List signal policy |
 | `source FILE` | Run commands from a file |

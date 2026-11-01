@@ -1,22 +1,21 @@
 # Expressions
 
-microscope reads expressions in one language for every program it debugs,
-whether it is written in C, C++, Rust, Go, Zig, Odin, Fortran, D, Nim, or
-Ada. The language is small and exact, and the same everywhere: it has no
-per-language parsers, type checkers, or compilers behind it.
+Use the same expression language in every program microscope debugs, whether
+written in C, C++, Rust, Go, Zig, Odin, Fortran, D, Nim, or Ada. There are no
+per-language parsers, type checkers, or compilers.
 
-Arithmetic gives the mathematically true answer, never a wrapped or
-promoted one, and bit operations keep their operand's width. Nothing converts
-implicitly except where this page says so, and a value the program cannot
-provide, such as an optimized-out variable, is reported as unavailable rather
-than guessed.
+Arithmetic computes exact results without wrapping or promotion. Bit operations
+keep their operand's width. Conversions are explicit except where this page
+says otherwise. Values the program cannot provide, such as optimized-out
+variables, are reported as unavailable.
 
-Every example on this page runs as one of microscope's tests, against small
-worlds of variables. Each row reads `expression => outcome`. An outcome is a
-value and its type, `value : type`; `reads as` and the expression's normal form,
-the spelling microscope prints it in; `error` and the kind of error with the
-text it points at; or `unavailable` and the operand whose value the program
-could not provide.
+The examples use small sets of variables and run as tests. Each row reads
+`expression => outcome`, with one of these outcomes:
+
+- `value : type`: the result and its type.
+- `reads as`: the expression in the form microscope prints.
+- `error`: the error kind and the text it points at.
+- `unavailable`: the operand whose value the program could not provide.
 
 ## Names
 
@@ -25,19 +24,19 @@ A name is `[A-Za-z_][A-Za-z0-9_]*`. Names may be qualified with `::`, and
 including one with `/`, `-`, spaces, or angle brackets, and one that is
 otherwise a keyword.
 
-A dotted name such as Go's `main.counter` names a global when one has that
-whole name; otherwise the dots select members. The longest name the frame
-knows is taken first.
+A dotted name such as Go's `main.counter` refers to a global with that full
+name if one exists; otherwise the dots select members. microscope matches
+the longest name known in the frame first.
 
 `$name` reads a register of the selected frame, such as `$rax` or `$rip`, and
 `$pc`, `$sp`, and `$fp` name the program counter, stack pointer, and frame
 pointer.
 
-`$task` is the id of the selected task, or of the task the selected thread
-runs, an exact integer: in Go, a goroutine's, so a breakpoint's condition
-`$task == 7` stops only in goroutine 7. Where the program has no tasks, or microscope cannot tell which one
-a thread runs, `$task` is refused; a thread between tasks, such as one idle
-in Go's scheduler, has none, and `$task` is unavailable there.
+`$task` is the selected task's id, or the id of the task running on the selected
+thread, as an exact integer. In Go, it is a goroutine id: the breakpoint
+condition `$task == 7` stops only in goroutine 7. `$task` is unsupported when
+the program has no tasks or microscope cannot identify a thread's task. It is
+unavailable when the thread is between tasks, such as when idle in Go's scheduler.
 
 `$future` is the future of the selected frame's async function or block,
 which holds the variables it keeps across its awaits and the state it is in.
@@ -55,11 +54,11 @@ naïve                     => error syntax at `ï`
 $                         => error syntax at `$`
 ```
 
-A name that several variables share is ambiguous, and the error lists how to
+A name shared by several variables is ambiguous; the error lists how to
 qualify each. Typedefs and qualifiers such as `const` keep their names but
-behave as the types they stand for, and a C++ reference stands for what it
-refers to. In a caller's frame, registers hold what unwinding recovered, and
-one it could not recover is unavailable.
+behave as their underlying types. A C++ reference behaves as the value it
+refers to. Registers in a caller's frame contain the values recovered by
+unwinding; unrecovered registers are unavailable.
 
 A word that C reserves for a type, such as `long`, `int`, `class`, or
 `const`, is a name wherever a type cannot be, since a Go, Rust, or Zig
@@ -100,12 +99,12 @@ $task                  => error unsupported at `$task`
 $future                => error unknown-name at `$future`
 ```
 
-Where a system call stopped the thread, as at a `catch syscall` stop, `$arg0`
-to `$arg5` are its arguments as its registers held them, `$ret` is what it
-returned, a negative errno when it failed, and `$path` is the path it names.
-Each is an exact integer, or text for `$path`. Before the call returns,
-`$ret` is refused, and so is `$path` for a call that names no path. A stop of
-any other kind has none of them.
+At a system-call stop, such as `catch syscall`, `$arg0` to `$arg5` contain the
+arguments as held in registers. `$ret` is the return value (a negative errno
+on failure), and `$path` is the path named by the call. These are exact
+integers except for `$path`, which is text. `$ret` is unsupported before the
+call returns, as is `$path` for a call without a path. None are supported at
+other kinds of stop.
 
 ```microscope-example
 world: syscall
@@ -141,16 +140,16 @@ is a range. `'a'` is a character's code point, and `"text"` is a string,
 which compares with the program's text. Both take the escapes `\n`, `\r`,
 `\t`, `\0`, `\\`, `\'`, `\"`, `\xHH`, and `\u{H…}`.
 
-`true`, `false`, and `null` mean what they say, and `nil` is a second
-spelling of `null`, which prints as `null`. `nullptr` and `NULL` are refused
-with a hint to write `null`: C's `NULL` is a macro, and the two spellings
-are enough for a condition to read the same in every language.
+`true` and `false` are booleans. `null` and `nil` both denote null and print
+as `null`. `nullptr` and `NULL` are rejected with a hint to use `null`.
+C's `NULL` is a macro; the expression language uses the same null spellings
+in every source language.
 
-A tuple is written `(a, b)`, `(a,)` for one value, or `()` for none, as
-Python and Rust write one; `(a)` only groups. In brackets, `m[a, b]` is
-`m[(a, b)]`, as Python reads it. A tuple is only a map's key (see Maps):
-it is no value of its own, so it is not printed, compared, or computed
-with, and a view's expressions write none.
+Write a tuple as `(a, b)`, `(a,)` for one value, or `()` for none, as in
+Python and Rust; `(a)` only groups. In brackets, `m[a, b]` means
+`m[(a, b)]`, as in Python. Tuples can only be map keys (see Maps), not
+standalone values to print, compare, or compute with. View expressions
+cannot contain tuples.
 
 ```microscope-example
 0x2a + 0b1010_1010 + 0o17 => reads as `42 + 170 + 15`
@@ -211,19 +210,22 @@ From loosest to tightest:
 | postfix `.` `->` `[]` | left |
 
 Bit operations bind tighter than comparisons, so `x & 1 == 0` means
-`(x & 1) == 0`, and comparisons do not chain. `.` selects a member, and also
-selects through one pointer; `->` selects through a pointer as in C;
-`t.0` selects a tuple's field. A member of an anonymous struct or union, or
-of a base class, is selected by its own name, as C and C++ select it: a
-record's own members hide its bases', and a name that two paths reach in
-different objects is ambiguous. A member of a Go embedded field is promoted
-as Go promotes it: `n.W` selects the `W` of the shallowest embedded field
-that has one, through an embedded pointer too, and several at that depth
-are ambiguous, the error naming each. `a[start..end]` is a half-open range
-of an array or slice, and must be the whole expression; `a[start:end]`
-slices (see Slices), and `m[key]` indexes a map (see Maps). `len(x)` is a
-length, `cap(x)` a capacity, and `sizeof(x)` a size. The language does not
-call functions.
+`(x & 1) == 0`. Comparisons do not chain.
+
+`.` selects a member, including through one pointer; `->` selects through
+a pointer as in C. `t.0` selects a tuple field. Members of anonymous structs,
+unions, and base classes are accessible by their own names, as in C and C++.
+A record's own members hide its bases' members. A name reached through two
+paths into different objects is ambiguous.
+
+Go embedded fields follow Go's promotion rules: `n.W` selects `W` from the
+shallowest embedded field that has it, including through embedded pointers.
+Multiple matches at that depth are ambiguous, and the error lists each.
+
+`a[start..end]` is a half-open range of an array or slice and must be the
+whole expression. `a[start:end]` slices (see Slices), and `m[key]` indexes
+a map (see Maps). `len(x)` gives a length, `cap(x)` a capacity, and
+`sizeof(x)` a size. Function calls are not supported.
 
 ```microscope-example
 a+b*c                     => reads as `a + b * c`
@@ -253,12 +255,12 @@ a +                       => error syntax at ``
 
 ## Arithmetic is exact
 
-`+ - * / %` compute the true result. No operand's type limits it: two `u8`
-values add to a number above 255, and subtracting from an unsigned value can
-go below zero. Results range over every value a 128-bit integer of either
-signedness holds, from −2^127 to 2^128 − 1; beyond that, and dividing by
-zero, are errors. Division truncates toward zero and the remainder takes the
-dividend's sign, as C, Rust, and Go agree.
+`+ - * / %` compute exact results regardless of operand types: two `u8`
+values can add to more than 255, and subtraction from an unsigned value can
+go below zero. Results may range from −2^127 to 2^128 − 1, covering both
+signed and unsigned 128-bit integers. Results outside that range and division
+by zero are errors. Division truncates toward zero; the remainder has the
+dividend's sign, as in C, Rust, and Go.
 
 To get a program's wrapping arithmetic, cast the result: `(u8)(uc + 10)`.
 
@@ -292,10 +294,10 @@ sc == -7               => true : bool
 
 ## Bit operations keep their width
 
-`~ & | ^ << >>` work on a value's bits at the width of its type, and the
-result keeps that type. When two typed operands meet, the wider one's type
-wins, and between equal widths, the unsigned one's. An exact integer meeting
-a typed one must fit its width, as either a signed or an unsigned value.
+`~ & | ^ << >>` operate at the operand type's width and preserve that type.
+With two typed operands, the result uses the wider type; at equal widths,
+it uses the unsigned type. An exact integer combined with a typed operand
+must fit that operand's width as either a signed or an unsigned value.
 Exact integers alone behave as infinite two's complement.
 
 `>>` is arithmetic for a signed value and logical for an unsigned one, and
@@ -325,12 +327,12 @@ uc & u16v              => 250 : short unsigned int
 
 ## Floating point
 
-Floats compute in the widest format among their operands, and an integer
-operand converts to the nearest value. x87 `long double`, half precision
+Floats compute in the widest operand format. Integer operands convert to the
+nearest value. x87 `long double`, half precision
 (`_Float16`, `f16`), bfloat16 (`__bf16`), and quad precision (`__float128`,
-`f128`) values compute exactly in their own formats, never rounded through a
-double; half and bfloat16 together, neither of which holds the other's
-values, compute as `f32`. Floats compare with integers exactly.
+`f128`) compute in their own formats without intermediate rounding to double.
+Half precision and bfloat16 together use `f32`, since neither format can
+represent all of the other's values. Float comparisons with integers are exact.
 
 ```microscope-example
 world: scalars
@@ -372,24 +374,28 @@ s && true                          => error type at `s`
 ## Pointers, arrays, and members
 
 `*p` dereferences, `&x` takes an address, `p[i]` is `*(p + i)`, and `p + n`
-moves by `n` elements. Only a value in memory has an address: one optimized
-code keeps in a register, computes, or splits across several places has
-none, though a member of it that lies in memory does. `p - q` counts the
-elements between two pointers, which must be a whole number of elements
-apart. Elements of a zero-sized type, such as Rust's `()`, all share one
-address, so a pointer to one moves nowhere and two such pointers have no
-count between them. Pointers compare with pointers, `null`, and `0`; to
-compare an address with another number, cast the pointer. Arrays index by
-each of their dimensions, and decay to a pointer to their first element in
-arithmetic. A slice's index is checked against its length when the
-expression runs, as is an index of an array the program bounds at run
-time: a C variable-length array, a Fortran array's descriptor, or an Ada
-array of an unconstrained type. A C flexible array member's length is
-not described, so its index is not checked. A value a view presents as another value
-([Views](views.md)), as Rust's `Arc` and C++'s `std::unique_ptr` present
-what they point to, dereferences to that value: `*arc` is what the `Arc`
-shares, and `*p` on one the view presents as empty, such as a null
-`unique_ptr`, is an error.
+moves by `n` elements. Only values in memory have addresses. A value kept in
+a register, computed, or split across several locations has no address,
+though a member stored in memory does.
+
+`p - q` counts the elements between pointers, which must be a whole number
+of elements apart. Elements of a zero-sized type, such as Rust's `()`, share
+one address. Pointer arithmetic on them does not move the pointer, and
+subtracting two such pointers is an error.
+
+Pointers compare with pointers, `null`, and `0`. To compare an address with
+another number, cast the pointer. Arrays index by dimension and decay to
+pointers to their first elements in arithmetic.
+
+Slice indices are checked against the length at evaluation time. The same
+applies to arrays with runtime bounds: C variable-length arrays, Fortran
+array descriptors, and Ada arrays of unconstrained types. C flexible array
+members have no described length, so their indices are not checked.
+
+A value presented as another value by a [view](views.md) dereferences to that
+value. For example, Rust's `Arc` and C++'s `std::unique_ptr` present their
+targets, so `*arc` gives the shared value. Dereferencing an empty presentation,
+such as a null `unique_ptr`, is an error.
 
 ```microscope-example
 world: memory
@@ -431,12 +437,12 @@ gone + 1               => unavailable at `gone`
 
 ## Slices
 
-`x[start:end]` is the part of an array, a slice, or text from index `start`
-up to, not including, `end`. A bound left out is the beginning or the end:
-`x[:end]`, `x[start:]`, and `x[:]`. When the expression runs, `0 <= start
-<= end <= len(x)` must hold, or it is a bounds error. Unlike Go, a slice's
-room beyond its length is not reachable this way, since what is there is
-not part of its value; Go's `x[low:high:max]` is not supported.
+`x[start:end]` selects part of an array, slice, or text from index `start`
+up to, but not including, `end`. Omitted bounds default to the beginning
+or end: `x[:end]`, `x[start:]`, and `x[:]`. At evaluation time,
+`0 <= start <= end <= len(x)` must hold; otherwise, the result is a bounds
+error. Unlike Go, slicing cannot reach spare capacity beyond the length,
+which is not part of the value. Go's `x[low:high:max]` is not supported.
 
 Slicing an array or slice is the range of its elements `x[start..end]`, and
 like a range must be the whole expression. Slicing text, which is a
@@ -466,25 +472,24 @@ ptr[0:1]               => error type at `ptr`
 
 ## Maps
 
-`m[key]` is the value a map holds for a key, when a view presents `m` as a
-map ([Views](views.md)): Go's maps, and the maps of the C++, Rust, and Zig
-standard libraries. A key is a number, truth value, pointer, or string, or
-text the program holds, and finds the entry whose key `==` would call equal
-to it, so numbers compare exactly and `m[2.0]` finds the key `2`. A key of a
-type the map's keys cannot equal, such as a string in a map of integers, is
-a type error, and a key the map does not hold is a missing-key error, never
-a zero value. The entries are searched in the view's order, as far as the
-inspection's budget allows. A map is never indexed by position.
+`m[key]` looks up a key when a [view](views.md) presents `m` as a map. This
+includes Go maps and C++, Rust, and Zig standard-library maps. A key can be
+a number, boolean, pointer, string literal, or text from the program. Lookup
+uses `==`, so numbers compare exactly and `m[2.0]` finds the key `2`.
 
-A tuple key finds an entry whose key is a tuple of as many elements, each
-equal to the tuple's item at its position: `grid[(1, 2)]`, `grid[1, 2]`,
-or `grid[cell]`, where `cell` is a tuple the program holds. Its elements
-may be tuples themselves, nested at most 8 deep, with at most 64 keys in
-one tuple. A tuple is a Rust or Zig tuple, a C++ `std::pair` or
-`std::tuple`, or a value another view presents as one ([Views](views.md)).
-A map whose keys are tuples of another length, or are not tuples, is a type
-error: a struct's members are not matched by position, so a Go, C, C++, or
-Rust struct key, a Rust tuple struct among them, is not found by a tuple.
+An incompatible key type, such as a string in an integer-keyed map, is a
+type error. A missing key is a missing-key error, not a zero value. Lookup
+searches entries in the view's order within the inspection budget. Maps
+cannot be indexed by position.
+
+A tuple key matches a tuple of the same length with equal elements at each
+position. Write `grid[(1, 2)]`, `grid[1, 2]`, or `grid[cell]`, where `cell`
+is a tuple from the program. Tuples may nest up to 8 deep and contain at
+most 64 keys per tuple. Supported tuples are Rust or Zig tuples, C++
+`std::pair` or `std::tuple`, and values a [view](views.md) presents as tuples.
+A map with non-tuple keys or tuples of a different length gives a type error.
+Struct members are not matched by position: a tuple cannot find a Go, C,
+C++, or Rust struct key, including a Rust tuple struct.
 
 ```microscope-example
 world: memory
@@ -520,27 +525,25 @@ m[(1, 2)]              => error type at `(1, 2)`
 `(T)x` and `x as T` convert a value. `T` may be a built-in type (`iN` and
 `uN` for N from 1 to 128, `isize`, `usize`, `f32`, `f64`, `bool`), a type the
 program defines, a C base type written with its words in any order, or a
-`struct`, `union`, `enum`, or `class` tag. A C base type the program's debug
-information does not describe, such as `unsigned char` in a Go program, is
-the one the target's C compiler would lay out. `const`, `volatile`, and `mut` are
-accepted and ignored. A pointer type is `T*` inside a cast's parentheses,
-where `(*p)` dereferences, and `*T` after `as`, where a trailing `*` would
-multiply.
+`struct`, `union`, `enum`, or `class` tag. C base types absent from the debug
+information, such as `unsigned char` in a Go program, use the target C
+compiler's layout. `const`, `volatile`, and `mut` are accepted but ignored.
+Write pointer types as `T*` inside cast parentheses, where `(*p)` means
+dereference, or `*T` after `as`, where a trailing `*` means multiplication.
 
-A program type is named by what it is, not by how its compiler spelled it.
-Its outer namespaces, modules, and packages may be left off, as may inline
-namespaces such as libc++'s `std::__1`, and a template's trailing arguments,
-which C++ fills with defaults: `` std::`vector<int>` `` names
-`std::vector<int, std::allocator<int> >`. A name that fits several different
-types is ambiguous, and the error lists them.
+Type names are normalized across compiler spellings. You may omit outer
+namespaces, modules, and packages, inline namespaces such as libc++'s
+`std::__1`, and trailing default template arguments. For example,
+`` std::`vector<int>` `` names `std::vector<int, std::allocator<int> >`.
+A name matching several different types is ambiguous; the error lists them.
 
 `(name) - 1` subtracts when `name` is a value and casts `-1` when it is a
-type, and the two readings group the rest of the expression differently:
-`(n) - a * b` is `n - (a * b)`, while `(T) - a * b` is `((T)(-a)) * b`. Such a
-parenthesized name before `-`, `*`, or `&` is read whichever way the name
-is, as C reads it, with a value in scope winning. Anything else after the
-parentheses is unambiguous: `(n) + 1` always adds, and `(T)x` always casts.
-An expression may hold at most four such names.
+type. This affects grouping: `(n) - a * b` means `n - (a * b)`, while
+`(T) - a * b` means `((T)(-a)) * b`. Before `-`, `*`, or `&`, a parenthesized
+name is resolved as in C, with a value in scope taking precedence over a type.
+Other tokens after the parentheses are unambiguous: `(n) + 1` always adds,
+and `(T)x` always casts. An expression may contain at most four such
+ambiguous names.
 
 ```microscope-example
 (unsigned long)-1         => reads as `(unsigned long)-1`
@@ -560,13 +563,15 @@ sizeof(int*)              => reads as `sizeof(int*)`
 ```
 
 Casting an integer truncates its two's complement. Casting a float to an
-integer rounds toward zero and saturates at the type's bounds; a NaN cannot be
-cast. Integers and pointers convert into each other as addresses, and anything
-with a truth value casts to `bool`. A cast cannot reinterpret a whole record;
-reinterpret its storage through a pointer instead. Casting a C++ object to one
-of its base classes is that base's part of it, as `static_cast` makes it, and
-is ambiguous when the object holds several. Casting a value to the type it
-already has changes nothing.
+integer rounds toward zero and saturates at the type's bounds; NaN cannot be
+cast. Integers and pointers convert into each other as addresses. Any value
+with a truth value can be cast to `bool`.
+
+A cast cannot reinterpret a whole record; use a pointer to reinterpret its
+storage instead. Casting a C++ object to a base class selects that base's
+subobject, as `static_cast` does. The cast is ambiguous if the object has
+several subobjects of that base class. Casting to the value's existing type
+changes nothing.
 
 ```microscope-example
 world: scalars
@@ -625,10 +630,10 @@ sizeof(long double)    => 16 : integer
 
 ## Enumerations
 
-An enumerator's name means its value. Next to a value of an enumeration, a
-bare enumerator name is found among that enumeration's enumerators, so
-`color == RED` works even where `RED` alone is ambiguous. An integer casts to
-an enumeration, whether or not an enumerator has its value.
+An enumerator's name denotes its value. When compared with an enum value,
+a bare name is looked up in that enum, so `color == RED` works even where
+`RED` alone is ambiguous. Integers can be cast to an enum even when no
+enumerator has that value.
 
 ```microscope-example
 world: memory
@@ -664,9 +669,9 @@ maybe == 1             => error type at `maybe == 1`
 
 ## Text
 
-A string literal compares with the program's text: a `char*`, a character
-array, or a language's string type. Text that could not be read to its end
-does not compare at all, unless what was read already differs.
+A string literal compares with program text: a `char*`, character array,
+or language string. If the text cannot be read to the end, the comparison
+is unavailable unless the readable part already differs.
 
 ```microscope-example
 world: memory
@@ -681,17 +686,16 @@ partial == "xyz"       => false : bool
 
 ## Sizes and lengths
 
-`sizeof(x)` and `sizeof(T)` give a size in bytes without reading anything.
-`len(x)` gives an array's or slice's element count, the first dimension's
-for an array of several, or the length in bytes of text: a language's
-string, or what a character pointer points to. An array of characters is an
-array, so its length is its element count.
+`sizeof(x)` and `sizeof(T)` give a size in bytes without reading the value.
+`len(x)` gives an array's or slice's element count, using the first dimension
+for multidimensional arrays. For text (a language string or character
+pointer's target), it gives the length in bytes. Character arrays use their
+element count, like other arrays.
 
-`cap(x)` gives how many elements `x` has room for: an array's element count,
-the capacity a slice records, as Go's slices do, or what the `capacity`
-field of the view that presents `x` says, as the views of Go's channels, of
-C++'s vectors and strings, and of Rust's and Zig's lists do. Anything else,
-a Go map among them, has no capacity.
+`cap(x)` gives the number of elements `x` can hold: an array's element count,
+a slice's recorded capacity (as in Go), or the presenting view's `capacity`
+field. Views provide capacity for Go channels, C++ vectors and strings, and
+Rust and Zig lists. Other values, including Go maps, have no capacity.
 
 ```microscope-example
 world: memory
@@ -716,70 +720,67 @@ cap(1)                 => error type at `1`
 
 ## Python values
 
-In a Python frame, a name is the frame's variable, then a global of its
-module, then a built-in, as Python finds it, and `::name` skips to the
-native program's globals. A Python variable has no type of its own: it holds
-whatever object it was last given, so each operation finds its operands'
-types as it runs. A value of any type binds, and an operation its value's
-type does not allow is refused when it runs.
+In a Python frame, names resolve to frame variables, then module globals,
+then built-ins, as in Python. `::name` looks in the native program's globals.
+Python variables have no fixed type, so operations check operand types at
+evaluation time. Any type can bind; unsupported operations fail when evaluated.
 
-`x[i]` indexes a list or tuple, from its end when `i` is negative, and
-`d[key]` finds a dict's key as Python's `==` would: numbers compare exactly,
-so `d[1]`, `d[1.0]`, and `d[true]` find one key, text equals only text, and
-`d[None]` finds a `None` key. A tuple key, written `d[(1, "a")]` or
-`d[1, "a"]`, or a `tuple` the program holds, finds a tuple key item by
-item, as Python compares tuples. A key taken from the program is that very
-object, which the dict finds as Python does, by identity before value: a
-NaN finds itself, though it equals nothing. A key of a type whose own
-`__eq__` decides what it equals, such as an instance of a class, is refused
-where the lookup would have to compare with it, as is a key the program
-holds of such a type. A `bytes` or `frozenset` key is not supported yet. An
-index past the end is a bounds error, and a key the dict does not hold is a
-missing-key error. `len(x)` is the length of a `str` in characters, of
-`bytes` in bytes, and of a list, tuple, dict, set, or frozenset in items. A
-value is true as Python says: `None`, zero, and empty text and collections
-are false.
+`x[i]` indexes a list or tuple; negative indices count from the end.
+`d[key]` looks up a dict key using Python equality. Numbers compare exactly,
+so `d[1]`, `d[1.0]`, and `d[true]` find the same key. Text equals only text,
+and `d[None]` finds a `None` key. Tuple keys, written `d[(1, "a")]` or
+`d[1, "a"]` or taken from the program, compare item by item as in Python.
 
-`x.name` reads an attribute as Python's `object.__getattribute__` finds it:
-a slot or other data descriptor of the object's class first, then the
-object's own dict, then an attribute of its class or the classes it derives
-from. `module.name` is a global of the module, and `Class.name` an
-attribute of the class. An attribute the object does not have is a
-missing-key error. A property, a method, any other descriptor whose code
-gives its value, a class's own `__getattribute__`, and a `__getattr__` that
-would find a missing attribute are refused.
+A key taken from the program is the original object. Lookup checks identity
+before equality, so a NaN key finds itself even though it equals nothing.
+Keys requiring a custom `__eq__`, such as class instances, are unsupported
+when lookup would need to compare with them. Using such an object from the
+program as a key is also unsupported. `bytes` and `frozenset` keys are not
+supported. An out-of-range index is a bounds error; an absent dict key is a
+missing-key error.
 
-An object of a class that derives from a built-in type, such as a
-`namedtuple`, holds that type's value, and `x[i]` and `len(x)` use it while
-the class keeps the built-in type's own `__getitem__` and `__len__`. A class
-that defines its own, a dict whose class defines `__missing__` and lacks the
-key, and any other object whose type defines them are refused; an object
-whose type defines neither is a type error, as in Python.
+`len(x)` counts characters in `str`, bytes in `bytes`, and items in lists,
+tuples, dicts, sets, and frozensets. Truth follows Python: `None`, zero,
+empty text, and empty collections are false.
 
-Numbers follow CPython's rules. `True` and `False` are the `int`s 1 and 0,
-and `&`, `|`, and `^` of two `bool`s give a `bool`. An `int` is exact, and one
-too large for 128 bits is shown whole but not computed with. `/` of two
-`int`s is the `float` nearest their exact quotient, as CPython rounds it.
-`%` floors, so its result has the divisor's sign, for `float`s too. Dividing
-or taking `%` by zero is an arithmetic error, as Python's
-`ZeroDivisionError` is, and so is a negative shift count, Python's
-`ValueError`. The expressions have no `//`. A computed result is shown
-as Python's `repr` writes it, with the type `int`, `float`, or `bool`: `7.0`,
-`7e+16`, `inf`, `False`. Values of different types are unequal, and only
-numbers, `str`, and `bytes` are ordered. Lists, dicts, and objects are
-neither compared nor computed with, since only running their types' code
-could say what those mean, and microscope never runs code in the program:
-not `__eq__`, properties, or calls. Such an operation is a type error only
-where Python's would be one, as `None + 1` is; where a type's code could give
-a value, as `"a" + "b"` does, it is refused as unsupported.
+`x.name` follows Python's `object.__getattribute__` lookup order: a slot or
+other class data descriptor, the object's dict, then attributes of its class
+and base classes. `module.name` reads a module global; `Class.name` reads a
+class attribute. An absent attribute is a missing-key error. Properties,
+methods, other descriptors that execute code, custom `__getattribute__`,
+and `__getattr__` for missing attributes are unsupported.
 
-In any frame of a CPython process, `(py)x` casts an address to the Python
-object there, so that a C extension's native frame reaches into the objects
-its `PyObject *` locals point to as a Python frame would: `((py)args).x`,
-`len((py)list)`. A Python value casts to itself, and an address is a pointer
-or an integer; anything else is a type error. A null address, or one that
-holds no object of a type microscope reads, is unavailable. A `PyObject *`
-pointer itself already shows the object it points to.
+Subclasses of built-in types, such as `namedtuple`, support `x[i]` and
+`len(x)` while they retain the built-in `__getitem__` and `__len__`.
+Overrides and implementations on other types are unsupported. A missing
+dict key is also unsupported if the dict's class defines `__missing__`.
+An object without the relevant operation gives a type error, as in Python.
+
+Numbers follow CPython's rules. `True` and `False` act as the `int`s 1 and 0;
+`&`, `|`, and `^` on two `bool`s return a `bool`. Integers are exact; values
+larger than 128 bits display in full but cannot be used in calculations.
+`/` on two `int`s returns the `float` nearest their exact quotient.
+`%` uses floor division, so the result has the divisor's sign, including
+for floats. Division or `%` by zero and negative shift counts are arithmetic
+errors, corresponding to Python's `ZeroDivisionError` and `ValueError`.
+`//` is not supported. Results use Python's `repr` with type `int`, `float`,
+or `bool`: `7.0`, `7e+16`, `inf`, `False`.
+
+Numbers compare across numeric types. Other supported value kinds compare
+unequal to each other; only numbers, `str`, and `bytes` support ordering.
+Lists, dicts, and objects cannot be compared or used in calculations because
+those operations could run their types' code. microscope never runs program
+code, including `__eq__`, properties, or calls. An operation gives a type
+error where Python would, such as `None + 1`.
+If the type's code could return a value, as for `"a" + "b"`, the operation
+is unsupported instead.
+
+In any CPython frame, `(py)x` reads the Python object at address `x`. This
+lets native C-extension frames inspect objects through `PyObject *` locals
+as Python frames do: `((py)args).x`, `len((py)list)`. The operand must be a
+pointer, integer address, or Python value (which casts to itself); anything
+else is a type error. A null address or an object of an unsupported type is
+unavailable. A `PyObject *` pointer already displays its target object.
 
 ```microscope-example
 world: python
@@ -863,44 +864,45 @@ count->real            => error type at `count`
 
 ## JavaScript values
 
-In a Node.js process, a JavaScript value follows ECMAScript's operators, and
-a literal the expression writes is a JavaScript value: `1` is a Number and
-`1n` a BigInt. A Python value and a JavaScript value are never combined.
+In a Node.js process, JavaScript values follow ECMAScript operator rules.
+Expression literals are JavaScript values: `1` is a Number and `1n` a BigInt.
+Python and JavaScript values cannot be combined.
 
-Every Number is a double. `/` by zero gives an infinity or NaN, `%` has the
-dividend's sign, and `&`, `|`, `^`, `~`, `<<`, and `>>` work on the Number's
-32-bit integer, with a shift count's low five bits. A BigInt is exact: `/`
-and `%` truncate toward zero, dividing by `0n` is an arithmetic error, as
-JavaScript's `RangeError` is, and a BigInt with a Number in arithmetic is a
-type error, as JavaScript's `TypeError` is. A BigInt beyond 128 bits is
-shown whole but not computed with. `true` and `false` count as 1 and 0,
-`null` as 0, and `undefined` as NaN.
+Numbers are doubles. Division by zero gives infinity or NaN; `%` has the
+dividend's sign. `&`, `|`, `^`, `~`, `<<`, and `>>` convert Numbers to
+32-bit integers; shifts use the count's low five bits.
 
-`==` is JavaScript's loose equality: `null == undefined`, a truth value
-equals the number it counts as, `1n == 1`, and NaN equals nothing.
-Comparing a BigInt with a Number is exact. Strings are ordered by their
-UTF-16 code units, as JavaScript orders them, so `"\u{1F600}" < "\u{FFFF}"`.
-`0`, `-0`, NaN, `0n`, `""`, `null`, `undefined`, and `false` are false, and
-every object is true, an empty array or Map too.
+BigInts are exact. `/` and `%` truncate toward zero. Division by `0n` is an
+arithmetic error (JavaScript's `RangeError`); mixing a BigInt and a Number
+in arithmetic is a type error (JavaScript's `TypeError`). BigInts beyond
+128 bits display in full but cannot be used in calculations. Numeric
+conversion maps `true` to 1, `false` and `null` to 0, and `undefined` to NaN.
 
-microscope refuses, as unsupported, what would run the program's code or
-make a new string: `+` with a string, arithmetic on an object, which calls
-its `valueOf`, a string compared with a number, and `==` of two objects,
-which compares their identities. `x[i]` takes a string, a BigInt, or a
-Number that is an integer below 2^53 in magnitude.
+`==` uses JavaScript's loose equality: `null == undefined`, booleans equal
+their numeric equivalents, `1n == 1`, and NaN equals nothing. Comparisons
+between BigInts and Numbers are exact. Strings are ordered by UTF-16 code
+units, so `"\u{1F600}" < "\u{FFFF}"`. `0`, `-0`, NaN, `0n`, `""`, `null`,
+`undefined`, and `false` are false. Every object is true, including empty
+arrays and Maps.
 
-A computed value is shown as Node's `util.inspect` writes it, with the type
-`number`, `bigint`, or `boolean`: `1.764e+23`, `Infinity`, `NaN`, `-0`, and a
-BigInt with its `n`, `-24691357802469135780n`.
+String concatenation with `+`, arithmetic on objects (which calls `valueOf`),
+and comparisons between strings and numbers are unsupported. microscope does
+not run program code or create new strings. Object equality, which compares
+identities, is also unsupported. `x[i]` accepts a string, BigInt, or integer
+Number with magnitude below 2^53.
+
+Computed values use Node's `util.inspect` format with type `number`, `bigint`,
+or `boolean`: `1.764e+23`, `Infinity`, `NaN`, `-0`, and BigInts with an `n`
+suffix, such as `-24691357802469135780n`.
 
 ## Assignment
 
-In the console and with `set var`, `=` and the compound operators (`+=`,
-`<<=`, …) assign, and an assignment must be the whole expression. The value
-must fit the target's type exactly; to store a wrapped or rounded value, cast
-it first. Only numbers, truth values, enumerations, and pointers are
-assigned. The result is the target read again. Hovering, watching, and
-breakpoint conditions cannot assign.
+Use `=` and compound operators (`+=`, `<<=`, …) in the console or `set var`
+to assign. Assignment must be the whole expression; hovers, watches, and
+breakpoint conditions cannot assign. Native assignment supports numbers,
+booleans, enums, and pointers. The value must fit the target type exactly;
+cast first to store a wrapped or rounded value. The result is the target
+read back after the write.
 
 ```microscope-example
 world: scalars
@@ -932,15 +934,16 @@ assign: s = s          => error type at `s`
 assign: r = 3          => 3 : int
 ```
 
-In a Python frame, `=` and the compound operators give a variable of the
-frame a new value, as `frame.f_locals[name] = value` would. The value is an
-integer, a float, a truth value, `None`, or text that microscope computes,
-or an object another name of the frame already holds: `held = other` makes
-both names hold the same list. microscope's agent stores it on the frame's
-thread, which runs alone until the agent reports the store. The stop is then
-published again, under a new stop, with the variable's frame selected. The
-result is the variable read again. None of the program's code runs. The
-object the variable held before is released once its thread runs on.
+In a Python frame, `=` and compound operators assign frame variables as
+`frame.f_locals[name] = value` would. The value can be an integer, float,
+boolean, `None`, text computed by microscope, or an object held by another
+frame variable. For example, `held = other` makes both names refer to the
+same list.
+
+The agent stores the value on the frame's thread, which runs alone until
+the agent reports completion. It then publishes a new stop with that frame
+selected and reads the variable back as the result. No program code runs.
+The old object is released when the thread resumes.
 
 ```text
 (microscope) set var count = 41
@@ -953,18 +956,17 @@ object the variable held before is released once its thread runs on.
 (list) held = [1, 2]
 ```
 
-The assignment is made only where it can be exact. That means CPython 3.14
-or later, built with the GIL, and a stop that the agent made: a Python
-breakpoint, the end of a Python step, or a Python exception. The frame's
-thread must also be the only thread the interpreter runs. Anywhere else, the
-assignment is refused and nothing runs:
+Python assignment requires CPython 3.14 or later with the GIL and an
+agent-created stop: a Python breakpoint, the end of a Python step, or a
+Python exception. The interpreter must have no thread other than the frame's
+thread. Otherwise, assignment is refused without running anything:
 
 - Another thread could be holding the objects it changes.
 - A free-threaded interpreter's threads can reach those objects at any time.
 - A native stop leaves the thread somewhere the agent cannot act.
 
-A global, an attribute, an item, text that is not UTF-8, and a value of one
-of the program's native types are refused too.
+Assignment to globals, attributes, and items is unsupported, as are non-UTF-8
+text and values of the program's native types.
 
 ```microscope-example
 world: python
@@ -973,21 +975,20 @@ assign: name = "\xff"  => error assignment at `"\xff"`
 assign: count = &point => error assignment at `&point`
 ```
 
-In a JavaScript frame, `=` and the compound operators give a variable a
-number, a BigInt, text, `true` or `false`, `null`, `undefined`, or the object
-another variable of the frame holds. V8's debugger makes the change, at a
-stop where V8 paused the thread, while every thread runs and none of the
-program's JavaScript does; the stop is then published again, under a new
-stop, and the result is the variable read again from memory. An integer
-must be exactly a JavaScript number, or written as a BigInt such as `5n`.
-[Assignments](languages.md#assignments) in the Node section lists what V8
-refuses.
+In a JavaScript frame, `=` and compound operators assign a number, BigInt,
+text, boolean, `null`, `undefined`, or an object held by another frame variable.
+V8's debugger makes the change at a V8 pause. All threads run during the
+assignment, but no program JavaScript runs. microscope then publishes a new
+stop and reads the variable back from memory as the result. An integer must
+be exactly representable as a JavaScript number or written as a BigInt, such
+as `5n`. The Node [Assignments](languages.md#assignments) section lists V8's
+restrictions.
 
-A register is assigned the same way. It holds an unsigned number of its own
-width, which the value must fit, or a pointer. Only the innermost frame's
-registers belong to the thread; a caller's are what unwinding recovered, and
-are refused. Assigning `$pc` moves where the thread resumes: the stop is
-published again at its new place, under a new stop.
+Registers can also be assigned. The value must fit the register's unsigned
+width or be a pointer. Only the innermost frame's registers are writable;
+callers' registers are recovered by unwinding and cannot be assigned.
+Assigning `$pc` changes where the thread resumes and publishes a new stop
+at that location.
 
 ```microscope-example
 world: memory

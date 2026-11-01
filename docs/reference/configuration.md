@@ -7,12 +7,11 @@ microscope reads TOML settings from up to three files:
 2. `.microscope/config.toml` in the project root
 3. `.microscope/config.local.toml` in the project root
 
-The local file is intended for settings that should not be committed. Add it
-to the project's `.gitignore`.
+Keep uncommitted settings in the local file and add it to `.gitignore`.
 
-The project root is the nearest parent containing `.microscope` or `.git`, or
-else the current directory. A repository inside another project, such as a git
-worktree, is a project of its own.
+The project root is the nearest ancestor containing `.microscope` or `.git`,
+or the current directory if neither exists. Nested repositories and git
+worktrees are separate projects.
 
 ## Inspect configuration
 
@@ -32,9 +31,9 @@ and location of the error.
 
 ## Precedence
 
-A command-line flag wins over environment settings, followed by the local
-project file, project file, user file, and built-in default. Tables merge by
-key; lists replace earlier lists.
+Highest priority first: command-line flags, environment settings, local project
+file, project file, user file, built-in defaults. Tables merge by key; lists
+replace earlier lists.
 
 Startup command lists run in order instead: user, project, local, selected
 launch configuration, `-c` files, then `-e` commands.
@@ -49,12 +48,12 @@ launch configuration, `-c` files, then `-e` commands.
 | `[stop]` | Sections printed at stops and their sizes |
 | `[print]` | Compact or pretty output, radix, width, depth, and element limits |
 | `[disassembly]` | Intel or AT&T syntax and instruction bytes |
-| `[step]` | Whether source steps enter supported runtime code, and the files they pass through |
+| `[step]` | Runtime stepping and file skip patterns |
 | `[backtrace]` | Whether backtraces fold runtime and interpreter frames |
 | `[breakpoints]` | Saved-breakpoint behavior |
 | `[debug-info]` | Separate debug-file directories and debuginfod |
 | `[history]` | REPL history size |
-| `[follow]` | Which processes the program starts are debugged, and what a stop in one stops |
+| `[follow]` | Child-process selection and whether processes stop together |
 | `[signals]` | Per-signal stop, print, and delivery policy |
 | `[aliases]` | Additional command names |
 | `[startup]` | Commands run at startup |
@@ -62,20 +61,16 @@ launch configuration, `-c` files, then `-e` commands.
 | `[[source-map]]` | Source-prefix remapping |
 | `[[launch]]` | Named launch, attach, and core-dump sessions |
 
-Run `microscope config init` to produce a file containing every setting, its
-type, and its default. That generated file is the exact reference for the
-installed version.
+`microscope config init` generates the full reference for your installed
+version: every setting, type, and default.
 
-`[backtrace] runtime` can be `"fold"` (the default) or `"show"`. With `"fold"`,
-each run of a language runtime's own frames, such as an interpreter's frames
-between Python frames, shows as one line. With `"show"`, backtraces show every
-frame. `bt -r` shows every frame for one command, and `set runtime-frames`
-changes the setting for a session.
+`[backtrace] runtime = "fold"` (the default) collapses consecutive runtime and
+interpreter frames into one line. `"show"` displays every frame. Use `bt -r`
+for one backtrace or `set runtime-frames` to change the session setting.
 
 ## Processes the program starts
 
-`[follow]` sets the follow policy, which decides which processes a launched
-or attached program starts are debugged with it. See
+`[follow]` selects which child processes to debug after launch or attach. See
 [Debug the processes a program starts](../debugging.md#debug-the-processes-a-program-starts).
 
 ```toml
@@ -87,16 +82,15 @@ stop = "group"
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `"auto"` | `"auto"`: processes that run the program itself, or Node.js, Python, or Go; `"all"`: every process; `"none"`: only the program's own |
-| `programs` | `[]` | More programs to debug, by file name, where `*` matches any run of characters and `?` any one |
+| `mode` | `"auto"` | `"auto"`: the original program, Node.js, Python, or Go; `"all"`: every child; `"none"`: only the original process |
+| `programs` | `[]` | Additional executable filenames; `*` matches any number of characters, `?` one |
 | `stop` | `"group"` | `"group"`: a stop in one process stops every debugged process; `"process"`: only the one that stopped |
 
-`--follow` overrides `mode` with a mode it names, and replaces `programs`
-with the programs it names. A project file's `[follow]` applies without
-trust. `microscope web` reads `[follow]` from the same files, and takes no
-`--follow`.
-The editor adapter does not read it; a launch or attach configuration sets
-[`follow`](../editors.md#processes-the-program-starts) instead.
+`--follow` overrides `mode` when it names a mode, and replaces `programs` when
+it names programs. Project `[follow]` settings do not require trust.
+`microscope web` reads the same settings but has no `--follow` flag. The editor
+adapter uses [`follow`](../editors.md#processes-the-program-starts) in its launch
+or attach configuration instead.
 
 ## Launch configurations
 

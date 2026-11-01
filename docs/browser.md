@@ -19,13 +19,12 @@ use.
 A launched program waits for the first continue. Pass `--run` to start it at
 once. An attached process waits at its attach stop unless `--resume` is used.
 
-The processes the program starts are debugged with it as the settings
-file's [`[follow]`](reference/configuration.md#processes-the-program-starts)
-says. Once there is a second one, a process list appears above the stop
-banner. Click a process to show it in every tab; a stop shows the process
-that stopped, which the list marks. When the shown process is stopped and is
-not the program's own, a Detach button lets it run on without microscope
-while the others stay debugged. See
+The [`[follow]` setting](reference/configuration.md#processes-the-program-starts)
+controls which child processes are debugged. With multiple processes, a list
+appears above the stop banner. Selecting a process changes it in every tab;
+a stop selects and marks the process that stopped. Detach releases a stopped
+child process while the others remain debugged; it cannot release the original
+process alone. See
 [Debug the processes a program starts](debugging.md#debug-the-processes-a-program-starts).
 
 ## Move around
@@ -34,29 +33,24 @@ The workspace can show source, disassembly, memory, values, registers,
 breakpoints, threads, tasks, signals, the console, and drawings. The command
 palette lists available actions and keyboard shortcuts.
 
-Ctrl+P opens a file: any source file the program's debug information names,
-and for a Python program launched from the page or `microscope web`, its own
-files. Those are the `.py` files under the directories Python searches before
-the standard library: the script's directory, or the working directory for
-`-c` and `-m`, and each `PYTHONPATH` directory unless `-E` or `-I` is given.
-Caches, hidden directories, `node_modules`, `site-packages`, and virtual
-environments are skipped, and links are not followed. Before the program
-runs, the page opens on the script. A standard library or installed
-package's file can be opened once a stack shows one of its frames. A very
-large tree is listed in part, and the palette says so.
+Ctrl+P lists source files named in debug information. For Python programs
+launched through the browser or `microscope web`, it also lists `.py` files
+from the script's directory (the working directory for `-c` or `-m`). It adds
+`PYTHONPATH` directories unless `-E` or `-I` ignores the environment. It skips caches,
+hidden directories, `node_modules`, `site-packages`, virtual environments, and
+symlinks. Large trees may be listed only partly, with a notice in the palette.
+The script opens before launch; standard-library and installed-package files
+become available when they appear in a stack.
 
-The stack marks each frame with a short language mark, such as `py`, `c`, `rs`,
-or `go`, where its function or interpreter says which language it is. Each run
-of a runtime's frames folds into one row, such as "6 frames of the runtime
-folded". Click the row to open it. A row that holds the selected frame stays
-open.
+Stack frames have language labels such as `py`, `c`, `rs`, or `go` when known.
+Consecutive runtime frames fold into a row such as "6 frames of the runtime
+folded". Click to expand it; a group containing the selected frame stays open.
 
 Each tab selects its own thread or task, frame, source location, and panel. All
 tabs control the same session and receive the same stops.
 
-The address bar records the tab's complete view. Copying the URL gives another
-tab the same selected stop, frame, source, panel, and memory location when that
-state is still available.
+The URL records the selected stop, frame, source, panel, and memory location.
+Open it in another tab to restore that view while the state remains available.
 
 ## Draw values
 
@@ -76,17 +70,15 @@ microscope web current.usprof
 microscope web current.usprof baseline.usprof
 ```
 
-The profile pages include call trees, functions, flame views, timelines,
-source and disassembly costs, blocked-time lanes, task stacks, and
-instrumentation zones when the recording contains them. A profile with Python
-frames has a Python stacks switch, which shows each stack as its Python code
-sees it, without the interpreter's own frames.
+Profile pages show call trees, functions, flame views, timelines, source and
+disassembly costs, blocked time, task stacks, and instrumentation zones when
+recorded. The Python stacks switch hides interpreter frames in profiles
+containing Python stacks.
 
-A file with system calls, from `microscope syscalls -o FILE.usprof` or
-`microscope record --syscalls`, has a Syscalls view. It lists calls in a table
-you can group by call, class, process, thread, file, or call site, with a log of
-the calls themselves, a heat map of their latency over time, and tabs for files,
-network connections, and processes. See [System calls](syscalls.md).
+A recording from `microscope syscalls -o FILE.usprof` or
+`microscope record --syscalls` has a Syscalls view: calls grouped by name, class,
+process, thread, file, or call site; an event log; a latency heat map; and tabs
+for files, network connections, and processes. See [System calls](syscalls.md).
 
 With no target, the page can also start a program and trace its system calls.
 It uses the ptrace engine, which needs no privilege. The trace updates every

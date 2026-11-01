@@ -24,9 +24,8 @@ microscope --debug-directory /srv/debug ./program
 Use `--debuginfod` when `DEBUGINFOD_URLS` lists trusted servers that carry the
 module's build ID.
 
-Optimization can remove variables or leave them available for only part of a
-function. microscope reports `optimized out`, an unavailable location, or a
-partial value when that is what the debug information says.
+Optimization can remove variables or limit their availability to part of a
+function. microscope reports them as `optimized out`, unavailable, or partial.
 
 ## A copied core dump cannot find its modules
 
@@ -48,16 +47,14 @@ When a process is in another mount namespace, microscope also uses
 
 ## System call tracing is refused
 
-`microscope syscalls` uses the BPF engine unless told otherwise, and it never
-falls back to ptrace on its own. When the engine cannot run, the error names
-the one thing missing:
+`microscope syscalls` defaults to BPF and never falls back to ptrace
+automatically. The error identifies the missing requirement:
 
-- **Linux older than 5.15, or no BTF.** BTF comes from building the kernel
-  with `CONFIG_DEBUG_INFO_BTF=y`; check for `/sys/kernel/btf/vmlinux`.
-- **Missing `CAP_BPF` or `CAP_PERFMON`.** See
-  [Give microscope the BPF privileges](../syscalls.md#give-microscope-the-bpf-privileges).
-- **Kernel lockdown for confidentiality.** This mode forbids the BPF programs
-  microscope needs. Boot with `lockdown=integrity` or without lockdown.
+| Requirement | Check or remedy |
+| --- | --- |
+| Kernel | Linux 5.15 or newer with BTF: build with `CONFIG_DEBUG_INFO_BTF=y`; check `/sys/kernel/btf/vmlinux` |
+| Capabilities | `CAP_BPF` and `CAP_PERFMON`; see [BPF privileges](../syscalls.md#give-microscope-the-bpf-privileges) |
+| Lockdown | Boot with `lockdown=integrity` or without lockdown |
 
 In each case, `--engine ptrace` still traces a program you launch.
 

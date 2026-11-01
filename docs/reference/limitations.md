@@ -1,16 +1,15 @@
 # Known limits
 
-This page states the broad support boundary. Individual commands can have
-narrower limits and report them when used.
+These are the general limits. Commands report additional restrictions when
+they apply.
 
 ## Host and target
 
 - The debugger runs on Linux x86-64, version 3.8 or newer. Catchpoints and
   the ptrace syscall engine need 5.3, `--sysroot` 5.6, and the profiler 6.0.
 - It debugs native x86-64 Linux processes and core dumps.
-- Thread-local variables are read in programs that use musl, or glibc 2.27
-  or newer. glibc before 2.34 describes its thread structures only in
-  libpthread, so a program that has not loaded it shows them as unavailable.
+- Thread-local variables require musl or glibc 2.27 or newer. Before glibc
+  2.34, the program must also have loaded libpthread's thread metadata.
 - Cross-architecture and remote targets are not supported.
 - Process control depends on Linux ptrace permissions.
 
@@ -22,8 +21,7 @@ narrower limits and report them when used.
   inlined frames, and values available for only part of a function.
 - Separate debug files and debuginfod are supported when they can be matched
   to a module.
-- A partial value or stack stays partial; microscope does not fill missing state
-  with assumed values.
+- Missing values and incomplete stacks are reported, not filled in.
 
 ## Run control
 
@@ -33,25 +31,20 @@ narrower limits and report them when used.
   registers.
 - Source stepping is only as precise as the compiler's line and inline-call
   information.
-- A program that execs another, as `env`, a shell wrapper, or a version
-  manager's shim does, is followed into it, and breakpoints set before the
-  run are placed in the new program. Breakpoints set by address stay
-  pending there. A program microscope cannot read, such as one executed
-  from a memfd or deleted since, stops the process with the reason, and
-  later commands that read it are refused.
-- The processes a program starts are debugged as the follow policy says
-  (see [Debug the processes a program starts](../debugging.md#debug-the-processes-a-program-starts)).
-  With `--follow none`, each runs on without microscope, which removes its
-  breakpoints, and a Python child's agent, from it first. With the other
-  modes, a process the policy does not debug stays traced, so another
-  debugger cannot attach to it, but each of its stops is resumed at once.
-- A started process that executes a program the policy would debug but
-  microscope cannot load runs on without being debugged, with an error
-  line, and fails a `--batch` run.
-- An attach does not take in the processes the program started before it.
+- Exec preserves debugging and reinstalls breakpoints in the new program;
+  address breakpoints stay pending. If the executable cannot be read (for
+  example, a memfd or deleted file), the process stops with an error and
+  commands that need the executable are rejected.
+- The [follow policy](../debugging.md#debug-the-processes-a-program-starts)
+  controls child processes. `--follow none` releases them after removing
+  breakpoints and any Python agent. Other modes keep non-selected processes
+  traced but resume their stops immediately; another debugger cannot attach.
+- A child that execs a selected but unreadable program runs without debugging,
+  reports an error, and causes `--batch` to fail.
+- Attach follows only future children, not existing ones.
 - Core dumps are read-only.
-- A core dump that left out a thread's stack, as `gcore` can, shows that
-  thread's backtrace as stopped where the stack is missing.
+- A backtrace ends at any stack memory omitted from the dump, as can happen
+  with `gcore`.
 
 ## System calls
 
@@ -64,10 +57,9 @@ narrower limits and report them when used.
 - Calls answered in the vDSO, such as `clock_gettime`, are not traced.
 - The BPF engine can drop calls under load and reports how many it lost.
 - A cgroup or container trace cannot show stacks.
-- The BPF engine's stacks show a Python program's frames only once it has
-  read the program's interpreter, a few milliseconds after the program maps
-  it, and only when microscope runs in the initial PID namespace. Until
-  then, and otherwise, they end with `interpreted frames unknown`.
+- BPF Python stacks require the initial PID namespace and interpreter metadata,
+  which takes a few milliseconds to read after the interpreter is mapped.
+  Otherwise they end with `interpreted frames unknown`.
 - `record --syscalls` cannot be used with `--pid`.
 - While a debugger catchpoint exists, every system call stops its thread
   briefly.
@@ -76,82 +68,69 @@ narrower limits and report them when used.
 
 - C, C++, Rust, Go, Zig, Odin, Fortran, D, Nim, and Ada use the shared native
   debugger.
-- Logical runtime tasks are implemented for Go goroutines, tokio tasks, and
-  asyncio tasks from CPython 3.14, which is the first to list them.
-- Python frames are read from CPython 3.12 through 3.15, with and without the
-  GIL. A CPython release microscope has not checked, or a version outside that
-  range, is refused by name; its native frames still appear.
-- Python expressions read names, attributes, items, keys, and lengths, and
-  compute with numbers, text, and truth values. They never run code in the
-  program, so properties, methods, and a class's own `__getattr__`,
-  `__getitem__`, `__len__`, and `__repr__` are refused or not used, and so is a
-  key a `defaultdict` holds no value for. A type an extension defines in C,
-  other than the standard library's and numpy's arrays that microscope reads,
-  shows its type and address. A numpy array of a dtype other than `bool`, an
-  integer, `float32`, or `float64`, or of big-endian elements, shows only its
-  shape and dtype, and indexing an array is refused. Python breakpoints need
-  CPython 3.14 or later with remote debugging allowed, or a 3.12 or 3.13 that
-  microscope launched itself, without `-I`, `-E`, or `-S`. Otherwise they stay
-  pending. 3.13's free-threaded build takes none. On 3.12 and 3.13, a native
-  step does not become a Python step where its frame returns to the
-  interpreter. A Python step starts only where microscope's agent stopped
-  the thread, at a Python breakpoint or a step's end, and steps by lines;
-  a native step leaves C for Python only where its frame returns to the
-  interpreter. A step into C stops only in a function debug information
-  describes. A Python watchpoint watches a variable of a function's frame,
-  not an object an expression reaches, a closure's cell, or a generator's or
-  coroutine's variable. An
-  uncaught Python exception stops in the outermost frame it leaves, whose
-  inner frames have returned; its message says where it was raised. On the
-  main thread only the main module's exceptions are uncaught: one leaving an
-  `atexit` callback or other code C calls there does not stop.
-  Exceptions raised while the agent itself runs, as while it compares a
-  breakpoint's keys, do not stop. A Python variable is given a value only
-  on CPython 3.14 or later with the GIL, at a stop the agent made, while its
-  thread is the interpreter's only one. Only a variable of the frame takes
-  one, not a global, attribute, or item, and an object only as another name
-  of the frame holds it.
-- JavaScript frames are read from Node 22, 24, and 26: official, nixpkgs,
-  and Debian builds. JavaScript breakpoints, steps, and exceptions need
-  Node's inspector: they stay pending, with the reason, in a node started
-  with `--disable-sigusr1` (when attached), with `--permission` and without
-  `--allow-inspector`, or whose parent replaced `NODE_OPTIONS`. A function
-  breakpoint takes a function's own name, not a dotted one. A variable V8
-  records no name for is an unnamed register except at a stop made through
-  the inspector. A JavaScript variable takes a value only at a stop where V8
-  paused its thread, and only where V8's debugger assigns it: not `this`, a
-  property, a global, an unnamed register, or a variable optimized code keeps
-  outside a context. The statement V8 paused at may still use the old value.
-  A JavaScript watchpoint watches a variable of a frame the interpreter or
-  Sparkplug runs, or a captured variable a context holds: not a property,
-  `this`, a global, a script's top-level binding, a block's variable that
-  no closure captured, a generator's or async function's variable kept
-  outside a context, a variable optimized code keeps, or, on Node 26, a variable V8 keeps in a context cell, as it does
-  in a context of at most two variables. A watch of a frame's own slot
-  ends where V8 begins replacing the frame by optimized code, even if the
-  replacement then fails. No watch is set on Debian's node, whose `libnode`
-  does not name V8's collector. A step enters a Node-API addon's C
-  function only from a stop where V8 paused the thread, only where the addon
-  has debug information, and not on Debian's node, whose `libnode` does not
-  name the function V8 enters addons through. An await chain starts only at
-  an async function resumed after an `await`, not inside a `.then` handler.
-  A core dump's JavaScript is read-only.
-- A profile's Python stacks (`record --python`) come from the BPF engine,
-  which needs `CAP_BPF` and `CAP_PERFMON`, or from snapshots that stop the
-  program or read it as it runs. The BPF engine's first samples of a program
-  or thread may have unknown Python frames, and say so, and it holds at most
-  128 Python frames a sample. A live read holds Python frames only, and leaves
-  out a thread whose frames change as it reads them. Only CPython 3.15 and
-  later say which threads wait for the GIL.
-- Code a JIT compiler registers through the GDB JIT interface is read at each
-  stop, and by a profile when a sample lands in it, without a breakpoint on
-  the compiler's registration. A profile cannot read the code of a program
-  that has already exited, so a short program's last samples in it end
-  short. At most 64 MiB of registered objects are read at a time.
+- Logical tasks are supported for Go goroutines, tokio tasks, and asyncio
+  tasks on CPython 3.14 or newer.
 - Runtime support follows known compiler and runtime layouts. Unknown versions
   can leave tasks or logical frames unavailable.
 - Built-in views cover selected standard-library and runtime types, not every
   third-party container.
+
+### Python
+
+CPython 3.12 through 3.15 is supported, with or without the GIL. Unverified or
+out-of-range releases are rejected with their version; native frames remain
+available.
+
+| Operation | Limits |
+| --- | --- |
+| Expressions | Read names, attributes, items, keys, and lengths; compute with numbers, text, and booleans. Never call properties, methods, `__getattr__`, `__getitem__`, `__len__`, or `__repr__`. Missing `defaultdict` keys are rejected. |
+| C-extension objects | Show type and address, except supported standard-library types and NumPy arrays. |
+| NumPy | Read `bool`, integer, `float32`, and `float64` arrays with native-endian elements. Other arrays show shape and dtype only; indexing is rejected. |
+| Breakpoints | Require 3.14+ with remote debugging allowed, or a directly launched 3.12/3.13 without `-I`, `-E`, or `-S`. Unsupported breakpoints stay pending. Free-threaded 3.13 has none. |
+| Stepping | Python line steps start at agent stops (Python breakpoints or completed steps). Native steps can return from C to Python on 3.14+, not 3.12/3.13. Stepping into C requires debug information. |
+| Watchpoints | Watch function-frame variables, not attributes, items, closure cells, or generator/coroutine variables. |
+| Assignment | Requires 3.14+, the GIL, an agent stop, and a single-threaded interpreter. Assign frame locals only, not globals, attributes, or items; object values must already be held by another frame local. |
+
+Uncaught exceptions stop in the outermost frame they leave, after inner frames
+have returned; the message includes the raise location. On the main thread,
+only exceptions leaving the main module qualify, not `atexit` callbacks or
+other C-invoked code. Exceptions raised inside microscope's agent do not stop.
+
+### Node.js
+
+Node 22, 24, and 26 are supported: official, nixpkgs, and Debian builds.
+Breakpoints, stepping, and exception stops need the inspector. They stay pending
+with a reason when attaching to Node with `--disable-sigusr1`, when
+`--permission` lacks `--allow-inspector`, or when a parent replaces
+`NODE_OPTIONS`.
+
+| Operation | Limits |
+| --- | --- |
+| Function breakpoints | Use the function's own name, not a dotted name. |
+| Variable names | Variables V8 leaves unnamed appear as registers, except at inspector stops. |
+| Assignment | Requires an inspector stop and a variable V8 can assign. Excludes `this`, properties, globals, unnamed registers, and optimized variables outside a context. The paused statement may still use the old value. |
+| Watchpoints | Watch interpreter/Sparkplug frame variables or captured context variables. Excludes properties, `this`, globals, script-level bindings, uncaptured block locals, generator/async variables outside a context, and optimized variables. Node 26 context cells are unsupported, including contexts with at most two variables. |
+| Node-API stepping | Requires an inspector stop and addon debug information. Unavailable on Debian's Node, whose `libnode` lacks the V8 entry symbol. |
+| Async callers | Chains start at async functions resumed after `await`, not `.then` handlers. |
+| Core dumps | Read-only. |
+
+A frame-slot watch ends when V8 starts replacing that frame with optimized
+code, even if replacement fails. Debian's `libnode` lacks V8 collector symbols,
+so JavaScript watchpoints are unavailable there.
+
+### Python profiles and JIT code
+
+`record --python` uses BPF (`CAP_BPF` and `CAP_PERFMON`) or snapshots taken
+with the program stopped or running. BPF records at most 128 Python frames per
+sample; early samples may report unknown frames. Live snapshots contain only
+Python frames and omit threads whose frames change during the read. Only
+CPython 3.15+ reports threads waiting for the GIL.
+
+microscope reads GDB JIT registrations at each stop and when a profile sample
+lands in registered code, without setting a registration breakpoint. Reads
+are limited to 64 MiB of registered objects at a time. Code is unavailable
+after process exit, so final JIT samples from short-lived programs may have
+incomplete stacks.
 
 ## Clients
 

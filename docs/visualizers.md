@@ -1,19 +1,17 @@
 # Visualizers
 
-A visualizer draws a value in the web page, `microscope web`: a chess position
-as a board, a framebuffer as an image, samples as a plot, a mesh as a
-model you can turn. A view says which
-of a value's data the drawing needs, with `visualize` ([Views](views.md)),
-and a **renderer**, a small JavaScript file, turns that data into a
-picture. The page runs the renderer in a sandbox, checks the picture, and
-draws it. The terminal and debug adapters never draw: a `visualize`
-changes nothing they show.
+A visualizer draws program values in `microscope web`: chess boards,
+framebuffer images, sample plots, or models you can rotate. A [view](views.md)
+selects the data with `visualize`. A renderer, a small JavaScript file,
+turns that data into a picture. The page runs the renderer in a sandbox,
+validates the picture, and draws it. `visualize` does not affect terminal
+or debug-adapter output; neither runs renderers.
 
 Every renderer example on this page runs as one of microscope's tests.
 
 ## A first drawing
 
-Conway's game of life keeps its board as bytes, one a cell:
+This Conway's Game of Life board uses one byte per cell:
 
 ```c
 struct life {
@@ -22,8 +20,7 @@ struct life {
 };
 ```
 
-Next to a view file, `life.views`, that names what a drawing of a `struct
-life` needs:
+Create `life.views` to select the drawing's inputs:
 
 ```text
 microscope-views 1
@@ -38,7 +35,7 @@ extend c life {
 }
 ```
 
-goes the renderer that draws it, `life.js`, named for the drawing:
+Save the renderer beside it as `life.js`, matching the drawing's name:
 
 ```js
 // @ts-check
@@ -58,75 +55,66 @@ microscope.draw(({ cells, columns, generation }, { previous }) => {
 });
 ```
 
-`microscope web --views life.views ./life` loads both. Stop anywhere a `struct
-life` is in scope, or a pointer to one, and press Alt+V: the Drawings view
-draws it, and draws it again at each stop, with the cells born since the
-stop before in orange. Edit `life.js` and run Reload views from the
-command palette (Ctrl+K) to see the change at once; nothing restarts.
+`microscope web --views life.views ./life` loads both files. Stop with a
+`struct life` or a pointer to one in scope, then press Alt+V. The Drawings
+view updates at each stop, marking cells born since the previous stop in
+orange. After editing `life.js`, run Reload views from the command palette
+(Ctrl+K) to apply the changes without restarting.
 
-`extend` adds the drawing to whatever view presents the type, so `print
-life` in the terminal is unchanged. `cells = bytes(…)` hands over the
-board's 3,072 bytes in one read, as a `Uint8Array`.
+`extend` adds a drawing without replacing the type's presenting view, so
+`print life` in the terminal is unchanged. `cells = bytes(…)` reads the
+board's 3,072 bytes at once and passes them as a `Uint8Array`.
 
 ## The Drawings view
 
-The Drawings view (Alt+V, or Drawings beside Source, Disassembly, and
-Memory) shows a card for each argument and local of the frame shown that a
-view draws, then for each value pinned to it. A pointer draws as what it
-points to, so a `&mut Board` or a `struct life *` has its target's
-drawings. The number beside Drawings counts the cards.
+Open Drawings with Alt+V or beside Source, Disassembly, and Memory. It shows
+cards for arguments and locals in the selected frame whose views provide
+drawings, followed by pinned values. Pointers use their targets' drawings:
+a `&mut Board` or `struct life *` draws the board itself. The number beside
+Drawings is the card count.
 
 - **Draw** on a value row pins the value with the drawings its view
   offers. **Draw as…** on any value row, or on a card, pins it with any
   renderer; that renderer draws the value itself as its `values` input,
   as `visualize "NAME" { values = self }` would.
-- **The link holds the view.** `view=drawings` shows it, and each pinned
-  value is `d=PATH` or `d=PATH~NAME` for a chosen renderer, so a link
-  shows the same drawings.
-- **A value with several drawings** shows each as a tab of its card, and
-  the tab chosen stays chosen at later stops.
-- **Across stops,** a card draws again at each stop the tab shows, and
-  hands the renderer what it drew at the stop before as `previous`, so it
-  can mark what changed. While the program runs, and until the next stop's
-  drawing is ready, the last drawing stays, dimmed, and says which stop it
-  is of.
-- **The latest stop wins.** When stops come faster than a card draws, as
-  while F10 is held, the card draws one stop at a time, at most once a
-  frame, skipping to the latest, and never replaces a drawing with one of
-  an earlier stop.
-- **Only cards on screen draw.** A card scrolled away draws when it comes
-  back. A card draws again when its width changes, or the page's colors
-  do, the system's switch to dark included.
-- **Parts.** A shape with `select` opens that part of the value as a row,
-  which can be expanded and watched, and its `title` is its tooltip and
-  accessible name. Over a titled image, the tooltip also names the pixel
-  under the pointer: `cells: column 31, row 20`.
-- **Table and Copy CSV.** Table lists every value the drawing's inputs
-  hold, a row each, as `cells[1311]` and `1`, a screenful at a time even
-  for a million. Copy CSV copies them as `path,value` lines. Both write
-  each number exactly: integers whole, and floats as the shortest text
-  that reads back as the same number, an `f32` as an `f32`. Captions
-  round to six digits; titles and the Table never do.
-- **Many shapes.** A picture of more than 2,000 shapes is drawn on a
-  canvas rather than as SVG, with the same tooltips and clicks.
-- **A card that cannot draw says why,** and draws nothing: an input that
-  could not be read, with which and why; a renderer that threw, with its
-  file, line, and message; one that took longer than 2 seconds, which is
-  stopped; a picture the page refuses, with which shape and why; and a
-  renderer nobody provides.
-- **Live drawings,** such as a mesh, draw on a canvas that follows the
-  pointer while the card is on screen (see Live renderers). Clicking the
-  canvas gives it the keys, all but the debugger's function keys, and
-  Escape gives them back. A live renderer that stops answering for 2
-  seconds, or whose WebGL context is lost, is stopped, and its card
+- Links preserve the view: `view=drawings` opens it, and `d=PATH` pins a
+  value. `d=PATH~NAME` also selects a renderer.
+- Multiple drawings appear as tabs on one card. The selected tab persists
+  across stops.
+- At each stop shown in the tab, the card redraws and passes the previous
+  drawing's inputs as `previous` so the renderer can mark changes. While
+  the program runs or the next drawing loads, the last drawing stays dimmed
+  and labeled with its stop.
+- If stops arrive faster than rendering, such as while holding F10, each
+  card draws one stop at a time, at most once per frame, skipping to the
+  latest. An earlier stop's drawing never replaces a later one.
+- Off-screen cards draw when scrolled back into view. Cards also redraw
+  when their width or the page's theme changes, including system dark mode.
+- A shape's `select` opens part of the value as a row you can expand or
+  watch. Its `title` is both tooltip and accessible name. Titled images
+  also identify the pixel under the pointer: `cells: column 31, row 20`.
+- Table lists each input value as a row, such as `cells[1311]` and `1`,
+  rendering one screenful at a time even for a million values. Copy CSV
+  copies `path,value` lines. Both preserve numbers exactly: integers in
+  full, floats as the shortest text that round-trips in their format
+  (`f32` as `f32`). Captions round to six digits; titles and Table do not.
+- Pictures with more than 2,000 shapes use canvas instead of SVG, retaining
+  the same tooltips and clicks.
+- If drawing fails, the card shows the reason instead: an unreadable input
+  and why it failed; a renderer error with file, line, and message; a
+  renderer stopped after 2 seconds; a rejected picture with the invalid
+  shape and reason; or a missing renderer.
+- Live drawings, such as meshes, respond to the pointer while on screen
+  (see Live renderers). Clicking the canvas gives it keyboard focus except
+  for debugger function keys; Escape returns focus. A live renderer stops
+  after 2 seconds without a response or on WebGL context loss. Its card
   offers to restart it.
 
 ## Inputs
 
-Each input of a `visualize` is evaluated as a view's field is, through
-every view, and arrives as a plain JavaScript value decided by its type
-alone, never by its value: a `uint64_t` is always a bigint, even when it
-is 3.
+Each `visualize` input is evaluated like a view field, applying views, and
+converted to JavaScript according to its type, not its value. A `uint64_t`
+is always a bigint, even when it is 3.
 
 | In the program | In the renderer | For example |
 |---|---|---|
@@ -146,25 +134,22 @@ is 3.
 | maps | an array of `[key, value]` pairs, in the view's order | `[["GET", 3]]` |
 | `bytes(PTR, LEN)` | `Uint8Array` | `Uint8Array(3072)` |
 
-- **Never partial.** When any part of any input cannot be read, the
-  renderer is not called, and the card says which part and why. A renderer
-  never has to tell a real 0 from a missing one.
-- **Pointers stay addresses.** An input that wants what a pointer points
-  to says `*p`, or names a value a view presents. A value a view
-  presents is what the view presents, even when it is stored as a
-  pointer, as a Go map is.
-- **Bulk data is read at once.** `bytes(PTR, LEN)` is one read of memory,
-  and a sequence of numbers that lies in one run of memory, as an array's,
-  a `Vec`'s, a `std::vector`'s, or a numpy array's elements do, is read
-  at once too. Both
-  travel to the page as bytes, never as text.
+- If any input part is unreadable, the renderer is not called. The card
+  identifies the part and reason; missing values never become zeros.
+- Pointers remain addresses. Use `*p` to pass a pointer's target, or name
+  a value presented by a view. View-presented values use their logical
+  form even when stored as pointers, as Go maps are.
+- `bytes(PTR, LEN)` reads memory once. Contiguous numeric sequences, such
+  as arrays and the elements of `Vec`, `std::vector`, and numpy arrays,
+  are also read at once. Both reach the page as bytes, not text.
 
 ## Renderers
 
-A renderer is one script that calls `microscope.draw` once with a function,
-or `microscope.live` for a live drawing (see Live renderers). The function
-gets the inputs and a context, and returns a picture; it may be `async`. The only global it can use beyond the language and drawing is
-`microscope`.
+A renderer is a script that registers a function with `microscope.draw`
+once, or uses `microscope.live` for a live drawing (see Live renderers).
+A draw function receives inputs and a context and returns a picture; it
+may be `async`. Renderers use `microscope` and the sandbox's language and
+drawing APIs, not page globals.
 
 ```text
 microscope.draw((input, context) => picture)
@@ -175,12 +160,11 @@ context.width      the CSS pixels the card offers; a picture is scaled to fit
 context.theme      "light" or "dark"
 ```
 
-`context.paths` lets a renderer's shapes open the parts they draw
-wherever its inputs come from. An input written as members and indices of
-the value, such as `squares = mailbox`, has the path `"mailbox"`, so
-square 28 selects `${paths.squares}[28]`; the value itself, as `self` or
-as Draw as… hands it over, has `""`; anything else, such as `bytes(…)`,
-`len * 2`, or a string, has null, and has no parts to open.
+Use `context.paths` to make shapes open the parts they draw. An input
+expressed as members and indices, such as `squares = mailbox`, has path
+`"mailbox"`, so square 28 selects `${paths.squares}[28]`. The value itself
+(`self` or the input from Draw as…) has path `""`. Other inputs, such as
+`bytes(…)`, `len * 2`, or a string, have path null and no parts to open.
 
 ```microscope-renderer-example
 // A bar per value, from a zero baseline, with each value in its title.
@@ -214,28 +198,26 @@ shapes are drawn in order, later ones on top.
 | `microscope.polyline`, `microscope.polygon` | `points`: x0, y0, x1, y1, …, an array or a `Float32Array` or `Float64Array` |
 | `microscope.path` | `d`: SVG path data |
 | `microscope.text` | `x`, `y`, `text`, `size?`, `weight?` (`"normal"`, `"bold"`, or 100 to 900), `family?` (`"sans"` or `"mono"`), `anchor?` (`"start"`, `"middle"`, `"end"`), `baseline?` (`"auto"`, `"alphabetic"`, `"middle"`, `"central"`, `"hanging"`, `"ideographic"`) |
-| `microscope.group` | `shapes`; `x?` and `y?` move them, and `rotate?` (degrees, clockwise) and `scale?` turn and size them about that point |
-| `microscope.image` | `x`, `y`, `width`, `height`, and either `pixels` (RGBA, a `Uint8ClampedArray`), `columns`, and `rows`, or a `canvas`, an `OffscreenCanvas` the renderer drew; `smooth?` blends pixels when scaled, which stay sharp otherwise |
+| `microscope.group` | `shapes`; `x?` and `y?` translate them; `rotate?` (degrees clockwise) and `scale?` rotate and scale around that point |
+| `microscope.image` | `x`, `y`, `width`, `height`, and either `pixels` (RGBA, a `Uint8ClampedArray`) with `columns` and `rows`, or `canvas` (an `OffscreenCanvas` drawn by the renderer); `smooth?` blends scaled pixels, which stay sharp otherwise |
 
 Every shape also takes:
 
-- `fill` and `stroke`: a color, `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()`,
-  `hsl()`, or a CSS color name. A shape with neither is drawn in the
-  page's ink, and lines and polylines by their stroke.
+- `fill` and `stroke`: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `hsl()`,
+  or a CSS color name. Shapes default to the page's ink. Lines and
+  polylines use their stroke.
 - `strokeWidth`, `opacity` (0 to 1), and `dash`, the lengths of dashes and
   gaps.
-- `title`: hover text, and the shape's accessible name, so a screen reader
+- `title`: hover text and the shape's accessible name, so a screen reader
   reads `e4: White Pawn`.
-- `select`: a part of the drawn value, as member names, `.`, and indices:
-  `mailbox[21]`, `[3]`, or `a.b[2].c`. Clicking the shape, or pressing
-  Enter on it, opens that part as a row. It is a path, never an
-  expression: a renderer can never make the debugger evaluate anything
-  else.
+- `select`: a path within the drawn value using member names, `.`, and
+  indices, such as `mailbox[21]`, `[3]`, or `a.b[2].c`. Click the shape
+  or press Enter on it to open that part as a row. Paths are not
+  expressions and cannot trigger arbitrary evaluation.
 
-A shape with neither a `title` nor a `select`, in a group with neither,
-lets the pointer through to the shapes beneath it, so a piece drawn on a
-square leaves the square clickable, and marks drawn over a titled image
-leave its pixels named.
+A shape without `title` or `select`, in a group without either, passes
+pointer events to shapes beneath it. A piece drawn over a square leaves
+the square clickable; marks over a titled image preserve pixel tooltips.
 
 ```microscope-renderer-example
 // Every kind of shape, in the page's colors.
@@ -270,16 +252,14 @@ microscope.draw(() => {
 
 ### Helpers
 
-- `microscope.theme` holds the page's colors in the theme it shows, each
-  `#rrggbb`: `ink`,
-  `ink2`, `ink3`, `paper`, `surface`, `line`, `accent`, `changed`,
-  `good`, `bad`, and `series`, eight categorical colors in an order
-  checked for color-blind readers. A card draws again when the theme
-  changes.
-- `microscope.same(a, b)` compares two input values deeply, typed arrays and
-  bigints included, for marking what changed since `previous`.
-- `microscope.color.scale(t, from, to)` blends from `from` to `to`, two `#rgb`
-  or `#rrggbb` colors, `t` of the way, for heatmaps.
+- `microscope.theme` provides the page's theme colors as `#rrggbb`:
+  `ink`, `ink2`, `ink3`, `paper`, `surface`, `line`, `accent`, `changed`,
+  `good`, and `bad`. `series` contains eight categorical colors ordered
+  and checked for color-blind readers. Cards redraw when the theme changes.
+- `microscope.same(a, b)` deeply compares inputs, including typed arrays
+  and bigints, to help mark changes since `previous`.
+- `microscope.color.scale(t, from, to)` blends two `#rgb` or `#rrggbb`
+  colors by fraction `t`, for heatmaps.
 
 ```microscope-renderer-example
 // The squares that changed since the stop before, outlined.
@@ -299,26 +279,25 @@ microscope.draw(({ cells }, { previous }) => {
 
 ### Errors
 
-The page names a renderer's own file and line when it fails, in Chromium
-and Firefox alike: a thrown error or a rejected promise shows as
-`life.js:12:5: TypeError: …`. A renderer that does not parse, or calls
-neither `microscope.draw` nor `microscope.live`, says so. A picture the page cannot show exactly as
-described is refused whole, naming the first shape at fault, such as
-`shape 3 (rect): fill is not a color`: unknown properties, numbers that
-are not finite, colors that are not colors, path data outside SVG's
-grammar, and pictures over the limits below.
+In Chromium and Firefox, renderer errors and rejected promises include the
+file and line: `life.js:12:5: TypeError: …`. The page also reports syntax
+errors and scripts that call neither `microscope.draw` nor `microscope.live`.
+It rejects invalid pictures in full, naming the first faulty shape, such
+as `shape 3 (rect): fill is not a color`. Invalid inputs include unknown
+properties, nonfinite numbers, invalid colors or SVG path data, and pictures
+exceeding the limits below.
 
-To have an editor check a renderer, start it with `// @ts-check` and give
-the editor `sdk/web/microscope-visualizer.d.ts`, which declares `microscope`.
+For editor type checking, start the renderer with `// @ts-check` and provide
+`sdk/web/microscope-visualizer.d.ts`, which declares `microscope`.
 
 ## Live renderers
 
-A picture is drawn once a stop. A **live** renderer instead keeps a
-canvas of its own while its card is on screen, and draws into it whenever
-it asks to: a model to turn, a level to fly through, bones to inspect. It
-calls `microscope.live` in place of `microscope.draw`, with a function that gets
-the canvas, an `OffscreenCanvas` sized to the card in device pixels, the
-first stop's inputs, and a context, and returns what it does next:
+A picture normally draws once per stop. A live renderer keeps its own
+canvas while its card is on screen and requests frames as needed, for
+example to rotate a model, fly through a level, or inspect bones. Register
+it with `microscope.live` instead of `microscope.draw`. Its function receives
+an `OffscreenCanvas` sized to the card in device pixels, the first stop's
+inputs, and a context. It returns event handlers:
 
 ```text
 microscope.live((canvas, input, context) => ({ frame, update, pointer, key, resize }))
@@ -340,32 +319,30 @@ microscope.hint(text)        the tooltip beside the pointer, or none with null
 microscope.select(path)      open a part of the value, as a shape's select does
 ```
 
-The five `microscope` calls are a live renderer's and do nothing in `draw`.
-Each sends only its latest value, once the function the page called
-returns, so calling `caption` in a loop costs one message.
+These five `microscope` calls work only in live renderers and do nothing in
+`draw`. Each sends its latest value after the handler returns, so calling
+`caption` in a loop sends one message.
 
 Each function is optional, and each may be `async`. The canvas takes
 `getContext("webgl2")` or `getContext("2d")`; WebGPU is not offered.
 
-- **The page drives frames.** It calls `frame` from its own animation
-  frame, one at a time, only after the renderer starts, gets a new stop,
-  or is resized, after `microscope.redraw()`, and every frame while
-  `microscope.animate(true)` holds, and never while the card is off screen or
-  the tab hidden. Each frame reaches the page as an `ImageBitmap`, only
-  pixels.
-- **One worker for as long as the card is on screen.** A new stop calls
-  `update` in the same worker, so a camera stays where it was. Scrolling
-  the card away, closing the view, or switching programs ends the worker;
-  scrolling back starts a new one with the inputs of then.
-- **At most four run at once** in a tab; later cards wait for one to
+- The page calls `frame` from its animation frame, one at a time, after
+  startup, a new stop, a resize, or `microscope.redraw()`. It also calls
+  every frame while `microscope.animate(true)` is active, but never while
+  the card is off screen or the tab is hidden. Frames reach the page as
+  `ImageBitmap`s containing only pixels.
+- Each card keeps one worker while on screen. New stops call `update` in
+  that worker, preserving state such as the camera position. Scrolling
+  away, closing the view, or switching programs ends the worker. Scrolling
+  back starts a new worker with the latest inputs.
+- At most four live renderers run per tab; later cards wait for one to
   leave the screen.
-- **A watchdog.** The page asks each live worker every second whether it
-  still answers, once its functions return. One that does not within 2
-  seconds, looping or awaiting what never settles, is ended, as is one
-  that throws or loses its WebGL context, and its card says why and
-  offers Restart.
-- Headless Firefox has no WebGL at all, so a WebGL renderer fails there
-  with its own message, as `mesh` says WebGL is unavailable.
+- The page checks worker responsiveness every second, after handlers
+  return. A worker that fails to respond within 2 seconds, whether looping
+  or awaiting an unsettled promise, is stopped. Errors and WebGL context
+  loss also stop it. The card explains why and offers Restart.
+- Headless Firefox has no WebGL, so WebGL renderers report failure there.
+  For example, `mesh` reports that WebGL is unavailable.
 
 ```microscope-live-example
 // A bar per value that follows the pointer: the bar under it is lit,
@@ -405,27 +382,26 @@ microscope.live((canvas, { values }) => {
 
 ## Built-in renderers
 
-microscope builds in eleven renderers, in `views/visualizers/`. Any `visualize`
-can name one, and Draw as… offers every one for any value. They are
-ordinary renderers, written against this page's API alone, so each is
-also an example to copy.
+microscope includes eleven renderers in `views/visualizers/`. Use them in
+`visualize` or choose any of them through Draw as… on a value. They use only
+the API on this page and serve as examples for your own renderers.
 
 | Renderer | Inputs | Draws |
 |---|---|---|
-| `line-plot` | `values`, or `series`, a map or record of up to 8 names to numbers; `x?`, `log?` | Past one value a pixel column, each column's first, lowest, highest, and last (M4), with a band for its range, so one spike in a million shows. NaN is a gap, ±∞ an arrow. A ghost is the line at the stop before. |
-| `bar-chart` | `values` with `labels?`, or `entries`, a map or record (as `values` may be); `orientation?` (`"horizontal"` or `"vertical"`), `sort?` (`"value"`, `"label"`, or `"none"`) | A map sorted by value, since its order may be random, past 40 entries folding into Other with their count and total; an array in the program's order. A tick marks each bar at the stop before. |
-| `scatter-plot` | `x` and `y`, or `values`, pairs or records of two numbers; `group?`, `labels?` | A dot per point, three groups in hues of their own; past 10,000, one image darker where more points fall. Up to 2,000 points, those that moved trail a line. |
-| `histogram` | `values`, raw samples, or `counts` and `edges`; `bins?`, `log?` | Freedman–Diaconis bins, exact p50, p90, and p99 (type 7), and an outline of the stop before's counts. |
-| `box-plot` | `groups` (or `values`), a map, record, or array of samples or of `{min, q1, median, q3, max}`; `labels?`; `error?`: `"sd"`, `"ci95"`, or numbers with `mean`; `error_label?` | Quartiles (type 7), Tukey whiskers, outliers, error bars beside each box, and a tick at each median of the stop before. |
-| `donut-chart` | `values` with `labels?`, or `entries` (as `values` may be); none negative | The seven largest shares and Other, each titled with its change since the stop before. |
-| `heatmap` | `values` and `columns`, or an array of rows; `row_labels?`, `column_labels?`, `scale?` (`"sequential"` or `"diverging"`), `log?` | Blue to red through gray when the values cross zero, NaN hatched, changed cells outlined; past 10,000 cells, one image of each pixel's largest cell. |
-| `flame-graph` | `nodes`, records of `name`, `value`, and `parent`, or `stacks`, `"a;b;c"` to counts as pairs or a map; `values` for either | An icicle, root on top, each frame as wide as its total, colored by name, with frames whose total changed outlined. |
-| `bitmap` | `pixels` (or `values`) and `columns`, or an array of rows; `format?` (`"gray8"`, `"rgba8"`, `"rgb565"`, `"bits"`) | The image at a whole zoom, sharp, with changed pixels outlined, or tinted when too small to outline. |
-| `bits` | `values`, one integer or up to 4,096; `columns?`, `origin?` (`"top-left"` or `"bottom-left"`), `labels?`, `width?` | Each integer as a grid of its bits, its width from its type, with flipped bits outlined and its value in hexadecimal. |
-| `mesh` (live) | `vertices` (bytes), `stride`, `position`; `normal?`, `color?` (offsets in a vertex), `indices?` (bytes) with `index_size?` (2 or 4), `primitive?` (`"triangles"`, `"lines"`, `"points"`), `transform?` (16 numbers, column-major), `up?` (`"y"` or `"z"`) | A model in WebGL2, lit from the eye, so flipped normals show dark, or shaded by its faces without normals. Drag turns it, the wheel zooms, and W shows its wireframe; hover names the nearest vertex. A position that is not finite, or that its transform carries past a float's range, or an index past the last vertex, is named in the caption and nothing is drawn. |
+| `line-plot` | `values`, or `series`, a map or record of up to 8 names to numeric sequences; `x?`, `log?` | Above one value per pixel column, retains each column's first, lowest, highest, and last values (M4), with a range band to preserve spikes. NaN creates gaps; ±∞ uses arrows. A ghost line shows the previous stop. |
+| `bar-chart` | `values` with `labels?`, or `entries`, a map or record (as `values` may be); `orientation?` (`"horizontal"` or `"vertical"`), `sort?` (`"value"`, `"label"`, or `"none"`) | Maps sorted by value, since their order may be random; entries beyond 40 fold into Other with their count and total. Arrays keep program order. Ticks mark previous bar values. |
+| `scatter-plot` | `x` and `y`, or `values`, pairs or records of two numbers; `group?`, `labels?` | Dots with distinct hues for three groups. Above 10,000 points, uses a density image, darker where more points fall. Up to 2,000 points, moved points trail lines from their previous positions. |
+| `histogram` | `values`, raw samples, or `counts` and `edges`; `bins?`, `log?` | Freedman–Diaconis bins, exact p50, p90, and p99 (type 7), and an outline of the previous counts. |
+| `box-plot` | `groups` (or `values`), a map, record, or array of samples or of `{min, q1, median, q3, max}`; `labels?`; `error?`: `"sd"`, `"ci95"`, or numbers with `mean`; `error_label?` | Quartiles (type 7), Tukey whiskers, outliers, error bars beside each box, and ticks at previous medians. |
+| `donut-chart` | `values` with `labels?`, or `entries` (as `values` may be); none negative | The seven largest shares and Other, with titles showing changes since the previous stop. |
+| `heatmap` | `values` and `columns`, or an array of rows; `row_labels?`, `column_labels?`, `scale?` (`"sequential"` or `"diverging"`), `log?` | Blue through gray to red when values cross zero. NaN is hatched; changed cells are outlined. Above 10,000 cells, uses one image, each pixel showing its largest cell value. |
+| `flame-graph` | `nodes`, records of `name`, `value`, and `parent`, or `stacks`, `"a;b;c"` to counts as pairs or a map; `values` for either | An icicle with the root on top, frame widths proportional to totals, and colors by name. Changed totals have outlines. |
+| `bitmap` | `pixels` (or `values`) and `columns`, or an array of rows; `format?` (`"gray8"`, `"rgba8"`, `"rgb565"`, `"bits"`) | A sharp image at integer zoom, with changed pixels outlined or tinted when too small to outline. |
+| `bits` | `values`, one integer or up to 4,096; `columns?`, `origin?` (`"top-left"` or `"bottom-left"`), `labels?`, `width?` | A bit grid per integer, using its type's width, with flipped bits outlined and values in hexadecimal. |
+| `mesh` (live) | `vertices` (bytes), `stride`, `position`; `normal?`, `color?` (offsets in a vertex), `indices?` (bytes) with `index_size?` (2 or 4), `primitive?` (`"triangles"`, `"lines"`, `"points"`), `transform?` (16 numbers, column-major), `up?` (`"y"` or `"z"`) | A WebGL2 model lit from the viewer, so flipped normals appear dark; without normals, uses face shading. Drag to rotate, scroll to zoom, press W for wireframe, or hover to identify the nearest vertex. Nonfinite positions, transformed positions outside float range, and indices beyond the last vertex prevent drawing and are reported in the caption. |
 
-`mesh` reads a mesh where the program keeps it, with no JavaScript of
-your own. For a C++ engine's `std::vector<Vertex>` and indices:
+`mesh` draws mesh data from program memory without custom JavaScript.
+For a C++ engine's `std::vector<Vertex>` and indices:
 
 ```text
 extend c++ engine::Mesh {
@@ -440,34 +416,32 @@ extend c++ engine::Mesh {
 }
 ```
 
-Only memory the process holds can be drawn: a mesh uploaded to the GPU
-and freed exists only there, so draw the copy the loader keeps.
+Only data in process memory can be drawn. If a mesh has been uploaded to
+the GPU and freed from process memory, use a copy retained by the loader.
 
 ## Where renderers come from
 
-A view calls the renderers of its own source before the built-in ones:
+A view looks for renderers in its own source before using built-ins:
 
-- a view file's are `NAME.js` files beside it, read with it, and read
-  again by Reload views;
-- a module's own views call the renderers the module carries in its
-  `.debug_microscope_views` section. A C or C++ program carries one with
-  `MICROSCOPE_VISUALIZER("board", "views/board.js");` from `microscope_views.h`,
-  and a Rust program with `microscope_views::microscope_visualizer!("board",
-  PATH);`;
-- the built-ins come last.
+- View files use adjacent `NAME.js` files, loaded with the view file and
+  reread by Reload views.
+- Module-carried views use renderers from the module's
+  `.debug_microscope_views` section. In C or C++, embed one with
+  `MICROSCOPE_VISUALIZER("board", "views/board.js");` from `microscope_views.h`.
+  In Rust, use `microscope_views::microscope_visualizer!("board", PATH);`.
+- Built-ins are the fallback.
 
-`microscope views check PROGRAM` lists every renderer the views call, each as
-its JavaScript, and fails when a drawing does not bind, such as one whose
-input names no member. A renderer is never run outside the page: microscope
-has no JavaScript engine of its own.
+`microscope views check PROGRAM` lists the JavaScript for every renderer
+referenced by the views. It fails if a drawing cannot bind, such as when an
+input names a nonexistent member. Renderers run only in the page;
+microscope has no JavaScript engine of its own.
 
 ## What a renderer cannot do
 
-A renderer may be hostile, as one carried by a program someone sent you
-may be. The page runs each in a worker of its own, started by a hidden
-frame whose origin is opaque and whose policy allows no request at all,
-and the worker deletes every global but the language, timers, and drawing
-before it runs the renderer. So a renderer cannot:
+A program you receive may carry a hostile renderer. Each renderer runs in
+its own worker, started by a hidden frame with an opaque origin and a policy
+that blocks all requests. Before running the renderer, the worker removes
+all globals except language, timer, and drawing APIs. A renderer cannot:
 
 - send anything anywhere, nor load a script, font, or image;
 - reach the debugger, read memory, or ask for any value beyond its inputs;
@@ -476,11 +450,11 @@ before it runs the renderer. So a renderer cannot:
 - hang the page: a draw that takes longer than 2 seconds is stopped, and
   so is a live renderer that stops answering for 2 seconds.
 
-A live renderer is no different: its WebGL loads nothing, events reach it
-as numbers and flags, and its frames reach the page as pixels alone.
+Live renderers have the same restrictions. WebGL loads no external data;
+events arrive as numbers and flags, and frames reach the page as pixels.
 
-What it can do is draw a misleading picture of data you are already
-looking at; each card names its renderer and where it came from.
+A renderer can still misrepresent its input data. Each card identifies
+the renderer and its source.
 
 ## Limits
 

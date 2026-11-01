@@ -7,21 +7,21 @@ hero:
   tagline: A Linux debugger for the terminal, browser, and your editor.
   actions:
     - theme: brand
-      text: Get started
+      text: Run a first session
       link: /getting-started
     - theme: alt
       text: Debug a program
       link: /debugging
 
 features:
-  - title: See the program as it is
-    details: Inspect stacks, values, memory, registers, and instructions. Missing information stays visible instead of becoming a guessed value.
-  - title: Work with language runtimes
-    details: Follow Go goroutines and async Rust tasks as logical stacks, including the places where they wait.
+  - title: Inspect program state
+    details: Read stacks, values, memory, registers, and instructions. Missing values and incomplete stacks are reported.
+  - title: Follow runtime tasks
+    details: Inspect Go goroutines and async Rust tasks, including suspended stacks and wait locations.
   - title: Record profiles
-    details: Sample native programs from outside the process and explore CPU time, blocked time, tasks, and instrumented work.
+    details: Sample native programs externally. Measure CPU time, blocked time, tasks, and instrumented work.
   - title: Trace system calls
-    details: See each call a program makes, as strace prints it, or count them in the kernel without stopping the program.
+    details: Trace calls in strace format, or count them in the kernel without stopping the program.
 ---
 
 microscope runs on Linux x86-64 and understands programs written in C, C++,

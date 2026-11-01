@@ -7,9 +7,9 @@ output:
 microscope dap
 ```
 
-The adapter uses the same debugger as the terminal and browser clients. It can
-launch, attach, inspect core dumps, set breakpoints and watchpoints, step,
-evaluate expressions, inspect variables and memory, and show disassembly.
+It uses the same debugger as the terminal and browser: launch, attach, core
+dumps, breakpoints, watchpoints, stepping, expressions, variables, memory, and
+disassembly.
 
 ## VS Code
 
@@ -18,11 +18,10 @@ The repository contains an extension under `editors/vscode`.
 > TODO: publish the extension and replace the development instructions with an
 > end-user installation path.
 
-For repository development, follow the extension's
-[README on
-GitHub](https://github.com/microscope-dev/microscope/tree/main/editors/vscode).
+For development setup, see the
+[extension README](https://github.com/microscope-dev/microscope/tree/main/editors/vscode).
 
-A launch entry has this shape:
+A launch entry:
 
 ```json
 {
@@ -35,9 +34,8 @@ A launch entry has this shape:
 ```
 
 To debug a Python program, launch its interpreter with the script as an
-argument; breakpoints in `.py` files, steps, and the Python exception filters
-need CPython 3.14 or later, or a launched 3.12 or 3.13 (see
-[Python](languages.md#python)):
+argument. Python breakpoints, stepping, and exception filters need CPython
+3.14 or later, or a launched 3.12 or 3.13; see [Python](languages.md#python).
 
 ```json
 {
@@ -50,9 +48,8 @@ need CPython 3.14 or later, or a launched 3.12 or 3.13 (see
 ```
 
 To debug a Node.js program, launch `node` with the script as an argument.
-Breakpoints in `.js` files, and in TypeScript files that a source map maps the
-running code to, steps, and the JavaScript exception filters work through
-Node's inspector:
+JavaScript breakpoints, stepping, and exception filters use Node's inspector.
+TypeScript source locations need source maps.
 
 ```json
 {
@@ -64,8 +61,8 @@ Node's inspector:
 }
 ```
 
-Use `"request": "attach"` with a process ID to attach. Core-dump sessions use
-the microscope-specific core setting described by the extension when installed.
+Use `"request": "attach"` with a process ID to attach. For core dumps, use the
+extension's microscope-specific core setting.
 
 ## Neovim
 
@@ -85,12 +82,9 @@ dap.adapters.microscope = {
 Create launch and attach configurations with `type = "microscope"` and the usual
 DAP `request`, `program`, `args`, and `cwd` fields.
 
-The processes the program starts are debugged with it, each in a session of its
-own that the program's adapter serves (see [`follow`](#processes-the-program-starts)).
-nvim-dap starts that session through the adapter, and can start it only as a
-program it runs. So define the adapter as a function that runs
-`microscope dap --connect` with the socket a member's configuration names, which
-relays the session to the program's adapter:
+To debug [child processes](#processes-the-program-starts), replace the adapter
+definition with this function. It connects each child session to the original
+adapter through `microscope dap --connect`:
 
 ```lua
 dap.adapters.microscope = function(callback, config)
@@ -114,28 +108,25 @@ request.
 
 ## Processes the program starts
 
-A launch or attach configuration's `follow` says which processes the program
-starts are debugged too, as the command line's `--follow` and the settings
-file's `[follow]` table do:
+Set `follow` in the launch or attach configuration to choose which child
+processes to debug:
 
 | `follow` | Debugs |
 |---|---|
-| `"auto"` (default) | Processes that run the program, or a runtime microscope models: Node.js, Python, or Go; others are watched until they execute one |
+| `"auto"` (default) | Processes running the original program, Node.js, Python, or Go; others are watched until they execute one |
 | `"all"` | Every process the program starts |
 | `"none"` | Only the program; its children run on their own |
-| `{"mode": …, "programs": [...], "stop": "process"}` | As the mode says, and the named programs too; `stop` is `"group"` (default), which stops every process when one stops, or `"process"` |
+| `{"mode": …, "programs": [...], "stop": "process"}` | The mode's processes plus the named programs; `stop` is `"group"` (default, stop all processes together) or `"process"` (stop each independently) |
 
-Each debugged process appears as a session of its own, nested under the
-session of the process that started it, and has the program's breakpoints
-before it runs an instruction. With `stop` at `"group"`, continuing any of
-them continues them all. microscope's VS Code extension connects these
-sessions to the program's adapter itself; nvim-dap needs the adapter
-function above. A client that cannot start them gets a console line for each
-process that is debugged without a session to show it. The adapter does not
-read the settings file's `[follow]`; without `follow`, a configuration
-follows as `"auto"` does. The older `followForks: true` means
-`follow: "all"`, and `followForks: false` means `follow: "none"`; a
-configuration cannot give both.
+Each process has a session nested under its parent's, with the program's
+breakpoints installed before its first instruction. With `stop: "group"`,
+continuing one continues all. The VS Code extension connects child sessions
+automatically; nvim-dap needs the function above. Other clients log a console
+message for each debugged process they cannot display.
+
+The adapter does not read `[follow]` from the settings file. Without `follow`,
+it uses `"auto"`. Legacy `followForks: true` means `follow: "all"`, and
+`false` means `follow: "none"`; do not set both options.
 
 ## Behavior to expect
 
@@ -144,10 +135,9 @@ requests. Supported language runtimes can also appear as logical tasks. The
 adapter reports optimized-out values and partial stacks as explicit failures or
 unavailable values.
 
-The adapter's exception filters include **System calls**, which stops at
-system calls as [`catch syscall`](debugging.md#stop-at-system-calls) does. Its
-condition is a comma-separated list of calls, such as `openat,connect`; leave
-it empty to stop at every call.
+The System calls exception filter works like
+[`catch syscall`](debugging.md#stop-at-system-calls). Its condition is a
+comma-separated list such as `openat,connect`; leave it empty for every call.
 
 DAP clients differ in which protocol features they expose. If a feature is
 missing from the editor UI, use its debug console or the terminal client to

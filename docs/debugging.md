@@ -15,11 +15,9 @@ Use `--cwd DIR` to choose the program's working directory and `--env
 NAME=VALUE` to add environment variables. A launched program stops before it
 begins. Set breakpoints, then run it.
 
-A script that starts with `#!`, such as `./cli.js` with `#!/usr/bin/env node`,
-runs as the kernel runs it: microscope launches the script and follows its
-interpreter. A program that executes another, as `env`, `bash -c`, and
-version managers' shims do, is followed into the one it executes, with a line
-saying so:
+microscope follows `#!` scripts into their interpreters, and follows wrappers
+such as `env`, `bash -c`, and version-manager shims into the programs they
+execute. It reports each change:
 
 ```console
 $ microscope env -- node app.js
@@ -31,10 +29,10 @@ process 6001 executed /usr/bin/node
 stopped at breakpoint 1 (hit 1) in uv_run from libuv.so.1
 ```
 
-A breakpoint whose function or file nothing loaded has is refused, unless
-the program can execute another; then it waits for one that has it. A
-misspelling of a name the program has is still refused with the nearest
-name. `catch exec` stops at each program the process executes.
+A breakpoint in an unknown function or file is rejected unless the program
+can execute another program; then it stays pending. Misspellings of known
+names are still rejected with a suggested correction. `catch exec` stops
+after each exec.
 
 ## Attach to a process
 
@@ -46,11 +44,10 @@ microscope --attach my-server
 microscope --attach server.js
 ```
 
-A name matches a process's command name, the file name of the program it
-was started as, a title it set (npm's `npm start` matches `npm`), or the
-file name of a script it runs (`node server.js` matches `server.js`). When
-several processes match, microscope lists each with what matched, and you
-attach to one by its ID.
+A name matches the command name, original executable's filename, process title
+(npm's `npm start` matches `npm`), or script filename (`node server.js` matches
+`server.js`). Multiple matches are listed with their matching names; choose
+one by ID.
 
 microscope normally finds the executable through `/proc`. Supply it as the
 positional executable when that is not possible.
@@ -60,15 +57,14 @@ attached process requires an explicit command.
 
 ## Debug the processes a program starts
 
-A launched or attached program and the processes it starts are debugged as
-one group. Each debugged process is a member, numbered from `[1]`, the
-program's own process. A member gets every breakpoint before it runs its
-first instruction, and a breakpoint set later reaches every member. The
-group also shares catchpoints, signal handling (`handle`), exception stops,
-`catch exec`, and view settings: changing one in any member changes it in
-every member, including those that join later. When one
-member stops, the others stop too, unless the `[follow]` setting `stop` is
-`"process"`. The stop selects the member that stopped:
+A program and its debugged child processes form a group. Each process is a
+member, numbered from `[1]` for the original process. Members share breakpoints,
+catchpoints, signal policy (`handle`), exception stops, `catch exec`, and view
+settings. Changes apply to existing and future members; new members receive
+breakpoints before their first instruction.
+
+A stop selects the member that stopped and pauses the others, unless
+`[follow] stop = "process"`:
 
 ```text
 (microscope) break child_work
@@ -85,35 +81,31 @@ selected [1]
 ```
 
 Process IDs differ from run to run. Once the group has a second member, the
-prompt names the selected one. Commands such as `backtrace`, `print`, and
-`step` act on the selected member. `continue` resumes every member, except
-that a stop another member made while the group was stopping is reported
-first, without resuming anything. `detach process N` lets a stopped member
-run on without microscope while the others stay debugged. The program's own
-process, `[1]`, cannot be detached alone. Lines about members that join,
-exit, or stop being debugged print as they happen, between commands too.
+prompt shows the selection. `backtrace`, `print`, and `step` act on that
+member. `continue` resumes all members, but first reports any additional stops
+collected while pausing the group, without resuming. `detach process N`
+releases a stopped member while the others remain debugged; `[1]` cannot be
+detached alone. Joins, exits, and detachments are reported as they happen,
+including between commands.
 
 The follow policy decides which processes are members. Choose it with
 `--follow MODE` or the [`[follow]` settings](reference/configuration.md#processes-the-program-starts):
 
 | Mode | Members |
 |---|---|
-| `auto` (default) | Processes that run the program itself, or a program of a runtime microscope models: Node.js, Python, or Go |
+| `auto` (default) | Processes running the original program, Node.js, Python, or Go |
 | `all` | Every process the program starts |
-| `none` | Only the program's process; each process it starts runs without microscope, with a line saying so |
+| `none` | Only the original process; children run without microscope, with a notice |
 
-A fork child runs its parent's program, so under `auto` and `all` a fork
-child of a member is a member too. A process the policy does not debug, such
-as a shell between `npm` and `node`, is watched: it runs as it would without
-microscope, and becomes a member if it executes a program the policy
-debugs. A member other than `[1]` that executes a program the policy does
-not debug is watched from then on, with a line saying so; `[1]` is followed
-into every program it executes. A vfork child, as `system` and
-`posix_spawn` make, is watched until it executes a program.
+A fork child inherits its parent's program, so it joins the group under
+`auto` and `all`. Other processes, such as a shell between `npm` and `node`,
+are watched until they execute a matching program. A child member that execs
+a non-matching program returns to watched status, with a notice. The original
+process `[1]` is always followed across exec. A vfork child, as created by
+`system` or `posix_spawn`, stays watched until exec.
 
-`--follow` also takes program names to debug besides those the mode
-chooses, matched against the file name with `*` and `?`, and may be
-repeated:
+Repeat `--follow` with filename patterns using `*` and `?` to include more
+programs:
 
 ```sh
 microscope --follow 'worker*' ./server
@@ -163,11 +155,10 @@ Use `info breakpoints` to list breakpoints, and `disable`, `enable`, or
 `delete` with a breakpoint number to manage one. `tbreak` creates a temporary
 breakpoint removed after its first hit.
 
-A resolved location can still be waiting for its language runtime to enable
-it. Pending locations show the reason; other locations of the same breakpoint
-can already be ready. Earlier instrumentation can still report hits while a
-new configuration waits for confirmation. The terminal, browser, and editor
-retain that distinction.
+A resolved location may stay pending until its runtime enables it; the reason
+is shown. Other locations of that breakpoint may already be active, and older
+instrumentation may report hits while an update awaits confirmation. All
+clients distinguish pending and active locations.
 
 `advance LOCATION` runs to a temporary source location in the current frame.
 
@@ -194,10 +185,9 @@ catch syscall entry connect
 catch syscall openat if $path == "config.toml"
 ```
 
-With no call named, every call stops. `entry` or `exit` stops only as the
-call begins or as it returns; the default is both. At the stop, `$arg0` to
-`$arg5` hold the call's arguments, `$ret` what it returned, and `$path` the
-path it names:
+With no call named, every call stops. `entry` and `exit` select one phase;
+the default is both. `$arg0` through `$arg5` hold arguments, `$ret` the return
+value, and `$path` the path:
 
 ```text
 stopped at catchpoint c1 as the call began: openat(AT_FDCWD, "missing", O_RDONLY)
@@ -245,16 +235,15 @@ locals
 print request
 ```
 
-Each run of a runtime's own frames, such as Go's or CPython's, folds into one
-line in `bt`. `bt -r` shows every frame.
+Consecutive runtime frames, such as Go's or CPython's, fold into one line.
+`bt -r` shows every frame.
 
 Use `threads` to list native threads and `thread ID` to select one. Programs
 with a supported runtime can also expose logical tasks such as goroutines,
 async Rust tasks, and asyncio tasks. See [Languages](languages.md).
 
-A runtime can label the threads it runs. In Node, a thread shows the V8
-isolate it works for. An isolate keeps its number for the life of the
-process, and no other isolate gets that number:
+Threads can have runtime labels. Node threads show their V8 isolate, whose
+number is unique and never reused within the process:
 
 ```text
 * 353561 "node-MainThread" stopped [isolate 1]
@@ -263,11 +252,10 @@ process, and no other isolate gets that number:
   353572 "beta" stopped [isolate 3]
 ```
 
-A thread that runs JavaScript (the main thread and each `worker_threads`
-worker) always has a label, so a thread without one runs no JavaScript. A
-label does not mean the thread runs JavaScript: a V8 helper thread, such as
-a `node-V8Worker` compiling code in the background or marking the heap,
-shows an isolate's label only while it works for that isolate.
+The main thread and `worker_threads` workers always have labels. V8 helper
+threads, which compile code or mark the heap, have a label only while working
+for an isolate. An unlabeled thread runs no JavaScript, but a label alone
+does not imply JavaScript execution.
 
 The debug adapter adds labels to the thread's name, as
 `node-MainThread (353561, isolate 1)`. The browser shows them in the
@@ -285,8 +273,8 @@ print/t mask
 ```
 
 microscope uses one [expression language](expressions.md) for every source
-language. [Views](views.md) make containers, strings, maps, and sum types read
-as their logical values.
+language. [Views](views.md) display containers as elements, strings as text,
+and sum types as their active values.
 
 When a variable was optimized out, a memory read failed, or debug information
 cannot describe a value, the output states that reason.
