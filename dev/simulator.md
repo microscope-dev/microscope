@@ -18,6 +18,7 @@ compare debugger state with the world's ground truth.
 | `src/sim/conformance/` | Dual-run probes against the real Linux kernel and CPU |
 | `src/backend/linux/sim_edge.rs` | Adapter from the real controller to simulated native operations |
 | `src/bin/microscope-sim.rs`, `src/sim/report.rs` | Sweep/replay command and failure reports |
+| `src/sim/shrink.rs` | Shrinking a failing run to a smaller one |
 | `tests/golden/`, `scripts/golden.sh` | Reproducible native programs and manifest management |
 
 ## Determinism
@@ -54,6 +55,7 @@ Classify a failure before fixing it:
 ```sh
 just sim
 just sim-seed SEED
+just sim-shrink SEED
 just sim 600
 ```
 
@@ -260,9 +262,9 @@ larger.
 
 ## Replaying failures
 
-There is no shrinker. A sweep groups failures by `Failure::signature()` and
-keeps the shortest run in each group, the smaller seed breaking ties. Replay
-that seed before making changes:
+A sweep groups failures by `Failure::signature()` and keeps the shortest run
+in each group, the smaller seed breaking ties. Replay that seed before making
+changes:
 
 ```sh
 just sim-seed SEED
@@ -272,6 +274,35 @@ just sim-seed SEED --at STEP
 The seed is diagnostic only for the commit that produced it. Turn a debugger
 failure into a focused non-simulator regression test before fixing it. The
 test should express the public behavior without depending on the random run.
+
+## Shrinking failures
+
+`just sim-shrink SEED` looks for a smaller run that fails with the same
+signature. A seed has no structure to shrink, so the shrinker works on what
+the run chose, in two passes:
+
+1. It simplifies the run's shape one part at a time: fewer requests, one
+   launch, no fault, no preemption, one-instruction bursts, faithful debug
+   registers, and no watching, attaching, or catching. The streams are
+   independent, so a change here barely disturbs the rest of the run.
+2. It shrinks the tape of `Choices::below` results each stream drew, as
+   Hypothesis does. A run replays the tape and draws from the seed's
+   generator once a stream's tape runs out. The shrinker deletes runs of
+   choices, the longest first, and lowers single choices toward zero.
+
+It keeps a change only when the run still fails with the same signature in
+no more actions, so the result is never larger than the seed's run. `--runs
+N` bounds how many runs it makes; the default is 2000.
+
+The shrunk run is written to `target/sim/SEED/shrunk.txt`: the seed, the
+simpler choices, and the tape. Replay it with the command it prints:
+
+```sh
+just sim-seed SEED --shrunk target/sim/SEED/shrunk.txt
+```
+
+A run with no simpler choices and no tape is the seed's run, unchanged.
+Like a seed, a shrunk run names one run only for the commit that wrote it.
 
 ## Failure classification
 
