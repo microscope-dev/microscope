@@ -1,3 +1,4 @@
+use gimli::Value;
 use proptest::prelude::*;
 
 use crate::test_strategies::{i128_edges, u64_edges, u128_edges};

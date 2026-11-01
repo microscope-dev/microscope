@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gimli::{Reader as _, RunTimeEndian, Value};
+use gimli::{Reader as _, RunTimeEndian};
 
 use crate::debug_info::VariableRuntime;
 use crate::debug_info::dwarf::Reader;
@@ -325,30 +325,6 @@ pub(super) fn wrapping_integer_bytes(
     }
 
     integer_bytes(value & low_bits_mask(size * 8), size, target)
-}
-
-pub(super) fn dwarf_address_bytes(
-    value: Value,
-    size: usize,
-    target: TargetDescription,
-) -> std::result::Result<Arc<[u8]>, EvaluateError> {
-    let address = match value {
-        Value::Generic(value) | Value::U64(value) => value,
-        Value::U8(value) => u64::from(value),
-        Value::U16(value) => u64::from(value),
-        Value::U32(value) => u64::from(value),
-        Value::I8(value) => i64::from(value).cast_unsigned(),
-        Value::I16(value) => i64::from(value).cast_unsigned(),
-        Value::I32(value) => i64::from(value).cast_unsigned(),
-        Value::I64(value) => value.cast_unsigned(),
-        Value::F32(_) | Value::F64(_) => {
-            return Err(EvaluateError::Malformed(
-                "floating-point value cannot represent an address".into(),
-            ));
-        }
-    };
-
-    wrapping_integer_bytes(u128::from(address), size, target)
 }
 
 pub(super) fn decode_address(
