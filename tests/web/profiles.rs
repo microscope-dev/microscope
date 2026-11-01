@@ -6,7 +6,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use microscope::profiler::{RecordOptions, SampleSource, Watch, record, record_watched};
+use microscope::profiler::{
+    RecordOptions, SMALL_STACK_COPY, SampleSource, StackCopy, Watch, record, record_watched,
+};
 use serde_json::{Value, json};
 
 use crate::support::{Scenario, ScratchDir};
@@ -22,11 +24,16 @@ fn record_calls(scratch: &ScratchDir) -> std::path::PathBuf {
 fn record_calls_of(scratch: &ScratchDir, symbol: &str, name: &str) -> std::path::PathBuf {
     let mut command = Command::new(Scenario::fixture("profile-stacks-gcc-o0"));
     command.arg("1").stdout(Stdio::null());
+    // The fixture keeps frame pointers, so a small copy still completes
+    // every stack. Six deep copies fill the smaller rings a recording gets
+    // while others run beside it, and a starved reader then loses calls
+    // made back to back.
     let options = RecordOptions {
         source: SampleSource::Function {
             symbol: symbol.into(),
         },
         function_period: 1,
+        stack: StackCopy::Bytes(SMALL_STACK_COPY),
         ..RecordOptions::default()
     };
 
@@ -294,7 +301,7 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     );
 
     let summary = tab.ok("profile", json!({"profile": id})).await;
-    assert_eq!(summary["samples"], 6);
+    assert_eq!(summary["samples"], 6, "{summary}");
     assert_eq!(summary["unit"], "executions");
     let threads = summary["threads"].as_array().expect("threads");
     assert_eq!(threads.len(), 2, "{summary}");
