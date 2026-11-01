@@ -1269,7 +1269,11 @@ impl MovedCode {
 const PAGE_BYTES: u64 = 4096;
 
 /// The byte at `address`, or `None` where no memory is mapped.
-fn memory_byte(ptrace: &impl LinuxTraceOps, pid: Pid, address: u64) -> Result<Option<u8>> {
+pub(super) fn memory_byte(
+    ptrace: &impl LinuxTraceOps,
+    pid: Pid,
+    address: u64,
+) -> Result<Option<u8>> {
     let (word, offset) = holding_word(address);
     match ptrace.read_memory_word(pid, word) {
         Ok(word) => Ok(Some(word.to_ne_bytes()[offset])),

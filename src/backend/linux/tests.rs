@@ -3576,6 +3576,50 @@ fn a_fork_child_loses_a_trap_whose_word_reaches_an_unmapped_page() {
     );
 }
 
+/// The program's own `int3` in a mapping's last bytes, before an unmapped
+/// page, is found through the aligned word that holds it.
+#[test]
+fn a_programs_trap_before_an_unmapped_page_is_its_own() {
+    let harness = hit_harness(1, ">=1");
+    let thread = harness.threads[0];
+    harness
+        .trace()
+        .program_counters
+        .borrow_mut()
+        .insert(thread, 0x1ffb);
+    harness.store(0x1ff8, 0x0000_0000_00cc_0000);
+    harness.trace().unreadable.borrow_mut().insert(0x1ffa);
+
+    assert_eq!(
+        harness.controller.program_trap(thread),
+        Some(VirtualAddress::new(0x1ffa))
+    );
+}
+
+/// A trap copied into a mapping's last bytes, before an unmapped page,
+/// comes out through the aligned word that holds it.
+#[test]
+fn a_copied_trap_before_an_unmapped_page_is_restored() {
+    let harness = hit_harness(1, ">=1");
+    let thread = harness.threads[0];
+    harness.store(0x1ff8, 0x11cc_0000_0000_0000);
+    harness.trace().unreadable.borrow_mut().insert(0x1ffe);
+
+    let trap = super::code_copies::CopiedTrap {
+        address: 0x1ffe,
+        original: 0x55,
+    };
+    assert_eq!(
+        harness.controller.restore_copied_traps(thread, &[trap]),
+        Some(())
+    );
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("write_word {thread} 0x1ff8 0x1155000000000000")),
+        "{actions:?}"
+    );
+}
+
 #[test]
 fn a_fork_whose_parent_is_killed_before_its_event_still_cleans_the_child() {
     let mut harness = hit_harness(1, ">=1");

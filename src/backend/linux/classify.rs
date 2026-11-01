@@ -170,7 +170,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// an `int3` that no breakpoint site of the debugger's put there.
     pub(super) fn program_trap(&self, pid: Pid) -> Option<VirtualAddress> {
         let address = self.ptrace.registers(pid).ok()?.rip.checked_sub(1)?;
-        let byte = self.ptrace.read_word(pid, address).ok()?.to_ne_bytes()[0];
+        let byte = super::breakpoints::memory_byte(&self.ptrace, pid, address).ok()??;
         (byte == BREAKPOINT_OPCODE).then_some(VirtualAddress::new(address))
     }
 
