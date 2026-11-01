@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2e609292c9f32a7bca6a255071cf4e8fca9e35ae7d5f6e61b837377e97402516 # shrinks to integer = Integer { value: Signed(-170141183460469231731687303715884105728), hex: false, upper: false, group: None, suffix: "" }
+cc 9e62ef7d4535835f8b06e66b8ae67cc721261fbf2c65f1135636af174915ffa5 # shrinks to (syntax, name) = (Angle, Name { path: [], base: "a", arguments: Some([Integer(Integer { value: Signed(-170141183460469231731687303715884105728), hex: false, upper: false, group: None, suffix: "" })]) })
