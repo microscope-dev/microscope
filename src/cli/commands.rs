@@ -1012,29 +1012,17 @@ impl Cli {
     ) -> Result<Option<Vec<CountedId>>> {
         let snapshot = self.debugger().snapshot().await?;
         let breakpoints = self.group_debugger().snapshot().await?.breakpoints;
-        let most = breakpoints.len() + snapshot.watchpoints.len();
-        let Some(ids) = parse_ids(words, watches, most, spec)? else {
-            return Ok(None);
-        };
-
-        let renderer = Renderer::new(false);
-        for &id in &ids {
-            let known = match id {
-                CountedId::Breakpoint(id) => {
-                    breakpoints.iter().any(|breakpoint| breakpoint.id == id)
-                }
-                CountedId::Watchpoint(id) => snapshot
+        let known = breakpoints
+            .iter()
+            .map(|breakpoint| CountedId::Breakpoint(breakpoint.id))
+            .chain(
+                snapshot
                     .watchpoints
                     .iter()
-                    .any(|watchpoint| watchpoint.id == id),
-            };
-
-            if !known {
-                bail!("{} was not found", id.describe(renderer));
-            }
-        }
-
-        Ok(Some(ids))
+                    .map(|watchpoint| CountedId::Watchpoint(watchpoint.id)),
+            )
+            .collect();
+        known_ids(words, watches, &known, spec)
     }
 
     /// Adds the breakpoint a `break` or `tbreak` line describes.
@@ -3396,6 +3384,24 @@ fn parse_ids(
     Ok(Some(ids))
 }
 
+/// The ids `words` name, each one of `known`, or `None` for `all`.
+fn known_ids(
+    words: &[&str],
+    watches: bool,
+    known: &std::collections::BTreeSet<CountedId>,
+    spec: &CommandSpec,
+) -> Result<Option<Vec<CountedId>>> {
+    let Some(ids) = parse_ids(words, watches, known.len(), spec)? else {
+        return Ok(None);
+    };
+
+    if let Some(id) = ids.iter().find(|id| !known.contains(id)) {
+        bail!("{} was not found", id.describe(Renderer::new(false)));
+    }
+
+    Ok(Some(ids))
+}
+
 /// `text` quoted for a POSIX shell.
 fn shell_quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
@@ -3956,6 +3962,7 @@ pub fn executes_programs(images: &[std::sync::Arc<microscope::ModuleImage>]) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn spec(command: Command) -> &'static CommandSpec {
         COMMANDS
@@ -4159,6 +4166,137 @@ mod tests {
                 parse_memory_byte_count(Some(count), spec).is_err(),
                 "accepted invalid byte count {count:?}"
             );
+        }
+    }
+
+    /// An id near the ends of `u64`, near the small ids that exist, or
+    /// anywhere.
+    fn id() -> impl Strategy<Value = u64> {
+        prop_oneof![
+            prop::sample::select(vec![0, 1, 2, 3, 4, 5, u64::MAX - 2, u64::MAX - 1, u64::MAX]),
+            any::<u64>(),
+        ]
+    }
+
+    /// A word of ids: one, or a range, perhaps marked as watchpoints.
+    #[derive(Debug, Clone)]
+    struct Word {
+        watch: bool,
+        first: u64,
+        last: u64,
+        range: bool,
+    }
+
+    impl Word {
+        fn text(&self) -> String {
+            let mark = if self.watch { "w" } else { "" };
+            if self.range {
+                format!("{mark}{}-{}", self.first, self.last)
+            } else {
+                format!("{mark}{}", self.first)
+            }
+        }
+    }
+
+    /// What `delete` should do with `words`: the ids they name in order,
+    /// each once, or the error for the first range that is empty or else
+    /// the first id that does not exist, found without walking a range.
+    fn expected_ids(
+        words: &[Word],
+        watches: bool,
+        known: &std::collections::BTreeSet<CountedId>,
+    ) -> Result<Vec<CountedId>, String> {
+        let words = words
+            .iter()
+            .map(|word| {
+                let last = if word.range { word.last } else { word.first };
+                if word.first > last {
+                    return Err(format!("range {} is empty", word.text()));
+                }
+
+                let id = |id| {
+                    if word.watch || watches {
+                        CountedId::Watchpoint(WatchpointId::new(id))
+                    } else {
+                        CountedId::Breakpoint(BreakpointId::new(id))
+                    }
+                };
+                Ok((id(word.first), id(last)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut ids = Vec::new();
+        for (first, last) in words {
+            // The ids in the range that exist, and whether each follows the
+            // one before it without a gap.
+            let mut next = Some(first);
+            for &id in known.range(first..=last) {
+                if Some(id) != next {
+                    break;
+                }
+
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+
+                next = match id {
+                    CountedId::Breakpoint(id) => id
+                        .get()
+                        .checked_add(1)
+                        .map(|id| CountedId::Breakpoint(BreakpointId::new(id))),
+                    CountedId::Watchpoint(id) => id
+                        .get()
+                        .checked_add(1)
+                        .map(|id| CountedId::Watchpoint(WatchpointId::new(id))),
+                };
+            }
+
+            if let Some(missing) = next.filter(|&next| next <= last) {
+                return Err(format!(
+                    "{} was not found",
+                    missing.describe(Renderer::new(false))
+                ));
+            }
+        }
+
+        Ok(ids)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            // A range walked id by id hangs.
+            fork: true,
+            timeout: 5_000,
+            ..ProptestConfig::default()
+        })]
+
+        /// `delete` and the commands like it accept ids exactly when each
+        /// exists, and otherwise name the first that does not.
+        #[test]
+        fn id_ranges_name_the_first_missing_id(
+            known in prop::collection::btree_set((any::<bool>(), id()), 0..8),
+            words in prop::collection::vec(
+                (any::<bool>(), id(), id(), any::<bool>())
+                    .prop_map(|(watch, first, last, range)| Word { watch, first, last, range }),
+                1..4,
+            ),
+            watches in any::<bool>(),
+        ) {
+            let known = known
+                .into_iter()
+                .map(|(watch, id)| if watch {
+                    CountedId::Watchpoint(WatchpointId::new(id))
+                } else {
+                    CountedId::Breakpoint(BreakpointId::new(id))
+                })
+                .collect();
+            let texts = words.iter().map(Word::text).collect::<Vec<_>>();
+            let texts = texts.iter().map(String::as_str).collect::<Vec<_>>();
+
+            let ids = known_ids(&texts, watches, &known, spec(Command::Delete))
+                .map(Option::unwrap_or_default)
+                .map_err(|error| error.to_string());
+            prop_assert_eq!(ids, expected_ids(&words, watches, &known));
         }
     }
 
