@@ -1171,6 +1171,7 @@ impl Pacer {
             self.toggled.1 = off.saturating_sub(began);
             self.sampled += off.saturating_sub(on);
             self.paused_since = Some(off);
+            processor.pause(off);
         }
 
         let next = [from, until, self.period.saturating_add(current(self))]

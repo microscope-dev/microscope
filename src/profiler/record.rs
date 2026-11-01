@@ -286,6 +286,9 @@ pub struct Processor {
     gaps: Vec<(u64, u64)>,
     gaps_end: u64,
 
+    /// Where a pause that is not yet a gap began.
+    paused: Option<u64>,
+
     /// The CPU time of this thread when the processor began, and what
     /// loading images has taken of it since.
     began: std::time::Duration,
@@ -382,6 +385,7 @@ impl Processor {
             switched_out: BTreeMap::new(),
             gaps: Vec::new(),
             gaps_end: 0,
+            paused: None,
             began: thread_cpu(),
             setup: None,
             loading: std::time::Duration::ZERO,
@@ -2281,6 +2285,10 @@ impl Processor {
     /// A budget pause is recorded when it ends, after the task snapshots
     /// taken in it recorded theirs, so it keeps only the spans around them.
     pub fn gap(&mut self, start: u64, end: u64, reason: GapReason) {
+        if self.paused == Some(start) {
+            self.paused = None;
+        }
+
         // A clock that failed reads as zero.
         if end <= start {
             return;
@@ -2317,6 +2325,14 @@ impl Processor {
             self.gaps.windows(2).all(|pair| pair[0].1 <= pair[1].0),
             "the gaps overlap after adding {start}..{end}"
         );
+    }
+
+    /// Records that sampling went off at `start` for a pause that becomes
+    /// a gap only when it ends. Records stamped in it are processed
+    /// meanwhile, and a thread off its CPU before it is cut where it began.
+    pub fn pause(&mut self, start: u64) {
+        debug_assert!(self.paused.is_none(), "a pause is already open");
+        self.paused = Some(start);
     }
 
     /// Notes the task a sample of process `pid` ran, when a task snapshot
@@ -2635,10 +2651,14 @@ impl Processor {
                 .is_some_and(|info| info.image.symbolize(ImageAddress::new(address)).is_some())
     }
 
-    /// Where the first gap after `time` began, or the end of time.
+    /// Where the first gap or open pause after `time` began, or the end of
+    /// time.
     fn next_gap(&self, time: u64) -> u64 {
         let next = self.gaps.partition_point(|&(start, _)| start <= time);
-        self.gaps.get(next).map_or(u64::MAX, |&(start, _)| start)
+        let gap = self.gaps.get(next).map_or(u64::MAX, |&(start, _)| start);
+        self.paused
+            .filter(|&paused| paused > time)
+            .map_or(gap, |paused| gap.min(paused))
     }
 
     /// Ends the recorder's setup: what it costs from here on is the cost of
@@ -3032,6 +3052,46 @@ mod tests {
         let last = processor.finish();
         assert_eq!(first.span().1, 5_000);
         assert_eq!(last.span(), (5_000, 5_000));
+    }
+
+    /// A budget pause becomes a gap only when it ends, but records are
+    /// processed while it lasts: a thread back on its CPU soon after the
+    /// pause began is still off it only until the pause did, not until it
+    /// came back unseen.
+    #[test]
+    fn a_thread_back_during_a_pause_is_off_its_cpu_until_the_pause_began() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let (pid, tid) = (Pid::new(100), Tid::new(101));
+        processor.process(decode::Record::Fork {
+            pid,
+            ppid: Pid::new(1),
+            tid,
+            ptid: Tid::new(1),
+            time: 1_000,
+        });
+        for (out, time) in [(true, 2_000), (false, 4_000)] {
+            if !out {
+                processor.pause(3_000);
+            }
+            processor.process(decode::Record::Switch {
+                pid,
+                tid,
+                out,
+                preempted: false,
+                time,
+            });
+        }
+        processor.gap(3_000, 9_000, GapReason::Budget);
+
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        let intervals: Vec<_> = profile
+            .off_cpu()
+            .iter()
+            .map(|interval| (interval.time, interval.duration))
+            .collect();
+        assert_eq!(intervals, [(2_000, 1_000)]);
     }
 
     /// A full ring drops whatever does not fit, so a thread can come back
