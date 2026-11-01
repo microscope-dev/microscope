@@ -519,11 +519,160 @@ fn mixed_float_formats_compute_in_the_widest() {
     );
 }
 
+/// Exact integers weighted toward the cases the laws and range checks
+/// turn on: small values, the ends of the range, and powers of two and
+/// their neighbors, of either sign.
 fn any_exact() -> impl Strategy<Value = Exact> {
+    let power = (0_u32..128, -1_i128..=1, any::<bool>()).prop_map(|(shift, offset, negative)| {
+        let magnitude = (1_u128 << shift).saturating_add_signed(offset);
+        if negative && magnitude <= 1 << 127 {
+            Exact::from(magnitude.cast_signed().wrapping_neg())
+        } else {
+            Exact::from(magnitude)
+        }
+    });
+
     prop_oneof![
-        any::<i128>().prop_map(Exact::from),
-        any::<u128>().prop_map(Exact::from),
-        (-1000..1000_i128).prop_map(Exact::from),
+        3 => (-300..300_i128).prop_map(Exact::from),
+        2 => prop::sample::select(vec![
+            Exact::ZERO,
+            exact(1),
+            exact(-1),
+            exact(i128::MAX),
+            exact(i128::MIN),
+            exact(i128::MIN + 1),
+            Exact::from(u128::MAX),
+            Exact::from(u128::MAX - 1),
+            Exact::from(1_u128 << 127),
+        ]),
+        2 => power,
+        1 => any::<i128>().prop_map(Exact::from),
+        1 => any::<u128>().prop_map(Exact::from),
+    ]
+}
+
+/// A 256-bit two's complement integer, high limb first, wide enough to hold
+/// any sum, difference, or bitwise result of two exact integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Wide(i128, u128);
+
+impl Wide {
+    fn of(value: Exact) -> Self {
+        let positive = Self(0, value.magnitude());
+        if value.is_negative() {
+            positive.negated()
+        } else {
+            positive
+        }
+    }
+
+    fn negated(self) -> Self {
+        let Self(high, low) = self;
+        let (low, borrow) = 0_u128.overflowing_sub(low);
+        Self((!high).wrapping_add(i128::from(!borrow)), low)
+    }
+
+    fn plus(self, other: Self) -> Self {
+        let (low, carry) = self.1.overflowing_add(other.1);
+        Self(self.0 + other.0 + i128::from(carry), low)
+    }
+
+    /// The exact integer this is, or `OutOfRange` beyond `-2^127..2^128`.
+    fn exact(self) -> Result<Exact, NumberError> {
+        match self {
+            Self(0, low) => Ok(Exact::from(low)),
+            Self(-1, low) if low >= 1 << 127 => Ok(Exact::from(low.cast_signed())),
+            _ => Err(NumberError::OutOfRange),
+        }
+    }
+}
+
+/// `magnitude · factor` as a sign and a 256-bit magnitude, high limb first,
+/// converted back when it is in range.
+fn signed_wide(negative: bool, high: u128, low: u128) -> Result<Exact, NumberError> {
+    match (negative, high) {
+        (_, 0) if low == 0 => Ok(Exact::ZERO),
+        (false, 0) => Ok(Exact::from(low)),
+        (true, 0) if low <= 1 << 127 => Ok(Exact::from(low.cast_signed().wrapping_neg())),
+        _ => Err(NumberError::OutOfRange),
+    }
+}
+
+/// The full 256-bit product of two magnitudes, high limb first.
+fn wide_product(left: u128, right: u128) -> (u128, u128) {
+    let half = |value: u128| (value >> 64, value & u128::from(u64::MAX));
+    let ((left_high, left_low), (right_high, right_low)) = (half(left), half(right));
+    let low = left_low * right_low;
+    let middle = (left_high * right_low, left_low * right_high);
+    let (middle_sum, middle_carry) = middle.0.overflowing_add(middle.1);
+    let (low, low_carry) = low.overflowing_add(middle_sum << 64);
+    let high = left_high * right_high
+        + (middle_sum >> 64)
+        + (u128::from(middle_carry) << 64)
+        + u128::from(low_carry);
+    (high, low)
+}
+
+/// What each operator gives, from the wide model.
+fn modeled(operator: &str, a: Exact, b: Exact) -> Result<Exact, NumberError> {
+    let (left, right) = (Wide::of(a), Wide::of(b));
+    let negative = a.is_negative() != b.is_negative();
+    let amount = || {
+        if b.is_negative() {
+            Err(NumberError::ShiftAmount)
+        } else {
+            Ok(b.magnitude())
+        }
+    };
+
+    match operator {
+        "add" => left.plus(right).exact(),
+        "sub" => left.plus(right.negated()).exact(),
+        "mul" => {
+            let (high, low) = wide_product(a.magnitude(), b.magnitude());
+            signed_wide(negative, high, low)
+        }
+        "div" | "rem" if b.is_zero() => Err(NumberError::DivisionByZero),
+        "div" => signed_wide(negative, 0, a.magnitude() / b.magnitude()),
+        "rem" => signed_wide(a.is_negative(), 0, a.magnitude() % b.magnitude()),
+        "and" => Wide(left.0 & right.0, left.1 & right.1).exact(),
+        "or" => Wide(left.0 | right.0, left.1 | right.1).exact(),
+        "xor" => Wide(left.0 ^ right.0, left.1 ^ right.1).exact(),
+        "shl" => {
+            let amount = amount()?;
+            if a.is_zero() {
+                return Ok(Exact::ZERO);
+            }
+
+            match u32::try_from(amount) {
+                Ok(amount @ 0..128) => {
+                    let (high, low) = wide_product(a.magnitude(), 1 << amount);
+                    signed_wide(a.is_negative(), high, low)
+                }
+                _ => Err(NumberError::OutOfRange),
+            }
+        }
+        // floor(a / 2^amount): a negative value rounds away from zero.
+        "shr" => {
+            let amount = amount()?;
+            let magnitude = a.magnitude();
+            let (quotient, inexact) = match u32::try_from(amount) {
+                Ok(amount @ 0..128) => (magnitude >> amount, magnitude & ((1 << amount) - 1) != 0),
+                _ => (0, magnitude != 0),
+            };
+            let rounded = quotient + u128::from(a.is_negative() && inexact);
+            signed_wide(a.is_negative(), 0, rounded)
+        }
+        _ => unreachable!("{operator}"),
+    }
+}
+
+type Operator = fn(Exact, Exact) -> Result<Exact, NumberError>;
+
+fn shift_amount_strategy() -> impl Strategy<Value = Exact> {
+    prop_oneof![
+        3 => (0..140_i128).prop_map(Exact::from),
+        1 => any_exact(),
     ]
 }
 
@@ -556,6 +705,34 @@ proptest! {
         }
 
         prop_assert_eq!(a.bitwise(BitOperator::Xor, a), Ok(Exact::ZERO));
+    }
+
+    /// Every operator gives the exact result whenever it lies in
+    /// `-2^127..2^128`, and `OutOfRange` exactly when it does not.
+    #[test]
+    fn exact_operators_match_a_wider_model(
+        a in any_exact(),
+        b in any_exact(),
+        amount in shift_amount_strategy(),
+    ) {
+        let operators: [(&str, Operator); 8] = [
+            ("add", Exact::add),
+            ("sub", Exact::sub),
+            ("mul", Exact::mul),
+            ("div", Exact::div),
+            ("rem", Exact::rem),
+            ("and", |a, b| a.bitwise(BitOperator::And, b)),
+            ("or", |a, b| a.bitwise(BitOperator::Or, b)),
+            ("xor", |a, b| a.bitwise(BitOperator::Xor, b)),
+        ];
+        for (name, operator) in operators {
+            prop_assert_eq!(operator(a, b), modeled(name, a, b), "{:?} {} {:?}", a, name, b);
+        }
+
+        prop_assert_eq!(a.shl(amount), modeled("shl", a, amount), "{:?} << {:?}", a, amount);
+        prop_assert_eq!(a.shr(amount), modeled("shr", a, amount), "{:?} >> {:?}", a, amount);
+        prop_assert_eq!(a.neg(), modeled("sub", Exact::ZERO, a), "-{:?}", a);
+        prop_assert_eq!(a.not(), modeled("sub", exact(-1), a), "!{:?}", a);
     }
 
     #[test]
