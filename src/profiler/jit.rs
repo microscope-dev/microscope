@@ -550,25 +550,7 @@ impl Jit {
                 None
             };
 
-            let overlapped: Vec<u64> = self
-                .functions
-                .range(..entry.end)
-                .rev()
-                .take_while(|(_, earlier)| earlier.function.entry.end > entry.start)
-                .map(|(&start, _)| start)
-                .collect();
-
-            for start in overlapped {
-                self.functions.remove(&start);
-            }
-
-            self.functions.insert(
-                entry.start,
-                Named {
-                    function: Jitted { entry, code },
-                    read,
-                },
-            );
+            self.name(Jitted { entry, code }, read);
         }
 
         if unread > 0 {
@@ -578,6 +560,26 @@ impl Jit {
         }
 
         any
+    }
+
+    /// Records a function the map named, whose line was read at `read`,
+    /// in place of those it overlaps.
+    fn name(&mut self, function: Jitted, read: u64) {
+        let entry = &function.entry;
+        let overlapped: Vec<u64> = self
+            .functions
+            .range(..entry.end)
+            .rev()
+            .take_while(|(_, earlier)| earlier.function.entry.end > entry.start)
+            .map(|(&start, _)| start)
+            .collect();
+
+        for start in overlapped {
+            self.functions.remove(&start);
+        }
+
+        self.functions
+            .insert(function.entry.start, Named { function, read });
     }
 }
 
@@ -1103,6 +1105,150 @@ mod tests {
         );
         let problem = jit.take_problem().expect("a problem");
         assert!(problem.contains("places no code"), "{problem}");
+    }
+
+    /// What the model's pages and functions are, in [`PAGE`]s and
+    /// [`UNIT`]s from [`BASE`].
+    const PAGE: u64 = 4096;
+    const UNIT: u64 = 16;
+    const PAGES: usize = 3 * (CHUNK / PAGE) as usize;
+    const BASE: u64 = 0x7f00_0000_0000;
+
+    /// One step of a process's code: a mapping of pages, anonymous or not,
+    /// at a time, or a function the map named, read at a time.
+    #[derive(Debug, Clone)]
+    enum Step {
+        Map {
+            start: usize,
+            pages: usize,
+            anonymous: bool,
+            time: u64,
+        },
+        Name {
+            start: u64,
+            units: u64,
+            read: u64,
+        },
+    }
+
+    fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+        use proptest::prelude::*;
+        let page = 0..PAGES;
+        let pages = prop_oneof![1..4_usize, 1..=PAGES];
+        let unit = 0..(PAGES as u64 * PAGE / UNIT);
+        let units = prop_oneof![1..8_u64, 1..(2 * CHUNK / UNIT)];
+        prop_oneof![
+            (page, pages, any::<bool>(), 0..4_u64).prop_map(|(start, pages, anonymous, time)| {
+                Step::Map {
+                    start,
+                    pages,
+                    anonymous,
+                    time,
+                }
+            }),
+            (unit, units, 0..4_u64).prop_map(|(start, units, read)| Step::Name {
+                start,
+                units,
+                read,
+            }),
+        ]
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// After any mappings and names, each page is in the anonymous
+        /// range of the last mapping that covered it, if that was
+        /// anonymous, as far as that mapping still holds it; each address
+        /// is named by the last function over it unless a mapping since
+        /// ended it; and each address's chunk holds it, every address of
+        /// the chunk has that chunk, and no function begun in the range is
+        /// cut by one.
+        #[test]
+        fn ranges_and_chunks_follow_the_last_mapping_of_each_page(
+            steps in proptest::collection::vec(step(), 1..24),
+        ) {
+            use proptest::prelude::*;
+            let mut jit = Jit::default();
+
+            // The step that last mapped each page, and the functions named
+            // and not since ended, each start, end, and read.
+            let mut mapped: Vec<Option<usize>> = vec![None; PAGES];
+            let mut named: Vec<(u64, u64, u64)> = Vec::new();
+
+            for (index, step) in steps.iter().enumerate() {
+                match *step {
+                    Step::Map { start, pages, anonymous, time } => {
+                        let end = (start + pages).min(PAGES);
+                        let (from, to) = (BASE + start as u64 * PAGE, BASE + end as u64 * PAGE);
+                        jit.mapped(from, to, anonymous, time);
+                        for page in &mut mapped[start..end] {
+                            *page = Some(index);
+                        }
+
+                        named.retain(|&(start, end, read)| end <= from || start >= to || read > time);
+                    }
+                    Step::Name { start, units, read } => {
+                        let start = BASE + start * UNIT;
+                        let end = start + units * UNIT;
+                        jit.name(function(start, end), read);
+                        named.retain(|&(earlier, until, _)| until <= start || earlier >= end);
+                        named.push((start, end, read));
+                    }
+                }
+            }
+
+            let anonymous = |page: usize| {
+                mapped[page].is_some_and(|step| matches!(steps[step], Step::Map { anonymous: true, .. }))
+            };
+
+            // The ranges are apart and in order.
+            let ranges: Vec<(u64, u64)> = jit.ranges.iter().map(|(&start, range)| (start, range.end)).collect();
+            prop_assert!(ranges.iter().all(|(start, end)| start < end));
+            prop_assert!(ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0), "{:x?}", ranges);
+
+            for page in 0..PAGES {
+                let address = BASE + page as u64 * PAGE;
+                let found = jit.range(address).map(|(start, range)| (start, range.end));
+                let expected = anonymous(page).then(|| {
+                    let same = |other: &usize| anonymous(*other) && mapped[*other] == mapped[page];
+                    let first = (0..=page).rev().take_while(same).last().unwrap_or(page);
+                    let last = (page..PAGES).take_while(same).last().unwrap_or(page);
+                    (BASE + first as u64 * PAGE, BASE + (last + 1) as u64 * PAGE)
+                });
+                prop_assert_eq!(found, expected, "page {}", page);
+            }
+
+            let mut addresses: Vec<u64> = named
+                .iter()
+                .flat_map(|&(start, end, _)| [start - UNIT, start, end - UNIT, end])
+                .chain((0..PAGES as u64).map(|page| BASE + page * PAGE))
+                .collect();
+            addresses.sort_unstable();
+            addresses.dedup();
+
+            for &address in &addresses {
+                let covered = named.iter().any(|&(start, end, _)| start <= address && address < end);
+                prop_assert_eq!(jit.covers(address), covered, "{:#x}", address);
+
+                let Some((start, range)) = jit.range(address) else {
+                    continue;
+                };
+                let (lower, upper) = jit.chunk(start, range.end, address);
+                prop_assert!(start <= lower && lower <= address && address < upper && upper <= range.end,
+                    "{:#x} in {:#x}..{:#x}", address, lower, upper);
+                prop_assert_eq!(jit.chunk(start, range.end, lower), (lower, upper));
+                prop_assert_eq!(jit.chunk(start, range.end, upper - 1), (lower, upper));
+
+                for &(begins, ends, _) in named.iter().filter(|(begins, _, _)| (start..range.end).contains(begins)) {
+                    // A function past the range's end ends its last chunk.
+                    for bound in [lower, upper].into_iter().filter(|&bound| bound != range.end) {
+                        prop_assert!(bound <= begins || bound >= ends,
+                            "{:#x}..{:#x} cuts {:#x}..{:#x}", lower, upper, begins, ends);
+                    }
+                }
+            }
+        }
     }
 
     /// After a read for code nothing names found nothing new, nothing is
