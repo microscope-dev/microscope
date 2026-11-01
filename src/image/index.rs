@@ -169,3 +169,6 @@ pub(super) fn valid_names(strings: &Strings<'_>, names: &[NameEntry], values: us
             && entry.hash.get() == hash(strings.bytes(StrId(entry.name.get())))
     }) && names.is_sorted_by(|earlier, later| key(earlier) < key(later))
 }
+
+#[cfg(test)]
+mod tests;
