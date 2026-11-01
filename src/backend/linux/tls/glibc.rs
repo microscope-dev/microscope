@@ -940,18 +940,19 @@ mod tests {
         let lists = (2_u64..9, proptest::collection::vec(1_u64..9, 0..4));
         let state = (
             any::<Index>(),
-            any::<bool>(),
+            prop::bool::weighted(0.1),
             0_u64..8,
             0_u64..8,
             prop_oneof![
-                (0x1000_0000_u64..0x2000_0000).prop_map(|block| block & !0xf),
-                Just(u64::MAX),
-                (0_u64..u64::MAX / 2).prop_map(|value| value * 2 + 1),
+                2 => (0x1000_0000_u64..0x2000_0000).prop_map(|block| block & !0xf),
+                1 => Just(u64::MAX),
+                1 => (0_u64..u64::MAX / 2).prop_map(|value| value * 2 + 1),
             ],
             prop_oneof![
-                Just(NO_TLS_OFFSET),
-                Just(FORCED_DYNAMIC_TLS_OFFSET),
-                1_u64..0x10000
+                1 => Just(NO_TLS_OFFSET),
+                1 => Just(FORCED_DYNAMIC_TLS_OFFSET),
+                4 => 1_u64..0x10000,
+                1 => THREAD_POINTER + 1..FORCED_DYNAMIC_TLS_OFFSET,
             ],
             prop_oneof![1 => Just(0_u64), 9 => Just(THREAD_POINTER)],
         );
@@ -1173,7 +1174,15 @@ mod tests {
                 return Err(TlsError::Deferred);
             }
 
-            Ok(self.thread_pointer - self.static_offset + 0x24)
+            self.thread_pointer
+                .checked_sub(self.static_offset)
+                .map(|block| block + 0x24)
+                .ok_or_else(|| {
+                    failed(format!(
+                        "static TLS offset {:#x} exceeds the thread pointer",
+                        self.static_offset
+                    ))
+                })
         }
     }
 
@@ -1192,22 +1201,178 @@ mod tests {
         fn any_described_layout_leads_to_the_block_glibc_finds(model in model()) {
             prop_assert_eq!(model.process().address(), model.expected());
         }
+    }
 
-        /// Loader state damaged anywhere yields an address or a reason,
-        /// never a panic or a hang.
+    /// Most layouts reach the walk of the slotinfo lists, and most of those
+    /// find a block, in the DTV or the static area, or find the static
+    /// offset past the thread pointer.
+    #[test]
+    fn layouts_mostly_reach_the_walk() {
+        use proptest::strategy::ValueTree;
+        use proptest::test_runner::TestRunner;
+
+        let mut runner = TestRunner::deterministic();
+        let strategy = model();
+        let (mut walked, mut found, mut past) = (0, 0, 0);
+        for _ in 0..1000 {
+            let model = strategy.new_tree(&mut runner).expect("a model").current();
+            if model.module == 0 || model.thread_pointer == 0 {
+                continue;
+            }
+            walked += 1;
+            match model.expected() {
+                Ok(_) => found += 1,
+                Err(TlsError::Failed(_)) => past += 1,
+                Err(_) => {}
+            }
+        }
+
+        assert!(walked >= 700, "{walked} of 1000 reach the walk");
+        assert!(found >= 400, "{found} of 1000 find a block");
+        assert!(
+            past >= 20,
+            "{past} of 1000 find the offset past the thread pointer"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            fork: true,
+            timeout: 10_000,
+            ..ProptestConfig::default()
+        })]
+
+        /// Loader state with bytes missing anywhere yields the block glibc
+        /// finds or a reason, never another address. Bytes overwritten as
+        /// well yield an address or a reason, and never a hang or a panic,
+        /// which the fork and the timeout catch and still shrink.
         #[test]
-        fn damaged_loader_state_is_a_reason_not_a_panic(
+        fn damaged_loader_state_is_the_block_or_a_reason(
             model in model(),
-            damage in proptest::collection::vec((any::<Index>(), any::<u8>()), 1..16),
+            damage in proptest::collection::vec(
+                (any::<Index>(), prop::option::of(any::<u8>())),
+                1..16,
+            ),
         ) {
             let mut process = model.process();
             let addresses: Vec<u64> = process.memory.keys().copied().collect();
+            let mut overwritten = false;
 
             for (index, byte) in damage {
-                process.memory.insert(*index.get(&addresses), byte);
+                let address = *index.get(&addresses);
+                match byte {
+                    Some(byte) => {
+                        overwritten = true;
+                        process.memory.insert(address, byte);
+                    }
+                    None => {
+                        process.memory.remove(&address);
+                    }
+                }
             }
 
-            let _ = process.address();
+            let address = process.address();
+            if !overwritten && address.is_ok() {
+                prop_assert_eq!(address, model.expected());
+            }
+        }
+    }
+
+    /// One of glibc's lists of threads as the property lays it out: an
+    /// intact list, or one whose `index`th link leads back to an earlier
+    /// node or to memory no one mapped.
+    #[derive(Debug, Clone, Copy)]
+    enum Links {
+        Intact,
+        Cycle { from: Index, to: Index },
+        Broken { at: Index },
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            fork: true,
+            timeout: 10_000,
+            ..ProptestConfig::default()
+        })]
+
+        /// glibc's two lists of threads give every thread whose id is a
+        /// live pid_t, in list order, and a list that does not lead back
+        /// to its head fails and names itself.
+        #[test]
+        fn thread_lists_give_their_live_threads(
+            (given, allocated, links, damaged) in (0..5_usize, 0..5_usize).prop_flat_map(
+                |(given, allocated)| {
+                    let tid = prop_oneof![
+                        1 => Just(0_u64),
+                        4 => 1_u64..=u64::from(i32::MAX.cast_unsigned()),
+                        1 => Just(u64::from(i32::MAX.cast_unsigned())),
+                        1 => Just(1 << 31),
+                        1 => Just(u64::from(u32::MAX)),
+                    ];
+                    let places = subsequence((0..16_u64).collect::<Vec<_>>(), given + allocated)
+                        .prop_shuffle();
+                    let links = prop_oneof![
+                        2 => Just(Links::Intact),
+                        1 => (any::<Index>(), any::<Index>())
+                            .prop_map(|(from, to)| Links::Cycle { from, to }),
+                        1 => any::<Index>().prop_map(|at| Links::Broken { at }),
+                    ];
+                    (
+                        places,
+                        proptest::collection::vec(tid, given + allocated),
+                        links,
+                        any::<bool>(),
+                    )
+                        .prop_map(move |(places, tids, links, second)| {
+                            let threads = places
+                                .into_iter()
+                                .map(|place| 0x7100_0000 + place * 0x1000)
+                                .zip(tids)
+                                .collect::<Vec<_>>();
+                            let (first, rest) = threads.split_at(given);
+                            (first.to_vec(), rest.to_vec(), links, second)
+                        })
+                }
+            )
+        ) {
+            const LIST: u64 = 0x2c0;
+            let mut process = threaded(&given, &allocated);
+            let list = if damaged { &allocated } else { &given };
+            let name = if damaged { "_dl_stack_used" } else { "_dl_stack_user" };
+
+            let failure = match (links, list.is_empty()) {
+                (Links::Intact, _) | (_, true) => None,
+                (Links::Cycle { from, to }, false) => {
+                    let from = from.index(list.len());
+                    let to = to.index(from + 1);
+                    process.word(list[from].0 + LIST, list[to].0 + LIST);
+                    Some(format!("{name} does not lead back to its head"))
+                }
+                (Links::Broken { at }, false) => {
+                    let at = at.index(list.len());
+                    process.word(list[at].0 + LIST, 0x9900_0000);
+                    Some("unreadable".to_owned())
+                }
+            };
+
+            let threads = thread_pointers(&process);
+            match failure {
+                None => {
+                    let live = given
+                        .iter()
+                        .chain(&allocated)
+                        .filter(|(_, tid)| *tid != 0 && *tid <= u64::from(i32::MAX.cast_unsigned()))
+                        .map(|&(descriptor, tid)| (tid, descriptor))
+                        .collect::<Vec<_>>();
+                    prop_assert_eq!(threads, Ok(live));
+                }
+                Some(reason) => match threads {
+                    Err(TlsError::Failed(message)) => {
+                        prop_assert!(message.contains(&reason), "{message}");
+                    }
+                    threads => prop_assert!(false, "expected {reason}, got {threads:?}"),
+                },
+            }
         }
     }
 }
