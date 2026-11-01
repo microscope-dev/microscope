@@ -99,9 +99,12 @@ impl Profile {
             return Self::from_bytes(bytes);
         }
 
+        // A pprof profile not gzipped may be text too.
         let capture = match std::str::from_utf8(bytes) {
-            Ok(text) if !pprof::is_gzip(bytes) => folded::import(text).map_err(|error| {
-                format!("not a profile microscope reads as folded stacks: {error}")
+            Ok(text) if !pprof::is_gzip(bytes) => folded::import(text).or_else(|error| {
+                pprof::import(bytes).map_err(|_| {
+                    format!("not a profile microscope reads as folded stacks: {error}")
+                })
             }),
             _ => pprof::import(bytes).map_err(|error| format!("not a pprof profile: {error}")),
         }
