@@ -206,20 +206,28 @@ fn code_without_call_frame_information_unwinds_by_its_proved_frames() {
     assert!(recording.status.success());
     let stacks = recording.profile.stacks();
     assert!(stacks.len() > 100, "{} stacks", stacks.len());
-    let complete = stacks
-        .iter()
-        .filter(|stack| stack.ending == StackEnding::Complete)
-        .count();
     // Both threads spin in leaf, under middle and outer; the main thread
     // under five frames of descend and main, the other under worker and
-    // glibc's thread start.
-    let deep = stacks
-        .iter()
-        .filter(|stack| stack.ending == StackEnding::Complete && stack.functions.len() >= 6)
+    // glibc's thread start. A sample in glibc, as a thread starts or exits,
+    // can be exact and shallow.
+    let complete = || {
+        stacks
+            .iter()
+            .filter(|stack| stack.ending == StackEnding::Complete)
+    };
+    let deep = complete()
+        .filter(|stack| stack.functions.len() >= 6)
         .count();
+    let shallow = complete().find(|stack| {
+        stack.functions.len() < 6
+            && stack
+                .functions
+                .first()
+                .is_some_and(|leaf| leaf.starts_with("profile-stacks-clang-o2-nocfi+"))
+    });
     assert!(
-        complete * 100 >= stacks.len() * 95 && deep == complete,
-        "{complete} of {} stacks complete, {deep} of them deep: {:?}",
+        deep * 100 >= stacks.len() * 95 && shallow.is_none(),
+        "{deep} of {} stacks complete and deep; shallow in the program: {shallow:?}; first incomplete: {:?}",
         stacks.len(),
         stacks
             .iter()
