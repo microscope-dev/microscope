@@ -207,10 +207,21 @@ mod tests {
             .arg("30")
             .spawn()
             .expect("spawn sleep");
-        let listed = processes(Path::new("/proc"));
+        let pid = u64::from(child.id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let listed = loop {
+            let listed = processes(Path::new("/proc"));
+            if listed
+                .iter()
+                .any(|process| process.pid == pid && process.command == "sleep 30")
+                || std::time::Instant::now() >= deadline
+            {
+                break listed;
+            }
+            std::thread::yield_now();
+        };
         let _ = child.kill();
         let _ = child.wait();
-        let pid = u64::from(child.id());
         let found = listed
             .iter()
             .find(|process| process.pid == pid)
