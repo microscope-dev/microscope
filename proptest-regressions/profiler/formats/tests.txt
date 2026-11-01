@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6ebcea5ea4f9631fd831ac76f02ab3da314617ff03c8f28ed35a0a620b3c5f07 # shrinks to ids = ([(1, 0)], [(1, [])], [])
+cc 788c143378a080c76d4f4bdc12e5404cddb6b1f75d4830a72e1ff3a260c730fe # shrinks to samples = [([7], 1)]
+cc 48b2e337a7bf52025d2db728f508cfd9628b7d20a192e23754ae8f6e2f71d4af # shrinks to ids = ([(1, 0), (2, 0), (1, 0)], [(1, [])], [])

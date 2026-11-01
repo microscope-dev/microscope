@@ -14,6 +14,8 @@
 
 pub mod builder;
 pub mod file;
+#[cfg(test)]
+mod properties;
 pub mod records;
 #[cfg(test)]
 mod tests;

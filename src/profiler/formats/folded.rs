@@ -41,8 +41,10 @@ pub fn import(text: &str) -> Result<Capture, String> {
             .checked_add(weight)
             .ok_or_else(|| format!("{} brings the weights past {}", at(), u64::MAX))?;
 
+        // Only the last space ends the stack, as FlameGraph reads it: a
+        // name may end in a space.
         stack.clear();
-        for name in names.trim_end().split(';').rev() {
+        for name in names.split(';').rev() {
             let next = frames.len() as u64;
             let frame = *frames.entry(name).or_insert_with(|| {
                 let frame = builder.frame(FrameKind::Native, NONE, next, 0);

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 88a844f0dbdda329a9d70b45832366a4f00292da93a033bd7e6657859b863044 # shrinks to model = Model { lives: [Life { pid: 1, tid: 1, start: 0, end: 0, named: false }, Life { pid: 1, tid: 2, start: 0, end: 55, named: false }, Life { pid: 1, tid: 3, start: 0, end: 1, named: false }, Life { pid: 1, tid: 3, start: 15, end: 31, named: true }], stacks: [[3, 1], [4], [5, 0]], labels: [None, None, None], samples: [(2, 0, 4, 2, None), (0, 0, 2, 1, Some(2)), (2, 1, 1, 1, Some(0)), (3, 25, 4, 1, None)], off_cpu: [(3, 24, 0, true), (2, 1, 0, true), (1, 12, 0, false), (2, 0, 0, false), (2, 0, 0, false)], zones: [(1, 14, 14, 0, None, 8)], marks: [(None, 41, Some(1))], plots: [(0, 2, 0, 0), (3, 1, 25, -2), (0, 2, 0, -1)], waits: [], gaps: [(3, 12), (22, 22), (22, 25)], traced: [] }, draws = [(true, Index(4377231078088842788), 73), (false, Index(1457451821862286005), 24)]
+cc 8857c1614128203fd082cbf464201cdf812488ac676e9d7ebc952c0c443e199e # shrinks to model = Model { lives: [Life { pid: 1, tid: 1, start: 0, end: 0, named: false }, Life { pid: 1, tid: 1, start: 2, end: 4, named: true }, Life { pid: 1, tid: 2, start: 0, end: 4, named: true }, Life { pid: 2, tid: 3, start: 0, end: 18, named: true }], stacks: [[5, 5, 4], [1, 5]], labels: [None, None, None], samples: [], off_cpu: [], zones: [(2, 2, 2, 0, None, 4), (2, 2, 2, 0, None, 0)], marks: [], plots: [], waits: [], gaps: [], traced: [] }

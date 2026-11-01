@@ -301,7 +301,9 @@ fn functions(raw: &Raw<'_>) -> Result<BTreeMap<u64, Function>, String> {
             }
         }
 
-        functions.insert(id, read);
+        if functions.insert(id, read).is_some() {
+            return Err(format!("two functions are numbered {id}"));
+        }
     }
 
     Ok(functions)
