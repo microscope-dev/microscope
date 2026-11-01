@@ -517,7 +517,10 @@ impl<C> Stops<C> {
 
     /// Applies the group's stop rule to a stop member `number` published.
     fn stopped(&mut self, number: MemberNumber, reason: StopReason) -> Option<StopAction> {
+        // Each member's stop is its own, and one of those a pause of the
+        // whole group waits for.
         if self.scope == StopScope::Process {
+            let _ = self.paused(number, None);
             return Some(StopAction::Report(number, reason));
         }
 
@@ -573,6 +576,17 @@ impl<C> Stops<C> {
 
         let first = first.take();
         self.phase = Phase::Stopped;
+
+        // Where each member's stop is reported as its own, a pause of the
+        // whole group has none to report.
+        if self.scope == StopScope::Process {
+            debug_assert!(
+                first.is_none(),
+                "a group stop for member {first:?} where each stop is its own"
+            );
+            return None;
+        }
+
         Some(first.unwrap_or((1, StopReason::Pause)))
     }
 
@@ -1448,6 +1462,30 @@ mod tests {
             .await
             .expect("end the root session in time")
             .expect("end the root session");
+    }
+
+    /// Found by a model of the stop rule: where each member's stop is
+    /// its own, a pause of the whole group still ends once each member
+    /// stopped or will not, reporting no stop of its own.
+    #[test]
+    fn a_pause_of_members_that_stop_alone_ends_with_their_stops() {
+        let mut stops = Stops::new(StopScope::Process);
+        assert_eq!(stops.pause_all(None, BTreeSet::from([1, 2])), None);
+        assert_eq!(
+            stops.stopped(1, StopReason::Pause),
+            Some(StopAction::Report(1, StopReason::Pause))
+        );
+        assert_eq!(stops.paused(2, None), None, "member 2 never stopped");
+        assert_eq!(
+            stops.defer("continue"),
+            Some("continue"),
+            "a continue is served"
+        );
+
+        let mut stops = Stops::new(StopScope::Process);
+        assert_eq!(stops.defer("continue"), Some("continue"));
+        assert_eq!(stops.pause_all(None, BTreeSet::from([1])), None);
+        assert_eq!(stops.paused(1, None), None, "member 1 never stopped");
     }
 
     #[tokio::test]
