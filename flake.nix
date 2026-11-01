@@ -18,6 +18,19 @@
         # For fully static builds of microscope: `just build-static`.
         targets = [ "x86_64-unknown-linux-musl" ];
       };
+      cargo-nextest = pkgs.cargo-nextest.overrideAttrs (final: _: {
+        version = "0.9.150";
+        src = pkgs.fetchFromGitHub {
+          owner = "nextest-rs";
+          repo = "nextest";
+          tag = "cargo-nextest-${final.version}";
+          hash = "sha256-8smZD0W9pcVEDnOHt5AOMpWkP5TawOGxsDksoKcb4Ys=";
+        };
+        cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+          inherit (final) src;
+          hash = "sha256-rY+6iJXf7j2Uz1Q7MtbntkBxYCDr+WaP9DUxm6P3hZ4=";
+        };
+      });
       goStable = pkgs.go.overrideAttrs (_final: previous: {
         version = "1.27.1";
         src = pkgs.fetchurl {
