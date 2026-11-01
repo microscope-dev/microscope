@@ -450,14 +450,20 @@ fn a_consumed_but_unacknowledged_slot_is_never_overwritten() {
     );
 }
 
-proptest::proptest! {
-    #[test]
-    fn injection_preserves_every_other_eval_breaker_bit(breaker: u64) {
+/// The request sets the debugger's stop bit in the eval breaker and keeps
+/// every other bit, whichever are set, the stop bit among them.
+#[test]
+fn injection_preserves_every_other_eval_breaker_bit() {
+    for breaker in [0, 32, 31, !32, u64::MAX, 0x8000_0000_0000_0001] {
         let (mut process, runtime, first, _) = target();
         process.memory.write(first + 64, breaker, 8);
         let writes = request(&process, runtime, "/a.py", &[100]).expect("request");
-        proptest::prop_assert_eq!(&writes[2].expected, &breaker.to_le_bytes());
-        proptest::prop_assert_eq!(&writes[2].bytes, &(breaker | 32).to_le_bytes());
+        assert_eq!(writes[2].expected, breaker.to_le_bytes(), "{breaker:#x}");
+        assert_eq!(
+            writes[2].bytes,
+            (breaker | 32).to_le_bytes(),
+            "{breaker:#x}"
+        );
     }
 }
 

@@ -1,7 +1,6 @@
 use super::super::agent as control_step;
 use super::super::{control, hook};
 use super::*;
-use proptest::prelude::*;
 
 fn slot(sequence: u64) -> (Memory, VirtualAddress) {
     let mut memory = Memory::default();
@@ -115,17 +114,58 @@ fn oversized_configuration_is_refused_without_truncation() {
     );
 }
 
-proptest! {
-    #[test]
-    fn arbitrary_generations_preserve_sequence_bits(previous in any::<u64>(), next in any::<u64>()) {
-        let (memory, address) = slot(previous);
-        match control::command(&memory, address, (previous, next), &[], None, 0, None) {
-            Ok(writes) => {
-                prop_assert!(next > previous);
-                prop_assert_eq!(&writes[2].expected, &previous.to_le_bytes());
-                prop_assert_eq!(&writes[2].bytes, &next.to_le_bytes());
-            }
-            Err(_) => prop_assert!(next <= previous),
+/// A slot with only as much room after its header as an empty command
+/// needs, so that a test of many slots stays cheap.
+fn small_slot(sequence: u64) -> (Memory, VirtualAddress) {
+    let mut memory = Memory::default();
+    memory.fill(HEAP, &[0; hook::CONTROL_HEADER + 64]);
+    memory.fill(HEAP, hook::CONTROL_MAGIC);
+    memory.write(HEAP + 8, sequence, 8);
+    memory.write(HEAP + 20, u64::from(hook::CONTROL_CAPACITY), 4);
+    (memory, VirtualAddress::new(HEAP))
+}
+
+/// A generation is published only past the one the agent acknowledged,
+/// replacing it with a write that expects it.
+#[test]
+fn a_generation_must_pass_the_acknowledged_one() {
+    for (previous, next, accepted) in [
+        (7, 7, false),
+        (7, 6, false),
+        (7, 8, true),
+        (0, 0, false),
+        (0, 1, true),
+        (7, u64::MAX, true),
+        (u64::MAX - 1, u64::MAX, true),
+        (u64::MAX, u64::MAX, false),
+        (u64::MAX, 0, false),
+    ] {
+        let (memory, address) = small_slot(previous);
+        let writes = control::command(&memory, address, (previous, next), &[], None, 0, None);
+        assert_eq!(writes.is_ok(), accepted, "{previous} then {next}");
+        if let Ok(writes) = writes {
+            assert_eq!(writes[2].expected, previous.to_le_bytes());
+            assert_eq!(writes[2].bytes, next.to_le_bytes());
+        }
+    }
+}
+
+/// Every change to a header's magic, acknowledged sequence, capacity,
+/// or reserved bytes refuses the command; its length is the agent's to
+/// clear, so any length is published over.
+#[test]
+fn any_damaged_header_is_refused() {
+    for index in 0..hook::CONTROL_HEADER as u64 {
+        for flip in 1..=u8::MAX {
+            let (mut memory, address) = small_slot(7);
+            let byte = memory.bytes[&(HEAP + index)];
+            memory.fill(HEAP + index, &[byte ^ flip]);
+            let command = control::command(&memory, address, (7, 8), &[], None, 0, None);
+            assert_eq!(
+                command.is_ok(),
+                (16..20).contains(&index),
+                "byte {index} changed by {flip:#x}"
+            );
         }
     }
 }
