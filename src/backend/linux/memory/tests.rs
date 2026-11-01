@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use nix::errno::Errno;
 use proptest::prelude::*;
 
@@ -40,6 +42,15 @@ impl Bytes {
         self.word_bytes(address)
             .map(u64::from_le_bytes)
             .ok_or_else(|| backend_error(LinuxError::System(Errno::EIO)))
+    }
+
+    fn poke(&mut self, address: u64, value: u64) -> Result<()> {
+        self.word_bytes(address)
+            .ok_or_else(|| backend_error(LinuxError::System(Errno::EIO)))?;
+        for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+            self.set(address + offset as u64, byte);
+        }
+        Ok(())
     }
 
     /// An aligned word's readable leading bytes, as a core dump's word
@@ -234,4 +245,30 @@ proptest! {
         let expected = expected_read(&memory, user, address, size);
         check_reads(&memory, &sites, address, size, expected);
     }
+}
+
+fn peek(memory: &RefCell<Bytes>) -> impl Fn(u64) -> Result<u64> + '_ {
+    |word| memory.borrow().peek(word)
+}
+
+fn poke(memory: &RefCell<Bytes>) -> impl Fn(u64, u64) -> Result<()> + '_ {
+    |word, value| memory.borrow_mut().poke(word, value)
+}
+
+/// A write to the last word of the address space ends with it.
+#[test]
+fn a_write_to_the_last_word_of_the_address_space_ends_with_it() {
+    let memory = RefCell::new(Bytes {
+        base: u64::MAX - 7,
+        bytes: vec![Some(0); WORD],
+    });
+    let written = write_logical_memory_with(
+        &mut BTreeMap::new(),
+        VirtualAddress::new(u64::MAX - 7),
+        &[1],
+        peek(&memory),
+        poke(&memory),
+    );
+    assert_eq!(written.expect("a write"), 1);
+    assert_eq!(memory.borrow().get(u64::MAX - 7), Some(1));
 }

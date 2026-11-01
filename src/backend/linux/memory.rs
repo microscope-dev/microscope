@@ -329,7 +329,10 @@ pub(super) fn write_logical_memory_with(
         }
 
         written += count;
-        word += WORD;
+        let Some(next) = word.checked_add(WORD) else {
+            break;
+        };
+        word = next;
     }
 
     if written == 0 && length != 0 {
