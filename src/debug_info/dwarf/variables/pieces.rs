@@ -15,7 +15,6 @@ use crate::{
     VariableValueSource, VirtualAddress,
 };
 
-use super::codec::dwarf_address_bytes;
 use super::evaluate::{EvaluateError, dwarf_value_bytes, evaluation_error};
 use super::storage;
 use super::{MAX_EVALUATION_MEMORY_BYTES, MAX_LOCATION_PIECES};
@@ -102,15 +101,14 @@ fn whole(
         }
         Location::Value { value } => Ok(bytes(
             VariableValueSource::Computed,
-            match scalar {
-                Some(scalar) => dwarf_value_bytes(*value, scalar, target)?,
-                // An object wider than the value extends it as a piece would.
-                None if size > 8 => {
-                    let mut raw = extended_value(*value, byte_size.saturating_mul(8))?.to_vec();
-                    raw.truncate(size);
-                    raw.into()
-                }
-                None => dwarf_address_bytes(*value, size, target)?,
+            if let Some(scalar) = scalar {
+                dwarf_value_bytes(*value, scalar, target)?
+            } else {
+                // Without a scalar type, the object holds the value's low
+                // bits, extended as a piece would extend them.
+                let mut raw = extended_value(*value, byte_size.saturating_mul(8))?.to_vec();
+                raw.truncate(size);
+                raw.into()
             },
         )),
         Location::Bytes { value } => {

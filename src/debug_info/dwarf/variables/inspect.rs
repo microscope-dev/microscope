@@ -262,7 +262,7 @@ pub(in crate::debug_info) fn array_byte_offset(
 
 /// The byte offset of the element at source `indices` of an array laid
 /// out in `ordering`, checked against its bounds.
-fn element_byte_offset(
+pub(super) fn element_byte_offset(
     dimensions: &[ArrayDimension],
     ordering: ArrayOrdering,
     indices: &[i128],
@@ -314,7 +314,7 @@ fn element_byte_offset(
 }
 
 /// The source indices of the row-major element `index` of an array.
-fn array_source_indices(dimensions: &[ArrayDimension], index: u64) -> Result<Vec<i128>> {
+pub(super) fn array_source_indices(dimensions: &[ArrayDimension], index: u64) -> Result<Vec<i128>> {
     let mut indices = vec![0_i128; dimensions.len()];
     let mut remaining = index;
 
