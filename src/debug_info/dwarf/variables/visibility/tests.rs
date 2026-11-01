@@ -198,7 +198,7 @@ fn image(
     instances.extend((1_u32..).zip(calls).map(|(id, call)| CodeInstanceInfo {
         id: CodeInstanceId::new(id),
         function: FunctionId::new(0),
-        parent: Some(CodeInstanceId::new(if call.nested { 1 } else { 0 })),
+        parent: Some(CodeInstanceId::new(u32::from(call.nested))),
         kind: CodeInstanceKind::Inline {
             call_site: call.site.clone(),
         },
@@ -267,13 +267,15 @@ proptest! {
             let call = calls
                 .iter()
                 .find(|call| in_instance && !call.nested && call.code.contains(address));
-            let executing = match call {
-                Some(call) => call.site.clone(),
-                None => lines
-                    .iter()
-                    .find(|(row, _)| row.contains(address))
-                    .map(|(_, location)| location.clone()),
-            };
+            let executing = call.map_or_else(
+                || {
+                    lines
+                        .iter()
+                        .find(|(row, _)| row.contains(address))
+                        .map(|(_, location)| location.clone())
+                },
+                |call| call.site.clone(),
+            );
 
             if scope.iter().any(|range| range.contains(address))
                 && shown(&declared.location, executing.as_ref())

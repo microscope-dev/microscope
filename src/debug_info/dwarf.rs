@@ -5403,7 +5403,7 @@ mod tests {
             let ranges = loaded_ranges(&tables);
             proptest::prop_assert_eq!(&ranges, &model_ranges(&sequences));
 
-            let mut sorted = ranges.clone();
+            let mut sorted = ranges;
             sorted.sort_unstable();
             for pair in sorted.windows(2) {
                 proptest::prop_assert!(pair[0].1 <= pair[1].0, "{:x?} overlap", pair);

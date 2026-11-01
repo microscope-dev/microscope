@@ -790,7 +790,7 @@ fn reference_vlq(text: &[u8]) -> Option<(i64, usize)> {
                 return None;
             }
 
-            let magnitude = (wide >> 1) as i64;
+            let magnitude = i64::try_from(wide >> 1).expect("below 2^31");
             let value = match (wide & 1, magnitude) {
                 (0, _) => magnitude,
                 (_, 0) => -(1 << 31),

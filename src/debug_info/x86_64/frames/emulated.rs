@@ -34,8 +34,13 @@ enum Op {
 impl Op {
     fn length(self) -> u64 {
         match self {
-            Self::PushRbp | Self::PopRbp | Self::PushRbx | Self::PopRbx => 1,
-            Self::Leave | Self::Nop | Self::Ret => 1,
+            Self::PushRbp
+            | Self::PopRbp
+            | Self::PushRbx
+            | Self::PopRbx
+            | Self::Leave
+            | Self::Nop
+            | Self::Ret => 1,
             Self::Allocate(_) | Self::Free(_) => 4,
             Self::MovRbpRsp | Self::MovRspRbp => 3,
             Self::Call => 5,
@@ -63,7 +68,7 @@ impl Program {
         for (index, op) in ops.iter().enumerate() {
             let next = offsets[index + 1];
             let relative = |target: usize| {
-                i8::try_from(offsets[target] as i64 - next as i64)
+                i8::try_from(i128::from(offsets[target]) - i128::from(next))
                     .expect("short code")
                     .cast_unsigned()
             };

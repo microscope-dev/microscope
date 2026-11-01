@@ -451,7 +451,7 @@ proptest! {
         });
 
         // Selection moves by whole bytes from a start that need not be one.
-        let from = start as i64 + delta * 8;
+        let from = i64::try_from(start).expect("a small composite") + delta * 8;
         let expected = expected_selection(&bits, from, size);
         let selected = storage::offset(storage.clone(), delta);
         let read = selected.clone().and_then(|selected| {
@@ -801,10 +801,10 @@ proptest! {
             let is_pointer = matches!(storage, Ok(ValueStorage::ImplicitPointer { .. }));
             prop_assert!(is_pointer, "{:?}", storage);
         } else {
-            let expected = match model_bits(&pieces, byte_size, &machine) {
-                Some(bits) => outcome(expected_read(&bits)),
-                None => Err(EvaluateError::Malformed("".into())),
-            };
+            let expected = model_bits(&pieces, byte_size, &machine).map_or_else(
+                || Err(EvaluateError::Malformed("".into())),
+                |bits| outcome(expected_read(&bits)),
+            );
             prop_assert_eq!(read, expected);
         }
 

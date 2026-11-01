@@ -140,11 +140,11 @@ proptest! {
         for (element, indices) in (0..elements).zip(&every) {
             let source = array_source_indices(&dimensions, element).expect("a non-empty array");
             prop_assert_eq!(&source, indices);
-            prop_assert_eq!(offset(ArrayOrdering::RowMajor, &source), (element * element_size) as i64);
+            prop_assert_eq!(offset(ArrayOrdering::RowMajor, &source), i64::try_from(element * element_size).expect("a small array"));
         }
 
         let offsets = every.iter().map(|indices| offset(ordering, indices)).collect::<BTreeSet<_>>();
-        let expected = (0..elements).map(|element| (element * element_size) as i64).collect::<BTreeSet<_>>();
+        let expected = (0..elements).map(|element| i64::try_from(element * element_size).expect("a small array")).collect::<BTreeSet<_>>();
         prop_assert_eq!(offsets, expected);
     }
 }

@@ -101,15 +101,14 @@ fn whole(
         }
         Location::Value { value } => Ok(bytes(
             VariableValueSource::Computed,
-            match scalar {
-                Some(scalar) => dwarf_value_bytes(*value, scalar, target)?,
+            if let Some(scalar) = scalar {
+                dwarf_value_bytes(*value, scalar, target)?
+            } else {
                 // Without a scalar type, the object holds the value's low
                 // bits, extended as a piece would extend them.
-                None => {
-                    let mut raw = extended_value(*value, byte_size.saturating_mul(8))?.to_vec();
-                    raw.truncate(size);
-                    raw.into()
-                }
+                let mut raw = extended_value(*value, byte_size.saturating_mul(8))?.to_vec();
+                raw.truncate(size);
+                raw.into()
             },
         )),
         Location::Bytes { value } => {

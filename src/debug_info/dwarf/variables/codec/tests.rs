@@ -63,7 +63,7 @@ fn reference_sleb128(bytes: &[u8]) -> Option<(i128, usize)> {
 fn encode_uleb128(mut value: u128) -> Vec<u8> {
     let mut bytes = Vec::new();
     loop {
-        let byte = (value & 0x7f) as u8;
+        let byte = (value & 0x7f).to_le_bytes()[0];
         value >>= 7;
         if value == 0 {
             bytes.push(byte);
@@ -77,7 +77,7 @@ fn encode_uleb128(mut value: u128) -> Vec<u8> {
 fn encode_sleb128(mut value: i128) -> Vec<u8> {
     let mut bytes = Vec::new();
     loop {
-        let byte = (value & 0x7f) as u8;
+        let byte = (value & 0x7f).to_le_bytes()[0];
         value >>= 7;
         if (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0) {
             bytes.push(byte);
@@ -225,7 +225,7 @@ fn signed_pattern(pattern: u128, bits: u32) -> i128 {
 /// `size` bytes of `pattern` in `byte_order`, one at a time.
 fn laid_out(pattern: u128, size: usize, byte_order: ByteOrder) -> Vec<u8> {
     let mut bytes = (0..size)
-        .map(|index| (pattern >> (8 * index)) as u8)
+        .map(|index| (pattern >> (8 * index)).to_le_bytes()[0])
         .collect::<Vec<_>>();
     if byte_order == ByteOrder::Big {
         bytes.reverse();
@@ -285,7 +285,7 @@ fn byte_order() -> impl Strategy<Value = ByteOrder> {
 /// A constant of a type `size` bytes wide: an integer near the type's
 /// edges, in any form, or bytes of about its size.
 fn constant(size: usize) -> impl Strategy<Value = ConstantValue> {
-    let bits = (size * 8) as u32;
+    let bits = u32::try_from(size * 8).expect("a small type");
     prop_oneof![
         3 => values_near(bits).prop_map(ConstantValue::Unsigned),
         2 => values_near(bits).prop_map(ConstantValue::Fixed),
@@ -309,7 +309,7 @@ proptest! {
         signed in any::<bool>(),
         byte_order in byte_order(),
     ) {
-        let bits = (size * 8) as u32;
+        let bits = u32::try_from(size * 8).expect("a small type");
         let expected = match &constant {
             ConstantValue::Unsigned(value) | ConstantValue::Fixed(value) => {
                 let pattern = pattern_of(*value, bits);
@@ -355,7 +355,8 @@ proptest! {
     #[test]
     fn integers_decode_and_check_against_their_range(
         (size, bits, raw) in (1_u64..=16).prop_flat_map(|size| {
-            (Just(size), 1..=size as u32 * 8, prop::collection::vec(any::<u8>(), size as usize))
+            let bytes = u32::try_from(size).expect("a small type");
+            (Just(size), 1..=bytes * 8, prop::collection::vec(any::<u8>(), bytes as usize))
         }),
         bit_size_given in any::<bool>(),
         encoding in prop::sample::select(vec![
@@ -368,7 +369,7 @@ proptest! {
         byte_order in byte_order(),
         candidate in (any::<bool>(), u128_edges()),
     ) {
-        let bits = if bit_size_given { bits } else { size as u32 * 8 };
+        let bits = if bit_size_given { bits } else { u32::try_from(size * 8).expect("a small type") };
         let base = integer_type(encoding, size, bit_size_given.then_some(u64::from(bits)));
         let signed = matches!(encoding, BaseTypeEncoding::Signed | BaseTypeEncoding::SignedCharacter);
         let boolean = encoding == BaseTypeEncoding::Boolean;
