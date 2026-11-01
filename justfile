@@ -11,6 +11,10 @@ set positional-arguments := true
 # threads. More concurrency adds contention without improving wall time.
 max_test_threads := "16"
 
+# The fuzz targets that decode x86, whose decoder tables iced-x86 never
+# frees; see `fuzz`.
+decoding_fuzz_targets := "disassembly dispatch elf-symbols"
+
 # Lints the Rust code and runs the complete test suite.
 default: check
 
@@ -20,7 +24,7 @@ check: lint test miri loom web-test docs
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
 # only between seeds 48 and 61.
-all: check props (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
+all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
 
 # Enters the pinned Nix development shell, or runs a command in it, with
 # nothing of the host's environment but the user and their terminal.
@@ -444,10 +448,23 @@ probe-cost COUNT="100000000": build-test-programs
 # dap-request, views, image, perf-records, capture, profile-import,
 # syscall-record, syscall-filter, glibc-tls, js-source-map, or cdp-message.
 # Arguments go to libFuzzer.
-# iced-x86 builds its formatter tables once and never frees them, which
-# LeakSanitizer would report as a failure when the disassembly target exits.
+# iced-x86 builds its decoder tables once and never frees them, which
+# LeakSanitizer reports when a target that decodes x86 exits: those run
+# without leak checks, libFuzzer's and the exit's.
 fuzz TARGET *ARGS="":
-    if [[ "$1" == disassembly ]]; then set -- "$@" -detect_leaks=0; fi; cargo fuzz run "$1" -- "${@:2}"
+    leaks=1; if [[ " {{decoding_fuzz_targets}} " == *" $1 "* ]]; then leaks=0; fi; ASAN_OPTIONS="detect_leaks=$leaks" cargo fuzz run "$1" -- -detect_leaks="$leaks" "${@:2}"
+
+# Runs every fuzz target once over each input of its corpus without
+# fuzzing, so an input a fuzzer saved keeps passing. `just all` runs it.
+[script]
+fuzz-replay:
+    cargo fuzz build
+    for target in $(cargo fuzz list); do
+        leaks=1
+        if [[ " {{decoding_fuzz_targets}} " == *" $target "* ]]; then leaks=0; fi
+        mkdir -p "fuzz/corpus/$target"
+        ASAN_OPTIONS="detect_leaks=$leaks" ./scripts/contained.sh cargo fuzz run "$target" -- -runs=0 -detect_leaks="$leaks"
+    done
 
 # Drives the DAP adapter from a real VS Code window, as a user would, and
 # records each session's traffic in DIR. Needs a display. Recording into

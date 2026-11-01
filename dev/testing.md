@@ -547,6 +547,11 @@ corpora and artifact growth bounded. A discovered crash becomes the smallest
 deterministic regression test at the owning layer; do not rely on a large fuzz
 artifact forever.
 
+`just fuzz-replay` runs every target once over each input of its corpus,
+without fuzzing; `just all` runs it. A corpus holds a few inputs that reach
+far into its target, not everything a run found: after a run, keep the
+handful with the most coverage.
+
 ## Miri
 
 `just miri` runs the tests of microscope's unsafe code under Miri, which stops
