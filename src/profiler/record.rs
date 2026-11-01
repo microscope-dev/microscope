@@ -2998,6 +2998,72 @@ mod tests {
         assert!(spent >= std::time::Duration::from_millis(110), "{spent:?}");
     }
 
+    /// A mapping of `pages` pages from page `start`, of image `image`
+    /// at a bias that tells it from every other.
+    fn mapping(step: u32, start: usize, pages: usize, image: u32) -> Mapped {
+        Mapped {
+            start: start as u64 * 4096,
+            end: (start + pages) as u64 * 4096,
+            image: image as usize,
+            loaded: LoadedModule {
+                id: ModuleId::new(step),
+                image: ModuleImageId::new(image),
+                load_bias: LoadBias::new(u64::from(step) * 0x1000),
+                window: None,
+            },
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+        /// After any mappings, each page is in the module of the last
+        /// mapping that covered it, in a piece of the same image and bias;
+        /// the pieces are apart, none empty; and a mapping keeps the order
+        /// of the pieces it leaves, which a copy's place first relies on.
+        #[test]
+        fn a_mapping_leaves_each_page_to_the_last_that_covered_it(
+            steps in proptest::collection::vec((0..48_usize, 1..20_usize, 0..3_u32), 1..16),
+        ) {
+            use proptest::prelude::*;
+            let mut mapped: Vec<Mapped> = Vec::new();
+            let mut last: Vec<Option<u32>> = vec![None; 48];
+
+            for (step, &(start, pages, image)) in (0..).zip(&steps) {
+                let end = (start + pages).min(48);
+                let before: Vec<u32> = mapped.iter().map(|piece| piece.loaded.id.get()).collect();
+                uncover(&mut mapped, start as u64 * 4096, end as u64 * 4096);
+
+                // The pieces left, each mapping's together, in their order.
+                let mut after: Vec<u32> = mapped.iter().map(|piece| piece.loaded.id.get()).collect();
+                after.dedup();
+                let mut order = before.iter();
+                prop_assert!(after.iter().all(|id| order.any(|earlier| earlier == id)), "{:?} then {:?}", before, after);
+
+                mapped.push(mapping(step, start, end - start, image));
+                for page in &mut last[start..end] {
+                    *page = Some(step);
+                }
+            }
+
+            prop_assert!(mapped.iter().all(|piece| piece.start < piece.end));
+
+            for (page, last) in last.iter().enumerate() {
+                let address = page as u64 * 4096;
+                let holding: Vec<&Mapped> = mapped
+                    .iter()
+                    .filter(|piece| piece.start <= address && address < piece.end)
+                    .collect();
+                let expected = last.map(|step| {
+                    let piece = mapping(step, 0, 1, steps[step as usize].2);
+                    (piece.image, piece.loaded)
+                });
+                prop_assert!(holding.len() <= 1, "page {} is in {:?}", page, holding);
+                prop_assert_eq!(holding.first().map(|piece| (piece.image, piece.loaded)), expected, "page {}", page);
+            }
+        }
+    }
+
     #[test]
     fn changed_threads_keep_their_time_and_ids_without_counting_as_failures() {
         let mut processor = Processor::new(DebugFileSearch::default(), 64);
