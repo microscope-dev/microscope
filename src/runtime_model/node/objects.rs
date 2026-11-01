@@ -467,8 +467,8 @@ pub(super) mod tests {
 
     impl Heap {
         pub(in super::super) fn word(&mut self, address: u64, word: u64) {
-            for (at, byte) in (address..).zip(word.to_le_bytes()) {
-                self.0.insert(at, byte);
+            for (index, byte) in (0..).zip(word.to_le_bytes()) {
+                self.0.insert(address + index, byte);
             }
         }
     }
