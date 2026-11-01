@@ -64,40 +64,50 @@ export function Processes() {
       .catch((failure: Error) => flash(failure.message))
       .finally(() => setBusy(false));
   };
+  const active: Member[] = [];
+  const other: Member[] = [];
+  for (const member of group.members) {
+    const visible =
+      member.state === "running" ||
+      member.state === "stopped" ||
+      member.number === 1 ||
+      member.number === group.selected ||
+      member.number === group.stopped;
+    (visible ? active : other).push(member);
+  }
+  const row = (member: Member) => {
+    const on = member.number === group.selected;
+    const debugged = member.state === "running" || member.state === "stopped";
+    return (
+      <li key={member.number}>
+        <button
+          type="button"
+          className={`process ${on ? "on" : ""}`}
+          aria-pressed={on}
+          disabled={!control || busy || !debugged}
+          title={[
+            `[${member.number}] process ${member.pid ?? "not started"}`,
+            member.command,
+            joinedText(member),
+            member.description,
+          ]
+            .filter(Boolean)
+            .join("\n")}
+          onClick={() => !on && ask("selectMember", member.number)}
+        >
+          <span className="number">[{member.number}]</span> {memberName(member)}
+          <span className="muted"> · {joinedText(member)} · </span>
+          <span className={`state ${member.state}`}>{STATES[member.state]}</span>
+          {member.number === group.stopped && <span> ◂ stopped here</span>}
+        </button>
+      </li>
+    );
+  };
 
   return (
     <nav className="processes" aria-label="Processes" data-testid="processes">
       <span className="muted">Processes</span>
-      <ul>
-        {group.members.map((member) => {
-          const on = member.number === group.selected;
-          const debugged = member.state === "running" || member.state === "stopped";
-          return (
-            <li key={member.number}>
-              <button
-                type="button"
-                className={`process ${on ? "on" : ""}`}
-                aria-pressed={on}
-                disabled={!control || busy || !debugged}
-                title={[
-                  `[${member.number}] process ${member.pid ?? "not started"}`,
-                  member.command,
-                  joinedText(member),
-                  member.description,
-                ]
-                  .filter(Boolean)
-                  .join("\n")}
-                onClick={() => !on && ask("selectMember", member.number)}
-              >
-                <span className="number">[{member.number}]</span> {memberName(member)}
-                <span className="muted"> · {joinedText(member)} · </span>
-                <span className={`state ${member.state}`}>{STATES[member.state]}</span>
-                {member.number === group.stopped && <span> ◂ stopped here</span>}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <ul>{active.map(row)}</ul>
       {control && selected && selected.number !== 1 && selected.state === "stopped" && (
         <button
           type="button"
@@ -108,6 +118,12 @@ export function Processes() {
         >
           Detach [{selected.number}]
         </button>
+      )}
+      {other.length > 0 && (
+        <details>
+          <summary>Other processes ({other.length})</summary>
+          <ul>{other.map(row)}</ul>
+        </details>
       )}
     </nav>
   );

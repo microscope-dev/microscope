@@ -6,6 +6,7 @@ import { page, userEvent } from "vitest/browser";
 import type { Group, Member } from "../src/protocol";
 import { Processes } from "../src/ui/Processes";
 import { mountPane, stoppedState, unmountPane } from "./pane";
+import "../src/styles.css";
 
 afterEach(unmountPane);
 
@@ -52,6 +53,7 @@ it("lists each process, how it joined, and where it is, and selects one", async 
   await expect.element(child).toHaveAttribute("aria-pressed", "true");
   expect(child.element().textContent).toContain("forked by [1]");
   expect(child.element().textContent).toContain("◂ stopped here");
+  await userEvent.click(page.getByText("Other processes (1)", { exact: true }));
   // A process that exited has nothing to show.
   await expect.element(page.getByRole("button", { name: /\[3\] tree/ })).toBeDisabled();
 
@@ -62,4 +64,74 @@ it("lists each process, how it joined, and where it is, and selects one", async 
 
   await userEvent.click(page.getByRole("button", { name: "Detach [2]" }));
   expect((await server.next("detachMember")).params).toEqual({ member: 2 });
+});
+
+it.each([
+  1440, 390,
+])("keeps inspection space with a long process history at %ipx", async (width) => {
+  await page.viewport(width, 1000);
+  const history = Array.from({ length: 35 }, (_, index) =>
+    member({
+      number: index + 3,
+      parent: 1,
+      joined: "forked",
+      state: index % 2 ? "exited" : "watched",
+    }),
+  );
+  const server = await mountPane(
+    <div style={{ maxWidth: "730px", display: "flex", flexDirection: "column", height: "800px" }}>
+      <Processes />
+      <div data-testid="inspection" style={{ flex: 1, minHeight: 0 }} />
+    </div>,
+    {},
+    stoppedState({ group: { ...two, members: [...two.members.slice(0, 2), ...history] } }),
+  );
+  const switcher = page.getByRole("navigation", { name: "Processes" });
+  await expect.element(switcher).toBeVisible();
+  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(200);
+  const disclosure = page.getByText("Other processes (35)", { exact: true });
+  await expect.element(disclosure).toBeVisible();
+  await expect.element(page.getByRole("button", { name: /\[3\] tree/ })).not.toBeInTheDocument();
+  await disclosure.element().focus();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("button", { name: /\[37\] tree/ })).toBeDisabled();
+  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(200);
+  expect(switcher.element().scrollWidth).toBe(switcher.element().clientWidth);
+  expect(
+    page.getByTestId("inspection").element().getBoundingClientRect().height,
+  ).toBeGreaterThanOrEqual(600);
+
+  await userEvent.click(page.getByRole("button", { name: /\[1\] tree/ }));
+  const asked = await server.next("selectMember");
+  expect(asked.params).toEqual({ member: 1 });
+  server.answer(asked, null);
+  await userEvent.click(page.getByRole("button", { name: "Detach [2]" }));
+  expect((await server.next("detachMember")).params).toEqual({ member: 2 });
+});
+
+it("bounds many selectable processes without folding them into history", async () => {
+  await page.viewport(390, 844);
+  const members = Array.from({ length: 37 }, (_, index) =>
+    member({ number: index + 1, state: index % 2 ? "running" : "stopped" }),
+  );
+  const server = await mountPane(
+    <Processes />,
+    {},
+    stoppedState({ group: { members, selected: 1, stopped: 1 } }),
+  );
+  const switcher = page.getByRole("navigation", { name: "Processes" });
+  await expect.element(switcher).toBeVisible();
+  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(200);
+  expect(switcher.element().scrollHeight).toBeGreaterThan(switcher.element().clientHeight);
+  expect(switcher.element().querySelector("details")).toBeNull();
+  await userEvent.click(page.getByRole("button", { name: /\[37\] tree/ }));
+  expect((await server.next("selectMember")).params).toEqual({ member: 37 });
+});
+
+it("keeps a selected exited process outside the folded entries", async () => {
+  await mountPane(<Processes />, {}, stoppedState({ group: { ...two, selected: 3, stopped: 3 } }));
+  const selected = page.getByRole("button", { name: /\[3\] tree/ });
+  await expect.element(selected).toHaveAttribute("aria-pressed", "true");
+  await expect.element(selected).toBeDisabled();
+  expect(selected.element().textContent).toContain("stopped here");
 });

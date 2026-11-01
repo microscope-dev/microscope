@@ -44,6 +44,7 @@ test("a child that stops shows in the switcher, and the panes switch processes",
     "aria-pressed",
     "true",
   );
+  await switcher.locator("summary").click();
   await expect(switcher.getByRole("button", { name: /\[2\] process-tree/ })).toContainText(
     "exited",
   );

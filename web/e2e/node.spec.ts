@@ -172,6 +172,7 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   await expect(stopped).not.toContainText(`[${first}]`, START);
   await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/);
   await expect(page.locator(".cm-frame-line")).toContainText("const marker =");
+  await switcher.locator("summary").click();
   await expect(
     switcher.getByRole("button", { name: new RegExp(`^\\[${first}\\] `) }),
   ).toContainText("exited");

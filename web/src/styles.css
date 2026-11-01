@@ -1567,7 +1567,10 @@ textarea.input {
   flex: none;
   flex-wrap: wrap;
   align-items: center;
+  align-content: start;
   gap: 6px 10px;
+  max-height: min(200px, 25vh);
+  overflow: auto;
   padding: 5px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
@@ -1578,13 +1581,37 @@ textarea.input {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  min-width: 0;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+.processes li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.processes details {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.processes summary {
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.processes summary:hover {
+  text-decoration: underline;
+}
+
+.processes summary:active {
+  background: var(--accent-soft);
+}
+
 .processes .process {
-  height: 24px;
+  min-height: 24px;
   padding: 0 8px;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -1592,6 +1619,8 @@ textarea.input {
   color: var(--ink);
   font: inherit;
   cursor: pointer;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .processes .process:hover:not(:disabled) {
@@ -3667,6 +3696,12 @@ textarea.input {
 
 /* The twist grows only its hit area, so the tree keeps its indents and rows. */
 @media (pointer: coarse) {
+  .processes .process,
+  .processes .button,
+  .processes summary {
+    min-height: 44px;
+  }
+
   .icon,
   .file-tab .close {
     min-width: 32px;
