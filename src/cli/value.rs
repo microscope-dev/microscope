@@ -1461,6 +1461,81 @@ mod tests {
         }
     }
 
+    /// A value's layout: leaves without commas or spaces, and groups in
+    /// the brackets values print with.
+    fn docs() -> impl Strategy<Value = Vec<Doc>> {
+        let leaf = prop::sample::select(vec!["a", "bb", "x=", "0x7f", "longer_leaf_text", "é"])
+            .prop_map(|text| Doc::Text(text.to_owned()));
+        let doc = leaf.prop_recursive(4, 40, 4, |inner| {
+            (
+                prop::sample::select(vec![
+                    ("{", "}"),
+                    ("[", "]"),
+                    ("Some(", ")"),
+                    ("{", "} <active member unknown>"),
+                ]),
+                prop::collection::vec(prop::collection::vec(inner, 1..3), 0..5),
+            )
+                .prop_map(|((open, close), items)| Doc::Group {
+                    open: open.to_owned(),
+                    items,
+                    close: close.to_owned(),
+                })
+        });
+        prop::collection::vec(doc, 1..3)
+    }
+
+    fn layout(width: usize, indent: usize) -> Layout {
+        Layout {
+            lines: Lines::Pretty,
+            width,
+            indent,
+            hexadecimal: false,
+            raw: false,
+            max_depth: 0,
+            max_elements: 0,
+        }
+    }
+
+    proptest! {
+        /// A pretty value is the compact one when it fits, and otherwise
+        /// the same text broken into lines that fit, but for a line no
+        /// break can shorten, which holds no two items side by side.
+        #[test]
+        fn pretty_layout_breaks_the_compact_form_into_lines_that_fit(
+            docs in docs(),
+            width in 1..80_usize,
+            indent in 1..5_usize,
+            start in 0..20_usize,
+        ) {
+            let mut flat = BoundedOutput::new(OUTPUT_LIMIT);
+            compact(&docs, &mut flat);
+            let flat = flat.into_string();
+            let mut broken = BoundedOutput::new(OUTPUT_LIMIT);
+            let mut column = start;
+            pretty(&docs, layout(width, indent), 0, 0, &mut column, &mut broken);
+            let broken = broken.into_string();
+
+            if start + flat.chars().count() <= width {
+                prop_assert_eq!(&broken, &flat);
+            }
+
+            let bare = |text: &str| text.chars().filter(|c| *c != ',' && !c.is_whitespace()).collect::<String>();
+            prop_assert_eq!(bare(&broken), bare(&flat));
+
+            for (index, line) in broken.split('\n').enumerate() {
+                let columns = line.chars().count() + if index == 0 { start } else { 0 };
+                prop_assert!(
+                    columns <= width || !line.contains(", "),
+                    "line {} of {:?} is {} columns wide", index, broken, columns
+                );
+            }
+
+            prop_assert_eq!(column, broken.rsplit('\n').next().unwrap_or_default().chars().count()
+                + if broken.contains('\n') { 0 } else { start });
+        }
+    }
+
     /// The property's shrunk failures: a cut in the earlier text followed
     /// by the start of the later one, and a cut inside a link's closing
     /// sequence that left the link open.
