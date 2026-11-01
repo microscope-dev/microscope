@@ -346,6 +346,7 @@ impl Session {
 }
 
 /// Instructions decoded around an anchor address.
+#[derive(Debug)]
 struct Decoded {
     /// The anchor address.
     address: u64,
@@ -376,13 +377,17 @@ enum Row<'a> {
 }
 
 impl Plan {
+    /// A plan for `count` rows from `first`. Rows further from the anchor
+    /// than a request's most instructions are padding, since finding them
+    /// would decode without bound.
     fn new(first: i64, count: i64) -> Self {
-        let end = first.saturating_add(count);
+        let reach = i128::from(MAX_INSTRUCTIONS);
+        let end = i128::from(first) + i128::from(count);
         Self {
             first,
             count: usize::try_from(count).unwrap_or(0),
-            before: usize::try_from(first.min(0).unsigned_abs()).unwrap_or(usize::MAX),
-            after: usize::try_from(end.max(0)).unwrap_or(usize::MAX),
+            before: usize::try_from((-i128::from(first)).clamp(0, reach)).unwrap_or(0),
+            after: usize::try_from(end.clamp(0, reach)).unwrap_or(0),
         }
     }
 
@@ -390,11 +395,12 @@ impl Plan {
     /// padding before and after them.
     fn rows<'a>(&self, decoded: &'a Decoded) -> impl Iterator<Item = Row<'a>> + 'a {
         let instructions = &decoded.instructions;
-        let anchor = i64::try_from(decoded.anchor).unwrap_or(i64::MAX);
-        let length = i64::try_from(instructions.len()).unwrap_or(i64::MAX);
-        let first = self.first;
+        let anchor = i128::try_from(decoded.anchor).unwrap_or(i128::MAX);
+        let length = i128::try_from(instructions.len()).unwrap_or(i128::MAX);
+        let first = i128::from(self.first);
         (0..self.count).map(move |row| {
-            let index = anchor + first + i64::try_from(row).unwrap_or(i64::MAX);
+            // Wide enough that no anchor, offset, and row overflow.
+            let index = anchor + first + i128::try_from(row).unwrap_or(i128::MAX);
             if let Some(instruction) = usize::try_from(index)
                 .ok()
                 .and_then(|index| instructions.get(index))
@@ -420,17 +426,22 @@ fn window_size(count: usize, max: u32) -> u32 {
 
 fn padding_address(
     instructions: &[microscope::DisassembledInstruction],
-    index: i64,
-    length: i64,
+    index: i128,
+    length: i128,
     anchor: u64,
 ) -> u64 {
+    let distance = |distance: u128| u64::try_from(distance).unwrap_or(u64::MAX);
     match (instructions.first(), instructions.last()) {
-        (Some(first), _) if index < 0 => first.address.get().saturating_sub(index.unsigned_abs()),
+        (Some(first), _) if index < 0 => first
+            .address
+            .get()
+            .saturating_sub(distance(index.unsigned_abs())),
         (_, Some(last)) => last
             .end()
             .get()
-            .saturating_add(u64::try_from(index - length).unwrap_or(0)),
-        _ => anchor.saturating_add_signed(index),
+            .saturating_add(distance(u128::try_from(index - length).unwrap_or(0))),
+        _ if index < 0 => anchor.saturating_sub(distance(index.unsigned_abs())),
+        _ => anchor.saturating_add(distance(index.unsigned_abs())),
     }
 }
 
@@ -505,6 +516,143 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// An offset from the edges of `i64`, near zero, or anywhere.
+    fn offset() -> impl Strategy<Value = i64> {
+        prop_oneof![
+            prop::sample::select(vec![
+                i64::MIN,
+                i64::MIN + 1,
+                i64::MAX,
+                i64::MAX - 1,
+                0,
+                -1,
+                1
+            ]),
+            -100..100_i64,
+            any::<i64>(),
+        ]
+    }
+
+    /// Instructions laid end to end from `base`, and the index of the
+    /// first one at or after the anchor.
+    fn decoded() -> impl Strategy<Value = Decoded> {
+        (
+            prop_oneof![Just(0_u64), 0..1_u64 << 48],
+            prop::collection::vec(1..16_u64, 0..40),
+        )
+            .prop_flat_map(|(base, lengths)| {
+                let count = lengths.len();
+                (Just(base), Just(lengths), 0..=count)
+            })
+            .prop_map(|(base, lengths, anchor)| {
+                let mut address = base;
+                let instructions = lengths
+                    .iter()
+                    .map(|&length| {
+                        let instruction = microscope::DisassembledInstruction {
+                            address: VirtualAddress::new(address),
+                            bytes: vec![0x90; usize::try_from(length).expect("small")].into(),
+                            content: InstructionContent::Invalid,
+                            location: microscope::AddressDescription {
+                                address: VirtualAddress::new(address),
+                                module: None,
+                            },
+                            source: None,
+                        };
+                        address += length;
+                        instruction
+                    })
+                    .collect::<Vec<_>>();
+                let anchor_address = instructions
+                    .get(anchor)
+                    .map_or(address, |instruction| instruction.address.get());
+                Decoded {
+                    address: anchor_address,
+                    instructions,
+                    anchor,
+                }
+            })
+    }
+
+    proptest! {
+        /// A plan gives exactly `count` rows in address order, each the
+        /// instruction its offset from the anchor names or padding, and
+        /// asks for instructions it can show, but no more than a request
+        /// may.
+        #[test]
+        fn disassembly_plans_give_each_row_its_instruction(
+            first in offset(),
+            count in 0..=64_i64,
+            decoded in decoded(),
+        ) {
+            let plan = Plan::new(first, count);
+            let cap = usize::try_from(MAX_INSTRUCTIONS).expect("small");
+            prop_assert!(plan.before <= cap && plan.after <= cap, "{plan:?}");
+            for row in 0..count {
+                let offset = i128::from(first) + i128::from(row);
+                let wanted = if offset < 0 { usize::try_from(-offset).ok().map(|o| o <= plan.before) } else { usize::try_from(offset).ok().map(|o| o < plan.after) };
+                if offset.unsigned_abs() < cap as u128 {
+                    prop_assert_eq!(wanted, Some(true), "{:?} misses offset {}", plan, offset);
+                }
+            }
+
+            let rows = plan.rows(&decoded).collect::<Vec<_>>();
+            prop_assert_eq!(rows.len(), usize::try_from(count).expect("small"));
+
+            let mut previous = 0;
+            for (row, shown) in rows.iter().enumerate() {
+                let index = i128::try_from(decoded.anchor).expect("small") + i128::from(first) + i128::try_from(row).expect("small");
+                let expected = usize::try_from(index).ok().and_then(|index| decoded.instructions.get(index));
+                let address = match (shown, expected) {
+                    (Row::Instruction(instruction), Some(expected)) => {
+                        prop_assert_eq!(instruction.address, expected.address);
+                        instruction.address.get()
+                    }
+                    (Row::Padding(address), None) => *address,
+                    _ => {
+                        prop_assert!(false, "row {} at index {} is the wrong kind", row, index);
+                        0
+                    }
+                };
+
+                prop_assert!(address >= previous, "row {} at {:#x} is before {:#x}", row, address, previous);
+                previous = address;
+            }
+        }
+    }
+
+    /// The property's shrunk failure: the row after one at `i64::MAX`
+    /// instructions overflowed, and the plan asked for that many.
+    #[test]
+    fn far_offsets_give_padding_without_decoding_without_bound() {
+        let instruction = microscope::DisassembledInstruction {
+            address: VirtualAddress::new(0),
+            bytes: vec![0x90].into(),
+            content: InstructionContent::Invalid,
+            location: microscope::AddressDescription {
+                address: VirtualAddress::new(0),
+                module: None,
+            },
+            source: None,
+        };
+        let decoded = Decoded {
+            address: 1,
+            instructions: vec![instruction],
+            anchor: 1,
+        };
+
+        let plan = Plan::new(i64::MAX, 1);
+        assert_eq!((plan.before, plan.after), (0, 16 * 1024));
+        let rows = plan.rows(&decoded).collect::<Vec<_>>();
+        assert!(matches!(rows[..], [Row::Padding(0x8000_0000_0000_0000)]));
+
+        let plan = Plan::new(i64::MIN, 2);
+        assert_eq!((plan.before, plan.after), (16 * 1024, 0));
+        let rows = plan.rows(&decoded).collect::<Vec<_>>();
+        assert!(matches!(rows[..], [Row::Padding(0), Row::Padding(0)]));
+    }
 
     #[test]
     fn base64_matches_the_standard_encoding_and_rejects_malformed_text() {
