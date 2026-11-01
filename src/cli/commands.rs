@@ -1,5 +1,6 @@
 //! The command table, argument parsing, and command handlers.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -1045,7 +1046,7 @@ impl Cli {
     ) -> Result<String> {
         let parsed = parse_break(line, spec)?;
 
-        let location = match parsed.location {
+        let location = match parsed.location.as_deref() {
             Some(written) => match frame_line(written)? {
                 Some(line) => self.frame_source(line).await?,
                 None => parse_breakpoint_location(written)?.ok_or_else(|| spec.usage_error())?,
@@ -1183,16 +1184,29 @@ impl Cli {
     /// Writes the commands that recreate the breakpoints to `file`.
     async fn save_breakpoint_commands(&self, file: &str) -> Result<String> {
         let snapshot = self.debugger().snapshot().await?;
-        let text = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
+        let (text, refused) = super::saved::commands(&snapshot.breakpoints, &self.settings.root);
         std::fs::write(file, text).with_context(|| format!("cannot write {file}"))?;
         let renderer = self.renderers.stdout;
 
-        Ok(format!(
+        let mut output = format!(
             "{} {} to {}",
             renderer.paint(Role::Success, "saved"),
-            plural(snapshot.breakpoints.len() as u64, "breakpoint"),
+            plural(
+                (snapshot.breakpoints.len() - refused.len()) as u64,
+                "breakpoint"
+            ),
             renderer.paint(Role::Metadata, file)
-        ))
+        );
+        for (id, reason) in refused {
+            let _ = write!(
+                output,
+                "\n{} {}: {reason}",
+                renderer.paint(Role::Warning, "not saved:"),
+                CountedId::Breakpoint(id).describe(renderer)
+            );
+        }
+
+        Ok(output)
     }
 
     /// The images of the loaded modules, or the program's before it runs.
@@ -3164,12 +3178,12 @@ fn frame_line(written: &str) -> Result<Option<FrameLine>> {
 
 /// A `break` line: its location, and the options written after it.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct BreakLine<'a> {
-    location: Option<&'a str>,
-    condition: Option<&'a str>,
-    hits: Option<&'a str>,
-    log: Option<String>,
-    disabled: bool,
+pub(super) struct BreakLine<'a> {
+    pub location: Option<Cow<'a, str>>,
+    pub condition: Option<&'a str>,
+    pub hits: Option<&'a str>,
+    pub log: Option<String>,
+    pub disabled: bool,
 }
 
 const BREAK_OPTIONS: [&str; 4] = ["if", "hits", "log", "disabled"];
@@ -3177,8 +3191,9 @@ const BREAK_OPTIONS: [&str; 4] = ["if", "hits", "log", "disabled"];
 /// Splits a `break` line into its location and its options, each of which
 /// takes the text up to the next option word outside a string or brackets.
 /// A word after the location that is no option is a hit condition, as
-/// `break counted ==3` wrote it before options had names.
-fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
+/// `break counted ==3` wrote it before options had names. A location in
+/// double quotes may hold spaces and option words.
+pub(super) fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
     let words = option_words(line);
     let starts = words
         .iter()
@@ -3191,9 +3206,9 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
 
     match &words[..first] {
         [] => {}
-        [(_, location)] => parsed.location = Some(location),
+        [(_, location)] => parsed.location = Some(unquoted_location(location)?),
         [(_, location), (_, hits)] => {
-            parsed.location = Some(location);
+            parsed.location = Some(unquoted_location(location)?);
             parsed.hits = Some(hits);
         }
         _ => return Err(spec.usage_error()),
@@ -3214,7 +3229,7 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
             "disabled" if !parsed.disabled => parsed.disabled = true,
             "if" if parsed.condition.is_none() => parsed.condition = Some(text),
             "hits" if parsed.hits.is_none() => parsed.hits = Some(text),
-            "log" if parsed.log.is_none() => parsed.log = Some(unquoted(text)?),
+            "log" if parsed.log.is_none() => parsed.log = Some(unquoted(text, "a log message")?),
             _ => return Err(twice()),
         }
     }
@@ -3222,19 +3237,21 @@ fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<BreakLine<'a>> {
     Ok(parsed)
 }
 
-/// The words of a line outside strings and brackets, with their offsets;
-/// a string or bracketed text is part of the word around it.
+/// The words of a line outside strings, character literals, backticked
+/// names, and brackets, with their offsets; such text is part of the word
+/// around it.
 fn option_words(line: &str) -> Vec<(usize, &str)> {
     let mut words = Vec::new();
-    let (mut depth, mut quoted, mut escaped) = (0_usize, false, false);
+    let (mut depth, mut quote, mut escaped) = (0_usize, None, false);
     let mut start = None;
+    let mut characters = line.char_indices();
 
-    for (offset, character) in line.char_indices() {
-        if quoted {
+    while let Some((offset, character)) = characters.next() {
+        if let Some(closing) = quote {
             match character {
                 _ if escaped => escaped = false,
-                '\\' => escaped = true,
-                '"' => quoted = false,
+                '\\' if closing == '"' => escaped = true,
+                _ if character == closing => quote = None,
                 _ => {}
             }
 
@@ -3251,7 +3268,15 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
 
         start.get_or_insert(offset);
         match character {
-            '"' => quoted = true,
+            '"' | '`' => quote = Some(character),
+            '\'' => {
+                // Only a whole literal such as `'('` or `'\''`, so that the
+                // lifetime in a name such as `Foo<'a>` opens nothing.
+                let length = char_literal_length(&line[offset..]);
+                for _ in 1..length {
+                    characters.next();
+                }
+            }
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
             _ => {}
@@ -3265,8 +3290,38 @@ fn option_words(line: &str) -> Vec<(usize, &str)> {
     words
 }
 
-/// A log message written in quotes, with `\"` and `\\` escaped, or as it is.
-fn unquoted(text: &str) -> Result<String> {
+/// How many characters the character literal at the start of `text` takes,
+/// or 1 when the quote begins none: one character or one escape, then the
+/// closing quote.
+fn char_literal_length(text: &str) -> usize {
+    let mut characters = text.chars().skip(1);
+    let length = match characters.next() {
+        Some('\\') => {
+            // An escape such as `\'` or `\u{e9}` runs to the next quote.
+            characters.next();
+            characters
+                .position(|character| character == '\'')
+                .map(|end| end + 4)
+        }
+        Some('\'') | None => None,
+        Some(_) => (characters.next() == Some('\'')).then_some(3),
+    };
+
+    length.unwrap_or(1)
+}
+
+/// A location as `break` takes it: in double quotes, escaped as a log
+/// message is, or as it is.
+fn unquoted_location(word: &str) -> Result<Cow<'_, str>> {
+    if word.starts_with('"') {
+        Ok(Cow::Owned(unquoted(word, "a location")?))
+    } else {
+        Ok(Cow::Borrowed(word))
+    }
+}
+
+/// A text, `what`, written in quotes, with `\"` and `\\` escaped, or as it is.
+fn unquoted(text: &str, what: &str) -> Result<String> {
     let Some(inner) = text.strip_prefix('"') else {
         return Ok(text.to_owned());
     };
@@ -3277,7 +3332,7 @@ fn unquoted(text: &str) -> Result<String> {
     while let Some(character) = characters.next() {
         match character {
             '"' if characters.as_str().trim().is_empty() => return Ok(message),
-            '"' => bail!("a log message in quotes ends at its closing quote"),
+            '"' => bail!("{what} in quotes ends at its closing quote"),
             '\\' => match characters.next() {
                 Some(escaped @ ('"' | '\\')) => message.push(escaped),
                 Some(other) => {
@@ -3290,7 +3345,7 @@ fn unquoted(text: &str) -> Result<String> {
         }
     }
 
-    bail!("a log message in quotes needs its closing quote")
+    bail!("{what} in quotes needs its closing quote")
 }
 
 /// Parses breakpoint and watchpoint ids, ranges of them such as `3-5` or
@@ -3959,7 +4014,7 @@ mod tests {
         assert_eq!(
             parsed,
             BreakLine {
-                location: Some("parse.c:12"),
+                location: Some("parse.c:12".into()),
                 condition: Some(r#"name == "log" && (a log b)"#),
                 hits: Some(">=2"),
                 log: Some(r#"said "{name}""#.to_owned()),
