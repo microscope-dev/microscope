@@ -1602,15 +1602,15 @@ impl ModuleImage {
     /// Every symbol that answers to a name as [`Symbol::answers_to`]
     /// reads it.
     ///
-    /// Such a symbol's name holds the name's last part as written: it is
-    /// the name, or the name with a version after it, or a mangled name
-    /// [`crate::demangle::spells`] accepts only if it holds the last part.
-    /// So only the few names that hold it are demangled, never all of a
+    /// Such a symbol's name holds the name's [`crate::demangle::Clue`]: it
+    /// is the name, or the name with a version after it, or a mangled name
+    /// [`crate::demangle::spells`] accepts only if it holds the clue. So
+    /// only the few names that hold it are demangled, never all of a
     /// module's, which for a large C++ program takes most of a second.
     pub fn symbols_answering<'a>(&'a self, name: &'a str) -> impl Iterator<Item = Symbol<'a>> {
-        let last = crate::demangle::last_part(name);
+        let clue = crate::demangle::Clue::of(name);
         self.symbols()
-            .filter(move |symbol| symbol.name().contains(last))
+            .filter(move |symbol| clue.is_in(symbol.name()))
             .filter(move |symbol| symbol.answers_to(name))
     }
 
