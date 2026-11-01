@@ -463,10 +463,16 @@ fn decode_sample(body: &[u8], kernel: bool, period: Option<u64>) -> Result<Sampl
 
 /// Copies the records of `bytes` to `out`, each sample of the usual layout
 /// that an event whose identifier is in `sampling` wrote keeping at most
-/// `keep` bytes of its stack copy, a multiple of 8, and returns how many
-/// samples it shortened. A record that cannot be decoded is copied as it
-/// is, with all that follows it.
+/// `keep` bytes of its stack copy, a positive multiple of 8, and returns
+/// how many samples it shortened. A record that cannot be decoded is
+/// copied as it is, with all that follows it.
 pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec<u8>) -> u64 {
+    // A copy of no bytes has no count of the bytes filled after it.
+    debug_assert!(
+        keep > 0 && keep.is_multiple_of(8),
+        "shortening stacks to {keep} bytes, not a positive multiple of 8"
+    );
+
     let mut shortened = 0;
     let mut rest = bytes;
     while let Some(header) = rest.first_chunk::<8>() {
@@ -726,5 +732,193 @@ mod tests {
             next_of(&sample_record(42, &overrun), &[42]),
             Some(Err(Malformed))
         );
+    }
+
+    use proptest::prelude::*;
+
+    /// A sample of the usual layout, or a record of another kind, as the
+    /// model of a ring's records.
+    #[derive(Debug, Clone)]
+    enum Model {
+        Sample {
+            identifier: u64,
+            misc: u16,
+            fields: [u64; 4],
+            chain: Vec<u64>,
+            registers: Option<Vec<u64>>,
+            stack: Vec<u8>,
+            used: u64,
+        },
+        Other {
+            kind: u32,
+            body: Vec<u8>,
+        },
+    }
+
+    impl Model {
+        fn encode(&self) -> Vec<u8> {
+            let mut body = Vec::new();
+            let mut word = |value: u64| body.extend_from_slice(&value.to_le_bytes());
+            let (kind, misc) = match self {
+                Self::Sample {
+                    identifier,
+                    misc,
+                    fields,
+                    chain,
+                    registers,
+                    stack,
+                    used,
+                } => {
+                    word(*identifier);
+                    fields.iter().copied().for_each(&mut word);
+                    word(chain.len() as u64);
+                    chain.iter().copied().for_each(&mut word);
+                    match registers {
+                        Some(registers) => {
+                            word(2);
+                            registers.iter().copied().for_each(&mut word);
+                        }
+                        None => word(0),
+                    }
+                    word(stack.len() as u64);
+                    if !stack.is_empty() {
+                        body.extend_from_slice(stack);
+                        body.extend_from_slice(&used.to_le_bytes());
+                    }
+                    (RECORD_SAMPLE, *misc)
+                }
+                Self::Other { kind, body: other } => {
+                    body.extend_from_slice(other);
+                    (*kind, 0)
+                }
+            };
+
+            let mut record = kind.to_le_bytes().to_vec();
+            record.extend_from_slice(&misc.to_le_bytes());
+            record.extend_from_slice(&u16::try_from(8 + body.len()).unwrap().to_le_bytes());
+            record.extend_from_slice(&body);
+            record
+        }
+
+        /// The record shortening keeps only `keep` bytes of, if any.
+        fn shortened(&self, keep: usize) -> Option<Self> {
+            let Self::Sample {
+                identifier: SAMPLING,
+                stack,
+                used,
+                ..
+            } = self
+            else {
+                return None;
+            };
+            if stack.len() <= keep {
+                return None;
+            }
+
+            let mut short = self.clone();
+            if let Self::Sample {
+                stack: short_stack,
+                used: short_used,
+                ..
+            } = &mut short
+            {
+                *short_stack = stack[..keep].to_vec();
+                *short_used = (*used).min(keep as u64);
+            }
+            Some(short)
+        }
+    }
+
+    /// The identifier of the event whose samples are shortened.
+    const SAMPLING: u64 = 1;
+
+    fn record() -> impl Strategy<Value = Model> {
+        let stack = (0..=8_usize).prop_flat_map(|words| {
+            let length = 8 * words;
+            (
+                prop::collection::vec(any::<u8>(), length),
+                0..=length as u64,
+            )
+        });
+        let sample = (
+            prop_oneof![3 => Just(SAMPLING), 1 => Just(2_u64)],
+            prop_oneof![Just(0_u16), Just(MISC_KERNEL)],
+            any::<[u64; 4]>(),
+            prop::collection::vec(any::<u64>(), 0..3),
+            prop::option::of(prop::collection::vec(any::<u64>(), 18)),
+            stack,
+        )
+            .prop_map(
+                |(identifier, misc, fields, chain, registers, (stack, used))| Model::Sample {
+                    identifier,
+                    misc,
+                    fields,
+                    chain,
+                    registers,
+                    stack,
+                    used,
+                },
+            );
+        let other = (
+            // Kinds whose records decode whatever their bodies hold.
+            prop::sample::select(vec![RECORD_THROTTLE, RECORD_SWITCH, 77]),
+            (0..=6_usize).prop_flat_map(|words| prop::collection::vec(any::<u8>(), 8 * words)),
+        )
+            .prop_map(|(kind, body)| Model::Other { kind, body });
+        prop_oneof![3 => sample, 1 => other]
+    }
+
+    proptest::proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Shortening rewrites each listed sample whose copy is longer
+        /// than `keep` to the record it would be had it asked for `keep`
+        /// bytes, and copies every other record, and a record cut short
+        /// with all that follows it, as they are.
+        #[test]
+        fn shortening_rewrites_only_long_listed_samples(
+            (records, keep, cut) in (
+                prop::collection::vec(record(), 0..6),
+                (1..=8_usize).prop_map(|words| 8 * words),
+                any::<prop::sample::Index>(),
+            )
+        ) {
+            let encoded = records.iter().map(Model::encode).collect::<Vec<_>>();
+            let stream = encoded.concat();
+            let cut = cut.index(stream.len() + 1);
+            let bytes = &stream[..cut];
+
+            let mut out = Vec::new();
+            let shortened = shorten_stacks(bytes, &[SAMPLING], keep, &mut out);
+
+            // The records whole before the cut, then what is left of it.
+            let mut expected = Vec::new();
+            let mut count = 0;
+            let mut offset = 0;
+            for (model, record) in records.iter().zip(&encoded) {
+                if offset + record.len() > cut {
+                    break;
+                }
+                offset += record.len();
+                match model.shortened(keep) {
+                    Some(short) => {
+                        expected.extend_from_slice(&short.encode());
+                        count += 1;
+                    }
+                    None => expected.extend_from_slice(record),
+                }
+            }
+            expected.extend_from_slice(&bytes[offset..]);
+
+            prop_assert_eq!(&out, &expected);
+            prop_assert_eq!(shortened, count);
+
+            // Every rewritten record decodes, as the one it replaced did.
+            let mut rest = &out[..out.len() - (cut - offset)];
+            while !rest.is_empty() {
+                let (_, length) = next(rest).expect("a record").expect("a whole record");
+                rest = &rest[length..];
+            }
+        }
     }
 }
