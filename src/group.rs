@@ -543,6 +543,20 @@ impl<C> Stops<C> {
         first: Option<(MemberNumber, StopReason)>,
         waiting: BTreeSet<MemberNumber>,
     ) -> Option<(MemberNumber, StopReason)> {
+        // A client's pause while the group stops joins the stop under way,
+        // which keeps the stop it is for.
+        if let Phase::Stopping {
+            waiting: awaited, ..
+        } = &mut self.phase
+        {
+            debug_assert!(
+                first.is_none(),
+                "member {first:?}'s stop began a group stop inside another"
+            );
+            awaited.extend(waiting);
+            return self.paused(0, None);
+        }
+
         self.phase = Phase::Stopping { first, waiting };
         self.paused(0, None)
     }
@@ -1486,6 +1500,28 @@ mod tests {
         assert_eq!(stops.defer("continue"), Some("continue"));
         assert_eq!(stops.pause_all(None, BTreeSet::from([1])), None);
         assert_eq!(stops.paused(1, None), None, "member 1 never stopped");
+    }
+
+    /// Found by a model of the stop rule: a client pauses the group
+    /// just as a member's breakpoint has begun to stop it.
+    #[test]
+    fn a_pause_during_a_group_stop_keeps_the_stop_it_is_for() {
+        let mut stops = Stops::<()>::new(StopScope::Group);
+        let breakpoint = breakpoint_stop();
+        assert_eq!(
+            stops.stopped(1, breakpoint.clone()),
+            Some(StopAction::PauseOthers(1, breakpoint.clone()))
+        );
+        assert_eq!(
+            stops.pause_all(Some((1, breakpoint.clone())), BTreeSet::from([2, 4])),
+            None
+        );
+        assert_eq!(stops.pause_all(None, BTreeSet::from([2, 4])), None);
+        assert_eq!(stops.stopped(2, StopReason::Pause), None);
+        assert_eq!(
+            stops.stopped(4, StopReason::Pause),
+            Some(StopAction::Report(1, breakpoint))
+        );
     }
 
     #[tokio::test]
