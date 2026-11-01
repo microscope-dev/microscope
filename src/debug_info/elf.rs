@@ -962,6 +962,14 @@ fn collect_plt(
             continue;
         };
 
+        let SectionFlags::Elf { sh_flags } = section.flags() else {
+            continue;
+        };
+
+        if !is_code(sh_flags) {
+            continue;
+        }
+
         let Ok(code) = section.data() else {
             continue;
         };
@@ -2236,6 +2244,42 @@ mod tests {
             [],
             "more pushes than any stub makes"
         );
+    }
+
+    /// A PLT section whose flags say it holds no code names no stubs, as
+    /// no other symbol is placed outside code.
+    #[test]
+    fn a_plt_that_is_not_code_has_no_stubs() {
+        let mut data =
+            include_bytes!("../../fuzz/corpus/elf-symbols/minidebuginfo-library").to_vec();
+        let (header, start, end) = {
+            let object = object::File::parse(data.as_slice()).expect("the library");
+            let object::File::Elf64(elf) = &object else {
+                panic!("a 64-bit library");
+            };
+            let section = object.section_by_name(".plt.got").expect("a .plt.got");
+            let shoff = elf.elf_header().e_shoff(Endianness::Little);
+            let header = shoff + section.index().0 as u64 * 64;
+            (
+                header,
+                section.address(),
+                section.address() + section.size(),
+            )
+        };
+
+        // sh_flags is the third field of the section header.
+        let flags = usize::try_from(header + 8).expect("an offset");
+        data[flags..flags + 8].fill(0);
+
+        let object = object::File::parse(data.as_slice()).expect("the library");
+        let table = load_symbols(&object, None, &[]);
+        let inside: Vec<_> = table
+            .symbols
+            .iter()
+            .filter(|symbol| (start..end).contains(&symbol.address.get()))
+            .map(|symbol| symbol.name.clone())
+            .collect();
+        assert!(inside.is_empty(), "{inside:?}");
     }
 
     /// A malformed section whose code runs past the last address holds no
