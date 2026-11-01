@@ -2331,4 +2331,253 @@ mod tests {
             assert_eq!(mismatch(&[wrong]), Some(true), "{wrong:x?}");
         }
     }
+
+    use proptest::prelude::*;
+
+    use super::super::memory::MemoryAccessError;
+
+    /// How many bytes of address space the memory models span.
+    const SPAN: u64 = 48;
+
+    /// A segment the dump saved `saved` bytes of, of the `recorded` its
+    /// producer meant to.
+    #[derive(Debug, Clone)]
+    struct ModelSegment {
+        start: u64,
+        end: u64,
+        recorded: u64,
+        saved: u64,
+    }
+
+    /// Core memory as the precedence rules say each byte reads: saved
+    /// bytes, else nothing where truncation lost them, else the file
+    /// backing that covers it.
+    #[derive(Debug, Clone)]
+    struct Model {
+        segments: Vec<ModelSegment>,
+
+        /// The core file, where the segments' saved bytes follow a header.
+        core: Vec<u8>,
+        backings: Vec<FileBacking>,
+    }
+
+    impl std::fmt::Debug for FileBacking {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("FileBacking")
+                .field("start", &self.start)
+                .field("end", &self.end)
+                .field("file_offset", &self.file_offset)
+                .field("data", &self.data.len())
+                .finish()
+        }
+    }
+
+    const HEADER: u64 = 3;
+
+    impl Model {
+        fn file_offsets(&self) -> impl Iterator<Item = u64> + '_ {
+            self.segments.iter().scan(HEADER, |offset, segment| {
+                let this = *offset;
+                *offset += segment.saved;
+                Some(this)
+            })
+        }
+
+        fn byte(&self, address: u64) -> Option<u8> {
+            for (segment, file_offset) in self.segments.iter().zip(self.file_offsets()) {
+                if !(segment.start..segment.end).contains(&address) {
+                    continue;
+                }
+
+                let offset = address - segment.start;
+                if offset < segment.saved {
+                    return Some(self.core[usize::try_from(file_offset + offset).unwrap()]);
+                }
+                if offset < segment.recorded {
+                    return None;
+                }
+            }
+
+            let backing = self
+                .backings
+                .iter()
+                .find(|backing| (backing.start..backing.end).contains(&address))?;
+            let offset = backing.file_offset.checked_add(address - backing.start)?;
+            backing.data.get(usize::try_from(offset).ok()?).copied()
+        }
+
+        fn bytes(&self, address: u64, size: usize) -> Option<Vec<u8>> {
+            (0..size as u64)
+                .map(|offset| self.byte(address.checked_add(offset)?))
+                .collect()
+        }
+
+        fn memory(&self) -> CoreMemory {
+            let segments = self
+                .segments
+                .iter()
+                .zip(self.file_offsets())
+                .map(|(segment, file_offset)| CoreSegment {
+                    start: segment.start,
+                    end: segment.end,
+                    file_offset,
+                    recorded: segment.recorded,
+                    saved: segment.saved,
+                    flags: elf::PF_R,
+                })
+                .collect();
+            let core = CoreDump {
+                segments,
+                ..CoreDump::new(
+                    CoreBytes::Memory(self.core.clone().into()),
+                    Metadata {
+                        process: CoreProcess {
+                            pid: 1,
+                            name: "".into(),
+                            arguments: "".into(),
+                        },
+                        threads: Vec::new(),
+                        auxv: Vec::new(),
+                        files: Vec::new(),
+                        segments: Vec::new(),
+                    },
+                )
+            };
+            CoreMemory::new(Arc::new(core), self.backings.clone())
+        }
+    }
+
+    /// Between `fewest` and `most` ordered ranges that do not overlap,
+    /// inside the span from `base`.
+    fn ranges(base: u64, fewest: usize, most: usize) -> impl Strategy<Value = Vec<Range<u64>>> {
+        prop::collection::btree_set(0..=SPAN, 2 * fewest..=2 * most).prop_map(move |points| {
+            let points = points.into_iter().collect::<Vec<_>>();
+            points
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[start, end]| base + start..base + end)
+                .collect()
+        })
+    }
+
+    /// Bytes that differ from one position to the next.
+    fn pattern(seed: u8, length: usize) -> Vec<u8> {
+        (0..length)
+            .map(|index| seed.wrapping_add(u8::try_from(index % 256).unwrap().wrapping_mul(37)))
+            .collect()
+    }
+
+    fn model() -> impl Strategy<Value = Model> {
+        crate::test_strategies::u64_edges()
+            .prop_map(|edge| edge.min(u64::MAX - SPAN))
+            .prop_flat_map(|base| {
+                let segments = ranges(base, 1, 3).prop_flat_map(|ranges| {
+                    ranges
+                        .into_iter()
+                        .map(|range| {
+                            let length = range.end - range.start;
+                            (0..=length, any::<prop::sample::Index>()).prop_map(
+                                move |(recorded, saved)| ModelSegment {
+                                    start: range.start,
+                                    end: range.end,
+                                    recorded,
+                                    saved: u64::try_from(
+                                        saved.index(usize::try_from(recorded).unwrap() + 1),
+                                    )
+                                    .unwrap(),
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                });
+                let backings = ranges(base, 0, 2).prop_flat_map(|ranges| {
+                    ranges
+                        .into_iter()
+                        .map(|range| {
+                            (
+                                prop_oneof![4 => 0..8_u64, 1 => Just(u64::MAX - 4)],
+                                0..=usize::try_from(SPAN).unwrap() + 8,
+                                any::<u8>(),
+                            )
+                                .prop_map(
+                                    move |(file_offset, length, seed)| FileBacking {
+                                        start: range.start,
+                                        end: range.end,
+                                        file_offset,
+                                        data: pattern(seed, length).into(),
+                                    },
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                });
+                (Just(base), segments, backings, any::<u8>())
+            })
+            .prop_map(|(_, segments, backings, seed)| {
+                let saved = segments.iter().map(|segment| segment.saved).sum::<u64>();
+                Model {
+                    core: pattern(seed, usize::try_from(HEADER + saved).unwrap()),
+                    segments,
+                    backings,
+                }
+            })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+        /// A read succeeds exactly when the model holds every byte it
+        /// asks for, with those bytes, however it splits across saved
+        /// bytes, truncation, and file backings. A word reads as far as
+        /// its leading bytes are readable.
+        #[test]
+        fn core_reads_follow_the_byte_model(
+            (model, reads) in model().prop_flat_map(|model| {
+                let base = model.segments[0].start;
+                let reads = prop::collection::vec((0..SPAN + 8, 0..=16_usize), 1..8);
+                (Just(model), reads.prop_map(move |reads| {
+                    reads
+                        .into_iter()
+                        .map(|(offset, size)| (base.saturating_add(offset), size))
+                        .collect::<Vec<_>>()
+                }))
+            })
+        ) {
+            let memory = model.memory();
+            for (address, size) in reads {
+                let mut buffer = vec![0; size];
+                let read = memory.read(address, &mut buffer).map(|()| buffer);
+                match (model.bytes(address, size), read) {
+                    (Some(expected), Ok(read)) => prop_assert_eq!(read, expected),
+                    (None, Err(CoreMemoryError::Unavailable)) => {}
+                    (expected, read) => prop_assert!(
+                        false,
+                        "a read of {size} at {address:#x}: expected {expected:?}, got {read:?}"
+                    ),
+                }
+
+                let readable = (0..8)
+                    .take_while(|offset| {
+                        address.checked_add(*offset).and_then(|byte| model.byte(byte)).is_some()
+                    })
+                    .count();
+                let mut word = model.bytes(address, readable).unwrap();
+                word.resize(8, 0);
+                let word = u64::from_le_bytes(word.try_into().unwrap());
+                match (readable, super::super::post_mortem::read_word(&memory, address)) {
+                    (8, Ok(read)) => prop_assert_eq!(read, word),
+                    (0, Err(MemoryAccessError::Inaccessible)) => {}
+                    (readable, Err(MemoryAccessError::Partial { word: read, readable: count })) => {
+                        prop_assert_eq!((read, count), (word, readable));
+                    }
+                    (readable, read) => prop_assert!(
+                        false,
+                        "a word at {address:#x}, {readable} readable: got {:?}",
+                        read.map_err(|error| matches!(error, MemoryAccessError::Inaccessible))
+                    ),
+                }
+            }
+        }
+    }
 }
