@@ -2302,6 +2302,12 @@ textarea.input {
   text-align: left;
 }
 
+/* Sticky offsets start inside the scroller's padding, so cancel .pane-text's
+   top padding to pin the header to the pane's edge. */
+.pane-text .table th {
+  top: -14px;
+}
+
 .table td {
   max-width: 40ch;
   padding: 2px 10px;
