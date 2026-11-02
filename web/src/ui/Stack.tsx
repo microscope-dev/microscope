@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { assert } from "../assert";
+import { unreached } from "../follow";
 import type { Backtrace, Frame } from "../protocol";
 import { stackRows } from "../stack";
 import { threadLabel } from "./names";
@@ -38,9 +39,11 @@ export function Stack() {
   } else if (!trace) {
     body = (
       <div className="empty">
-        {stale === "passed"
-          ? `Stop #${at.stop} has passed; its stack is gone with it.`
-          : "Reading the stack…"}
+        {stale !== "passed"
+          ? "Reading the stack…"
+          : unreached(state, at.stop)
+            ? `This session has not reached stop #${at.stop}.`
+            : `Stop #${at.stop} has passed; its stack is gone with it.`}
       </div>
     );
   } else {
@@ -112,7 +115,11 @@ export function Stack() {
         {at?.task ? (
           <span className="count">task {at.task.number}</span>
         ) : (
-          thread && <span className="count">{threadLabel(thread.id, thread.name)}</span>
+          thread && (
+            <span className="count" title={threadLabel(thread.id, thread.name)}>
+              {threadLabel(thread.id, thread.name)}
+            </span>
+          )
         )}
         <span className="end">Alt+2</span>
       </div>

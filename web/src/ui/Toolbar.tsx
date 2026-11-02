@@ -53,7 +53,6 @@ export function Toolbar() {
           {failure.length > 60 ? `${failure.slice(0, 60)}…` : failure}
         </span>
       )}
-      <span className="spacer" />
       <People />
       <Share />
       {control && (

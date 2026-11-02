@@ -189,6 +189,39 @@ async fn a_viewer_watches_but_cannot_control_or_share_control() {
 }
 
 #[tokio::test]
+async fn a_browser_with_control_keeps_it_when_it_opens_a_view_link() {
+    let web = Web::start("keeps-control", &[]);
+    let mut owner = web.control("owner").await;
+    let link = owner.ok("share", json!({"role": "view", "to": "/"})).await;
+    let view = link["url"]
+        .as_str()
+        .and_then(|link| link.rsplit_once('#'))
+        .expect("a token in the link")
+        .1
+        .to_owned();
+    let control = web.cookie(&web.control_token.clone());
+    let viewing = web.cookie(&view);
+
+    // A browser holds one cookie per server: a view link must not replace
+    // control, but control replaces viewing.
+    let login = |token: &str, cookie: &str| {
+        web.http(&format!(
+            "POST {}api/login HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: {cookie}\r\n\
+             Connection: close\r\nContent-Length: {}\r\n\r\n{token}",
+            web.base,
+            web.host(),
+            web.origin(),
+            token.len(),
+        ))
+    };
+    let kept = login(&view, &control);
+    assert!(kept.starts_with("HTTP/1.1 204"), "{kept}");
+    assert!(!kept.to_lowercase().contains("set-cookie"), "{kept}");
+    let raised = login(&web.control_token, &viewing);
+    assert!(raised.to_lowercase().contains("set-cookie"), "{raised}");
+}
+
+#[tokio::test]
 async fn malformed_requests_are_answered_not_fatal() {
     let web = Web::start("malformed", &[]);
     let mut client = web.control("tab").await;

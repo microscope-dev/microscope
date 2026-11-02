@@ -299,8 +299,10 @@ pub async fn read_memory(
         ));
     }
 
+    // A read stops at the end of the address space rather than overflowing it.
+    let count = request.count.min(u64::MAX - start.get());
     let read = handle
-        .read_memory_at(StopId::new(request.stop), start, request.count)
+        .read_memory_at(StopId::new(request.stop), start, count)
         .await?;
     let mut bytes = String::with_capacity(read.bytes.len() * 2);
     for byte in read.bytes.iter() {

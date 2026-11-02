@@ -497,8 +497,14 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) ->
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    if app.session.tokens().role(body.trim()).is_none() {
+    let Some(role) = app.session.tokens().role(body.trim()) else {
         return (StatusCode::FORBIDDEN, "this link is not for this server").into_response();
+    };
+
+    // A browser holds one cookie for this server, so opening a view link
+    // keeps the control it has rather than taking it away.
+    if role == Role::View && app.authorize(&headers, None) == Some(Role::Control) {
+        return StatusCode::NO_CONTENT.into_response();
     }
 
     let cookie = auth::set_cookie(app.port, body.trim(), app.public.as_ref());

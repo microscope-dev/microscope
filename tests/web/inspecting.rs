@@ -205,6 +205,19 @@ async fn the_console_completes_and_runs_commands_in_the_tabs_frame() {
         .expect_err("run control from the console");
     assert_eq!(kind, "invalid", "{message}");
 
+    // Help lists what the console runs, and nothing it refuses.
+    let help = tab.ok("console", json!({"line": "help"})).await;
+    let listed = help["output"]
+        .as_str()
+        .expect("help output")
+        .lines()
+        .filter_map(|line| line.strip_prefix("  ")?.split_whitespace().next())
+        .collect::<Vec<_>>();
+    assert!(listed.contains(&"frame"), "{help}");
+    for refused in ["continue", "edit", "clear", "quit"] {
+        assert!(!listed.contains(&refused), "{refused} in {help}");
+    }
+
     // A viewer reads values and evaluates, but neither writes nor runs commands.
     let link = tab.ok("share", json!({"role": "view", "to": "/"})).await["url"]
         .as_str()
@@ -445,4 +458,26 @@ async fn a_python_stack_marks_its_languages_and_folds_the_interpreter() {
     let nested = tab.ok("evaluate", evaluate("nested[2]")).await;
     assert_eq!(nested["text"], "{'k': [4]}", "{nested}");
     assert!(nested["children"]["handle"].is_u64(), "{nested}");
+}
+
+#[tokio::test]
+async fn a_frame_without_debug_information_says_so_rather_than_failing() {
+    let web = Web::start("nodebug", &[&fixture("kvstore")]);
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    tab.ok("addBreakpoint", json!({"location": "nanosleep"}))
+        .await;
+    tab.ok("continue", json!({})).await;
+    let stopped = tab.inferior("stopped").await;
+    let inferior = &stopped["inferior"];
+
+    let frame = json!({"stop": inferior["stop"], "thread": inferior["thread"], "frame": 0});
+    let scopes = tab.ok("scopes", frame).await;
+    let locals = &scopes["scopes"][0];
+    assert_eq!(locals["problem"], Value::Null, "{scopes}");
+    assert_eq!(
+        locals["note"], "no debug information describes this frame's variables",
+        "{scopes}"
+    );
 }

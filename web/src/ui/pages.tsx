@@ -167,10 +167,12 @@ export function SessionPage() {
     <div className="page">
       <div className="card" style={{ width: "min(560px, 100%)" }} data-testid="session-ended">
         <div className="card-head">
-          <h1>This session ended</h1>
+          {/* Only a tab that saw the session knows it ran here at all. */}
+          <h1>{followed.current ? "This session ended" : "This session is not here"}</h1>
         </div>
         <div className="card-body">
           <p style={{ margin: 0 }}>
+            {followed.current ? "" : "It ended, or the link is wrong. "}
             {ended ? `${ended.name} ${ended.text}. ` : ""}
             {current
               ? `microscope is now debugging ${targetName(state) ?? "something else"}.`

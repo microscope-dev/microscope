@@ -113,7 +113,7 @@ test("a program chosen in the picker keeps nothing of the one it replaced", asyn
   await expect(page.getByTestId("console")).not.toContainText("spin_value");
 });
 
-test("a replacement that fails says the old session ended", async ({ page, microscope }) => {
+test("a replacement that fails leaves the old session running", async ({ page, microscope }) => {
   await join(page, microscope.link);
   const first = page.url();
   const watcher = await page.context().newPage();
@@ -126,14 +126,12 @@ test("a replacement that fails says the old session ended", async ({ page, micro
   await page.getByRole("button", { name: "Load", exact: true }).click();
   await page.getByRole("button", { name: /End it and continue/ }).click();
   await expect(page.getByRole("alert")).toContainText("No such file");
-  // Nothing is left to end, so the picker no longer asks to.
-  await expect(page.getByRole("button", { name: /End it and continue/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^Debug something$/ })).toBeVisible();
   // The failure is not a program worth recalling.
   await expect(page.getByRole("button", { name: "program", exact: true })).toHaveCount(0);
 
-  // Others learn why their session ended.
-  const ended = watcher.getByTestId("session-ended");
-  await expect(ended).toContainText("ended the spin session");
-  await expect(ended).toContainText("No such file");
+  // The program that could not load ended nothing.
+  await page.getByRole("link", { name: "Back to spin" }).click();
+  await expect(page.getByTestId("status")).toContainText("Not started");
+  await expect(watcher.getByTestId("status")).toContainText("Not started");
+  await expect(watcher.getByTestId("session-ended")).toHaveCount(0);
 });

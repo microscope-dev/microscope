@@ -9,7 +9,7 @@ import { useCallback } from "react";
 import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
-import { type At, inView, stringifySearch, type View } from "../focus";
+import { type At, inView, stringifySearch, type View, watching } from "../focus";
 import type { Model } from "../model";
 import { useConnection, useStoreApi } from "../store";
 import { flash, type TabState, tab } from "../tab";
@@ -218,11 +218,10 @@ export const COMMANDS = registry({
         flash("Select an expression in the source, then press w to watch it");
         return;
       }
-      const w = current.look.w ?? [];
-      if (!w.includes(expression)) {
+      const look = watching(current.look, expression);
+      if (look !== current.look) {
         void navigate({
-          href:
-            window.location.pathname + stringifySearch({ ...current.look, w: [...w, expression] }),
+          href: window.location.pathname + stringifySearch({ ...look }),
           replace: true,
         });
       }
@@ -306,6 +305,8 @@ export function useCommands(): Commands {
       const command = COMMANDS.get(id);
       const available = command.available(now);
       if (available.state === "ready") {
+        // What an earlier command said no longer holds.
+        tab.setState({ flash: null });
         command.run(now);
       }
       return available;

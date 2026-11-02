@@ -29,7 +29,8 @@ export function Picker() {
   const state = useModel((model) => model.state);
   const [busy, setBusy] = useState<Pending | null>(null);
   const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // An error belongs to the tab that caused it, until its form is edited.
+  const [error, setError] = useState<{ tab: PickerTab; message: string } | null>(null);
   const current = targetName(state);
 
   const submit = async (pending: Pending, replace = false) => {
@@ -43,9 +44,8 @@ export function Picker() {
       if (failure instanceof RequestError && failure.kind === "busy") {
         setBusy(pending);
       } else {
-        // A replacement that failed has still ended what it replaced.
         setBusy(null);
-        setError(failure instanceof Error ? failure.message : String(failure));
+        setError({ tab, message: failure instanceof Error ? failure.message : String(failure) });
       }
     } finally {
       setWorking(false);
@@ -112,21 +112,23 @@ export function Picker() {
               </div>
             </div>
           )}
-          {error && (
+          {error?.tab === tab && (
             <div className="banner error" role="alert">
-              {error}
+              {error.message}
             </div>
           )}
-          {tab === "launch" && (
-            <LaunchForm working={working} submit={(pending) => void submit(pending)} />
-          )}
-          {tab === "attach" && (
-            <AttachForm working={working} submit={(pending) => void submit(pending)} />
-          )}
-          {tab === "core" && (
-            <CoreForm working={working} submit={(pending) => void submit(pending)} />
-          )}
-          {tab === "profile" && <RecordForm />}
+          <div className="picker-forms" onInput={() => setError(null)}>
+            {tab === "launch" && (
+              <LaunchForm working={working} submit={(pending) => void submit(pending)} />
+            )}
+            {tab === "attach" && (
+              <AttachForm working={working} submit={(pending) => void submit(pending)} />
+            )}
+            {tab === "core" && (
+              <CoreForm working={working} submit={(pending) => void submit(pending)} />
+            )}
+            {tab === "profile" && <RecordForm />}
+          </div>
         </div>
       </div>
     </div>
@@ -513,9 +515,12 @@ export function AttachForm({ working, submit }: FormProps) {
 
   const shown = useMemo(() => {
     const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
-    return (processes ?? []).filter((process) =>
+    const matching = (processes ?? []).filter((process) =>
       words.every((word) => `${process.pid} ${process.command}`.toLowerCase().includes(word)),
     );
+    // A typed pid names one process, ahead of newer ones that only mention it.
+    const named = (process: Process) => (words.includes(String(process.pid)) ? 0 : 1);
+    return matching.toSorted((a, b) => named(a) - named(b));
   }, [processes, filter]);
   const choice = shown[Math.min(selected, shown.length - 1)];
 

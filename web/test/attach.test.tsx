@@ -64,3 +64,25 @@ it("chooses the first process after ArrowDown in an empty list", async () => {
     .toHaveAttribute("aria-selected", "true");
   await expect.element(page.getByRole("button", { name: "Attach to 42" })).toBeEnabled();
 });
+
+it("puts the process whose pid was typed ahead of newer ones that only mention it", async () => {
+  const server = await fakeServer();
+  render(
+    <SessionContext value={server.session}>
+      <AttachForm working={false} submit={() => undefined} />
+    </SessionContext>,
+  );
+  server.answer(await server.next("processes"), {
+    processes: [
+      { pid: 9041, command: "bash -c 'kill 41'" },
+      { pid: 41, command: "kvstore" },
+    ],
+    ptraceScope: null,
+  });
+  await userEvent.click(page.getByRole("textbox"));
+  await userEvent.keyboard("41");
+  await expect
+    .element(page.getByRole("option", { name: /kvstore/ }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect.element(page.getByRole("button", { name: "Attach to 41" })).toBeEnabled();
+});

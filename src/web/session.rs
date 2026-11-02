@@ -97,12 +97,21 @@ impl Failure {
 impl From<microscope::Error> for Failure {
     fn from(error: microscope::Error) -> Self {
         use microscope::Error;
+        // The page says what the program is doing, in its own words: a
+        // second pause or continue, as racing keys send, finds it so.
+        let run = match error {
+            Error::NotStopped => Some("the program is not stopped"),
+            Error::NotRunning => Some("the program is not running"),
+            Error::AlreadyRunning => Some("the program is already running"),
+            Error::AlreadyStopped => Some("the program is already stopped"),
+            _ => None,
+        };
+        if let Some(message) = run {
+            return Self::new(ErrorKind::NotStopped, message);
+        }
+
         let kind = match error {
             Error::StaleStop => ErrorKind::StaleStop,
-            Error::NotStopped
-            | Error::NotRunning
-            | Error::AlreadyRunning
-            | Error::AlreadyStopped => ErrorKind::NotStopped,
             // A frame the interpreter or a suspended task holds has no
             // machine state, which is how such a frame is, not a failure.
             Error::PostMortemTarget
@@ -1719,6 +1728,18 @@ impl Session {
             ));
         }
 
+        // Only one target can be traced at a time, so the current one ends
+        // before the new one opens. What can fail without tracing is
+        // checked first, so a mistyped path leaves the current session be.
+        let program = if target.is_some() {
+            match prepare(&start, &self.debug_files, self.stopping.subscribe()).await {
+                Ok(program) => program,
+                Err(message) => return Err((Failure::new(ErrorKind::Failed, message), None)),
+            }
+        } else {
+            None
+        };
+
         let ended = match target.take() {
             Some(current) => {
                 let name = current.name.clone();
@@ -1728,12 +1749,17 @@ impl Session {
             None => None,
         };
 
-        let opened = self.open_target(&mut target, start).await;
+        let opened = self.open_target(&mut target, start, program).await;
         drop(target);
         opened.map_err(|failure| (failure, ended))
     }
 
-    async fn open_target(&self, target: &mut Option<Target>, start: Start) -> Result<(), Failure> {
+    async fn open_target(
+        &self,
+        target: &mut Option<Target>,
+        start: Start,
+        program: Option<microscope::Program>,
+    ) -> Result<(), Failure> {
         self.history
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1744,8 +1770,8 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let opened = match open(&start, &self.debug_files, policy, self.stopping.subscribe()).await
-        {
+        let stopping = self.stopping.subscribe();
+        let opened = match open(&start, program, &self.debug_files, policy, stopping).await {
             Ok(opened) => opened,
             Err(message) => {
                 self.state.send_replace(Arc::new(State::idle(None)));
@@ -2201,30 +2227,68 @@ impl Opened {
 /// Opens what `start` describes, off the async threads where it loads debug
 /// information. A launched or attached program's processes are followed as
 /// `policy` says.
+/// Checks what `start` can fail at without tracing anything: a launched
+/// program loads, a core dump can be read, and a process exists. A launched
+/// program's load is kept, to open it with.
+async fn prepare(
+    start: &Start,
+    debug_files: &microscope::DebugFileOptions,
+    mut stopping: watch::Receiver<bool>,
+) -> Result<Option<microscope::Program>, String> {
+    match start {
+        Start::Launch { spec, .. } => load(spec, debug_files, &mut stopping).await.map(Some),
+        Start::Attach(process) => {
+            if Path::new("/proc").join(process.to_string()).exists() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "failed to attach to process {process}: no such process"
+                ))
+            }
+        }
+        Start::Core(options) => std::fs::File::open(&options.core)
+            .map(|_| None)
+            .map_err(|error| {
+                format!(
+                    "failed to open the core dump {}: {error}",
+                    options.core.display()
+                )
+            }),
+    }
+}
+
+async fn load(
+    spec: &LaunchSpec,
+    debug_files: &microscope::DebugFileOptions,
+    stopping: &mut watch::Receiver<bool>,
+) -> Result<microscope::Program, String> {
+    let program = spec.program.clone();
+    let debug_files = debug_files.clone();
+    loaded(
+        stopping,
+        tokio::task::spawn_blocking(move || microscope::Program::load(&program, &debug_files)),
+    )
+    .await?
+    .map_err(|error| format!("failed to load {}: {error}", spec.program.display()))
+}
+
+/// Opens `start`, with its program when `prepare` loaded it already.
 async fn open(
     start: &Start,
+    program: Option<microscope::Program>,
     debug_files: &microscope::DebugFileOptions,
     policy: FollowPolicy,
     mut stopping: watch::Receiver<bool>,
 ) -> Result<Opened, String> {
     match start {
         Start::Launch { spec, .. } => {
-            let program = spec.program.clone();
-            let debug_files = debug_files.clone();
-            let failed = |error: microscope::Error| {
-                format!("failed to load {}: {error}", spec.program.display())
+            let program = match program {
+                Some(program) => program,
+                None => load(spec, debug_files, &mut stopping).await?,
             };
-            let program = loaded(
-                &mut stopping,
-                tokio::task::spawn_blocking(move || {
-                    microscope::Program::load(&program, &debug_files)
-                }),
-            )
-            .await?
-            .map_err(failed)?;
             ProcessGroup::new(program, policy)
                 .map(Opened::Group)
-                .map_err(failed)
+                .map_err(|error| format!("failed to load {}: {error}", spec.program.display()))
         }
         Start::Attach(process) => ProcessGroup::attach(*process, None, policy, debug_files)
             .await

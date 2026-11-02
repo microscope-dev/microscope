@@ -169,6 +169,16 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
     assert_eq!(unmapped["bytes"], "");
     assert_eq!(unmapped["unreadable"], "0x10");
 
+    // The last page of the address space reads up to its end.
+    let last = tab
+        .ok(
+            "readMemory",
+            json!({"stop": at["stop"], "address": "0xffffffffffffff00", "count": 256}),
+        )
+        .await;
+    assert_eq!(last["bytes"], "");
+    assert_eq!(last["unreadable"], "0xffffffffffffff00");
+
     let before = tab.latest_state().expect("a state")["writes"].clone();
     tab.ok(
         "writeMemory",

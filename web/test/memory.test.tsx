@@ -60,3 +60,17 @@ it("keeps every arrow key pressed faster than the page draws", async () => {
   }
   await expect.element(page.getByRole("button", { name: /at 0x1013$/ })).toHaveFocus();
 });
+
+it("shows the last page of the address space without running past its end", async () => {
+  const server = await mountPane(<Memory />, { look: { mem: "0xffffffffffffffff:1" } });
+  const asked = await server.next("readMemory");
+  expect(asked.params).toMatchObject({ address: "0xffffffffffffff00", count: 256 });
+  server.answer(asked, {
+    address: "0xffffffffffffff00",
+    bytes: "",
+    unreadable: "0xffffffffffffff00",
+  });
+  await expect.element(page.getByText("fffffffffffffff0", { exact: true })).toBeVisible();
+  expect(document.body.textContent).not.toMatch(/10000000000000000/);
+  await expect.element(page.getByRole("button", { name: /Later/ })).toBeDisabled();
+});

@@ -291,6 +291,14 @@ impl Reader<'_> {
                 }
             }
             Err(error @ microscope::Error::StaleStop) => return Err(error.into()),
+            // A frame in code built without debug information, such as libc.
+            Err(microscope::Error::VariableContextUnsupported) => scopes.push(Scope {
+                key: ScopeKey::Locals,
+                name: "Locals".to_owned(),
+                rows: Vec::new(),
+                problem: None,
+                note: Some("no debug information describes this frame's variables".to_owned()),
+            }),
             Err(error) => scopes.push(Scope {
                 key: ScopeKey::Locals,
                 name: "Locals".to_owned(),

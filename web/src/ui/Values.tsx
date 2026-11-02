@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { assert } from "../assert";
 import { useRequest } from "../data";
-import type { At } from "../focus";
+import { type At, watching } from "../focus";
 import { hidden } from "./hidden";
 import { useLook } from "./navigation";
 import { Earlier, LinkedExpansion, messageRow, RowList, ValueRow } from "./ValueTree";
@@ -65,7 +65,9 @@ export function Variables() {
                   <ul className="value-list">
                     {scope.problem && <li className="empty error">{scope.problem}</li>}
                     {scope.note && <li className="empty">{scope.note}</li>}
-                    {scope.rows.length === 0 && !scope.problem && <li className="empty">none</li>}
+                    {scope.rows.length === 0 && !scope.problem && !scope.note && (
+                      <li className="empty">none</li>
+                    )}
                     <RowList rows={scope.rows} parent={scope.key} depth={0} />
                   </ul>
                 )}
@@ -137,7 +139,7 @@ export function Watch() {
             event.preventDefault();
             const expression = text.trim();
             if (expression) {
-              look((current) => ({ ...current, w: [...(current.w ?? []), expression] }));
+              look((current) => watching(current, expression));
               setText("");
             }
           }}

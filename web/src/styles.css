@@ -198,15 +198,9 @@ kbd {
   padding: 4px 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
-  flex-wrap: nowrap;
-}
-
-/* Narrow windows wrap the toolbar rather than scroll it, since a scrolling
-   box would clip its popovers. */
-@media (width < 900px) {
-  .toolbar {
-    flex-wrap: wrap;
-  }
+  /* Wraps rather than scrolls, since a scrolling box would clip its
+     popovers. */
+  flex-wrap: wrap;
 }
 
 /* Step buttons keep their glyphs and tooltips where labels do not fit. */
@@ -305,12 +299,14 @@ kbd {
   flex: 1;
 }
 
+/* Takes the toolbar's spare room, and moves to its own row before the
+   pill would be cut off. */
 .status {
   display: flex;
-  flex: 0 1 auto;
+  flex: 1 1 0;
+  min-width: 12em;
   align-items: center;
   gap: 8px;
-  min-width: 0;
   overflow: hidden;
   color: var(--ink-2);
   white-space: nowrap;
@@ -492,6 +488,7 @@ kbd {
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 /* What a heading names, such as a function or a time, reads as written. */
@@ -507,6 +504,9 @@ kbd {
 }
 
 .pane-head .count {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--ink-3);
   font: 500 10.5px var(--mono);
   letter-spacing: 0;
@@ -514,6 +514,7 @@ kbd {
 }
 
 .pane-head .end {
+  flex: none;
   margin-left: auto;
   color: var(--ink-3);
   font: 10px var(--mono);
@@ -683,6 +684,11 @@ kbd {
   display: grid;
   gap: 14px;
   padding: 16px;
+}
+
+/* Only listens for edits; the forms stay in the card's grid. */
+.picker-forms {
+  display: contents;
 }
 
 .segmented {
@@ -1145,6 +1151,13 @@ textarea.input {
 .error {
   color: var(--error);
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* An error says all of itself, on as many lines as it takes. */
+.row.sub.error {
+  height: auto;
+  white-space: normal;
 }
 
 .icon {

@@ -10,6 +10,11 @@ export function latestStop(state: State): number | undefined {
   return state.stops.at(-1)?.stop;
 }
 
+/** Whether `stop` is beyond any this session has made, as a link can name. */
+export function unreached(state: State, stop: number): boolean {
+  return stop > (latestStop(state) ?? 0);
+}
+
 /**
  * Use the stop's selected frame for its thread, otherwise the innermost frame.
  * Runtime-agent stops select the program's frame, not the agent's.

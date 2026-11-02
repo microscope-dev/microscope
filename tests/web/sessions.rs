@@ -217,13 +217,27 @@ async fn the_picker_replaces_one_session_with_another_only_when_asked() {
     assert_eq!(kind, "failed");
     assert!(message.contains("/nonexistent/program"), "{message}");
 
-    // An answer never arrives ahead of the state its request left behind.
+    // Neither does a process that is gone or a core dump that is missing.
+    for (method, params) in [
+        ("attach", json!({"pid": 999_999_999, "replace": true})),
+        (
+            "openCore",
+            json!({"core": "/nonexistent.core", "replace": true}),
+        ),
+    ] {
+        let (kind, message) = tab.request(method, params).await.expect_err(method);
+        assert_eq!(kind, "failed", "{message}");
+    }
+
+    // What does not open leaves the session it would replace.
     let state = tab.latest_state().expect("a state");
-    assert!(state["session"].is_null(), "{state}");
+    assert_eq!(state["session"], second["session"], "{state}");
     assert!(
         state["busy"].is_null(),
         "still busy after the failure: {state}"
     );
+    tab.ok("continue", json!({"stop": null})).await;
+    tab.inferior("exited").await;
     tab.save_traffic("picker");
 }
 
@@ -364,12 +378,29 @@ async fn restart_runs_the_program_again() {
         })
         .await;
     wait_gone(first);
-    let (kind, _) = tab
+    let (kind, message) = tab
         .request("continue", json!({}))
         .await
         .expect_err("already running");
     assert_eq!(kind, "notStopped");
+    assert!(message.contains("already started"), "{message}");
     assert!(exists(pid(&again)));
+
+    // Racing keys and double clicks send a second pause or continue; what
+    // they are told is so, in the page's words.
+    tab.ok("pause", json!(null)).await;
+    let stop = tab.inferior("stopped").await["inferior"]["stop"].clone();
+    let (_, message) = tab
+        .request("pause", json!(null))
+        .await
+        .expect_err("already stopped");
+    assert_eq!(message, "the program is not running");
+    tab.ok("continue", json!({"stop": stop})).await;
+    let (_, message) = tab
+        .request("continue", json!({"stop": stop}))
+        .await
+        .expect_err("already running");
+    assert_eq!(message, "the program is not stopped");
 }
 
 /// Copies each module the foreign core recorded, as its machine had it, to

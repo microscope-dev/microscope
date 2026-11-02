@@ -308,6 +308,12 @@ export function drawing(look: Look, pinned: Pinned): Look {
   return { ...look, d: [...d, entry], view: "drawings" };
 }
 
+/** The same look, watching `expression` too: once, however often it is added. */
+export function watching(look: Look, expression: string): Look {
+  const w = look.w ?? [];
+  return w.includes(expression) ? look : { ...look, w: [...w, expression] };
+}
+
 /** The same look, in `view`: source is the view a look names by none. */
 export function inView(look: Look, view: View): Look {
   const { view: _view, ...rest } = look;

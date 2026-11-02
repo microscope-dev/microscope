@@ -14,7 +14,7 @@ import {
 } from "../breakpoints";
 import { cache, useRequest } from "../data";
 import { followedLook, formatPlace, inView, parsePlace, showingSource, type View } from "../focus";
-import { stopNote } from "../follow";
+import { stopNote, unreached } from "../follow";
 import { controls } from "../model";
 import type { Breakpoint, Row } from "../protocol";
 import { frameAt } from "../stack";
@@ -221,9 +221,11 @@ export function CodeArea() {
             : at && frame && !frame.source
               ? `${frame.name} has no source${frame.address ? `: it is at ${frame.address}` : ""}${frame.module ? ` in ${frame.module}` : ""}.`
               : at && !trace
-                ? stale === "passed"
-                  ? `Stop #${at.stop} has passed.`
-                  : "Reading the stack…"
+                ? stale !== "passed"
+                  ? "Reading the stack…"
+                  : unreached(state, at.stop)
+                    ? `This session has not reached stop #${at.stop}.`
+                    : `Stop #${at.stop} has passed.`
                 : state.inferior.state === "notStarted"
                   ? "Press F5 to run the program."
                   : "No source to show."}

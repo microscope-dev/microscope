@@ -19,7 +19,7 @@ use microscope::{
     WatchScope, Watchpoint, WatchpointHit, WatchpointInvalidation,
 };
 
-use super::commands::{COMMANDS, CommandSpec, aliases};
+use super::commands::{COMMANDS, Command, CommandSpec, aliases};
 use super::terminal::{Renderer, Role};
 use super::value::{self, bound_output};
 use crate::present::frames;
@@ -62,15 +62,17 @@ pub fn plural(count: u64, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
-pub fn help(aliases: &BTreeMap<String, String>, renderer: Renderer) -> String {
-    let name_width = COMMANDS.iter().map(|command| command.name.len()).max();
-    let alias_width = COMMANDS
-        .iter()
-        .map(|command| alias_list(command).len())
-        .max();
+pub fn help(
+    aliases: &BTreeMap<String, String>,
+    renderer: Renderer,
+    shown: fn(Command) -> bool,
+) -> String {
+    let commands = || COMMANDS.iter().filter(|command| shown(command.command));
+    let name_width = commands().map(|command| command.name.len()).max();
+    let alias_width = commands().map(|command| alias_list(command).len()).max();
     let (name_width, alias_width) = (name_width.unwrap_or(0), alias_width.unwrap_or(0));
     let mut output = "commands:".to_owned();
-    for command in COMMANDS {
+    for command in commands() {
         let aliases = alias_list(command);
         let rendered_aliases = if aliases.is_empty() {
             String::new()
@@ -3609,7 +3611,7 @@ mod tests {
     #[test]
     fn generated_help_lists_every_command_and_shows_usage_only_for_arguments() {
         let renderer = Renderer::new(false);
-        let overview = help(&BTreeMap::new(), renderer);
+        let overview = help(&BTreeMap::new(), renderer, |_| true);
         for command in COMMANDS {
             // Each command has one overview row: its name, aliases, summary.
             let row = overview

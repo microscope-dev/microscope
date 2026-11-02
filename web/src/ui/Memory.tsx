@@ -26,6 +26,9 @@ import { useFocus } from "./Workspace";
 /** Rows shown at once. */
 const ROWS = 16;
 
+/** One past the last address. */
+const END = 1n << 64n;
+
 /** How far each arrow key moves through the bytes. */
 const STEPS: Record<string, bigint> = {
   ArrowLeft: -1n,
@@ -140,8 +143,10 @@ function Dump({ shown }: { shown: Target }) {
   const [cursor, setCursor] = useState<bigint>(shown.address);
   const body = useRef<HTMLDivElement>(null);
 
+  // Paging stops at either end of the address space.
   const first = rowStart(shown.address) + BigInt(moved * ROW);
-  const start = first < 0n ? 0n : first;
+  const last = END - BigInt(ROWS * ROW);
+  const start = first < 0n ? 0n : first > last ? last : first;
   assert(moved % ROWS === 0, `memory moved ${moved} rows, not a page`);
   assert(start % BigInt(ROW) === 0n, `memory starts mid-row at ${hex(start)}`);
   const read = useRequest(
@@ -199,10 +204,20 @@ function Dump({ shown }: { shown: Target }) {
   return (
     <>
       <div className="mem-pages">
-        <button type="button" className="button small" onClick={() => setMoved(moved - ROWS)}>
+        <button
+          type="button"
+          className="button small"
+          disabled={start === 0n}
+          onClick={() => setMoved(moved - ROWS)}
+        >
           ↑ Earlier
         </button>
-        <button type="button" className="button small" onClick={() => setMoved(moved + ROWS)}>
+        <button
+          type="button"
+          className="button small"
+          disabled={start === last}
+          onClick={() => setMoved(moved + ROWS)}
+        >
           Later ↓
         </button>
         {read.data.unreadable && (

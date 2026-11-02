@@ -16,6 +16,7 @@ import {
   stopPath,
   stringifySearch,
   validateLook,
+  watching,
 } from "../src/focus";
 
 const roundTrip = (look: Look) => validateLook(parseSearch(stringifySearch({ ...look })));
@@ -137,6 +138,12 @@ describe("a link's lists", () => {
     expect(look.w).toEqual(many.slice(0, 64));
     expect(look.x).toEqual(many.slice(0, 64));
     expect(look.d).toEqual(many.slice(0, 64));
+  });
+
+  it("watches an expression once, however often it is added", () => {
+    const once = watching({ w: ["a"] }, "b");
+    expect(once.w).toEqual(["a", "b"]);
+    expect(watching(once, "b").w).toEqual(["a", "b"]);
   });
 });
 

@@ -56,6 +56,27 @@ export type Action = Available | Unavailable;
 
 const unavailable = (reason: string): Unavailable => ({ enabled: false, reason });
 
+/** The actions being answered. The same one sent again meanwhile would act
+ * on the state the first is changing, as a double click's second click
+ * would, so it is dropped. Another, such as a pause during a long step,
+ * still goes. */
+const answering = new Map<ActionName, Promise<unknown>>();
+
+function ready(name: ActionName, run: (connection: Connection) => Promise<unknown>): Available {
+  return {
+    enabled: true,
+    run: (connection) => {
+      const sent =
+        answering.get(name) ??
+        run(connection).finally(() => {
+          answering.delete(name);
+        });
+      answering.set(name, sent);
+      return sent;
+    },
+  };
+}
+
 /** `at` is where the tab looks, when it looks at a stop. */
 export function action(
   name: ActionName,
@@ -90,26 +111,23 @@ export function action(
     case "continue":
       if (inferior.state === "stopped") {
         const stop = inferior.stop;
-        return { enabled: true, run: (connection) => connection.request("continue", { stop }) };
+        return ready(name, (connection) => connection.request("continue", { stop }));
       }
       if (launched && (inferior.state === "notStarted" || inferior.state === "exited")) {
-        return {
-          enabled: true,
-          run: (connection) => connection.request("continue", { stop: null }),
-        };
+        return ready(name, (connection) => connection.request("continue", { stop: null }));
       }
       return unavailable(inferior.state === "running" ? "already running" : "the program is gone");
     case "pause":
       return inferior.state === "running"
-        ? { enabled: true, run: (connection) => connection.request("pause") }
+        ? ready(name, (connection) => connection.request("pause"))
         : unavailable("the program is not running");
     case "kill":
       return inferior.state === "running" || inferior.state === "stopped"
-        ? { enabled: true, run: (connection) => connection.request("kill") }
+        ? ready(name, (connection) => connection.request("kill"))
         : unavailable("the program is not running");
     case "restart":
       return launched
-        ? { enabled: true, run: (connection) => connection.request("restart") }
+        ? ready(name, (connection) => connection.request("restart"))
         : unavailable("only a launched program can restart");
   }
 }
@@ -138,24 +156,22 @@ function atStop(
         return unavailable("put the cursor on the line the thread should resume at");
       }
       const location = `${cursor.path}:${cursor.line}`;
-      return {
-        enabled: true,
-        run: (connection) => connection.request("jump", { stop, thread, task, location }),
-      };
+      return ready(name, (connection) =>
+        connection.request("jump", { stop, thread, task, location }),
+      );
     }
     case "stepIntoCall":
       if (!at) {
         return unavailable("this tab shows no stop");
       }
       // The palette lists the line's calls; choosing one steps into it.
-      return { enabled: true, run: async () => tab.setState({ palette: "calls" }) };
+      return ready(name, async () => tab.setState({ palette: "calls" }));
     default: {
       const kind = STEPS[name];
       const frame = kind === "out" ? (at?.frame ?? 0) : 0;
-      return {
-        enabled: true,
-        run: (connection) => connection.request("step", { stop, thread, task, frame, kind }),
-      };
+      return ready(name, (connection) =>
+        connection.request("step", { stop, thread, task, frame, kind }),
+      );
     }
   }
 }

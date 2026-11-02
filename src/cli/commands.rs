@@ -685,6 +685,28 @@ pub fn resolve_command(entered: &str) -> Result<&'static CommandSpec> {
 
 /// The command a line starts with, and the name it is written with, which
 /// excludes a format such as the `/x` of `p/x`.
+/// Whether a client that controls execution itself lets its console run
+/// `command`. Running the inferior and ending the session belong to the
+/// client, which also shows files and watches values itself.
+const fn in_console(command: Command) -> bool {
+    !matches!(
+        command,
+        Command::Run
+            | Command::Continue
+            | Command::Step
+            | Command::Next
+            | Command::Stepi
+            | Command::Nexti
+            | Command::Finish
+            | Command::Advance
+            | Command::Clear
+            | Command::Quit
+            | Command::Edit
+            | Command::Display
+            | Command::Undisplay
+    )
+}
+
 pub fn line_command(line: &str) -> Option<(&'static CommandSpec, &str)> {
     let written = line.split_whitespace().next()?;
     let name = written.split_once('/').map_or(written, |(name, _)| name);
@@ -815,7 +837,7 @@ impl Cli {
                 command_named(name).ok_or_else(|| anyhow!("unknown command '{name}'"))?,
                 renderer,
             ),
-            None => format::help(&self.settings.config.aliases, renderer),
+            None => format::help(&self.settings.config.aliases, renderer, |_| true),
         })
     }
 
@@ -916,27 +938,20 @@ impl Cli {
             return Ok(None);
         };
 
-        if matches!(
-            spec.command,
-            Command::Run
-                | Command::Continue
-                | Command::Step
-                | Command::Next
-                | Command::Stepi
-                | Command::Nexti
-                | Command::Finish
-                | Command::Advance
-                | Command::Clear
-                | Command::Quit
-                // The client shows files and watches values itself.
-                | Command::Edit
-                | Command::Display
-                | Command::Undisplay
-        ) {
+        if !in_console(spec.command) {
             bail!(
                 "`{}` is not available in the debug console; use the debugger's controls",
                 spec.name
             );
+        }
+
+        // Plain `help` lists only what the console runs.
+        if spec.command == Command::Help && line.split_whitespace().nth(1).is_none() {
+            return Ok(Some(format::help(
+                &self.settings.config.aliases,
+                self.renderers.stdout,
+                in_console,
+            )));
         }
 
         match self.execute(line).await? {
