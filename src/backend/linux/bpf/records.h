@@ -32,6 +32,8 @@ enum record_kind {
 	// A thread's JavaScript frames as V8 keeps them on its stack, which the
 	// sample or call that follows on its CPU was taken in.
 	RECORD_V8_STACK = 10,
+	// A worker exec's captured entry now belongs to the leader's id.
+	RECORD_HANDOFF = 11,
 };
 
 // Which descriptors a call makes, from call_spec.makes.
@@ -140,7 +142,7 @@ struct call_spec {
 	// Whether it creates a thread or process, whose own return from it
 	// is not a call of its own.
 	u8 forks;
-	u8 pad;
+	u8 execs;
 	// Its row in STATS, which holds only the chosen calls.
 	u16 stat;
 	struct arg_copy args[6];
@@ -162,9 +164,11 @@ struct entry {
 	u64 args[6];
 	u32 nr;
 	u32 tgid;
+	// The pre-exec id in the namespace shown by the trace; zero for other calls.
+	u32 exec_tid;
 	u8 abi;
 	u8 flags;
-	u8 pad[6];
+	u8 pad[2];
 };
 
 // What the in_flight iterator writes for each call in progress.
@@ -217,8 +221,15 @@ struct spawn_record {
 struct exec_record {
 	struct record header;
 	u64 time;
-	u32 former;
+	u32 pad;
 	u32 len;
+};
+
+struct handoff_record {
+	struct record header;
+	u64 entered;
+	u32 former;
+	u32 pad;
 };
 
 // A thread's end, and when it was the last, its process's.

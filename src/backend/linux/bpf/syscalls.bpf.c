@@ -165,6 +165,7 @@ struct scratch {
 		struct capture_header capture;
 		struct spawn_record spawn;
 		struct exec_record exec;
+		struct handoff_record handoff;
 		struct exit_record exit;
 		struct signal_record signal;
 		struct file_record file;
@@ -649,6 +650,22 @@ __noinline int copy_arg(u32 slot, u32 index, u32 off, u32 phase, s64 ret)
 static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u32 kind, u32 phase,
 				      s64 ret, u64 exited)
 {
+	// Exec can change a worker's id even when loading the new image fails.
+	if (kind == RECORD_CALL && entry->exec_tid && entry->exec_tid != tid) {
+		struct handoff_record *handoff = bpf_ringbuf_reserve(&EVENTS, sizeof(*handoff), 0);
+		if (handoff) {
+			handoff->header.kind = RECORD_HANDOFF;
+			handoff->header.size = sizeof(*handoff);
+			handoff->header.tid = tid;
+			handoff->header.tgid = tgid;
+			handoff->entered = entry->entered;
+			handoff->former = entry->exec_tid;
+			handoff->pad = 0;
+			bpf_ringbuf_submit(handoff, 0);
+		} else {
+			lost();
+		}
+	}
 	u32 zero = 0;
 	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
 	if (!buffer)
@@ -930,6 +947,7 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id)
 	if (settings->flags & CONFIG_STREAM)
 		read_args(regs, entry.abi, entry.args);
 	entry.tgid = tgid;
+	entry.exec_tid = spec->execs ? tid : 0;
 	entry.entered = bpf_ktime_get_ns();
 	if ((settings->flags & CONFIG_STREAM) && !sampled_in(settings->sample))
 		entry.flags |= CALL_SAMPLED_OUT;
@@ -1102,7 +1120,6 @@ SEC("tp_btf/sched_process_exec")
 int process_exec(u64 *ctx)
 {
 	struct task_struct *task = (struct task_struct *)ctx[0];
-	u32 former = (u32)ctx[1];
 	struct linux_binprm *binary = (struct linux_binprm *)ctx[2];
 	u32 tgid = BPF_CORE_READ(task, tgid);
 	if (!traced(tgid))
@@ -1119,7 +1136,7 @@ int process_exec(u64 *ctx)
 	record->header.tid = tid;
 	record->header.tgid = tgid;
 	record->time = bpf_ktime_get_ns();
-	record->former = former;
+	record->pad = 0;
 	long read = bpf_probe_read_kernel_str(buffer->data + sizeof(*record), 4096,
 					      BPF_CORE_READ(binary, filename));
 	u32 len = read > 0 ? read - 1 : 0;

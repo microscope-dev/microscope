@@ -72,6 +72,7 @@ const RECORD_FILE: u32 = 7;
 const RECORD_STACK: u32 = 8;
 const RECORD_PY_STACK: u32 = 9;
 const RECORD_V8_STACK: u32 = 10;
+const RECORD_HANDOFF: u32 = 11;
 
 const MAKES_RESULT: u8 = 1;
 const MAKES_PAIR: u8 = 2;
@@ -154,7 +155,7 @@ pub struct RawCallSpec {
     pub makes: u8,
     pub makes_arg: u8,
     pub forks: u8,
-    pub pad: u8,
+    pub execs: u8,
     pub stat: u16,
     pub args: [RawArgCopy; 6],
 }
@@ -181,9 +182,10 @@ pub struct RawEntry {
     pub args: [u64; 6],
     pub nr: u32,
     pub tgid: u32,
+    pub exec_tid: u32,
     pub abi: u8,
     pub flags: u8,
-    pub pad: [u8; 6],
+    pub pad: [u8; 2],
 }
 
 /// `struct in_flight_record`.
@@ -261,8 +263,20 @@ pub struct RawSpawnRecord {
 pub struct RawExecRecord {
     pub header: RawRecord,
     pub time: u64,
-    pub former: u32,
+    pub pad: u32,
     pub len: u32,
+}
+
+/// `struct handoff_record`.
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
+)]
+pub struct RawHandoffRecord {
+    pub header: RawRecord,
+    pub entered: u64,
+    pub former: u32,
+    pub pad: u32,
 }
 
 /// `struct exit_record`.
@@ -425,6 +439,7 @@ pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
             call.name(),
             Some("clone" | "clone3" | "fork" | "vfork")
         )),
+        execs: u8::from(matches!(call.name(), Some("execve" | "execveat"))),
         ..RawCallSpec::default()
     };
 
@@ -499,6 +514,14 @@ pub enum Record {
     /// The arguments a call read at its entry; its exit follows.
     Entry(SyscallEvent),
     Event(TraceEvent),
+
+    /// A captured exec entry whose thread took the leader's id.
+    Handoff {
+        former: Tid,
+        thread: Tid,
+        process: Pid,
+        entered: u64,
+    },
 
     /// The stack of the thread whose call or signal follows.
     Stack(SampledStack),
@@ -597,6 +620,15 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
                 time: raw.time,
                 path: String::from_utf8_lossy(path).into(),
             }))
+        }
+        RECORD_HANDOFF => {
+            let raw: RawHandoffRecord = read(bytes)?;
+            Ok(Record::Handoff {
+                former: Tid::new(raw.former),
+                thread: Tid::new(header.tid),
+                process: Pid::new(header.tgid),
+                entered: raw.entered,
+            })
         }
         RECORD_EXIT => {
             let raw: RawExitRecord = read(bytes)?;
@@ -2642,6 +2674,24 @@ impl Reader<'_> {
             Record::Entry(entry) => {
                 self.entries.insert(entry.thread, entry);
             }
+            Record::Handoff {
+                former,
+                thread,
+                process,
+                entered,
+            } => {
+                if former != thread
+                    && self.entries.get(&former).is_some_and(|entry| {
+                        entry.process == process && entry.entered == Some(entered)
+                    })
+                    && let Some(mut entry) = self.entries.remove(&former)
+                {
+                    entry.thread = thread;
+                    if let Some(displaced) = self.entries.insert(thread, entry) {
+                        self.emit(TraceEvent::Call(displaced));
+                    }
+                }
+            }
             Record::Call(mut call) => {
                 let unwound = self.unwind(call.thread, call.stack.take());
                 if let Some(entry) = self.entries.remove(&call.thread) {
@@ -2677,15 +2727,6 @@ impl Reader<'_> {
                         self.live.insert(Pid::led_by(*child));
                     }
 
-                    TraceEvent::Exec {
-                        thread, process, ..
-                    } if *thread != process.leader() => {
-                        // A thread that executes takes its process's id.
-                        if let Some(mut entry) = self.entries.remove(thread) {
-                            entry.thread = process.leader();
-                            self.entries.insert(process.leader(), entry);
-                        }
-                    }
                     TraceEvent::Exit { process, end, .. } => {
                         if *process == self.first {
                             self.end = Some(*end);
@@ -2798,7 +2839,7 @@ mod tests {
             (
                 RawCallSpec,
                 "call_spec",
-                [selected, moves, makes, makes_arg, forks, pad, stat, args]
+                [selected, moves, makes, makes_arg, forks, execs, stat, args]
             ),
             (
                 RawFileRecord,
@@ -2809,7 +2850,7 @@ mod tests {
             (
                 RawEntry,
                 "entry",
-                [entered, args, nr, tgid, abi, flags, pad]
+                [entered, args, nr, tgid, exec_tid, abi, flags, pad]
             ),
             (RawRecord, "record", [kind, size, tid, tgid]),
             (RawInFlightRecord, "in_flight_record", [tid, pad, entry]),
@@ -2828,7 +2869,12 @@ mod tests {
                 "spawn_record",
                 [header, time, child, child_tgid]
             ),
-            (RawExecRecord, "exec_record", [header, time, former, len]),
+            (RawExecRecord, "exec_record", [header, time, pad, len]),
+            (
+                RawHandoffRecord,
+                "handoff_record",
+                [header, entered, former, pad]
+            ),
             (RawExitRecord, "exit_record", [header, time, code, last]),
             (
                 RawSignalRecord,

@@ -1941,6 +1941,125 @@ mod bpf {
         assert!(!trace.contains("--- "), "ignored signal delivered: {trace}");
     }
 
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_workers_exec_is_paired_once_with_its_captured_arguments() {
+        for late_failure in [false, true] {
+            let mut command = microscope(&[
+                "-f",
+                "--attach",
+                "tracepoint",
+                "--format",
+                "ndjson",
+                "-v",
+                "-e",
+                "trace=execve,execveat,exit_group",
+                "-o",
+                "-",
+                "--",
+            ]);
+            command.arg(Scenario::fixture("thread-exec"));
+            if late_failure {
+                command.arg("late-failure");
+            }
+            let output = command.output().expect("trace a worker exec");
+            let context = format!("{}\n{}", text(&output.stdout), text(&output.stderr));
+            assert_eq!(
+                output.status.code(),
+                Some(if late_failure { 139 } else { 0 }),
+                "{context}"
+            );
+            let records: Vec<serde_json::Value> = text(&output.stdout)
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("trace JSON"))
+                .collect();
+            let execs: Vec<_> = records
+                .iter()
+                .filter(|record| record["type"] == "call" && record["name"] == "execveat")
+                .collect();
+            assert_eq!(execs.len(), 1, "{context}");
+            let exec = execs[0];
+            assert_eq!(
+                exec["return"],
+                if late_failure { -22 } else { 0 },
+                "{context}"
+            );
+            if late_failure {
+                assert_eq!(exec["errno"], "EINVAL", "{context}");
+            }
+            assert_eq!(exec["tid"], exec["pid"], "{context}");
+            assert_eq!(exec["args"]["filename"], "\"\"", "{context}");
+            assert_eq!(exec["args"]["argv"], "[\"true\"]", "{context}");
+            assert_eq!(exec["args"]["envp"], "[]", "{context}");
+            assert!(
+                exec["duration_ns"].as_u64().is_some_and(|time| time > 0),
+                "{context}"
+            );
+            assert!(
+                records.iter().all(|record| record["unfinished"] != true),
+                "{context}"
+            );
+            let exits: Vec<_> = records
+                .iter()
+                .filter(|record| record["type"] == "exit")
+                .collect();
+            assert_eq!(exits.len(), 1, "{context}");
+            if late_failure {
+                assert_eq!(exits[0]["signal"], "SIGSEGV", "{context}");
+            } else {
+                assert_eq!(exits[0]["code"], 0, "{context}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_workers_exec_keeps_the_cgroups_namespace_ids() {
+        let mut target = ExternalProcess::spawn_command(
+            Command::new(fixture())
+                .arg("namespaced")
+                .arg(Scenario::fixture("thread-exec")),
+        );
+        let child = target
+            .ready_line()
+            .strip_prefix("READY child ")
+            .expect("host pid");
+        let cgroup = TestCgroup::new("microscope-worker-exec");
+        std::fs::write(cgroup.0.join("cgroup.procs"), child).expect("move child");
+        let path = cgroup.0.to_str().expect("cgroup path");
+        let mut running = Running::spawn(&mut microscope(&[
+            "--cgroup",
+            path,
+            "-v",
+            "-e",
+            "trace=execve,execveat,exit_group",
+        ]));
+        running.line(|line| line == format!("microscope: Tracing cgroup {path}"));
+        target.take_stdin().write_all(b"x").expect("release child");
+        assert!(target.wait().success());
+        cgroup.remove();
+        let (code, lines) = running.finish();
+        let trace = lines.join("\n");
+        let context = &trace;
+        assert_eq!(code, Some(0), "{context}");
+        let execs: Vec<_> = trace
+            .lines()
+            .filter(|line| line.contains("execveat("))
+            .collect();
+        assert_eq!(execs.len(), 1, "{context}");
+        let exec = Regex::new(
+            r#"^\[pid +1\] +execveat\(\d+, "", \["true"\], \[\], AT_EMPTY_PATH\) += 0$"#,
+        )
+        .expect("exec pattern");
+        assert!(exec.is_match(execs[0]), "{context}");
+        assert!(!trace.contains("unfinished"), "{context}");
+        assert_eq!(
+            trace.matches("+++ exited with 0 +++").count(),
+            1,
+            "{context}"
+        );
+    }
+
     fn group_exits(mode: &str, attach: &str) {
         let directory = ScratchDir::new("syscalls-group-exits");
         let path = directory.path().join("trace");

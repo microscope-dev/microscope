@@ -194,7 +194,7 @@ static void block(void) {
 // starts a grandchild for each byte it reads until its input closes; each
 // asks its pid and exits. The parent prints the child's pid as the host
 // knows it, then waits for it.
-static void namespaced(void) {
+static void namespaced(const char *program) {
     if (unshare(CLONE_NEWUSER | CLONE_NEWPID) != 0) {
         _exit(20);
     }
@@ -205,6 +205,11 @@ static void namespaced(void) {
     if (child == 0) {
         char byte;
         while (read(0, &byte, 1) > 0) {
+            if (program) {
+                alarm(10);
+                execl(program, program, (char *)NULL);
+                _exit(24);
+            }
             pid_t grandchild = fork();
             if (grandchild == 0) {
                 syscall(SYS_getpid);
@@ -216,7 +221,7 @@ static void namespaced(void) {
         }
         _exit(0);
     }
-    printf("child %d\n", child);
+    printf(program ? "READY child %d\n" : "child %d\n", child);
     fflush(stdout);
     int status;
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) {
@@ -332,7 +337,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (strcmp(mode, "namespaced") == 0) {
-        namespaced();
+        namespaced(argc > 2 ? argv[2] : NULL);
         return 0;
     }
     if (strcmp(mode, "pause") == 0) {
