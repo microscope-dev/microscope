@@ -90,6 +90,26 @@ describe("debugger keys", () => {
     expect(describeKey("palette")).toBe("Ctrl+K");
     expect(describeKey("over", true)).toBe("n");
     expect(describeKey("frameUp")).toBeNull();
+    expect(describeKey("moveToGroupLeft")).toBe("Alt+⇧←");
+  });
+
+  it("lists keys for assistive technology in its own syntax", () => {
+    expect(COMMANDS.aria("kill")).toBe("Shift+F5");
+    expect(COMMANDS.aria("continue")).toBe("F5 c");
+    expect(COMMANDS.aria("moveToGroupLeft")).toBe("Alt+Shift+ArrowLeft");
+    expect(COMMANDS.aria("frameUp")).toBe("u");
+  });
+
+  it("reads bracket and backslash chords by the key pressed, whatever it types", () => {
+    // Alt+Shift+] types ’ on a Mac, and Shift makes \ a |.
+    const press = (typed: string, code: string, modifiers: Partial<KeyLike>) =>
+      commandFor({ ...key(typed, modifiers), code }, false);
+    expect(press("’", "BracketRight", { altKey: true, shiftKey: true })).toBe("moveTabRight");
+    expect(press("‘", "BracketLeft", { altKey: true })).toBe("previousTab");
+    expect(press("\\", "Backslash", { ctrlKey: true })).toBe("splitRight");
+    expect(press("|", "Backslash", { ctrlKey: true, shiftKey: true })).toBe("splitDown");
+    // Without Alt or Ctrl, a bracket is typed, not a chord.
+    expect(press("}", "BracketRight", { shiftKey: true })).toBeNull();
   });
 });
 

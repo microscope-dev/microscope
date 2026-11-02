@@ -3,9 +3,30 @@
 // so a group's selector re-renders it only when it changed.
 
 import { createStore, useStore } from "zustand";
-import { emptyLayout, type GroupId, type Layout, type Node } from "./layout";
+import { emptyLayout, type GroupId, type Layout, type Node, type Pane } from "./layout";
 
-export const workbench = createStore<{ layout: Layout }>(() => ({ layout: emptyLayout() }));
+/** A closed tab, and where it was, to open it there again. */
+export interface Closed {
+  readonly pane: Pane;
+  readonly group: GroupId;
+  readonly index: number;
+}
+
+/** How many closed tabs can be opened again. */
+export const REOPENABLE = 20;
+
+export interface Workbench {
+  readonly layout: Layout;
+  /** The most recently closed last. */
+  readonly closed: readonly Closed[];
+}
+
+export const workbench = createStore<Workbench>(() => ({ layout: emptyLayout(), closed: [] }));
+
+/** Starts the workbench over, as a fresh page has it. */
+export function resetWorkbench(layout: Layout = emptyLayout()): void {
+  workbench.setState({ layout, closed: [] }, true);
+}
 
 export function useLayout<T>(select: (layout: Layout) => T): T {
   return useStore(workbench, (state) => select(state.layout));

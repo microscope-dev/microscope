@@ -36,6 +36,7 @@ export interface PaneKind<Need extends string> {
 
 export interface Kinds<Need extends string> {
   get(id: KindId): PaneKind<Need>;
+  has(id: KindId): boolean;
   /** In the order they were defined, which is the order menus list them. */
   readonly all: readonly PaneKind<Need>[];
 }
@@ -45,6 +46,7 @@ export function kinds<Need extends string>(all: readonly PaneKind<Need>[]): Kind
   assert(byId.size === all.length, "two pane kinds have the same id");
   return {
     all,
+    has: (id) => byId.has(id),
     get: (id) => {
       const kind = byId.get(id);
       assert(kind, `no pane kind ${id}`);

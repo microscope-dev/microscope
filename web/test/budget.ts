@@ -6,7 +6,7 @@
 // test's own is about half again its time. `just web-props` runs without
 // budgets.
 
-import { afterEach, beforeEach, expect } from "vitest";
+import { afterEach, beforeEach, expect, inject } from "vitest";
 
 /** Tests outside a browser: logic over data. */
 const UNIT = 50;
@@ -28,6 +28,8 @@ export const OWN: Record<string, { ms: number; why: string }> = {
     { ms: 3_000, why: "waits out the sandbox's real 2s draw deadline" },
   "test/path-input.test.tsx :: passes Tab through an empty field and stops descending at a directory":
     { ms: 800, why: "types paths a key at a time through the browser" },
+  "test/docking.test.tsx :: keeps the screen and the layout model alike through any run of drags and clicks":
+    { ms: 1_500, why: "a hundred runs of up to a dozen drags and clicks, each checked on screen" },
   "test/sandbox.test.tsx :: the sandbox > runs four draws at once and queues the rest": {
     ms: 1_000,
     why: "holds four real worker draws open while a fifth queues",
@@ -49,7 +51,7 @@ beforeEach(() => {
 });
 
 // A deeper property search is meant to take its time.
-const searching = typeof process !== "undefined" && process.env.PROPTEST_CASES !== undefined;
+const searching = inject("proptestCases") !== "";
 
 afterEach(() => {
   if (searching) {

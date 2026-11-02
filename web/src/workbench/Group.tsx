@@ -2,9 +2,10 @@
 // not shown stay mounted and hidden, so a tab switch is instant and keeps
 // their scroll, unless their kind says they are too costly to keep.
 
-import { type KeyboardEvent, memo } from "react";
+import { type KeyboardEvent, memo, useEffect, useRef } from "react";
 import { assert } from "../assert";
 import { panelId, tabId, useDock } from "./context";
+import { pressTab } from "./drag";
 import { activate, type GroupId, groups, type Layout, type PaneId } from "./layout";
 import { PaneHost } from "./PaneHost";
 import { change, useLayout } from "./store";
@@ -19,6 +20,25 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
   const panes = useLayout((layout) => layout.panes);
   const focused = useLayout((layout) => layout.focused === id);
   const { kinds } = useDock();
+  const strip = useRef<HTMLDivElement>(null);
+  const active = group?.active ?? null;
+
+  // A strip with more tabs than room scrolls, keeping the shown one in view.
+  useEffect(() => {
+    if (active) {
+      const shown = document.getElementById(tabId(active));
+      if (shown && strip.current?.contains(shown)) {
+        const box = strip.current.getBoundingClientRect();
+        const at = shown.getBoundingClientRect();
+        if (at.left < box.left) {
+          strip.current.scrollLeft -= box.left - at.left;
+        } else if (at.right > box.right) {
+          strip.current.scrollLeft += at.right - box.right;
+        }
+      }
+    }
+  }, [active]);
+
   if (!group) {
     return null;
   }
@@ -36,6 +56,10 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
 
   // The arrow keys, Home, and End choose a tab as they go; Delete closes it.
   const walk = (event: KeyboardEvent) => {
+    // Chords with modifiers are commands', such as Alt+→ to the next group.
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
     const index = group.active === null ? -1 : group.tabs.indexOf(group.active);
     if (event.key === "Delete" && group.active) {
       event.preventDefault();
@@ -62,6 +86,7 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
     <section className={`group ${focused ? "focused" : ""}`} data-group={id}>
       <div
         className="group-tabs"
+        ref={strip}
         role="tablist"
         aria-label="Panes"
         onKeyDown={walk}
@@ -85,6 +110,7 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
                 tabIndex={shown ? 0 : -1}
                 title={found.key || title}
                 onClick={() => choose(pane)}
+                onPointerDown={(event) => pressTab(event, pane, title)}
                 // A middle click closes the tab, without the browser's autoscroll.
                 onMouseDown={(event) => event.button === 1 && event.preventDefault()}
                 onAuxClick={(event) => event.button === 1 && shut(pane)}

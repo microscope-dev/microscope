@@ -12,12 +12,15 @@ import { best, score } from "../palette";
 import { useConnection } from "../store";
 import { flash, tab, useTab } from "../tab";
 import { chooseTheme, THEMES } from "../theme";
+import { deleteNamed, layoutNames, loadNamed, saveNamed } from "../workbench/persist";
+import { workbench } from "../workbench/store";
 import { placeText } from "./Banner";
 import { placeLabel, useShowBreakpoint } from "./Breakpoints";
 import { COMMANDS, useCommands } from "./commands";
 import { useDialogFocus } from "./dialog";
 import { threadLabel } from "./names";
 import { useGo, useLinkPaths, useShowSource } from "./navigation";
+import { applyLayout, DEBUG_KINDS, debugLayout } from "./panes";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
@@ -41,7 +44,7 @@ interface Group {
   rank: number;
 }
 
-type Mode = "all" | "files" | "line" | "calls";
+type Mode = NonNullable<ReturnType<typeof tab.getState>["palette"]>;
 
 export function Palette() {
   const mode = useTab((current) => current.palette);
@@ -96,11 +99,15 @@ function Open({ mode }: { mode: Mode }) {
           placeholder={
             mode === "line"
               ? "a line, or file:line"
-              : mode === "calls"
-                ? "a call of the line to step into"
-                : mode === "files"
-                  ? "a file"
-                  : "a command, function, file, thread, breakpoint, or stop"
+              : mode === "layouts"
+                ? "a layout"
+                : mode === "save"
+                  ? "a name for this layout"
+                  : mode === "calls"
+                    ? "a call of the line to step into"
+                    : mode === "files"
+                      ? "a file"
+                      : "a command, function, file, thread, breakpoint, or stop"
           }
           value={query}
           onChange={(event) => {
@@ -231,6 +238,64 @@ function useGroups(mode: Mode, query: string): Found {
   const showSource = useShowSource();
   const showBreakpoint = useShowBreakpoint();
 
+  if (mode === "save") {
+    if (query === "") {
+      return { groups: [], why: "Type a name; a layout of that name is replaced." };
+    }
+    return {
+      groups: [
+        {
+          name: "Save",
+          rank: 0,
+          items: [
+            {
+              id: "save",
+              label: `Save this layout as ${query}`,
+              run: () => {
+                saveNamed(query, workbench.getState().layout);
+                flash(`Saved the layout as ${query}`);
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  if (mode === "layouts") {
+    const open = (name: string) => {
+      const loaded = loadNamed(name, DEBUG_KINDS);
+      if (loaded.ok) {
+        applyLayout(loaded.layout);
+      } else {
+        flash(`The layout ${name} can't be opened: ${loaded.why}`);
+      }
+    };
+    const saved: Item[] = layoutNames().flatMap((name) => [
+      { id: `layout:${name}`, label: name, run: () => open(name) },
+      {
+        id: `delete:${name}`,
+        label: `Delete ${name}`,
+        run: () => {
+          deleteNamed(name);
+          flash(`Deleted the layout ${name}`);
+        },
+      },
+    ]);
+    const presets: Item[] = [
+      {
+        id: "preset:debug",
+        label: "Debug",
+        detail: "preset",
+        run: () => applyLayout(debugLayout()),
+      },
+    ];
+    const groups = [ranked("Saved", saved, query, 50), ranked("Presets", presets, query)].filter(
+      (group): group is Group => group !== null,
+    );
+    return { groups };
+  }
+
   if (mode === "line") {
     const match = /^(?:(.+):)?(\d+)$/.exec(query);
     const path = match?.[1] ? paths.recorded(match[1]) : shown?.path;
@@ -317,7 +382,10 @@ function useGroups(mode: Mode, query: string): Found {
   }
 
   const commands: Item[] = COMMANDS.ids
-    .filter((command) => !["palette", "files", "line", "stepIntoCall"].includes(command))
+    .filter(
+      (command) =>
+        !["palette", "files", "line", "stepIntoCall", "saveLayout", "openLayout"].includes(command),
+    )
     .map((command) => ({
       id: `command:${command}`,
       label: COMMANDS.get(command).label,

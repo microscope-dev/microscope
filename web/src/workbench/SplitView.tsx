@@ -186,6 +186,9 @@ function Separator({
   };
 
   const key = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
     if (event.key === "Escape" && drag.current) {
       cancel();
       return;

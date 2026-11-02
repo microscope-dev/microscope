@@ -33,6 +33,19 @@ The workspace can show source, disassembly, memory, values, registers,
 breakpoints, threads, tasks, signals, the console, and drawings. The command
 palette lists available actions and keyboard shortcuts.
 
+Each view is a pane in a group of tabs. Drag a tab onto another group's strip
+to join it, onto a side of a group to split it, or along the workspace's edge
+to dock it across. Hold Shift as you drop to float the pane in a window of its
+own; drag a window's title bar onto a strip or edge to dock it again, and
+press Escape to give up a drag. The Window menu does all of this from the
+keyboard too: Alt+arrow keys move between groups, Ctrl+\\ splits, Alt+Shift+F
+floats or docks, Alt+W closes a tab, and Alt+Shift+T opens it again.
+
+The browser keeps your arrangement across reloads. Window > Save layout as…
+names one to come back to, and Reset layout returns to the Debug layout. Below
+720 pixels wide, the workspace shows one group at a time, with a list of every
+pane.
+
 Ctrl+P lists source files named in debug information. For Python programs
 launched through the browser or `microscope web`, it also lists `.py` files
 from the script's directory (the working directory for `-c` or `-m`). It adds

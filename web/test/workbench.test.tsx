@@ -1,6 +1,7 @@
 // The whole page's workbench at a stop: the Debug layout fits common window
-// sizes, a pane in a tab not shown asks the server nothing, and the menu bar
-// works by keyboard and says why a command cannot run.
+// sizes, a pane in a tab not shown asks the server nothing, the menu bar
+// works by keyboard and says why a command cannot run, and the browser keeps
+// the layout across a reload.
 
 import { afterEach, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
@@ -81,4 +82,35 @@ it("opens a menu by keyboard, walks it, and says why an item cannot run", async 
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
   await expect.element(page.getByRole("menuitem", { name: "Debug", exact: true })).toHaveFocus();
+});
+
+it("keeps this browser's layout across a reload, and says once when it can't", async () => {
+  const source = await commands.readFile("../tests/fixtures/c/kvstore.c");
+  const first = await openPage(kvstore(source));
+  await first.user.chooseTab("Registers");
+  await first.user.press("Alt+Enter");
+  // Maximized, the Registers group fills the dock alone.
+  await first.user.expectGroups([["*Registers"]]);
+  closePage();
+
+  const second = await openPage(kvstore(source));
+  await second.user.expectGroups([["*Registers"]]);
+  closePage();
+
+  localStorage.setItem("microscope-layout", '{"version":1,"layout":{"root":"split"}}');
+  await openPage(kvstore(source));
+  await expect.poll(() => readGroups()).toHaveLength(8);
+  await expect
+    .poll(() => document.querySelector("[data-testid=flash]")?.textContent)
+    .toMatch(/kept can't be used \(panes is not an object\), so it is the Debug layout/);
+});
+
+it("shows one group at a time in a narrow window, and any pane from its list", async () => {
+  const source = await commands.readFile("../tests/fixtures/c/kvstore.c");
+  await openPage(kvstore(source));
+  await page.viewport(600, 700);
+  await expect.poll(() => readGroups()).toEqual([["*Threads", "Tasks", "Processes"]]);
+  await userEvent.selectOptions(page.getByRole("combobox", { name: "Pane" }), "Registers");
+  await expect.poll(() => readGroups()).toEqual([["*Registers"]]);
+  await expect.element(page.getByRole("tabpanel", { name: "Registers" })).toBeVisible();
 });

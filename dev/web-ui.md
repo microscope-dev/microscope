@@ -160,7 +160,10 @@ State has several lifetimes:
 - execution: running operation and pending control state;
 - stop: threads, tasks, frames, variables, memory, and disassembly answers;
 - tab: selected context, panel, paths, expanded values, and pinned drawings;
-- component: transient focus, hover, and layout state.
+- browser: where panes sit (`workbench/persist.ts`), kept in localStorage and
+  never part of a URL, since a link shares where to look, not how a page is
+  arranged;
+- component: transient focus, hover, and drag state.
 
 Put data in the narrowest lifetime that owns it. On a new stop, forget every
 cached answer tied to the previous `StopId`. On session replacement, also
@@ -176,6 +179,11 @@ context, frame, source, panel, memory address, and pinned values.
 URL parsing is an untrusted boundary. Reject or normalize invalid IDs, paths,
 indexes, and duplicate fields. Do not issue debugger writes merely by opening a
 URL.
+
+A drag changes the layout once, when it drops. Until then `workbench/drag.ts`
+moves the ghost, the highlight, and a dragged window by hand, at most once a
+frame, against rectangles measured as the drag began, so a drag renders
+nothing.
 
 When adding durable view state, update parsing, serialization, back/forward
 behavior, sharing tests, and unknown-value fallback. Ephemeral state such as a

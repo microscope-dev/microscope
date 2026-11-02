@@ -3,7 +3,15 @@
 // and whether it can run now are the same wherever it is offered.
 
 import { assert } from "../assert";
-import { type Chord, describeChord, type KeyLike, matches, sameKey, typing } from "./keys";
+import {
+  ariaChord,
+  type Chord,
+  describeChord,
+  type KeyLike,
+  matches,
+  sameKey,
+  typing,
+} from "./keys";
 
 export type Menu = "File" | "Edit" | "View" | "Go" | "Run" | "Debug" | "Window" | "Help";
 
@@ -38,6 +46,8 @@ export interface Registry<Id extends string, Context> {
   match(event: KeyLike, inTextBox: boolean): Id | null;
   /** How a command's key is written, its typing one or its other one. */
   describe(id: Id, typed?: boolean): string | null;
+  /** A command's keys as `aria-keyshortcuts` lists them. */
+  aria(id: Id): string | null;
 }
 
 export function registry<Id extends string, Context>(
@@ -60,5 +70,6 @@ export function registry<Id extends string, Context>(
       const chord = commands[id].keys.find((candidate) => typing(candidate) === typed);
       return chord ? describeChord(chord) : null;
     },
+    aria: (id) => commands[id].keys.map(ariaChord).join(" ") || null,
   };
 }

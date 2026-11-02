@@ -18,6 +18,7 @@ import {
   open,
   type PaneId,
   type Rect,
+  reframe,
   resize,
   restore,
   type Side,
@@ -34,6 +35,7 @@ export type Step =
   | { op: "resize"; split: number; weights: number[] }
   | { op: "float"; pane: number; rect: Rect }
   | { op: "dock"; window: number; target: TargetChoice }
+  | { op: "reframe"; window: number; rect: Rect }
   | { op: "maximize"; group: number }
   | { op: "restore" };
 
@@ -89,6 +91,10 @@ export const step: fc.Arbitrary<Step> = fc.oneof(
   },
   { weight: 2, arbitrary: fc.record({ op: fc.constant("float" as const), pane: choice, rect }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant("dock" as const), window: choice, target }) },
+  {
+    weight: 1,
+    arbitrary: fc.record({ op: fc.constant("reframe" as const), window: choice, rect }),
+  },
   { weight: 1, arbitrary: fc.record({ op: fc.constant("maximize" as const), group: choice }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant("restore" as const) }) },
 );
@@ -147,6 +153,10 @@ export function apply(layout: Layout, chosen: Step): Layout {
       const window = pick(layout.floating, chosen.window);
       const where = targetAt(layout, chosen.target);
       return window && where ? dock(layout, window.group.id, where) : layout;
+    }
+    case "reframe": {
+      const window = pick(layout.floating, chosen.window);
+      return window ? reframe(layout, window.group.id, chosen.rect) : layout;
     }
     case "maximize": {
       const group = pick(groups(layout), chosen.group);

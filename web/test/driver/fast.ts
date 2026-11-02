@@ -13,8 +13,7 @@ import { forgetting } from "../../src/forget";
 import { createAppRouter } from "../../src/router";
 import { SessionContext } from "../../src/store";
 import { initialTab, tab } from "../../src/tab";
-import { emptyLayout } from "../../src/workbench/layout";
-import { workbench } from "../../src/workbench/store";
+import { resetWorkbench } from "../../src/workbench/store";
 import { fakeServer, POLL } from "../fake-server";
 import { readGroups } from "./layout";
 import { type Script, ScriptedDebugger } from "./scripted";
@@ -56,7 +55,7 @@ export function closePage(): void {
   }
   cache.clear();
   tab.setState(initialTab, true);
-  workbench.setState({ layout: emptyLayout() }, true);
+  resetWorkbench();
 }
 
 /** The single element `selector` finds, or why there is not one. */

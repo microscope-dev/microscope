@@ -3,7 +3,13 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { type Measured, type Point, resolveDrop } from "../src/workbench/drop";
+import {
+  type Direction,
+  type Measured,
+  neighbor,
+  type Point,
+  resolveDrop,
+} from "../src/workbench/drop";
 import type { GroupId, Rect } from "../src/workbench/layout";
 import { GRAB, keepOnScreen, snapSplitter, snapWindow } from "../src/workbench/snap";
 
@@ -91,6 +97,41 @@ describe("dropping a tab", () => {
         expect(y + height).toBeLessThanOrEqual(600);
       }),
     );
+  });
+});
+
+describe("dropping a window by its title bar", () => {
+  const at = (point: Point) => resolveDrop(measured, point, false)?.target ?? null;
+
+  it("docks on a strip or the dock's edge, and moves anywhere else", () => {
+    expect(at({ x: 60, y: 15 })).toEqual({ type: "tab", group: A, index: 1 });
+    expect(at({ x: 5, y: 300 })).toEqual({ type: "edge", side: "left" });
+    expect(at({ x: 150, y: 300 })).toBeNull();
+    expect(at({ x: 60, y: 300 })).toBeNull();
+    // Over another window's body, though a docked body lies beneath.
+    expect(at({ x: 600, y: 300 })).toBeNull();
+  });
+});
+
+describe("the group beside another", () => {
+  // Left and two stacked on the right, the lower one wider.
+  const rects = new Map<GroupId, Rect>([
+    [A, { x: 0, y: 0, width: 300, height: 600 }],
+    [B, { x: 300, y: 0, width: 700, height: 200 }],
+    [W, { x: 300, y: 200, width: 700, height: 400 }],
+  ]);
+
+  it.each<[GroupId, Direction, GroupId | null]>([
+    [A, "right", W],
+    [B, "left", A],
+    [W, "left", A],
+    [B, "down", W],
+    [W, "up", B],
+    [A, "left", null],
+    [B, "up", null],
+    [A, "down", null],
+  ])("from %s, %s, is %s", (from, direction, expected) => {
+    expect(neighbor(rects, from, direction)).toBe(expected);
   });
 });
 

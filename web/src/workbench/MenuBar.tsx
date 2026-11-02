@@ -151,7 +151,7 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
                       tabIndex={-1}
                       aria-disabled={now.state !== "ready"}
                       aria-label={command.label}
-                      aria-keyshortcuts={key ?? undefined}
+                      aria-keyshortcuts={registry.aria(id) ?? undefined}
                       title={now.state === "blocked" ? now.why : undefined}
                       onClick={() => {
                         if (now.state === "ready") {

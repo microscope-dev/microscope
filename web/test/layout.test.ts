@@ -22,6 +22,7 @@ import {
   type Node,
   open,
   type PaneId,
+  reframe,
   split,
 } from "../src/workbench/layout";
 import { loadLayout, saveLayout } from "../src/workbench/saved";
@@ -203,6 +204,23 @@ describe("floating windows", () => {
     expect(
       raised.floating.map((window) => raised.panes[window.group.tabs[0] as PaneId]?.kind),
     ).toEqual(["b", "a"]);
+  });
+
+  it("move and resize as a whole, tabs and all, and rise and take focus", () => {
+    const [layout, a, b, c] = opened(emptyLayout(), "a", "b", "c");
+    const rect = { x: 0, y: 0, width: 100, height: 100 };
+    const first = float(layout, a as PaneId, rect);
+    const window = groupOf(first, a as PaneId)?.id as GroupId;
+    const joined = move(first, b as PaneId, { type: "tab", group: window, index: 1 });
+    const two = float(joined, c as PaneId, rect);
+    const moved = reframe(two, window, { x: 40, y: 50, width: 300, height: 200 });
+    expect(moved.floating.at(-1)).toEqual({
+      group: groupOf(two, a as PaneId),
+      rect: { x: 40, y: 50, width: 300, height: 200 },
+    });
+    expect(moved.focused).toBe(window);
+    expect(reframe(two, window, { ...rect, width: 0 })).toBe(two);
+    expect(reframe(two, layout.focused, rect)).toBe(two);
   });
 });
 

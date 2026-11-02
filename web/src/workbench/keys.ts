@@ -49,18 +49,45 @@ export function sameKey(a: Chord, b: Chord): boolean {
   );
 }
 
+const ARROWS: Readonly<Record<string, string>> = {
+  ArrowLeft: "←",
+  ArrowRight: "→",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+};
+
 /** How a chord is written in tooltips and help, such as `⇧F11`. */
 export function describeChord(chord: Chord): string {
   if (typing(chord)) {
     return chord.key === "Escape" ? "Esc" : chord.key;
   }
-  const key = chord.key.length === 1 ? chord.key.toUpperCase() : chord.key;
+  const key = chord.key.length === 1 ? chord.key.toUpperCase() : (ARROWS[chord.key] ?? chord.key);
   return `${chord.ctrl ? "Ctrl+" : ""}${chord.alt ? "Alt+" : ""}${chord.shift ? "⇧" : ""}${key}`;
 }
 
-/** The key a chord names: Alt changes what letters and digits type. */
+/** A chord as `aria-keyshortcuts` writes it, such as `Shift+F11`. */
+export function ariaChord(chord: Chord): string {
+  const key = chord.key === " " ? "Space" : chord.key;
+  return [chord.ctrl && "Control", chord.alt && "Alt", chord.shift && "Shift", key]
+    .filter(Boolean)
+    .join("+");
+}
+
+/** Punctuation chords name by the key pressed, unshifted. */
+const PUNCTUATION: Readonly<Record<string, string>> = {
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backslash: "\\",
+  Backquote: "`",
+};
+
+/** The key a chord names: Alt changes what letters and digits type, and
+ * Alt, Ctrl, and Shift change what punctuation types. */
 function keyOf(event: KeyLike): string {
-  if (event.altKey && event.code) {
+  if (!event.code) {
+    return event.key;
+  }
+  if (event.altKey) {
     const digit = /^Digit(\d)$/.exec(event.code);
     if (digit) {
       return digit[1] as string;
@@ -70,7 +97,8 @@ function keyOf(event: KeyLike): string {
       return (letter[1] as string).toLowerCase();
     }
   }
-  return event.key;
+  const punctuation = PUNCTUATION[event.code];
+  return punctuation && (event.altKey || event.ctrlKey) ? punctuation : event.key;
 }
 
 /**

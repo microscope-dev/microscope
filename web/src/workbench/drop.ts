@@ -41,15 +41,17 @@ export interface Drop {
   readonly highlight: Rect;
 }
 
-/** Where a drop at `point` lands, or null to float it there. */
-export function resolveDrop(measured: Measured, point: Point): Drop | null {
+/** Where a drop at `point` lands, or null to float it there. A floating
+ * window dragged by its title bar lands only on strips and the dock's
+ * edges (`bodies` false), so dropping it anywhere else just moves it. */
+export function resolveDrop(measured: Measured, point: Point, bodies = true): Drop | null {
   // Windows sit above the dock, the top one first.
   for (const window of [...measured.floating].reverse()) {
     if (inside(window.strip, point)) {
       return gap(window, point);
     }
     if (inside(window.body, point)) {
-      return whole(window);
+      return bodies ? whole(window) : null;
     }
   }
   // Strips come before the dock's edges, whose top one they would cover.
@@ -64,6 +66,9 @@ export function resolveDrop(measured: Measured, point: Point): Drop | null {
       target: { type: "edge", side: edge },
       highlight: part(measured.dock, edge, EDGE_SHARE),
     };
+  }
+  if (!bodies) {
+    return null;
   }
   for (const group of measured.docked) {
     if (inside(group.body, point)) {
@@ -156,4 +161,43 @@ function around(group: MeasuredGroup): Rect {
   const right = Math.max(group.strip.x + group.strip.width, group.body.x + group.body.width);
   const bottom = Math.max(group.strip.y + group.strip.height, group.body.y + group.body.height);
   return { x, y, width: right - x, height: bottom - y };
+}
+
+export type Direction = "left" | "right" | "up" | "down";
+
+/** The group beside `from` in a direction: of those wholly that way and
+ * overlapping it across, the nearest, then the most overlapping. */
+export function neighbor(
+  rects: ReadonlyMap<GroupId, Rect>,
+  from: GroupId,
+  direction: Direction,
+): GroupId | null {
+  const origin = rects.get(from);
+  if (!origin) {
+    return null;
+  }
+  const across = direction === "left" || direction === "right";
+  let best: { id: GroupId; gap: number; overlap: number } | null = null;
+  for (const [id, rect] of rects) {
+    if (id === from) {
+      continue;
+    }
+    const gap = {
+      left: origin.x - (rect.x + rect.width),
+      right: rect.x - (origin.x + origin.width),
+      up: origin.y - (rect.y + rect.height),
+      down: rect.y - (origin.y + origin.height),
+    }[direction];
+    const overlap = across
+      ? Math.min(origin.y + origin.height, rect.y + rect.height) - Math.max(origin.y, rect.y)
+      : Math.min(origin.x + origin.width, rect.x + rect.width) - Math.max(origin.x, rect.x);
+    // A pixel either way, for borders that round apart.
+    if (gap < -1 || overlap <= 0) {
+      continue;
+    }
+    if (!best || gap < best.gap - 1 || (Math.abs(gap - best.gap) <= 1 && overlap > best.overlap)) {
+      best = { id, gap, overlap };
+    }
+  }
+  return best?.id ?? null;
 }

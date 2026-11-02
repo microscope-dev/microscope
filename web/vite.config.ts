@@ -49,6 +49,9 @@ export default defineConfig({
     },
   },
   test: {
+    // How many cases each property test tries, for `just web-props`; tests in
+    // a browser can't read the environment, so it is handed to them.
+    provide: { proptestCases: process.env.PROPTEST_CASES ?? "" },
     // expect.element and expect.poll check this often; their default of 50ms
     // made most browser tests wait at least one interval.
     expect: { poll: { interval: 2 } },
@@ -66,10 +69,12 @@ export default defineConfig({
         extends: true,
         // Tests read the docs and fixtures they check the page against.
         server: { fs: { allow: [".."] } },
+        // Bundled before the first test, so no test reloads the page midway.
+        optimizeDeps: { include: ["fast-check"] },
         test: {
           name: "browser",
           include: ["test/**/*.test.tsx"],
-          setupFiles: ["test/budget.ts", "test/browser-setup.ts"],
+          setupFiles: ["test/budget.ts", "test/props.ts", "test/browser-setup.ts"],
           browser: {
             enabled: true,
             headless: true,

@@ -9,8 +9,9 @@ import { follow, latestStop } from "../follow";
 import type { Backtrace, State } from "../protocol";
 import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
-import { tab, useTab } from "../tab";
+import { flash, tab, useTab } from "../tab";
 import { Dock } from "../workbench/Dock";
+import { keepSaving, lastLayout } from "../workbench/persist";
 import { workbench } from "../workbench/store";
 import { Documents } from "./Documents";
 import { Palette } from "./Palette";
@@ -110,15 +111,29 @@ export function Workspace() {
 
 const SETUP = { kinds: DEBUG_KINDS, useMissing };
 
-/** Arranges the debugger's panes as the Debug layout, unless the page has
- * arranged them already. On the first render, before the panes it holds
- * render or arrange themselves within it. */
+/** Arranges the debugger's panes as this browser last had them, or as the
+ * Debug layout, unless the page has arranged them already; then keeps the
+ * arrangement as it changes. Arranged during the first render, before the
+ * panes it holds render or arrange themselves within it. */
 function useDebugLayout() {
-  useState(() => {
+  // Read without changing anything, so StrictMode's second call agrees.
+  const [start] = useState(() =>
+    Object.keys(workbench.getState().layout.panes).length > 0 ? null : lastLayout(DEBUG_KINDS),
+  );
+  const placed = useRef(false);
+  if (!placed.current) {
+    placed.current = true;
     if (Object.keys(workbench.getState().layout.panes).length === 0) {
-      workbench.setState({ layout: debugLayout() });
+      workbench.setState({ layout: start?.ok ? start.layout : debugLayout() });
     }
-  });
+  }
+  const refused = start && !start.ok ? start.why : null;
+  useEffect(() => {
+    if (refused) {
+      flash(`The layout this browser kept can't be used (${refused}), so it is the Debug layout`);
+    }
+  }, [refused]);
+  useEffect(keepSaving, []);
 }
 
 /** Moves a following tab to each new stop, replacing the address (D3). */

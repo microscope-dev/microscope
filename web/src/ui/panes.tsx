@@ -8,7 +8,7 @@ import type { View } from "../focus";
 import { tab } from "../tab";
 import { kinds, type PaneKind, type PaneProps } from "../workbench/kinds";
 import { build, close, type Layout, type Pane, type PaneId } from "../workbench/layout";
-import { change } from "../workbench/store";
+import { change, workbench } from "../workbench/store";
 import { Breakpoints, BreakpointsBadge } from "./Breakpoints";
 import { Console } from "./Console";
 import {
@@ -168,4 +168,10 @@ export function debugLayout(): Layout {
       ],
     ],
   });
+}
+
+/** Puts a whole layout in place, the tab's open files in its documents. */
+export function applyLayout(layout: Layout): void {
+  workbench.setState({ layout });
+  tab.setState((state) => ({ files: [...state.files] }));
 }

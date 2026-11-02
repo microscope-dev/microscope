@@ -31,9 +31,10 @@ export interface TabState {
   /** Counts requests to show code, so a closed file opens again when asked
    * for even at the place it was closed. */
   asked: number;
-  /** The palette, open at everything, at files, at a line, or at the calls
-   * of the shown thread's line to step into. */
-  palette: "all" | "files" | "line" | "calls" | null;
+  /** The palette, open at everything, at files, at a line, at the calls
+   * of the shown thread's line to step into, at the saved layouts, or
+   * naming the layout to save. */
+  palette: "all" | "files" | "line" | "calls" | "layouts" | "save" | null;
   /** Whether the key help is open. */
   help: boolean;
 }

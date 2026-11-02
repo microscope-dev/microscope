@@ -17,6 +17,21 @@ import { flash, type TabState, tab } from "../tab";
 import { setRemote, standalone } from "../target";
 import { chooseTheme, type Theme } from "../theme";
 import {
+  besideWhy,
+  floatOrDock,
+  floatWhy,
+  focusBeside,
+  focusPane,
+  focusTab,
+  sendBeside,
+  sendWhy,
+  shiftTab,
+  shiftWhy,
+  splitFocused,
+  splitWhy,
+  type Why,
+} from "../workbench/arrange";
+import {
   ABSENT,
   type Availability,
   blocked,
@@ -24,7 +39,7 @@ import {
   READY,
   registry,
 } from "../workbench/commands";
-import { panelId, tabId } from "../workbench/context";
+import { NARROW } from "../workbench/Dock";
 import type { Chord } from "../workbench/keys";
 import {
   activate,
@@ -37,11 +52,12 @@ import {
   paneOf,
   restore,
 } from "../workbench/layout";
+import { MENU_BAR } from "../workbench/MenuBar";
 import { change, workbench } from "../workbench/store";
-import { chooseTab, closeTab } from "../workbench/tabs";
+import { chooseTab, closeTab, reopenTab } from "../workbench/tabs";
 import { go } from "./navigation";
 import type { PickerTab } from "./Picker";
-import { DEBUG_KINDS, debugLayout } from "./panes";
+import { applyLayout, DEBUG_KINDS, debugLayout } from "./panes";
 
 interface Context {
   model: Model;
@@ -119,12 +135,6 @@ function showPane(kind: KindId, label: string, number?: number): Spec {
   };
 }
 
-/** Puts the keyboard in a pane: in the box it is for, if it has one. */
-export function focusPane(pane: PaneId): void {
-  const panel = document.getElementById(panelId(pane));
-  (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel)?.focus();
-}
-
 /** The active tab of the focused group. */
 function focusedPane(): { id: PaneId; group: Group } | null {
   const layout = workbench.getState().layout;
@@ -147,7 +157,7 @@ function nextTab(by: 1 | -1): Spec {
       const { tabs } = focused.group;
       const next = tabs[(tabs.indexOf(focused.id) + by + tabs.length) % tabs.length] as PaneId;
       chooseTab(DEBUG_KINDS, next);
-      document.getElementById(tabId(next))?.focus();
+      focusTab(next);
     },
   };
 }
@@ -252,6 +262,25 @@ function breakpoint(edit: boolean): Spec {
 }
 
 const always = (): Availability => READY;
+
+/** A Window menu arrangement, blocked for as long as it says why. */
+function arrange(label: string, keys: Chord[], why: () => Why, run: () => void): Spec {
+  return {
+    label,
+    menu: "Window",
+    keys,
+    available: ({ current }) => {
+      if (!current.session) {
+        return ABSENT;
+      }
+      const reason = why();
+      return reason === null ? READY : blocked(reason);
+    },
+    run,
+  };
+}
+
+const narrow = () => window.innerWidth < NARROW;
 
 export const COMMANDS = registry({
   continue: act("continue", "Continue", "Run", [{ key: "F5" }, { key: "c" }]),
@@ -399,6 +428,78 @@ export const COMMANDS = registry({
   },
   nextTab: nextTab(1),
   previousTab: nextTab(-1),
+  reopenTab: arrange(
+    "Reopen closed tab",
+    [{ key: "t", alt: true, shift: true }],
+    () => (workbench.getState().closed.length > 0 ? null : "no tab was closed"),
+    () => void reopenTab(DEBUG_KINDS),
+  ),
+  moveTabLeft: arrange(
+    "Move tab left",
+    [{ key: "[", alt: true, shift: true }],
+    () => shiftWhy(-1),
+    () => shiftTab(-1),
+  ),
+  moveTabRight: arrange(
+    "Move tab right",
+    [{ key: "]", alt: true, shift: true }],
+    () => shiftWhy(1),
+    () => shiftTab(1),
+  ),
+  moveToGroupLeft: arrange(
+    "Move tab to the group on the left",
+    [{ key: "ArrowLeft", alt: true, shift: true }],
+    () => (narrow() ? "the window is too narrow" : sendWhy("left")),
+    () => sendBeside("left"),
+  ),
+  moveToGroupRight: arrange(
+    "Move tab to the group on the right",
+    [{ key: "ArrowRight", alt: true, shift: true }],
+    () => (narrow() ? "the window is too narrow" : sendWhy("right")),
+    () => sendBeside("right"),
+  ),
+  focusLeft: arrange(
+    "Focus the group on the left",
+    [{ key: "ArrowLeft", alt: true }],
+    () => besideWhy("left"),
+    () => focusBeside("left"),
+  ),
+  focusRight: arrange(
+    "Focus the group on the right",
+    [{ key: "ArrowRight", alt: true }],
+    () => besideWhy("right"),
+    () => focusBeside("right"),
+  ),
+  focusUp: arrange(
+    "Focus the group above",
+    [{ key: "ArrowUp", alt: true }],
+    () => besideWhy("up"),
+    () => focusBeside("up"),
+  ),
+  focusDown: arrange(
+    "Focus the group below",
+    [{ key: "ArrowDown", alt: true }],
+    () => besideWhy("down"),
+    () => focusBeside("down"),
+  ),
+  splitRight: arrange(
+    "Split right",
+    [{ key: "\\", ctrl: true }],
+    () => (narrow() ? "the window is too narrow" : splitWhy()),
+    () => splitFocused("right"),
+  ),
+  splitDown: arrange(
+    "Split down",
+    [{ key: "\\", ctrl: true, shift: true }],
+    () => (narrow() ? "the window is too narrow" : splitWhy()),
+    () => splitFocused("bottom"),
+  ),
+  floatOrDock: arrange(
+    "Float or dock",
+    [{ key: "f", alt: true, shift: true }],
+    () => floatWhy(narrow()),
+    floatOrDock,
+  ),
   maximize: {
     label: "Maximize or restore",
     menu: "Window",
@@ -414,11 +515,28 @@ export const COMMANDS = registry({
     menu: "Window",
     keys: [],
     available: ({ current }) => (current.session ? READY : ABSENT),
-    run: () => {
-      workbench.setState({ layout: debugLayout() });
-      // The documents group takes the tab's files again.
-      tab.setState((state) => ({ files: [...state.files] }));
-    },
+    run: () => applyLayout(debugLayout()),
+  },
+  saveLayout: {
+    label: "Save layout as…",
+    menu: "Window",
+    keys: [],
+    available: ({ current }) => (current.session ? READY : ABSENT),
+    run: () => tab.setState({ palette: "save" }),
+  },
+  openLayout: {
+    label: "Open layout…",
+    menu: "Window",
+    keys: [],
+    available: ({ current }) => (current.session ? READY : ABSENT),
+    run: () => tab.setState({ palette: "layouts" }),
+  },
+  focusMenuBar: {
+    label: "Focus the menu bar",
+    menu: "View",
+    keys: [{ key: "F10", alt: true }],
+    available: always,
+    run: () => document.getElementById(MENU_BAR)?.focus(),
   },
   reloadViews: {
     label: "Reload views",

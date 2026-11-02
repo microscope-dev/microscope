@@ -289,6 +289,20 @@ export function float(layout: Layout, pane: PaneId, rect: Rect): Layout {
   });
 }
 
+/** Moves or resizes a floating window, and raises it. */
+export function reframe(layout: Layout, window: GroupId, rect: Rect): Layout {
+  const found = layout.floating.find((candidate) => candidate.group.id === window);
+  if (!found || !validRect(rect)) {
+    return layout;
+  }
+  const others = layout.floating.filter((candidate) => candidate !== found);
+  return settle({
+    ...layout,
+    floating: [...others, { group: found.group, rect }],
+    focused: window,
+  });
+}
+
 /** Docks a floating window's group at a target: its tabs join a group, or
  * the whole group takes a side. */
 export function dock(layout: Layout, window: GroupId, target: Target): Layout {

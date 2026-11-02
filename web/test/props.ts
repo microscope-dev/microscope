@@ -3,8 +3,16 @@
 // `just web-props` makes, as `just props` does for the Rust tests.
 
 import fc from "fast-check";
+import { inject } from "vitest";
 
-const cases = Number(process.env.PROPTEST_CASES ?? "");
+declare module "vitest" {
+  export interface ProvidedContext {
+    /** PROPTEST_CASES, or "" when it is not set. */
+    proptestCases: string;
+  }
+}
+
+const cases = Number(inject("proptestCases"));
 if (Number.isInteger(cases) && cases > 0) {
   fc.configureGlobal({ numRuns: cases });
 }

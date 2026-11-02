@@ -320,9 +320,12 @@ web-test *ARGS: web-deps
 web-watch: web-deps
     cd web && ./node_modules/.bin/vitest --project unit --project browser
 
-# Runs the page's property tests with CASES cases each instead of the default.
+# Runs the page's property tests with CASES cases each instead of the default,
+# and the model-based docking test, which drives a browser, with a fifth as
+# many.
 web-props CASES="10000": web-deps
     cd web && PROPTEST_CASES="$1" ./node_modules/.bin/vitest run --project unit
+    cd web && PROPTEST_CASES="$(( $1 / 5 ))" ./node_modules/.bin/vitest run --project browser test/docking.test.tsx
 
 # Drives the built page and real `microscope web` servers in Chromium and
 # Firefox. Arguments go to Playwright, e.g. `just web-e2e --project=chromium`.
