@@ -182,7 +182,11 @@ async fn frames_of_every_tier_are_the_ones_v8_reported() {
     for entry in MATRIX {
         let mut session =
             NodeSession::launch(entry, "tiers.js", &["--allow-natives-syntax"], &[]).await;
-        let mut reported = threads(&session.stop_at("tiers").await);
+        let checkpoint = session.stop_at("tiers").await;
+        crate::stacks::check_tiers(&session.context(), entry, &session.report(), &checkpoint);
+        let mut reported = threads(&checkpoint);
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        crate::values::optimized_frames_show_no_stale_registers(&session, printer.native).await;
         // The tier is what makes each frame's reading differ, not a fact
         // a backtrace reports.
         for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {

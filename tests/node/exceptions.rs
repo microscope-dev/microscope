@@ -4,6 +4,8 @@
 //! uncaught kind, and that an exception Node's own code catches never
 //! stops.
 
+use std::collections::BTreeMap;
+
 use microscope::{
     ExceptionStops, ExitStatus, LanguageException, LanguageExceptionKind, StopReason,
 };
@@ -20,10 +22,8 @@ const CHOICES: [(&[&str], &str); 3] = [
     (&["javascript-thrown", "javascript-uncaught"], "all"),
 ];
 
-/// Runs the fixture on one build with the filters `chosen` and returns
-/// where microscope stopped and where V8 paused, and the messages.
-async fn run(entry: &str, chosen: &[&str], state: &str) -> (Vec<Pause>, Vec<Pause>, Vec<String>) {
-    let expected = oracle::pauses(entry, FIXTURE, &[], (&[], Skipping::default()), state);
+/// Runs the fixture with `chosen` filters: its stops and exception messages.
+async fn run(entry: &str, chosen: &[&str]) -> (Vec<Pause>, Vec<String>) {
     let session = NodeSession::unlaunched(entry, FIXTURE);
     let mut stops = ExceptionStops::NONE;
     for filter in chosen {
@@ -62,7 +62,7 @@ async fn run(entry: &str, chosen: &[&str], state: &str) -> (Vec<Pause>, Vec<Paus
         assert!(output.contains(line), "{context}: no {line:?} in {output}");
     }
     session.shutdown().await;
-    (seen, expected, messages)
+    (seen, messages)
 }
 
 /// The uncaught filter reports the uncaught kind when both are chosen.
@@ -82,9 +82,13 @@ fn reported(expected: Vec<Pause>, chosen: &[&str]) -> Vec<Pause> {
 /// stop where V8 pauses at it, as the kind it is, with V8's message.
 pub async fn lies(entry: &str) -> Vec<String> {
     let mut lies = Vec::new();
+    let mut expected = BTreeMap::new();
     for (chosen, state) in CHOICES {
-        let (seen, expected, messages) = run(entry, chosen, state).await;
-        let expected = reported(expected, chosen);
+        let expected = expected.entry(state).or_insert_with(|| {
+            oracle::pauses(entry, FIXTURE, &[], (&[], Skipping::default()), state)
+        });
+        let (seen, messages) = run(entry, chosen).await;
+        let expected = reported(expected.clone(), chosen);
         let differences = oracle::differences(&seen, &expected);
         if !differences.is_empty() {
             lies.push(format!(

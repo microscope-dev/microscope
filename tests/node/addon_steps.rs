@@ -117,8 +117,12 @@ async fn into_add_and_out(entry: &str, lies: &mut Vec<String>) {
 
 /// Into `inspect`, then by `back` to JavaScript: over each of its lines,
 /// the one that calls `cb()` among them, until a step leaves it; or out.
-async fn into_inspect_and_back(entry: &str, back: StepKind, lies: &mut Vec<String>) {
-    let expected = v8_pauses(entry, "CALLS_INSPECT", &[Command::Into, Command::Out]);
+async fn into_inspect_and_back(
+    entry: &str,
+    back: StepKind,
+    expected: &[Pause],
+    lies: &mut Vec<String>,
+) {
     let (mut session, _, _) = NodeSession::unlaunched(entry, FIXTURE)
         .run_to_stop(vec![breakpoint("CALLS_INSPECT")])
         .await;
@@ -177,8 +181,10 @@ async fn into_inspect_and_on(entry: &str, lies: &mut Vec<String>) {
 pub async fn lies(entry: &str) -> Vec<String> {
     let mut lies = Vec::new();
     into_add_and_out(entry, &mut lies).await;
-    into_inspect_and_back(entry, StepKind::OverSource, &mut lies).await;
-    into_inspect_and_back(entry, StepKind::Out, &mut lies).await;
+    let expected = v8_pauses(entry, "CALLS_INSPECT", &[Command::Into, Command::Out]);
+    for back in [StepKind::OverSource, StepKind::Out] {
+        into_inspect_and_back(entry, back, &expected, &mut lies).await;
+    }
     into_inspect_and_on(entry, &mut lies).await;
     lies
 }

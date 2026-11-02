@@ -197,20 +197,6 @@ async fn each_builds_threads_park_where_the_fixture_says() {
     }
 }
 
-/// On every build, `tiers.js` puts a frame of each tier the build can run
-/// on one stack, and says which it cannot.
-#[tokio::test]
-async fn each_build_reports_each_tier_from_inside_its_frame() {
-    for entry in MATRIX {
-        let mut session =
-            NodeSession::launch(entry, "tiers.js", &["--allow-natives-syntax"], &[]).await;
-        let context = session.context();
-        let lines = session.stop_at("tiers").await;
-        check_tiers(&context, entry, &session.report(), &lines);
-        session.shutdown().await;
-    }
-}
-
 /// Each core dump holds every thread its fixture reported just before it
 /// aborted, each labelled with its isolate, and the report beside it says
 /// what the live one does.

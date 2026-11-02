@@ -100,37 +100,105 @@ fn clipped(text: &str) -> String {
 /// On every build, each gallery value shows the text `util.inspect` gave
 /// it. Errors whose stacks were never read show the stacks Node formats
 /// from their call sites once something reads them.
-#[tokio::test]
-async fn gallery_values_are_the_text_node_gave_them() {
+async fn gallery_values(entry: &str) {
     let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
-        let reported = threads(&session.stop_at("gallery").await);
-        let printer = reported
-            .iter()
-            .find(|thread| thread.printer)
-            .expect("the printer's thread");
-        select_function(&session, printer.native, "gallery").await;
-        for value in &printer.values {
-            let shown = presented(&session, &value.name).await;
-            lies.extend(lies_about(&session.context(), value, &shown));
-        }
-        // At "gallery", `unread` holds raw call sites. Node formats them
-        // when the fixture inspects `unread` at the next checkpoint.
-        let unformatted = presented(&session, "unread").await;
-        session.proceed().await;
-        let reported = threads(&session.stop_at("unread").await);
-        let printer = reported
-            .iter()
-            .find(|thread| thread.printer)
-            .expect("the printer's thread");
-        for value in printer.values.iter().filter(|value| value.name == "unread") {
-            let context = format!("{}, formatted from its call sites", session.context());
-            lies.extend(lies_about(&context, value, &unformatted));
-        }
-        session.shutdown().await;
+    let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
+    let reported = threads(&session.stop_at("gallery").await);
+    let printer = reported
+        .iter()
+        .find(|thread| thread.printer)
+        .expect("the printer's thread");
+    select_function(&session, printer.native, "gallery").await;
+    for value in &printer.values {
+        let shown = presented(&session, &value.name).await;
+        lies.extend(lies_about(&session.context(), value, &shown));
     }
+    // At "gallery", `unread` holds raw call sites. Node formats them
+    // when the fixture inspects `unread` at the next checkpoint.
+    let unformatted = presented(&session, "unread").await;
+    select_function(&session, printer.native, "gallery").await;
+    gallery_variable_scopes(&session, &mut lies).await;
+    select_function(&session, printer.native, "gallery").await;
+    lengths_sizes_and_typed_elements_are_javascripts(&session, &mut lies).await;
+    select_function(&session, printer.native, "gallery").await;
+    operators_compute_as_javascript_does(&session, &mut lies).await;
+    session.proceed().await;
+    let reported = threads(&session.stop_at("unread").await);
+    let printer = reported
+        .iter()
+        .find(|thread| thread.printer)
+        .expect("the printer's thread");
+    for value in printer.values.iter().filter(|value| value.name == "unread") {
+        let context = format!("{}, formatted from its call sites", session.context());
+        lies.extend(lies_about(&context, value, &unformatted));
+    }
+    session.shutdown().await;
     assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
+}
+
+const _: () = assert!(
+    MATRIX.len() == 6,
+    "gallery and inspection tests for each build"
+);
+
+#[tokio::test]
+async fn gallery_values_on_build_0() {
+    gallery_values(MATRIX[0]).await;
+}
+
+#[tokio::test]
+async fn gallery_values_on_build_1() {
+    gallery_values(MATRIX[1]).await;
+}
+
+#[tokio::test]
+async fn gallery_values_on_build_2() {
+    gallery_values(MATRIX[2]).await;
+}
+
+#[tokio::test]
+async fn gallery_values_on_build_3() {
+    gallery_values(MATRIX[3]).await;
+}
+
+#[tokio::test]
+async fn gallery_values_on_build_4() {
+    gallery_values(MATRIX[4]).await;
+}
+
+#[tokio::test]
+async fn gallery_values_on_build_5() {
+    gallery_values(MATRIX[5]).await;
+}
+
+#[tokio::test]
+async fn inspection_values_on_build_0() {
+    inspection_values(MATRIX[0]).await;
+}
+
+#[tokio::test]
+async fn inspection_values_on_build_1() {
+    inspection_values(MATRIX[1]).await;
+}
+
+#[tokio::test]
+async fn inspection_values_on_build_2() {
+    inspection_values(MATRIX[2]).await;
+}
+
+#[tokio::test]
+async fn inspection_values_on_build_3() {
+    inspection_values(MATRIX[3]).await;
+}
+
+#[tokio::test]
+async fn inspection_values_on_build_4() {
+    inspection_values(MATRIX[4]).await;
+}
+
+#[tokio::test]
+async fn inspection_values_on_build_5() {
+    inspection_values(MATRIX[5]).await;
 }
 
 /// The kind of each variable of the selected frame named in `names`, in
@@ -152,56 +220,49 @@ async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<VariableKind
         .collect()
 }
 
-/// On every build, a JavaScript frame's variables are in JavaScript's
-/// scopes: receiver and arguments, its own contexts, what its closure
-/// captured, a module's bindings, `globalThis`, and interpreter registers,
-/// which say why they have no names.
+async fn gallery_variable_scopes(session: &NodeSession, lies: &mut Vec<String>) {
+    use VariableKind::{Captured, Global, Local, Parameter, Unnamed};
+    // `values` is gallery's own, which its arrow captures; `truth` is
+    // the CommonJS wrapper's, around it.
+    let names = [
+        "this",
+        "arguments[0]",
+        "values",
+        "truth",
+        "globalThis",
+        "r0",
+    ];
+    let expected = [Parameter, Parameter, Local, Captured, Global, Unnamed].map(Some);
+    let seen = kinds(session, &names).await;
+    if seen != expected {
+        lies.push(format!(
+            "{}: gallery's {names:?} are {seen:?}",
+            session.context()
+        ));
+    }
+    let snapshot = session
+        .scenario
+        .operation("variables", session.scenario.handle().variables())
+        .await;
+    let unnamed = snapshot
+        .variables
+        .iter()
+        .filter(|variable| variable.kind == Unnamed)
+        .all(|variable| variable.unnamed.is_some());
+    if !unnamed {
+        lies.push(format!(
+            "{}: a register does not say why it has no name",
+            session.context()
+        ));
+    }
+}
+
+/// Module bindings retain their scope alongside the frame's own locals.
 #[tokio::test]
-async fn frame_variables_are_in_the_scopes_javascript_gives_them() {
-    use VariableKind::{Captured, Global, Local, Module, Parameter, Unnamed};
+async fn module_variables_are_in_the_scopes_javascript_gives_them() {
+    use VariableKind::{Local, Module};
     let mut lies = Vec::new();
     for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
-        let reported = threads(&session.stop_at("gallery").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        select_function(&session, printer.native, "gallery").await;
-        // `values` is gallery's own, which its arrow captures; `truth` is
-        // the CommonJS wrapper's, around it.
-        let names = [
-            "this",
-            "arguments[0]",
-            "values",
-            "truth",
-            "globalThis",
-            "r0",
-        ];
-        let expected = [Parameter, Parameter, Local, Captured, Global, Unnamed].map(Some);
-        let seen = kinds(&session, &names).await;
-        if seen != expected {
-            lies.push(format!(
-                "{}: gallery's {names:?} are {seen:?}",
-                session.context()
-            ));
-        }
-        let snapshot = session
-            .scenario
-            .operation("variables", session.scenario.handle().variables())
-            .await;
-        let unnamed = snapshot
-            .variables
-            .iter()
-            .filter(|variable| variable.kind == Unnamed)
-            .all(|variable| variable.unnamed.is_some());
-        if !unnamed {
-            lies.push(format!(
-                "{}: a register does not say why it has no name",
-                session.context()
-            ));
-        }
-        session.proceed().await;
-        session.stop_at("unread").await;
-        session.shutdown().await;
-
         let mut session = NodeSession::launch(entry, "modules é/entry.mjs", &[], &[]).await;
         let reported = threads(&session.stop_at("modules").await);
         let printer = reported.iter().find(|t| t.printer).expect("the printer");
@@ -222,8 +283,10 @@ async fn frame_variables_are_in_the_scopes_javascript_gives_them() {
 /// On every build, `.length`, `.size`, and typed array elements read what
 /// JavaScript would give for the gallery's values, as the fixture writes
 /// them, and an element past a typed array's end is absent.
-#[tokio::test]
-async fn lengths_sizes_and_typed_elements_are_javascripts() {
+async fn lengths_sizes_and_typed_elements_are_javascripts(
+    session: &NodeSession,
+    lies: &mut Vec<String>,
+) {
     let cases = [
         ("values.arrays.packedSmi.length", "3"),
         ("values.arrays.long.length", "150"),
@@ -244,31 +307,19 @@ async fn lengths_sizes_and_typed_elements_are_javascripts() {
         // 'buffer bytes' starts with b, 98.
         ("values.binary.buffer[0]", "98"),
     ];
-    let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
-        let reported = threads(&session.stop_at("gallery").await);
-        let printer = reported
-            .iter()
-            .find(|thread| thread.printer)
-            .expect("the printer's thread");
-        select_function(&session, printer.native, "gallery").await;
-        for (text, expected) in cases {
-            let (summary, _) = presented(&session, text).await;
-            if summary != expected {
-                lies.push(format!(
-                    "{}: {text} is {summary}, not {expected}",
-                    session.context()
-                ));
-            }
+    for (text, expected) in cases {
+        let (summary, _) = presented(session, text).await;
+        if summary != expected {
+            lies.push(format!(
+                "{}: {text} is {summary}, not {expected}",
+                session.context()
+            ));
         }
-        let (past, _) = presented(&session, "values.binary.uint8[3]").await;
-        if !past.starts_with("<error") {
-            lies.push(format!("{}: uint8[3] is {past}", session.context()));
-        }
-        session.shutdown().await;
     }
-    assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
+    let (past, _) = presented(session, "values.binary.uint8[3]").await;
+    if !past.starts_with("<error") {
+        lies.push(format!("{}: uint8[3] is {past}", session.context()));
+    }
 }
 
 /// What the user sees for `text`: a computed value's one-line summary and
@@ -294,8 +345,7 @@ async fn shown(session: &NodeSession, text: &str) -> String {
 /// On every build, operators on JavaScript values give what JavaScript
 /// gives: every Number is a double, a `BigInt` mixes with no Number, and
 /// what microscope cannot compute is refused.
-#[tokio::test]
-async fn operators_compute_as_javascript_does() {
+async fn operators_compute_as_javascript_does(session: &NodeSession, lies: &mut Vec<String>) {
     let cases = [
         ("values.numbers.smi / 5", "8.4 : number"),
         ("values.numbers.smi % -5", "2 : number"),
@@ -342,27 +392,15 @@ async fn operators_compute_as_javascript_does() {
              does not make>",
         ),
     ];
-    let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &[]).await;
-        let reported = threads(&session.stop_at("gallery").await);
-        let printer = reported
-            .iter()
-            .find(|thread| thread.printer)
-            .expect("the printer's thread");
-        select_function(&session, printer.native, "gallery").await;
-        for (text, expected) in cases {
-            let actual = shown(&session, text).await;
-            if actual != expected {
-                lies.push(format!(
-                    "{}: {text} is {actual}, not {expected}",
-                    session.context()
-                ));
-            }
+    for (text, expected) in cases {
+        let actual = shown(session, text).await;
+        if actual != expected {
+            lies.push(format!(
+                "{}: {text} is {actual}, not {expected}",
+                session.context()
+            ));
         }
-        session.shutdown().await;
     }
-    assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
 }
 
 /// On every build, `process.env`, whose variables an interceptor gives, is
@@ -390,141 +428,124 @@ async fn an_interceptors_object_is_refused_rather_than_shown_empty() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// On every build, a frame running optimized code shows no interpreter
-/// registers, whose slots it leaves stale, not even one entered on a loop
-/// (OSR) that kept the interpreter's frame; a baseline or interpreted frame
-/// shows its registers.
-#[tokio::test]
-async fn optimized_frames_show_no_stale_registers() {
+/// Optimized frames show no stale interpreter registers, even after OSR;
+/// baseline and interpreted frames show theirs.
+pub async fn optimized_frames_show_no_stale_registers(session: &NodeSession, printer: u64) {
     let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session =
-            NodeSession::launch(entry, "tiers.js", &["--allow-natives-syntax"], &[]).await;
-        let reported = threads(&session.stop_at("tiers").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        // `deoptimized` left its optimized code for the interpreter.
-        for (function, registers) in [
-            ("osr", false),
-            ("turbofan", false),
-            ("sparkplug", true),
-            ("deoptimized", true),
-        ] {
-            select_function(&session, printer.native, function).await;
-            let snapshot = session
-                .scenario
-                .operation("variables", session.scenario.handle().variables())
-                .await;
-            let shown = snapshot
-                .variables
-                .iter()
-                .any(|variable| variable.kind == VariableKind::Unnamed);
-            if shown != registers {
-                lies.push(format!(
-                    "{}: {function} shows registers: {shown}",
-                    session.context()
-                ));
-            }
+    // `deoptimized` left its optimized code for the interpreter.
+    for (function, registers) in [
+        ("osr", false),
+        ("turbofan", false),
+        ("sparkplug", true),
+        ("deoptimized", true),
+    ] {
+        select_function(session, printer, function).await;
+        let snapshot = session
+            .scenario
+            .operation("variables", session.scenario.handle().variables())
+            .await;
+        let shown = snapshot
+            .variables
+            .iter()
+            .any(|variable| variable.kind == VariableKind::Unnamed);
+        if shown != registers {
+            lies.push(format!(
+                "{}: {function} shows registers: {shown}",
+                session.context()
+            ));
         }
-        session.shutdown().await;
     }
     assert!(lies.is_empty(), "{lies:#?}");
 }
 
-#[tokio::test]
-async fn inspection_keys_follow_ordinary_and_integer_indexed_rules() {
+async fn inspection_values(entry: &str) {
     let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
-        let reported = threads(&session.stop_at("inspection").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        select_function(&session, printer.native, "inspection").await;
-        for (expression, expected) in [
-            ("keyed[4294967295]", "42"),
-            ("keyed[\"4294967295\"]", "42"),
-            ("array[4294967295]", "43"),
-            ("typed[0]", "2"),
-            ("typed[\"01\"]", "98"),
-            ("typed[\"-1.0\"]", "97"),
-            ("inherited[0]", "2"),
-            ("inherited[\"01\"]", "98"),
-            ("shadowed[\"-1\"]", "44"),
-            ("boxed[2]", "'past string'"),
-            ("boxedInherited[2]", "'past string'"),
-            ("boxedShadowed[0]", "45"),
-        ] {
-            let (actual, _) = presented(&session, expression).await;
-            if actual != expected {
-                lies.push(format!("{entry}: {expression} is {actual}, not {expected}"));
-            }
+    let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
+    let reported = threads(&session.stop_at("inspection").await);
+    let printer = reported.iter().find(|t| t.printer).expect("the printer");
+    select_function(&session, printer.native, "inspection").await;
+    for (expression, expected) in [
+        ("keyed[4294967295]", "42"),
+        ("keyed[\"4294967295\"]", "42"),
+        ("array[4294967295]", "43"),
+        ("typed[0]", "2"),
+        ("typed[\"01\"]", "98"),
+        ("typed[\"-1.0\"]", "97"),
+        ("inherited[0]", "2"),
+        ("inherited[\"01\"]", "98"),
+        ("shadowed[\"-1\"]", "44"),
+        ("boxed[2]", "'past string'"),
+        ("boxedInherited[2]", "'past string'"),
+        ("boxedShadowed[0]", "45"),
+    ] {
+        let (actual, _) = presented(&session, expression).await;
+        if actual != expected {
+            lies.push(format!("{entry}: {expression} is {actual}, not {expected}"));
         }
-        for expression in ["boxed[0]", "boxedInherited[1]"] {
-            let (actual, _) = presented(&session, expression).await;
-            if !actual.contains("string wrapper's character") {
-                lies.push(format!(
-                    "{entry}: {expression} is {actual}, not a character refusal"
-                ));
-            }
-        }
-        for key in ["-1", "-0", "1.5", "NaN", "Infinity", "4294967295"] {
-            for object in ["typed", "inherited"] {
-                let expression = format!("{object}[\"{key}\"]");
-                let (actual, _) = presented(&session, &expression).await;
-                if actual != "<error: the value has no such property>" {
-                    lies.push(format!("{entry}: {expression} is {actual}, not absent"));
-                }
-            }
-        }
-        session.shutdown().await;
     }
+    for expression in ["boxed[0]", "boxedInherited[1]"] {
+        let (actual, _) = presented(&session, expression).await;
+        if !actual.contains("string wrapper's character") {
+            lies.push(format!(
+                "{entry}: {expression} is {actual}, not a character refusal"
+            ));
+        }
+    }
+    for key in ["-1", "-0", "1.5", "NaN", "Infinity", "4294967295"] {
+        for object in ["typed", "inherited"] {
+            let expression = format!("{object}[\"{key}\"]");
+            let (actual, _) = presented(&session, &expression).await;
+            if actual != "<error: the value has no such property>" {
+                lies.push(format!("{entry}: {expression} is {actual}, not absent"));
+            }
+        }
+    }
+    select_function(&session, printer.native, "inspection").await;
+    inspection_errors_refuse_replaced_stack_getters(&session, &mut lies).await;
+    select_function(&session, printer.native, "inspection").await;
+    let deep = printer
+        .values
+        .iter()
+        .find(|v| v.name == "deep")
+        .expect("deep");
+    inspection_depth_does_not_follow_hidden_property_chains(&session, deep).await;
+    select_function(&session, printer.native, "inspection").await;
+    inspection_children_include_numeric_own_properties_in_pages(&session).await;
+    session.shutdown().await;
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-#[tokio::test]
-async fn inspection_errors_refuse_replaced_stack_getters() {
-    let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
-        let reported = threads(&session.stop_at("inspection").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        select_function(&session, printer.native, "inspection").await;
-        let (_, custom) = presented(&session, "customStack").await;
-        if !custom.contains("stack getter is not V8's original") {
-            lies.push(format!("{entry}: custom stack getter shows {custom}"));
-        }
-        let (_, native) = presented(&session, "nativeStack").await;
-        if !native.starts_with("TypeError: native stack is still readable\n    at inspection (") {
-            lies.push(format!("{entry}: original stack getter shows {native}"));
-        }
-        session.shutdown().await;
+async fn inspection_errors_refuse_replaced_stack_getters(
+    session: &NodeSession,
+    lies: &mut Vec<String>,
+) {
+    let entry = &session.entry;
+    let (_, custom) = presented(session, "customStack").await;
+    if !custom.contains("stack getter is not V8's original") {
+        lies.push(format!("{entry}: custom stack getter shows {custom}"));
     }
-    assert!(lies.is_empty(), "{}", lies.join("\n"));
+    let (_, native) = presented(session, "nativeStack").await;
+    if !native.starts_with("TypeError: native stack is still readable\n    at inspection (") {
+        lies.push(format!("{entry}: original stack getter shows {native}"));
+    }
 }
 
-#[tokio::test]
-async fn inspection_depth_does_not_follow_hidden_property_chains() {
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
-        let reported = threads(&session.stop_at("inspection").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        select_function(&session, printer.native, "inspection").await;
-        let deep = printer
-            .values
-            .iter()
-            .find(|v| v.name == "deep")
-            .expect("deep");
-        let actual = presented(&session, "deep").await;
-        assert!(
-            lies_about(entry, deep, &actual).is_empty(),
-            "{entry}: {actual:?}"
-        );
-        let (proxy, _) = presented(&session, "proxies").await;
-        assert!(
-            proxy.contains("proxy chain is too long")
-                || (crate::session::major(entry) < 26 && proxy.contains("a proxy of a proxy")),
-            "{entry}: {proxy}"
-        );
-        session.shutdown().await;
-    }
+async fn inspection_depth_does_not_follow_hidden_property_chains(
+    session: &NodeSession,
+    deep: &Named,
+) {
+    let entry = session.entry.as_str();
+    let actual = presented(session, "deep").await;
+    assert!(
+        lies_about(entry, deep, &actual).is_empty(),
+        "{entry}: {actual:?}"
+    );
+    let (proxy, _) = presented(session, "proxies").await;
+    assert!(
+        proxy.contains("proxy chain is too long")
+            || (crate::session::major(entry) < 26 && proxy.contains("a proxy of a proxy")),
+        "{entry}: {proxy}"
+    );
 }
 
 #[tokio::test]
@@ -552,72 +573,65 @@ async fn dense_elements_cross_the_enumeration_limit_without_losing_values() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-#[tokio::test]
-async fn inspection_children_include_numeric_own_properties_in_pages() {
+async fn inspection_children_include_numeric_own_properties_in_pages(session: &NodeSession) {
     use microscope::{ValueChildQuery, ValueChildRelationship, ValueChildren};
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "values.js", &[], &["inspection"]).await;
-        let reported = threads(&session.stop_at("inspection").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        select_function(&session, printer.native, "inspection").await;
-        let result = session
-            .scenario
-            .handle()
-            .evaluate(&Expression::parse("keyed").unwrap())
-            .await
-            .unwrap();
-        let Evaluation::Value { value, .. } = result else {
-            panic!("{result:?}")
-        };
-        let VariableState::Available {
-            presentation: Some(presentation),
-            ..
-        } = value.state
-        else {
-            panic!("{:?}", value.state)
-        };
-        let ValueChildren::Available(children) = &presentation.children else {
-            panic!("no children")
-        };
-        assert_eq!(children.total(), 3);
-        for limit in [1, 2] {
-            let mut found = Vec::new();
-            for offset in (0..3).step_by(limit as usize) {
-                let page = session
-                    .scenario
-                    .operation(
-                        "children",
-                        session.scenario.handle().value_children(
-                            std::sync::Arc::clone(children),
-                            ValueChildQuery { offset, limit },
-                        ),
-                    )
-                    .await;
-                for child in page.children.iter() {
-                    let ValueChildRelationship::Field { name } = &child.relationship else {
-                        panic!("{:?}", child.relationship)
-                    };
-                    let VariableState::Available {
-                        presentation: Some(value),
-                        ..
-                    } = &child.state
-                    else {
-                        panic!("{:?}", child.state)
-                    };
-                    found.push((name.to_string(), value.summary.to_string()));
-                }
+    let entry = &session.entry;
+    let result = session
+        .scenario
+        .handle()
+        .evaluate(&Expression::parse("keyed").unwrap())
+        .await
+        .unwrap();
+    let Evaluation::Value { value, .. } = result else {
+        panic!("{result:?}")
+    };
+    let VariableState::Available {
+        presentation: Some(presentation),
+        ..
+    } = value.state
+    else {
+        panic!("{:?}", value.state)
+    };
+    let ValueChildren::Available(children) = &presentation.children else {
+        panic!("no children")
+    };
+    assert_eq!(children.total(), 3);
+    for limit in [1, 2] {
+        let mut found = Vec::new();
+        for offset in (0..3).step_by(limit as usize) {
+            let page = session
+                .scenario
+                .operation(
+                    "children",
+                    session.scenario.handle().value_children(
+                        std::sync::Arc::clone(children),
+                        ValueChildQuery { offset, limit },
+                    ),
+                )
+                .await;
+            for child in page.children.iter() {
+                let ValueChildRelationship::Field { name } = &child.relationship else {
+                    panic!("{:?}", child.relationship)
+                };
+                let VariableState::Available {
+                    presentation: Some(value),
+                    ..
+                } = &child.state
+                else {
+                    panic!("{:?}", child.state)
+                };
+                found.push((name.to_string(), value.summary.to_string()));
             }
-            assert_eq!(
-                found,
-                [
-                    ("0".into(), "'zero'".into()),
-                    ("foo".into(), "'bar'".into()),
-                    ("4294967295".into(), "42".into())
-                ],
-                "{entry}"
-            );
         }
-        session.shutdown().await;
+        assert_eq!(
+            found,
+            [
+                ("0".into(), "'zero'".into()),
+                ("foo".into(), "'bar'".into()),
+                ("4294967295".into(), "42".into())
+            ],
+            "{entry}"
+        );
     }
 }
 
