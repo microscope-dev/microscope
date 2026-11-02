@@ -22,7 +22,7 @@ use aya::maps::{
     Array, ArrayOfMaps, HashMap, MapData, PerCpuArray, PerCpuHashMap, PerCpuValues, RingBuf,
 };
 
-use aya::programs::{BtfTracePoint, FEntry, FExit, Iter};
+use aya::programs::{BtfTracePoint, FEntry, FExit, Iter, KProbe};
 use aya::{Btf, Ebpf, EbpfLoader};
 use aya_obj::btf::BtfKind;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -53,12 +53,11 @@ use crate::unwind::sample::SampledState;
 static OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/syscalls.bpf.o"));
 
 /// The tracepoints the programs attach to, by program name.
-const PROGRAMS: [(&str, &str); 6] = [
+const PROGRAMS: [(&str, &str); 5] = [
     ("sys_enter", "sys_enter"),
     ("sys_exit", "sys_exit"),
     ("process_fork", "sched_process_fork"),
     ("process_exec", "sched_process_exec"),
-    ("process_exit", "sched_process_exit"),
     ("signal_deliver", "signal_deliver"),
 ];
 
@@ -157,6 +156,7 @@ pub struct RawCallSpec {
     pub forks: u8,
     pub execs: u8,
     pub stat: u16,
+    pub ends: u32,
     pub args: [RawArgCopy; 6],
 }
 
@@ -440,6 +440,7 @@ pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
             Some("clone" | "clone3" | "fork" | "vfork")
         )),
         execs: u8::from(matches!(call.name(), Some("execve" | "execveat"))),
+        ends: u32::from(matches!(call.name(), Some("exit" | "exit_group"))),
         ..RawCallSpec::default()
     };
 
@@ -1306,6 +1307,12 @@ impl Loaded {
         }
         let attachment = attachment(all, &calls, engine.attach, || has_x32(&has), &has)
             .map_err(BpfError::Unavailable)?;
+        let terminal: BTreeSet<_> = calls
+            .iter()
+            .filter(|call| matches!(call.name(), Some("exit" | "exit_group")))
+            .filter_map(|&call| call.kernel_function())
+            .filter(|function| !function.starts_with("__ia32_") || has(function))
+            .collect();
         record!(
             "syscalls bpf: attach {} ({}): {:?}",
             attachment.name(),
@@ -1363,7 +1370,7 @@ impl Loaded {
             config.set(0, value, 0).map_err(load_error)?;
         }
 
-        attach(&mut ebpf, &btf, &attachment)?;
+        attach(&mut ebpf, &btf, &attachment, &terminal)?;
 
         let targets =
             HashMap::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)
@@ -1676,7 +1683,12 @@ impl Loaded {
 
 /// Loads and attaches the programs where `attachment` says, and loads
 /// the in-flight iterator, which runs only when asked.
-fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), BpfError> {
+fn attach(
+    ebpf: &mut Ebpf,
+    btf: &Btf,
+    attachment: &Attachment,
+    terminal: &BTreeSet<String>,
+) -> Result<(), BpfError> {
     for (name, tracepoint) in PROGRAMS {
         if !attachment.functions.is_empty() && matches!(name, "sys_enter" | "sys_exit") {
             continue;
@@ -1691,6 +1703,26 @@ fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), Bpf
         program.attach().map_err(load_error)?;
     }
 
+    let exit: &mut KProbe = ebpf
+        .program_mut("process_exit")
+        .ok_or_else(|| missing("process_exit"))?
+        .try_into()
+        .map_err(load_error)?;
+    exit.load().map_err(load_error)?;
+    exit.attach("exit_notify", 0).map_err(load_error)?;
+
+    if !terminal.is_empty() {
+        let enter: &mut KProbe = ebpf
+            .program_mut("terminal_enter")
+            .ok_or_else(|| missing("terminal_enter"))?
+            .try_into()
+            .map_err(load_error)?;
+        enter.load().map_err(load_error)?;
+        for function in terminal {
+            enter.attach(function, 0).map_err(load_error)?;
+        }
+    }
+
     let end: &mut FEntry = ebpf
         .program_mut("process_end")
         .ok_or_else(|| missing("process_end"))?
@@ -1700,6 +1732,9 @@ fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), Bpf
     end.attach().map_err(load_error)?;
 
     for (slot, function) in attachment.functions.iter().enumerate() {
+        if terminal.contains(function) {
+            continue;
+        }
         let enter = format!("enter_{slot}");
         let program: &mut FEntry = ebpf
             .program_mut(&enter)
@@ -1708,11 +1743,6 @@ fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), Bpf
             .map_err(load_error)?;
         program.load(function, btf).map_err(load_error)?;
         program.attach().map_err(load_error)?;
-        // These calls end at sched_process_exit, never at fexit, which
-        // the verifier refuses on their __noreturn kernel functions.
-        if function.ends_with("_sys_exit") || function.ends_with("_sys_exit_group") {
-            continue;
-        }
         let exit = format!("exit_{slot}");
         let program: &mut FExit = ebpf
             .program_mut(&exit)
@@ -2839,7 +2869,9 @@ mod tests {
             (
                 RawCallSpec,
                 "call_spec",
-                [selected, moves, makes, makes_arg, forks, execs, stat, args]
+                [
+                    selected, moves, makes, makes_arg, forks, execs, stat, ends, args
+                ]
             ),
             (
                 RawFileRecord,

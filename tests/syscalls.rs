@@ -2060,7 +2060,7 @@ mod bpf {
         );
     }
 
-    fn group_exits(mode: &str, attach: &str) {
+    fn group_exits(mode: &str, attach: &str, workers: u32, rounds: u32) {
         let directory = ScratchDir::new("syscalls-group-exits");
         let path = directory.path().join("trace");
         let output = microscope(&["-f", "--attach", attach, "-e", "trace=exit,exit_group,kill"])
@@ -2068,7 +2068,12 @@ mod bpf {
             .arg(&path)
             .arg("--")
             .arg(fixture())
-            .args(["group-exits", mode, "7", "8"])
+            .args([
+                "group-exits",
+                mode,
+                &workers.to_string(),
+                &rounds.to_string(),
+            ])
             .output()
             .expect("trace terminating groups");
         let trace = std::fs::read_to_string(path).expect("read trace");
@@ -2078,10 +2083,17 @@ mod bpf {
             text(&output.stderr)
         );
         assert!(output.status.success(), "{context}");
-        check_group_exits(mode, &truth, &trace, &context);
+        check_group_exits(mode, &truth, &trace, &context, workers, rounds);
     }
 
-    fn check_group_exits(mode: &str, truth: &str, trace: &str, context: &str) {
+    fn check_group_exits(
+        mode: &str,
+        truth: &str,
+        trace: &str,
+        context: &str,
+        workers: u32,
+        rounds: u32,
+    ) {
         let number = |value: &str| value.parse::<u32>().expect("fixture number");
         let mut expected = BTreeMap::new();
         let mut owners = BTreeMap::new();
@@ -2118,7 +2130,11 @@ mod bpf {
                 _ => panic!("unexpected fixture output: {context}"),
             }
         }
-        assert_eq!((members, reaped), (64, 8), "{context}");
+        assert_eq!(
+            (members, reaped),
+            ((workers + 1) * rounds, rounds),
+            "{context}"
+        );
         let ending = Regex::new(r"^(\d+) +\+\+\+ (.+) \+\+\+$").expect("exit regex");
         let mut actual: BTreeMap<u32, Vec<String>> = BTreeMap::new();
         for line in trace.lines() {
@@ -2136,13 +2152,37 @@ mod bpf {
             }
         }
         assert_eq!(actual, expected, "{context}");
+        if mode == "parallel" {
+            let terminal = Regex::new(r"^(\d+) +(exit|exit_group)\((\d+)\) += \?$")
+                .expect("terminal call regex");
+            let mut calls: BTreeMap<u32, Vec<(String, u32)>> = BTreeMap::new();
+            for line in trace.lines() {
+                if let Some(found) = terminal.captures(line) {
+                    calls
+                        .entry(number(&found[1]))
+                        .or_default()
+                        .push((found[2].to_owned(), number(&found[3])));
+                }
+            }
+            let expected_calls: BTreeMap<_, _> = expected
+                .keys()
+                .map(|&tid| {
+                    let call = match owners.get(&tid) {
+                        Some(&owner) => ("exit".to_owned(), if owner == tid { 23 } else { 37 }),
+                        None => ("exit_group".to_owned(), 0),
+                    };
+                    (tid, vec![call])
+                })
+                .collect();
+            assert_eq!(calls, expected_calls, "{context}");
+        }
     }
 
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn group_termination_reports_each_thread_and_one_process_exit() {
         for mode in ["term", "kill", "group", "worker-group", "return"] {
-            group_exits(mode, "tracepoint");
+            group_exits(mode, "tracepoint", 7, 8);
         }
     }
 
@@ -2150,7 +2190,15 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn group_exit_status_matches_the_status_reaped_by_the_parent() {
         for mode in ["leader-first", "parallel"] {
-            group_exits(mode, "fentry");
+            group_exits(mode, "fentry", 7, 8);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn simultaneous_worker_exits_are_not_skipped() {
+        for attach in ["tracepoint", "fentry"] {
+            group_exits("parallel", attach, 63, 100);
         }
     }
 
@@ -2251,7 +2299,14 @@ mod bpf {
             assert_eq!(code, Some(0), "{lines:?}");
             let joined = lines.join("\n");
             let trace = prefix.replace_all(&joined, "${1} ");
-            check_group_exits(mode, &truth, &trace, &format!("{mode}\n{truth}\n{trace}"));
+            check_group_exits(
+                mode,
+                &truth,
+                &trace,
+                &format!("{mode}\n{truth}\n{trace}"),
+                7,
+                8,
+            );
         }
     }
 

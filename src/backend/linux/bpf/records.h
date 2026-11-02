@@ -145,6 +145,7 @@ struct call_spec {
 	u8 execs;
 	// Its row in STATS, which holds only the chosen calls.
 	u16 stat;
+	u32 ends;
 	struct arg_copy args[6];
 };
 

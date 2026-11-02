@@ -159,19 +159,28 @@ fatal signal. Unlike ptrace, this tracepoint does not supply the original
 fatal signal's delivery stop or its sender; the BPF engine does not invent
 them from the preceding `kill` call.
 
-Worker exits come from `sched_process_exit`. The final process exit comes
-from `fentry/do_notify_parent`, only when the task is the leader, no live
-threads remain, and `signal->nr_threads` is one. At that point every worker
+Worker exits and unfinished calls come from `kprobe/exit_notify`, before
+the task leaves its thread group. Terminal syscall entries (`exit` and
+`exit_group`) also use kprobes, in both attachment modes. Kprobes disable
+preemption before the BPF recursion guard. BTF tracepoints and fentry do
+not: an exiting task can preempt another task's callback on the same CPU,
+then be skipped by its per-CPU guard even though the ring has room. Normal
+syscall hooks remain best-effort, and their skip counters remain visible.
+The kprobe PMU attaches without needing permission to read tracefs.
+
+The final process exit comes from `fentry/do_notify_parent`, only when the
+task is the leader, no live threads remain, and `signal->nr_threads` is
+one. At that point every worker
 has finished its exit callback and left the thread group. The final record
 therefore follows all worker records. It uses `group_exit_code` when
 `SIGNAL_GROUP_EXIT` is set, otherwise the leader's `exit_code`, matching the
 parent's wait status. A worker record keeps that task's own `exit_code`;
 ptrace can instead report an already-selected group status for a worker.
 
-Do not elect the final callback by reading `signal->live == 0` at
-`sched_process_exit`: several callbacks can see zero, and some may not have
-started yet. Removing the PID target there both duplicates process exits
-and hides later worker exits. Target removal now follows the final record.
+Do not elect the final callback by reading `signal->live == 0` before
+group membership is removed: several callbacks can see zero, and some may
+not have started yet. Removing the PID target there both duplicates
+process exits and hides later worker exits. Target removal now follows the final record.
 For cgroups, a marker on the leader records ownership without testing the
 notifying task's cgroup, and consumes it once even if reparenting notifies
 again. Ignored SIGCHLD still reaches this hook; no parent reap is required.
@@ -191,6 +200,9 @@ How it attaches:
 - Process completion always needs `do_notify_parent` in kernel BTF and an
   attachable fentry hook, including with `--attach tracepoint`. Missing
   support is an error, not a return to the racy shared-counter check.
+- Exit tracing also needs an attachable `exit_notify` kprobe and, when
+  terminal calls are selected, kprobes on their syscall wrappers. Attachment
+  failures are errors, not a fallback to preemptible exit hooks.
 - When any tracer attaches to or detaches from a kernel function, the kernel
   skips the old trampoline's `fexit` programs for calls in progress, and
   counts nothing. The engine sees a call that entered and never returned and

@@ -926,7 +926,7 @@ static __always_inline void send_files(u32 tid, u32 tgid, struct call_spec *spec
 }
 
 // A call's entry, with the registers it entered with and its number.
-static __always_inline int on_enter(struct pt_regs *regs, u64 id)
+static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
 {
 	u64 ids = bpf_get_current_pid_tgid();
 	u32 tgid = ids >> 32, tid = (u32)ids;
@@ -938,7 +938,7 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id)
 	entry.nr = entry.abi == ABI_X32 ? (id & ~X32_SYSCALL_BIT) : id;
 	u32 slot = slot_of(entry.abi, entry.nr);
 	struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
-	if (!spec || !spec->selected)
+	if (!spec || !spec->selected || spec->ends != ending)
 		return 0;
 	struct config *settings = config();
 	if (!settings)
@@ -1044,13 +1044,20 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 SEC("tp_btf/sys_enter")
 int sys_enter(u64 *ctx)
 {
-	return on_enter((struct pt_regs *)ctx[0], ctx[1]);
+	return on_enter((struct pt_regs *)ctx[0], ctx[1], 0);
 }
 
 SEC("tp_btf/sys_exit")
 int sys_exit(u64 *ctx)
 {
 	return on_exit(ctx, (struct pt_regs *)ctx[0], ctx[1]);
+}
+
+SEC("kprobe")
+int terminal_enter(void *ctx)
+{
+	struct pt_regs *regs = (struct pt_regs *)bpf_task_pt_regs(bpf_get_current_task_btf());
+	return on_enter(regs, BPF_CORE_READ(regs, orig_ax), 1);
 }
 
 // Or only the chosen calls' kernel functions, each `__x64_sys_NAME(regs)`
@@ -1062,7 +1069,7 @@ int sys_exit(u64 *ctx)
 	int enter_##n(u64 *ctx)                                                    \
 	{                                                                          \
 		struct pt_regs *regs = (struct pt_regs *)ctx[0];                   \
-		return on_enter(regs, BPF_CORE_READ(regs, orig_ax));               \
+		return on_enter(regs, BPF_CORE_READ(regs, orig_ax), 0);            \
 	}                                                                          \
 	SEC("fexit")                                                               \
 	int exit_##n(u64 *ctx)                                                     \
@@ -1169,10 +1176,11 @@ static __always_inline void send_exit(u32 tid, u32 tgid, u64 now, s32 code, u32 
 	bpf_ringbuf_submit(record, 0);
 }
 
-SEC("tp_btf/sched_process_exit")
-int process_exit(u64 *ctx)
+// Kprobes disable preemption before entering BPF's per-CPU recursion guard.
+SEC("kprobe/exit_notify")
+int process_exit(void *ctx)
 {
-	struct task_struct *task = (struct task_struct *)ctx[0];
+	struct task_struct *task = bpf_get_current_task_btf();
 	u32 tgid = BPF_CORE_READ(task, tgid);
 	u32 tid = BPF_CORE_READ(task, pid);
 	if (!traced(tgid))
