@@ -8,6 +8,7 @@ import {
   activate,
   close,
   dock,
+  dockBeside,
   emptyLayout,
   float,
   groups,
@@ -25,6 +26,7 @@ import {
   split,
   splits,
   type Target,
+  toggleHidden,
 } from "../../src/workbench/layout";
 
 export type Step =
@@ -37,6 +39,7 @@ export type Step =
   | { op: "dock"; window: number; target: TargetChoice }
   | { op: "reframe"; window: number; rect: Rect }
   | { op: "maximize"; group: number }
+  | { op: "hide"; group: number; side: "left" | "bottom" }
   | { op: "restore" };
 
 type TargetChoice =
@@ -97,6 +100,14 @@ export const step: fc.Arbitrary<Step> = fc.oneof(
   },
   { weight: 1, arbitrary: fc.record({ op: fc.constant("maximize" as const), group: choice }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant("restore" as const) }) },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      op: fc.constant("hide" as const),
+      group: choice,
+      side: fc.constantFrom("left" as const, "bottom" as const),
+    }),
+  },
 );
 
 // Long runs, which build layouts several splits deep; short ones are still
@@ -164,6 +175,11 @@ export function apply(layout: Layout, chosen: Step): Layout {
     }
     case "restore":
       return restore(layout);
+    case "hide": {
+      const group = pick(groups(layout), chosen.group);
+      const beside = group && dockBeside(layout, group.id, chosen.side);
+      return group && beside ? toggleHidden(layout, beside.id, group.id) : layout;
+    }
   }
 }
 

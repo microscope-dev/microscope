@@ -4,6 +4,11 @@
 to one debugger session over WebSocket. The server is a `DebuggerHandle` client,
 like the CLI and DAP server.
 
+The page is a workbench, as in an IDE: a menu bar, a run toolbar, and panes in
+tabbed groups that split, float, and dock. Every view is a pane, including
+Welcome, Settings, Account, and the forms that launch or attach. There are no
+pages.
+
 ## Code map
 
 | Path | What lives there |
@@ -15,14 +20,71 @@ like the CLI and DAP server.
 | `src/web/inspect.rs`, `src/web/values.rs`, `src/web/draw.rs`, `src/web/profiles.rs` | Server adapters for major page features |
 | `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Syscalls view; see [system call tracing](syscalls.md) |
 | `web/src/store.ts`, `web/src/connection.ts`, `web/src/actions.ts` | Browser state, transport, and user actions |
-| `web/src/router.tsx`, `web/src/tab.ts`, `web/src/ui/` | URL state, per-tab view, and React interface |
-| `web/src/workbench/` | The workbench every pane builds on: the layout model, drag geometry, keys, and the command registry. It imports nothing outside itself |
-| `web/src/target.ts`, `web/src/account.ts`, `web/src/ui/Start.tsx` | The page served on its own: which microscope it talks to, and services sign-in |
+| `web/src/router.tsx`, `web/src/ui/Routes.tsx`, `web/src/tab.ts` | Addresses, what each opens in the workbench, and per-tab state |
+| `web/src/workbench/` | The workbench every pane builds on: the layout model, its frame components, drag geometry, keys, and the command registry. It imports nothing outside itself |
+| `web/src/ui/panes.tsx`, `web/src/ui/commands.ts` | Every pane kind, the layout presets, and every command |
+| `web/src/ui/` | Pane bodies and the frame around the workbench |
+| `web/src/target.ts`, `web/src/account.ts`, `web/src/ui/Account.tsx` | The page served on its own: which microscope it talks to, and services sign-in |
 | `web/src/protocol.gen.ts` | Generated TypeScript protocol; do not edit by hand |
 | `web/src/visualize/`, `sdk/web/` | Sandboxed visualizers and their public type contract |
 | `web/test/` | Fast TypeScript, React, replay, and sandbox tests |
 | `web/e2e/`, `tests/web/` | Browser end-to-end tests and Rust server tests |
 | `web/vite.config.ts`, `web/playwright.config.ts` | Browser build and end-to-end configuration |
+
+## The workbench
+
+`web/src/workbench/` is generic: it knows panes only through their kinds, and
+imports nothing from the debugger. `web/src/ui/panes.tsx` registers the
+debugger's kinds and `web/src/ui/commands.ts` its commands.
+
+- **Layout** (`layout.ts`): plain data, a tree of splits whose leaves are
+  groups of tabs, plus floating windows, a maximized group, and hidden docks.
+  Only its operations change it (`open`, `close`, `move`, `split`, `float`,
+  `dock`, `toggleHidden` and the rest). Each returns a layout that keeps every
+  rule `checkLayout` lists; development builds assert it after every change.
+- **Pane kinds** (`kinds.ts`): a kind gives a pane its title, body, optional
+  badge, what it `needs` (a session, a connection, or control), and whether it
+  stays mounted when hidden. A pane is a kind and a key, so there is one pane
+  per kind and key: one Registers, one Source per file, one Profile per
+  profile. A pane's own state goes in its params, which the layout saves.
+- **Frame** (`Dock.tsx`, `Group.tsx`, `SplitView.tsx`, `PaneHost.tsx`,
+  `MenuBar.tsx`): draws the layout. `PaneHost` shows why a pane is empty when
+  its need is missing, and catches a pane that throws so the rest keeps
+  working. Each has a CSS module beside it; `styles.css` keeps the tokens and
+  what pane bodies share. Code and tests find frame parts by role or
+  `data-part`, never by a module's class names.
+- **Commands** (`commands.ts` here, and `web/src/ui/commands.ts`): see
+  [actions and focus](#actions-and-focus).
+- **Persistence** (`persist.ts`, `saved.ts`): the layout is saved per browser.
+  `saved.ts` has a version and a migration per version, and
+  `web/test/layouts/` keeps a fixture of every version ever written, each of
+  which must still load.
+
+### Addresses
+
+Every address renders the same workbench and says what it wants from it
+(`web/src/ui/Routes.tsx`). `/s/SESSION/...` wants a session's panes, and gets
+the Debug layout when no open pane shows one. `/` gets Welcome when every open
+pane needs a session; a server started on a profile starts at that profile
+instead. `/profile/ID` opens that profile's pane, and the address follows the
+pane while it is the one shown. `/pick?tab=` opens the Start pane its tab
+became. `/join` alone shows without the frame.
+
+### Adding a pane
+
+1. Add its id to `KIND` in `web/src/documents.ts`.
+2. Write its body as a component taking `PaneProps`. Read the session's focus
+   with `useFocus()` only if its kind needs a session.
+3. Register the kind in `KINDS` in `web/src/ui/panes.tsx`: title, body, needs,
+   `keepAlive`, and a badge if the tab should count something.
+4. Give it a command in `web/src/ui/commands.ts` (`debugPane` for a session's
+   view, `pane` for one that needs none), so the menus, palette, and Keyboard
+   shortcuts pane offer it. Use a key only from the probe-validated list in
+   the plan; most panes need none.
+5. Decide whether a preset (`debugLayout`, `welcomeLayout`) should hold it. A
+   saved layout without it still loads.
+6. Test what a person does with it through the driver, and add it to a journey
+   if it changes one. The swarm finds its menu item on its own.
 
 ## Protocol and state
 
@@ -31,7 +93,7 @@ The server sends tab state and notices. A tab sends requests that include the
 them after writes, setting changes, and session changes.
 
 The address bar contains the tab's complete view: stop, thread or task, frame,
-source, panel, and memory location. A shared link must open the same view.
+source, document, and memory location. A shared link must open the same view.
 
 Formatting shared with other clients belongs in `src/present`.
 
@@ -43,6 +105,20 @@ MICROSCOPE_UPDATE_PROTOCOL=1 just test protocol
 ```
 
 ## Building and testing
+
+Journeys are written once against the `User` interface in
+`web/test/driver/user.ts`: `press`, `menu`, `chooseTab`, `expectGroups`, and
+the debugger's own steps. `fast.ts` runs them in Vitest's Chromium against a
+scripted debugger in milliseconds; `real.ts` runs them in Playwright against a
+real `microscope web`. When the page changes how something is done, change the
+backends, not the journeys.
+
+`web/e2e/swarm.spec.ts` drives random menu commands, keys, tab clicks, and
+drags against a live session, checking after each that every group shows one
+tab and no pane failed. `just web-e2e` runs 60 steps.
+`MICROSCOPE_SWARM_STEPS=1000 just web-e2e swarm` runs it at depth, and a
+failure's `MICROSCOPE_SWARM_SEED` replays it.
+
 
 Debug builds read the page from `build/web` at runtime. Release builds embed
 it.
@@ -159,7 +235,7 @@ State has several lifetimes:
 - session: target, modules, settings, loaded views;
 - execution: running operation and pending control state;
 - stop: threads, tasks, frames, variables, memory, and disassembly answers;
-- tab: selected context, panel, paths, expanded values, and pinned drawings;
+- tab: selected context, open files, expanded values, and pinned drawings;
 - browser: where panes sit (`workbench/persist.ts`), kept in localStorage and
   never part of a URL, since a link shares where to look, not how a page is
   arranged;
@@ -174,7 +250,7 @@ more selective invalidation within one stop.
 
 `router.tsx`, `tab.ts`, and UI path helpers encode a tab's complete navigable
 view. A copied URL should restore the same stop where retained, execution
-context, frame, source, panel, memory address, and pinned values.
+context, frame, source, document, memory address, and pinned values.
 
 URL parsing is an untrusted boundary. Reject or normalize invalid IDs, paths,
 indexes, and duplicate fields. Do not issue debugger writes merely by opening a
@@ -193,8 +269,9 @@ hover or open menu should stay out of the URL.
 
 Every command is defined once, in `web/src/ui/commands.ts`, in a registry
 from `web/src/workbench/commands.ts`: its label, menu, keys, when it can run,
-and what it does. Buttons, keys, the key help, and the command palette read
-that registry rather than duplicating control logic. Run control asks
+and what it does. The menus, buttons, keys, and the command palette read
+that registry rather than duplicating control logic, and so does the
+Keyboard shortcuts pane, so no key is listed by hand. Run control asks
 `actions.ts`.
 
 A command says whether it can run now: ready, blocked with the reason, or
@@ -205,7 +282,7 @@ explain the missing condition where the UI has room. Keyboard handling
 must respect text inputs, dialogs, renderer canvases, and platform modifier
 conventions.
 
-Focus is part of accessibility and debugger speed. After a stop or panel
+Focus is part of accessibility and debugger speed. After a stop or pane
 change, move focus only when the user's current focus is no longer meaningful.
 Do not steal it from the console or an expression editor on every event.
 
@@ -244,7 +321,7 @@ change.
 
 ## Profiles in the browser
 
-Profile pages use typed server queries over validated captures. Flame trees,
+Profile panes use typed server queries over validated captures. Flame trees,
 functions, timelines, zones, source costs, and diffs should consume
 `src/analysis` results. Do not reimplement aggregation in TypeScript.
 
@@ -273,7 +350,7 @@ the test harness and must end after failure as well as success.
 
 `just web-probe` is for human inspection. It drives named steps, saves
 screenshots under the target output directory, and prints console messages.
-Use it after layout, theme, panel, focus, or responsive changes even when DOM
+Use it after layout, theme, pane, focus, or responsive changes even when DOM
 tests pass.
 
 ## Security review
@@ -297,6 +374,8 @@ public deployment.
 - Does every stopped request carry the observed `StopId`?
 - Are caches invalidated at the right lifetime boundary?
 - Does URL state round-trip and handle old or malformed values?
+- Is a new view a pane kind with a command, rather than a page or a fixed
+  part of the frame?
 - Are keyboard and focus behavior accessible?
 - Are large results paged or virtualized?
 - Does untrusted renderer or profile data stay bounded?

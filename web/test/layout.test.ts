@@ -7,9 +7,11 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   activate,
+  build,
   checkLayout,
   close,
   dock,
+  dockBeside,
   emptyLayout,
   float,
   type GroupId,
@@ -24,6 +26,7 @@ import {
   type PaneId,
   reframe,
   split,
+  toggleHidden,
 } from "../src/workbench/layout";
 import { loadLayout, saveLayout } from "../src/workbench/saved";
 import { apply, step, steps } from "./arbitraries/layout";
@@ -232,6 +235,63 @@ it("forgets a maximized group once it is gone", () => {
   expect(close(big, b as PaneId).maximized).toBeNull();
 });
 
+describe("hiding a dock", () => {
+  const pane = (kind: string) => ({ kind: kind as KindId, key: "", params: null });
+  // Threads | (source over console) | watch, with Threads focused.
+  const start = build({
+    axis: "row",
+    children: [
+      [0.2, [pane("threads")]],
+      [
+        0.6,
+        {
+          axis: "column",
+          children: [
+            [0.7, [pane("source")]],
+            [0.3, [pane("console")]],
+          ],
+        },
+      ],
+      [0.2, [pane("watch")]],
+    ],
+  });
+  const groupWith = (layout: Layout, kind: string) =>
+    groups(layout).find((group) => layout.panes[group.active as PaneId]?.kind === kind) as {
+      id: GroupId;
+      active: PaneId;
+    };
+  const source = groupWith(start, "source").id;
+  const threads = groupWith(start, "threads");
+  const consoleGroup = groupWith(start, "console").id;
+
+  it("finds the dock before a group in a row, and after it in a column", () => {
+    expect(dockBeside(start, source, "left")?.id).toBe(threads.id);
+    expect(dockBeside(start, source, "bottom")?.id).toBe(consoleGroup);
+    // From below the code, the row it is in has the same dock on its left.
+    expect(dockBeside(start, consoleGroup, "left")?.id).toBe(threads.id);
+    // Nothing is left of the first column, or below the last row.
+    expect(dockBeside(start, threads.id, "left")).toBeNull();
+    expect(dockBeside(start, consoleGroup, "bottom")).toBeNull();
+  });
+
+  it("moves the focus out of a dock it hides, and shows it again", () => {
+    const hidden = toggleHidden(start, threads.id, source);
+    expect(hidden.hidden).toEqual([threads.id]);
+    expect(hidden.focused).toBe(source);
+    expect(maximize(hidden, threads.id)).toBe(hidden);
+    expect(toggleHidden(hidden, threads.id, source).hidden).toEqual([]);
+  });
+
+  it("shows a hidden dock when one of its panes is shown", () => {
+    const hidden = toggleHidden(start, threads.id, source);
+    expect(activate(hidden, threads.active).hidden).toEqual([]);
+  });
+
+  it("refuses to hide the group the focus would move to", () => {
+    expect(toggleHidden(start, source, source)).toBe(start);
+  });
+});
+
 describe("any run of operations", () => {
   it("keeps every rule after every step", () => {
     fc.assert(
@@ -308,14 +368,18 @@ describe("a saved layout", () => {
   it("refuses text that is no layout, and layouts from a newer page", () => {
     expect(loadLayout("{").ok).toBe(false);
     expect(loadLayout("null").ok).toBe(false);
-    const newer = JSON.stringify({ version: 2, layout: emptyLayout() });
-    expect(loadLayout(newer)).toEqual({ ok: false, why: "it is from version 2, not up to 1" });
+    const newer = JSON.stringify({ version: 3, layout: emptyLayout() });
+    expect(loadLayout(newer)).toEqual({ ok: false, why: "it is from version 3, not up to 2" });
   });
 
   // Every version of the saved shape ever written stays loadable.
-  it.each(["v1"])("of version %s loads", (version) => {
+  it.each([
+    ["v1", []],
+    ["v2", ["g0"]],
+  ])("of version %s loads", (version, hidden) => {
     const text = readFileSync(join(import.meta.dirname, "layouts", `${version}.json`), "utf8");
     const loaded = loadLayout(text);
+    expect(loaded.ok && loaded.layout.hidden).toEqual(hidden);
     expect(loaded.ok && shape(loaded.layout)).toEqual({
       row: [
         [0.25, ["*threads", "tasks"]],

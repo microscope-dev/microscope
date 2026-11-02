@@ -8,7 +8,7 @@
 export type ValuePane = "Variables" | "Watch";
 
 export interface User {
-  /** Presses keys as the key help writes them: `F10`, `Alt+Shift+ArrowRight`. */
+  /** Presses keys as the Keyboard shortcuts pane writes them: `F10`, `Alt+Shift+ArrowRight`. */
   press(chord: string): Promise<void>;
 
   /** Adds a breakpoint by typing where, as `kvstore.c:92`. */

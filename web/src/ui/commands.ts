@@ -9,7 +9,7 @@ import { useCallback } from "react";
 import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
-import { KIND } from "../documents";
+import { documentsGroup, KIND } from "../documents";
 import { type At, inView, type View, watching } from "../focus";
 import type { Model } from "../model";
 import { useConnection, useStoreApi } from "../store";
@@ -21,6 +21,7 @@ import {
   floatOrDock,
   floatWhy,
   focusBeside,
+  focusPane,
   focusTab,
   sendBeside,
   sendWhy,
@@ -41,12 +42,14 @@ import {
 import { NARROW } from "../workbench/Dock";
 import type { Chord } from "../workbench/keys";
 import {
+  dockBeside,
   type Group,
   groups,
   type KindId,
   maximize,
   type PaneId,
   restore,
+  toggleHidden,
 } from "../workbench/layout";
 import { MENU_BAR } from "../workbench/MenuBar";
 import { change, workbench } from "../workbench/store";
@@ -267,6 +270,40 @@ function arrange(label: string, keys: Chord[], why: () => Why, run: () => void):
 
 const narrow = () => window.innerWidth < NARROW;
 
+/** The dock left of or below the code, which Ctrl+B and Ctrl+` hide. */
+function codeDock(side: "left" | "bottom") {
+  const layout = workbench.getState().layout;
+  const code = documentsGroup(layout, tab.getState().files);
+  return { code, dock: dockBeside(layout, code, side) };
+}
+
+function hideDock(side: "left" | "bottom", label: string, key: string): Spec {
+  return arrange(
+    label,
+    [{ key, ctrl: true }],
+    () =>
+      narrow()
+        ? "the window is too narrow"
+        : codeDock(side).dock
+          ? null
+          : `nothing is docked ${side === "left" ? "left of" : "below"} the code`,
+    () => {
+      const { code, dock } = codeDock(side);
+      if (!dock) {
+        return;
+      }
+      const before = workbench.getState().layout.focused;
+      change((layout) => toggleHidden(layout, dock.id, code));
+      // The keyboard follows the focus out of a dock that went.
+      const after = workbench.getState().layout;
+      const shown = groups(after).find((group) => group.id === after.focused)?.active;
+      if (after.focused !== before && shown) {
+        requestAnimationFrame(() => focusPane(shown));
+      }
+    },
+  );
+}
+
 export const COMMANDS = registry({
   continue: act("continue", "Continue", "Run", [{ key: "F5" }, { key: "c" }]),
   pause: act("pause", "Pause", "Run", [{ key: "F6" }]),
@@ -485,6 +522,8 @@ export const COMMANDS = registry({
     () => (narrow() ? "the window is too narrow" : splitWhy()),
     () => splitFocused("bottom"),
   ),
+  leftDock: hideDock("left", "Show or hide the left dock", "b"),
+  bottomDock: hideDock("bottom", "Show or hide the bottom dock", "`"),
   floatOrDock: arrange(
     "Float or dock",
     [{ key: "f", alt: true, shift: true }],

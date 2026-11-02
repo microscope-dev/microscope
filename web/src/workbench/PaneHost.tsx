@@ -3,9 +3,13 @@
 // workbench keeps running.
 
 import { Component, memo, type ReactNode } from "react";
+import { classOf } from "./classes";
 import { useDock } from "./context";
 import type { Pane, PaneId } from "./layout";
+import styles from "./PaneHost.module.css";
 import { VisibleContext } from "./visible";
+
+const css = classOf(styles);
 
 interface Props {
   readonly id: PaneId;
@@ -21,7 +25,7 @@ export const PaneHost = memo(function PaneHost({ id, pane, visible }: Props) {
   return (
     <VisibleContext value={visible}>
       {missing !== null ? (
-        <div className="empty pane-missing">{missing}</div>
+        <div className={`empty ${css("pane-missing")}`}>{missing}</div>
       ) : (
         <Boundary title={kind.title(pane)}>
           <Body id={id} pane={pane} />
@@ -47,7 +51,7 @@ class Boundary extends Component<
       return this.props.children;
     }
     return (
-      <div className="pane-failed" role="alert">
+      <div className={css("pane-failed")} role="alert" data-part="pane-failed">
         <b>{this.props.title} stopped working.</b> {failure.message}
         <div>
           <button

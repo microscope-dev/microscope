@@ -28,6 +28,10 @@ export const OWN: Record<string, { ms: number; why: string }> = {
     { ms: 3_000, why: "waits out the sandbox's real 2s draw deadline" },
   "test/path-input.test.tsx :: passes Tab through an empty field and stops descending at a directory":
     { ms: 800, why: "types paths a key at a time through the browser" },
+  "test/path-input.test.tsx :: never completes typed text with suggestions for older text": {
+    ms: 800,
+    why: "types paths a key at a time through the browser",
+  },
   "test/docking.test.tsx :: keeps the screen and the layout model alike through any run of drags and clicks":
     { ms: 1_500, why: "a hundred runs of up to a dozen drags and clicks, each checked on screen" },
   "test/sandbox.test.tsx :: the sandbox > runs four draws at once and queues the rest": {

@@ -5,7 +5,11 @@
 
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { assert } from "../assert";
+import { classOf } from "./classes";
 import type { Availability, Menu, Registry } from "./commands";
+import styles from "./MenuBar.module.css";
+
+const css = classOf(styles);
 
 export const MENUS: readonly Menu[] = [
   "File",
@@ -116,14 +120,14 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
   };
 
   return (
-    <div className="menu-bar" role="menubar" aria-label="Menus" ref={bar} data-keys="escape">
+    <div className={css("menu-bar")} role="menubar" aria-label="Menus" ref={bar} data-keys="escape">
       {menus.map((menu, index) => (
-        <div key={menu} className="menu-anchor">
+        <div key={menu} className={css("menu-anchor")}>
           <button
             type="button"
             role="menuitem"
             id={index === 0 ? MENU_BAR : undefined}
-            className={`menu-button ${open === menu ? "on" : ""}`}
+            className={`${css("menu-button")} ${open === menu ? css("on") : ""}`}
             aria-haspopup="menu"
             aria-expanded={open === menu}
             data-menu={menu}
@@ -135,7 +139,7 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
             {menu}
           </button>
           {open === menu && (
-            <div className="menu" role="menu" aria-label={menu} onKeyDown={onMenu(menu)}>
+            <div className={css("menu")} role="menu" aria-label={menu} onKeyDown={onMenu(menu)}>
               {registry.ids
                 .filter((id) => registry.get(id).menu === menu)
                 .map((id) => {
@@ -147,7 +151,7 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
                       key={id}
                       type="button"
                       role="menuitem"
-                      className="menu-item"
+                      className={css("menu-item")}
                       tabIndex={-1}
                       aria-disabled={now.state !== "ready"}
                       aria-label={command.label}

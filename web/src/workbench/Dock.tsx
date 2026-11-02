@@ -11,13 +11,17 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { classOf } from "./classes";
 import { DockContext, type DockSetup, useDock } from "./context";
+import styles from "./Dock.module.css";
 import { pressWindow, rememberSize } from "./drag";
 import { GroupView } from "./Group";
 import { activate, dock, type GroupId, groups, type PaneId, type Rect, reframe } from "./layout";
 import { NodeView } from "./SplitView";
 import { keepOnScreen } from "./snap";
 import { change, useLayout, workbench } from "./store";
+
+const css = classOf(styles);
 
 /** Below this width the dock shows one group at a time. */
 export const NARROW = 720;
@@ -51,15 +55,15 @@ export function Dock({ setup }: { setup: DockSetup }) {
 
   return (
     <DockContext value={setup}>
-      <div className="dock" ref={element}>
+      <div className={css("dock")} data-part="dock" ref={element}>
         {narrow ? (
-          <div className="dock-tree dock-narrow">
+          <div className={`${css("dock-tree")} ${css("dock-narrow")}`} data-part="tree">
             <PanePicker />
             <GroupView id={focused} />
           </div>
         ) : (
           <>
-            <div className="dock-tree">
+            <div className={css("dock-tree")} data-part="tree">
               {maximized ? <GroupView id={maximized} /> : <NodeView node={root} />}
             </div>
             {size &&
@@ -151,7 +155,8 @@ const FloatingWindow = memo(function FloatingWindow({
   return (
     <div
       ref={element}
-      className="dock-window"
+      className={css("dock-window")}
+      data-part="window"
       role="dialog"
       aria-label={title}
       style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: layer }}
@@ -164,17 +169,19 @@ const FloatingWindow = memo(function FloatingWindow({
       }}
     >
       <div
-        className="window-bar"
+        className={css("window-bar")}
+        data-part="window-bar"
         onPointerDown={(event) => {
           if (element.current && !(event.target as Element).closest("button")) {
             pressWindow(event, id, element.current, rect);
           }
         }}
       >
-        <span className="window-title">{title}</span>
+        <span className={css("window-title")}>{title}</span>
         <button
           type="button"
-          className="window-dock"
+          className={css("window-dock")}
+          data-part="window-dock"
           title="Dock this window on the right"
           aria-label={`Dock ${title}`}
           onClick={() => {
@@ -186,7 +193,7 @@ const FloatingWindow = memo(function FloatingWindow({
         </button>
       </div>
       <GroupView id={id} />
-      <div className="window-grip" aria-hidden="true" {...grip} />
+      <div className={css("window-grip")} data-part="window-grip" aria-hidden="true" {...grip} />
     </div>
   );
 });
@@ -216,7 +223,7 @@ function PanePicker() {
   );
   return (
     <select
-      className="pane-picker"
+      className={css("pane-picker")}
       aria-label="Pane"
       value={shown}
       onChange={(event) => {

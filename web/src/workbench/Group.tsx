@@ -4,13 +4,17 @@
 
 import { type ComponentType, type KeyboardEvent, memo, useEffect, useRef } from "react";
 import { assert } from "../assert";
+import { classOf } from "./classes";
 import { panelId, tabId, useDock } from "./context";
 import { pressTab } from "./drag";
+import styles from "./Group.module.css";
 import type { PaneProps } from "./kinds";
 import { activate, type GroupId, groups, type Layout, type Pane, type PaneId } from "./layout";
 import { PaneHost } from "./PaneHost";
 import { change, useLayout } from "./store";
 import { chooseTab, closeTab } from "./tabs";
+
+const css = classOf(styles);
 
 function groupIn(layout: Layout, id: GroupId) {
   return groups(layout).find((group) => group.id === id) ?? null;
@@ -84,9 +88,14 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
   };
 
   return (
-    <section className={`group ${focused ? "focused" : ""}`} data-group={id}>
+    <section
+      className={`${css("group")} ${focused ? css("focused") : ""}`}
+      data-group={id}
+      // The group keys and new panes go to.
+      data-focused={focused || undefined}
+    >
       <div
-        className="group-tabs"
+        className={css("group-tabs")}
         ref={strip}
         role="tablist"
         aria-label="Panes"
@@ -101,7 +110,11 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
           const shown = pane === group.active;
           const Badge = kind.Badge;
           return (
-            <div key={pane} className={`group-tab ${shown ? "on" : ""}`}>
+            <div
+              key={pane}
+              className={`${css("group-tab")} ${shown ? css("on") : ""}`}
+              data-part="tab"
+            >
               <button
                 type="button"
                 role="tab"
@@ -116,13 +129,15 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
                 onMouseDown={(event) => event.button === 1 && event.preventDefault()}
                 onAuxClick={(event) => event.button === 1 && shut(pane)}
               >
-                <span className="tab-title">{title}</span>
+                <span className={css("tab-title")} data-part="tab-title">
+                  {title}
+                </span>
                 {Badge && <TabBadge Badge={Badge} id={pane} pane={found} needs={kind.needs} />}
               </button>
               {kind.closable(found) && (
                 <button
                   type="button"
-                  className="group-close"
+                  className={css("group-close")}
                   tabIndex={-1}
                   aria-label={`Close ${title}`}
                   onClick={() => shut(pane)}
@@ -144,7 +159,7 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
         return (
           <div
             key={pane}
-            className="group-panel"
+            className={css("group-panel")}
             role="tabpanel"
             id={panelId(pane)}
             aria-label={kinds.get(found.kind).title(found)}

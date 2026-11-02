@@ -36,7 +36,7 @@ it.each([
   const boxes = [...document.querySelectorAll("[data-group]")].map((group) =>
     group.getBoundingClientRect(),
   );
-  const dock = (document.querySelector(".dock") as HTMLElement).getBoundingClientRect();
+  const dock = (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
   for (const [index, box] of boxes.entries()) {
     // A tab strip and a few rows at least.
     expect(box.width, `group ${index}`).toBeGreaterThanOrEqual(150);
@@ -131,4 +131,41 @@ it("starts the layout over only when it holds nothing for the address", () => {
   expect(misplaced(welcomeLayout(), "start")).toBe(false);
   // A profile needs a connection, not a session.
   expect(misplaced(profileLayout("ab", "spin.usprof", {}), "start")).toBe(false);
+});
+
+it("hides the docks left of and below the code by key, and shows one for a pane opened in it", async () => {
+  const { user } = await stopped();
+  const firsts = () => readGroups().map((group) => group[0]);
+  await user.press("Ctrl+b");
+  await expect
+    .poll(firsts)
+    .toEqual(["*kvstore.c", "*Output", "*Watch", "*Variables", "*Registers"]);
+  // The keyboard left the hidden dock for the code.
+  await expect
+    .poll(() => document.activeElement?.closest("[data-group]"))
+    .toBe(document.querySelector("[data-group]"));
+  await user.press("Ctrl+`");
+  await expect.poll(firsts).toEqual(["*kvstore.c", "*Watch", "*Variables", "*Registers"]);
+  // What is left fills the dock: the code takes the hidden docks' room.
+  const area = (box: DOMRect) => box.width * box.height;
+  const dock = (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
+  const covered = [...document.querySelectorAll("[data-group]")]
+    .map((group) => area(group.getBoundingClientRect()))
+    .reduce((sum, each) => sum + each, 0);
+  expect(covered / area(dock)).toBeGreaterThan(0.98);
+  // Threads is in the hidden left dock, so showing it shows the dock.
+  await user.press("Alt+1");
+  await expect
+    .poll(firsts)
+    .toEqual([
+      "*Threads",
+      "*Call Stack",
+      "*Breakpoints",
+      "*kvstore.c",
+      "*Watch",
+      "*Variables",
+      "*Registers",
+    ]);
+  await user.press("Ctrl+`");
+  await expect.poll(() => readGroups()).toHaveLength(8);
 });

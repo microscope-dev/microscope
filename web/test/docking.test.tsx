@@ -80,7 +80,7 @@ async function mount(layout: Layout = START()) {
 
 const tabOf = (title: string) =>
   [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find(
-    (tab) => tab.querySelector(".tab-title")?.textContent === title,
+    (tab) => tab.querySelector("[data-part=tab-title]")?.textContent === title,
   ) as HTMLElement;
 
 const middle = (element: Element) => {
@@ -151,7 +151,8 @@ function sidePoint(id: string, side: Side) {
   }[side];
 }
 
-const dockBox = () => (document.querySelector(".dock") as HTMLElement).getBoundingClientRect();
+const dockBox = () =>
+  (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
 
 /** Whether a person can aim at `point` in `within`, as the screen shows
  * it: nothing else drawn over it, and, for a group's body, clear of its
@@ -201,7 +202,7 @@ it("gives up a drag on Escape, leaving every tab where it was", async () => {
   const before = readGroups();
   drag(tabOf("Threads"), sidePoint("g7", "right"), { key: "Escape" });
   expect(readGroups()).toEqual(before);
-  expect(document.querySelector(".drop-highlight")).toBeNull();
+  expect(document.querySelector("[data-part=drop-highlight]")).toBeNull();
   // A press that never moves far is a click, and chooses the tab.
   drag(tabOf("Tasks"), middle(tabOf("Tasks")), { still: true });
   expect(readGroups()[0]).toEqual(["Threads", "*Tasks"]);
@@ -210,20 +211,25 @@ it("gives up a drag on Escape, leaving every tab where it was", async () => {
 it("moves a window by its title bar, docks it on a strip, and reopens a closed tab there", async () => {
   await mount();
   drag(tabOf("Memory"), { x: 600, y: 300 }, { shiftKey: true });
-  const bar = document.querySelector(".window-bar") as HTMLElement;
-  const window = document.querySelector(".dock-window") as HTMLElement;
+  const bar = document.querySelector("[data-part=window-bar]") as HTMLElement;
+  const window = document.querySelector("[data-part=window]") as HTMLElement;
   const before = window.getBoundingClientRect();
   // Onto a body, which a window only moves over.
   drag(bar, { x: middle(bar).x - 150, y: middle(bar).y + 40 });
-  const after = (document.querySelector(".dock-window") as HTMLElement).getBoundingClientRect();
+  const after = (
+    document.querySelector("[data-part=window]") as HTMLElement
+  ).getBoundingClientRect();
   expect(after.x).toBeLessThan(before.x - 100);
   expect(readGroups()).toHaveLength(4);
 
   // Onto the Stack group's strip, past its tab.
   const strip = groupElement("g5").querySelector('[role="tablist"]') as HTMLElement;
   const box = strip.getBoundingClientRect();
-  drag(document.querySelector(".window-bar") as HTMLElement, { x: box.right - 4, y: box.y + 10 });
-  expect(document.querySelector(".dock-window")).toBeNull();
+  drag(document.querySelector("[data-part=window-bar]") as HTMLElement, {
+    x: box.right - 4,
+    y: box.y + 10,
+  });
+  expect(document.querySelector("[data-part=window]")).toBeNull();
   expect(readGroups()[1]).toEqual(["Stack", "*Memory"]);
 
   // A tab's id is its pane's, after "tab-".
@@ -279,8 +285,8 @@ function perform(model: Layout, chosen: Action): Layout {
       return model;
     }
     const button = groupElement(window.group.id)
-      .closest(".dock-window")
-      ?.querySelector(".window-dock");
+      .closest("[data-part=window]")
+      ?.querySelector("[data-part=window-dock]");
     act(() => (button as HTMLElement).click());
     return dock(model, window.group.id, { type: "edge", side: "right" });
   }
@@ -298,7 +304,7 @@ function perform(model: Layout, chosen: Action): Layout {
       act(() => element.click());
       return activate(model, tab);
     case "close": {
-      const button = element.parentElement?.querySelector(".group-close") as HTMLElement;
+      const button = element.parentElement?.querySelector('[aria-label^="Close "]') as HTMLElement;
       act(() => button.click());
       return close(model, tab);
     }
@@ -323,7 +329,7 @@ function perform(model: Layout, chosen: Action): Layout {
         // Anywhere along the strip: between two tabs, or past them all.
         point = { x: box.x + 2 + chosen.along * (box.width - 5), y: box.y + 10 };
         // Tabs that overflow the strip lie past its end.
-        const before = [...strip.querySelectorAll(".group-tab")].filter(
+        const before = [...strip.querySelectorAll("[data-part=tab]")].filter(
           (t) => middle(t).x <= point.x,
         );
         target = { type: "tab", group: into.id, index: before.length };
@@ -347,7 +353,9 @@ function perform(model: Layout, chosen: Action): Layout {
       const near = [-4, 0, 4].flatMap((dx) =>
         [-4, 0, 4].map((dy) => document.elementFromPoint(point.x + dx, point.y + dy)),
       );
-      if (near.some((hit) => !hit?.closest(".dock-tree") || hit.closest('[role="tablist"]'))) {
+      if (
+        near.some((hit) => !hit?.closest("[data-part=tree]") || hit.closest('[role="tablist"]'))
+      ) {
         return model;
       }
       drag(element, point);

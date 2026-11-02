@@ -1,0 +1,78 @@
+/* The menu bar: a menu per menu name, each listing its commands. */
+
+.menu-bar {
+  display: flex;
+  align-items: center;
+}
+
+.menu-anchor {
+  position: relative;
+}
+
+.menu-button {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.menu-button:hover,
+.menu-button.on {
+  background: var(--surface-2);
+}
+
+/* Menus are above the dock, so they and floating windows alone cast a
+   shadow. */
+.menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 3px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  max-height: calc(100vh - 60px);
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover:not([aria-disabled="true"]),
+.menu-item:focus-visible {
+  background: var(--accent-soft);
+  outline: 0;
+}
+
+.menu-item[aria-disabled="true"] {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.menu-item kbd {
+  color: var(--ink-3);
+  font: 10.5px var(--mono);
+}

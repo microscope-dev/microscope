@@ -46,7 +46,7 @@ export function focusTab(pane: PaneId): void {
 /** The groups on screen, where they are. */
 function onScreen(): Map<GroupId, Rect> {
   const rects = new Map<GroupId, Rect>();
-  for (const element of document.querySelectorAll<HTMLElement>(".dock [data-group]")) {
+  for (const element of document.querySelectorAll<HTMLElement>("[data-part=dock] [data-group]")) {
     const box = element.getBoundingClientRect();
     if (box.width > 0 && box.height > 0) {
       rects.set(element.dataset.group as GroupId, box);
@@ -158,7 +158,7 @@ export function floatOrDock(): void {
     rememberSize(layout, group.id);
     change((now) => dock(now, group.id, { type: "edge", side: "right" }));
   } else {
-    const box = document.querySelector(".dock")?.getBoundingClientRect();
+    const box = document.querySelector("[data-part=dock]")?.getBoundingClientRect();
     const bounds = box
       ? { x: box.x, y: box.y, width: box.width, height: box.height }
       : { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };

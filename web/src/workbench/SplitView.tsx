@@ -5,11 +5,23 @@
 
 import { Fragment, type KeyboardEvent, memo, type PointerEvent, useRef } from "react";
 import { assert } from "../assert";
+import { classOf } from "./classes";
 import { useDock } from "./context";
 import { GroupView } from "./Group";
-import { type Layout, type Node, resize, type Split, type SplitId, splits } from "./layout";
+import {
+  type Child,
+  type Layout,
+  type Node,
+  resize,
+  type Split,
+  type SplitId,
+  splits,
+} from "./layout";
+import styles from "./SplitView.module.css";
 import { snapSplitter } from "./snap";
 import { change, useLayout } from "./store";
+
+const css = classOf(styles);
 
 /** The least a pane gets along a split, in pixels. */
 export const LEAST = 120;
@@ -27,20 +39,46 @@ function splitIn(layout: Layout, id: SplitId): Split | null {
 
 const SplitView = memo(function SplitView({ id }: { id: SplitId }) {
   const split = useLayout((layout) => splitIn(layout, id));
+  // As text, so a change elsewhere is the same value.
+  const hidden = useLayout((layout) => layout.hidden.join(" "));
   const box = useRef<HTMLDivElement>(null);
   if (!split) {
     return null;
   }
+  // Hidden children take no room; the others share all of it by their
+  // weights. Flex grows by less than the free space when the grows sum
+  // below 1, so they are scaled to sum to 1.
+  const shown = split.children.flatMap((child, index) =>
+    hidden.split(" ").includes(child.node.id) ? [] : [index],
+  );
+  const scale = 1 / shown.reduce((sum, index) => sum + (split.children[index] as Child).weight, 0);
   return (
-    <div className={`split split-${split.axis}`} ref={box} data-split={id}>
-      {split.children.map((child, index) => (
-        <Fragment key={child.node.id}>
-          {index > 0 && <Separator split={split} index={index} box={box} />}
-          <div className="split-child" style={{ flexGrow: child.weight }}>
-            <NodeView node={child.node} />
-          </div>
-        </Fragment>
-      ))}
+    <div className={`${css("split")} ${css(`split-${split.axis}`)}`} ref={box} data-split={id}>
+      {shown.map((index, at) => {
+        const child = split.children[index] as Child;
+        const previous = shown[at - 1];
+        return (
+          <Fragment key={child.node.id}>
+            {previous !== undefined && (
+              <Separator
+                split={split}
+                before={previous}
+                after={index}
+                at={at}
+                scale={scale}
+                box={box}
+              />
+            )}
+            <div
+              className={css("split-child")}
+              data-part="split-child"
+              style={{ flexGrow: child.weight * scale }}
+            >
+              <NodeView node={child.node} />
+            </div>
+          </Fragment>
+        );
+      })}
     </div>
   );
 });
@@ -59,20 +97,30 @@ interface Measure {
   after: HTMLElement;
 }
 
+/** The separator between two children shown side by side: `before` and
+ * `after` index the split's children, and `at` is `after`'s place among
+ * those shown. */
 function Separator({
   split,
-  index,
+  before: beforeIndex,
+  after: afterIndex,
+  at,
+  scale,
   box,
 }: {
   split: Split;
-  index: number;
+  before: number;
+  after: number;
+  at: number;
+  /** What the split's weights are multiplied by to grow its children. */
+  scale: number;
   box: React.RefObject<HTMLDivElement | null>;
 }) {
   const { kinds } = useDock();
   const row = split.axis === "row";
-  const first = split.children[index - 1];
-  const second = split.children[index];
-  assert(first && second, `separator ${index} of ${split.children.length} children`);
+  const first = split.children[beforeIndex];
+  const second = split.children[afterIndex];
+  assert(first && second, `separator ${beforeIndex}-${afterIndex} of ${split.children.length}`);
   const shared = first.weight + second.weight;
   const drag = useRef<Measure | null>(null);
   const panes = useLayout((layout) => layout.panes);
@@ -85,12 +133,12 @@ function Separator({
   const measure = (): Measure => {
     const element = box.current;
     assert(element, "a separator outside its split");
-    const children = [...element.children].filter((child) =>
-      child.classList.contains("split-child"),
+    const children = [...element.children].filter(
+      (child) => (child as HTMLElement).dataset.part === "split-child",
     ) as HTMLElement[];
-    const before = children[index - 1];
-    const after = children[index];
-    assert(before && after, `separator ${index} has no children beside it`);
+    const before = children[at - 1];
+    const after = children[at];
+    assert(before && after, `separator ${at} has no children beside it`);
     const along = (rect: DOMRect) =>
       row ? { start: rect.left, end: rect.right } : { start: rect.top, end: rect.bottom };
     const whole = along(element.getBoundingClientRect());
@@ -126,8 +174,8 @@ function Separator({
   };
 
   const commit = ([a, b]: [number, number]) => {
-    const weights = split.children.map((child, at) =>
-      at === index - 1 ? a : at === index ? b : child.weight,
+    const weights = split.children.map((child, index) =>
+      index === beforeIndex ? a : index === afterIndex ? b : child.weight,
     );
     change((layout) => resize(layout, split.id, weights));
   };
@@ -165,8 +213,8 @@ function Separator({
       measured,
       settle(measured, row ? event.clientX : event.clientY, event.altKey),
     );
-    measured.before.style.flexGrow = String(a);
-    measured.after.style.flexGrow = String(b);
+    measured.before.style.flexGrow = String(a * scale);
+    measured.after.style.flexGrow = String(b * scale);
   };
   const up = (event: PointerEvent<HTMLDivElement>) => {
     const measured = drag.current;
@@ -180,8 +228,8 @@ function Separator({
     const measured = drag.current;
     drag.current = null;
     if (measured) {
-      measured.before.style.flexGrow = String(first.weight);
-      measured.after.style.flexGrow = String(second.weight);
+      measured.before.style.flexGrow = String(first.weight * scale);
+      measured.after.style.flexGrow = String(second.weight * scale);
     }
   };
 
@@ -223,7 +271,7 @@ function Separator({
   return (
     // biome-ignore lint/a11y/useSemanticElements: a focusable separator that resizes is a widget, which <hr> is not
     <div
-      className="separator-bar"
+      className={css("separator-bar")}
       role="separator"
       aria-orientation={row ? "vertical" : "horizontal"}
       aria-label={`Resize ${name(first.node)} and ${name(second.node)}`}

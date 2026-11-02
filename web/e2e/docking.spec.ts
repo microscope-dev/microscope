@@ -13,7 +13,7 @@ const groups = (page: Page) =>
   page.evaluate(() =>
     [...document.querySelectorAll('[role="tablist"][aria-label="Panes"]')].map((list) =>
       [...list.querySelectorAll('[role="tab"]')].map((tab) => {
-        const title = tab.querySelector(".tab-title")?.textContent ?? "";
+        const title = tab.querySelector("[data-part=tab-title]")?.textContent ?? "";
         return tab.getAttribute("aria-selected") === "true" ? `*${title}` : title;
       }),
     ),
@@ -22,13 +22,13 @@ const groups = (page: Page) =>
 /** The group holding a tab with this title. */
 const groupOf = (page: Page, title: string) =>
   page.locator("[data-group]").filter({
-    has: page.locator('[role="tab"] .tab-title', { hasText: new RegExp(`^${title}$`) }),
+    has: page.locator('[role="tab"] [data-part=tab-title]', { hasText: new RegExp(`^${title}$`) }),
   });
 
 const tab = (page: Page, title: string) =>
   page
     .getByRole("tab")
-    .filter({ has: page.locator(".tab-title", { hasText: new RegExp(`^${title}$`) }) });
+    .filter({ has: page.locator("[data-part=tab-title]", { hasText: new RegExp(`^${title}$`) }) });
 
 async function box(_page: Page, locator: ReturnType<Page["locator"]>) {
   const found = await locator.boundingBox();
@@ -88,7 +88,7 @@ test("tabs dragged onto a side, a strip, and the dock's edge land there", async 
     .toEqual(["Threads", "*Signals", "Tasks", "Processes"]);
 
   // Along the bottom edge of the dock, across all of it.
-  const dock = await box(page, page.locator(".dock"));
+  const dock = await box(page, page.locator("[data-part=dock]"));
   await drag(page, tab(page, "Modules"), {
     x: dock.x + dock.width / 2,
     y: dock.y + dock.height - 4,
@@ -103,7 +103,7 @@ test("tabs dragged onto a side, a strip, and the dock's edge land there", async 
     page.keyboard.press("Escape"),
   );
   expect(await groups(page)).toEqual(before);
-  await expect(page.locator(".drop-highlight")).toHaveCount(0);
+  await expect(page.locator("[data-part=drop-highlight]")).toHaveCount(0);
 });
 
 test("a tab floats with Shift held, and its window moves and docks by its title bar", async ({
@@ -112,7 +112,7 @@ test("a tab floats with Shift held, and its window moves and docks by its title 
 }) => {
   await join(page, microscope.link);
   await expect(tab(page, "Memory")).toBeVisible();
-  const dock = await box(page, page.locator(".dock"));
+  const dock = await box(page, page.locator("[data-part=dock]"));
 
   await page.keyboard.down("Shift");
   await drag(page, tab(page, "Memory"), { x: dock.x + dock.width / 2, y: dock.y + 200 });
@@ -121,7 +121,7 @@ test("a tab floats with Shift held, and its window moves and docks by its title 
   await expect(window).toBeVisible();
 
   // Over a group's body it only moves.
-  const bar = window.locator(".window-bar");
+  const bar = window.locator("[data-part=window-bar]");
   const was = await box(page, window);
   await drag(page, bar, { x: was.x + 60, y: was.y + 100 });
   await expect.poll(async () => (await box(page, window)).y).toBeGreaterThan(was.y + 60);
@@ -146,9 +146,9 @@ test("the Window keys move, split, float, close, and reopen tabs, and a reload k
 
   // To the group beside, by its shown tab's panel.
   await page.keyboard.press("Alt+ArrowUp");
-  await expect(page.locator("[data-group].focused")).toContainText("Disassembly");
+  await expect(page.locator("[data-group][data-focused]")).toContainText("Disassembly");
   await page.keyboard.press("Alt+ArrowDown");
-  await expect(page.locator("[data-group].focused")).toContainText("Console");
+  await expect(page.locator("[data-group][data-focused]")).toContainText("Console");
 
   // Along the strip, and into a group of its own.
   await page.keyboard.press("Alt+Shift+BracketRight");

@@ -129,7 +129,7 @@ describe("two tabs racing a stop", () => {
   });
 });
 
-describe("the picker replacing a session", () => {
+describe("a Start pane replacing a session", () => {
   const models = replay(received("picker"));
 
   it("drops the old program's output when another starts", () => {

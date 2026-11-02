@@ -4,6 +4,8 @@
 // renders nothing until it ends. Escape cancels it.
 
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { classOf } from "./classes";
+import styles from "./Dock.module.css";
 import { type Drop, type Measured, type MeasuredGroup, type Point, resolveDrop } from "./drop";
 import {
   dock,
@@ -17,6 +19,8 @@ import {
 } from "./layout";
 import { keepOnScreen, snapWindow } from "./snap";
 import { change, workbench } from "./store";
+
+const css = classOf(styles);
 
 /** How far, in pixels, the pointer moves before a press becomes a drag, so
  * a click still chooses a tab. */
@@ -100,7 +104,7 @@ export function rememberSize(layout: Layout, window: GroupId): void {
 }
 
 function press(event: ReactPointerEvent<HTMLElement>, source: Source): void {
-  const dockElement = event.currentTarget.closest<HTMLElement>(".dock");
+  const dockElement = event.currentTarget.closest<HTMLElement>("[data-part=dock]");
   if (event.button !== 0 || active || !dockElement) {
     return;
   }
@@ -194,15 +198,16 @@ function begin(drag: Drag): void {
   const dockRect = drag.dock.getBoundingClientRect();
   drag.bounds = { x: dockRect.x, y: dockRect.y, width: dockRect.width, height: dockRect.height };
   drag.measured = measure(drag);
-  drag.dock.classList.add("dragging");
+  drag.dock.classList.add(css("dragging"));
   const highlight = document.createElement("div");
-  highlight.className = "drop-highlight";
+  highlight.className = css("drop-highlight");
+  highlight.dataset.part = "drop-highlight";
   highlight.hidden = true;
   drag.highlight = highlight;
   drag.dock.append(highlight);
   if (drag.source.type === "tab") {
     const ghost = document.createElement("div");
-    ghost.className = "drag-ghost";
+    ghost.className = css("drag-ghost");
     ghost.textContent = drag.source.title;
     drag.ghost = ghost;
     drag.dock.append(ghost);
@@ -296,7 +301,7 @@ function end(drag: Drag): void {
   }
   drag.ghost?.remove();
   drag.highlight?.remove();
-  drag.dock.classList.remove("dragging");
+  drag.dock.classList.remove(css("dragging"));
   if (drag.source.type === "window") {
     drag.source.element.style.transform = "";
   }
@@ -315,11 +320,11 @@ function end(drag: Drag): void {
 /** The dock's groups and windows as they are on screen, less what is
  * dragged. */
 function measure(drag: Drag): Measured {
-  const tree = [...drag.dock.querySelectorAll<HTMLElement>(".dock-tree [data-group]")];
+  const tree = [...drag.dock.querySelectorAll<HTMLElement>("[data-part=tree] [data-group]")];
   const dragged = drag.source.type === "window" ? drag.source.group : null;
-  const windows = [...drag.dock.querySelectorAll<HTMLElement>(".dock-window [data-group]")].filter(
-    (element) => element.dataset.group !== dragged,
-  );
+  const windows = [
+    ...drag.dock.querySelectorAll<HTMLElement>("[data-part=window] [data-group]"),
+  ].filter((element) => element.dataset.group !== dragged);
   return {
     dock: drag.bounds,
     docked: tree.map(measureGroup),
@@ -329,8 +334,8 @@ function measure(drag: Drag): Measured {
 
 function measureGroup(element: HTMLElement): MeasuredGroup {
   const whole = element.getBoundingClientRect();
-  const head = element.querySelector(".group-tabs")?.getBoundingClientRect() ?? whole;
-  const tabs = [...element.querySelectorAll(".group-tab")].map((tab) => rect(tab));
+  const head = element.querySelector('[role="tablist"]')?.getBoundingClientRect() ?? whole;
+  const tabs = [...element.querySelectorAll("[data-part=tab]")].map((tab) => rect(tab));
   return {
     id: element.dataset.group as GroupId,
     strip: rect(head),

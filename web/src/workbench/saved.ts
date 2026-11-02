@@ -20,10 +20,13 @@ import {
 } from "./layout";
 
 /** Raise this, and add a migration, whenever the saved shape changes. */
-export const VERSION = 1;
+export const VERSION = 2;
 
 /** Each turns a saved layout of one version into the next version's. */
-const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {};
+const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {
+  // Version 2 can hide docked nodes; nothing was hidden before.
+  1: (old) => ({ ...record(old, "the layout"), hidden: [] }),
+};
 
 export type Loaded = { ok: true; layout: Layout } | { ok: false; why: string };
 
@@ -70,6 +73,11 @@ function readLayout(value: unknown): Layout {
     root: readNode(layout.root),
     floating: list(layout.floating, "floating").map(readFloating),
     maximized,
+    hidden: list(layout.hidden, "hidden").map((id) =>
+      typeof id === "string" && id.startsWith("s")
+        ? ident<SplitId>(id, "s", "a hidden node")
+        : ident<GroupId>(id, "g", "a hidden node"),
+    ),
     focused: ident<GroupId>(layout.focused, "g", "focused"),
     panes,
     next: count(layout.next, "next"),

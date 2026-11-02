@@ -1,7 +1,8 @@
 // Screenshots of every screen in light and dark at a few widths, for
 // reviewing the look without clicking through: `just web-shot [PROGRAM]`.
 
-import { mkdir } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { access, mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { chromium, type Page } from "@playwright/test";
 import { fixture, menu, root, startMicroscope } from "./server.ts";
@@ -86,6 +87,7 @@ try {
   await shoot(page, "8-exited");
 
   await shootWelcome(page);
+  await shootProfile(page);
   await shootDrawings(page);
   await shootMesh(page);
 } finally {
@@ -103,6 +105,29 @@ async function shootWelcome(page: Page): Promise<void> {
     await shoot(page, "0-welcome");
   } finally {
     await empty.stop();
+  }
+}
+
+/** The Profile layout: a second of spin recorded, then served. */
+async function shootProfile(page: Page): Promise<void> {
+  const file = path.join(out, "spin.usprof");
+  // Ending the recording kills spin, so record exits as it did; the file
+  // is what counts.
+  spawnSync(
+    path.join(root, "target", "debug", "microscope"),
+    ["record", "-o", file, "--duration", "1", "--", fixture("spin")],
+    { stdio: "ignore" },
+  );
+  await access(file);
+  const served = await startMicroscope([file], "");
+  try {
+    await page.setViewportSize({ width: 1440, height: 800 });
+    await page.goto(served.link);
+    await page.waitForURL(/\/profile\//);
+    await page.getByTestId("accounting").waitFor();
+    await shoot(page, "0-profile", 300);
+  } finally {
+    await served.stop();
   }
 }
 

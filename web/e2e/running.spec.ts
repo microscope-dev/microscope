@@ -42,7 +42,7 @@ test("reloading keeps the session and its output", async ({ page, microscope }) 
   await expect(page.getByTestId("status")).toContainText("Exited");
 });
 
-test("the picker completes a path and loads it in place of the program", async ({
+test("the Launch pane completes a path and loads it in place of the program", async ({
   page,
   microscope,
 }) => {
@@ -86,7 +86,7 @@ test("the picker completes a path and loads it in place of the program", async (
   await expect(late).toHaveURL(page.url());
 });
 
-test("a program chosen in the picker keeps nothing of the one it replaced", async ({
+test("a program chosen from a Start pane keeps nothing of the one it replaced", async ({
   page,
   microscope,
 }) => {

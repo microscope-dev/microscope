@@ -1,6 +1,7 @@
 // Commands: everything a person can do by name. The menus, the palette, the
-// keys, and the key help all read one registry, so a command's label, keys,
-// and whether it can run now are the same wherever it is offered.
+// keys, and the Keyboard shortcuts pane all read one registry, so a
+// command's label, keys, and whether it can run now are the same wherever
+// it is offered.
 
 import { assert } from "../assert";
 import {

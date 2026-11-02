@@ -77,6 +77,9 @@ export interface Layout {
   /** Bottom to top. */
   readonly floating: readonly Floating[];
   readonly maximized: GroupId | null;
+  /** Docked nodes put out of sight, such as a side dock hidden to give the
+   * code room. Never one holding the focused group. */
+  readonly hidden: readonly (GroupId | SplitId)[];
   /** The group keys and new panes go to. */
   readonly focused: GroupId;
   readonly panes: Readonly<Record<PaneId, Pane>>;
@@ -96,7 +99,15 @@ const EDGE_WEIGHT = 0.25;
 
 export function emptyLayout(): Layout {
   const root: Group = { type: "group", id: "g0" as GroupId, tabs: [], active: null };
-  return { root, floating: [], maximized: null, focused: root.id, panes: {}, next: 1 };
+  return {
+    root,
+    floating: [],
+    maximized: null,
+    hidden: [],
+    focused: root.id,
+    panes: {},
+    next: 1,
+  };
 }
 
 /** Every group: the dock's in reading order, then the floating ones. */
@@ -180,7 +191,15 @@ export function build(shape: Shape): Layout {
   };
   const root = node(shape);
   const first = docked(root)[0] as Group;
-  return settle({ root, floating: [], maximized: null, focused: first.id, panes, next });
+  return settle({
+    root,
+    floating: [],
+    maximized: null,
+    hidden: [],
+    focused: first.id,
+    panes,
+    next,
+  });
 }
 
 /** Closes a pane. Its group shows the tab beside it, or goes when empty. */
@@ -340,7 +359,7 @@ export function dock(layout: Layout, window: GroupId, target: Target): Layout {
 
 /** Fills the dock with one docked group until `restore`. */
 export function maximize(layout: Layout, group: GroupId): Layout {
-  if (!docked(layout.root).some((candidate) => candidate.id === group)) {
+  if (!docked(layout.root).some((candidate) => candidate.id === group) || isHidden(layout, group)) {
     return layout;
   }
   return settle({ ...layout, maximized: group, focused: group });
@@ -348,6 +367,84 @@ export function maximize(layout: Layout, group: GroupId): Layout {
 
 export function restore(layout: Layout): Layout {
   return layout.maximized === null ? layout : { ...layout, maximized: null };
+}
+
+/** The dock beside a group's branch of the tree: the node before it in the
+ * nearest row that has one (`left`), or after it in the nearest column that
+ * has one (`bottom`). Null when there is none. */
+export function dockBeside(layout: Layout, group: GroupId, side: "left" | "bottom"): Node | null {
+  const path = pathTo(layout.root, group);
+  for (let at = path.length - 2; at >= 0; at--) {
+    const node = path[at] as Node;
+    if (node.type !== "split" || node.axis !== (side === "left" ? "row" : "column")) {
+      continue;
+    }
+    const index = node.children.findIndex((child) => child.node === path[at + 1]);
+    const beside = node.children[side === "left" ? index - 1 : index + 1];
+    if (beside) {
+      return beside.node;
+    }
+  }
+  return null;
+}
+
+/** Hides a docked node, or shows it again. Hiding the one holding the
+ * focused group moves the focus to `from`, which must stay in sight. */
+export function toggleHidden(layout: Layout, node: GroupId | SplitId, from: GroupId): Layout {
+  if (layout.hidden.includes(node)) {
+    return settle({ ...layout, hidden: layout.hidden.filter((id) => id !== node) });
+  }
+  const found = nodeIn(layout.root, node);
+  if (!found || found === layout.root || docked(found).some((group) => group.id === from)) {
+    return layout;
+  }
+  const inside = docked(found).some((group) => group.id === layout.focused);
+  return settle({
+    ...layout,
+    hidden: [...layout.hidden, node],
+    focused: inside ? from : layout.focused,
+    maximized: docked(found).some((group) => group.id === layout.maximized)
+      ? null
+      : layout.maximized,
+  });
+}
+
+/** Whether a docked group is out of sight. */
+export function isHidden(layout: Layout, group: GroupId): boolean {
+  return layout.hidden.some((id) => {
+    const found = nodeIn(layout.root, id);
+    return found !== null && docked(found).some((candidate) => candidate.id === group);
+  });
+}
+
+/** The nodes from the root down to a group, or none when it is not docked. */
+function pathTo(node: Node, group: GroupId): Node[] {
+  if (node.type === "group") {
+    return node.id === group ? [node] : [];
+  }
+  for (const child of node.children) {
+    const below = pathTo(child.node, group);
+    if (below.length > 0) {
+      return [node, ...below];
+    }
+  }
+  return [];
+}
+
+function nodeIn(node: Node, id: GroupId | SplitId): Node | null {
+  if (node.id === id) {
+    return node;
+  }
+  if (node.type === "group") {
+    return null;
+  }
+  for (const child of node.children) {
+    const found = nodeIn(child.node, id);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
 }
 
 /** Whether a pane or window from `from` can land at `target`. A group can't
@@ -460,7 +557,13 @@ function settle(layout: Layout): Layout {
   const maximized = docked(root).some((group) => group.id === layout.maximized)
     ? layout.maximized
     : null;
-  const settled = { ...layout, root, floating, focused, maximized };
+  // A node a change took apart is gone, and one holding the focus shows
+  // again, as when a pane in a hidden dock is opened.
+  const hidden = layout.hidden.filter((id) => {
+    const found = nodeIn(root, id);
+    return found !== null && found !== root && !docked(found).some((group) => group.id === focused);
+  });
+  const settled = { ...layout, root, floating, focused, maximized, hidden };
   if (import.meta.env.DEV) {
     const broken = checkLayout(settled);
     assert(broken.length === 0, `the layout breaks its rules: ${broken.join("; ")}`);
@@ -569,6 +672,17 @@ export function checkLayout(layout: Layout): string[] {
   }
   if (layout.maximized !== null && !docked(layout.root).some((g) => g.id === layout.maximized)) {
     broken.push(`the maximized ${layout.maximized} is no docked group`);
+  }
+  for (const id of layout.hidden) {
+    const found = nodeIn(layout.root, id);
+    if (!found || found === layout.root) {
+      broken.push(`the hidden ${id} is no docked node below the root`);
+    } else if (docked(found).some((g) => g.id === layout.focused || g.id === layout.maximized)) {
+      broken.push(`the hidden ${id} holds the focused or maximized group`);
+    }
+  }
+  if (new Set(layout.hidden).size !== layout.hidden.length) {
+    broken.push("a node is hidden twice");
   }
   for (const window of layout.floating) {
     if (!validRect(window.rect)) {
