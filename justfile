@@ -24,7 +24,7 @@ check: lint test miri loom web-test docs
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
 # only between seeds 48 and 61.
-all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-e2e stress sim bench-smoke build-static
+all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-props web-e2e stress sim bench-smoke build-static
 
 # Enters the pinned Nix development shell, or runs a command in it, with
 # nothing of the host's environment but the user and their terminal.
@@ -315,6 +315,14 @@ web-build: web-deps
 # its component tests in headless Chromium. Arguments go to Vitest.
 web-test *ARGS: web-deps
     cd web && ./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/tsc -p ../sdk/web && biome check src test e2e && ./node_modules/.bin/vitest run "$@"
+
+# Reruns the page's tests on every save, in and outside the browser.
+web-watch: web-deps
+    cd web && ./node_modules/.bin/vitest --project unit --project browser
+
+# Runs the page's property tests with CASES cases each instead of the default.
+web-props CASES="10000": web-deps
+    cd web && PROPTEST_CASES="$1" ./node_modules/.bin/vitest run --project unit
 
 # Drives the built page and real `microscope web` servers in Chromium and
 # Firefox. Arguments go to Playwright, e.g. `just web-e2e --project=chromium`.

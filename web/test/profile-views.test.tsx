@@ -25,6 +25,7 @@ import { SyscallsView } from "../src/ui/profile/SyscallsView";
 import { Timeline } from "../src/ui/profile/Timeline";
 import { TreeView } from "../src/ui/profile/TreeView";
 import { ZonesView } from "../src/ui/profile/ZonesView";
+import { POLL } from "./fake-server";
 
 interface Asked {
   id: number;
@@ -66,7 +67,7 @@ class Server {
         throw new Error("the page never connected");
       }
       return this.#handlers;
-    });
+    }, POLL);
     handlers.open();
     this.send({
       type: "hello",
@@ -98,7 +99,7 @@ class Server {
       }
       this.#answered.add(found.id);
       return found;
-    });
+    }, POLL);
   }
 
   /** Answers, with the columns sent first as a binary frame. */
@@ -293,7 +294,7 @@ it("walks a call tree with the arrow keys and selects with Enter", async () => {
   await userEvent.keyboard("{End}");
   expect(activeName(element)).toBe("leaf");
   await userEvent.keyboard("{ArrowUp}{Enter}");
-  await vi.waitFor(() => expect(lookShown().fn).toBe("thread"));
+  await vi.waitFor(() => expect(lookShown().fn).toBe("thread"), POLL);
   await expect
     .element(tree.getByRole("treeitem", { selected: true }))
     .toHaveAccessibleName(/^thread,/);
@@ -338,7 +339,7 @@ it("walks the functions with the arrow keys, same-named functions included", asy
     list.getByRole("option").nth(2).element().id,
   );
   await userEvent.keyboard("{Enter}");
-  await vi.waitFor(() => expect(lookShown().fn).toBe("leaf"));
+  await vi.waitFor(() => expect(lookShown().fn).toBe("leaf"), POLL);
 });
 
 it("says when no function was sampled", async () => {
@@ -374,7 +375,7 @@ it("brings each function's own hottest line into view once its lines arrive", as
     const bounds = hottest.element().getBoundingClientRect();
     expect(bounds.top).toBeGreaterThanOrEqual(0);
     expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
-  });
+  }, POLL);
 });
 
 it("says it is reading a flame graph, and reads a function's cost from the server", async () => {
@@ -413,7 +414,7 @@ it("forgets the frame it hovered once another tree arrives", async () => {
   await expect.element(canvas).toBeVisible();
   mouseAt(canvas.element(), "mousemove", 10, 5);
   const tip = () => document.querySelector("[data-testid=flame-tip] .mono")?.textContent;
-  await vi.waitFor(() => expect(tip()).toBe("main"));
+  await vi.waitFor(() => expect(tip()).toBe("main"), POLL);
   changeLook((look) => ({ ...look, invert: "1" }));
   server.answer(await server.next("profileTree"), ...treeOf([["other", 1, 1, 0]]));
   await expect.element(page.getByTestId("flame-tip")).not.toBeInTheDocument();
@@ -455,7 +456,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
     const element = canvas.element() as HTMLCanvasElement;
     const pixels = element.getContext("2d")?.getImageData(0, 0, 4, 18).data ?? [];
     expect([...pixels].some((value) => value > 0)).toBe(true);
-  });
+  }, POLL);
 });
 
 it("says why the timeline could not be read", async () => {
@@ -513,7 +514,7 @@ it("selects a call from its name's button, and sorts by a column it names", asyn
   expect(sorting("total")).toBe("descending");
   expect(sorting("calls")).toBeNull();
   await page.getByRole("button", { name: "name", exact: true }).click();
-  await vi.waitFor(() => expect(sorting("name")).toBe("ascending"));
+  await vi.waitFor(() => expect(sorting("name")).toBe("ascending"), POLL);
   expect(sorting("total")).toBeNull();
   // Counts are grouped, and a rounded time holds its exact nanoseconds.
   await expect.element(page.getByRole("cell", { name: "1,200" }).first()).toBeVisible();
@@ -550,7 +551,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
   // falls between two, a click on its top row reads as just above it.
   expect(bounds.top % 1, "the heat map's top is a whole pixel").not.toBe(0);
   mouseAt(map.element(), "click", bounds.width / 4, 0);
-  await vi.waitFor(() => expect(lookShown().sl).toBeDefined());
+  await vi.waitFor(() => expect(lookShown().sl).toBeDefined(), POLL);
   expect(lookShown().sl).toBe("2");
   expect(lookShown().range).toBe("1000-1500");
 });

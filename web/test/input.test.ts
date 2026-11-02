@@ -1,8 +1,10 @@
 // What people type: debugger keys, program arguments, and environments.
 
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { BINDINGS, commandFor, describe as describeKey, type KeyLike } from "../src/keys";
 import { joinWords, parseEnvironment, splitWords } from "../src/words";
+import { altLetterOrDigit, keyPress } from "./arbitraries/keys";
 
 const key = (name: string, modifiers: Partial<KeyLike> = {}): KeyLike => ({
   key: name,
@@ -45,6 +47,34 @@ describe("debugger keys", () => {
   it("reads Alt chords by the key pressed, whatever Alt makes it type", () => {
     expect(commandFor(key("¡", { altKey: true, code: "Digit1" }), false)).toBe("pane1");
     expect(commandFor(key("∂", { altKey: true, code: "KeyD" }), true)).toBe("viewDisassembly");
+  });
+
+  it("never runs a command for a character typed into a text box", () => {
+    fc.assert(
+      fc.property(keyPress, (press) => {
+        const typed = press.key.length === 1 && !press.ctrlKey && !press.altKey;
+        fc.pre(typed);
+        expect(commandFor(press, true)).toBeNull();
+      }),
+    );
+  });
+
+  it("leaves every press with Cmd or the Windows key to the browser", () => {
+    fc.assert(
+      fc.property(keyPress, fc.boolean(), (press, inTextBox) => {
+        expect(commandFor({ ...press, metaKey: true }, inTextBox)).toBeNull();
+      }),
+    );
+  });
+
+  it("reads an Alt chord by its physical key, whatever Alt makes it type", () => {
+    fc.assert(
+      fc.property(altLetterOrDigit, fc.boolean(), ({ letter, typed, shiftKey }, inTextBox) => {
+        const code = /\d/.test(letter) ? `Digit${letter}` : `Key${letter.toUpperCase()}`;
+        const press = { key: typed, code, shiftKey, ctrlKey: false, altKey: true, metaKey: false };
+        expect(commandFor(press, inTextBox)).toBe(commandFor({ ...press, key: letter }, inTextBox));
+      }),
+    );
   });
 
   it("never binds one press to two commands", () => {

@@ -49,12 +49,15 @@ it.
 ```sh
 just web-build
 just web-test
+just web-watch
+just web-props
 just web-e2e
 just web-e2e --project=chromium -g NAME
 ```
 
 `just web-test` runs TypeScript, Biome, and Vitest. End-to-end tests run real
-servers in Chromium and Firefox.
+servers in Chromium and Firefox. The test budgets, journeys, and property tests are
+described in [testing](testing.md#web-tests).
 
 Replay tests use recorded server transcripts. Update them with `just
 web-transcripts` when the protocol change is intentional.

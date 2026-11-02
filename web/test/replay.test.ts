@@ -13,6 +13,7 @@ import {
 } from "../src/model";
 import type { ServerMessage, State, Target } from "../src/protocol";
 import { shown } from "../src/ui/Status";
+import { POLL } from "./fake-server";
 import { binaries, received, transcript, transcriptNames } from "./transcripts";
 
 function replay(messages: ServerMessage[]): Model[] {
@@ -270,7 +271,7 @@ async function openConnection(emit: (event: ModelEvent) => void = () => undefine
       throw new Error("the connection never connected");
     }
     return handlers as TransportHandlers;
-  });
+  }, POLL);
   transport.open();
   return { connection, sent, transport };
 }

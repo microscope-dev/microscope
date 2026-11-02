@@ -249,6 +249,10 @@ function shapes(value: unknown, within: string, depth: number, totals: Totals): 
   if (depth > MOST_DEPTH) {
     throw new PictureError(`${within}: groups nest more than ${MOST_DEPTH} deep`);
   }
+  // Each item is a shape at least, so a list too long is refused unread.
+  if (totals.shapes + value.length > MOST_SHAPES) {
+    throw new PictureError(`the picture has more than ${MOST_SHAPES} shapes`);
+  }
   value.forEach((item, index) => {
     totals.shapes += 1;
     if (totals.shapes > MOST_SHAPES) {

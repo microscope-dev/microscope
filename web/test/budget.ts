@@ -1,0 +1,70 @@
+// How long one test may take. The suite runs on every save, so a slow test
+// is a defect: make it faster, or give it a budget of its own below with the
+// reason it cannot be faster. A test in a browser waits on real key presses,
+// garbage collection, and modules loading cold, so its budget leaves room
+// for that: about twice the slowest ordinary test on jlinux1. A budget of a
+// test's own is about half again its time. `just web-props` runs without
+// budgets.
+
+import { afterEach, beforeEach, expect } from "vitest";
+
+/** Tests outside a browser: logic over data. */
+const UNIT = 50;
+
+/** Tests rendering in Chromium. */
+const BROWSER = 500;
+
+/** Tests that cannot meet their project's budget, by file and full name. */
+export const OWN: Record<string, { ms: number; why: string }> = {
+  "test/live.test.tsx :: a live renderer > is ended when a function it returned never settles": {
+    ms: 4_500,
+    why: "waits out the live renderer's real 3s deadline",
+  },
+  "test/live.test.tsx :: a live renderer > is ended when it stops answering, and starts afresh": {
+    ms: 4_500,
+    why: "waits out the live renderer's real 3s deadline",
+  },
+  "test/sandbox.test.tsx :: the sandbox > ends a draw that runs too long, and the card draws again afterwards":
+    { ms: 3_000, why: "waits out the sandbox's real 2s draw deadline" },
+  "test/path-input.test.tsx :: passes Tab through an empty field and stops descending at a directory":
+    { ms: 800, why: "types paths a key at a time through the browser" },
+  "test/sandbox.test.tsx :: the sandbox > runs four draws at once and queues the rest": {
+    ms: 1_000,
+    why: "holds four real worker draws open while a fifth queues",
+  },
+};
+
+/** Files whose every test has a budget of its own, and why. */
+export const FILES: Record<string, { ms: number; why: string }> = {
+  "test/journeys.test.tsx": {
+    ms: 1_500,
+    why: "a journey is several steps of a person's, each rendering the whole page",
+  },
+};
+
+let started = 0;
+
+beforeEach(() => {
+  started = performance.now();
+});
+
+// A deeper property search is meant to take its time.
+const searching = typeof process !== "undefined" && process.env.PROPTEST_CASES !== undefined;
+
+afterEach(() => {
+  if (searching) {
+    return;
+  }
+  const elapsed = performance.now() - started;
+  const { testPath, currentTestName } = expect.getState();
+  const file = (testPath ?? "").replace(/^.*\/web\//, "");
+  const name = `${file} :: ${currentTestName ?? ""}`;
+  const own = OWN[name] ?? FILES[file];
+  const budget = own?.ms ?? (typeof window === "undefined" ? UNIT : BROWSER);
+  if (elapsed > budget) {
+    throw new Error(
+      `${name} took ${Math.round(elapsed)}ms, over its ${budget}ms budget. ` +
+        "Make it faster, or give it a budget of its own in test/budget.ts with the reason.",
+    );
+  }
+});

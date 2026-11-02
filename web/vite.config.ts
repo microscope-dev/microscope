@@ -49,12 +49,16 @@ export default defineConfig({
     },
   },
   test: {
+    // expect.element and expect.poll check this often; their default of 50ms
+    // made most browser tests wait at least one interval.
+    expect: { poll: { interval: 2 } },
     projects: [
       {
         extends: true,
         test: {
           name: "unit",
           include: ["test/**/*.test.ts"],
+          setupFiles: ["test/budget.ts", "test/props.ts"],
           environment: "node",
         },
       },
@@ -65,6 +69,7 @@ export default defineConfig({
         test: {
           name: "browser",
           include: ["test/**/*.test.tsx"],
+          setupFiles: ["test/budget.ts"],
           browser: {
             enabled: true,
             headless: true,

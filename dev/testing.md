@@ -469,6 +469,27 @@ Run both Chromium and Firefox before merging a browser behavior change. A
 snapshot or screenshot should assert a layout or rendering contract that text
 and DOM state cannot express more clearly.
 
+`just web-watch` reruns the unit and browser tests on every save.
+
+Every web test has a time budget, enforced by `web/test/budget.ts`: 50ms
+outside a browser and 500ms in one. A test over budget fails. Make it faster,
+or give it a budget of its own in that file with the reason.
+
+`web/test/boundaries.test.ts` fails on an import that crosses a module
+boundary, such as `src/` importing from `test/`, and on a budget entry that
+names a test that no longer exists.
+
+Property tests use fast-check, with shared generators in
+`web/test/arbitraries/`. They try 100 cases on every run. `just web-props
+CASES` searches deeper, without budgets, and `just all` runs it.
+
+A journey is a person's task written once against the `User` driver in
+`web/test/driver/`, in their words: press F5, expect the current line. The
+same journey runs in memory against a scripted debugger
+(`web/test/journeys.test.tsx`) and against a real `microscope web` in both
+browsers (`web/e2e/journeys.spec.ts`). The scripted debugger refuses any
+request it was not given a handler for, and the test fails on it.
+
 ## Executable documentation
 
 Several public reference pages are test inputs:
