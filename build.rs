@@ -5,7 +5,7 @@
 //! Development builds read `build/web` at run time instead, so rebuilding
 //! the page never rebuilds the crate. Node is never needed to build microscope:
 //! a missing `build/web` embeds nothing, and the page says to run
-//! `just web`.
+//! `just web-build`.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;

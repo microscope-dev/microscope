@@ -3,9 +3,11 @@ import { useEffect } from "react";
 import { commandFor, isTextBox, keepsEscape } from "../keys";
 import { commandName } from "../model";
 import { useModel } from "../store";
+import { standalone } from "../target";
 import { useCommands } from "./commands";
 import { KeyHelp } from "./KeyHelp";
 import { NeedsLink } from "./pages";
+import { Start } from "./Start";
 import { Strip } from "./Strip";
 import { Toolbar } from "./Toolbar";
 
@@ -26,7 +28,11 @@ export function Shell() {
     location.pathname === "/join" ? (
       <Outlet />
     ) : link === "unauthorized" ? (
-      <NeedsLink reason="This browser has not joined this microscope session yet." />
+      standalone ? (
+        <Start />
+      ) : (
+        <NeedsLink reason="This browser has not joined this microscope session yet." />
+      )
     ) : link === "incompatible" ? (
       <NeedsLink reason="This page is from another version of microscope. Reload to get this one's." />
     ) : null;

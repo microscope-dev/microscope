@@ -5,7 +5,9 @@
 //! request at all, only its own inline script, by a nonce chosen for each
 //! response, and the workers that script starts from blobs, which inherit
 //! the policy. `'unsafe-eval'` lets a worker evaluate a renderer once it
-//! has locked itself down (`web/src/visualize/worker.js`).
+//! has locked itself down (`web/src/visualize/worker.js`). Any page may
+//! frame it, as a page served on its own does: it holds nothing and can
+//! reach nothing.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -33,7 +35,7 @@ pub async fn frame(State(app): State<Arc<App>>, headers: HeaderMap) -> Response 
 
     let csp = format!(
         "sandbox allow-scripts; default-src 'none'; script-src 'nonce-{nonce}' 'unsafe-eval'; \
-         worker-src blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+         worker-src blob:; frame-ancestors *; base-uri 'none'; form-action 'none'"
     );
 
     (

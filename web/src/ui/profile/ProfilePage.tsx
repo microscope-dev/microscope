@@ -1,6 +1,5 @@
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useCallback, useMemo, useState } from "react";
-import { base } from "../../base";
 import {
   type ProfileLook,
   type ProfileView,
@@ -22,6 +21,7 @@ import {
 import { tracedBy, traceNotes } from "../../profile/syscalls";
 import type { ProfileGranularity, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
+import { presented, serverUrl } from "../../target";
 import {
   ProfileContext,
   type ProfileFocus,
@@ -516,9 +516,10 @@ function Recording({ info }: { info: ProfileInfo }) {
   const save = async () => {
     setFailure(null);
     try {
-      const response = await fetch(`${base}api/profile/${info.id}`, {
+      const response = await fetch(serverUrl(`api/profile/${info.id}`), {
         method: "POST",
         credentials: "same-origin",
+        body: presented(),
       });
       if (!response.ok) {
         throw new Error(`the server answered ${response.status}`);

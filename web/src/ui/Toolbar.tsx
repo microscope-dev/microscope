@@ -7,6 +7,7 @@ import { describe } from "../keys";
 import { targetName } from "../model";
 import { useConnection, useModel, useStoreApi } from "../store";
 import { useTab } from "../tab";
+import { setRemote, standalone } from "../target";
 import { chooseTheme, THEMES, type Theme, useChosenTheme } from "../theme";
 import { useCommands } from "./commands";
 import { People } from "./People";
@@ -64,6 +65,19 @@ export function Toolbar() {
           title="Launch, attach, or open a core dump"
         >
           {debugging ? "Debug something else" : "Debug something"}
+        </button>
+      )}
+      {standalone && (
+        <button
+          type="button"
+          className="tb ghost"
+          onClick={() => {
+            setRemote(null);
+            window.location.assign("/");
+          }}
+          title="Connect to another microscope"
+        >
+          Disconnect
         </button>
       )}
       <ThemeButton />

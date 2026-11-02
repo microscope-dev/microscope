@@ -13,11 +13,11 @@ import {
   useState,
 } from "react";
 import { assert } from "../assert";
-import { base } from "../base";
 import { useRequest } from "../data";
 import { type At, drawing, formatPinned, type Look, type Pinned, parsePinned } from "../focus";
 import type { Drawing, Row } from "../protocol";
 import { flash } from "../tab";
+import { serverUrl } from "../target";
 import { useShownScheme } from "../theme";
 import { DecodeError, decodeInputs, inputPaths, type Value } from "../visualize/decode";
 import { buildPicture } from "../visualize/draw";
@@ -62,7 +62,7 @@ export function pin(pinned: Pinned): (look: Look) => Look {
 
 /** The tab's sandbox, started the first time something is drawn. */
 function sandbox(): Sandbox {
-  shared ??= new Sandbox(`${base}visualizer-frame`);
+  shared ??= new Sandbox(serverUrl("visualizer-frame"));
   return shared;
 }
 

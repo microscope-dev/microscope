@@ -1,6 +1,6 @@
 //! The page's files.
 //!
-//! A release build embeds `build/web`, which `just web` builds. A
+//! A release build embeds `build/web`, which `just web-build` builds. A
 //! development build reads the directory at run time instead, so rebuilding
 //! the page never rebuilds microscope.
 
@@ -10,7 +10,7 @@ use std::borrow::Cow;
 #[cfg(not(debug_assertions))]
 static EMBEDDED: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 
-/// Where `just web` puts the built page.
+/// Where `just web-build` puts the built page.
 #[cfg(debug_assertions)]
 const DIRECTORY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build/web");
 
@@ -18,7 +18,7 @@ const DIRECTORY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build/web");
 /// `rooted` names the base in it as in the built page.
 const UNBUILT: &str = "<!doctype html><head><meta charset=utf-8><title>microscope web</title></head>\
 <body style=\"font:15px system-ui;padding:2em\"><h1>The page is not built</h1>\
-<p>Run <code>just web</code>, then reload.</p>";
+<p>Run <code>just web-build</code>, then reload.</p>";
 
 /// A file to serve and its media type.
 pub struct Asset {

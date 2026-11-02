@@ -64,7 +64,7 @@ build-debug *ARGS="":
 # and the binary is target/x86_64-unknown-linux-musl/PROFILE/microscope. Release
 # builds embed the web page. Fails unless the binary is static.
 [script]
-build-static PROFILE="debug" *ARGS: web
+build-static PROFILE="debug" *ARGS: web-build
     # Unset, the musl target's own flags apply instead of the glibc ones.
     unset RUSTFLAGS
     cargo build --target x86_64-unknown-linux-musl --bin microscope \
@@ -298,10 +298,16 @@ docs: docs-deps
 docs-dev: docs-deps
     cd docs && ./node_modules/.bin/vitepress dev .
 
+# Serves the page on its own on HOST:3000, reloading on every save. Paste a
+# join link from any `microscope web` to connect; signing in uses the services
+# backend at MICROSCOPE_SERVICES_URL, by default http://127.0.0.1:8080.
+web HOST="0.0.0.0": web-deps
+    cd web && ./node_modules/.bin/vite --host "$1"
+
 # Builds the web page into build/web, where `microscope web` serves it from.
 # Development builds of microscope read it from disk, so rebuilding the page
 # needs no Rust rebuild.
-web: web-deps
+web-build: web-deps
     cd web && ./node_modules/.bin/vite build --logLevel warn
 
 # Type-checks and lints the page, checks renderers against sdk/web's
@@ -312,18 +318,9 @@ web-test *ARGS: web-deps
 
 # Drives the built page and real `microscope web` servers in Chromium and
 # Firefox. Arguments go to Playwright, e.g. `just web-e2e --project=chromium`.
-web-e2e *ARGS: web build-test-programs
+web-e2e *ARGS: web-build build-test-programs
     cargo build --quiet --profile test
     cd web && MICROSCOPE_CACHE_DIR="$PWD/../target/image-cache" ./node_modules/.bin/playwright test "$@"
-
-# Serves PROGRAM on port 7342 with the page from Vite, which reloads on every
-# save: open the join link microscope prints, with 5173 in place of 7342.
-[script]
-web-dev *ARGS: web-deps
-    cargo build --quiet --profile test
-    ./target/debug/microscope web --port 7342 --allow-origin http://127.0.0.1:5173 "$@" &
-    trap 'kill %1 2>/dev/null || true' EXIT
-    cd web && ./node_modules/.bin/vite
 
 # Rerecords the server traffic the page's replay tests read
 # (web/test/transcripts) from the Rust web tests.
@@ -493,20 +490,20 @@ uat-nvim NVIM_DAP DIR="target/uat": build
 
 # Screenshots every screen in light and dark at three widths into
 # target/web-shots, with PROGRAM loaded (the kvstore fixture by default).
-web-shot *PROGRAM: web build-test-programs
+web-shot *PROGRAM: web-build build-test-programs
     cargo build --quiet --profile test
     cd web && node e2e/shots.ts "$@"
 
 # Times the metrics fixture's drawings with a million samples in headless
 # Chromium, from a stop to its picture, over ROUNDS stops each, with a release
 # build. Not part of the gate: the times depend on the machine.
-web-bench ROUNDS="5": web build-test-programs
+web-bench ROUNDS="5": web-build build-test-programs
     cargo build --quiet --release
     cd web && MICROSCOPE_WEB_BINARY="$PWD/../target/release/microscope" MICROSCOPE_CACHE_DIR="$PWD/../target/image-cache" node e2e/bench.ts "{{ROUNDS}}"
 
 # Drives PROGRAM through STEPS in headless Chromium, saving a screenshot after
 # each and printing the page's console: `just web-probe build/test-programs/basic
 # key:F9 key:F5 wait:Stopped`. See web/e2e/probe.ts for the steps.
-web-probe PROGRAM *STEPS: web
+web-probe PROGRAM *STEPS: web-build
     cargo build --quiet --profile test
     cd web && MICROSCOPE_CACHE_DIR="$PWD/../target/image-cache" node e2e/probe.ts "$(realpath "../$1")" "${@:2}"

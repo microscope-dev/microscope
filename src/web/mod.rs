@@ -44,6 +44,12 @@ use session::{LaunchSpec, Session, Start};
 /// The port tried first, so links stay the same from run to run.
 const DEFAULT_PORT: u16 = 7341;
 
+/// The subprotocol a socket that presents its token offers, as
+/// `microscope-token.TOKEN` beside it; browsers cannot add other headers to a
+/// WebSocket.
+const PROTOCOL: &str = "microscope";
+const TOKEN_PROTOCOL: &str = "microscope-token.";
+
 /// The largest message a tab may send.
 const MAX_MESSAGE: usize = 1024 * 1024;
 
@@ -118,11 +124,6 @@ pub struct WebArgs {
     #[arg(long, value_name = "URL")]
     public_url: Option<auth::PublicUrl>,
 
-    /// Also accept pages served from ORIGIN, such as the development
-    /// server's `http://127.0.0.1:5173`. May be repeated.
-    #[arg(long = "allow-origin", value_name = "ORIGIN", hide = true)]
-    allow_origins: Vec<String>,
-
     /// Look up --core's files under DIR, a copy of the dumping machine's
     /// files, as the terminal's --sysroot does.
     #[arg(long, value_name = "DIR", requires = "core")]
@@ -163,9 +164,18 @@ struct App {
 }
 
 impl App {
-    /// The role this request's cookie grants, if it came from this server's
-    /// own pages.
-    fn authorize(&self, headers: &HeaderMap) -> Option<Role> {
+    /// The role this request grants. A token the request presents itself is
+    /// good from any page, which could only have it from a join link, as when
+    /// the page is served on its own; the cookie, which a browser adds to
+    /// every page's requests, only from this server's own pages.
+    fn authorize(&self, headers: &HeaderMap, presented: Option<&str>) -> Option<Role> {
+        if let Some(token) = presented.filter(|token| !token.is_empty()) {
+            return self
+                .known_host(headers)
+                .then(|| self.session.tokens().role(token))
+                .flatten();
+        }
+
         if !self.is_own_page(headers) {
             return None;
         }
@@ -222,7 +232,7 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     let (start, profile) = what_to_serve(args, &profiles)?;
     let listener = bind(args).await?;
     let address = listener.local_addr().context("the listening address")?;
-    let origins = Origins::new(address, args.allow_origins.clone(), args.public_url.clone());
+    let origins = Origins::new(address, args.public_url.clone());
     let link_base = args.public_url.as_ref().map_or_else(
         || format!("http://{}/", origins.primary()),
         auth::PublicUrl::url,
@@ -462,13 +472,21 @@ async fn socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let Some(role) = app.authorize(&headers) else {
+    let presented = headers
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .find_map(|protocol| protocol.trim().strip_prefix(TOKEN_PROTOCOL));
+
+    let Some(role) = app.authorize(&headers, presented) else {
         return (StatusCode::FORBIDDEN, "join with a link first").into_response();
     };
 
     let session = Arc::clone(&app.session);
     let profiles = Arc::clone(&app.profiles);
     upgrade
+        .protocols([PROTOCOL])
         .max_message_size(MAX_MESSAGE)
         .on_upgrade(move |socket| connection::serve(socket, session, profiles, role))
 }
@@ -492,13 +510,15 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) ->
 }
 
 /// A profile's file, for saving. It is a POST, which carries the `Origin`
-/// that shows the request came from this server's own page.
+/// that shows the request came from this server's own page, or the token in
+/// its body.
 async fn download(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
+    body: String,
 ) -> Response {
-    if app.authorize(&headers).is_none() {
+    if app.authorize(&headers, Some(body.trim())).is_none() {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -524,6 +544,7 @@ async fn download(
 
     (
         [
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_owned()),
             (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
             (
                 header::CONTENT_DISPOSITION,
@@ -535,14 +556,20 @@ async fn download(
         .into_response()
 }
 
-/// Says whether this browser's cookie grants access, which a refused
-/// WebSocket cannot tell the page.
-async fn check(State(app): State<Arc<App>>, headers: HeaderMap) -> StatusCode {
-    if app.authorize(&headers).is_some() {
+/// Says whether this browser's cookie, or the token in the body, grants
+/// access, which a refused WebSocket cannot tell the page.
+///
+/// It and `download` answer pages served anywhere: a browser shows another
+/// page the answer only to a request it sent without cookies, so all that
+/// page learns is whether a token it already holds is good.
+async fn check(State(app): State<Arc<App>>, headers: HeaderMap, body: String) -> Response {
+    let status = if app.authorize(&headers, Some(body.trim())).is_some() {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::FORBIDDEN
-    }
+    };
+
+    (status, [(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")]).into_response()
 }
 
 async fn page(State(app): State<Arc<App>>, headers: HeaderMap, uri: Uri) -> Response {

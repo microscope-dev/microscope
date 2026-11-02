@@ -255,6 +255,7 @@ impl Web {
             Some(&cookie),
             Some(&self.origin()),
             Some(&self.host()),
+            None,
         )
         .await
         .expect("connect")
@@ -265,7 +266,7 @@ impl Web {
         let token = link.rsplit_once('#').expect("a token in the link").1;
         let cookie = self.cookie(token);
 
-        self.connect(name, Some(&cookie), Some(&self.origin()), None)
+        self.connect(name, Some(&cookie), Some(&self.origin()), None, None)
             .await
             .expect("connect")
     }
@@ -278,6 +279,7 @@ impl Web {
         cookie: Option<&str>,
         origin: Option<&str>,
         host: Option<&str>,
+        protocols: Option<&str>,
     ) -> Result<Client, u16> {
         let mut request = format!("ws://{}{}api/ws", self.address, self.base)
             .into_client_request()
@@ -294,6 +296,10 @@ impl Web {
 
         if let Some(host) = host {
             headers.insert("Host", host.parse().expect("header"));
+        }
+
+        if let Some(protocols) = protocols {
+            headers.insert("Sec-WebSocket-Protocol", protocols.parse().expect("header"));
         }
 
         match timeout(DEADLINE, tokio_tungstenite::connect_async(request)).await {

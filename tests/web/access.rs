@@ -61,19 +61,70 @@ async fn the_socket_refuses_other_pages_names_and_cookies() {
 
     for (cookie, origin, host) in attempts {
         let refused = web
-            .connect("refused", cookie.as_deref(), origin, host)
+            .connect("refused", cookie.as_deref(), origin, host, None)
             .await;
         assert_eq!(refused.err(), Some(403), "{cookie:?} {origin:?} {host:?}");
     }
 
     let mut client = web
-        .connect("tab", Some(&cookie), Some(&origin), None)
+        .connect("tab", Some(&cookie), Some(&origin), None, None)
         .await
         .expect("connect");
     let hello = client.next().await;
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["role"], "control");
     assert_eq!(hello["version"], 2);
+}
+
+/// A page served on its own, by another origin, holds the token itself and
+/// presents it; the cookie is still good only from this server's pages.
+#[tokio::test]
+async fn a_token_the_page_presents_is_good_from_any_page() {
+    let web = Web::start("presented", &[]);
+    let token = web.control_token.clone();
+    let elsewhere = Some("http://dev.example:5173");
+    let offer = |token: &str| format!("microscope, microscope-token.{token}");
+
+    let refused = [
+        web.connect("wrong", None, elsewhere, None, Some(&offer("c-0000")))
+            .await,
+        web.connect(
+            "rebound",
+            None,
+            elsewhere,
+            Some("evil.example:1"),
+            Some(&offer(&token)),
+        )
+        .await,
+        web.connect("cookie", Some(&web.cookie(&token)), elsewhere, None, None)
+            .await,
+    ];
+
+    for refused in refused {
+        assert_eq!(refused.err(), Some(403));
+    }
+
+    let mut client = web
+        .connect("tab", None, elsewhere, None, Some(&offer(&token)))
+        .await
+        .expect("connect");
+    let hello = client.next().await;
+    assert_eq!(hello["role"], "control");
+
+    let check = |body: &str| {
+        web.http(&format!(
+            "POST /api/check HTTP/1.1\r\nHost: {}\r\nOrigin: http://dev.example:5173\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            web.address,
+            body.len()
+        ))
+    };
+
+    let good = check(&token);
+    assert!(good.starts_with("HTTP/1.1 204"), "{good}");
+    assert!(good.contains("access-control-allow-origin: *"), "{good}");
+    assert!(check("c-0000").starts_with("HTTP/1.1 403"));
+    assert!(check("").starts_with("HTTP/1.1 403"));
 }
 
 #[tokio::test]
@@ -272,7 +323,7 @@ async fn the_renderers_frame_is_sandboxed_and_allows_no_request() {
         "sandbox allow-scripts",
         "default-src 'none'",
         "worker-src blob:",
-        "frame-ancestors 'self'",
+        "frame-ancestors *",
         "'unsafe-eval'",
     ] {
         assert!(policy.contains(directive), "{directive} in {policy}");

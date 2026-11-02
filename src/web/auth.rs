@@ -6,7 +6,9 @@
 //! which browsers never send; the page posts it to `/api/login`, which sets
 //! an `HttpOnly` cookie, so ordinary links carry no secret. `Host` must name
 //! this server, which defeats DNS rebinding, and `Origin` must be its own,
-//! so no other page can use the cookie.
+//! so no other page can use the cookie. A page served on its own presents
+//! the token with each request instead, which any page may, since only a
+//! join link could have given it the token.
 
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -186,10 +188,6 @@ pub fn cookie(header: &str, port: u16) -> Option<&str> {
 pub struct Origins {
     hosts: Vec<String>,
 
-    /// Pages served from elsewhere that may use the server anyway, such as
-    /// a development server proxying to it.
-    extra: Vec<String>,
-
     /// The proxy the pages are served through, whose host and origin are
     /// this server's as well.
     public: Option<PublicUrl>,
@@ -198,7 +196,7 @@ pub struct Origins {
 impl Origins {
     /// The server listening at `address`. A loopback server is also
     /// `localhost`.
-    pub fn new(address: SocketAddr, extra_origins: Vec<String>, public: Option<PublicUrl>) -> Self {
+    pub fn new(address: SocketAddr, public: Option<PublicUrl>) -> Self {
         let port = address.port();
         let mut hosts = vec![match address {
             SocketAddr::V4(v4) => format!("{}:{port}", v4.ip()),
@@ -208,11 +206,7 @@ impl Origins {
             hosts.push(format!("localhost:{port}"));
         }
 
-        Self {
-            hosts,
-            extra: extra_origins,
-            public,
-        }
+        Self { hosts, public }
     }
 
     /// Whether `host` names this server, directly or through its proxy.
@@ -245,7 +239,6 @@ impl Origins {
             || origin
                 .strip_prefix("http://")
                 .is_some_and(|rest| rest == host && self.hosts.iter().any(|known| known == rest))
-            || self.extra.iter().any(|extra| extra == origin)
     }
 
     /// The address links use.
@@ -283,11 +276,7 @@ mod tests {
 
     #[test]
     fn only_this_servers_own_pages_are_allowed() {
-        let origins = Origins::new(
-            "127.0.0.1:7341".parse().expect("address"),
-            vec!["http://127.0.0.1:5173".to_owned()],
-            None,
-        );
+        let origins = Origins::new("127.0.0.1:7341".parse().expect("address"), None);
         let allows = |host, origin| origins.allows(host, origin);
         assert!(allows(
             Some("127.0.0.1:7341"),
@@ -297,13 +286,13 @@ mod tests {
             Some("localhost:7341"),
             Some("http://localhost:7341")
         ));
-        assert!(allows(
-            Some("127.0.0.1:7341"),
-            Some("http://127.0.0.1:5173")
-        ));
 
         // Another page, a rebound name, a mismatch, or no browser at all.
         assert!(!allows(Some("127.0.0.1:7341"), Some("http://evil.example")));
+        assert!(!allows(
+            Some("127.0.0.1:7341"),
+            Some("http://127.0.0.1:5173")
+        ));
         assert!(!allows(
             Some("evil.example:7341"),
             Some("http://evil.example:7341")
@@ -320,7 +309,7 @@ mod tests {
         assert!(!allows(None, Some("http://127.0.0.1:7341")));
         assert_eq!(origins.primary(), "127.0.0.1:7341");
 
-        let public = Origins::new("0.0.0.0:80".parse().expect("address"), Vec::new(), None);
+        let public = Origins::new("0.0.0.0:80".parse().expect("address"), None);
         assert!(!public.allows(Some("localhost:80"), Some("http://localhost:80")));
     }
 
@@ -332,7 +321,6 @@ mod tests {
         assert_eq!(public.url(), "https://proxy.example/debug/7/");
         let origins = Origins::new(
             "127.0.0.1:7341".parse().expect("address"),
-            Vec::new(),
             Some(public.clone()),
         );
         let allows = |host, origin| origins.allows(Some(host), Some(origin));

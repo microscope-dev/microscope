@@ -13,6 +13,7 @@ import {
   type Results,
   type ServerMessage,
 } from "./protocol";
+import { presented, remote, serverUrl, standalone } from "./target";
 
 export interface TransportHandlers {
   open(): void;
@@ -267,10 +268,14 @@ export function leaveWhileCached(connection: Connection, page: EventTarget): voi
   });
 }
 
-/** Connects a browser WebSocket to this page's server. */
+/** Connects a browser WebSocket to the page's server: the one that served
+ * it, with its cookie, or the remote one, offering the token as a
+ * subprotocol, the only header a page may give a WebSocket. */
 export const browserConnect: Connect = (handlers) => {
-  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${scheme}//${location.host}${base}api/ws`);
+  const url = new URL(serverUrl("api/ws"), location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const token = presented();
+  const socket = new WebSocket(url, token ? ["microscope", `microscope-token.${token}`] : []);
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => handlers.open());
   socket.addEventListener("message", (event) => {
@@ -287,9 +292,17 @@ export const browserConnect: Connect = (handlers) => {
   };
 };
 
-/** Asks the server whether this browser's cookie is good. */
+/** Asks the server whether this browser's cookie or token is good. A page
+ * served on its own that has no server yet has neither. */
 export const browserAuthorized: Authorized = async () => {
-  const response = await fetch(`${base}api/check`, { method: "POST", credentials: "same-origin" });
+  if (standalone && !remote()) {
+    return false;
+  }
+  const response = await fetch(serverUrl("api/check"), {
+    method: "POST",
+    credentials: "same-origin",
+    body: presented(),
+  });
   if (response.status === 204) {
     return true;
   }

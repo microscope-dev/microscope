@@ -16,6 +16,7 @@ like the CLI and DAP server.
 | `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Syscalls view; see [system call tracing](syscalls.md) |
 | `web/src/store.ts`, `web/src/connection.ts`, `web/src/actions.ts` | Browser state, transport, and user actions |
 | `web/src/router.tsx`, `web/src/tab.ts`, `web/src/ui/` | URL state, per-tab view, and React interface |
+| `web/src/target.ts`, `web/src/account.ts`, `web/src/ui/Start.tsx` | The page served on its own: which microscope it talks to, and services sign-in |
 | `web/src/protocol.gen.ts` | Generated TypeScript protocol; do not edit by hand |
 | `web/src/visualize/`, `sdk/web/` | Sandboxed visualizers and their public type contract |
 | `web/test/` | Fast TypeScript, React, replay, and sandbox tests |
@@ -46,7 +47,7 @@ Debug builds read the page from `build/web` at runtime. Release builds embed
 it.
 
 ```sh
-just web
+just web-build
 just web-test
 just web-e2e
 just web-e2e --project=chromium -g NAME
@@ -65,8 +66,26 @@ just web-probe PROGRAM STEPS...
 ```
 
 The probe saves a screenshot after each step and prints browser-console
-messages. `web/e2e/probe.ts` lists the available steps. `just web-dev` starts
-the live-reload server.
+messages. `web/e2e/probe.ts` lists the available steps.
+
+## Serving the page on its own
+
+`just web` serves the page from Vite on `0.0.0.0:3000`, reloading on every
+save; `just web 127.0.0.1` keeps it local. A page that `microscope web` did
+not serve has no `microscope-base` meta tag, so `web/src/target.ts` treats it
+as standalone: it asks for a join link, keeps the link's server and token in
+localStorage, and presents the token itself. The socket offers it as the
+subprotocol `microscope-token.TOKEN` beside `microscope`; `/api/check` and
+`/api/profile/{id}` take it as the POST body. A presented token is good from
+any origin, since only a join link could have given it; the cookie is still
+good only from the server's own pages.
+
+The standalone page also offers an optional sign-in to the services backend,
+which it reaches under its own `/api/`. Vite proxies that to
+`MICROSCOPE_SERVICES_URL`, by default `http://127.0.0.1:8080`, and renames
+services' `__Host-session` cookie, which a browser keeps only over HTTPS. Start
+services from its own repository with `just up` and `just run`. Without it,
+the page says sign-in is unavailable and connecting still works.
 
 Use binaries in `web/node_modules/.bin` or the Nix shell's `biome`. Do not use
 `npx`, which can download a different package when a command is missing.
@@ -239,10 +258,6 @@ the test harness and must end after failure as well as success.
 screenshots under the target output directory, and prints console messages.
 Use it after layout, theme, panel, focus, or responsive changes even when DOM
 tests pass.
-
-`just web-dev` serves Vite on its development port and microscope on a separate
-port with the allowed origin configured. It drives a host browser and is one
-of the recipes that deliberately leaves the pure build boundary where needed.
 
 ## Security review
 
