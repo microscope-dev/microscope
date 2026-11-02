@@ -202,6 +202,12 @@ How it reads calls:
 - Pointer arguments are copied at exit, as each call's spec in
   `src/syscalls/specs.rs` says. `execve`, `execveat`, and `rseq` are copied at
   entry, because their memory is gone or rewritten by exit.
+- A worker that executes becomes its process's leader. Task storage keeps
+  its original id in the trace's PID namespace. Before its terminal call,
+  a handoff record moves the captured entry to the new id, only when the
+  process and entry timestamp match. This also covers exec failures after
+  the id changes, which emit no successful exec event. A displaced leader
+  entry stays visibly unfinished; a lost handoff counts as a ring loss.
 - Every record goes through one `BPF_MAP_TYPE_RINGBUF`, `EVENTS`, shared by
   all CPUs: 16 MiB (`DEFAULT_RING`), or 64 MiB (`STACK_COPY_RING`) with
   `-k=dwarf`, whose 8 KiB copies make a call's records about 8.6 KiB
