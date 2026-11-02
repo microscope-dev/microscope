@@ -838,6 +838,31 @@ A rolling window evicts records older than its retained interval while keeping
 the dictionaries and mappings needed to interpret remaining data. A signal can
 snapshot the current window without stopping collection.
 
+Perf counts are independent kernel totals, not sums of sample weights. CPU
+clock events count only while enabled, in the selected user/kernel modes;
+budget and reader-backlog pauses stop counting as well as sampling. Breakpoint
+events count hits, including inherited threads and children, even when their
+sample records are lost. Each event read includes its inherited counts.
+
+Window and segment cuts use timestamped count observations. The processor
+holds each observation until records before its timestamp have arrived, then
+records both the perf totals and the record-derived accounts at that boundary.
+Snapshots stop at the latest such boundary; later records stay for the next
+snapshot or segment. A save trigger requests an observation and waits for its
+earlier records, so the saved window includes the trigger. Reading counts
+after processing and labeling them with the older watermark instead subtracts
+future work from a retained window.
+The final disabled-event observation advances the window even if the target
+ended asleep and wrote no more records. A window starts at the latest observed
+boundary at least its requested length before its end, so sparse drains can
+retain more than the requested length.
+
+Event descriptors are read sequentially, not as an atomic system-wide
+snapshot. Live observations are timestamped after the reads; their duration
+is the boundary's uncertainty. Disabled-event totals are stable and use the
+terminal disable boundary. Sample periods also leave partial periods at either
+cut, so weighted samples need not equal counted CPU or hits.
+
 Continuous mode writes complete segment files and removes segments older than
 the retention policy. A directory reader presents valid segments as one
 logical profile. It must tolerate a segment being written, a missing segment,

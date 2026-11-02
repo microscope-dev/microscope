@@ -697,14 +697,24 @@ fn drive(
         .map(|pid| Collector::new(pid, options.probes.clone(), options.probe_timeout));
     let started = started.is_some();
 
-    // A window moves by eighths of itself.
-    let marks = options.window.map(|window| {
+    if let Some(window) = options.window {
         processor.keep_window(window);
-        (window / 8).max(Duration::from_millis(10))
+    }
+    // Cuts use observed counts, held back with the records on their clock.
+    let accounting = options.window.or(options.segment).map(|span| {
+        (span / 8)
+            .min(watch.every)
+            .min(Duration::from_millis(250))
+            .max(Duration::from_millis(10))
     });
-    let mut marked = std::time::Instant::now();
+    if accounting.is_some() {
+        let counts = events.counts();
+        processor.counts_at(monotonic(), counts);
+    }
+    let mut counted = std::time::Instant::now();
     let segment = options.segment.filter(|_| options.window.is_none());
     let mut segmented = std::time::Instant::now();
+    let mut pending_save = None;
     if started {
         (watch.publish)(Profile {
             capture: processor.snapshot(),
@@ -716,15 +726,22 @@ fn drive(
     let mut wait = watch.every.min(Duration::from_millis(250));
     let mut stopping = false;
     let mut now = false;
-    loop {
+    let end = loop {
         if !stopping && watch.stop.load(Ordering::Relaxed) {
             stopping = true;
             now = stop();
         }
 
         let finished = now || ended();
-        if finished {
+        let disabled_at = finished.then(|| {
             events.enable(false);
+            monotonic()
+        });
+
+        if !finished && accounting.is_some_and(|every| counted.elapsed() >= every) {
+            let counts = events.counts();
+            processor.counts_at(monotonic(), counts);
+            counted = std::time::Instant::now();
         }
 
         // Every record stamped before this has been written by the time
@@ -785,21 +802,13 @@ fn drive(
             }
         }
 
-        if finished {
-            break;
+        if let Some(end) = disabled_at {
+            break end;
         }
 
         for snapshots in &mut snapshots {
             let sampling = pacer.as_ref().is_none_or(Pacer::sampling);
             snapshots.when_due(processor, events, sampling);
-        }
-
-        if let Some(every) = marks
-            && marked.elapsed() >= every
-        {
-            processor.counts(events.counts());
-            processor.mark();
-            marked = std::time::Instant::now();
         }
 
         // A program's trigger saves the window as microscope's does.
@@ -811,22 +820,23 @@ fn drive(
                 events,
                 syscalls,
                 triggered,
+                (accounting.is_some(), &mut pending_save),
                 (segment, &mut segmented),
             );
         }
 
         if started && published.elapsed() >= wait {
-            processor.counts(events.counts());
+            if accounting.is_none() {
+                processor.counts(events.counts());
+            }
             (watch.publish)(Profile {
                 capture: processor.snapshot(),
             });
             published = std::time::Instant::now();
             wait = (wait * 2).min(watch.every);
         }
-    }
+    };
 
-    events.enable(false);
-    let end = monotonic();
     for (start, end) in events.behind(Some(end)) {
         processor.gap(start, end, GapReason::Behind);
     }
@@ -841,7 +851,26 @@ fn drive(
     for snapshots in &mut snapshots {
         snapshots.finish(processor);
     }
-    processor.counts(events.counts());
+    let counts = events.counts();
+    if accounting.is_some() {
+        processor.counts_at(end, counts);
+        processor.ingest(&[], None);
+    } else {
+        processor.counts(counts);
+    }
+    if pending_save.is_some()
+        && let Some(save) = &mut watch.save
+    {
+        save_when_due(
+            save,
+            processor,
+            events,
+            syscalls,
+            false,
+            (accounting.is_some(), &mut pending_save),
+            (segment, &mut segmented),
+        );
+    }
 }
 
 /// Saves the profile so far when `save`'s trigger fires, the program
@@ -853,14 +882,31 @@ fn save_when_due(
     events: &perf::Events,
     syscalls: Option<&SyscallTrace>,
     triggered: bool,
+    (timed_counts, pending): (bool, &mut Option<u64>),
     (every, cut): (Option<Duration>, &mut std::time::Instant),
 ) {
     let due = every.is_some_and(|every| cut.elapsed() >= every);
-    if !(save.trigger.swap(false, Ordering::Relaxed) || triggered || due) {
+    let requested = save.trigger.swap(false, Ordering::Relaxed) || triggered;
+    if timed_counts {
+        if requested && pending.is_none() {
+            let counts = events.counts();
+            let at = monotonic();
+            processor.counts_at(at, counts);
+            *pending = Some(at);
+        }
+        if let Some(at) = *pending {
+            if processor.accounted_to().is_none_or(|end| end < at) {
+                return;
+            }
+            *pending = None;
+        } else if !due || processor.accounted_to().is_none() {
+            return;
+        }
+    } else if requested || due {
+        processor.counts(events.counts());
+    } else {
         return;
     }
-
-    processor.counts(events.counts());
     record!("record: saved, segment due {due}");
     let capture = if every.is_some() {
         *cut = std::time::Instant::now();

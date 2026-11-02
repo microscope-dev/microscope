@@ -763,6 +763,15 @@ fn a_threads_time_off_its_cpu_is_each_sleep_and_each_preemption() {
 /// reaches past the start of one, and each change of the share is marked.
 #[test]
 fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {
+    budget_pauses(None);
+}
+
+#[test]
+fn a_rolling_recording_counts_only_cpu_while_sampling_is_enabled() {
+    budget_pauses(Some(Duration::from_secs(10)));
+}
+
+fn budget_pauses(window: Option<Duration>) {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("profile-phases"));
     command
@@ -770,6 +779,7 @@ fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let options = RecordOptions {
+        window,
         budget: Some(Budget {
             cpu: 0.001,
             period: Duration::from_millis(50),
@@ -812,6 +822,7 @@ fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {
     let inside = |time: i64| gaps.iter().any(|(start, end)| *start < time && time < *end);
     let sampled = profile.stacks();
     assert!(!sampled.is_empty());
+    assert_cpu_accounting(profile);
     if let Some(stack) = sampled.iter().find(|stack| inside(stack.time)) {
         panic!("{stack:?} was sampled in a gap: {gaps:?}");
     }
@@ -834,6 +845,18 @@ fn on_stacks(profile: &Profile) -> std::collections::BTreeSet<String> {
         .into_iter()
         .flat_map(|stack| stack.functions)
         .collect()
+}
+
+fn assert_cpu_accounting(profile: &Profile) {
+    let (start, end) = profile.span();
+    assert!(start <= end, "{start}..{end}");
+    let error = profile.total_weight().abs_diff(profile.counted());
+    assert!(
+        error < 20_000_000,
+        "{start}..{end}: weight {} differs from counted {} by {error} ns",
+        profile.total_weight(),
+        profile.counted()
+    );
 }
 
 /// A rolling window keeps only its last span. A trigger saves the window
@@ -904,6 +927,7 @@ fn a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span() {
         "counted {} in {span}",
         profile.counted()
     );
+    assert_cpu_accounting(profile);
 }
 
 /// A recording cut into segments tiles its time with them: each holds
@@ -968,7 +992,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
     let scratch = support::ScratchDir::new("profiler-segments");
     for (number, segment) in segments.iter().enumerate() {
         let (start, end) = segment.span();
-        assert!(start <= end, "segment {number}: {start} {end}");
+        assert_cpu_accounting(segment);
         if let Some(next) = segments.get(number + 1) {
             assert_eq!(
                 end,
@@ -985,7 +1009,6 @@ fn segments_tile_a_recording_and_read_back_as_one() {
             within(interval.time)
                 && interval.time + i64::try_from(interval.duration).expect("short") <= end
         }));
-
         segment
             .write_segment(scratch.path(), Duration::from_hours(1))
             .expect("write the segment");
@@ -1074,6 +1097,66 @@ fn a_profile_says_how_much_cpu_time_its_samples_cover() {
         "{:?}",
         profile.settings()
     );
+}
+
+#[test]
+fn timed_cuts_keep_exact_function_counts_including_inherited_threads() {
+    for segmented in [false, true] {
+        let options = RecordOptions {
+            window: (!segmented).then_some(Duration::from_secs(10)),
+            segment: segmented.then_some(Duration::from_millis(20)),
+            ..calls_of("leaf")
+        };
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        let mut command = Command::new(Scenario::fixture("profile-attach-gcc-o0"));
+        command.stdin(reader).stdout(Stdio::null());
+        if !segmented {
+            writer.write_all(b"\n").expect("release the program");
+        }
+        let (trigger, stop) = (AtomicBool::new(false), AtomicBool::new(false));
+        let mut parts = Vec::new();
+        let deadline = std::time::Instant::now() + READY_DEADLINE;
+        let recording = record_watched(
+            command,
+            &options,
+            &mut Watch {
+                every: Duration::from_millis(20),
+                publish: &mut |_| {
+                    if std::time::Instant::now() >= deadline {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                },
+                stop: &stop,
+                save: Some(Save {
+                    trigger: &trigger,
+                    to: &mut |profile| {
+                        parts.push(profile);
+                        if segmented && parts.len() == 2 {
+                            writer.write_all(b"\n").expect("release after two cuts");
+                        }
+                    },
+                }),
+            },
+        )
+        .expect("record calls across cuts");
+        assert!(recording.status.success());
+        parts.push(recording.profile);
+        assert_eq!(parts.iter().map(Profile::counted).sum::<u64>(), 9);
+        assert_eq!(
+            parts
+                .iter()
+                .map(|profile| profile.samples() as u64 + profile.lost_samples())
+                .sum::<u64>(),
+            9
+        );
+        if segmented {
+            assert!(parts.len() > 2, "two cuts must precede the calls");
+            for profile in &parts[..2] {
+                assert_eq!(profile.counted(), 0);
+                assert_eq!(profile.samples(), 0);
+            }
+        }
+    }
 }
 
 #[test]

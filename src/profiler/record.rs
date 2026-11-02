@@ -317,6 +317,10 @@ pub struct Processor {
     processed: u64,
     window: Option<Window>,
 
+    /// Perf observations waiting for the records before them to arrive.
+    accounting: std::collections::VecDeque<(u64, perf::Counts)>,
+    accounted: Option<(u64, BTreeMap<u32, u64>)>,
+
     /// Where the segment being recorded starts, and the counts there, once
     /// the recording has been cut into segments.
     segment: Option<(u64, BTreeMap<u32, u64>)>,
@@ -406,6 +410,8 @@ impl Processor {
             thread_changes: 0,
             processed: 0,
             window: None,
+            accounting: std::collections::VecDeque::new(),
+            accounted: None,
             segment: None,
             tasks_of: None,
             located: std::collections::VecDeque::new(),
@@ -611,6 +617,24 @@ impl Processor {
         self.untrusted = untrusted;
     }
 
+    /// A live count belongs to the time it was read, not to the older
+    /// watermark of the batch being processed.
+    pub fn counts_at(&mut self, time: u64, counts: perf::Counts) {
+        self.accounting.push_back((time, counts));
+    }
+
+    pub fn accounted_to(&self) -> Option<u64> {
+        self.accounted.as_ref().map(|(at, _)| *at)
+    }
+
+    fn account_before(&mut self, time: u64) {
+        while let Some((at, counts)) = self.accounting.pop_front_if(|(at, _)| *at <= time) {
+            self.counts(counts);
+            self.accounted = Some((at, self.builder.accounts().clone()));
+            self.mark(at);
+        }
+    }
+
     /// Processes the records in `batch` and those held back before, in
     /// time order, up to `watermark`; holds back the rest. Rings are
     /// drained one after another, so a record of one may be written after
@@ -739,6 +763,7 @@ impl Processor {
         self.order = order;
         bytes.clear();
         self.spare = bytes;
+        self.account_before(watermark.unwrap_or(u64::MAX));
         self.processed = watermark.unwrap_or(self.latest).max(self.processed);
         self.map_lost_before(watermark.unwrap_or(u64::MAX));
     }
@@ -752,15 +777,13 @@ impl Processor {
         });
     }
 
-    /// Marks the counts where every record has been processed, and moves
-    /// a window's start up to the latest mark it has passed, forgetting
-    /// what came before. The events' counts must be current.
-    pub fn mark(&mut self) {
+    /// Evicts only at an observed accounting boundary whose earlier
+    /// records have all been processed.
+    fn mark(&mut self, now: u64) {
         let Some(window) = &mut self.window else {
             return;
         };
 
-        let now = self.processed;
         window
             .marks
             .push_back((now, self.builder.accounts().clone()));
@@ -778,12 +801,14 @@ impl Processor {
     /// Where a window starts, and the counts there.
     fn window_start(&self) -> Option<&(u64, BTreeMap<u32, u64>)> {
         let window = self.window.as_ref()?;
-        let passed = self.processed.saturating_sub(window.length);
+        let end = self.accounted.as_ref()?.0;
+        let passed = end.saturating_sub(window.length);
         window.marks.front().filter(|(time, _)| *time <= passed)
     }
 
     fn process(&mut self, record: decode::Record<'_>) {
         let time = record.time().unwrap_or(self.latest);
+        self.account_before(time);
         self.map_lost_before(time);
         if time < self.latest {
             self.builder.count(AccountKind::LateRecords as u32, 1);
@@ -2165,7 +2190,8 @@ impl Processor {
         if self.images.iter().any(|image| image.deferred.is_some()) {
             builder.setting("symbols", "later");
         }
-        self.close(&mut builder, self.latest);
+        let end = self.accounted_end(&mut builder, self.latest);
+        self.close(&mut builder, end);
         self.cut(&mut builder);
         builder.finish()
     }
@@ -2179,7 +2205,8 @@ impl Processor {
         }
         self.symbolize_new();
         let mut builder = std::mem::take(&mut self.builder);
-        self.close(&mut builder, self.latest);
+        let end = self.accounted_end(&mut builder, self.latest);
+        self.close(&mut builder, end);
         self.cut(&mut builder);
         builder.finish()
     }
@@ -2188,12 +2215,12 @@ impl Processor {
     /// where every record has been processed, which begins the next: a
     /// complete capture of that span alone, every frame symbolized. What
     /// spans the cut, a thread off its CPU or an open zone, is in each
-    /// segment for the part of it there. The events' counts must be
-    /// current.
+    /// segment for the part of it there. A live perf observation becomes
+    /// a cut only once its earlier records have arrived.
     pub fn segment(&mut self) -> Capture {
         self.symbolize_new();
-        let end = self.processed;
         let mut builder = self.builder.clone();
+        let end = self.accounted_end(&mut builder, self.processed);
         self.close(&mut builder, end);
         let counts = builder.accounts().clone();
         self.cut(&mut builder);
@@ -2203,6 +2230,23 @@ impl Processor {
         self.segment = Some((end, counts));
         self.first = Some(end);
         builder.finish()
+    }
+
+    fn accounted_end(&self, builder: &mut CaptureBuilder, fallback: u64) -> u64 {
+        let Some((end, accounts)) = &self.accounted else {
+            if self.accounting.is_empty() {
+                return fallback;
+            }
+            // Until the first observation matures, no span is accounted.
+            let end = self.first.unwrap_or(fallback);
+            builder.restore_accounts(&BTreeMap::new());
+            builder.setting("start", &end.to_string());
+            builder.setting("end", &end.to_string());
+            return end;
+        };
+        builder.restore_accounts(accounts);
+        builder.setting("end", &end.to_string());
+        *end
     }
 
     /// Ends each interval of a thread still off its CPU, and each zone
@@ -2234,6 +2278,10 @@ impl Processor {
         ] {
             let charged = builder.account(kind as u32);
             builder.count(kind as u32, nanoseconds(total).saturating_sub(charged));
+        }
+
+        if self.accounted.is_some() || !self.accounting.is_empty() {
+            builder.forget_from(end.cast_signed());
         }
     }
 
@@ -3937,6 +3985,81 @@ mod tests {
         }
 
         perf_record(1, time, &rest)
+    }
+
+    #[test]
+    fn observed_counts_wait_for_their_records_and_segments_share_their_boundary() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        for (time, counted) in [(15, 17), (35, 42)] {
+            processor.counts_at(
+                time,
+                perf::Counts {
+                    counted,
+                    ..perf::Counts::default()
+                },
+            );
+        }
+        let bytes: Vec<_> = [10, 20, 30, 35, 40]
+            .into_iter()
+            .flat_map(bare_sample)
+            .collect();
+        processor.ingest(&bytes, Some(14));
+        let waiting = processor.snapshot();
+        assert_eq!(waiting.span(), (10, 10));
+        assert_eq!(waiting.account(AccountKind::Counted as u32), 0);
+        assert!(waiting.samples.is_empty());
+
+        processor.ingest(&[], Some(32));
+        let early = processor.snapshot();
+        assert_eq!(early.span(), (10, 15));
+        assert_eq!(early.account(AccountKind::Counted as u32), 17);
+        assert_eq!(early.samples.len(), 1);
+
+        processor.ingest(&[], Some(40));
+        let first = processor.segment();
+        assert_eq!(first.span(), (10, 35));
+        assert_eq!(first.account(AccountKind::Counted as u32), 42);
+        assert_eq!(first.samples.len(), 3);
+
+        processor.counts_at(
+            45,
+            perf::Counts {
+                counted: 55,
+                ..perf::Counts::default()
+            },
+        );
+        let last = processor.finish();
+        assert_eq!(last.span(), (35, 45));
+        assert_eq!(last.account(AccountKind::Counted as u32), 13);
+        assert_eq!(last.samples.len(), 2);
+        assert_eq!(last.samples[0].time.get(), 35);
+        assert_eq!(last.samples[1].time.get(), 40);
+    }
+
+    #[test]
+    fn a_terminal_observation_moves_the_window_even_without_new_records_or_counts() {
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.keep_window(std::time::Duration::from_nanos(20));
+        for (time, counted) in [(15, 17), (35, 42), (55, 55), (95, 55)] {
+            processor.counts_at(
+                time,
+                perf::Counts {
+                    counted,
+                    ..perf::Counts::default()
+                },
+            );
+        }
+        let bytes: Vec<_> = [10, 20, 30, 40].into_iter().flat_map(bare_sample).collect();
+        processor.ingest(&bytes, Some(60));
+        let during = processor.snapshot();
+        assert_eq!(during.span(), (35, 55));
+        assert_eq!(during.account(AccountKind::Counted as u32), 13);
+        assert_eq!(during.samples.len(), 1);
+
+        let last = processor.finish();
+        assert_eq!(last.span(), (55, 95));
+        assert_eq!(last.account(AccountKind::Counted as u32), 0);
+        assert!(last.samples.is_empty());
     }
 
     /// An output event's record of a thread with no frames, which holds

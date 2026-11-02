@@ -805,6 +805,11 @@ impl CaptureBuilder {
         &self.accounts
     }
 
+    /// Restores cumulative totals at a cut before the latest rows.
+    pub fn restore_accounts(&mut self, accounts: &BTreeMap<u32, u64>) {
+        self.accounts.clone_from(accounts);
+    }
+
     /// Takes `base` from every count, so that they count only what came
     /// after it.
     pub fn discount(&mut self, base: &BTreeMap<u32, u64>) {
