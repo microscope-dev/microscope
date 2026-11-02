@@ -9,7 +9,7 @@ import { useCallback } from "react";
 import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
-import { DOCUMENT_KINDS, documentsGroup, KIND, single } from "../documents";
+import { KIND } from "../documents";
 import { type At, inView, type View, watching } from "../focus";
 import type { Model } from "../model";
 import { useConnection, useStoreApi } from "../store";
@@ -21,7 +21,6 @@ import {
   floatOrDock,
   floatWhy,
   focusBeside,
-  focusPane,
   focusTab,
   sendBeside,
   sendWhy,
@@ -42,22 +41,18 @@ import {
 import { NARROW } from "../workbench/Dock";
 import type { Chord } from "../workbench/keys";
 import {
-  activate,
   type Group,
   groups,
   type KindId,
   maximize,
-  open,
   type PaneId,
-  paneOf,
   restore,
 } from "../workbench/layout";
 import { MENU_BAR } from "../workbench/MenuBar";
 import { change, workbench } from "../workbench/store";
 import { chooseTab, closeTab, reopenTab } from "../workbench/tabs";
 import { go } from "./navigation";
-import type { PickerTab } from "./Picker";
-import { applyLayout, DEBUG_KINDS, debugLayout } from "./panes";
+import { applyLayout, debugLayout, KINDS, showPane, welcomeLayout } from "./panes";
 
 interface Context {
   model: Model;
@@ -106,33 +101,26 @@ function show(view: View, label: string, letter: string): Spec {
   };
 }
 
-/** Shows a pane, opening it where it belongs when it is not open, and
- * moves the keyboard into it. */
-function showPane(kind: KindId, label: string, number?: number): Spec {
+/** Shows a session's pane, opening it where it belongs when it is not
+ * open, and moves the keyboard into it. */
+function debugPane(kind: KindId, label: string, number?: number): Spec {
   return {
     label,
     menu: "View",
     keys: number === undefined ? [] : [{ key: String(number), alt: true }],
     available: ({ current }) => (current.session ? READY : ABSENT),
-    run: () => {
-      let shown: PaneId | null = null;
-      change((layout) => {
-        const found = paneOf(layout, kind, "");
-        if (found) {
-          shown = found;
-          return activate(layout, found);
-        }
-        const into = DOCUMENT_KINDS.has(kind)
-          ? documentsGroup(layout, tab.getState().files)
-          : layout.focused;
-        const opened = open(layout, single(kind), into);
-        shown = opened.pane;
-        return activate(opened.layout, opened.pane);
-      });
-      // Once the pane is on screen.
-      requestAnimationFrame(() => shown && focusPane(shown));
-    },
+    run: () => showPane(kind),
   };
+}
+
+/** Shows a pane that needs no session. */
+function pane(
+  kind: KindId,
+  label: string,
+  menu: "File" | "View" | "Help",
+  keys: Chord[] = [],
+): Spec {
+  return { label, menu, keys, available: always, run: () => showPane(kind) };
 }
 
 /** The active tab of the focused group. */
@@ -156,14 +144,14 @@ function nextTab(by: 1 | -1): Spec {
       }
       const { tabs } = focused.group;
       const next = tabs[(tabs.indexOf(focused.id) + by + tabs.length) % tabs.length] as PaneId;
-      chooseTab(DEBUG_KINDS, next);
+      chooseTab(KINDS, next);
       focusTab(next);
     },
   };
 }
 
-/** Starts something new, on the picker's tab for it. */
-function start(tab: PickerTab, label: string): Spec {
+/** Opens the pane that starts something new. */
+function start(kind: KindId, label: string): Spec {
   return {
     label,
     menu: "File",
@@ -174,7 +162,7 @@ function start(tab: PickerTab, label: string): Spec {
         : model.hello
           ? blocked("this link can only view the session")
           : ABSENT,
-    run: ({ navigate }) => void navigate({ to: "/pick", search: tab === "launch" ? {} : { tab } }),
+    run: () => showPane(kind),
   };
 }
 
@@ -269,10 +257,7 @@ function arrange(label: string, keys: Chord[], why: () => Why, run: () => void):
     label,
     menu: "Window",
     keys,
-    available: ({ current }) => {
-      if (!current.session) {
-        return ABSENT;
-      }
+    available: () => {
       const reason = why();
       return reason === null ? READY : blocked(reason);
     },
@@ -350,48 +335,56 @@ export const COMMANDS = registry({
   palette: palette("all", "Command palette", "View", "k"),
   files: palette("files", "Open file", "Go", "p"),
   line: palette("line", "Go to line", "Go", "g"),
-  help: {
-    label: "Keyboard shortcuts",
-    menu: "Help",
-    keys: [{ key: "?", shift: true }],
-    available: always,
-    run: () => tab.setState((state) => ({ help: !state.help })),
-  },
+  help: pane(KIND.keys, "Keyboard shortcuts", "Help", [{ key: "?", shift: true }]),
+  welcome: pane(KIND.welcome, "Welcome", "Help"),
   back: {
     label: "Back to source",
     menu: "Go",
     keys: [{ key: "Escape" }],
-    available: ({ current }) =>
-      current.help || (current.look.view && current.session) ? READY : ABSENT,
+    available: ({ current }) => (current.look.view && current.session ? READY : ABSENT),
     run: ({ current, navigate }) => {
-      if (current.help) {
-        tab.setState({ help: false });
-        return;
-      }
       void navigate({ to: ".", search: inView(current.look, "source"), replace: true });
     },
   },
-  threads: showPane(KIND.threads, "Threads", 1),
-  stack: showPane(KIND.stack, "Call Stack", 2),
-  breakpoints: showPane(KIND.breakpoints, "Breakpoints", 3),
-  watch: showPane(KIND.watch, "Watch", 4),
-  variables: showPane(KIND.variables, "Variables", 5),
-  console: showPane(KIND.console, "Console", 6),
-  registers: showPane(KIND.registers, "Registers", 7),
-  tasks: showPane(KIND.tasks, "Tasks"),
-  processes: showPane(KIND.processes, "Processes"),
-  stops: showPane(KIND.stops, "Stops"),
-  output: showPane(KIND.output, "Output"),
-  signals: showPane(KIND.signals, "Signals"),
-  modules: showPane(KIND.modules, "Modules"),
+  threads: debugPane(KIND.threads, "Threads", 1),
+  stack: debugPane(KIND.stack, "Call Stack", 2),
+  breakpoints: debugPane(KIND.breakpoints, "Breakpoints", 3),
+  watch: debugPane(KIND.watch, "Watch", 4),
+  variables: debugPane(KIND.variables, "Variables", 5),
+  console: debugPane(KIND.console, "Console", 6),
+  registers: debugPane(KIND.registers, "Registers", 7),
+  tasks: debugPane(KIND.tasks, "Tasks"),
+  processes: debugPane(KIND.processes, "Processes"),
+  stops: debugPane(KIND.stops, "Stops"),
+  output: debugPane(KIND.output, "Output"),
+  signals: debugPane(KIND.signals, "Signals"),
+  modules: debugPane(KIND.modules, "Modules"),
   viewSource: show("source", "Show source", "s"),
   viewDisassembly: show("disassembly", "Show disassembly", "d"),
   viewMemory: show("memory", "Show memory", "m"),
   viewDrawings: show("drawings", "Show drawings", "v"),
-  launch: start("launch", "Launch a program…"),
-  attach: start("attach", "Attach to a process…"),
-  core: start("core", "Open a core dump…"),
-  record: start("profile", "Record a profile…"),
+  launch: start(KIND.launch, "Launch a program…"),
+  attach: start(KIND.attach, "Attach to a process…"),
+  core: start(KIND.core, "Open a core dump…"),
+  record: start(KIND.record, "Record a profile…"),
+  explorer: pane(KIND.explorer, "Explorer", "View"),
+  // A page microscope web serves is connected to it, with no accounts.
+  connect: {
+    ...pane(KIND.connect, "Connect…", "File"),
+    available: () => (standalone ? READY : ABSENT),
+  },
+  account: {
+    ...pane(KIND.account, "Account", "File"),
+    available: () => (standalone ? READY : ABSENT),
+  },
+  share: {
+    label: "Share…",
+    menu: "File",
+    keys: [],
+    available: ({ model }) => (model.link === "open" && model.hello ? READY : ABSENT),
+    run: () => tab.setState((state) => ({ share: !state.share })),
+  },
+  settings: pane(KIND.settings, "Settings", "File"),
   disconnect: {
     label: "Disconnect",
     menu: "File",
@@ -415,14 +408,12 @@ export const COMMANDS = registry({
         return ABSENT;
       }
       const pane = workbench.getState().layout.panes[focused.id];
-      return pane && DEBUG_KINDS.get(pane.kind).closable(pane)
-        ? READY
-        : blocked("this tab stays open");
+      return pane && KINDS.get(pane.kind).closable(pane) ? READY : blocked("this tab stays open");
     },
     run: () => {
       const focused = focusedPane();
       if (focused) {
-        closeTab(DEBUG_KINDS, focused.id);
+        closeTab(KINDS, focused.id);
       }
     },
   },
@@ -432,7 +423,7 @@ export const COMMANDS = registry({
     "Reopen closed tab",
     [{ key: "t", alt: true, shift: true }],
     () => (workbench.getState().closed.length > 0 ? null : "no tab was closed"),
-    () => void reopenTab(DEBUG_KINDS),
+    () => void reopenTab(KINDS),
   ),
   moveTabLeft: arrange(
     "Move tab left",
@@ -504,7 +495,7 @@ export const COMMANDS = registry({
     label: "Maximize or restore",
     menu: "Window",
     keys: [{ key: "Enter", alt: true }],
-    available: ({ current }) => (current.session ? READY : ABSENT),
+    available: always,
     run: () =>
       change((layout) =>
         layout.maximized === null ? maximize(layout, layout.focused) : restore(layout),
@@ -514,8 +505,8 @@ export const COMMANDS = registry({
     label: "Reset layout",
     menu: "Window",
     keys: [],
-    available: ({ current }) => (current.session ? READY : ABSENT),
-    run: () => applyLayout(debugLayout()),
+    available: always,
+    run: ({ current }) => applyLayout(current.session ? debugLayout() : welcomeLayout()),
   },
   saveLayout: {
     label: "Save layout as…",

@@ -21,10 +21,10 @@ it("says a session it never saw is not here, not that it ended", async () => {
       <RouterProvider router={router} />
     </SessionContext>,
   );
-  await expect
-    .element(page.getByRole("heading", { name: "This session is not here" }))
-    .toBeVisible();
-  await expect
-    .element(page.getByText("It ended, or the link is wrong. microscope is now debugging basic."))
-    .toBeVisible();
+  const notice = page.getByTestId("session-ended");
+  await expect.element(notice).toBeVisible();
+  expect(notice.element().textContent).toBe(
+    "This session is not here. It ended, or the link is wrong. Go to basic",
+  );
+  await expect.element(notice.getByRole("link", { name: "Go to basic" })).toBeVisible();
 });

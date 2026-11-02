@@ -1,6 +1,6 @@
-// The URL is the focus: each route is a place in the session that a link
-// can name. The path names the debugger state, the query how a tab looks at
-// it (see focus.ts).
+// The URL is the focus: each route is a place that a link can name, which
+// the one workbench opens (Routes.tsx). The path names the debugger state,
+// the query how a tab looks at it (see focus.ts).
 
 import {
   createRootRoute,
@@ -12,10 +12,9 @@ import { base } from "./base";
 import { parseSearch, stringifySearch, validateLook } from "./focus";
 import { validateProfileLook } from "./profile/look";
 import { Frame } from "./ui/Frame";
-import { Landing } from "./ui/Landing";
-import { Picker, pickerSearch } from "./ui/Picker";
-import { Home, Join, SessionPage } from "./ui/pages";
-import { ProfilePage } from "./ui/profile/ProfilePage";
+import { Join } from "./ui/Join";
+import { pickerSearch } from "./ui/Picker";
+import { Home, Pick, ProfileRoute, SessionRoute } from "./ui/Routes";
 import { Workspace } from "./ui/Workspace";
 
 const rootRoute = createRootRoute({ component: Frame });
@@ -30,25 +29,18 @@ const joinRoute = createRoute({
   component: Join,
 });
 
-/** A signed-in user's landing page, on a page served on its own. */
-const landingRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/home",
-  component: Landing,
-});
-
 const pickRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/pick",
   validateSearch: pickerSearch,
-  component: Picker,
+  component: Pick,
 });
 
 const sessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/s/$session",
   validateSearch: validateLook,
-  component: SessionPage,
+  component: SessionRoute,
 });
 
 /** The session wherever it is, following it. */
@@ -84,13 +76,12 @@ const profileRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/profile/$profile",
   validateSearch: validateProfileLook,
-  component: ProfilePage,
+  component: ProfileRoute,
 });
 
 const routeTree = rootRoute.addChildren([
   homeRoute,
   joinRoute,
-  landingRoute,
   pickRoute,
   profileRoute,
   sessionRoute.addChildren([sessionIndexRoute, liveRoute, stopRoute, taskRoute]),

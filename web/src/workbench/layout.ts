@@ -289,6 +289,16 @@ export function float(layout: Layout, pane: PaneId, rect: Rect): Layout {
   });
 }
 
+/** Gives a pane new params, such as how a profile pane looks at its
+ * profile; the same layout when they are the same. */
+export function setParams(layout: Layout, pane: PaneId, params: Json): Layout {
+  const found = layout.panes[pane];
+  if (!found || JSON.stringify(found.params) === JSON.stringify(params)) {
+    return layout;
+  }
+  return { ...layout, panes: { ...layout.panes, [pane]: { ...found, params } } };
+}
+
 /** Moves or resizes a floating window, and raises it. */
 export function reframe(layout: Layout, window: GroupId, rect: Rect): Layout {
   const found = layout.floating.find((candidate) => candidate.group.id === window);

@@ -1,4 +1,4 @@
-// A failed start shows its error on its own tab, until its form is edited.
+// A failed start shows its error until its form is edited.
 
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
@@ -7,11 +7,22 @@ import { page, userEvent } from "vitest/browser";
 import { createAppRouter } from "../src/router";
 import { SessionContext } from "../src/store";
 import { fakeServer } from "./fake-server";
+import { stoppedState } from "./pane";
 
 afterEach(cleanup);
 
 async function failedLaunch() {
   const server = await fakeServer();
+  // Nothing is being debugged.
+  server.send({
+    type: "state",
+    ...stoppedState({
+      session: null,
+      target: null,
+      inferior: { state: "notStarted" },
+      threads: [],
+    }),
+  });
   const router = createAppRouter(createMemoryHistory({ initialEntries: ["/pick"] }));
   render(
     <SessionContext value={server.session}>
@@ -34,12 +45,4 @@ it("hides a launch error once the program is edited", async () => {
   const program = await failedLaunch();
   await userEvent.clear(program);
   await expect.element(page.getByText("no such program /nope")).not.toBeInTheDocument();
-});
-
-it("does not show a launch error on the Attach tab", async () => {
-  await failedLaunch();
-  await userEvent.click(page.getByRole("button", { name: "Attach" }));
-  await expect.element(page.getByText("no such program /nope")).not.toBeInTheDocument();
-  await userEvent.click(page.getByRole("button", { name: "Launch" }));
-  await expect.element(page.getByText("no such program /nope")).toBeVisible();
 });

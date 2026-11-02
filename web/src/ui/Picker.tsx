@@ -1,14 +1,31 @@
-import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+// Starting something to debug or profile: a pane each for launching a
+// program, attaching to a process, opening a core dump, and recording a
+// profile. A pane closes once it has started what it was for.
+
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useState } from "react";
 import { assert } from "../assert";
+import { KIND } from "../documents";
 import { targetName } from "../model";
 import type { PathEntry, Process, RecordPreset } from "../protocol";
 import { RequestError } from "../protocol";
 import { isRecentLaunches, type RecentLaunch, read, rememberLaunch } from "../storage";
 import { useConnection, useModel } from "../store";
 import { parseEnvironment, splitWords } from "../words";
+import type { PaneProps } from "../workbench/kinds";
+import { close, type KindId, type PaneId } from "../workbench/layout";
+import { change } from "../workbench/store";
 
+/** What `/pick?tab=` names, which an old link may still carry. */
 export type PickerTab = "launch" | "attach" | "core" | "profile";
+
+/** The Start pane each picker tab became. */
+export const PICKED: Readonly<Record<PickerTab, KindId>> = {
+  launch: KIND.launch,
+  attach: KIND.attach,
+  core: KIND.core,
+  profile: KIND.record,
+};
 
 /** Validates the `?tab=` search parameter. */
 export function pickerSearch(search: Record<string, unknown>): { tab?: PickerTab } {
@@ -22,15 +39,18 @@ interface Pending {
   send(replace: boolean): Promise<unknown>;
 }
 
-export function Picker() {
-  const { tab = "launch" } = useSearch({ from: "/pick" });
+/** Closes a Start pane, its work done. */
+const done = (pane: PaneId) => change((layout) => close(layout, pane));
+
+/** The body of a Start pane: its form, the error it last met until the form
+ * is edited, and, when something else is being debugged, whether to end it. */
+export function StartBody({ id, pane }: PaneProps) {
   const navigate = useNavigate();
-  const control = useModel((model) => model.hello?.role === "control");
+  const location = useLocation();
   const state = useModel((model) => model.state);
   const [busy, setBusy] = useState<Pending | null>(null);
   const [working, setWorking] = useState(false);
-  // An error belongs to the tab that caused it, until its form is edited.
-  const [error, setError] = useState<{ tab: PickerTab; message: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const current = targetName(state);
 
   const submit = async (pending: Pending, replace = false) => {
@@ -39,98 +59,63 @@ export function Picker() {
     try {
       await pending.send(replace);
       setBusy(null);
-      void navigate({ to: "/" });
+      done(id);
+      // A session's address follows it to the next session on its own;
+      // elsewhere, the address of the session started is `/`'s.
+      if (!location.pathname.startsWith("/s/")) {
+        void navigate({ to: "/" });
+      }
     } catch (failure) {
       if (failure instanceof RequestError && failure.kind === "busy") {
         setBusy(pending);
       } else {
         setBusy(null);
-        setError({ tab, message: failure instanceof Error ? failure.message : String(failure) });
+        setError(failure instanceof Error ? failure.message : String(failure));
       }
     } finally {
       setWorking(false);
     }
   };
-
-  if (!control) {
-    return (
-      <div className="page">
-        <div className="card">
-          <div className="card-body">This link can only view the session.</div>
-        </div>
-      </div>
-    );
-  }
+  const form = { working, submit: (pending: Pending) => void submit(pending) };
 
   return (
-    <div className="page">
-      <div className="card" data-testid="picker">
-        <div className="card-head">
-          <h1>Debug something</h1>
-          <div className="segmented">
-            {(["launch", "attach", "core", "profile"] as const).map((name) => (
-              <button
-                key={name}
-                type="button"
-                aria-pressed={tab === name}
-                onClick={() => void navigate({ to: "/pick", search: { tab: name }, replace: true })}
-              >
-                {
-                  { launch: "Launch", attach: "Attach", core: "Core dump", profile: "Profile" }[
-                    name
-                  ]
-                }
-              </button>
-            ))}
-          </div>
-          {current && (
-            <Link to="/" className="button small">
-              Back to {current}
-            </Link>
-          )}
-        </div>
-        <div className="card-body">
-          {busy && current && (
-            <div className="banner" role="alert">
-              <span>
-                <b>End the {current} session?</b> {busy.describe} stops debugging {current}: a
-                launched program is killed, an attached one keeps running. Links to it will say the
-                session ended.
-              </span>
-              <div className="actions">
-                <button
-                  type="button"
-                  className="button primary"
-                  disabled={working}
-                  onClick={() => void submit(busy, true)}
-                >
-                  End it and continue
-                </button>
-                <button type="button" className="button" onClick={() => setBusy(null)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-          {error?.tab === tab && (
-            <div className="banner error" role="alert">
-              {error.message}
-            </div>
-          )}
-          <div className="picker-forms" onInput={() => setError(null)}>
-            {tab === "launch" && (
-              <LaunchForm working={working} submit={(pending) => void submit(pending)} />
-            )}
-            {tab === "attach" && (
-              <AttachForm working={working} submit={(pending) => void submit(pending)} />
-            )}
-            {tab === "core" && (
-              <CoreForm working={working} submit={(pending) => void submit(pending)} />
-            )}
-            {tab === "profile" && <RecordForm />}
+    <div className="pane-body start-pane" onInput={() => setError(null)}>
+      {busy && current && (
+        <div className="banner" role="alert">
+          <span>
+            <b>End the {current} session?</b> {busy.describe} stops debugging {current}: a launched
+            program is killed, an attached one keeps running. Links to it will say the session
+            ended.
+          </span>
+          <div className="actions">
+            <button
+              type="button"
+              className="button primary"
+              disabled={working}
+              onClick={() => void submit(busy, true)}
+            >
+              End it and continue
+            </button>
+            <button type="button" className="button" onClick={() => setBusy(null)}>
+              Cancel
+            </button>
           </div>
         </div>
-      </div>
+      )}
+      {error && (
+        <div className="banner error" role="alert">
+          {error}
+        </div>
+      )}
+      {pane.kind === KIND.launch ? (
+        <LaunchForm {...form} />
+      ) : pane.kind === KIND.attach ? (
+        <AttachForm {...form} />
+      ) : pane.kind === KIND.core ? (
+        <CoreForm {...form} />
+      ) : (
+        <RecordForm onRecording={() => done(id)} />
+      )}
     </div>
   );
 }
@@ -283,7 +268,7 @@ const PRESETS: { preset: RecordPreset; label: string }[] = [
 ];
 
 /** Records a program, opening its profile as it grows. */
-function RecordForm() {
+function RecordForm({ onRecording }: { onRecording(): void }) {
   const connection = useConnection();
   const navigate = useNavigate();
   const [form, setForm] = useState<RecentLaunch>({
@@ -325,6 +310,7 @@ function RecordForm() {
         window: traced ? null : seconds,
         syscalls: traced ? { filter: calls.trim(), stacks } : null,
       });
+      onRecording();
       void navigate({ to: "/profile/$profile", params: { profile: started.profile } });
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -550,8 +536,8 @@ export function AttachForm({ working, submit }: FormProps) {
             id={id}
             className="input"
             value={filter}
-            // biome-ignore lint/a11y/noAutofocus: the tab exists to type a filter
-            autoFocus
+            // The keyboard goes here when the pane is opened.
+            data-autofocus
             placeholder="kvstore"
             onChange={(event) => {
               setFilter(event.target.value);
@@ -782,8 +768,8 @@ export function PathInput({
         className="input"
         value={value}
         placeholder={placeholder}
-        // biome-ignore lint/a11y/noAutofocus: the picker opens to type a path
-        autoFocus={autoFocus}
+        // The keyboard goes here when the pane is opened.
+        data-autofocus={autoFocus || undefined}
         spellCheck={false}
         autoComplete="off"
         role="combobox"

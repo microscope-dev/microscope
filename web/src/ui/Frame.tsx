@@ -1,6 +1,6 @@
 // The page's frame: the menu bar and run toolbar above, the status bar
-// below, and the keys, which work wherever the page is. Pages outside a
-// session, such as joining one, show alone.
+// below, and the keys, which work wherever the page is. Only joining shows
+// alone.
 
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
@@ -8,18 +8,13 @@ import { base } from "../base";
 import { commandName } from "../model";
 import { useModel } from "../store";
 import { flash } from "../tab";
-import { standalone } from "../target";
 import { isTextBox, keepsEscape } from "../workbench/keys";
 import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
-import { KeyHelp } from "./KeyHelp";
-import { NeedsLink } from "./pages";
 import { RunToolbar } from "./RunToolbar";
-import { Start } from "./Start";
 import { StatusBar } from "./StatusBar";
 
 export function Frame() {
-  const link = useModel((model) => model.link);
   const name = useModel((model) => commandName(model.state));
   const inferior = useModel((model) => model.state?.inferior.state);
   const location = useLocation();
@@ -31,23 +26,11 @@ export function Frame() {
     document.title = name ? `${name}${state ? ` · ${state}` : ""} · microscope` : "microscope";
   }, [name, inferior]);
 
-  // Pages outside a session have nothing to control.
-  const bare =
-    location.pathname === "/join" || location.pathname === "/home" ? (
-      <Outlet />
-    ) : link === "unauthorized" ? (
-      standalone ? (
-        <Start />
-      ) : (
-        <NeedsLink reason="This browser has not joined this microscope session yet." />
-      )
-    ) : link === "incompatible" ? (
-      <NeedsLink reason="This page is from another version of microscope. Reload to get this one's." />
-    ) : null;
-  if (bare) {
+  // Joining happens before there is anything to control.
+  if (location.pathname === "/join") {
     return (
       <div className="app" style={{ gridTemplateRows: "1fr" }}>
-        {bare}
+        <Outlet />
       </div>
     );
   }
@@ -74,7 +57,6 @@ export function Frame() {
       </header>
       <Outlet />
       <StatusBar />
-      <KeyHelp />
     </div>
   );
 }

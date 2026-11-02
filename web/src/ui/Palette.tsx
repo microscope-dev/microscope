@@ -20,7 +20,7 @@ import { COMMANDS, useCommands } from "./commands";
 import { useDialogFocus } from "./dialog";
 import { threadLabel } from "./names";
 import { useGo, useLinkPaths, useShowSource } from "./navigation";
-import { applyLayout, DEBUG_KINDS, debugLayout } from "./panes";
+import { applyLayout, debugLayout, KINDS } from "./panes";
 import { fileName } from "./paths";
 import { useFocus } from "./Workspace";
 
@@ -264,7 +264,7 @@ function useGroups(mode: Mode, query: string): Found {
 
   if (mode === "layouts") {
     const open = (name: string) => {
-      const loaded = loadNamed(name, DEBUG_KINDS);
+      const loaded = loadNamed(name, KINDS);
       if (loaded.ok) {
         applyLayout(loaded.layout);
       } else {

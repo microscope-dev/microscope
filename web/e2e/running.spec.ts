@@ -51,12 +51,16 @@ test("the picker completes a path and loads it in place of the program", async (
   const watcher = await page.context().newPage();
   await watcher.goto(first);
   await expect(watcher.getByTestId("status")).toContainText("Not started");
-  // The picker leads back to the session it was opened from.
+  // Launching opens a pane beside the session, which closes with nothing lost.
   await menu(page, "File", "Launch a program…");
-  await page.getByRole("link", { name: "Back to spin" }).click();
+  await page.getByRole("button", { name: "Close Launch" }).click();
+  await expect(page.getByRole("tab", { name: "Launch", exact: true })).toHaveCount(0);
   await expect(page).toHaveURL(first);
   await menu(page, "File", "Launch a program…");
-  await expect(page).toHaveURL(/\/pick$/);
+  await expect(page.getByRole("tab", { name: "Launch", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   const program = page.getByRole("combobox", { name: "Program" });
   await program.pressSequentially("build/test-prog");
   await page.keyboard.press("Tab");
@@ -67,8 +71,9 @@ test("the picker completes a path and loads it in place of the program", async (
   await page.getByRole("button", { name: "Load", exact: true }).click();
   // Spin is still loaded, so loading asks first.
   await page.getByRole("button", { name: /End it and continue/ }).click();
+  // The address follows to the new session.
+  await expect(page).not.toHaveURL(first);
   await expect(page).toHaveURL(/\/s\/[0-9a-f]+$/);
-  expect(page.url()).not.toBe(first);
   await expect(page).toHaveTitle(/^basic/);
 
   // A tab that watched the old session follows to the new one; a link to
@@ -97,8 +102,7 @@ test("a program chosen in the picker keeps nothing of the one it replaced", asyn
   await page.getByRole("textbox", { name: "Console" }).press("Enter");
   await expect(page.getByTestId("console")).toContainText("43");
 
-  await menu(page, "File", "Launch a program…");
-  await page.getByRole("button", { name: "Core dump", exact: true }).click();
+  await menu(page, "File", "Open a core dump…");
   await page.getByRole("combobox", { name: "Core dump" }).fill(fixture("crash-gcc-o0-segv.core"));
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Open", exact: true }).click();
@@ -130,7 +134,7 @@ test("a replacement that fails leaves the old session running", async ({ page, m
   await expect(page.getByRole("button", { name: "program", exact: true })).toHaveCount(0);
 
   // The program that could not load ended nothing.
-  await page.getByRole("link", { name: "Back to spin" }).click();
+  await page.getByRole("button", { name: "Close Launch" }).click();
   await expect(page.getByTestId("status")).toContainText("Not started");
   await expect(watcher.getByTestId("status")).toContainText("Not started");
   await expect(watcher.getByTestId("session-ended")).toHaveCount(0);

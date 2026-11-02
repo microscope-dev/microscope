@@ -2,6 +2,9 @@
 // under the page's own `/api/`: the development server proxies it there
 // (vite.config.ts). The session is services' HttpOnly cookie.
 
+import { createStore, useStore } from "zustand";
+import { standalone } from "./target";
+
 export interface User {
   id: number;
   username: string;
@@ -30,6 +33,12 @@ export async function currentUser(): Promise<User | null> {
 }
 
 export async function signIn(usernameOrEmail: string, password: string): Promise<User> {
+  const user = await postLogin(usernameOrEmail, password);
+  account.setState({ now: { kind: "in", user } });
+  return user;
+}
+
+async function postLogin(usernameOrEmail: string, password: string): Promise<User> {
   const response = await fetch("/api/login", {
     method: "POST",
     credentials: "same-origin",
@@ -47,4 +56,39 @@ export async function signOut(): Promise<void> {
   if (!response.ok) {
     throw await failure(response);
   }
+  account.setState({ now: { kind: "out" } });
+}
+
+/** Who is signed in, as far as the page knows. */
+export type Account =
+  | { readonly kind: "checking" }
+  | { readonly kind: "unavailable"; readonly why: string }
+  | { readonly kind: "out" }
+  | { readonly kind: "in"; readonly user: User };
+
+export const account = createStore<{ now: Account }>(() => ({ now: { kind: "checking" } }));
+
+export function useAccount(): Account {
+  return useStore(account, (state) => state.now);
+}
+
+/** The question to services in flight, which panes opening together share. */
+let asking: Promise<void> | null = null;
+
+/** Asks services who is signed in. A page `microscope web` serves has no
+ * services behind it. */
+export function checkAccount(): Promise<void> {
+  if (!standalone) {
+    account.setState({
+      now: { kind: "unavailable", why: "this page is served by microscope web, which has none" },
+    });
+    return Promise.resolve();
+  }
+  asking ??= currentUser()
+    .then((user) => account.setState({ now: user ? { kind: "in", user } : { kind: "out" } }))
+    .catch((error: Error) => account.setState({ now: { kind: "unavailable", why: error.message } }))
+    .finally(() => {
+      asking = null;
+    });
+  return asking;
 }

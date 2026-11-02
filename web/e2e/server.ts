@@ -176,7 +176,13 @@ export function documents(page: Page) {
     .filter({ has: page.getByRole("tab", { name: "Disassembly", exact: true }) });
 }
 
+/** Opens a join link and waits for where it leads: the session, the
+ * profile the server serves, or else Welcome. */
 export async function join(page: Page, link: string): Promise<void> {
   await page.goto(link);
-  await page.waitForURL(/\/(s\/[0-9a-f]+|pick|profile\/[0-9a-f]+)(\/|\?|$)/);
+  const welcome = page.getByRole("tab", { name: "Welcome", exact: true });
+  await expect(async () => {
+    const path = new URL(page.url()).pathname;
+    expect(/^\/(s|profile)\/[0-9a-f]+/.test(path) || (await welcome.isVisible())).toBe(true);
+  }).toPass();
 }

@@ -1,12 +1,12 @@
-// What the page for an ended session says about how it ended.
+// What the notice for an ended session says about how it ended.
 
 import { describe, expect, it } from "vitest";
 import type { Note } from "../src/model";
-import { endedNotice } from "../src/ui/pages";
+import { endedNotice } from "../src/ui/Routes";
 
 const note = (text: string, at: number): Note => ({ connection: 1, name: "ada", text, at });
 
-describe("an ended session's card", () => {
+describe("an ended session's notice", () => {
   const notices = [
     note("ended the kvstore session", 1),
     note("launched /bin/cat", 2),

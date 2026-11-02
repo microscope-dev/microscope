@@ -1,7 +1,7 @@
 // What a tab remembers belongs to one session, and some of it to one stop,
 // one connection, or one revision of the program's values. Forgetting
-// follows the model, not a page: a tab in the picker while the session
-// changes forgets as surely as one watching it.
+// follows the model, not a page: a tab showing other panes while the
+// session changes forgets as surely as one watching it.
 
 import type { StoreApi } from "zustand";
 import { assert } from "./assert";

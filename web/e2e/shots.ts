@@ -61,15 +61,18 @@ try {
   await page.keyboard.press("Escape");
 
   await menu(page, "File", "Launch a program…");
-  await page.getByRole("combobox", { name: "Program" }).pressSequentially("build/test-programs/");
-  await page.getByRole("option").first().waitFor();
-  await shoot(page, "5-picker");
-  await page.getByRole("button", { name: "Attach" }).click();
+  const launch = page.getByRole("tabpanel", { name: "Launch" });
+  await launch.getByRole("combobox", { name: "Program" }).pressSequentially("build/test-programs/");
+  await launch.getByRole("option").first().waitFor();
+  await shoot(page, "5-launch");
+  await page.keyboard.press("Escape");
+  await menu(page, "File", "Attach to a process…");
   await page.waitForTimeout(300);
   await shoot(page, "6-attach");
+  await menu(page, "File", "Settings");
+  await shoot(page, "6-settings");
 
   const viewer = await browser.newPage({ viewport: { width: 1440, height: 800 } });
-  await page.goto(page.url().replace(/\/pick.*/, "/"));
   await page.getByRole("button", { name: "Share" }).click();
   const field = page.getByRole("textbox", { name: "Join link" });
   await field.and(page.locator("[value*=join]")).waitFor();
@@ -82,11 +85,25 @@ try {
   await status.getByText("Exited").waitFor();
   await shoot(page, "8-exited");
 
+  await shootWelcome(page);
   await shootDrawings(page);
   await shootMesh(page);
 } finally {
   await browser.close();
   await server.stop();
+}
+
+/** Where `microscope web` with nothing to debug starts. */
+async function shootWelcome(page: Page): Promise<void> {
+  const empty = await startMicroscope([], "");
+  try {
+    await page.setViewportSize({ width: 1440, height: 800 });
+    await page.goto(empty.link);
+    await page.getByRole("tab", { name: "Welcome", exact: true }).waitFor();
+    await shoot(page, "0-welcome");
+  } finally {
+    await empty.stop();
+  }
 }
 
 /** The Drawings view of the metrics fixture after two ticks, so each chart

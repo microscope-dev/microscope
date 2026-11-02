@@ -2,11 +2,12 @@
 // not shown stay mounted and hidden, so a tab switch is instant and keeps
 // their scroll, unless their kind says they are too costly to keep.
 
-import { type KeyboardEvent, memo, useEffect, useRef } from "react";
+import { type ComponentType, type KeyboardEvent, memo, useEffect, useRef } from "react";
 import { assert } from "../assert";
 import { panelId, tabId, useDock } from "./context";
 import { pressTab } from "./drag";
-import { activate, type GroupId, groups, type Layout, type PaneId } from "./layout";
+import type { PaneProps } from "./kinds";
+import { activate, type GroupId, groups, type Layout, type Pane, type PaneId } from "./layout";
 import { PaneHost } from "./PaneHost";
 import { change, useLayout } from "./store";
 import { chooseTab, closeTab } from "./tabs";
@@ -116,7 +117,7 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
                 onAuxClick={(event) => event.button === 1 && shut(pane)}
               >
                 <span className="tab-title">{title}</span>
-                {Badge && <Badge id={pane} pane={found} />}
+                {Badge && <TabBadge Badge={Badge} id={pane} pane={found} needs={kind.needs} />}
               </button>
               {kind.closable(found) && (
                 <button
@@ -158,3 +159,20 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
     </section>
   );
 });
+
+/** A tab's badge, which counts what its pane shows and so needs what the
+ * pane needs. */
+function TabBadge({
+  Badge,
+  id,
+  pane,
+  needs,
+}: {
+  Badge: ComponentType<PaneProps>;
+  id: PaneId;
+  pane: Pane;
+  needs: string | null;
+}) {
+  const { useMissing } = useDock();
+  return useMissing(needs) === null ? <Badge id={id} pane={pane} /> : null;
+}

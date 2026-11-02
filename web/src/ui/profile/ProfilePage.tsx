@@ -1,5 +1,5 @@
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useCallback, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type ProfileLook,
   type ProfileView,
@@ -9,6 +9,7 @@ import {
   rangeOf,
   transformed,
   untransformed,
+  validateProfileLook,
   withLook,
 } from "../../profile/look";
 import {
@@ -22,6 +23,9 @@ import { tracedBy, traceNotes } from "../../profile/syscalls";
 import type { ProfileGranularity, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import { presented, serverUrl } from "../../target";
+import type { PaneProps } from "../../workbench/kinds";
+import { groups, type Json, type Pane, setParams } from "../../workbench/layout";
+import { change, useLayout, workbench } from "../../workbench/store";
 import {
   ProfileContext,
   type ProfileFocus,
@@ -37,21 +41,68 @@ import { Timeline } from "./Timeline";
 import { TreeView } from "./TreeView";
 import { ZonesView } from "./ZonesView";
 
-/** `/profile/$profile`: one profile, explored. */
-export function ProfilePage() {
-  const { profile } = useParams({ from: "/profile/$profile" });
-  const look = useSearch({ from: "/profile/$profile" });
+/** What a profile pane keeps: the profile's name, for its tab, and how it
+ * looks at the profile. */
+export interface ProfileParams {
+  readonly name: string;
+  readonly look: ProfileLook;
+}
+
+export function profileParams(pane: Pane): ProfileParams {
+  const params = (pane.params ?? {}) as { name?: unknown; look?: unknown };
+  const look = typeof params.look === "object" && params.look !== null ? params.look : {};
+  return {
+    name: typeof params.name === "string" ? params.name : "",
+    look: validateProfileLook(look as Record<string, unknown>),
+  };
+}
+
+const sameLook = (a: ProfileLook, b: ProfileLook) => JSON.stringify(a) === JSON.stringify(b);
+
+/** A profile pane. The pane keeps its look; while its tab is the one shown
+ * in the focused group and no session's focus is in the address, the
+ * address follows it, so a link opens the same view. */
+export function ProfileBody({ id, pane }: PaneProps) {
+  const profile = pane.key;
+  const { look } = profileParams(pane);
   const navigate = useNavigate();
-  const setLook = useCallback(
-    (change: (look: ProfileLook) => ProfileLook, push = false) =>
-      void navigate({
-        to: "/profile/$profile",
-        params: { profile },
-        search: change(look),
-        replace: !push,
-      }),
-    [navigate, profile, look],
+  const location = useLocation();
+  const inSession = location.pathname.startsWith("/s/");
+  const focused = useLayout(
+    (layout) => groups(layout).find((group) => group.id === layout.focused)?.active === id,
   );
+  const leads = focused && !inSession;
+
+  const setLook = useCallback(
+    (by: (look: ProfileLook) => ProfileLook, push = false) => {
+      const now = workbench.getState().layout.panes[id];
+      if (!now) {
+        return;
+      }
+      const params = profileParams(now);
+      const next = by(params.look);
+      change((layout) => setParams(layout, id, { ...params, look: next } as unknown as Json));
+      if (leads) {
+        void navigate({
+          to: "/profile/$profile",
+          params: { profile },
+          search: next,
+          replace: !push,
+        });
+      }
+    },
+    [id, leads, navigate, profile],
+  );
+
+  // The address names the profile this pane shows, as it changes.
+  const search = location.search as Record<string, unknown>;
+  const addressed = location.pathname === `/profile/${profile}`;
+  useEffect(() => {
+    if (leads && (!addressed || !sameLook(validateProfileLook(search), look))) {
+      void navigate({ to: "/profile/$profile", params: { profile }, search: look, replace: true });
+    }
+  }, [leads, addressed, search, look, navigate, profile]);
+
   return <Profile profile={profile} look={look} setLook={setLook} />;
 }
 

@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
-import { expect, fixture, join, root, test } from "./server";
+import { expect, fixture, join, menu, root, test } from "./server";
 
 // The test serves a trace it records, not a program.
 test.use({ program: [] });
@@ -152,11 +152,12 @@ test("a trace recorded from the page shows what its program is blocked in, until
   microscope,
 }) => {
   await join(page, microscope.link);
-  await page.goto(new URL("/pick?tab=profile", microscope.origin).href);
-  await page.getByRole("button", { name: "System calls" }).click();
-  await page.getByLabel("Program").fill(fixture("syscalls"));
-  await page.getByLabel("Arguments").fill("pause");
-  await page.getByRole("button", { name: "Record" }).click();
+  await menu(page, "File", "Record a profile…");
+  const record = page.getByRole("tabpanel", { name: "Record" });
+  await record.getByRole("button", { name: "System calls" }).click();
+  await record.getByLabel("Program").fill(fixture("syscalls"));
+  await record.getByLabel("Arguments").fill("pause");
+  await record.getByRole("button", { name: "Record" }).click();
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/);
   await expect(page.getByTestId("recording")).toContainText("Recording syscalls");
 

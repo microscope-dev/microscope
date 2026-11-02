@@ -1,9 +1,19 @@
-// All panes share the session, stop, and frame selected by the URL.
+// The workbench every address shows. A session's panes share the session,
+// stop, and frame its address selects.
 
 import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { assert } from "../assert";
 import { useRequest } from "../data";
+import { KIND } from "../documents";
 import { type At, followedLook, type Look, parseAt } from "../focus";
 import { follow, latestStop } from "../follow";
 import type { Backtrace, State } from "../protocol";
@@ -11,11 +21,20 @@ import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
 import { flash, tab, useTab } from "../tab";
 import { Dock } from "../workbench/Dock";
-import { keepSaving, lastLayout } from "../workbench/persist";
+import { type Layout, paneOf } from "../workbench/layout";
+import { keepSaving } from "../workbench/persist";
 import { workbench } from "../workbench/store";
 import { Documents } from "./Documents";
 import { Palette } from "./Palette";
-import { DEBUG_KINDS, debugLayout, useMissing } from "./panes";
+import {
+  DOCK,
+  debugLayout,
+  misplaced,
+  restoreLayout,
+  showPane,
+  type Wants,
+  welcomeLayout,
+} from "./panes";
 
 export interface Focus {
   session: string;
@@ -60,6 +79,7 @@ function useAt(): At | null {
   );
 }
 
+/** A session's panes, at the focus the address names. */
 export function Workspace() {
   const { session } = useParams({ from: "/s/$session" });
   const look = useSearch({ from: "/s/$session" });
@@ -67,7 +87,6 @@ export function Workspace() {
   const link = useModel((model) => model.link);
   const at = useAt();
   useFollowing(session, at, look);
-  useMirror(session, at, look);
   const trace = useRequest(
     "backtrace",
     at && state?.session === session
@@ -79,7 +98,6 @@ export function Workspace() {
   useEffect(() => {
     tab.setState({ frames });
   }, [frames]);
-  useDebugLayout();
 
   const focus = useMemo((): Focus | null => {
     if (!state) {
@@ -97,43 +115,70 @@ export function Workspace() {
     return { session, state, at, look, trace, stale };
   }, [session, state, at, look, trace, link]);
 
-  if (!focus) {
-    return null;
-  }
+  return <Workbench focus={focus} wants="session" />;
+}
+
+/** The panes, as every address shows them: with a session's focus when the
+ * address names one, and with `notice` above them when it says something
+ * the panes can't. */
+export function Workbench({
+  focus,
+  wants,
+  start = wants === "session" ? debugLayout : welcomeLayout,
+  notice,
+}: {
+  focus: Focus | null;
+  wants: Wants;
+  /** The layout to start from when the one in use holds nothing for what
+   * the address wants. */
+  start?: () => Layout;
+  notice?: ReactNode;
+}) {
+  useArranged(wants, start);
+  useMirror(focus);
+  useConnectWhenRefused();
   return (
     <FocusContext value={focus}>
-      <Documents />
-      <Dock setup={SETUP} />
-      <Palette />
+      {focus && <Documents />}
+      <div className="workbench">
+        {notice}
+        <Dock setup={DOCK} />
+      </div>
+      {focus && <Palette />}
     </FocusContext>
   );
 }
 
-const SETUP = { kinds: DEBUG_KINDS, useMissing };
-
-/** Arranges the debugger's panes as this browser last had them, or as the
- * Debug layout, unless the page has arranged them already; then keeps the
- * arrangement as it changes. Arranged during the first render, before the
- * panes it holds render or arrange themselves within it. */
-function useDebugLayout() {
-  // Read without changing anything, so StrictMode's second call agrees.
-  const [start] = useState(() =>
-    Object.keys(workbench.getState().layout.panes).length > 0 ? null : lastLayout(DEBUG_KINDS),
-  );
-  const placed = useRef(false);
-  if (!placed.current) {
-    placed.current = true;
-    if (Object.keys(workbench.getState().layout.panes).length === 0) {
-      workbench.setState({ layout: start?.ok ? start.layout : debugLayout() });
+/** Arranges the panes as this browser last had them, then as the address
+ * wants them, during the first render so the panes render within it; then
+ * keeps the arrangement as it changes. */
+function useArranged(wants: Wants, start: () => Layout) {
+  // Read once, so StrictMode's second render agrees.
+  const [refused] = useState(restoreLayout);
+  const arranged = useRef<Wants | null>(null);
+  if (arranged.current !== wants) {
+    arranged.current = wants;
+    if (misplaced(workbench.getState().layout, wants)) {
+      workbench.setState({ layout: start() });
     }
   }
-  const refused = start && !start.ok ? start.why : null;
   useEffect(() => {
     if (refused) {
-      flash(`The layout this browser kept can't be used (${refused}), so it is the Debug layout`);
+      flash(`The layout this browser kept can't be used (${refused}), so it starts over`);
     }
   }, [refused]);
   useEffect(keepSaving, []);
+}
+
+/** Shows Connect when microscope refuses the page's link, which is the
+ * pane that can fix it. */
+function useConnectWhenRefused() {
+  const refused = useModel((model) => model.link === "unauthorized");
+  useEffect(() => {
+    if (refused && !paneOf(workbench.getState().layout, KIND.connect, "")) {
+      showPane(KIND.connect);
+    }
+  }, [refused]);
 }
 
 /** Moves a following tab to each new stop, replacing the address (D3). */
@@ -186,11 +231,16 @@ function useFollowing(session: string, at: At | null, look: Look) {
 }
 
 /** Mirrors the focus into the tab store, for the keyboard. */
-function useMirror(session: string, at: At | null, look: Look) {
+function useMirror(focus: Focus | null) {
+  const session = focus?.session ?? null;
+  const at = focus?.at ?? null;
+  const look = focus?.look ?? NO_LOOK;
   useEffect(() => {
     tab.setState({ session, at, look });
   }, [session, at, look]);
 }
+
+const NO_LOOK: Look = {};
 
 /** Tells everyone where this tab looks. */
 function usePresence(at: At | null, trace: Backtrace | undefined) {

@@ -1,10 +1,14 @@
 // The whole page's workbench at a stop: the Debug layout fits common window
 // sizes, a pane in a tab not shown asks the server nothing, the menu bar
 // works by keyboard and says why a command cannot run, and the browser keeps
-// the layout across a reload.
+// the layout across a reload, starting over only when it holds nothing for
+// the address.
 
 import { afterEach, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
+import { KIND, single } from "../src/documents";
+import { debugLayout, misplaced, profileLayout, welcomeLayout } from "../src/ui/panes";
+import { type KindId, type Layout, open } from "../src/workbench/layout";
 import { closePage, openPage } from "./driver/fast";
 import { readGroups } from "./driver/layout";
 import { kvstore } from "./driver/scripted";
@@ -102,7 +106,7 @@ it("keeps this browser's layout across a reload, and says once when it can't", a
   await expect.poll(() => readGroups()).toHaveLength(8);
   await expect
     .poll(() => document.querySelector("[data-testid=flash]")?.textContent)
-    .toMatch(/kept can't be used \(panes is not an object\), so it is the Debug layout/);
+    .toMatch(/kept can't be used \(panes is not an object\), so it starts over/);
 });
 
 it("shows one group at a time in a narrow window, and any pane from its list", async () => {
@@ -113,4 +117,18 @@ it("shows one group at a time in a narrow window, and any pane from its list", a
   await userEvent.selectOptions(page.getByRole("combobox", { name: "Pane" }), "Registers");
   await expect.poll(() => readGroups()).toEqual([["*Registers"]]);
   await expect.element(page.getByRole("tabpanel", { name: "Registers" })).toBeVisible();
+});
+
+it("starts the layout over only when it holds nothing for the address", () => {
+  const plus = (layout: Layout, kind: KindId) => open(layout, single(kind), layout.focused).layout;
+  // A session's panes show nothing without one; Settings does.
+  expect(misplaced(debugLayout(), "start")).toBe(true);
+  expect(misplaced(plus(debugLayout(), KIND.settings), "start")).toBe(false);
+  expect(misplaced(debugLayout(), "session")).toBe(false);
+  // Welcome has nothing for a session until one of its panes is open.
+  expect(misplaced(welcomeLayout(), "session")).toBe(true);
+  expect(misplaced(plus(welcomeLayout(), KIND.variables), "session")).toBe(false);
+  expect(misplaced(welcomeLayout(), "start")).toBe(false);
+  // A profile needs a connection, not a session.
+  expect(misplaced(profileLayout("ab", "spin.usprof", {}), "start")).toBe(false);
 });

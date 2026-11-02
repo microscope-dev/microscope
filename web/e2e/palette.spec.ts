@@ -76,11 +76,9 @@ test("every stop is in the palette, and ? lists every key", async ({ page, micro
   await expect(page.getByTestId("passed")).toContainText("This session has not reached stop #99");
 
   await page.keyboard.press("?");
-  const help = page.getByRole("dialog", { name: "Keys" });
-  await expect(help).toContainText("Step over");
-  await expect(help.getByRole("row", { name: /^Step over F10/ })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(help).toHaveCount(0);
+  const keys = page.getByRole("tab", { name: "Keyboard shortcuts", exact: true });
+  await expect(keys).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("row", { name: /^Step over F10/ })).toBeVisible();
 });
 
 test("closing the file shown shows its neighbor, and a middle click closes a tab", async ({

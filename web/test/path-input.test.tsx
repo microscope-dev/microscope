@@ -13,7 +13,7 @@ function Field() {
   const [value, setValue] = useState("");
   return (
     <>
-      <PathInput id="program" value={value} onChange={setValue} autoFocus />
+      <PathInput id="program" value={value} onChange={setValue} />
       <button type="button">Next</button>
     </>
   );
@@ -26,6 +26,7 @@ async function mount(): Promise<FakeServer> {
       <Field />
     </SessionContext>,
   );
+  await userEvent.click(field());
   return server;
 }
 

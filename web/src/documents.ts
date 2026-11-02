@@ -1,4 +1,4 @@
-// The debugger's pane kinds by id, and how the documents group follows the
+// Every pane kind by id, and how the debugger's documents group follows the
 // address: a Source pane for each file the tab has open, and the pane of the
 // view the address names shown.
 
@@ -38,6 +38,17 @@ export const KIND = {
   disassembly: kind("disassembly"),
   memory: kind("memory"),
   drawings: kind("drawings"),
+  welcome: kind("welcome"),
+  explorer: kind("explorer"),
+  connect: kind("connect"),
+  account: kind("account"),
+  launch: kind("launch"),
+  attach: kind("attach"),
+  core: kind("core"),
+  record: kind("record"),
+  profile: kind("profile"),
+  settings: kind("settings"),
+  keys: kind("keys"),
 } as const;
 
 /** A pane of a kind there is one of. */

@@ -172,9 +172,11 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   microscope,
 }) => {
   await join(page, microscope.link);
+  // An address from before Record was a pane opens the pane.
   await page.goto(new URL("/pick?tab=profile", microscope.origin).href);
-  await page.getByLabel("Program").fill(fixture("spin"));
-  await page.getByRole("button", { name: "Record" }).click();
+  const record = page.getByRole("tabpanel", { name: "Record" });
+  await record.getByLabel("Program").fill(fixture("spin"));
+  await record.getByRole("button", { name: "Record" }).click();
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/);
   await expect(page.getByTestId("recording")).toContainText("Recording spin");
 
@@ -221,7 +223,7 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   await expect(page.getByTestId("accounting")).toContainText("task snapshots");
 
   // The waits' functions are the receivers', and by task each is its own.
-  await page.getByRole("button", { name: "Waits" }).click();
+  await page.getByRole("button", { name: "Waits", exact: true }).click();
   await expect(page).toHaveURL(/src=waits/);
   await page.getByRole("button", { name: "Functions" }).click();
   const functions = page.getByRole("listbox", { name: "Functions" });

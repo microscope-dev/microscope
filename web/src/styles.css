@@ -184,10 +184,19 @@ kbd {
   height: 100%;
 }
 
-.landing {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  height: 100%;
+/* The panes, and a notice above them when the address says something
+   they can't, such as that its session ended. */
+.workbench {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workbench-notice {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--warn-line);
+  background: var(--warn-bg);
 }
 
 /* The menu bar and the run toolbar under it. */
@@ -927,6 +936,64 @@ kbd {
   overflow: auto;
 }
 
+/* A pane of prose and forms, such as Welcome or Settings. */
+.pane-text {
+  display: grid;
+  /* Rows as tall as their content, scrolling in a short pane instead of
+     squeezing what clips its overflow, such as a segmented control. */
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 10px;
+  padding: 14px 16px 24px;
+}
+
+.pane-text > * {
+  max-width: 640px;
+  margin: 0;
+}
+
+.pane-text h1 {
+  font-size: 18px;
+}
+
+.pane-text h2 {
+  margin-top: 8px;
+  color: var(--ink-3);
+  font: 600 11px var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.welcome-actions {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.welcome-actions li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pane-form {
+  display: grid;
+  gap: 8px;
+}
+
+.start-pane {
+  display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 12px;
+  padding: 14px 16px 24px;
+}
+
+.start-pane > * {
+  max-width: 720px;
+}
+
 .rows {
   margin: 0;
   padding: 3px 0;
@@ -1112,7 +1179,8 @@ kbd {
   border-right: 0;
 }
 
-.segmented button[aria-pressed="true"] {
+.segmented button[aria-pressed="true"],
+.segmented button[aria-checked="true"] {
   background: var(--accent-soft);
   color: var(--ink);
 }
@@ -1121,6 +1189,11 @@ fieldset.segmented {
   min-inline-size: 0;
   margin: 0;
   padding: 0;
+}
+
+.pane-text .segmented {
+  justify-self: start;
+  margin-left: 0;
 }
 
 .field {
@@ -2740,26 +2813,6 @@ textarea.input {
   border-top: 1px solid var(--line);
   color: var(--ink-3);
   font-size: 11.5px;
-}
-
-.key-help {
-  width: min(560px, calc(100vw - 32px));
-  max-height: 76vh;
-  overflow: auto;
-}
-
-.key-help .card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.overlay-close {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  background: none;
-  cursor: default;
 }
 
 .overlay > .card,

@@ -26,7 +26,13 @@ test("a cookie from an earlier microscope on the same port asks for a link", asy
     .addCookies([{ name: `microscope-${port}`, value: old?.value ?? "", url: next.origin }]);
   expectErrors(`POST ${next.origin}/api/check: 403`);
   await page.goto(`${next.origin}/`);
-  await expect(page.getByRole("heading", { name: "Open a join link" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Connect", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(
+    page.getByText("This browser has not joined this microscope session yet"),
+  ).toBeVisible();
   // Nothing here can control a program it cannot see.
   await expect(page.locator("[data-action]")).toHaveCount(0);
 });

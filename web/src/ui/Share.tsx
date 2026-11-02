@@ -2,11 +2,13 @@ import { useLocation } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import type { Role } from "../protocol";
 import { useConnection, useModel } from "../store";
+import { tab, useTab } from "../tab";
 import { useDialogFocus } from "./dialog";
 
 export function Share() {
   const open = useModel((model) => model.link === "open");
-  const [shown, setShown] = useState(false);
+  // The File menu opens it too.
+  const shown = useTab((current) => current.share);
   const anchor = useRef<HTMLDivElement>(null);
 
   // Escape or a click elsewhere puts it away.
@@ -16,12 +18,12 @@ export function Share() {
     }
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setShown(false);
+        tab.setState({ share: false });
       }
     };
     const pointer = (event: PointerEvent) => {
       if (!anchor.current?.contains(event.target as Node)) {
-        setShown(false);
+        tab.setState({ share: false });
       }
     };
     window.addEventListener("keydown", key);
@@ -41,7 +43,7 @@ export function Share() {
         type="button"
         className="tb ghost"
         aria-expanded={shown}
-        onClick={() => setShown(!shown)}
+        onClick={() => tab.setState({ share: !shown })}
       >
         Share
       </button>

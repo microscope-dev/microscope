@@ -35,8 +35,8 @@ export interface TabState {
    * of the shown thread's line to step into, at the saved layouts, or
    * naming the layout to save. */
   palette: "all" | "files" | "line" | "calls" | "layouts" | "save" | null;
-  /** Whether the key help is open. */
-  help: boolean;
+  /** Whether the Share dialog is open. */
+  share: boolean;
 }
 
 export const initialTab: TabState = {
@@ -53,7 +53,7 @@ export const initialTab: TabState = {
   places: {},
   asked: 0,
   palette: null,
-  help: false,
+  share: false,
 };
 
 export const tab = createStore<TabState>(() => initialTab);
