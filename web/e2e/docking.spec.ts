@@ -106,7 +106,7 @@ test("tabs dragged onto a side, a strip, and the dock's edge land there", async 
   await expect(page.locator("[data-part=drop-highlight]")).toHaveCount(0);
 });
 
-test("a tab floats with Shift held, and its window moves and docks by its title bar", async ({
+test("a tab floats with Shift held, and its window moves by either header row and docks", async ({
   page,
   microscope,
 }) => {
@@ -126,6 +126,21 @@ test("a tab floats with Shift held, and its window moves and docks by its title 
   await drag(page, bar, { x: was.x + 60, y: was.y + 100 });
   await expect.poll(async () => (await box(page, window)).y).toBeGreaterThan(was.y + 60);
   await expect(window).toBeVisible();
+
+  const moved = await box(page, window);
+  const strip = window.getByRole("tablist", { name: "Panes" });
+  const empty = await box(page, strip);
+  await drag(page, strip, {
+    x: empty.x + empty.width / 2 - 60,
+    y: empty.y + empty.height / 2 - 30,
+  });
+  await expect.poll(async () => (await box(page, window)).x).toBeCloseTo(moved.x - 60, 0);
+  await expect.poll(async () => (await box(page, window)).y).toBeCloseTo(moved.y - 30, 0);
+
+  const kept = await box(page, window);
+  const at = await box(page, strip);
+  await drag(page, strip, { x: at.x + 100, y: at.y + 80 }, () => page.keyboard.press("Escape"));
+  await expect.poll(() => box(page, window)).toEqual(kept);
 
   // Onto a strip it docks there.
   const breakpoints = await box(page, tab(page, "Breakpoints"));

@@ -36,8 +36,9 @@ palette lists available actions and keyboard shortcuts.
 Each view is a pane in a group of tabs. Drag a tab onto another group's strip
 to join it, onto a side of a group to split it, or along the workspace's edge
 to dock it across. Hold Shift as you drop to float the pane in a window of its
-own; drag a window's title bar onto a strip or edge to dock it again, and
-press Escape to give up a drag. The Window menu does all of this from the
+own. Move a window by its title bar or the empty area beside its tabs; drop
+it onto a strip or edge to dock it again. Press Escape to give up a drag.
+The Window menu does all of this from the
 keyboard too: Alt+arrow keys move between groups, Ctrl+\\ splits, Alt+Shift+F
 floats or docks, Alt+W closes a tab, and Alt+Shift+T opens it again.
 

@@ -9,6 +9,7 @@
 }
 
 .dock-tree {
+  isolation: isolate;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -89,6 +90,10 @@
   background: var(--surface-2);
   color: var(--ink-3);
   font-size: 11.5px;
+}
+
+.window-bar,
+.dock-window > [data-group] > [role="tablist"] {
   cursor: grab;
   touch-action: none;
   user-select: none;

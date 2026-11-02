@@ -200,16 +200,18 @@ const FloatingWindow = memo(function FloatingWindow({
           change((now) => reframe(now, id, found.rect));
         }
       }}
+      onPointerDown={(event) => {
+        const target = event.target as Element;
+        if (
+          !target.closest("button") &&
+          (target.closest("[data-part=window-bar]") ||
+            target.matches(`[data-group="${id}"] > [role="tablist"]`))
+        ) {
+          pressWindow(event, id, event.currentTarget, rect);
+        }
+      }}
     >
-      <div
-        className={css("window-bar")}
-        data-part="window-bar"
-        onPointerDown={(event) => {
-          if (element.current && !(event.target as Element).closest("button")) {
-            pressWindow(event, id, element.current, rect);
-          }
-        }}
-      >
+      <div className={css("window-bar")} data-part="window-bar">
         <span className={css("window-title")}>{title}</span>
         <button
           type="button"

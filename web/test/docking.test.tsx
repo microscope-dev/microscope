@@ -209,7 +209,7 @@ it("gives up a drag on Escape, leaving every tab where it was", async () => {
   expect(readGroups()[0]).toEqual(["Threads", "*Tasks"]);
 });
 
-it("moves a window by its title bar, docks it on a strip, and reopens a closed tab there", async () => {
+it("moves a window by either header row, docks it on a strip, and reopens a closed tab there", async () => {
   await mount();
   drag(tabOf("Memory"), { x: 600, y: 300 }, { shiftKey: true });
   const bar = document.querySelector("[data-part=window-bar]") as HTMLElement;
@@ -221,6 +221,13 @@ it("moves a window by its title bar, docks it on a strip, and reopens a closed t
     document.querySelector("[data-part=window]") as HTMLElement
   ).getBoundingClientRect();
   expect(after.x).toBeLessThan(before.x - 100);
+  expect(readGroups()).toHaveLength(4);
+
+  const windowStrip = window.querySelector('[role="tablist"]') as HTMLElement;
+  const point = middle(windowStrip);
+  drag(windowStrip, { x: point.x - 60, y: point.y - 30 });
+  expect(window.getBoundingClientRect().x).toBeCloseTo(after.x - 60);
+  expect(window.getBoundingClientRect().y).toBeCloseTo(after.y - 30);
   expect(readGroups()).toHaveLength(4);
 
   // Onto the Stack group's strip, past its tab.
@@ -277,6 +284,32 @@ it("resizes a floating window by keyboard and cancels an interrupted pointer res
     expect(window.getBoundingClientRect().width).toBe(resized.width);
     expect(window.getBoundingClientRect().height).toBe(resized.height);
     expect(workbench.getState().layout).toBe(layout);
+  }
+});
+
+it("keeps docked separators behind a floating window", async () => {
+  const start = START();
+  const memory = Object.keys(start.panes).find(
+    (id) => start.panes[id as PaneId]?.key === "Memory",
+  ) as PaneId;
+  await mount(float(start, memory, { x: 200, y: 150, width: 400, height: 300 }));
+  const window = document.querySelector("[data-part=window]") as HTMLElement;
+  const box = window.getBoundingClientRect();
+  const separators = [...document.querySelectorAll('[role="separator"]')];
+  expect(separators).toHaveLength(2);
+  for (const separator of separators) {
+    const line = separator.getBoundingClientRect();
+    const left = Math.max(box.left, line.left);
+    const right = Math.min(box.right, line.right);
+    const top = Math.max(box.top, line.top);
+    const bottom = Math.min(box.bottom, line.bottom);
+    expect(right).toBeGreaterThan(left);
+    expect(bottom).toBeGreaterThan(top);
+    expect(
+      document
+        .elementFromPoint((left + right) / 2, (top + bottom) / 2)
+        ?.closest("[data-part=window]"),
+    ).toBe(window);
   }
 });
 
