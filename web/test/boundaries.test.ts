@@ -32,6 +32,11 @@ const RULES: readonly Rule[] = [
     except: /^src\/(ui\/|router\.tsx$|main\.tsx$)/,
     why: "state and logic sit below the views, which only the entry points assemble",
   },
+  {
+    from: /^src\/workbench\//,
+    to: /^src\/(?!workbench\/|assert$)/,
+    why: "the workbench is the frame every pane builds on, so it knows nothing of what panes show",
+  },
 ];
 
 function files(directory: string): string[] {
