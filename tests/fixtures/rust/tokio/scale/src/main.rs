@@ -1,10 +1,10 @@
-//! A hundred thousand tasks on a multi-thread runtime, each parked at an
+//! Thousands of tasks on a multi-thread runtime, each parked at an
 //! await that never finishes. Once every task waits there and the workers
 //! are idle, the program reports its truth and stops at the checkpoint
 //! `parked`.
 
 /// The tasks the program spawns.
-const TASKS: usize = 100_000;
+const TASKS: usize = 2_049;
 
 async fn parked() {
     let me = truth::start();

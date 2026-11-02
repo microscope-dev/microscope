@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -1758,9 +1759,10 @@ fn data_members(body: &str) -> Vec<String> {
 
 /// The text without its comments.
 fn strip_comments(text: &str) -> String {
-    let block = Regex::new(r"(?s)/\*.*?\*/").expect("a pattern");
-    let line = Regex::new(r"//[^\n]*").expect("a pattern");
-    line.replace_all(&block.replace_all(text, ""), "")
+    static BLOCK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").expect("a pattern"));
+    static LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"//[^\n]*").expect("a pattern"));
+    LINE.replace_all(&BLOCK.replace_all(text, ""), "")
         .into_owned()
 }
 
@@ -1897,8 +1899,11 @@ fn namespace_constant(text: &str, name: &str) -> Option<String> {
 /// The value of a C++ integer expression: literals, names `lookup` gives,
 /// unary minus, `* + - << == |`, parentheses, and `condition ? a : b`.
 pub(super) fn eval(expression: &str, lookup: &dyn Fn(&str) -> Option<i64>) -> Option<i64> {
-    let tokens = Regex::new(r"[A-Za-z_][\w:]*|0x[0-9a-fA-F]+[uUlL]*|\d+[uUlL]*|<<|==|[-+*|()?:]")
-        .ok()?
+    static TOKENS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"[A-Za-z_][\w:]*|0x[0-9a-fA-F]+[uUlL]*|\d+[uUlL]*|<<|==|[-+*|()?:]")
+            .expect("a pattern")
+    });
+    let tokens = TOKENS
         .find_iter(expression)
         .map(|token| token.as_str())
         .collect::<Vec<_>>();

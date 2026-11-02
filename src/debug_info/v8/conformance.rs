@@ -1373,8 +1373,7 @@ fn every_build_in_the_matrix_binds_to_its_layout() {
         assert_eq!(node.major.to_string(), line, "{entry}: Node {node}");
         let text = format!("v{node}\0");
         assert!(
-            data.windows(text.len())
-                .any(|window| window == text.as_bytes()),
+            memchr::memmem::find(&data, text.as_bytes()).is_some(),
             "{entry}: Node {node}, which the binary does not name"
         );
 
@@ -1414,9 +1413,9 @@ fn every_build_says_where_node_keeps_its_tasks() {
         let data = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("{entry}: read {}: {error}", path.display()));
         let object = object::File::parse(data.as_slice()).expect("an ELF file");
-        let runtime = super::runtime(&object).unwrap_or_else(|| panic!("{entry}: no V8 runtime"));
-        let tasks = runtime
-            .tasks
+        let runtime = super::describe(&super::exports(&object))
+            .unwrap_or_else(|| panic!("{entry}: no V8 runtime"));
+        let tasks = super::node_tasks::layout(&object, runtime.layout.as_ref())
             .unwrap_or_else(|problem| panic!("{entry}: {problem}"));
         let context = match (major, minor) {
             (12, 4) => 0x120,

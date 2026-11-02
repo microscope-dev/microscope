@@ -116,13 +116,30 @@ const FEWEST_FAST_CALLS: usize = 100;
 /// A build's file, read for its code.
 pub(super) struct Build {
     data: Vec<u8>,
+    builtins: BTreeMap<String, Option<(u64, std::ops::Range<usize>)>>,
 }
 
 impl Build {
     pub(super) fn read(path: &std::path::Path) -> Self {
         let data =
             std::fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        Self { data }
+        let object = object::File::parse(data.as_slice()).expect("an ELF file");
+        let mut builtins = BTreeMap::new();
+        for symbol in object.symbols() {
+            let Ok(name) = symbol.name() else {
+                continue;
+            };
+            if !name.starts_with("Builtins_") {
+                continue;
+            }
+            builtins.entry(name.to_owned()).or_insert_with(|| {
+                let section = object.section_by_index(symbol.section_index()?).ok()?;
+                let code = section.data_range(symbol.address(), symbol.size()).ok()??;
+                let start = code.as_ptr() as usize - data.as_ptr() as usize;
+                Some((symbol.address(), start..start + code.len()))
+            });
+        }
+        Self { data, builtins }
     }
 
     fn object(&self) -> object::File<'_> {
@@ -131,13 +148,8 @@ impl Build {
 
     /// Each named builtin's address and code.
     fn builtin(&self, name: &str) -> Option<(u64, &[u8])> {
-        let object = self.object();
-        let symbol = object.symbols().find(|symbol| symbol.name() == Ok(name))?;
-        let section = object.section_by_index(symbol.section_index()?).ok()?;
-        let code = section.data_range(symbol.address(), symbol.size()).ok()??;
-        // The bytes borrow the file's data, which outlives the object.
-        let start = code.as_ptr() as usize - self.data.as_ptr() as usize;
-        Some((symbol.address(), &self.data[start..start + code.len()]))
+        let (address, range) = self.builtins.get(name)?.as_ref()?;
+        Some((*address, &self.data[range.clone()]))
     }
 
     /// The code at `address`, at most `length` bytes of it.
@@ -194,9 +206,7 @@ impl Build {
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    memchr::memmem::find(haystack, needle)
 }
 
 /// The displacement of `instruction`'s memory operand from `r13`, with no
@@ -638,7 +648,7 @@ mod tests {
 
     /// What `build`'s runtime binds its layout to say.
     fn expected(entry: &str, build: &Build) -> Expected {
-        let runtime = super::super::runtime(&build.object())
+        let runtime = super::super::describe(&super::super::exports(&build.object()))
             .unwrap_or_else(|| panic!("{entry}: no V8 runtime"));
         let layout = runtime
             .layout
@@ -681,10 +691,7 @@ mod tests {
     fn each_build_enters_isolates_where_it_reads_their_entries() {
         for (entry, path, _) in super::super::conformance::matrix() {
             let build = Build::read(&path);
-            let runtime = super::super::runtime(&build.object())
-                .unwrap_or_else(|| panic!("{entry}: no V8 runtime"));
-            let offset = runtime
-                .entry_stack
+            let offset = super::super::accessors::entry_stack(&build.object())
                 .unwrap_or_else(|problem| panic!("{entry}: {problem}"))
                 .cast_signed();
             let stores =

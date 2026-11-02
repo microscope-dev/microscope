@@ -304,7 +304,7 @@ mod tests {
             .map(|entry| entry.expect("an interpreter").path())
             .collect();
         interpreters.sort();
-        let reprs: Vec<(String, Vec<String>)> = interpreters
+        let reprs: Vec<(String, String)> = interpreters
             .iter()
             .map(|interpreter| {
                 let output = std::process::Command::new(interpreter.join("python"))
@@ -313,26 +313,31 @@ mod tests {
                     .expect("run the interpreter");
                 assert!(output.status.success(), "{}", interpreter.display());
                 let text = String::from_utf8(output.stdout).expect("UTF-8 reprs");
-                let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-                assert_eq!(lines.len(), 0x11_0000, "{}", interpreter.display());
-                (interpreter.display().to_string(), lines)
+                assert_eq!(
+                    text.split('\n').count(),
+                    0x11_0000,
+                    "{}",
+                    interpreter.display()
+                );
+                (interpreter.display().to_string(), text)
             })
             .collect();
+        let mut lines: Vec<_> = reprs.iter().map(|(_, text)| text.split('\n')).collect();
+        let mut current = Vec::with_capacity(reprs.len());
 
         for point in 0..0x11_0000_u32 {
             let ours = string(&[point]);
-            let index = usize::try_from(point).expect("a small index");
+            current.clear();
+            current.extend(lines.iter_mut().map(|lines| lines.next().expect("a repr")));
 
-            for (interpreter, lines) in &reprs {
-                let theirs = &lines[index];
+            for ((interpreter, _), theirs) in reprs.iter().zip(&current) {
                 if ours == *theirs {
                     continue;
                 }
 
                 let kept = char::from_u32(point).map(|character| format!("'{character}'"));
                 assert!(
-                    kept.as_ref() == Some(&ours)
-                        && reprs.iter().any(|(_, other)| other[index] == ours),
+                    kept.as_ref() == Some(&ours) && current.iter().any(|other| *other == ours),
                     "U+{point:04X}: {interpreter} writes {theirs}, microscope {ours}"
                 );
             }

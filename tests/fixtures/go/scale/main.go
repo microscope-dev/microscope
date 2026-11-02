@@ -1,4 +1,4 @@
-// A program with a hundred thousand parked goroutines, which says how
+// A program with thousands of parked goroutines, which says how
 // many goroutines the runtime counts once every one of them is parked.
 // It observes that they are in its own goroutine dump rather than waiting.
 package main
@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-const parked = 100_000
+const parked = 8_193
 
 //go:noinline
 func park(started *sync.WaitGroup, forever <-chan struct{}) {

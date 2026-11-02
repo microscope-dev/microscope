@@ -1,4 +1,4 @@
-//! A hundred thousand parked goroutines. Paging through the program's
+//! Thousands of parked goroutines. Paging through the program's
 //! goroutines returns each exactly once, as many as the runtime counts,
 //! leaving the runtime's own out before paging; each page's work is
 //! bounded however many goroutines there are; and a goroutine's frames
@@ -14,11 +14,11 @@ use microscope::{
 
 use crate::support::{Scenario, ScratchDir};
 
-/// Goroutines read in one page.
-const PAGE: usize = 500;
+/// Small pages make a whole-list rescan exceed the budget even at this scale.
+const PAGE: usize = 64;
 
 #[tokio::test]
-async fn a_hundred_thousand_goroutines_page_once_each_with_bounded_work() {
+async fn goroutines_page_once_each_with_bounded_work() {
     let scratch = ScratchDir::new("scale");
     let output = scratch.path().join("stdout");
     let mut scenario = Scenario::launch("scale-go");

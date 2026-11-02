@@ -8,7 +8,7 @@ use crate::debug_info::{DebugFileSearch, load_module};
 use crate::image::python::{Constant, Field, PyVersion};
 use crate::{
     DebugFileOptions, IntegerValue, ModuleImage, ModuleImageId, NamedTypeRelationship,
-    RecordMember, RecordMemberLayout, TypeInfo, TypeKind, TypeNode, TypeReference,
+    RecordMember, RecordMemberLayout, TypeInfo, TypeKind, TypeReference,
 };
 
 /// The interpreters in the matrix whose builds have debug outputs:
@@ -417,21 +417,15 @@ fn described(image: &ModuleImage, (ty, path): Member) -> u64 {
 /// The value of the enumerator `name`, from whichever enumeration of the
 /// image holds it.
 fn enumerator_value(image: &ModuleImage, name: &str) -> Option<i128> {
-    image.types().find_map(|node| match node {
-        TypeNode::Resolved(TypeInfo {
-            kind: TypeKind::Enumeration { enumerators, .. },
-            ..
-        }) => enumerators
-            .iter()
-            .find(|enumerator| &*enumerator.name == name)
-            .map(|enumerator| match enumerator.value {
-                IntegerValue::Signed(value) => value,
-                IntegerValue::Unsigned(value) => {
-                    i128::try_from(value).expect("an enumerator fits in i128")
-                }
-            }),
-        _ => None,
-    })
+    image
+        .enumerators_named(name)
+        .first()
+        .map(|(_, value, _)| match *value {
+            IntegerValue::Signed(value) => value,
+            IntegerValue::Unsigned(value) => {
+                i128::try_from(value).expect("an enumerator fits in i128")
+            }
+        })
 }
 
 /// Every interpreter in the matrix whose build has a debug output agrees

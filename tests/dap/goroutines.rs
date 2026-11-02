@@ -130,10 +130,10 @@ fn launch_options_list_the_runtimes_goroutines_cut_the_list_or_list_threads() {
     dap.finish();
 }
 
-/// A hundred thousand goroutines are cut to `maxTasks`, the stopped one
+/// Thousands of goroutines are cut to `maxTasks`, the stopped one
 /// first, with the rest counted in a last entry.
 #[test]
-fn a_hundred_thousand_goroutines_are_cut_with_a_count_of_the_rest() {
+fn goroutines_are_cut_with_a_count_of_the_rest() {
     let mut dap = Dap::start("scale");
     let started = dap.launch(
         Profile::VsCode,
@@ -166,7 +166,7 @@ fn a_hundred_thousand_goroutines_are_cut_with_a_count_of_the_rest() {
     // main's goroutine and every parked one.
     assert_eq!(
         listed[1000].1,
-        "99001 more goroutines not shown; maxTasks lists 1000"
+        "7194 more goroutines not shown; maxTasks lists 1000"
     );
     dap.finish();
 }

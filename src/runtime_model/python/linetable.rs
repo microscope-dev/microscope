@@ -322,6 +322,7 @@ mod tests {
     /// table, first line, length in bytes, and `co_lines()`'s runs.
     const ORACLE: &str = r#"
 import json, sys
+from importlib.machinery import PathFinder
 def walk(code):
     yield code
     for constant in code.co_consts:
@@ -329,9 +330,12 @@ def walk(code):
             yield from walk(constant)
 for name in ["json.decoder", "threading", "dataclasses", "asyncio.base_events", "argparse",
              "inspect", "typing", "email.message", "pathlib", "tarfile", "unittest.case"]:
-    module = __import__(name, fromlist=["_"])
-    with open(module.__file__) as source:
-        top = compile(source.read(), module.__file__, "exec")
+    path = None
+    for part in name.split("."):
+        spec = PathFinder.find_spec(part, path)
+        path = spec.submodule_search_locations
+    with open(spec.origin) as source:
+        top = compile(source.read(), spec.origin, "exec")
     for code in walk(top):
         print(json.dumps([code.co_linetable.hex(), code.co_firstlineno,
                           len(code.co_code), list(code.co_lines())]))
@@ -369,18 +373,23 @@ for name in ["json.decoder", "threading", "dataclasses", "asyncio.base_events", 
                     .step_by(2)
                     .map(|at| u8::from_str_radix(&table[at..at + 2], 16).expect("hex"))
                     .collect();
-                for offset in (0..length).step_by(2) {
-                    let expected = runs
-                        .iter()
-                        .find(|(start, end, _)| *start <= offset && offset < *end)
-                        .map(|(_, _, line)| *line);
-                    assert_eq!(
-                        line_at(&table, first, offset).ok(),
-                        expected,
-                        "{}: offset {offset} of a code object at line {first}",
-                        interpreter.display()
-                    );
-                }
+                // Walk every unit once; the property above checks line_at's
+                // lookup at every byte without quadratic stdlib scans.
+                let decoded = super::runs(&table, first).flat_map(|run| {
+                    let run = run.expect("the interpreter's table is valid");
+                    (run.start..run.end)
+                        .step_by(2)
+                        .map(move |offset| (offset, run.line))
+                });
+                assert_eq!(runs.last().map_or(0, |run| run.1), length);
+                let expected = runs.into_iter().flat_map(|(start, end, line)| {
+                    (start..end).step_by(2).map(move |offset| (offset, line))
+                });
+                assert!(
+                    decoded.eq(expected),
+                    "{}: a code object at line {first}",
+                    interpreter.display()
+                );
 
                 checked += 1;
             }
