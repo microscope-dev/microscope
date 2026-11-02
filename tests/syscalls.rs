@@ -1941,6 +1941,252 @@ mod bpf {
         assert!(!trace.contains("--- "), "ignored signal delivered: {trace}");
     }
 
+    fn group_exits(mode: &str, attach: &str) {
+        let directory = ScratchDir::new("syscalls-group-exits");
+        let path = directory.path().join("trace");
+        let output = microscope(&["-f", "--attach", attach, "-e", "trace=exit,exit_group,kill"])
+            .arg("-o")
+            .arg(&path)
+            .arg("--")
+            .arg(fixture())
+            .args(["group-exits", mode, "7", "8"])
+            .output()
+            .expect("trace terminating groups");
+        let trace = std::fs::read_to_string(path).expect("read trace");
+        let truth = text(&output.stdout);
+        let context = format!(
+            "{mode}, {attach}:\n{}\n{truth}\n{trace}",
+            text(&output.stderr)
+        );
+        assert!(output.status.success(), "{context}");
+        check_group_exits(mode, &truth, &trace, &context);
+    }
+
+    fn check_group_exits(mode: &str, truth: &str, trace: &str, context: &str) {
+        let number = |value: &str| value.parse::<u32>().expect("fixture number");
+        let mut expected = BTreeMap::new();
+        let mut owners = BTreeMap::new();
+        let mut members = 0;
+        let mut reaped = 0;
+        for line in truth.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            match fields.as_slice() {
+                ["root", tid] => {
+                    expected.insert(number(tid), vec!["exited with 0".to_owned()]);
+                }
+                ["member", pid, tid] => {
+                    let end = match mode {
+                        "term" => "killed by SIGTERM",
+                        "kill" => "killed by SIGKILL",
+                        "return" => "exited with 0",
+                        _ => "exited with 37",
+                    };
+                    assert!(expected.insert(number(tid), vec![end.to_owned()]).is_none());
+                    owners.insert(number(tid), number(pid));
+                    members += 1;
+                }
+                ["wait", pid, status] => {
+                    let status = number(status);
+                    let end = match status & 0x7f {
+                        0 => format!("exited with {}", status >> 8),
+                        15 => "killed by SIGTERM".to_owned(),
+                        9 => "killed by SIGKILL".to_owned(),
+                        signal => panic!("unexpected signal {signal}: {context}"),
+                    };
+                    assert!(expected.insert(number(pid), vec![end]).is_some());
+                    reaped += 1;
+                }
+                _ => panic!("unexpected fixture output: {context}"),
+            }
+        }
+        assert_eq!((members, reaped), (64, 8), "{context}");
+        let ending = Regex::new(r"^(\d+) +\+\+\+ (.+) \+\+\+$").expect("exit regex");
+        let mut actual: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for line in trace.lines() {
+            if let Some(found) = ending.captures(line) {
+                let tid = number(&found[1]);
+                if let Some(&owner) = owners.get(&tid)
+                    && owner != tid
+                {
+                    assert!(
+                        !actual.contains_key(&owner),
+                        "worker after process exit: {context}"
+                    );
+                }
+                actual.entry(tid).or_default().push(found[2].to_owned());
+            }
+        }
+        assert_eq!(actual, expected, "{context}");
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn group_termination_reports_each_thread_and_one_process_exit() {
+        for mode in ["term", "kill", "group", "worker-group", "return"] {
+            group_exits(mode, "tracepoint");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn group_exit_status_matches_the_status_reaped_by_the_parent() {
+        for mode in ["leader-first", "parallel"] {
+            group_exits(mode, "fentry");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn structured_group_exits_distinguish_threads_from_processes() {
+        let directory = ScratchDir::new("syscalls-group-exit-kinds");
+        let path = directory.path().join("trace");
+        let output = microscope(&["-f", "--format", "ndjson", "-e", "trace=exit,exit_group"])
+            .arg("-o")
+            .arg(&path)
+            .arg("--")
+            .arg(fixture())
+            .args(["group-exits", "parallel", "7", "1"])
+            .output()
+            .expect("trace group exit kinds");
+        let trace = std::fs::read_to_string(path).expect("trace");
+        let truth = text(&output.stdout);
+        let context = format!("{}\n{truth}\n{trace}", text(&output.stderr));
+        assert!(output.status.success(), "{context}");
+        let number = |value: &str| value.parse::<u64>().expect("fixture number");
+        let mut owners = BTreeMap::new();
+        for line in truth.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            match fields.as_slice() {
+                ["root", pid] => {
+                    owners.insert(number(pid), number(pid));
+                }
+                ["member", pid, tid] => {
+                    owners.insert(number(tid), number(pid));
+                }
+                ["wait", _, _] => {}
+                _ => panic!("unexpected fixture output: {context}"),
+            }
+        }
+        assert_eq!(owners.len(), 9, "{context}");
+        let expected: BTreeMap<_, _> = owners
+            .iter()
+            .map(|(&tid, &pid)| {
+                (
+                    tid,
+                    vec![if tid == pid { "exit" } else { "thread_exit" }.to_owned()],
+                )
+            })
+            .collect();
+        let mut actual: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+        for line in trace.lines() {
+            let event: serde_json::Value = serde_json::from_str(line).expect("JSON event");
+            let kind = event["type"].as_str().expect("event kind");
+            let tid = match kind {
+                "exit" => event["pid"].as_u64().expect("process"),
+                "thread_exit" => event["tid"].as_u64().expect("thread"),
+                _ => continue,
+            };
+            assert_eq!(
+                event["pid"].as_u64(),
+                owners.get(&tid).copied(),
+                "{context}"
+            );
+            actual.entry(tid).or_default().push(kind.to_owned());
+        }
+        assert_eq!(actual, expected, "{context}");
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn cgroup_group_exits_are_complete_and_reported_once() {
+        let prefix = Regex::new(r"(?m)^\[pid +(\d+)\] ").expect("PID prefix");
+        for mode in ["term", "leader-first", "parallel"] {
+            let mut target = ExternalProcess::spawn_command(Command::new(fixture()).args([
+                "group-exits",
+                mode,
+                "7",
+                "8",
+                "gate",
+            ]));
+            let cgroup = TestCgroup::new("microscope-group-exits");
+            std::fs::write(
+                cgroup.0.join("cgroup.procs"),
+                target.process_id().get().to_string(),
+            )
+            .expect("move target");
+            let path = cgroup.0.to_str().expect("cgroup path");
+            let mut running = Running::spawn(&mut microscope(&[
+                "--cgroup",
+                path,
+                "-e",
+                "trace=exit,exit_group,kill",
+            ]));
+            running.line(|line| line == format!("microscope: Tracing cgroup {path}"));
+            target.take_stdin().write_all(b"x").expect("release groups");
+            let mut stdout = target.take_stdout();
+            assert_eq!(target.wait().code(), Some(0));
+            let mut truth = String::new();
+            stdout.read_to_string(&mut truth).expect("fixture truth");
+            cgroup.remove();
+            let (code, lines) = running.finish();
+            assert_eq!(code, Some(0), "{lines:?}");
+            let joined = lines.join("\n");
+            let trace = prefix.replace_all(&joined, "${1} ");
+            check_group_exits(mode, &truth, &trace, &format!("{mode}\n{truth}\n{trace}"));
+        }
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_zombie_leader_does_not_end_its_running_workers_trace() {
+        let mut command = microscope(&[
+            "-f",
+            "-e",
+            "trace=read,getppid,exit",
+            "--in-flight",
+            "50ms",
+            "--",
+        ]);
+        command
+            .arg(fixture())
+            .arg("leader-waits")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut running = Running::spawn(&mut command);
+        running.line(|line| line.contains("read(0, ") && line.contains("in flight"));
+        running
+            .child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(b"x")
+            .expect("release worker");
+        let (code, lines) = running.finish();
+        assert!(matches!(code, Some(23 | 37)), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("getppid()")),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("+++ exited with 37 +++"))
+                .count(),
+            if code == Some(37) { 2 } else { 1 },
+            "{lines:?}"
+        );
+        if code == Some(23) {
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.contains("+++ exited with 23 +++"))
+                    .count(),
+                1,
+                "{lines:?}"
+            );
+        }
+    }
+
     /// A short list attaches to its calls' kernel functions, which see the
     /// calls the tracepoints do; only the tracepoints, which every call on
     /// the host passes, say what they cost.

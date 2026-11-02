@@ -88,6 +88,99 @@ static void churn(int count) {
     }
 }
 
+struct ending_group {
+    pthread_barrier_t ready;
+    const char *mode;
+    pid_t leader;
+};
+
+static void await_leader_exit(pid_t leader) {
+    char path[80], stat[512];
+    snprintf(path, sizeof path, "/proc/self/task/%d/stat", leader);
+    for (;;) {
+        FILE *file = fopen(path, "r");
+        if (!file || !fgets(stat, sizeof stat, file)) _exit(26);
+        fclose(file);
+        char *name_end = strrchr(stat, ')');
+        if (name_end && name_end[2] == 'Z') return;
+        sched_yield();
+    }
+}
+
+static void *ending_worker(void *argument) {
+    struct ending_group *group = argument;
+    dprintf(1, "member %d %ld\n", group->leader, syscall(SYS_gettid));
+    pthread_barrier_wait(&group->ready);
+    if (strcmp(group->mode, "return") == 0) return NULL;
+    if (strcmp(group->mode, "leader-first") == 0) {
+        await_leader_exit(group->leader);
+        syscall(SYS_exit, 37);
+    }
+    if (strcmp(group->mode, "leader-waits") == 0) {
+        await_leader_exit(group->leader);
+        dprintf(1, "leader gone\n");
+        char byte;
+        if (read(0, &byte, 1) != 1) syscall(SYS_exit_group, 29);
+        syscall(SYS_getppid);
+        syscall(SYS_exit, 37);
+    }
+    if (strcmp(group->mode, "parallel") == 0) syscall(SYS_exit, 37);
+    if (strcmp(group->mode, "worker-group") == 0) syscall(SYS_exit_group, 37);
+    for (;;) pause();
+}
+
+static void leader_waits(void) {
+    alarm(5);
+    struct ending_group group = {.mode = "leader-waits", .leader = getpid()};
+    pthread_t thread;
+    if (pthread_barrier_init(&group.ready, NULL, 2) != 0) _exit(26);
+    dprintf(1, "member %d %d\n", group.leader, group.leader);
+    if (pthread_create(&thread, NULL, ending_worker, &group) != 0) _exit(26);
+    pthread_barrier_wait(&group.ready);
+    syscall(SYS_exit, 23);
+}
+
+static int group_exits(const char *mode, int workers, int rounds) {
+    if (workers < 1 || workers > 64 || rounds < 1 || rounds > 1000) return 24;
+    dprintf(1, "root %d\n", getpid());
+    for (int round = 0; round < rounds; round++) {
+        pid_t child = fork();
+        if (child < 0) return 25;
+        if (child == 0) {
+            alarm(5);
+            if (setpgid(0, 0) != 0) _exit(26);
+            struct ending_group group = {.mode = mode, .leader = getpid()};
+            pthread_t threads[64];
+            if (pthread_barrier_init(&group.ready, NULL, workers + 1) != 0) _exit(26);
+            dprintf(1, "member %d %d\n", group.leader, group.leader);
+            for (int i = 0; i < workers; i++) {
+                if (pthread_create(&threads[i], NULL, ending_worker, &group) != 0) _exit(26);
+            }
+            pthread_barrier_wait(&group.ready);
+            if (strcmp(mode, "term") == 0) kill(-group.leader, SIGTERM);
+            if (strcmp(mode, "kill") == 0) kill(-group.leader, SIGKILL);
+            if (strcmp(mode, "group") == 0) syscall(SYS_exit_group, 37);
+            if (strcmp(mode, "leader-first") == 0 || strcmp(mode, "parallel") == 0)
+                syscall(SYS_exit, 23);
+            if (strcmp(mode, "return") == 0) {
+                for (int i = 0; i < workers; i++) pthread_join(threads[i], NULL);
+                _exit(37);
+            }
+            for (;;) pause();
+        }
+        int status;
+        if (waitpid(child, &status, 0) != child) return 27;
+        dprintf(1, "wait %d %d\n", child, status);
+        int expected = strcmp(mode, "term") == 0 ? SIGTERM :
+            strcmp(mode, "kill") == 0 ? SIGKILL :
+            37 << 8;
+        if (status != expected && !((strcmp(mode, "parallel") == 0 ||
+            strcmp(mode, "leader-first") == 0) && status == (23 << 8)))
+            return 28;
+    }
+    return 0;
+}
+
 static void block(void) {
     // The test sees this line, then the read blocked in flight, then
     // closes standard input.
@@ -211,6 +304,19 @@ int main(int argc, char **argv) {
     if (strcmp(mode, "churn") == 0 && argc > 2) {
         churn(atoi(argv[2]));
         return 0;
+    }
+    if (strcmp(mode, "group-exits") == 0 && (argc == 5 || argc == 6)) {
+        if (argc == 6) {
+            alarm(5);
+            dprintf(1, "READY %d\n", getpid());
+            char byte;
+            if (read(0, &byte, 1) != 1) return 29;
+        }
+        return group_exits(argv[2], atoi(argv[3]), atoi(argv[4]));
+    }
+    if (strcmp(mode, "leader-waits") == 0) {
+        leader_waits();
+        return 30;
     }
     if (strcmp(mode, "block") == 0) {
         block();

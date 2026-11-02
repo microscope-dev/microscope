@@ -18,6 +18,7 @@
 #include "v8.bpf.h"
 
 #define TS_COMPAT 0x0002
+#define SIGNAL_GROUP_EXIT 0x00000004
 #define X32_SYSCALL_BIT 0x40000000
 #define SLOTS 3072
 // A per-CPU array's value holds at most 32 KiB.
@@ -68,6 +69,14 @@ struct {
 	__type(key, int);
 	__type(value, struct entry);
 } ENTRIES SEC(".maps");
+
+// A death notification may run in another process, outside the traced cgroup.
+struct {
+	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, u8);
+} ENDINGS SEC(".maps");
 
 // The Python thread state the walker last found each thread's frames from,
 // which it tries first: searching every interpreter's threads costs a read
@@ -1151,7 +1160,14 @@ int process_exit(u64 *ctx)
 	u32 tid = BPF_CORE_READ(task, pid);
 	if (!traced(tgid))
 		return 0;
-	u32 host = tgid;
+	if (cgroup_id) {
+		u8 one = 1;
+		u8 *ending = bpf_task_storage_get(&ENDINGS, task->group_leader, &one,
+						BPF_LOCAL_STORAGE_GET_F_CREATE);
+		// A concurrent creator can win BPF_NOEXIST inside the helper.
+		if (!ending && !bpf_task_storage_get(&ENDINGS, task->group_leader, 0, 0))
+			lost();
+	}
 	shown(task, &tid, &tgid);
 	u64 now = bpf_ktime_get_ns();
 	struct config *settings = config();
@@ -1173,15 +1189,35 @@ int process_exit(u64 *ctx)
 		}
 	}
 	s32 code = BPF_CORE_READ(task, exit_code);
-	u32 last = BPF_CORE_READ(task, signal, live.counter) == 0;
-	if (last)
-		bpf_map_delete_elem(&TARGETS, &host);
-	// A thread's own end, as a tracer reaps it; the leader's is its
-	// process's, however early it left.
+	// Workers keep their own status; the leader identifies the final process exit.
 	if (tid != tgid && (settings->flags & CONFIG_STREAM))
 		send_exit(tid, tgid, now, code, 0);
-	if (last)
-		send_exit(tid, tgid, now, code, 1);
+	return 0;
+}
+
+SEC("fentry/do_notify_parent")
+int process_end(u64 *ctx)
+{
+	struct task_struct *task = (struct task_struct *)ctx[0];
+	u32 host = BPF_CORE_READ(task, tgid);
+	if (!cgroup_id && !bpf_map_lookup_elem(&TARGETS, &host))
+		return 0;
+	if (task != task->group_leader || BPF_CORE_READ(task, signal, live.counter) != 0 ||
+	    BPF_CORE_READ(task, signal, nr_threads) != 1)
+		return 0;
+	// All worker exit callbacks finished before their group membership was removed.
+	if (cgroup_id) {
+		u8 *ending = bpf_task_storage_get(&ENDINGS, task, 0, 0);
+		if (!ending || !*ending)
+			return 0;
+		*ending = 0;
+	}
+	u32 tgid = BPF_CORE_READ(task, tgid), tid = BPF_CORE_READ(task, pid);
+	s32 code = BPF_CORE_READ(task, signal, flags) & SIGNAL_GROUP_EXIT
+		? BPF_CORE_READ(task, signal, group_exit_code) : BPF_CORE_READ(task, exit_code);
+	shown(task, &tid, &tgid);
+	send_exit(tid, tgid, bpf_ktime_get_ns(), code, 1);
+	bpf_map_delete_elem(&TARGETS, &host);
 	return 0;
 }
 

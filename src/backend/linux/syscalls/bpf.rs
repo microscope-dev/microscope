@@ -1267,6 +1267,11 @@ impl Loaded {
         let btf = Btf::from_sys_fs().map_err(load_error)?;
         let calls: Vec<SyscallId> = chosen.iter().map(|&(_, call)| call).collect();
         let has = |name: &str| btf.id_by_type_name_kind(name, BtfKind::Func).is_ok();
+        if !has("do_notify_parent") {
+            return Err(BpfError::Unavailable(
+                "the kernel's BTF has no do_notify_parent hook for complete process exits".into(),
+            ));
+        }
         let attachment = attachment(all, &calls, engine.attach, || has_x32(&has), &has)
             .map_err(BpfError::Unavailable)?;
         record!(
@@ -1654,6 +1659,14 @@ fn attach(ebpf: &mut Ebpf, btf: &Btf, attachment: &Attachment) -> Result<(), Bpf
         program.attach().map_err(load_error)?;
     }
 
+    let end: &mut FEntry = ebpf
+        .program_mut("process_end")
+        .ok_or_else(|| missing("process_end"))?
+        .try_into()
+        .map_err(load_error)?;
+    end.load("do_notify_parent", btf).map_err(load_error)?;
+    end.attach().map_err(load_error)?;
+
     for (slot, function) in attachment.functions.iter().enumerate() {
         let enter = format!("enter_{slot}");
         let program: &mut FEntry = ebpf
@@ -1705,11 +1718,13 @@ fn cpu_time() -> u64 {
     })
 }
 
-/// Whether a process has ended: gone, or a zombie.
+/// A zombie leader can still have running workers.
 fn ended(process: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{process}/stat")).map_or(true, |stat| {
-        stat.rsplit_once(") ")
-            .is_some_and(|(_, rest)| rest.starts_with('Z') || rest.starts_with('X'))
+        stat.rsplit_once(") ").is_some_and(|(_, rest)| {
+            (rest.starts_with('Z') || rest.starts_with('X'))
+                && rest.split_whitespace().nth(17) == Some("1")
+        })
     })
 }
 
@@ -2149,14 +2164,17 @@ impl Reader<'_> {
                 }
             }
 
-            // Processes that ended without a record, as when the ring was
-            // full, are seen in /proc; whatever they sent is in the ring
-            // before they are.
+            // Target removal follows the final record, even if the ring was full.
+            // A zombie can appear before that notification has run.
             let gone: Vec<Pid> = self
                 .live
                 .iter()
                 .copied()
-                .filter(|&pid| ended(pid.get()))
+                .filter(|&pid| {
+                    ended(pid.get())
+                        && (loaded.targets.get(&pid.get(), 0).is_err()
+                            || !std::path::Path::new(&format!("/proc/{}", pid.get())).exists())
+                })
                 .collect();
             self.drain(&mut ring);
             self.release(Until::Waiting);

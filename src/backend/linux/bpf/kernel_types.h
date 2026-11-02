@@ -39,6 +39,9 @@ typedef struct {
 
 struct signal_struct {
 	atomic_t live;
+	int nr_threads;
+	unsigned int flags;
+	int group_exit_code;
 } __kernel_preserve;
 
 struct super_block {
