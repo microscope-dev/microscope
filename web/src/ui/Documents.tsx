@@ -1,7 +1,8 @@
-// The code at the focus, in one of four views of the place. Source shows
-// the file and lines the link names, or else the frame's own line, or,
-// before the program runs, its main function (D2). A frame with no source
-// shows its instructions instead.
+// The code at the focus, as panes: a Source pane for each open file, and
+// Disassembly, Memory, and Drawings. Source shows the file and lines the link
+// names, or else the frame's own line, or, before the program runs, its main
+// function (D2). A frame with no source shows its instructions instead. The
+// address says which document is shown, and the documents group follows it.
 
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { assert } from "../assert";
@@ -13,6 +14,7 @@ import {
   toggleBreakpoint,
 } from "../breakpoints";
 import { cache, useRequest } from "../data";
+import { arrange } from "../documents";
 import { followedLook, formatPlace, inView, parsePlace, showingSource, type View } from "../focus";
 import { stopNote, unreached } from "../follow";
 import { controls } from "../model";
@@ -20,9 +22,11 @@ import type { Breakpoint, Row } from "../protocol";
 import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
 import { closeFile, openFile, shownAt, tab, useTab } from "../tab";
+import type { PaneProps } from "../workbench/kinds";
+import { change } from "../workbench/store";
+import { Banner } from "./Banner";
 import { Disassembly } from "./Disassembly";
-import { Drawings, useCards } from "./Drawings";
-import { Memory } from "./Memory";
+import { useCards } from "./Drawings";
 import { useLinkPaths, useLook } from "./navigation";
 import { fileName } from "./paths";
 import { useInlineValues } from "./source/inline";
@@ -69,21 +73,41 @@ function useOwnSource(): Shown | null {
   return null;
 }
 
-const VIEWS: readonly { view: View; label: string; key: string }[] = [
-  { view: "source", label: "Source", key: "Alt+S" },
-  { view: "disassembly", label: "Disassembly", key: "Alt+D" },
-  { view: "memory", label: "Memory", key: "Alt+M" },
-  { view: "drawings", label: "Drawings", key: "Alt+V" },
-];
+/** The view shown: the address's, or else source, or a sourceless frame's
+ * instructions. */
+function useView(): { view: View; sourceless: boolean } {
+  const { at, trace, look } = useFocus();
+  const shown = useShown();
+  const frame = frameAt(trace, at);
+  const sourceless = !shown && frame !== undefined && !frame.source;
+  return { view: look.view ?? (sourceless ? "disassembly" : "source"), sourceless };
+}
 
-export function CodeArea() {
-  const { at, trace, state, stale, look: current } = useFocus();
+/** What the document panes' tabs do, given by the session's workspace. */
+const documents: {
+  show(path: string): void;
+  close(path: string): void;
+  view(view: View): void;
+} = {
+  show: () => undefined,
+  close: () => undefined,
+  view: () => undefined,
+};
+
+export const showDocument = (path: string) => documents.show(path);
+export const closeDocument = (path: string) => documents.close(path);
+export const showView = (view: View) => documents.view(view);
+
+/** Keeps the tab's open files and the documents group in step with the
+ * address. Renders nothing. */
+export function Documents() {
+  const { at, look: current } = useFocus();
   const shown = useShown();
   const own = useOwnSource();
-  const files = useTab((current) => current.files);
+  const { view } = useView();
+  const files = useTab((state) => state.files);
   const look = useLook();
   const paths = useLinkPaths();
-  const drawings = useCards().length;
 
   const path = shown?.path;
   const line = shown?.line ?? null;
@@ -91,7 +115,7 @@ export function CodeArea() {
   // file closed opens again at every new stop, when its line moves, or when
   // something asks for it.
   const stop = at?.stop;
-  const asked = useTab((current) => current.asked);
+  const asked = useTab((state) => state.asked);
   // Closing the last file shows the focus's own place, which stays closed:
   // this names the showing it must not reopen.
   const unasked = useRef<string | null>(null);
@@ -114,125 +138,119 @@ export function CodeArea() {
     }
   }, [path, line, open, place]);
 
-  const frame = frameAt(trace, at);
-  // A frame with no source, and no file named, shows its instructions.
-  const sourceless = !shown && frame !== undefined && !frame.source;
-  const view = current.view ?? (sourceless ? "disassembly" : "source");
-  // A file's tab follows the focus when the focus shows that file by
-  // itself, or else shows where the file was last shown.
-  const show = (path: string) => {
-    const place = tab.getState().places[path];
-    look(
-      (current) =>
-        path === own?.path
-          ? inView(followedLook(current), "source")
-          : showingSource(
-              current,
-              place ?? formatPlace({ path: paths.link(path), line: 1, end: 1 }),
-            ),
-      { replace: false, ask: true },
-    );
-  };
-  // Closing the file shown shows its neighbor, the next one or else the one
-  // before it. Closing the last drops it from the address.
-  const close = (closed: string) => {
-    const index = files.indexOf(closed);
-    assert(index >= 0, `closing a file not among the ${files.length} open`);
-    const neighbor = files[index + 1] ?? files[index - 1];
-    closeFile(closed);
-    if (closed !== path) {
-      return;
-    }
-    if (neighbor) {
-      show(neighbor);
-    } else if (current.src) {
-      unasked.current = `${own?.path}:${own?.line ?? null}:${stop}:${asked}`;
-      look(({ src: _, ...rest }) => rest, { replace: false });
-    }
-  };
+  useLayoutEffect(() => {
+    change((layout) => arrange(layout, files, open && path ? path : null, view));
+  }, [files, path, open, view]);
 
+  // The tabs act through these, which close over this render's focus.
+  useLayoutEffect(() => {
+    // A file's tab follows the focus when the focus shows that file by
+    // itself, or else shows where the file was last shown.
+    documents.show = (chosen) => {
+      const where = tab.getState().places[chosen];
+      look(
+        (current) =>
+          chosen === own?.path
+            ? inView(followedLook(current), "source")
+            : showingSource(
+                current,
+                where ?? formatPlace({ path: paths.link(chosen), line: 1, end: 1 }),
+              ),
+        { replace: false, ask: true },
+      );
+    };
+    // Closing the file shown shows its neighbor, the next one or else the one
+    // before it. Closing the last drops it from the address.
+    documents.close = (closed) => {
+      const index = files.indexOf(closed);
+      assert(index >= 0, `closing a file not among the ${files.length} open`);
+      const neighbor = files[index + 1] ?? files[index - 1];
+      closeFile(closed);
+      if (closed !== path) {
+        return;
+      }
+      if (neighbor) {
+        documents.show(neighbor);
+      } else if (current.src) {
+        unasked.current = `${own?.path}:${own?.line ?? null}:${stop}:${asked}`;
+        look(({ src: _, ...rest }) => rest, { replace: false });
+      }
+    };
+    documents.view = (chosen) => look((look) => inView(look, chosen), { replace: false });
+  });
+  return null;
+}
+
+/** One file's source, or while none is open, why there is nothing to show. */
+export function SourceBody({ pane }: PaneProps) {
+  const { at, stale } = useFocus();
+  const shown = useShown();
+  const path = pane.key;
   return (
-    <section className="pane code grow" aria-label="Code">
-      <nav className="file-tabs" aria-label="Open files">
-        {files.map((path) => (
-          <div key={path} className={`file-tab ${path === shown?.path ? "on" : ""}`} title={path}>
-            <button
-              type="button"
-              className="file-name"
-              aria-current={path === shown?.path ? "page" : undefined}
-              onClick={() => show(path)}
-              // A middle click closes the tab, without the browser's autoscroll.
-              onMouseDown={(event) => event.button === 1 && event.preventDefault()}
-              onAuxClick={(event) => event.button === 1 && close(path)}
-            >
-              {fileName(path)}
-            </button>
-            <button
-              type="button"
-              className="close"
-              aria-label={`Close ${fileName(path)}`}
-              onClick={() => close(path)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        <span className="file-tabs-end">
-          {stale === "running" && at && (
-            <span className="showing">Showing stop #{at.stop} · program running</span>
-          )}
-          <fieldset className="segmented small" aria-label="View">
-            {VIEWS.map((choice) => (
-              <button
-                key={choice.view}
-                type="button"
-                aria-pressed={view === choice.view}
-                title={choice.key}
-                onClick={() => look((look) => inView(look, choice.view), { replace: false })}
-              >
-                {choice.label}
-                {choice.view === "drawings" && drawings > 0 && (
-                  <span className="badge">{drawings}</span>
-                )}
-              </button>
-            ))}
-          </fieldset>
-        </span>
-      </nav>
-      {view === "disassembly" ? (
-        <>
-          {sourceless && (
-            <div className="view-note" data-testid="no-source">
-              {frame.name} has no source: showing its instructions
-            </div>
-          )}
-          <Disassembly />
-        </>
-      ) : view === "memory" ? (
-        <Memory />
-      ) : view === "drawings" ? (
-        <Drawings />
-      ) : shown && open ? (
-        <SourceFile shown={shown} />
+    <div className="document">
+      <Banner />
+      {stale === "running" && at && (
+        <div className="view-note">Showing stop #{at.stop} · program running</div>
+      )}
+      {path === "" ? (
+        <Nothing />
       ) : (
-        <div className="empty center-message">
-          {shown
-            ? "No file open."
-            : at && frame && !frame.source
-              ? `${frame.name} has no source${frame.address ? `: it is at ${frame.address}` : ""}${frame.module ? ` in ${frame.module}` : ""}.`
-              : at && !trace
-                ? stale !== "passed"
-                  ? "Reading the stack…"
-                  : unreached(state, at.stop)
-                    ? `This session has not reached stop #${at.stop}.`
-                    : `Stop #${at.stop} has passed.`
-                : state.inferior.state === "notStarted"
-                  ? "Press F5 to run the program."
-                  : "No source to show."}
+        <SourceFile
+          shown={
+            shown?.path === path
+              ? shown
+              : { path, line: tab.getState().shown?.line ?? null, selection: null }
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function Nothing() {
+  const { at, trace, state, stale } = useFocus();
+  const shown = useShown();
+  const frame = frameAt(trace, at);
+  return (
+    <div className="empty center-message">
+      {shown
+        ? "No file open."
+        : at && frame && !frame.source
+          ? `${frame.name} has no source${frame.address ? `: it is at ${frame.address}` : ""}${frame.module ? ` in ${frame.module}` : ""}.`
+          : at && !trace
+            ? stale !== "passed"
+              ? "Reading the stack…"
+              : unreached(state, at.stop)
+                ? `This session has not reached stop #${at.stop}.`
+                : `Stop #${at.stop} has passed.`
+            : state.inferior.state === "notStarted"
+              ? "Press F5 to run the program."
+              : "No source to show."}
+    </div>
+  );
+}
+
+export function DisassemblyBody() {
+  const { at, trace } = useFocus();
+  const { sourceless } = useView();
+  const frame = frameAt(trace, at);
+  return (
+    <div className="document">
+      <Banner />
+      {sourceless && frame && (
+        <div className="view-note" data-testid="no-source">
+          {frame.name} has no source: showing its instructions
         </div>
       )}
-    </section>
+      <Disassembly />
+    </div>
   );
+}
+
+/** How many drawings the stop shows. */
+export function DrawingsBadge() {
+  const drawings = useCards().length;
+  return drawings > 0 ? <span className="badge">{drawings}</span> : null;
 }
 
 /** Lines with breakpoints in a file, and what kind each is. */

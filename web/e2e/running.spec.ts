@@ -1,6 +1,6 @@
 // Running a program from the page with VS Code's keys, and choosing another.
 
-import { expect, fixture, join, test } from "./server";
+import { documents, expect, fixture, join, menu, test } from "./server";
 
 test("F5, F6, and Shift+F5 run, pause, and kill without the browser acting", async ({
   page,
@@ -16,7 +16,7 @@ test("F5, F6, and Shift+F5 run, pause, and kill without the browser acting", asy
   await expect(status).toContainText("Running");
   await page.keyboard.press("F6");
   await expect(status).toContainText("Stopped");
-  await expect(page.getByRole("region", { name: "Threads" })).toContainText("stopped here");
+  await expect(page.getByRole("tabpanel", { name: "Threads" })).toContainText("stopped here");
   await page.keyboard.press("F5");
   await expect(status).toContainText("Running");
   await page.keyboard.press("Shift+F5");
@@ -52,10 +52,10 @@ test("the picker completes a path and loads it in place of the program", async (
   await watcher.goto(first);
   await expect(watcher.getByTestId("status")).toContainText("Not started");
   // The picker leads back to the session it was opened from.
-  await page.getByRole("button", { name: /Debug something/ }).click();
+  await menu(page, "File", "Launch a program…");
   await page.getByRole("link", { name: "Back to spin" }).click();
   await expect(page).toHaveURL(first);
-  await page.getByRole("button", { name: /Debug something/ }).click();
+  await menu(page, "File", "Launch a program…");
   await expect(page).toHaveURL(/\/pick$/);
   const program = page.getByRole("combobox", { name: "Program" });
   await program.pressSequentially("build/test-prog");
@@ -89,15 +89,15 @@ test("a program chosen in the picker keeps nothing of the one it replaced", asyn
   await page.keyboard.press("F5");
   await expect(page.getByTestId("status")).toContainText("Running");
   await page.keyboard.press("F6");
-  const files = page.getByRole("navigation", { name: "Open files" });
-  await expect(files.getByRole("button", { name: "spin.c", exact: true })).toBeVisible();
+  const files = documents(page);
+  await expect(files.getByRole("tab", { name: "spin.c", exact: true })).toBeVisible();
   await expect(page.getByTestId("registers")).toContainText("rip");
   await page.getByRole("tab", { name: "Console" }).click();
   await page.getByRole("textbox", { name: "Console" }).fill("spin_value + 1");
   await page.getByRole("textbox", { name: "Console" }).press("Enter");
   await expect(page.getByTestId("console")).toContainText("43");
 
-  await page.getByRole("button", { name: /Debug something/ }).click();
+  await menu(page, "File", "Launch a program…");
   await page.getByRole("button", { name: "Core dump", exact: true }).click();
   await page.getByRole("combobox", { name: "Core dump" }).fill(fixture("crash-gcc-o0-segv.core"));
   await page.keyboard.press("Escape");
@@ -106,8 +106,8 @@ test("a program chosen in the picker keeps nothing of the one it replaced", asyn
   await expect(page.getByTestId("status")).toContainText("Core dump");
 
   // The core's own file, and registers with nothing to compare against.
-  await expect(files.getByRole("button", { name: "main.c", exact: true })).toBeVisible();
-  await expect(files.getByRole("button", { name: "spin.c", exact: true })).toHaveCount(0);
+  await expect(files.getByRole("tab", { name: "main.c", exact: true })).toBeVisible();
+  await expect(files.getByRole("tab", { name: "spin.c", exact: true })).toHaveCount(0);
   await expect(page.getByTestId("registers")).toContainText("rip");
   await expect(page.getByTestId("registers").locator(".was")).toHaveCount(0);
   await expect(page.getByTestId("console")).not.toContainText("spin_value");
@@ -120,7 +120,7 @@ test("a replacement that fails leaves the old session running", async ({ page, m
   await watcher.goto(first);
   await expect(watcher.getByTestId("status")).toContainText("Not started");
 
-  await page.getByRole("button", { name: /Debug something/ }).click();
+  await menu(page, "File", "Launch a program…");
   await page.getByRole("combobox", { name: "Program" }).fill("/nonexistent/program");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Load", exact: true }).click();

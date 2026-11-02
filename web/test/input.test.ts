@@ -50,7 +50,7 @@ describe("debugger keys", () => {
   });
 
   it("reads Alt chords by the key pressed, whatever Alt makes it type", () => {
-    expect(commandFor(key("¡", { altKey: true, code: "Digit1" }), false)).toBe("pane1");
+    expect(commandFor(key("¡", { altKey: true, code: "Digit1" }), false)).toBe("threads");
     expect(commandFor(key("∂", { altKey: true, code: "KeyD" }), true)).toBe("viewDisassembly");
   });
 

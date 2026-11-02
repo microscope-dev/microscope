@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import { expect, join, root, test } from "./server";
+import { documents, expect, join, root, test } from "./server";
 
 const script = path.join(root, "tests", "fixtures", "python", "page.py");
 const python = path.join(process.env.MICROSCOPE_CPYTHON ?? "", "3.14", "python");
@@ -36,7 +36,7 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
   await expect(line).toBeInViewport();
   // The stop reason must leave room for the command.
   expect(await program.evaluate((name) => name.clientWidth >= name.scrollWidth / 2)).toBe(true);
-  const variables = page.getByRole("region", { name: "Variables" });
+  const variables = page.getByRole("tabpanel", { name: "Variables" });
   await expect(variables).toContainText("shelf");
   // Preserve spaces inside string values.
   await expect(variables.locator(".value-text", { hasText: "north" })).toHaveJSProperty(
@@ -44,7 +44,7 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
     "'north    end'",
   );
   // An interpreted frame has no registers, which is no failure.
-  const registers = page.getByRole("region", { name: "Registers" }).locator(".empty");
+  const registers = page.getByRole("tabpanel", { name: "Registers" }).locator(".empty");
   await expect(registers).toContainText("interpreted");
   await expect(registers).not.toHaveClass(/error/);
 });
@@ -59,7 +59,7 @@ test.describe("an exception chosen as the program runs", () => {
   test("stops where Python raises it, on the program's line", async ({ page, microscope }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await join(page, microscope.link);
-    const breakpoints = page.getByRole("region", { name: "Breakpoints" });
+    const breakpoints = page.getByRole("tabpanel", { name: "Breakpoints" });
     const input = page.getByPlaceholder(/breakpoint at/);
     await input.click();
     await input.fill(`uat.py:${area + 1}`);
@@ -136,7 +136,10 @@ test.describe("a breakpoint in a script named relatively", () => {
     await page.keyboard.press("F5");
     await expect(page.locator(".cm-frame-line")).toContainText("result = side * side");
     // The stop is in the file the breakpoint was set in, which shows it set.
-    await expect(page.locator(".file-tab")).toHaveCount(1);
+    const files = documents(page).getByRole("button", {
+      name: /^Close (?!Disassembly$|Memory$|Drawings$)/,
+    });
+    await expect(files).toHaveCount(1);
     await expect(source).toHaveAttribute("data-path", uat);
     await expect(page.locator(".cm-breakpoints .dot.plain")).toHaveCount(1);
     await expect(page.locator(".cm-breakpoints .dot.pending")).toHaveCount(0);

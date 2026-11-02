@@ -2,7 +2,7 @@
 
 import type { Page } from "@playwright/test";
 import { stopInHandleRequest } from "./kvstore";
-import { expect, fixture, join, test } from "./server";
+import { documents, expect, fixture, join, test } from "./server";
 
 test.use({ program: [fixture("kvstore")] });
 
@@ -47,8 +47,6 @@ test("the palette finds functions, files, lines, and commands", async ({ page, m
   await search(page).fill("theme dark");
   await page.keyboard.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  // The toolbar says so, and its next choice follows from it.
-  await expect(page.getByRole("button", { name: "Theme: dark" })).toBeVisible();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expect(page.locator(".cm-line").first()).toBeVisible();
@@ -90,27 +88,27 @@ test("closing the file shown shows its neighbor, and a middle click closes a tab
   microscope,
 }) => {
   await join(page, microscope.link);
-  const files = page.getByRole("navigation", { name: "Open files" });
-  const tab = (name: string) => files.getByRole("button", { name, exact: true });
+  const files = documents(page);
+  const tab = (name: string) => files.getByRole("tab", { name, exact: true });
   await expect(tab("kvstore.c")).toBeVisible();
   for (const name of ["pthread.h", "stdio.h"]) {
     await page.keyboard.press("Control+p");
     await search(page).fill(name);
     await expect(palette(page).getByRole("option").first()).toContainText(name);
     await page.keyboard.press("Enter");
-    await expect(tab(name)).toHaveAttribute("aria-current", "page");
+    await expect(tab(name)).toHaveAttribute("aria-selected", "true");
   }
 
   await tab("stdio.h").click({ button: "middle" });
   await expect(tab("stdio.h")).toHaveCount(0);
-  await expect(tab("pthread.h")).toHaveAttribute("aria-current", "page");
+  await expect(tab("pthread.h")).toHaveAttribute("aria-selected", "true");
   await expect(page).toHaveURL(/[?&]src=[^&]*pthread\.h:1(&|$)/);
 
   await files.getByRole("button", { name: "Close pthread.h" }).click();
   await expect(tab("pthread.h")).toHaveCount(0);
   // The program's own file follows the focus again.
   await expect(page).not.toHaveURL(/[?&]src=/);
-  await expect(tab("kvstore.c")).toHaveAttribute("aria-current", "page");
+  await expect(tab("kvstore.c")).toHaveAttribute("aria-selected", "true");
 
   // The last file closed leaves nothing shown.
   await files.getByRole("button", { name: "Close kvstore.c" }).click();
@@ -125,13 +123,13 @@ test("a new stop opens its file again, even on the line it was closed at", async
 }) => {
   await join(page, microscope.link);
   await stopInHandleRequest(page);
-  const files = page.getByRole("navigation", { name: "Open files" });
+  const files = documents(page);
   await files.getByRole("button", { name: "Close kvstore.c" }).click();
   await expect(page.getByText("No file open.")).toBeVisible();
 
   await page.keyboard.press("F5");
   await expect(page.getByTestId("stops")).toContainText("#3");
-  await expect(files.getByRole("button", { name: "kvstore.c", exact: true })).toBeVisible();
+  await expect(files.getByRole("tab", { name: "kvstore.c", exact: true })).toBeVisible();
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");
 });
 
@@ -141,7 +139,7 @@ test("a closed file opens again when asked for at the place it was closed", asyn
 }) => {
   await join(page, microscope.link);
   await stopInHandleRequest(page);
-  const files = page.getByRole("navigation", { name: "Open files" });
+  const files = documents(page);
   const closed = async () => {
     await files.getByRole("button", { name: "Close kvstore.c" }).click();
     await expect(page.getByText("No file open.")).toBeVisible();
@@ -164,7 +162,7 @@ test("a closed file opens again when asked for at the place it was closed", asyn
   await page.keyboard.press("Control+p");
   await search(page).fill("kvstore.c");
   await page.keyboard.press("Enter");
-  await expect(files.getByRole("button", { name: "kvstore.c", exact: true })).toBeVisible();
+  await expect(files.getByRole("tab", { name: "kvstore.c", exact: true })).toBeVisible();
 });
 
 test("a file's tab shows where it was, and the frame's file follows the frame", async ({
@@ -173,35 +171,35 @@ test("a file's tab shows where it was, and the frame's file follows the frame", 
 }) => {
   await join(page, microscope.link);
   await stopInHandleRequest(page);
-  const files = page.getByRole("navigation", { name: "Open files" });
+  const files = documents(page);
   await page.keyboard.press("Control+g");
   await search(page).fill("stdio.h:50");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/);
 
-  await files.getByRole("button", { name: "kvstore.c", exact: true }).click();
+  await files.getByRole("tab", { name: "kvstore.c", exact: true }).click();
   await expect(page).not.toHaveURL(/[?&]src=/);
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");
 
-  await files.getByRole("button", { name: "stdio.h", exact: true }).click();
+  await files.getByRole("tab", { name: "stdio.h", exact: true }).click();
   await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/);
 });
 
 test("a reload keeps the tab's files, and where each was shown", async ({ page, microscope }) => {
   await join(page, microscope.link);
-  const files = page.getByRole("navigation", { name: "Open files" });
-  const tab = (name: string) => files.getByRole("button", { name, exact: true });
+  const files = documents(page);
+  const tab = (name: string) => files.getByRole("tab", { name, exact: true });
   await page.keyboard.press("Control+g");
   await search(page).fill("stdio.h:50");
   await page.keyboard.press("Enter");
   await page.keyboard.press("Control+p");
   await search(page).fill("pthread.h");
   await page.keyboard.press("Enter");
-  await expect(tab("pthread.h")).toHaveAttribute("aria-current", "page");
+  await expect(tab("pthread.h")).toHaveAttribute("aria-selected", "true");
 
   await page.reload();
-  await expect(tab("pthread.h")).toHaveAttribute("aria-current", "page");
-  await expect(files.getByRole("button", { name: /^Close / })).toHaveText(["×", "×", "×"]);
+  await expect(tab("pthread.h")).toHaveAttribute("aria-selected", "true");
+  await expect(files.getByRole("button", { name: /^Close .*\.[ch]$/ })).toHaveText(["×", "×", "×"]);
   await expect(files).toContainText("kvstore.c");
   await tab("stdio.h").click();
   await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/);
@@ -210,7 +208,7 @@ test("a reload keeps the tab's files, and where each was shown", async ({ page, 
 test("closing the last file drops it from the address", async ({ page, microscope }) => {
   await join(page, microscope.link);
   await stopInHandleRequest(page);
-  const files = page.getByRole("navigation", { name: "Open files" });
+  const files = documents(page);
   await page.keyboard.press("Control+p");
   await search(page).fill("stdio.h");
   await page.keyboard.press("Enter");
@@ -220,7 +218,7 @@ test("closing the last file drops it from the address", async ({ page, microscop
 
   await expect(page).not.toHaveURL(/[?&]src=/);
   await expect(page.getByText("No file open.")).toBeVisible();
-  await expect(files.getByRole("button", { name: /^Close / })).toHaveCount(0);
+  await expect(files.getByRole("button", { name: /^Close .*\.[ch]$/ })).toHaveCount(0);
   // Its frame still opens its file again.
   await page.getByTestId("stack").getByRole("button").first().click();
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");

@@ -1,5 +1,5 @@
-// The process switcher beside the stop banner: hidden for one process,
-// and for several, each with how it joined and where it is, choosing one.
+// The Processes pane: one process says so, and for several, each with how it
+// joined and where it is, choosing one.
 
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -38,12 +38,13 @@ const two: Group = {
   stopped: 2,
 };
 
-it("is hidden while the program has one process", async () => {
+it("says so while the program has one process", async () => {
   await mountPane(
     <Processes />,
     {},
     stoppedState({ group: { ...two, members: [member({ number: 1 })], selected: 1 } }),
   );
+  await expect.element(page.getByText("This session debugs one process.")).toBeVisible();
   await expect.element(page.getByRole("navigation", { name: "Processes" })).not.toBeInTheDocument();
 });
 
@@ -66,10 +67,7 @@ it("lists each process, how it joined, and where it is, and selects one", async 
   expect((await server.next("detachMember")).params).toEqual({ member: 2 });
 });
 
-it.each([
-  1440, 390,
-])("keeps inspection space with a long process history at %ipx", async (width) => {
-  await page.viewport(width, 1000);
+it.each([1440, 390])("folds a long process history and stays within a %ipx pane", async (width) => {
   const history = Array.from({ length: 35 }, (_, index) =>
     member({
       number: index + 3,
@@ -79,27 +77,22 @@ it.each([
     }),
   );
   const server = await mountPane(
-    <div style={{ maxWidth: "730px", display: "flex", flexDirection: "column", height: "800px" }}>
+    <div style={{ width: `${width}px`, display: "flex", flexDirection: "column", height: "400px" }}>
       <Processes />
-      <div data-testid="inspection" style={{ flex: 1, minHeight: 0 }} />
     </div>,
     {},
     stoppedState({ group: { ...two, members: [...two.members.slice(0, 2), ...history] } }),
   );
   const switcher = page.getByRole("navigation", { name: "Processes" });
-  await expect.element(switcher).toBeVisible();
-  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(200);
   const disclosure = page.getByText("Other processes (35)", { exact: true });
   await expect.element(disclosure).toBeVisible();
   await expect.element(page.getByRole("button", { name: /\[3\] tree/ })).not.toBeInTheDocument();
   await disclosure.element().focus();
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByRole("button", { name: /\[37\] tree/ })).toBeDisabled();
-  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(200);
   expect(switcher.element().scrollWidth).toBe(switcher.element().clientWidth);
-  expect(
-    page.getByTestId("inspection").element().getBoundingClientRect().height,
-  ).toBeGreaterThanOrEqual(600);
+  // The pane scrolls within its own height.
+  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(400);
 
   await userEvent.click(page.getByRole("button", { name: /\[1\] tree/ }));
   const asked = await server.next("selectMember");
@@ -109,19 +102,19 @@ it.each([
   expect((await server.next("detachMember")).params).toEqual({ member: 2 });
 });
 
-it("bounds many selectable processes without folding them into history", async () => {
-  await page.viewport(390, 844);
+it("lists many selectable processes without folding them into history", async () => {
   const members = Array.from({ length: 37 }, (_, index) =>
     member({ number: index + 1, state: index % 2 ? "running" : "stopped" }),
   );
   const server = await mountPane(
-    <Processes />,
+    <div style={{ width: "390px", display: "flex", flexDirection: "column", height: "200px" }}>
+      <Processes />
+    </div>,
     {},
     stoppedState({ group: { members, selected: 1, stopped: 1 } }),
   );
   const switcher = page.getByRole("navigation", { name: "Processes" });
   await expect.element(switcher).toBeVisible();
-  expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(200);
   expect(switcher.element().scrollHeight).toBeGreaterThan(switcher.element().clientHeight);
   expect(switcher.element().querySelector("details")).toBeNull();
   await userEvent.click(page.getByRole("button", { name: /\[37\] tree/ }));

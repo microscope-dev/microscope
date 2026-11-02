@@ -79,15 +79,9 @@ export function Variables() {
     );
   }
   return (
-    <section className="pane grow" aria-label="Variables" data-pane="5" tabIndex={-1}>
-      <div className="pane-head">
-        Variables
-        <span className="end">Alt+5</span>
-      </div>
-      <div className="pane-body">
-        <LinkedExpansion>{body}</LinkedExpansion>
-      </div>
-    </section>
+    <div className="pane-body">
+      <LinkedExpansion>{body}</LinkedExpansion>
+    </div>
   );
 }
 
@@ -108,53 +102,51 @@ export function Watch() {
   };
 
   return (
-    <section className="pane watch" aria-label="Watch" data-pane="4" tabIndex={-1}>
-      <div className="pane-head">
-        Watch
-        {watches.length > 0 && <span className="count">{watches.length}</span>}
-        <span className="end">Alt+4</span>
-      </div>
-      <div className="pane-body">
-        {why && watches.length > 0 && <div className="empty">{why}</div>}
-        <LinkedExpansion>
-          <ul className="value-list" aria-label="Watches" data-testid="watches">
-            {watches.map((expression, index) => {
-              // A repeated watch is its own row, as a repeated name is.
-              const occurrence = watches.slice(0, index).filter((w) => w === expression).length + 1;
-              return (
-                <WatchRow
-                  key={`${expression}~${occurrence}`}
-                  expression={expression}
-                  occurrence={occurrence}
-                  hidden={why}
-                  onRemove={() => remove(index)}
-                />
-              );
-            })}
-          </ul>
-        </LinkedExpansion>
-        <form
-          className="watch-add"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const expression = text.trim();
-            if (expression) {
-              look((current) => watching(current, expression));
-              setText("");
-            }
-          }}
-        >
-          <input
-            className="input quiet"
-            aria-label="Add a watch"
-            placeholder="+ expression"
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-          />
-        </form>
-      </div>
-    </section>
+    <div className="pane-body">
+      {why && watches.length > 0 && <div className="empty">{why}</div>}
+      <LinkedExpansion>
+        <ul className="value-list" aria-label="Watches" data-testid="watches">
+          {watches.map((expression, index) => {
+            // A repeated watch is its own row, as a repeated name is.
+            const occurrence = watches.slice(0, index).filter((w) => w === expression).length + 1;
+            return (
+              <WatchRow
+                key={`${expression}~${occurrence}`}
+                expression={expression}
+                occurrence={occurrence}
+                hidden={why}
+                onRemove={() => remove(index)}
+              />
+            );
+          })}
+        </ul>
+      </LinkedExpansion>
+      <form
+        className="watch-add"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const expression = text.trim();
+          if (expression) {
+            look((current) => watching(current, expression));
+            setText("");
+          }
+        }}
+      >
+        <input
+          className="input quiet"
+          aria-label="Add a watch"
+          placeholder="+ expression"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </form>
+    </div>
   );
+}
+
+export function WatchBadge() {
+  const count = useFocus().look.w?.length ?? 0;
+  return count > 0 ? <span className="count">{count}</span> : null;
 }
 
 function WatchRow({

@@ -20,6 +20,7 @@ test("tasks are listed, grouped, and chosen, and a link names the task", async (
   await expect(page.getByTestId("status")).toContainText("Stopped");
 
   // Two runtimes and two local sets hold eight tasks, each parked.
+  await page.getByRole("tab", { name: /^Tasks/ }).click();
   const tasks = page.getByTestId("tasks");
   const task = (number: number) => tasks.getByRole("button", { name: `task ${number}` });
   await expect(tasks.getByRole("button", { name: /^task \d+$/ })).toHaveCount(8);
@@ -40,16 +41,17 @@ test("tasks are listed, grouped, and chosen, and a link names the task", async (
   // the code the program wrote, with its locals.
   await task(7).click();
   await expect(page).toHaveURL(/\/task\/\d+\.7\/f\/1/);
-  await expect(page.getByRole("region", { name: "Variables" })).toContainText("notify");
+  await expect(page.getByRole("tabpanel", { name: "Variables" })).toContainText("notify");
   await expect(task(7)).toHaveAttribute("aria-current", "true");
-  const stack = page.getByRole("region", { name: "Call stack" });
+  const stack = page.getByRole("tab", { name: /^Call Stack/ });
   await expect(stack).toContainText("task 7");
   await expect(page.getByTestId("stack")).toContainText("async");
   await expect(page.getByTestId("threads").locator("[aria-current]")).toHaveCount(0);
 
   // The address opens the same task.
   await page.goto(page.url());
-  await expect(task(7)).toHaveAttribute("aria-current", "true");
   await expect(stack).toContainText("task 7");
   await expect(page.getByTestId("stack")).toContainText("async");
+  await page.getByRole("tab", { name: /^Tasks/ }).click();
+  await expect(task(7)).toHaveAttribute("aria-current", "true");
 });

@@ -7,7 +7,7 @@ import {
 } from "../src/breakpoints";
 import type { Breakpoint, Place } from "../src/protocol";
 import { breakpointTitle, placeLabel } from "../src/ui/Breakpoints";
-import { breakpointLines } from "../src/ui/CodeArea";
+import { breakpointLines } from "../src/ui/Documents";
 
 const source: Place = { address: "", function: null, path: "/src/app.py", line: 3 };
 const reason = "waiting for a runtime acknowledgement";

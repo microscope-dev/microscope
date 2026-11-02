@@ -4,7 +4,7 @@
 import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { chromium, type Page } from "@playwright/test";
-import { fixture, root, startMicroscope } from "./server.ts";
+import { fixture, menu, root, startMicroscope } from "./server.ts";
 
 const out = path.join(root, "target", "web-shots");
 const program = process.argv[2] ?? fixture("kvstore");
@@ -60,7 +60,7 @@ try {
   await shoot(page, "4-share");
   await page.keyboard.press("Escape");
 
-  await page.getByRole("button", { name: /Debug something/ }).click();
+  await menu(page, "File", "Launch a program…");
   await page.getByRole("combobox", { name: "Program" }).pressSequentially("build/test-programs/");
   await page.getByRole("option").first().waitFor();
   await shoot(page, "5-picker");

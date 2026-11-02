@@ -63,6 +63,11 @@ export class ScriptedDebugger {
     this.#publish();
   }
 
+  /** How many times the page has asked for `method`. */
+  asked(method: Method): number {
+    return this.#server.requests.filter((request) => request.method === method).length;
+  }
+
   /** The stop number the page sees for the script's stop at `index`. */
   static stopNumber(index: number): number {
     return index + 1;
@@ -134,6 +139,12 @@ export class ScriptedDebugger {
         this.#current(stop);
         return { registers: [] };
       },
+      // The script keeps no instructions or signals: their panes show none.
+      disassemble: ({ stop }) => {
+        this.#current(stop);
+        return { function: null, marked: null, instructions: [], notes: [] };
+      },
+      signals: () => ({ signals: [] }),
       tasks: ({ stop }) => {
         this.#current(stop);
         return { noun: null, tasks: [], more: false, gaps: [] };

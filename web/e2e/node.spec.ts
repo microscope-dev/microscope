@@ -75,6 +75,7 @@ test("npm start stops at the app's breakpoint, its node beside npm's", async ({
   await page.keyboard.press("F5");
 
   // The app is the node npm's shell executed, which stopped the group.
+  await page.getByRole("tab", { name: /^Processes/ }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const app = switcher.getByRole("button", { name: /stopped here/ });
   await expect(app).toContainText(/\[\d+\] node · executed by \[\d+\]/, START);
@@ -107,6 +108,7 @@ test("node --test stops in each file's node at its breakpoint", async ({ page, m
 
   // Each file runs in a node of its own, started by the runner, which
   // stops where its file's breakpoint is; the runner runs neither.
+  await page.getByRole("tab", { name: /^Processes/ }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const stopped = switcher.getByRole("button", { name: /stopped here/ });
   const numbers: string[] = [];
@@ -150,6 +152,7 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   await breakAt(page, server, ["app.js:2"]);
   await page.keyboard.press("F5");
 
+  await page.getByRole("tab", { name: /^Processes/ }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const stopped = switcher.getByRole("button", { name: /stopped here/ });
   await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/, START);
@@ -188,6 +191,7 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
 
   // A timer is what it waits for, then the program's callback, and opens
   // no stack; a pool job runs on its thread.
+  await page.getByRole("tab", { name: /^Tasks/ }).click();
   const tasks = page.getByTestId("tasks");
   const timer = tasks.getByRole("listitem", { name: "task 2", exact: true });
   await expect(timer).toContainText("timeout 30000 ms");
@@ -223,6 +227,6 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
   const job = jobs[0] ?? "";
   await groups.getByRole("button", { name: `task ${job}`, exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/task/\\d+\\.${job}/f/`));
-  await expect(page.getByRole("region", { name: "Call stack" })).toContainText(`task ${job}`);
+  await expect(page.getByRole("tab", { name: /^Call Stack/ })).toContainText(`task ${job}`);
   await expect(page.getByTestId("stack")).toContainText("worker");
 });

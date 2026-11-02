@@ -4,7 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { flash, tab } from "../src/tab";
 import { useCommands } from "../src/ui/commands";
-import { Strip } from "../src/ui/Strip";
+import { StatusBar } from "../src/ui/StatusBar";
 import { mountPane, unmountPane } from "./pane";
 
 afterEach(unmountPane);
@@ -22,7 +22,7 @@ it("clears what a refused command said once another runs", async () => {
   await mountPane(
     <>
       <Palette />
-      <Strip />
+      <StatusBar />
     </>,
   );
   tab.setState({ session: "s1" });

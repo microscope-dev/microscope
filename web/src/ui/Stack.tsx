@@ -15,7 +15,6 @@ const NONE_OPEN: ReadonlySet<number> = new Set();
 export function Stack() {
   const { state, at, trace, stale } = useFocus();
   const go = useGo();
-  const thread = state.threads.find((candidate) => candidate.id === at?.thread);
 
   // The runs opened in this stack; another stack folds afresh.
   const [opened, setOpened] = useState<{
@@ -108,24 +107,17 @@ export function Stack() {
       </ul>
     );
   }
-  return (
-    <section className="pane grow" aria-label="Call stack" data-pane="2" tabIndex={-1}>
-      <div className="pane-head">
-        Call stack
-        {at?.task ? (
-          <span className="count">task {at.task.number}</span>
-        ) : (
-          thread && (
-            <span className="count" title={threadLabel(thread.id, thread.name)}>
-              {threadLabel(thread.id, thread.name)}
-            </span>
-          )
-        )}
-        <span className="end">Alt+2</span>
-      </div>
-      <div className={`pane-body ${stale && stale !== "passed" ? "stale" : ""}`}>{body}</div>
-    </section>
-  );
+  return <div className={`pane-body ${stale && stale !== "passed" ? "stale" : ""}`}>{body}</div>;
+}
+
+/** Whose stack the tab shows: the task's, or the thread's. */
+export function StackBadge() {
+  const { state, at } = useFocus();
+  if (at?.task) {
+    return <span className="count">task {at.task.number}</span>;
+  }
+  const thread = state.threads.find((candidate) => candidate.id === at?.thread);
+  return thread ? <span className="count">{threadLabel(thread.id, thread.name)}</span> : null;
 }
 
 /**

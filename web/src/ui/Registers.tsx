@@ -2,12 +2,10 @@
 // outer frame's as its callees saved them. A value that changed since the
 // stop before is marked, as variables are.
 
-import { useState } from "react";
 import { assert } from "../assert";
 import { useRequest } from "../data";
 import type { At } from "../focus";
 import type { Register, Row } from "../protocol";
-import { isBoolean, read, write } from "../storage";
 import { errorClass, hidden } from "./hidden";
 import { LinkedExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
@@ -31,10 +29,9 @@ function row(register: Register, innermost: boolean): Row {
 
 export function Registers() {
   const focus = useFocus();
-  const [open, setOpen] = useState(() => read("microscope-registers-open", true, isBoolean));
   const why = hidden(focus, "Registers");
   assert(why !== null || focus.at !== null, "registers shown with no stop");
-  const registers = useRequest("registers", open && why === null ? (focus.at as At) : null);
+  const registers = useRequest("registers", why === null ? (focus.at as At) : null);
 
   let body: React.ReactNode;
   if (why) {
@@ -62,34 +59,14 @@ export function Registers() {
     );
   }
   return (
-    <section
-      className={`pane ${open ? "registers" : ""}`}
-      aria-label="Registers"
-      data-pane="7"
-      tabIndex={-1}
-    >
-      <div className="pane-head">
-        <button
-          type="button"
-          className="twist"
-          aria-expanded={open}
-          aria-label={`${open ? "Close" : "Open"} registers`}
-          onClick={() => {
-            setOpen(!open);
-            write("microscope-registers-open", !open);
-          }}
-        >
-          {open ? "▾" : "▸"}
-        </button>
-        Registers
-        {focus.at && <span className="count">frame {focus.at.frame}</span>}
-        <span className="end">Alt+7</span>
-      </div>
-      {open && (
-        <div className="pane-body">
-          <LinkedExpansion>{body}</LinkedExpansion>
-        </div>
-      )}
-    </section>
+    <div className="pane-body registers">
+      <LinkedExpansion>{body}</LinkedExpansion>
+    </div>
   );
+}
+
+/** Whose registers they are: the frame's. */
+export function RegistersBadge() {
+  const at = useFocus().at;
+  return at ? <span className="count">frame {at.frame}</span> : null;
 }

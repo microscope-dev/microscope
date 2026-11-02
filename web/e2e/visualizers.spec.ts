@@ -6,7 +6,7 @@ import { copyFile, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Page } from "@playwright/test";
 import { card, drawAt } from "./drawings";
-import { expect, fixture, join, type Microscope, root, test } from "./server";
+import { expect, fixture, join, type Microscope, menu, root, test } from "./server";
 
 /** The squares a board's drawing outlines as changed since the stop before. */
 async function outlined(page: Page): Promise<string[]> {
@@ -27,7 +27,7 @@ test.describe("a program's own renderer", () => {
     await join(page, microscope.link);
     await drawAt(page, "main.rs:108");
     const board = card(page, "self");
-    await expect(page.getByRole("button", { name: /Drawings\s*1/ })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /Drawings\s*1/ })).toBeVisible();
     // Pieces are named by their squares' titles.
     await expect(board.getByRole("button", { name: "e1: White King" })).toBeVisible();
     await expect(board.getByRole("button", { name: "d8: Black Queen" })).toBeVisible();
@@ -252,7 +252,7 @@ extend c life {
 
     // The same program again, whose first board differs from the last one
     // drawn before it, at an earlier stop.
-    await page.getByRole("button", { name: /Debug something/ }).click();
+    await menu(page, "File", "Launch a program…");
     const program = page.getByRole("combobox", { name: "Program" });
     await program.fill(fixture("life"));
     await page.keyboard.press("Escape");

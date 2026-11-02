@@ -4,7 +4,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import * as path from "node:path";
-import { expect, fixture, join, root, test } from "./server";
+import { expect, fixture, join, menu, root, test } from "./server";
 
 // The test serves a profile it records, not a program.
 test.use({ program: [] });
@@ -303,9 +303,7 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   await page.emulateMedia({ colorScheme: "light" });
   const painted = () => tracks.evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL());
   const before = await painted();
-  const theme = page.getByRole("button", { name: /^Theme:/ });
-  await theme.click();
-  await theme.click();
+  await menu(page, "View", "Theme: dark");
   await expect.poll(painted).not.toBe(before);
   await stats.getByRole("listitem").first().getByRole("button").click();
 

@@ -118,17 +118,20 @@ function docked(node: Node): Group[] {
   return node.type === "group" ? [node] : node.children.flatMap((child) => docked(child.node));
 }
 
-/** Opens a pane in the focused group, after its active tab, or shows the
- * pane of the same kind and key when there is one. */
-export function open(layout: Layout, pane: Pane): { layout: Layout; pane: PaneId } {
-  const existing = (Object.entries(layout.panes) as [PaneId, Pane][]).find(
-    ([, open]) => open.kind === pane.kind && open.key === pane.key,
-  );
+/** Opens a pane in a group, the focused one unless another is named, after
+ * its active tab, or shows the pane of the same kind and key when there is
+ * one. */
+export function open(
+  layout: Layout,
+  pane: Pane,
+  group: GroupId = layout.focused,
+): { layout: Layout; pane: PaneId } {
+  const existing = paneOf(layout, pane.kind, pane.key);
   if (existing) {
-    return { layout: activate(layout, existing[0]), pane: existing[0] };
+    return { layout: activate(layout, existing), pane: existing };
   }
   const id = `p${layout.next}` as PaneId;
-  const into = find(layout, layout.focused);
+  const into = find(layout, group);
   const at = into.active === null ? into.tabs.length : into.tabs.indexOf(into.active) + 1;
   const opened = settle({
     ...replaceGroup(layout, { ...into, tabs: insert(into.tabs, at, [id]), active: id }),
@@ -136,6 +139,48 @@ export function open(layout: Layout, pane: Pane): { layout: Layout; pane: PaneId
     next: layout.next + 1,
   });
   return { layout: opened, pane: id };
+}
+
+/** The open pane of a kind and key. */
+export function paneOf(layout: Layout, kind: KindId, key: string): PaneId | null {
+  const found = (Object.entries(layout.panes) as [PaneId, Pane][]).find(
+    ([, open]) => open.kind === kind && open.key === key,
+  );
+  return found?.[0] ?? null;
+}
+
+/** A layout to build: a split's children with their shares, or a group's
+ * panes, the first of them shown. */
+export type Shape =
+  | { readonly axis: Axis; readonly children: readonly (readonly [number, Shape])[] }
+  | readonly Pane[];
+
+/** Builds a layout from a shape, its first group focused. */
+export function build(shape: Shape): Layout {
+  let next = 0;
+  const panes: Record<PaneId, Pane> = {};
+  const node = (shape: Shape): Node => {
+    if ("axis" in shape) {
+      const id = `s${next++}` as SplitId;
+      const total = shape.children.reduce((sum, [weight]) => sum + weight, 0);
+      const children = shape.children.map(([weight, child]) => ({
+        node: node(child),
+        weight: weight / total,
+      }));
+      return { type: "split", id, axis: shape.axis, children };
+    }
+    assert(shape.length > 0, "a group to build has no panes");
+    const id = `g${next++}` as GroupId;
+    const tabs = shape.map((pane) => {
+      const tab = `p${next++}` as PaneId;
+      panes[tab] = pane;
+      return tab;
+    });
+    return { type: "group", id, tabs, active: tabs[0] as PaneId };
+  };
+  const root = node(shape);
+  const first = docked(root)[0] as Group;
+  return settle({ root, floating: [], maximized: null, focused: first.id, panes, next });
 }
 
 /** Closes a pane. Its group shows the tab beside it, or goes when empty. */

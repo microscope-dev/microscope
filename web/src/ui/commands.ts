@@ -9,10 +9,13 @@ import { useCallback } from "react";
 import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
-import { type At, inView, stringifySearch, type View, watching } from "../focus";
+import { DOCUMENT_KINDS, documentsGroup, KIND, single } from "../documents";
+import { type At, inView, type View, watching } from "../focus";
 import type { Model } from "../model";
 import { useConnection, useStoreApi } from "../store";
 import { flash, type TabState, tab } from "../tab";
+import { setRemote, standalone } from "../target";
+import { chooseTheme, type Theme } from "../theme";
 import {
   ABSENT,
   type Availability,
@@ -21,8 +24,24 @@ import {
   READY,
   registry,
 } from "../workbench/commands";
+import { panelId, tabId } from "../workbench/context";
 import type { Chord } from "../workbench/keys";
+import {
+  activate,
+  type Group,
+  groups,
+  type KindId,
+  maximize,
+  open,
+  type PaneId,
+  paneOf,
+  restore,
+} from "../workbench/layout";
+import { change, workbench } from "../workbench/store";
+import { chooseTab, closeTab } from "../workbench/tabs";
 import { go } from "./navigation";
+import type { PickerTab } from "./Picker";
+import { DEBUG_KINDS, debugLayout } from "./panes";
 
 interface Context {
   model: Model;
@@ -66,22 +85,96 @@ function show(view: View, label: string, letter: string): Spec {
     keys: [{ key: letter, alt: true }],
     available: ({ current }) => (current.session ? READY : ABSENT),
     run: ({ current, navigate }) => {
-      void navigate({
-        href: window.location.pathname + stringifySearch({ ...inView(current.look, view) }),
-      });
+      void navigate({ to: ".", search: inView(current.look, view) });
     },
   };
 }
 
-/** Focuses one of the panes by its number. */
-function pane(number: number, label: string): Spec {
-  const target = () => document.querySelector<HTMLElement>(`[data-pane="${number}"]`);
+/** Shows a pane, opening it where it belongs when it is not open, and
+ * moves the keyboard into it. */
+function showPane(kind: KindId, label: string, number?: number): Spec {
   return {
     label,
     menu: "View",
-    keys: [{ key: String(number), alt: true }],
-    available: () => (target() ? READY : ABSENT),
-    run: () => target()?.focus(),
+    keys: number === undefined ? [] : [{ key: String(number), alt: true }],
+    available: ({ current }) => (current.session ? READY : ABSENT),
+    run: () => {
+      let shown: PaneId | null = null;
+      change((layout) => {
+        const found = paneOf(layout, kind, "");
+        if (found) {
+          shown = found;
+          return activate(layout, found);
+        }
+        const into = DOCUMENT_KINDS.has(kind)
+          ? documentsGroup(layout, tab.getState().files)
+          : layout.focused;
+        const opened = open(layout, single(kind), into);
+        shown = opened.pane;
+        return activate(opened.layout, opened.pane);
+      });
+      // Once the pane is on screen.
+      requestAnimationFrame(() => shown && focusPane(shown));
+    },
+  };
+}
+
+/** Puts the keyboard in a pane: in the box it is for, if it has one. */
+export function focusPane(pane: PaneId): void {
+  const panel = document.getElementById(panelId(pane));
+  (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel)?.focus();
+}
+
+/** The active tab of the focused group. */
+function focusedPane(): { id: PaneId; group: Group } | null {
+  const layout = workbench.getState().layout;
+  const group = groups(layout).find((candidate) => candidate.id === layout.focused);
+  return group?.active ? { id: group.active, group } : null;
+}
+
+/** Shows the tab beside the focused one. */
+function nextTab(by: 1 | -1): Spec {
+  return {
+    label: by === 1 ? "Next tab" : "Previous tab",
+    menu: "Window",
+    keys: [{ key: by === 1 ? "]" : "[", alt: true }],
+    available: () => ((focusedPane()?.group.tabs.length ?? 0) > 1 ? READY : ABSENT),
+    run: () => {
+      const focused = focusedPane();
+      if (!focused) {
+        return;
+      }
+      const { tabs } = focused.group;
+      const next = tabs[(tabs.indexOf(focused.id) + by + tabs.length) % tabs.length] as PaneId;
+      chooseTab(DEBUG_KINDS, next);
+      document.getElementById(tabId(next))?.focus();
+    },
+  };
+}
+
+/** Starts something new, on the picker's tab for it. */
+function start(tab: PickerTab, label: string): Spec {
+  return {
+    label,
+    menu: "File",
+    keys: [],
+    available: ({ model }) =>
+      model.hello?.role === "control"
+        ? READY
+        : model.hello
+          ? blocked("this link can only view the session")
+          : ABSENT,
+    run: ({ navigate }) => void navigate({ to: "/pick", search: tab === "launch" ? {} : { tab } }),
+  };
+}
+
+function theme(chosen: Theme, label: string): Spec {
+  return {
+    label,
+    menu: "View",
+    keys: [],
+    available: always,
+    run: () => chooseTheme(chosen),
   };
 }
 
@@ -220,10 +313,7 @@ export const COMMANDS = registry({
       }
       const look = watching(current.look, expression);
       if (look !== current.look) {
-        void navigate({
-          href: window.location.pathname + stringifySearch({ ...look }),
-          replace: true,
-        });
+        void navigate({ to: ".", search: look, replace: true });
       }
       flash(`Watching ${expression}`);
     },
@@ -232,7 +322,7 @@ export const COMMANDS = registry({
   files: palette("files", "Open file", "Go", "p"),
   line: palette("line", "Go to line", "Go", "g"),
   help: {
-    label: "Every key",
+    label: "Keyboard shortcuts",
     menu: "Help",
     keys: [{ key: "?", shift: true }],
     available: always,
@@ -249,23 +339,87 @@ export const COMMANDS = registry({
         tab.setState({ help: false });
         return;
       }
-      void navigate({
-        href: window.location.pathname + stringifySearch({ ...inView(current.look, "source") }),
-        replace: true,
-      });
+      void navigate({ to: ".", search: inView(current.look, "source"), replace: true });
     },
   },
-  pane1: pane(1, "Focus threads"),
-  pane2: pane(2, "Focus the call stack"),
-  pane3: pane(3, "Focus breakpoints"),
-  pane4: pane(4, "Focus watches"),
-  pane5: pane(5, "Focus variables"),
-  pane6: pane(6, "Focus the console and output"),
-  pane7: pane(7, "Focus registers"),
+  threads: showPane(KIND.threads, "Threads", 1),
+  stack: showPane(KIND.stack, "Call Stack", 2),
+  breakpoints: showPane(KIND.breakpoints, "Breakpoints", 3),
+  watch: showPane(KIND.watch, "Watch", 4),
+  variables: showPane(KIND.variables, "Variables", 5),
+  console: showPane(KIND.console, "Console", 6),
+  registers: showPane(KIND.registers, "Registers", 7),
+  tasks: showPane(KIND.tasks, "Tasks"),
+  processes: showPane(KIND.processes, "Processes"),
+  stops: showPane(KIND.stops, "Stops"),
+  output: showPane(KIND.output, "Output"),
+  signals: showPane(KIND.signals, "Signals"),
+  modules: showPane(KIND.modules, "Modules"),
   viewSource: show("source", "Show source", "s"),
   viewDisassembly: show("disassembly", "Show disassembly", "d"),
   viewMemory: show("memory", "Show memory", "m"),
   viewDrawings: show("drawings", "Show drawings", "v"),
+  launch: start("launch", "Launch a program…"),
+  attach: start("attach", "Attach to a process…"),
+  core: start("core", "Open a core dump…"),
+  record: start("profile", "Record a profile…"),
+  disconnect: {
+    label: "Disconnect",
+    menu: "File",
+    keys: [],
+    available: () => (standalone ? READY : ABSENT),
+    run: () => {
+      setRemote(null);
+      window.location.assign("/");
+    },
+  },
+  themeSystem: theme("system", "Theme: the system's"),
+  themeLight: theme("light", "Theme: light"),
+  themeDark: theme("dark", "Theme: dark"),
+  closeTab: {
+    label: "Close tab",
+    menu: "Window",
+    keys: [{ key: "w", alt: true }],
+    available: () => {
+      const focused = focusedPane();
+      if (!focused) {
+        return ABSENT;
+      }
+      const pane = workbench.getState().layout.panes[focused.id];
+      return pane && DEBUG_KINDS.get(pane.kind).closable(pane)
+        ? READY
+        : blocked("this tab stays open");
+    },
+    run: () => {
+      const focused = focusedPane();
+      if (focused) {
+        closeTab(DEBUG_KINDS, focused.id);
+      }
+    },
+  },
+  nextTab: nextTab(1),
+  previousTab: nextTab(-1),
+  maximize: {
+    label: "Maximize or restore",
+    menu: "Window",
+    keys: [{ key: "Enter", alt: true }],
+    available: ({ current }) => (current.session ? READY : ABSENT),
+    run: () =>
+      change((layout) =>
+        layout.maximized === null ? maximize(layout, layout.focused) : restore(layout),
+      ),
+  },
+  resetLayout: {
+    label: "Reset layout",
+    menu: "Window",
+    keys: [],
+    available: ({ current }) => (current.session ? READY : ABSENT),
+    run: () => {
+      workbench.setState({ layout: debugLayout() });
+      // The documents group takes the tab's files again.
+      tab.setState((state) => ({ files: [...state.files] }));
+    },
+  },
   reloadViews: {
     label: "Reload views",
     menu: "Debug",

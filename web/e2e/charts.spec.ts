@@ -7,7 +7,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { card, copyCsv, drawAt, showTab, stubClipboard, titles } from "./drawings";
-import { expect, fixture, join, type Microscope, root, test } from "./server";
+import { expect, fixture, join, type Microscope, menu, root, test } from "./server";
 
 /** Starts microscope on a fixture with its views file, and joins it. */
 async function open(
@@ -91,6 +91,8 @@ test.describe("a C program's metrics", () => {
     page,
     microscope,
   }) => {
+    // Narrow enough that the 600 values outnumber the plot's columns.
+    await page.setViewportSize({ width: 1000, height: 720 });
     await metrics(page, microscope);
     await drawAt(page, "metrics.c:119");
     const board = card(page, "m");
@@ -147,7 +149,7 @@ test.describe("a C program's metrics", () => {
     // The chosen drawing stays chosen at the next stop, and in another view.
     const histogram = board.getByRole("button", { name: "histogram", exact: true });
     await expect(histogram).toHaveAttribute("aria-pressed", "true");
-    await page.getByRole("button", { name: "Source", exact: true }).click();
+    await menu(page, "Go", "Show source");
     await page.keyboard.press("Alt+v");
     await expect(histogram).toHaveAttribute("aria-pressed", "true");
   });

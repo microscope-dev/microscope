@@ -29,6 +29,36 @@ export class RealUser implements User {
     await expect(this.#page.getByTestId("source").locator(".cm-pc-line")).toContainText(text);
   }
 
+  async menu(menu: string, item: string): Promise<void> {
+    await this.#page.getByRole("menuitem", { name: menu, exact: true }).click();
+    await this.#page
+      .getByRole("menu", { name: menu })
+      .getByRole("menuitem", { name: item })
+      .click();
+  }
+
+  async chooseTab(title: string): Promise<void> {
+    await this.#page
+      .getByRole("tab")
+      .filter({ has: this.#page.getByText(title, { exact: true }) })
+      .click();
+  }
+
+  async expectGroups(groups: string[][]): Promise<void> {
+    await expect
+      .poll(() =>
+        this.#page.evaluate(() =>
+          [...document.querySelectorAll('[role="tablist"][aria-label="Panes"]')].map((list) =>
+            [...list.querySelectorAll('[role="tab"]')].map((tab) => {
+              const title = tab.querySelector(".tab-title")?.textContent ?? "";
+              return tab.getAttribute("aria-selected") === "true" ? `*${title}` : title;
+            }),
+          ),
+        ),
+      )
+      .toEqual(groups);
+  }
+
   async expectValue(pane: ValuePane, name: string, text: string): Promise<void> {
     const row = this.#page
       .getByTestId(PANES[pane])

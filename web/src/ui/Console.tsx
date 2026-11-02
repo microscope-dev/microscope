@@ -208,7 +208,7 @@ function ConsoleInput() {
         aria-label="Console"
         aria-controls={choices ? list : undefined}
         aria-activedescendant={active === null ? undefined : `${list}-${active}`}
-        data-pane="6"
+        data-autofocus
         placeholder={
           frame
             ? `an expression or command, in frame ${frame.frame}`

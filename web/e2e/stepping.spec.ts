@@ -76,7 +76,7 @@ test("a breakpoint stops the program where the page shows, and steps replace the
   // Before it runs, the page opens on main (D2).
   await expect(line(page, "int main(void) {")).toBeInViewport();
   await breakInHandleRequest(page);
-  await expect(page.getByRole("region", { name: "Call stack" })).toContainText("handle_request");
+  await expect(page.getByRole("tabpanel", { name: "Call Stack" })).toContainText("handle_request");
   const history = await page.evaluate(() => window.history.length);
 
   await page.keyboard.press("F10");
@@ -139,7 +139,7 @@ test("i lists the calls of the line, and steps into the one chosen", async ({
   await expect(calls.getByRole("option")).toHaveText([/^table_find/]);
   await page.keyboard.press("Enter");
   await expect(page).not.toHaveURL(before);
-  await expect(page.getByRole("region", { name: "Call stack" })).toContainText("table_find");
+  await expect(page.getByRole("tabpanel", { name: "Call Stack" })).toContainText("table_find");
   await expect(page.getByTestId("stops")).toContainText("step · kvstore.c:66");
 });
 

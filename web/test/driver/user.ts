@@ -19,6 +19,16 @@ export interface User {
 
   /** Waits until `pane` shows the value named `name` as `text`. */
   expectValue(pane: ValuePane, name: string, text: string): Promise<void>;
+
+  /** Opens a menu on the menu bar and chooses an item in it. */
+  menu(menu: string, item: string): Promise<void>;
+
+  /** Chooses the tab with this title. */
+  chooseTab(title: string): Promise<void>;
+
+  /** Waits until the groups show these tabs, in reading order, the shown
+   * one in each marked with a star: `[["*Threads", "Tasks"], …]`. */
+  expectGroups(groups: string[][]): Promise<void>;
 }
 
 export const MODIFIERS = ["Ctrl", "Alt", "Shift", "Meta"] as const;

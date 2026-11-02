@@ -1,7 +1,7 @@
 // All panes share the session, stop, and frame selected by the URL.
 
 import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { createContext, useContext, useEffect, useMemo, useRef } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { assert } from "../assert";
 import { useRequest } from "../data";
 import { type At, followedLook, type Look, parseAt } from "../focus";
@@ -10,18 +10,11 @@ import type { Backtrace, State } from "../protocol";
 import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
 import { tab, useTab } from "../tab";
-import { Banner } from "./Banner";
-import { BottomPanel } from "./BottomPanel";
-import { Breakpoints } from "./Breakpoints";
-import { CodeArea } from "./CodeArea";
+import { Dock } from "../workbench/Dock";
+import { workbench } from "../workbench/store";
+import { Documents } from "./Documents";
 import { Palette } from "./Palette";
-import { Processes } from "./Processes";
-import { Registers } from "./Registers";
-import { useSplit } from "./Split";
-import { Stack } from "./Stack";
-import { Tasks } from "./Tasks";
-import { Threads } from "./Threads";
-import { Variables, Watch } from "./Values";
+import { DEBUG_KINDS, debugLayout, useMissing } from "./panes";
 
 export interface Focus {
   session: string;
@@ -85,17 +78,7 @@ export function Workspace() {
   useEffect(() => {
     tab.setState({ frames });
   }, [frames]);
-  const left = useSplit("microscope-split-left", 270, {
-    label: "Resize the left column",
-    min: 180,
-    max: 520,
-  });
-  const right = useSplit("microscope-split-right", 340, {
-    label: "Resize the right column",
-    min: 220,
-    max: 720,
-    reversed: true,
-  });
+  useDebugLayout();
 
   const focus = useMemo((): Focus | null => {
     if (!state) {
@@ -118,35 +101,24 @@ export function Workspace() {
   }
   return (
     <FocusContext value={focus}>
-      <main
-        className="workspace"
-        style={{
-          gridTemplateColumns: `${left.size}px 5px minmax(0, 1fr) 5px ${right.size}px`,
-        }}
-      >
-        <div className="column">
-          <Threads />
-          <Tasks />
-          <Stack />
-          <Breakpoints />
-        </div>
-        <div {...left.handle} />
-        <div className="column center">
-          <Processes />
-          <Banner />
-          <CodeArea />
-          <BottomPanel />
-        </div>
-        <div {...right.handle} />
-        <div className="column right">
-          <Watch />
-          <Variables />
-          <Registers />
-        </div>
-      </main>
+      <Documents />
+      <Dock setup={SETUP} />
       <Palette />
     </FocusContext>
   );
+}
+
+const SETUP = { kinds: DEBUG_KINDS, useMissing };
+
+/** Arranges the debugger's panes as the Debug layout, unless the page has
+ * arranged them already. On the first render, before the panes it holds
+ * render or arrange themselves within it. */
+function useDebugLayout() {
+  useState(() => {
+    if (Object.keys(workbench.getState().layout.panes).length === 0) {
+      workbench.setState({ layout: debugLayout() });
+    }
+  });
 }
 
 /** Moves a following tab to each new stop, replacing the address (D3). */

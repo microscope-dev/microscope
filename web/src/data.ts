@@ -7,6 +7,7 @@ import { assert } from "./assert";
 import type { Connection } from "./connection";
 import { type Method, type ParamsOf, RequestError, type Results } from "./protocol";
 import { useConnection } from "./store";
+import { useVisible } from "./workbench/visible";
 
 type Settled = { ok: true; value: unknown } | { ok: false; error: RequestError };
 
@@ -125,7 +126,8 @@ export interface Requested<T> {
 
 /**
  * Asks for `method` with `params`, or nothing when params are null, keeping
- * the previous answer on screen until the new one arrives.
+ * the previous answer on screen until the new one arrives. A pane not on
+ * screen keeps what it has and asks for nothing until it is shown.
  */
 export function useRequest<M extends Method>(
   method: M,
@@ -133,12 +135,13 @@ export function useRequest<M extends Method>(
   source: Cache = cache,
 ): Requested<Results[M]> {
   const connection = useConnection();
+  const visible = useVisible();
   const key = params === null ? null : cacheKey(method, params);
   // Cache invalidation triggers a new request.
   const version = useSyncExternalStore(source.subscribe, source.version);
   const [shown, setShown] = useState<{ key: string | null; settled?: Settled }>(() => {
-    if (key === null) {
-      return { key };
+    if (key === null || !visible) {
+      return { key: null };
     }
     const settled = source.get(connection, method, params).settled;
     return settled ? { key, settled } : { key: null };
@@ -151,6 +154,9 @@ export function useRequest<M extends Method>(
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new version means answers were forgotten, so ask again
   useEffect(() => {
     const params = asked.current;
+    if (!visible) {
+      return;
+    }
     if (key === null || params === null) {
       setShown({ key: null });
       return;
@@ -169,7 +175,7 @@ export function useRequest<M extends Method>(
     return () => {
       live = false;
     };
-  }, [key, connection, method, source, version]);
+  }, [key, connection, method, source, version, visible]);
 
   const current = shown.key === key && key !== null;
   const settled = shown.settled;

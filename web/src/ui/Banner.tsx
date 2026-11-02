@@ -4,6 +4,7 @@ import { formatPlace } from "../focus";
 import { unreached } from "../follow";
 import type { Place, StopEntry } from "../protocol";
 import { tab, useTab } from "../tab";
+import { useVisible } from "../workbench/visible";
 import { threadLabel } from "./names";
 import { useGo, useLinkPaths } from "./navigation";
 import { fileName } from "./paths";
@@ -27,7 +28,9 @@ export function Banner() {
   const paths = useLinkPaths();
   const go = useGo();
   const [stayed, setStayed] = useState<number | null>(null);
-  if (!at) {
+  // Each document pane has a banner; only the one on screen shows it.
+  const visible = useVisible();
+  if (!at || !visible) {
     return null;
   }
   const inferior = state.inferior;

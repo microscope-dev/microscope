@@ -70,7 +70,7 @@ describe("module boundaries", () => {
 
   it("finds the modules it checks", () => {
     expect(all).toContain("src/store.ts");
-    expect(imports("src/router.tsx").map((found) => found.target)).toContain("src/ui/Shell");
+    expect(imports("src/router.tsx").map((found) => found.target)).toContain("src/ui/Frame");
   });
 
   it.each(RULES)("$why", (rule) => {

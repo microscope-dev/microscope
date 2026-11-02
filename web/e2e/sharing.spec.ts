@@ -38,7 +38,13 @@ test("a view link shows a coworker the same session without its controls", async
   );
   await expect(coworker.getByText("View only")).toBeVisible();
   await expect(coworker.locator("[data-action]")).toHaveCount(0);
-  await expect(coworker.getByRole("button", { name: /Debug something/ })).toHaveCount(0);
+  await coworker.getByRole("menuitem", { name: "File", exact: true }).click();
+  await expect(
+    coworker
+      .getByRole("menu", { name: "File" })
+      .getByRole("menuitem", { name: "Launch a program…" }),
+  ).toHaveAttribute("aria-disabled", "true");
+  await coworker.keyboard.press("Escape");
   await coworker.keyboard.press("F5");
   await expect(coworker.getByTestId("status")).toContainText("Stopped");
 

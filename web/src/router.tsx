@@ -11,14 +11,14 @@ import {
 import { base } from "./base";
 import { parseSearch, stringifySearch, validateLook } from "./focus";
 import { validateProfileLook } from "./profile/look";
+import { Frame } from "./ui/Frame";
 import { Landing } from "./ui/Landing";
 import { Picker, pickerSearch } from "./ui/Picker";
 import { Home, Join, SessionPage } from "./ui/pages";
 import { ProfilePage } from "./ui/profile/ProfilePage";
-import { Shell } from "./ui/Shell";
 import { Workspace } from "./ui/Workspace";
 
-const rootRoute = createRootRoute({ component: Shell });
+const rootRoute = createRootRoute({ component: Frame });
 
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: Home });
 

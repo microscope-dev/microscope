@@ -54,7 +54,11 @@ export function Processes() {
   const [busy, setBusy] = useState(false);
   const group = state.group;
   if (!showsProcesses(group)) {
-    return null;
+    return (
+      <div className="pane-body">
+        <div className="empty">This session debugs one process.</div>
+      </div>
+    );
   }
   const selected = group.members.find((member) => member.number === group.selected);
   const ask = (method: "selectMember" | "detachMember", member: number) => {
@@ -105,8 +109,7 @@ export function Processes() {
   };
 
   return (
-    <nav className="processes" aria-label="Processes" data-testid="processes">
-      <span className="muted">Processes</span>
+    <nav className="pane-body processes" aria-label="Processes" data-testid="processes">
       <ul>{active.map(row)}</ul>
       {control && selected && selected.number !== 1 && selected.state === "stopped" && (
         <button
@@ -127,4 +130,9 @@ export function Processes() {
       )}
     </nav>
   );
+}
+
+export function ProcessesBadge() {
+  const count = useModel((model) => model.state?.group?.members.length ?? 0);
+  return count > 1 ? <span className="count">{count}</span> : null;
 }

@@ -19,52 +19,47 @@ export function Breakpoints() {
   const breakpoints = state.breakpoints;
 
   return (
-    <section
-      className="pane"
-      style={{ flex: "0 1 auto", maxHeight: "40%" }}
-      aria-label="Breakpoints"
-      data-pane="3"
-      tabIndex={-1}
-    >
-      <div className="pane-head">
-        Breakpoints <span className="count">{breakpoints.length + state.watchpoints.length}</span>
-        <span className="end">Alt+3</span>
-      </div>
-      <div className="pane-body">
-        <ul className="rows" data-testid="breakpoints">
-          {breakpoints.map((breakpoint) =>
-            editing === breakpoint.id ? (
-              <BreakpointEditor
-                key={breakpoint.id}
-                breakpoint={breakpoint}
-                done={() => setEditing(null)}
-              />
-            ) : (
-              <Row
-                key={breakpoint.id}
-                breakpoint={breakpoint}
-                control={control}
-                edit={() => setEditing(breakpoint.id)}
-              />
-            ),
-          )}
+    <div className="pane-body">
+      <ul className="rows" data-testid="breakpoints">
+        {breakpoints.map((breakpoint) =>
+          editing === breakpoint.id ? (
+            <BreakpointEditor
+              key={breakpoint.id}
+              breakpoint={breakpoint}
+              done={() => setEditing(null)}
+            />
+          ) : (
+            <Row
+              key={breakpoint.id}
+              breakpoint={breakpoint}
+              control={control}
+              edit={() => setEditing(breakpoint.id)}
+            />
+          ),
+        )}
+      </ul>
+      {state.watchpoints.length > 0 && (
+        <ul className="rows" data-testid="watchpoints">
+          {state.watchpoints.map((watchpoint) => (
+            <WatchRow key={watchpoint.id} watchpoint={watchpoint} control={control} />
+          ))}
         </ul>
-        {state.watchpoints.length > 0 && (
-          <ul className="rows" data-testid="watchpoints">
-            {state.watchpoints.map((watchpoint) => (
-              <WatchRow key={watchpoint.id} watchpoint={watchpoint} control={control} />
-            ))}
-          </ul>
-        )}
-        {control && <Adder />}
-        {control && <WatchAdder />}
-        <Exceptions control={control} />
-        {!control && breakpoints.length + state.watchpoints.length === 0 && (
-          <div className="empty">No breakpoints.</div>
-        )}
-      </div>
-    </section>
+      )}
+      {control && <Adder />}
+      {control && <WatchAdder />}
+      <Exceptions control={control} />
+      {!control && breakpoints.length + state.watchpoints.length === 0 && (
+        <div className="empty">No breakpoints.</div>
+      )}
+    </div>
   );
+}
+
+export function BreakpointsBadge() {
+  const count = useModel(
+    (model) => (model.state?.breakpoints.length ?? 0) + (model.state?.watchpoints.length ?? 0),
+  );
+  return count > 0 ? <span className="count">{count}</span> : null;
 }
 
 /** Short source location, falling back to the requested location. */

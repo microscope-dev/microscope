@@ -17,58 +17,46 @@ export function Threads() {
   const choosable = at !== null && stale === null;
 
   return (
-    <section
-      className="pane"
-      style={{ flex: "0 1 auto", maxHeight: "30%" }}
-      aria-label="Threads"
-      data-pane="1"
-      tabIndex={-1}
-    >
-      <div className="pane-head">
-        Threads <span className="count">{state.threads.length}</span>
-        <span className="end">Alt+1</span>
-      </div>
-      <div className={`pane-body ${stale ? "stale" : ""}`}>
-        {state.threads.length === 0 ? (
-          <div className="empty">{emptyThreads(inferior)}</div>
-        ) : (
-          <ul className="rows" data-testid="threads">
-            {state.threads.map((thread) => (
-              <li key={thread.id}>
-                <button
-                  type="button"
-                  className={`row button-row ${thread.id === shown ? "selected" : ""}`}
-                  disabled={!choosable}
-                  aria-current={thread.id === shown ? "true" : undefined}
-                  onClick={() => {
-                    assert(at !== null, `thread ${thread.id} chosen with no stop`);
-                    go({
-                      stop: at.stop,
-                      thread: thread.id,
-                      frame: openingFrame(state, at.stop, thread.id),
-                    });
-                  }}
-                >
-                  <span>{threadLabel(thread.id, thread.name)}</span>
-                  {thread.labels.map((label) => (
-                    <span key={label} className="dim">
-                      {label}
-                    </span>
-                  ))}
-                  <span className="end">
-                    {thread.id === stopping
-                      ? "◂ stopped here"
-                      : thread.stopped
-                        ? "stopped"
-                        : "running"}
+    <div className={`pane-body ${stale ? "stale" : ""}`}>
+      {state.threads.length === 0 ? (
+        <div className="empty">{emptyThreads(inferior)}</div>
+      ) : (
+        <ul className="rows" data-testid="threads">
+          {state.threads.map((thread) => (
+            <li key={thread.id}>
+              <button
+                type="button"
+                className={`row button-row ${thread.id === shown ? "selected" : ""}`}
+                disabled={!choosable}
+                aria-current={thread.id === shown ? "true" : undefined}
+                onClick={() => {
+                  assert(at !== null, `thread ${thread.id} chosen with no stop`);
+                  go({
+                    stop: at.stop,
+                    thread: thread.id,
+                    frame: openingFrame(state, at.stop, thread.id),
+                  });
+                }}
+              >
+                <span>{threadLabel(thread.id, thread.name)}</span>
+                {thread.labels.map((label) => (
+                  <span key={label} className="dim">
+                    {label}
                   </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </section>
+                ))}
+                <span className="end">
+                  {thread.id === stopping
+                    ? "◂ stopped here"
+                    : thread.stopped
+                      ? "stopped"
+                      : "running"}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

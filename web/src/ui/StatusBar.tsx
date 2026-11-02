@@ -15,48 +15,25 @@ const SHOWN = 8;
 const FLASH = 4000;
 
 /**
- * The bottom strip: the session's latest stops, clickable, and what others
+ * The status bar: the session's latest stops, clickable, and what others
  * did or what the tab just did.
  */
-export function Strip() {
+export function StatusBar() {
   const notices = useModel((model) => model.notices);
   const me = useModel((model) => model.hello?.connection);
   const state = useModel((model) => model.state);
-  const at = useTab((current) => current.at);
   const flash = useTab((current) => current.flash);
-  const navigate = useNavigate();
   const now = useNow(flash ? flash.at + FLASH : null);
   const latest = [...notices].reverse().find((notice) => notice.connection !== me);
   const stops = state?.session ? state.stops.slice(-SHOWN) : [];
-  const session = state?.session;
-  const current = state?.inferior.state === "stopped" ? state.inferior.stop : null;
 
   return (
-    <footer className="strip">
+    <footer className="strip status-bar">
       {stops.length > 0 && (
         <nav className="stops" aria-label="Stops" data-testid="stops">
           <span className="muted">Stops</span>
           {stops.map((entry) => (
-            <button
-              key={entry.stop}
-              type="button"
-              className={`stop ${entry.stop === at?.stop ? "on" : ""} ${entry.stop === current ? "current" : ""}`}
-              aria-current={entry.stop === at?.stop ? "true" : undefined}
-              title={describeStop(entry)}
-              onClick={() => {
-                assert(session, `stop ${entry.stop} listed with no session`);
-                void navigate({
-                  href: stopPath(session, {
-                    stop: entry.stop,
-                    thread: entry.thread,
-                    frame: entry.frame,
-                  }),
-                });
-              }}
-            >
-              #{entry.stop} {stopKind(entry.reason.kind)} · {placeText(entry.place)}
-              {entry.stop === current && " ◂ now"}
-            </button>
+            <StopButton key={entry.stop} entry={entry} className="stop" />
           ))}
         </nav>
       )}
@@ -74,6 +51,57 @@ export function Strip() {
         ) : null}
       </span>
     </footer>
+  );
+}
+
+/** Every stop the session made, the latest first. */
+export function Stops() {
+  const stops = useModel((model) => model.state?.stops);
+  if (!stops || stops.length === 0) {
+    return (
+      <div className="pane-body">
+        <div className="empty">Stops appear here as the program stops.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="pane-body">
+      <ul className="rows" data-testid="stop-list">
+        {[...stops].reverse().map((entry) => (
+          <li key={entry.stop}>
+            <StopButton entry={entry} className="row button-row" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** A stop, which shows the tab that stop when chosen. */
+function StopButton({ entry, className }: { entry: StopEntry; className: string }) {
+  const session = useModel((model) => model.state?.session);
+  const current = useModel((model) =>
+    model.state?.inferior.state === "stopped" ? model.state.inferior.stop : null,
+  );
+  const at = useTab((state) => state.at);
+  const navigate = useNavigate();
+  const on = entry.stop === at?.stop;
+  return (
+    <button
+      type="button"
+      className={`${className} ${on ? "on" : ""} ${entry.stop === current ? "current" : ""}`}
+      aria-current={on ? "true" : undefined}
+      title={describeStop(entry)}
+      onClick={() => {
+        assert(session, `stop ${entry.stop} listed with no session`);
+        void navigate({
+          href: stopPath(session, { stop: entry.stop, thread: entry.thread, frame: entry.frame }),
+        });
+      }}
+    >
+      #{entry.stop} {stopKind(entry.reason.kind)} · {placeText(entry.place)}
+      {entry.stop === current && " ◂ now"}
+    </button>
   );
 }
 

@@ -21,6 +21,7 @@ test("a child that stops shows in the switcher, and the panes switch processes",
   await expect(page.getByTestId("breakpoints")).toContainText("child_work");
   await page.keyboard.press("F5");
 
+  await page.getByRole("tab", { name: /^Processes/ }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const child = switcher.getByRole("button", { name: /\[2\] process-tree/ });
   await expect(child).toHaveAttribute("aria-pressed", "true");

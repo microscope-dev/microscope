@@ -1,22 +1,29 @@
-import { Outlet, useLocation } from "@tanstack/react-router";
+// The page's frame: the menu bar and run toolbar above, the status bar
+// below, and the keys, which work wherever the page is. Pages outside a
+// session, such as joining one, show alone.
+
+import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { base } from "../base";
 import { commandName } from "../model";
 import { useModel } from "../store";
 import { flash } from "../tab";
 import { standalone } from "../target";
 import { isTextBox, keepsEscape } from "../workbench/keys";
+import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
 import { KeyHelp } from "./KeyHelp";
 import { NeedsLink } from "./pages";
+import { RunToolbar } from "./RunToolbar";
 import { Start } from "./Start";
-import { Strip } from "./Strip";
-import { Toolbar } from "./Toolbar";
+import { StatusBar } from "./StatusBar";
 
-export function Shell() {
+export function Frame() {
   const link = useModel((model) => model.link);
   const name = useModel((model) => commandName(model.state));
   const inferior = useModel((model) => model.state?.inferior.state);
   const location = useLocation();
+  const commands = useCommands();
   useKeys();
 
   useEffect(() => {
@@ -46,9 +53,27 @@ export function Shell() {
   }
   return (
     <div className="app">
-      <Toolbar />
+      <header className="frame-head">
+        <div className="menu-row">
+          <Link to="/" className="brand" aria-label="microscope home">
+            <img src={`${base}favicon.svg`} alt="" />
+            microscope
+          </Link>
+          <MenuBar
+            registry={COMMANDS}
+            availability={commands.availability}
+            run={(id) => {
+              const ran = commands.run(id);
+              if (ran.state === "blocked") {
+                flash(ran.why);
+              }
+            }}
+          />
+        </div>
+        <RunToolbar />
+      </header>
       <Outlet />
-      <Strip />
+      <StatusBar />
       <KeyHelp />
     </div>
   );

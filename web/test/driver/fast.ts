@@ -6,14 +6,17 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
 import { expect, vi } from "vitest";
-import { userEvent } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import "../../src/styles.css";
 import { cache } from "../../src/data";
 import { forgetting } from "../../src/forget";
 import { createAppRouter } from "../../src/router";
 import { SessionContext } from "../../src/store";
 import { initialTab, tab } from "../../src/tab";
+import { emptyLayout } from "../../src/workbench/layout";
+import { workbench } from "../../src/workbench/store";
 import { fakeServer, POLL } from "../fake-server";
+import { readGroups } from "./layout";
 import { type Script, ScriptedDebugger } from "./scripted";
 import { parseChord, toKeyboard, type User, type ValuePane } from "./user";
 
@@ -30,12 +33,17 @@ export async function openPage(
   forgetting(server.session.store);
   const scripted = new ScriptedDebugger(server, script);
   const router = createAppRouter(createMemoryHistory({ initialEntries: ["/"] }));
+  // The page fills the window, as index.html has it.
+  await page.viewport(1440, 900);
+  const container = document.body.appendChild(document.createElement("div"));
+  container.style.height = "100vh";
   render(
     createElement(
       SessionContext,
       { value: server.session },
       createElement(RouterProvider, { router }),
     ),
+    { container },
   );
   return { user: new FastUser(), debugger: scripted };
 }
@@ -43,8 +51,12 @@ export async function openPage(
 /** Forgets what one journey left: its page, its answers, and its tab. */
 export function closePage(): void {
   cleanup();
+  for (const left of document.body.querySelectorAll(":scope > div:empty")) {
+    left.remove();
+  }
   cache.clear();
   tab.setState(initialTab, true);
+  workbench.setState({ layout: emptyLayout() }, true);
 }
 
 /** The single element `selector` finds, or why there is not one. */
@@ -80,6 +92,23 @@ class FastUser implements User {
       () => expect(one('[data-testid="source"] .cm-pc-line').textContent).toContain(text),
       DEADLINE,
     );
+  }
+
+  async menu(menu: string, item: string): Promise<void> {
+    await userEvent.click(page.getByRole("menuitem", { name: menu, exact: true }));
+    await userEvent.click(
+      page.getByRole("menu", { name: menu }).getByRole("menuitem", { name: item }),
+    );
+  }
+
+  async chooseTab(title: string): Promise<void> {
+    await userEvent.click(
+      page.getByRole("tab").filter({ has: page.getByText(title, { exact: true }) }),
+    );
+  }
+
+  async expectGroups(groups: string[][]): Promise<void> {
+    await vi.waitFor(() => expect(readGroups()).toEqual(groups), DEADLINE);
   }
 
   async expectValue(pane: ValuePane, name: string, text: string): Promise<void> {

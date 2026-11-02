@@ -30,7 +30,7 @@ export function Signals() {
       .catch((failure: Error) => setError(failure.message));
   };
   return (
-    <div className="pane-body table-body" data-pane="6" tabIndex={-1}>
+    <div className="pane-body table-body">
       {error && <div className="error">{error}</div>}
       <table className="table" data-testid="signals">
         <thead>
@@ -80,7 +80,7 @@ export function Modules() {
     return <div className="empty">Modules appear once the program runs.</div>;
   }
   return (
-    <div className="pane-body table-body" data-pane="6" tabIndex={-1}>
+    <div className="pane-body table-body">
       <table className="table" data-testid="modules">
         <thead>
           <tr>
