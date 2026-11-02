@@ -1,28 +1,32 @@
-// What a page served on its own shows until it has a microscope to talk to:
-// a join link to paste, and an optional sign-in to the services backend.
+// What a page served on its own shows to someone not signed in: a join link
+// to paste, and an optional sign-in to the services backend. Someone signed
+// in goes on to their landing page (Landing.tsx).
 
+import { Navigate, useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { currentUser, signIn, signOut, type User } from "../account";
+import { currentUser, signIn, type User } from "../account";
 import { isPagePath } from "../focus";
 import { parseJoinLink, remote, setRemote } from "../target";
 
 export function Start() {
-  const refused = remote();
   return (
     <div className="page" style={{ display: "grid", gap: 16, alignContent: "start" }}>
-      <Connect
-        reason={
-          refused
-            ? `The microscope at ${refused.server} refused its link. It may have restarted with a new one.`
-            : null
-        }
-      />
+      <Connect />
       <Account />
     </div>
   );
 }
 
-function Connect({ reason }: { reason: string | null }) {
+/** Why the microscope the page last connected to sent it back here, if it did. */
+function refused(): string | null {
+  const last = remote();
+  return last
+    ? `The microscope at ${last.server} refused its link. It may have restarted with a new one.`
+    : null;
+}
+
+export function Connect() {
+  const reason = refused();
   const id = useId();
   const [link, setLink] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -77,16 +81,20 @@ type AccountState =
   | { kind: "checking" }
   | { kind: "unavailable"; why: string }
   | { kind: "out" }
-  | { kind: "in"; user: User };
+  | { kind: "in" };
 
 function Account() {
+  const navigate = useNavigate();
   const [state, setState] = useState<AccountState>({ kind: "checking" });
   useEffect(() => {
     currentUser()
-      .then((user) => setState(user ? { kind: "in", user } : { kind: "out" }))
+      .then((user) => setState({ kind: user ? "in" : "out" }))
       .catch((error: Error) => setState({ kind: "unavailable", why: error.message }));
   }, []);
 
+  if (state.kind === "in") {
+    return <Navigate to="/home" replace />;
+  }
   return (
     <div className="card" style={{ width: "min(560px, 100%)" }}>
       <div className="card-head">
@@ -98,36 +106,9 @@ function Account() {
         <div className="card-body muted">
           Sign-in is unavailable ({state.why}). You can still connect without an account.
         </div>
-      ) : state.kind === "in" ? (
-        <SignedIn user={state.user} onSignedOut={() => setState({ kind: "out" })} />
       ) : (
-        <SignIn onSignedIn={(user) => setState({ kind: "in", user })} />
+        <SignIn onSignedIn={() => void navigate({ to: "/home" })} />
       )}
-    </div>
-  );
-}
-
-function SignedIn({ user, onSignedOut }: { user: User; onSignedOut(): void }) {
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <div className="card-body">
-      <p style={{ margin: 0 }}>
-        Signed in as <strong>{user.username}</strong> ({user.email}).
-      </p>
-      {error && <span className="error">{error}</span>}
-      <div className="actions">
-        <button
-          type="button"
-          className="button"
-          onClick={() => {
-            signOut()
-              .then(onSignedOut)
-              .catch((failure: Error) => setError(failure.message));
-          }}
-        >
-          Sign out
-        </button>
-      </div>
     </div>
   );
 }

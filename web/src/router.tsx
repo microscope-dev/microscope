@@ -11,6 +11,7 @@ import {
 import { base } from "./base";
 import { parseSearch, stringifySearch, validateLook } from "./focus";
 import { validateProfileLook } from "./profile/look";
+import { Landing } from "./ui/Landing";
 import { Picker, pickerSearch } from "./ui/Picker";
 import { Home, Join, SessionPage } from "./ui/pages";
 import { ProfilePage } from "./ui/profile/ProfilePage";
@@ -27,6 +28,13 @@ const joinRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): { to?: string } =>
     typeof search.to === "string" ? { to: search.to } : {},
   component: Join,
+});
+
+/** A signed-in user's landing page, on a page served on its own. */
+const landingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/home",
+  component: Landing,
 });
 
 const pickRoute = createRoute({
@@ -82,6 +90,7 @@ const profileRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   homeRoute,
   joinRoute,
+  landingRoute,
   pickRoute,
   profileRoute,
   sessionRoute.addChildren([sessionIndexRoute, liveRoute, stopRoute, taskRoute]),

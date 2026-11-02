@@ -25,7 +25,7 @@ export function Shell() {
 
   // Pages outside a session have nothing to control.
   const bare =
-    location.pathname === "/join" ? (
+    location.pathname === "/join" || location.pathname === "/home" ? (
       <Outlet />
     ) : link === "unauthorized" ? (
       standalone ? (
