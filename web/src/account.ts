@@ -1,6 +1,11 @@
 // Accounts on the services backend, which serves a page served on its own
 // under the page's own `/api/`: the development server proxies it there
 // (vite.config.ts). The session is services' HttpOnly cookie.
+//
+// When services sends email, a new account confirms its address by a link
+// to `/confirm-email`, and signing in takes the password and then the code
+// or the link (`/login-link`) it emails. Without email, a password alone
+// signs in, and signing up signs in too.
 
 import { createStore, useStore } from "zustand";
 import { standalone } from "./target";
@@ -11,19 +16,44 @@ export interface User {
   email: string;
 }
 
+/** What services answered when it refused, with its HTTP status. */
+export class Refused extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 /** What services said went wrong, or why it could not be asked. */
-async function failure(response: Response): Promise<Error> {
+async function failure(response: Response): Promise<Refused> {
   const body: unknown = await response.json().catch(() => null);
   const error = (body as { error?: unknown } | null)?.error;
-  return new Error(
+  return new Refused(
     typeof error === "string" ? error : `the services backend answered ${response.status}`,
+    response.status,
   );
 }
 
-/** The signed-in user, or null when nobody is. */
+async function post(path: string, body: unknown): Promise<Response> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw await failure(response);
+  }
+  return response;
+}
+
+/** The signed-in user, or null when nobody is. A session whose account has
+ * not confirmed its email is no session yet. */
 export async function currentUser(): Promise<User | null> {
   const response = await fetch("/api/users/me", { credentials: "same-origin" });
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 403) {
     return null;
   }
   if (!response.ok) {
@@ -32,23 +62,50 @@ export async function currentUser(): Promise<User | null> {
   return (await response.json()) as User;
 }
 
-export async function signIn(usernameOrEmail: string, password: string): Promise<User> {
-  const user = await postLogin(usernameOrEmail, password);
-  account.setState({ now: { kind: "in", user } });
+/** Counts the page's own sign-ins and outs, which a check that set out
+ * before one of them must not undo. */
+let changes = 0;
+
+const signedIn = (user: User): User => {
+  changes += 1;
+  account.setState({ now: { kind: "in", user }, notice: null });
   return user;
+};
+
+/** Signs in with a password: done, or a challenge to finish with the code
+ * services emailed. */
+export async function signIn(
+  usernameOrEmail: string,
+  password: string,
+): Promise<{ user: User } | { challenge: string }> {
+  const response = await post("/api/login", { username_or_email: usernameOrEmail, password });
+  if (response.status === 202) {
+    const { challenge } = (await response.json()) as { challenge: string };
+    return { challenge };
+  }
+  return { user: signedIn((await response.json()) as User) };
 }
 
-async function postLogin(usernameOrEmail: string, password: string): Promise<User> {
-  const response = await fetch("/api/login", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username_or_email: usernameOrEmail, password }),
-  });
-  if (!response.ok) {
-    throw await failure(response);
+export async function enterCode(challenge: string, code: string): Promise<User> {
+  const response = await post("/api/login/code", { challenge, code });
+  return signedIn((await response.json()) as User);
+}
+
+/** Makes an account. Returns whether its email must be confirmed before it
+ * can sign in; when it need not be, services signed it in already. */
+export async function signUp(username: string, email: string, password: string): Promise<boolean> {
+  await post("/api/users", { username, email, password });
+  const user = await currentUser();
+  if (user) {
+    signedIn(user);
   }
-  return (await response.json()) as User;
+  return user === null;
+}
+
+/** Asks for another confirmation link. Services answers the same whether
+ * or not it sent one, so nobody learns which addresses have accounts. */
+export async function resendConfirmation(email: string): Promise<void> {
+  await post("/api/email-confirmations/resend", { email });
 }
 
 export async function signOut(): Promise<void> {
@@ -56,7 +113,8 @@ export async function signOut(): Promise<void> {
   if (!response.ok) {
     throw await failure(response);
   }
-  account.setState({ now: { kind: "out" } });
+  changes += 1;
+  account.setState({ now: { kind: "out" }, notice: null });
 }
 
 /** Who is signed in, as far as the page knows. */
@@ -66,10 +124,23 @@ export type Account =
   | { readonly kind: "out" }
   | { readonly kind: "in"; readonly user: User };
 
-export const account = createStore<{ now: Account }>(() => ({ now: { kind: "checking" } }));
+/** What became of a link from an email, for the Account pane to say. */
+export interface Notice {
+  readonly ok: boolean;
+  readonly text: string;
+}
+
+export const account = createStore<{ now: Account; notice: Notice | null }>(() => ({
+  now: { kind: "checking" },
+  notice: null,
+}));
 
 export function useAccount(): Account {
   return useStore(account, (state) => state.now);
+}
+
+export function useNotice(): Notice | null {
+  return useStore(account, (state) => state.notice);
 }
 
 /** The question to services in flight, which panes opening together share. */
@@ -84,11 +155,62 @@ export function checkAccount(): Promise<void> {
     });
     return Promise.resolve();
   }
-  asking ??= currentUser()
-    .then((user) => account.setState({ now: user ? { kind: "in", user } : { kind: "out" } }))
-    .catch((error: Error) => account.setState({ now: { kind: "unavailable", why: error.message } }))
-    .finally(() => {
-      asking = null;
-    });
+  if (asking === null) {
+    const before = changes;
+    const settle = (now: Account) => {
+      if (changes === before) {
+        account.setState({ now });
+      }
+    };
+    asking = ask()
+      .then(settle)
+      .finally(() => {
+        asking = null;
+      });
+  }
   return asking;
+}
+
+function ask(): Promise<Account> {
+  return currentUser().then(
+    (user) => (user ? { kind: "in", user } : { kind: "out" }),
+    (error: Error) => ({ kind: "unavailable", why: error.message }),
+  );
+}
+
+/** Takes the token from an emailed link's `#token=…` out of the address
+ * bar, so nothing later can copy it. Null once it is gone. */
+function takeToken(): string | null {
+  const token = new URLSearchParams(window.location.hash.slice(1)).get("token");
+  if (token !== null) {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+  return token;
+}
+
+/** Follows the link a confirmation or login email sent: `/confirm-email`
+ * or `/login-link`. Says how it went in the Account pane. */
+export function followEmailLink(link: "confirm" | "login"): void {
+  const token = takeToken();
+  if (token === null || !standalone) {
+    return;
+  }
+  const done = (notice: Notice) => account.setState({ notice });
+  if (link === "confirm") {
+    post("/api/email-confirmations", { token })
+      .then(() => done({ ok: true, text: "Your email address is confirmed. You can sign in now." }))
+      .catch((error: Error) => done({ ok: false, text: `Could not confirm: ${error.message}.` }));
+  } else {
+    // The sign-in form would only flash while the link is checked.
+    changes += 1;
+    account.setState({ now: { kind: "checking" } });
+    post("/api/login/link", { token })
+      .then(async (response) => {
+        signedIn((await response.json()) as User);
+      })
+      .catch((error: Error) => {
+        done({ ok: false, text: `Could not sign in: ${error.message}.` });
+        void ask().then((now) => account.setState({ now }));
+      });
+  }
 }

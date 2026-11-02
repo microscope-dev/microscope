@@ -3,11 +3,9 @@
 // something from the File menu.
 
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
-import * as path from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, expectErrors, fixture, join, menu, root, test } from "./server";
+import { expect, expectErrors, fixture, join, menu, test } from "./server";
+import { type Handler, standalonePage } from "./services";
 
 const tab = (page: Page, name: string) => page.getByRole("tab", { name, exact: true });
 
@@ -53,58 +51,34 @@ test.describe("with nothing to debug", () => {
   });
 });
 
-/** Serves the built page on its own, as `just web` does, with a stand-in
- * for the services backend's accounts under `/api/`. */
-async function standalonePage(): Promise<{ origin: string; server: Server }> {
-  const dir = path.join(root, "build", "web");
+/** A stand-in for the services backend without email, where a password
+ * alone signs in. */
+function standIn(): Handler {
   let signedIn = false;
   const dev = { id: 1, username: "dev", email: "dev@microscope.dev" };
-  const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://page");
+  return (request, response) => {
     const json = (status: number, body: unknown) => {
       response.writeHead(status, { "Content-Type": "application/json" });
       response.end(JSON.stringify(body));
     };
-    if (url.pathname === "/api/users/me") {
+    if (request.url === "/api/users/me") {
       json(signedIn ? 200 : 401, signedIn ? dev : { error: "not signed in" });
       return;
     }
-    if (url.pathname === "/api/login") {
+    if (request.url === "/api/login") {
       signedIn = true;
       json(200, dev);
       return;
     }
-    // Assets by name, and the page for every other address.
-    const file = url.pathname.startsWith("/assets/") ? url.pathname : "/index.html";
-    readFile(path.join(dir, path.normalize(file)))
-      .then((body) => {
-        response.writeHead(200, {
-          "Content-Type": file.endsWith(".js")
-            ? "text/javascript"
-            : file.endsWith(".css")
-              ? "text/css"
-              : "text/html",
-        });
-        response.end(body);
-      })
-      .catch(() => {
-        response.writeHead(404);
-        response.end();
-      });
-  });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("the page's server has no port");
-  }
-  return { origin: `http://127.0.0.1:${address.port}`, server };
+    json(404, { error: "no such route" });
+  };
 }
 
 test("a page served on its own signs in, then connects with a join link", async ({
   page,
   microscope,
 }) => {
-  const served = await standalonePage();
+  const served = await standalonePage(standIn());
   // Services says nobody is signed in yet.
   expectErrors(/\/api\/users\/me: 401$/);
   try {

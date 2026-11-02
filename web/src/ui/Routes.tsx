@@ -4,6 +4,7 @@
 
 import { Link, Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
+import { followEmailLink } from "../account";
 import { KIND } from "../documents";
 import { type Note, targetName } from "../model";
 import { useModel } from "../store";
@@ -50,6 +51,18 @@ export function Pick() {
     showPane(PICKED[tab ?? "launch"]);
     void navigate({ to: "/", replace: true });
   }, [tab, navigate]);
+  return <Workbench focus={null} wants="start" />;
+}
+
+/** `/confirm-email#token=` and `/login-link#token=`, where the links in
+ * services' emails lead: the Account pane, saying how following it went. */
+export function EmailLink({ link }: { link: "confirm" | "login" }) {
+  const navigate = useNavigate();
+  useLayoutEffect(() => {
+    followEmailLink(link);
+    showPane(KIND.account);
+    void navigate({ to: "/", replace: true });
+  }, [link, navigate]);
   return <Workbench focus={null} wants="start" />;
 }
 

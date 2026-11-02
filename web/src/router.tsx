@@ -14,7 +14,7 @@ import { validateProfileLook } from "./profile/look";
 import { Frame } from "./ui/Frame";
 import { Join } from "./ui/Join";
 import { pickerSearch } from "./ui/Picker";
-import { Home, Pick, ProfileRoute, SessionRoute } from "./ui/Routes";
+import { EmailLink, Home, Pick, ProfileRoute, SessionRoute } from "./ui/Routes";
 import { Workspace } from "./ui/Workspace";
 
 const rootRoute = createRootRoute({ component: Frame });
@@ -34,6 +34,19 @@ const pickRoute = createRoute({
   path: "/pick",
   validateSearch: pickerSearch,
   component: Pick,
+});
+
+// Services' emails link to these.
+const confirmEmailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/confirm-email",
+  component: () => <EmailLink link="confirm" />,
+});
+
+const loginLinkRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/login-link",
+  component: () => <EmailLink link="login" />,
 });
 
 const sessionRoute = createRoute({
@@ -83,6 +96,8 @@ const routeTree = rootRoute.addChildren([
   homeRoute,
   joinRoute,
   pickRoute,
+  confirmEmailRoute,
+  loginLinkRoute,
   profileRoute,
   sessionRoute.addChildren([sessionIndexRoute, liveRoute, stopRoute, taskRoute]),
 ]);

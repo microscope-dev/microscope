@@ -170,6 +170,22 @@ services' `__Host-session` cookie, which a browser keeps only over HTTPS. Start
 services from its own repository with `just up` and `just run`. Without it,
 the page says sign-in is unavailable and connecting still works.
 
+The Account pane signs up, signs in, and signs out (`web/src/account.ts`).
+When services sends email, a new account must confirm its address first,
+and signing in takes the password and then the six-digit code services
+emails. The links in those emails lead to the page's `/confirm-email` and
+`/login-link`, with the token in the fragment. Those addresses open the
+Account pane, which says how the link went. Without email, a password alone
+signs in.
+
+`web/e2e/accounts.spec.ts` runs this against the real services server, with
+a fake Postmark that keeps each email so the test can follow its link or
+type its code. Services hashes passwords at argon2's minimum costs there
+(`--insecure-fast-password-hashing`, debug builds only). It runs services
+from `../services/target/debug`, or from `MICROSCOPE_SERVICES_BINARY`, and
+skips when that is not built. Build it and start its database from the
+services repository with `just build` and `just up`.
+
 Use binaries in `web/node_modules/.bin` or the Nix shell's `biome`. Do not use
 `npx`, which can download a different package when a command is missing.
 

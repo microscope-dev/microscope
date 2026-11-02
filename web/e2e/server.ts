@@ -112,10 +112,12 @@ export const test = base.extend<{ program: string[]; microscope: Microscope; qui
       context.pages().forEach(watch);
       context.on("page", watch);
       await use(undefined);
+      const allowed = allowedErrors.get(test.info().testId) ?? [];
+      const unexpected = errors.filter((error) => !allowed.some((each) => each.test(error)));
       const expected = (expectedErrors.get(test.info().testId) ?? []).map((error) =>
         typeof error === "string" ? error : expect.stringMatching(error),
       );
-      expect(errors).toEqual(expected);
+      expect(unexpected).toEqual(expected);
     },
     { auto: true },
   ],
@@ -158,6 +160,14 @@ const expectedErrors = new Map<string, (string | RegExp)[]>();
  * as patterns. */
 export function expectErrors(...errors: (string | RegExp)[]): void {
   expectedErrors.set(test.info().testId, errors);
+}
+
+const allowedErrors = new Map<string, RegExp[]>();
+
+/** Declares errors this test's pages may show any number of times, which
+ * `expectErrors` then leaves out. */
+export function allowErrors(...errors: RegExp[]): void {
+  allowedErrors.set(test.info().testId, errors);
 }
 
 /** Opens the join link and waits until the page shows the session, or
