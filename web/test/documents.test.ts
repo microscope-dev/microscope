@@ -58,6 +58,9 @@ describe("arranging the documents", () => {
         // What the person was working in stays theirs.
         if (groups(after).some((candidate) => candidate.id === before.focused)) {
           expect(after.focused).toBe(before.focused);
+          if (groups(after).some((candidate) => candidate.id === before.maximized)) {
+            expect(after.maximized).toBe(before.maximized);
+          }
         }
         for (const [id, pane] of Object.entries(before.panes) as [PaneId, Pane][]) {
           if (pane.kind !== KIND.source) {

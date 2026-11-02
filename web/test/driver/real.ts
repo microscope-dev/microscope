@@ -63,8 +63,10 @@ export class RealUser implements User {
     const row = this.#page
       .getByTestId(PANES[pane])
       .locator(".value-row")
-      .filter({ has: this.#page.locator(".value-name", { hasText: new RegExp(`^${name}$`) }) })
+      .filter({ has: this.#page.getByText(name, { exact: true }) })
       .first();
-    await expect(row).toContainText(text);
+    await expect
+      .poll(() => row.locator(".value-text").evaluate((value) => value.firstChild?.textContent))
+      .toBe(text);
   }
 }

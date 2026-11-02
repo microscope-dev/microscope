@@ -530,10 +530,10 @@ function replaceNode(node: Node, id: GroupId | SplitId, by: Node): Node {
   };
 }
 
-/** Restores the rules after an operation: empty groups and splits of one go,
- * nested splits along one axis flatten, and focus moves off a group that
- * went to the nearest one left, in reading order. */
+/** Removes empty groups, collapses splits, and restores lost focus to the
+ * maximized group or the nearest remaining group in reading order. */
 function settle(layout: Layout): Layout {
+  assert(Number.isSafeInteger(layout.next), "layout ids exhausted");
   const before = groups(layout);
   const dock = before.filter((group) => !layout.floating.some((w) => w.group === group));
   const root = tidy(layout.root) ?? {
@@ -552,11 +552,17 @@ function settle(layout: Layout): Layout {
     const nearest = [...before.slice(0, index).reverse(), ...before.slice(index + 1)].find(
       (group) => after.has(group.id),
     );
-    focused = nearest?.id ?? docked(root)[0]?.id ?? focused;
+    focused =
+      docked(root).find((group) => group.id === layout.maximized)?.id ??
+      nearest?.id ??
+      docked(root)[0]?.id ??
+      focused;
   }
-  const maximized = docked(root).some((group) => group.id === layout.maximized)
-    ? layout.maximized
-    : null;
+  const maximized =
+    docked(root).some((group) => group.id === layout.maximized) &&
+    (focused === layout.maximized || floating.some((window) => window.group.id === focused))
+      ? layout.maximized
+      : null;
   // A node a change took apart is gone, and one holding the focus shows
   // again, as when a pane in a hidden dock is opened.
   const hidden = layout.hidden.filter((id) => {
@@ -609,6 +615,10 @@ function validRect(rect: Rect): boolean {
 /** Every rule the layout breaks; none, after any operation. */
 export function checkLayout(layout: Layout): string[] {
   const broken: string[] = [];
+  // Splitting can allocate both a group and a split.
+  if (!Number.isSafeInteger(layout.next + 2) || layout.next < 0) {
+    broken.push("the next id leaves no room for another split");
+  }
   const all = groups(layout);
   const seen = new Set<PaneId>();
   const ids = new Set<string>();
@@ -672,6 +682,13 @@ export function checkLayout(layout: Layout): string[] {
   }
   if (layout.maximized !== null && !docked(layout.root).some((g) => g.id === layout.maximized)) {
     broken.push(`the maximized ${layout.maximized} is no docked group`);
+  }
+  if (
+    layout.maximized !== null &&
+    layout.focused !== layout.maximized &&
+    !layout.floating.some((window) => window.group.id === layout.focused)
+  ) {
+    broken.push(`the focused ${layout.focused} is behind the maximized group`);
   }
   for (const id of layout.hidden) {
     const found = nodeIn(layout.root, id);

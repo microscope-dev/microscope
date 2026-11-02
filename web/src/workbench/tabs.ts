@@ -2,6 +2,7 @@
 // menu.
 
 import { assert } from "../assert";
+import { tabId } from "./context";
 import type { Kinds } from "./kinds";
 import { activate, close, groupOf, groups, move, open, type PaneId, paneOf } from "./layout";
 import { change, REOPENABLE, workbench } from "./store";
@@ -30,6 +31,16 @@ export function closeTab(kinds: Kinds<string>, pane: PaneId): void {
   } else {
     change((layout) => close(layout, pane));
   }
+  requestAnimationFrame(() => {
+    if (document.activeElement !== document.body) {
+      return;
+    }
+    const current = workbench.getState().layout;
+    const next = groups(current).find((candidate) => candidate.id === current.focused)?.active;
+    if (next) {
+      document.getElementById(tabId(next))?.focus();
+    }
+  });
 }
 
 /** Opens the most recently closed tab that is not open again, where it was

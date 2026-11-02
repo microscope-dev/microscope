@@ -325,6 +325,11 @@ function measure(drag: Drag): Measured {
   const windows = [
     ...drag.dock.querySelectorAll<HTMLElement>("[data-part=window] [data-group]"),
   ].filter((element) => element.dataset.group !== dragged);
+  const stacked = workbench.getState().layout.floating.map((window) => window.group.id);
+  windows.sort(
+    (a, b) =>
+      stacked.indexOf(a.dataset.group as GroupId) - stacked.indexOf(b.dataset.group as GroupId),
+  );
   return {
     dock: drag.bounds,
     docked: tree.map(measureGroup),

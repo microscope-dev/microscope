@@ -235,6 +235,32 @@ it("forgets a maximized group once it is gone", () => {
   expect(close(big, b as PaneId).maximized).toBeNull();
 });
 
+it("restores the dock when another docked group takes focus, but not for a floating window", () => {
+  const [layout, a, b, c] = opened(emptyLayout(), "a", "b", "c");
+  const both = split(layout, layout.focused, "right");
+  const big = maximize(both, both.focused);
+  expect(activate(big, a as PaneId).maximized).toBeNull();
+
+  const floating = float(big, a as PaneId, { x: 0, y: 0, width: 200, height: 150 });
+  expect(floating.maximized).toBe(big.maximized);
+  expect(activate(floating, b as PaneId).maximized).toBeNull();
+
+  const left = activate(both, b as PaneId);
+  const floatingLeft = float(maximize(left, left.focused), a as PaneId, {
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 150,
+  });
+  const closedWindow = close(floatingLeft, a as PaneId);
+  expect(closedWindow.focused).toBe(left.focused);
+  expect(closedWindow.maximized).toBe(left.focused);
+
+  const splitAgain = split(maximize(left, left.focused), left.focused, "bottom");
+  expect(groupOf(splitAgain, b as PaneId)?.id).not.toBe(groupOf(splitAgain, c as PaneId)?.id);
+  expect(splitAgain.maximized).toBeNull();
+});
+
 describe("hiding a dock", () => {
   const pane = (kind: string) => ({ kind: kind as KindId, key: "", params: null });
   // Threads | (source over console) | watch, with Threads focused.
@@ -285,6 +311,9 @@ describe("hiding a dock", () => {
   it("shows a hidden dock when one of its panes is shown", () => {
     const hidden = toggleHidden(start, threads.id, source);
     expect(activate(hidden, threads.active).hidden).toEqual([]);
+    const shown = activate(maximize(hidden, source), threads.active);
+    expect(shown.hidden).toEqual([]);
+    expect(shown.maximized).toBeNull();
   });
 
   it("refuses to hide the group the focus would move to", () => {
@@ -370,6 +399,20 @@ describe("a saved layout", () => {
     expect(loadLayout("null").ok).toBe(false);
     const newer = JSON.stringify({ version: 3, layout: emptyLayout() });
     expect(loadLayout(newer)).toEqual({ ok: false, why: "it is from version 3, not up to 2" });
+  });
+
+  it("refuses an exhausted id counter before opening another pane can lose tabs", () => {
+    for (const next of [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER - 1]) {
+      const damaged = { ...emptyLayout(), next };
+      expect(loadLayout(saveLayout(damaged)).ok).toBe(false);
+      expect(checkLayout(damaged)).not.toEqual([]);
+    }
+    const loaded = loadLayout(saveLayout({ ...emptyLayout(), next: Number.MAX_SAFE_INTEGER - 4 }));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      const [layout] = opened(loaded.layout, "a", "b");
+      expect(shape(layout)).toEqual(["a", "*b"]);
+    }
   });
 
   // Every version of the saved shape ever written stays loadable.

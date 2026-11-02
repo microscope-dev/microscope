@@ -8,7 +8,7 @@ import { cleanup, render } from "@testing-library/react";
 import fc from "fast-check";
 import { act } from "react";
 import { afterEach, expect, it } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import "../src/styles.css";
 import { Dock } from "../src/workbench/Dock";
 import { kinds, type PaneKind } from "../src/workbench/kinds";
@@ -19,6 +19,7 @@ import {
   dock,
   float,
   type Group,
+  groupOf,
   groups,
   type KindId,
   type Layout,
@@ -237,6 +238,62 @@ it("moves a window by its title bar, docks it on a strip, and reopens a closed t
   expect(readGroups()[1]).toEqual(["*Memory"]);
   act(() => void reopenTab(KINDS));
   expect(readGroups()[1]).toEqual(["*Stack", "Memory"]);
+});
+
+it("resizes a floating window by keyboard and cancels an interrupted pointer resize", async () => {
+  await mount();
+  drag(tabOf("Memory"), { x: 400, y: 180 }, { shiftKey: true });
+  const window = document.querySelector("[data-part=window]") as HTMLElement;
+  const grip = document.querySelector("[data-part=window-grip]") as HTMLElement;
+  const before = window.getBoundingClientRect();
+  act(() => grip.focus());
+  await act(async () => userEvent.keyboard("{ArrowLeft}"));
+  await act(async () => userEvent.keyboard("{ArrowUp}"));
+  const resized = window.getBoundingClientRect();
+  expect(resized.width).toBe(before.width - 16);
+  expect(resized.height).toBe(before.height - 16);
+
+  const layout = workbench.getState().layout;
+  for (const end of ["pointercancel", "lostpointercapture", "Escape"]) {
+    act(() => {
+      grip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 }));
+      grip.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          pointerId: 1,
+          clientX: -80,
+          clientY: -40,
+        }),
+      );
+    });
+    expect(window.getBoundingClientRect().width).toBe(resized.width - 80);
+    act(() => {
+      grip.dispatchEvent(
+        end === "Escape"
+          ? new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })
+          : new PointerEvent(end, { bubbles: true, pointerId: 1 }),
+      );
+    });
+    expect(window.getBoundingClientRect().width).toBe(resized.width);
+    expect(window.getBoundingClientRect().height).toBe(resized.height);
+    expect(workbench.getState().layout).toBe(layout);
+  }
+});
+
+it("drops onto the raised floating window, not the one behind it", async () => {
+  const start = START();
+  const find = (name: string) =>
+    Object.keys(start.panes).find((id) => start.panes[id as PaneId]?.key === name) as PaneId;
+  const memory = find("Memory");
+  const registers = find("Registers");
+  const rect = { x: 350, y: 100, width: 400, height: 260 };
+  const two = float(float(start, memory, rect), registers, rect);
+  await mount(activate(two, memory));
+  const strip = tabOf("Memory").closest('[role="tablist"]') as HTMLElement;
+  drag(tabOf("Threads"), middle(strip));
+  const after = workbench.getState().layout;
+  expect(groupOf(after, find("Threads"))?.id).toBe(groupOf(after, memory)?.id);
+  expect(groupOf(after, registers)?.tabs).toEqual([registers]);
 });
 
 /** What a person does, with indexes read against the layout as it is. */

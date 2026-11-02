@@ -1,6 +1,5 @@
-// The processes a session debugs together, beside the stop banner: which
-// one the panes show, how each joined, and where each is. It appears once a
-// program has started a second process the session debugs.
+// The Processes pane selects which process the session shows and lets a
+// stopped child detach without ending the other processes.
 
 import { useState } from "react";
 import { assert } from "../assert";

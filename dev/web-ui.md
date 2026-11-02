@@ -6,8 +6,8 @@ like the CLI and DAP server.
 
 The page is a workbench, as in an IDE: a menu bar, a run toolbar, and panes in
 tabbed groups that split, float, and dock. Every view is a pane, including
-Welcome, Settings, Account, and the forms that launch or attach. There are no
-pages.
+Welcome, Settings, Account, and the forms that launch or attach. Only the join
+form sits outside the workbench.
 
 ## Code map
 
@@ -21,7 +21,7 @@ pages.
 | `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Syscalls view; see [system call tracing](syscalls.md) |
 | `web/src/store.ts`, `web/src/connection.ts`, `web/src/actions.ts` | Browser state, transport, and user actions |
 | `web/src/router.tsx`, `web/src/ui/Routes.tsx`, `web/src/tab.ts` | Addresses, what each opens in the workbench, and per-tab state |
-| `web/src/workbench/` | The workbench every pane builds on: the layout model, its frame components, drag geometry, keys, and the command registry. It imports nothing outside itself |
+| `web/src/workbench/` | Generic layout model, frame components, drag geometry, keys, and command registry; depends only on React, Zustand, and the shared assertion helper |
 | `web/src/ui/panes.tsx`, `web/src/ui/commands.ts` | Every pane kind, the layout presets, and every command |
 | `web/src/ui/` | Pane bodies and the frame around the workbench |
 | `web/src/target.ts`, `web/src/account.ts`, `web/src/ui/Account.tsx` | The page served on its own: which microscope it talks to, and services sign-in |
@@ -73,14 +73,17 @@ became. `/join` alone shows without the frame.
 ### Adding a pane
 
 1. Add its id to `KIND` in `web/src/documents.ts`.
-2. Write its body as a component taking `PaneProps`. Read the session's focus
-   with `useFocus()` only if its kind needs a session.
+2. Write its body as a component. Take `PaneProps` when it needs the pane's
+   key or params. Read the session's focus with `useFocus()` only if its kind
+   needs a session.
 3. Register the kind in `KINDS` in `web/src/ui/panes.tsx`: title, body, needs,
    `keepAlive`, and a badge if the tab should count something.
 4. Give it a command in `web/src/ui/commands.ts` (`debugPane` for a session's
    view, `pane` for one that needs none), so the menus, palette, and Keyboard
-   shortcuts pane offer it. Use a key only from the probe-validated list in
-   the plan; most panes need none.
+   shortcuts pane offer it. Most panes need no shortcut. Before adding one,
+   test it in real Chrome and Firefox on each supported platform, including
+   while typing. Synthetic key events cannot establish whether browser or
+   operating-system shortcuts intercept a key.
 5. Decide whether a preset (`debugLayout`, `welcomeLayout`) should hold it. A
    saved layout without it still loads.
 6. Test what a person does with it through the driver, and add it to a journey
@@ -196,9 +199,9 @@ member that stopped. `State::group` carries the members, the selected one,
 and the one whose stop stopped the group. `selectMember` and `detachMember`
 change them.
 
-`web/src/ui/Processes.tsx` draws the switcher above the stop banner once the
-group has a second member, with a Detach button for a stopped member other
-than the root.
+`web/src/ui/Processes.tsx` lists the members in the Processes pane, with a
+Detach button for a stopped member other than the root. A single-process
+session shows an empty-state explanation instead.
 
 ## Generated protocol
 

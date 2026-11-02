@@ -5,7 +5,7 @@
 // failure prints its seed: `MICROSCOPE_SWARM_SEED=... just web-e2e swarm` runs it again.
 // `just web-e2e` runs a short swarm; `MICROSCOPE_SWARM_STEPS=1000` runs one at depth.
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect, fixture, join, test } from "./server";
 
 test.use({ program: [fixture("kvstore")] });
@@ -70,6 +70,15 @@ async function dismiss(page: Page): Promise<void> {
   }
 }
 
+async function exposed(tab: Locator): Promise<boolean> {
+  await tab.scrollIntoViewIfNeeded();
+  return tab.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    return hit !== null && element.contains(hit);
+  });
+}
+
 /** What must hold after every action. */
 async function check(page: Page, done: string[]): Promise<void> {
   const broken = await page.evaluate(() => {
@@ -128,21 +137,26 @@ test("random commands, keys, and drags leave a working page", async ({ page, mic
         const tabs = page.locator('[role="tab"]:visible');
         const count = await tabs.count();
         if (count > 0) {
-          const chosen = tabs.nth(Math.floor(next() * count));
+          // Activating a document can reorder the visible groups.
+          const id = await tabs.nth(Math.floor(next() * count)).getAttribute("id");
+          const chosen = page.locator(`[id="${id}"]`);
           const name = await chosen.textContent();
           // A floating window may cover it, as it would for a person.
-          const covered = await chosen.click({ timeout: 500 }).then(
-            () => false,
-            () => true,
-          );
-          done.push(`${covered ? "covered" : "click"} ${name}`);
+          if (await exposed(chosen)) {
+            await chosen.click();
+            await expect(chosen, `clicked ${name}`).toHaveAttribute("aria-selected", "true");
+            done.push(`click ${name}`);
+          } else {
+            done.push(`covered ${name}`);
+          }
         }
       } else {
         // A tab dragged to a random point of the dock.
         const tabs = page.locator('[data-part=dock] [role="tab"]:visible');
         const count = await tabs.count();
         const dock = await page.locator("[data-part=dock]").boundingBox();
-        const from = count > 0 ? await tabs.nth(Math.floor(next() * count)).boundingBox() : null;
+        const chosen = count > 0 ? tabs.nth(Math.floor(next() * count)) : null;
+        const from = chosen && (await exposed(chosen)) ? await chosen.boundingBox() : null;
         if (from && dock) {
           const x = dock.x + next() * dock.width;
           const y = dock.y + next() * dock.height;

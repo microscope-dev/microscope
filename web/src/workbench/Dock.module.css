@@ -126,6 +126,10 @@
   bottom: 0;
   width: 14px;
   height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   cursor: nwse-resize;
   touch-action: none;
 }

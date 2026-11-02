@@ -20,8 +20,8 @@ A launched program waits for the first continue. Pass `--run` to start it at
 once. An attached process waits at its attach stop unless `--resume` is used.
 
 The [`[follow]` setting](reference/configuration.md#processes-the-program-starts)
-controls which child processes are debugged. With multiple processes, a list
-appears above the stop banner. Selecting a process changes it in every tab;
+controls which child processes are debugged. Open the Processes pane to choose
+among them. Selecting a process changes it in every browser tab;
 a stop selects and marks the process that stopped. Detach releases a stopped
 child process while the others remain debugged; it cannot release the original
 process alone. See
@@ -40,6 +40,10 @@ own; drag a window's title bar onto a strip or edge to dock it again, and
 press Escape to give up a drag. The Window menu does all of this from the
 keyboard too: Alt+arrow keys move between groups, Ctrl+\\ splits, Alt+Shift+F
 floats or docks, Alt+W closes a tab, and Alt+Shift+T opens it again.
+
+Tab to a floating window's resize grip and use the arrow keys to resize it.
+Hold Shift for larger steps. Escape cancels a pointer resize. Opening a pane
+in another docked group restores the dock so that pane is visible.
 
 The browser keeps your arrangement across reloads. Window > Save layout as…
 names one to come back to, and Reset layout returns to the Debug layout. Below
@@ -83,7 +87,7 @@ microscope web current.usprof
 microscope web current.usprof baseline.usprof
 ```
 
-Profile pages show call trees, functions, flame views, timelines, source and
+Profile panes show call trees, functions, flame views, timelines, source and
 disassembly costs, blocked time, task stacks, and instrumentation zones when
 recorded. The Python stacks switch hides interpreter frames in profiles
 containing Python stacks.

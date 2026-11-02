@@ -11,7 +11,7 @@ import { useModel } from "../store";
 import { tab } from "../tab";
 import { remote, standalone } from "../target";
 import { focusPane } from "../workbench/arrange";
-import { kinds, type PaneKind, type PaneProps } from "../workbench/kinds";
+import { kinds, type PaneKind } from "../workbench/kinds";
 import {
   activate,
   build,
@@ -79,27 +79,22 @@ function view(
   };
 }
 
-/** Wraps a body that takes no props. */
-const plain =
-  (Body: () => React.ReactNode) =>
-  (_: PaneProps): React.ReactNode => <Body />;
-
 export const KINDS = kinds<Need>([
-  view(KIND.threads, "Threads", plain(Threads), {
-    Badge: () => <ThreadsBadge />,
+  view(KIND.threads, "Threads", Threads, {
+    Badge: ThreadsBadge,
   }),
-  view(KIND.tasks, "Tasks", plain(Tasks), { Badge: plain(TasksBadge) }),
-  view(KIND.processes, "Processes", plain(Processes), { Badge: plain(ProcessesBadge) }),
-  view(KIND.stack, "Call Stack", plain(Stack), { Badge: plain(StackBadge) }),
-  view(KIND.breakpoints, "Breakpoints", plain(Breakpoints), { Badge: plain(BreakpointsBadge) }),
-  view(KIND.stops, "Stops", plain(Stops)),
-  view(KIND.watch, "Watch", plain(Watch), { Badge: plain(WatchBadge) }),
-  view(KIND.variables, "Variables", plain(Variables)),
-  view(KIND.registers, "Registers", plain(Registers), { Badge: plain(RegistersBadge) }),
-  view(KIND.console, "Console", plain(Console)),
-  view(KIND.output, "Output", plain(Output), { Badge: plain(OutputBadge) }),
-  view(KIND.signals, "Signals", plain(Signals)),
-  view(KIND.modules, "Modules", plain(Modules)),
+  view(KIND.tasks, "Tasks", Tasks, { Badge: TasksBadge }),
+  view(KIND.processes, "Processes", Processes, { Badge: ProcessesBadge }),
+  view(KIND.stack, "Call Stack", Stack, { Badge: StackBadge }),
+  view(KIND.breakpoints, "Breakpoints", Breakpoints, { Badge: BreakpointsBadge }),
+  view(KIND.stops, "Stops", Stops),
+  view(KIND.watch, "Watch", Watch, { Badge: WatchBadge }),
+  view(KIND.variables, "Variables", Variables),
+  view(KIND.registers, "Registers", Registers, { Badge: RegistersBadge }),
+  view(KIND.console, "Console", Console),
+  view(KIND.output, "Output", Output, { Badge: OutputBadge }),
+  view(KIND.signals, "Signals", Signals),
+  view(KIND.modules, "Modules", Modules),
   {
     id: KIND.source,
     title: (pane) => (pane.key === "" ? "Source" : fileName(pane.key)),
@@ -111,31 +106,31 @@ export const KINDS = kinds<Need>([
     chosen: (pane) => (pane.key === "" ? showView("source") : showDocument(pane.key)),
     close: (_, pane) => closeDocument(pane.key),
   },
-  view(KIND.disassembly, "Disassembly", plain(DisassemblyBody), {
+  view(KIND.disassembly, "Disassembly", DisassemblyBody, {
     chosen: () => showView("disassembly"),
     close: closesView("disassembly"),
   }),
-  view(KIND.memory, "Memory", plain(Memory), {
+  view(KIND.memory, "Memory", Memory, {
     chosen: () => showView("memory"),
     close: closesView("memory"),
   }),
-  view(KIND.drawings, "Drawings", plain(Drawings), {
-    Badge: plain(DrawingsBadge),
+  view(KIND.drawings, "Drawings", Drawings, {
+    Badge: DrawingsBadge,
     // Live drawings hold workers and canvases.
     keepAlive: false,
     chosen: () => showView("drawings"),
     close: closesView("drawings"),
   }),
-  view(KIND.welcome, "Welcome", plain(WelcomeBody), { needs: null }),
-  view(KIND.explorer, "Explorer", plain(ExplorerBody), { needs: null }),
-  view(KIND.connect, "Connect", plain(ConnectBody), { needs: null }),
-  view(KIND.account, "Account", plain(AccountBody), { needs: null }),
+  view(KIND.welcome, "Welcome", WelcomeBody, { needs: null }),
+  view(KIND.explorer, "Explorer", ExplorerBody, { needs: null }),
+  view(KIND.connect, "Connect", ConnectBody, { needs: null }),
+  view(KIND.account, "Account", AccountBody, { needs: null }),
   view(KIND.launch, "Launch", StartBody, { needs: "control" }),
   view(KIND.attach, "Attach", StartBody, { needs: "control" }),
   view(KIND.core, "Core dump", StartBody, { needs: "control" }),
   view(KIND.record, "Record", StartBody, { needs: "control" }),
-  view(KIND.settings, "Settings", plain(SettingsBody), { needs: null }),
-  view(KIND.keys, "Keyboard shortcuts", plain(KeysBody), { needs: null }),
+  view(KIND.settings, "Settings", SettingsBody, { needs: null }),
+  view(KIND.keys, "Keyboard shortcuts", KeysBody, { needs: null }),
   {
     id: KIND.profile,
     title: (pane) => fileName(profileParams(pane).name) || "Profile",

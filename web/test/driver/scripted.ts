@@ -26,6 +26,7 @@ export interface ScriptedStop {
   reason: { kind: string; description: string };
   /** What led to it, as the stop history says: `stepped over`. */
   action: string;
+  step?: ParamsOf<"step">["kind"];
   frames: Frame[];
   scopes: Scope[];
 }
@@ -115,8 +116,12 @@ export class ScriptedDebugger {
         return { id };
       },
       continue: () => this.#advance(),
-      step: ({ stop }) => {
+      step: ({ stop, kind }) => {
         this.#current(stop);
+        const expected = this.#script.stops[this.#at + 1]?.step;
+        if (expected !== undefined && kind !== expected) {
+          throw new Refusal("failed", `expected step ${expected}, got ${kind}`);
+        }
         return this.#advance();
       },
       backtrace: ({ stop }) => ({
@@ -352,6 +357,7 @@ export function kvstore(source: string): Script {
         place: place(next),
         reason: { kind: "step", description: "stopped after source step" },
         action: "stepped over",
+        step: "over",
         ...at(next, "0"),
       },
     ],

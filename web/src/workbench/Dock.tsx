@@ -4,6 +4,7 @@
 // list to choose any pane from, and nothing floats.
 
 import {
+  type KeyboardEvent,
   memo,
   type PointerEvent,
   useLayoutEffect,
@@ -125,16 +126,46 @@ const FloatingWindow = memo(function FloatingWindow({
   }
   const rect = keepOnScreen(found.rect, { x: 0, y: 0, ...bounds });
 
+  const cancel = () => {
+    const from = resizing.current;
+    resizing.current = null;
+    if (from && element.current) {
+      element.current.style.width = `${from.rect.width}px`;
+      element.current.style.height = `${from.rect.height}px`;
+    }
+  };
+  const resizeKey = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    if (event.key === "Escape") {
+      cancel();
+      return;
+    }
+    const step = event.shiftKey ? 64 : 16;
+    const delta = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    }[event.key];
+    if (delta) {
+      event.preventDefault();
+      change((layout) => reframe(layout, id, grown(rect, delta[0] ?? 0, delta[1] ?? 0, bounds)));
+    }
+  };
+
   const grip = {
-    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0) {
         return;
       }
       event.preventDefault();
+      event.currentTarget.focus();
       event.currentTarget.setPointerCapture(event.pointerId);
       resizing.current = { x: event.clientX, y: event.clientY, rect };
     },
-    onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
+    onPointerMove: (event: PointerEvent<HTMLButtonElement>) => {
       const from = resizing.current;
       if (from && element.current) {
         const sized = grown(from.rect, event.clientX - from.x, event.clientY - from.y, bounds);
@@ -142,7 +173,7 @@ const FloatingWindow = memo(function FloatingWindow({
         element.current.style.height = `${sized.height}px`;
       }
     },
-    onPointerUp: (event: PointerEvent<HTMLDivElement>) => {
+    onPointerUp: (event: PointerEvent<HTMLButtonElement>) => {
       const from = resizing.current;
       resizing.current = null;
       if (from) {
@@ -150,6 +181,8 @@ const FloatingWindow = memo(function FloatingWindow({
         change((layout) => reframe(layout, id, sized));
       }
     },
+    onPointerCancel: cancel,
+    onLostPointerCapture: cancel,
   };
 
   return (
@@ -193,7 +226,16 @@ const FloatingWindow = memo(function FloatingWindow({
         </button>
       </div>
       <GroupView id={id} />
-      <div className={css("window-grip")} data-part="window-grip" aria-hidden="true" {...grip} />
+      <button
+        type="button"
+        className={css("window-grip")}
+        data-part="window-grip"
+        data-keys="escape"
+        aria-label={`Resize ${title}`}
+        title="Resize with arrow keys; hold Shift for larger steps"
+        onKeyDown={resizeKey}
+        {...grip}
+      />
     </div>
   );
 });
@@ -201,8 +243,8 @@ const FloatingWindow = memo(function FloatingWindow({
 function grown(rect: Rect, dx: number, dy: number, bounds: { width: number; height: number }) {
   return {
     ...rect,
-    width: Math.max(LEAST.width, Math.min(bounds.width - rect.x, rect.width + dx)),
-    height: Math.max(LEAST.height, Math.min(bounds.height - rect.y, rect.height + dy)),
+    width: Math.min(bounds.width - rect.x, Math.max(LEAST.width, rect.width + dx)),
+    height: Math.min(bounds.height - rect.y, Math.max(LEAST.height, rect.height + dy)),
   };
 }
 

@@ -145,8 +145,13 @@ export function arrange(
   if (next === layout) {
     return layout;
   }
-  const focused = groups(next).some((group) => group.id === layout.focused)
+  const remaining = groups(next);
+  const focused = remaining.some((group) => group.id === layout.focused)
     ? layout.focused
     : next.focused;
-  return { ...next, focused };
+  const maximized =
+    focused === layout.focused && remaining.some((group) => group.id === layout.maximized)
+      ? layout.maximized
+      : next.maximized;
+  return { ...next, focused, maximized };
 }

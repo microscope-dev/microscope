@@ -476,8 +476,9 @@ outside a browser and 500ms in one. A test over budget fails. Make it faster,
 or give it a budget of its own in that file with the reason.
 
 `web/test/boundaries.test.ts` fails on an import that crosses a module
-boundary, such as `src/` importing from `test/`, and on a budget entry that
-names a test that no longer exists.
+boundary, such as `src/` importing from `test/`. It also checks that budget
+entries name existing files and quoted test-title segments. This static check
+does not verify nesting or collect runtime-generated test names.
 
 Property tests use fast-check, with shared generators in
 `web/test/arbitraries/`. They try 100 cases on every run. `just web-props

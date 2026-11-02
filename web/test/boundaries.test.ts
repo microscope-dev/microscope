@@ -86,11 +86,13 @@ describe("module boundaries", () => {
 });
 
 describe("the speed budget", () => {
-  it("names only tests that exist", () => {
+  it("names files and title segments that exist", () => {
     for (const name of Object.keys(OWN)) {
       const [file, title] = name.split(" :: ") as [string, string];
-      const last = title.split(" > ").at(-1) as string;
-      expect(readFileSync(join(web, file), "utf8"), name).toContain(last);
+      const source = readFileSync(join(web, file), "utf8");
+      for (const segment of title.split(" > ")) {
+        expect(source, name).toContain(JSON.stringify(segment));
+      }
     }
     for (const file of Object.keys(FILES)) {
       expect(readdirSync(join(web, dirname(file))), file).toContain(file.split("/").at(-1));

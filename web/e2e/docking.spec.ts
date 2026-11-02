@@ -172,9 +172,34 @@ test("the Window keys move, split, float, close, and reopen tabs, and a reload k
   await page.keyboard.press("Alt+Shift+KeyT");
   await expect(tab(page, "Output")).toBeVisible();
 
+  // Keep a resized split and a resized floating window across the reload.
+  const separator = page.locator('[role="separator"][aria-orientation="vertical"]').first();
+  const share = await separator.getAttribute("aria-valuenow");
+  await separator.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(separator).not.toHaveAttribute("aria-valuenow", share ?? "");
+  await tab(page, "Output").click();
+  await page.keyboard.press("Alt+Shift+KeyF");
+  const window = page.getByRole("dialog", { name: "Output" });
+  const before = await box(page, window);
+  await window.getByRole("button", { name: "Resize Output" }).focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowUp");
+  await expect.poll(async () => (await box(page, window)).width).toBe(before.width - 16);
+  await expect.poll(async () => (await box(page, window)).height).toBe(before.height - 16);
+
+  const geometry = () =>
+    page.locator("[data-part=window], [data-group]").evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
+      }),
+    );
   const arranged = await groups(page);
+  const rectangles = await geometry();
   await page.reload();
   await expect.poll(() => groups(page)).toEqual(arranged);
+  await expect.poll(geometry).toEqual(rectangles);
 
   // The menu bar, by keyboard.
   await page.keyboard.press("Alt+F10");

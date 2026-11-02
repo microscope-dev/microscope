@@ -117,7 +117,7 @@ class FastUser implements User {
         (candidate) => candidate.querySelector(".value-name")?.textContent === name,
       );
       expect(row, `${pane} has no value named ${name}`).toBeDefined();
-      expect(row?.textContent).toContain(text);
+      expect(row?.querySelector(".value-text")?.firstChild?.textContent).toBe(text);
     }, DEADLINE);
   }
 }

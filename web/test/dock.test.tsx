@@ -112,6 +112,9 @@ it("walks tabs with the arrow keys and closes one with Delete", async () => {
   await userEvent.keyboard("{Home}{Delete}");
   await expect.element(tab("Console")).not.toBeInTheDocument();
   await expect.element(tab("Output")).toHaveAttribute("aria-selected", "true");
+  await expect.element(tab("Output")).toHaveFocus();
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.element(tab("Signals")).toHaveFocus();
   await expect.element(page.getByRole("button", { name: "Close Signals" })).not.toBeInTheDocument();
 });
 
