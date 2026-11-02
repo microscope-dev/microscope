@@ -1,10 +1,11 @@
 import { Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { commandFor, isTextBox, keepsEscape } from "../keys";
 import { commandName } from "../model";
 import { useModel } from "../store";
+import { flash } from "../tab";
 import { standalone } from "../target";
-import { useCommands } from "./commands";
+import { isTextBox, keepsEscape } from "../workbench/keys";
+import { COMMANDS, useCommands } from "./commands";
 import { KeyHelp } from "./KeyHelp";
 import { NeedsLink } from "./pages";
 import { Start } from "./Start";
@@ -55,14 +56,14 @@ export function Shell() {
 
 /** Runs the debugger keys, claiming them from the browser while it does. */
 function useKeys() {
-  const run = useCommands();
+  const { run } = useCommands();
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if (event.isComposing || (event.key === "Escape" && keepsEscape(document.activeElement))) {
         return;
       }
       const typing = isTextBox(document.activeElement);
-      const command = commandFor(event, typing);
+      const command = COMMANDS.match(event, typing);
       if (command === null) {
         // Escape leaves a text box, giving the keys back to the debugger.
         if (typing && event.key === "Escape" && document.activeElement instanceof HTMLElement) {
@@ -72,9 +73,13 @@ function useKeys() {
         }
         return;
       }
-      // Function keys are claimed even when unavailable, so F5 never reloads
-      // the debugger away; other keys only when they did something.
-      if (run(command) || /^F\d+$/.test(event.key)) {
+      const ran = run(command);
+      if (ran.state === "blocked") {
+        flash(ran.why);
+      }
+      // Function keys are claimed even when they mean nothing here, so F5
+      // never reloads the debugger away.
+      if (ran.state !== "absent" || /^F\d+$/.test(event.key)) {
         event.preventDefault();
       }
     };

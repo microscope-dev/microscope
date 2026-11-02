@@ -16,6 +16,7 @@ like the CLI and DAP server.
 | `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Syscalls view; see [system call tracing](syscalls.md) |
 | `web/src/store.ts`, `web/src/connection.ts`, `web/src/actions.ts` | Browser state, transport, and user actions |
 | `web/src/router.tsx`, `web/src/tab.ts`, `web/src/ui/` | URL state, per-tab view, and React interface |
+| `web/src/workbench/` | The workbench every pane builds on: the layout model, drag geometry, keys, and the command registry. It imports nothing outside itself |
 | `web/src/target.ts`, `web/src/account.ts`, `web/src/ui/Start.tsx` | The page served on its own: which microscope it talks to, and services sign-in |
 | `web/src/protocol.gen.ts` | Generated TypeScript protocol; do not edit by hand |
 | `web/src/visualize/`, `sdk/web/` | Sandboxed visualizers and their public type contract |
@@ -182,12 +183,17 @@ hover or open menu should stay out of the URL.
 
 ## Actions and focus
 
-`actions.ts`, `keys.ts`, `palette.ts`, and `focus.ts` form one command system.
-Buttons, keyboard shortcuts, and the command palette should invoke the same
-action rather than duplicate control logic.
+Every command is defined once, in `web/src/ui/commands.ts`, in a registry
+from `web/src/workbench/commands.ts`: its label, menu, keys, when it can run,
+and what it does. Buttons, keys, the key help, and the command palette read
+that registry rather than duplicating control logic. Run control asks
+`actions.ts`.
 
-An action declares when it is available from current state. Disabled actions
-should explain the missing condition where the UI has room. Keyboard handling
+A command says whether it can run now: ready, blocked with the reason, or
+absent where it means nothing, such as stepping with no program. A blocked
+command's key shows the reason; an absent one's key is left to the browser,
+except function keys, which the page always claims. Disabled controls should
+explain the missing condition where the UI has room. Keyboard handling
 must respect text inputs, dialogs, renderer canvases, and platform modifier
 conventions.
 

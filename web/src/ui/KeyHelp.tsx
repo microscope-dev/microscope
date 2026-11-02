@@ -2,9 +2,8 @@
 // letter, for keyboards without function keys.
 
 import { useRef } from "react";
-import { assert } from "../assert";
-import { BINDINGS, type Command, describe, LABELS } from "../keys";
 import { tab, useTab } from "../tab";
+import { COMMANDS } from "./commands";
 import { useDialogFocus } from "./dialog";
 
 export function KeyHelp() {
@@ -15,11 +14,7 @@ export function KeyHelp() {
 function Keys() {
   const dialog = useRef<HTMLDivElement>(null);
   useDialogFocus(dialog);
-  const commands = [...new Set(BINDINGS.map((binding) => binding.command))] as Command[];
-  assert(
-    commands.every((command) => describe(command) !== null || describe(command, true) !== null),
-    "a bound command has no key to show",
-  );
+  const commands = COMMANDS.ids.filter((id) => COMMANDS.get(id).keys.length > 0);
   const done = () => tab.setState({ help: false });
   return (
     <div className="overlay">
@@ -52,9 +47,13 @@ function Keys() {
             <tbody>
               {commands.map((command) => (
                 <tr key={command}>
-                  <td>{LABELS[command]}</td>
-                  <td>{describe(command) && <kbd>{describe(command)}</kbd>}</td>
-                  <td>{describe(command, true) && <kbd>{describe(command, true)}</kbd>}</td>
+                  <td>{COMMANDS.get(command).label}</td>
+                  <td>{COMMANDS.describe(command) && <kbd>{COMMANDS.describe(command)}</kbd>}</td>
+                  <td>
+                    {COMMANDS.describe(command, true) && (
+                      <kbd>{COMMANDS.describe(command, true)}</kbd>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -2,7 +2,7 @@
 // reads the keyboard.
 
 import fc from "fast-check";
-import type { KeyLike } from "../../src/keys";
+import type { KeyLike } from "../../src/workbench/keys";
 
 const LETTERS = "abcdefghijklmnopqrstuvwxyz".split("");
 const DIGITS = "0123456789".split("");

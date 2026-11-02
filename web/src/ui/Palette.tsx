@@ -7,7 +7,6 @@ import { assert } from "../assert";
 import { firstBreakpointPlace } from "../breakpoints";
 import { useRequest } from "../data";
 import { openingFrame } from "../follow";
-import { type Command, describe, LABELS } from "../keys";
 import { stopKind } from "../model";
 import { best, score } from "../palette";
 import { useConnection } from "../store";
@@ -15,7 +14,7 @@ import { flash, tab, useTab } from "../tab";
 import { chooseTheme, THEMES } from "../theme";
 import { placeText } from "./Banner";
 import { placeLabel, useShowBreakpoint } from "./Breakpoints";
-import { useCommands } from "./commands";
+import { COMMANDS, useCommands } from "./commands";
 import { useDialogFocus } from "./dialog";
 import { threadLabel } from "./names";
 import { useGo, useLinkPaths, useShowSource } from "./navigation";
@@ -215,7 +214,7 @@ function useGroups(mode: Mode, query: string): Found {
   const go = useGo();
   const paths = useLinkPaths();
   const connection = useConnection();
-  const runCommand = useCommands();
+  const { run: runCommand } = useCommands();
   const shown = useTab((current) => current.shown);
   const sources = useRequest("sources", undefined);
   const functions = useRequest(
@@ -317,15 +316,18 @@ function useGroups(mode: Mode, query: string): Found {
     return { groups: group ? [group] : [] };
   }
 
-  const commands: Item[] = (Object.keys(LABELS) as Command[])
+  const commands: Item[] = COMMANDS.ids
     .filter((command) => !["palette", "files", "line", "stepIntoCall"].includes(command))
     .map((command) => ({
       id: `command:${command}`,
-      label: LABELS[command],
-      hint: describe(command) ?? describe(command, true),
+      label: COMMANDS.get(command).label,
+      hint: COMMANDS.describe(command) ?? COMMANDS.describe(command, true),
       run: () => {
-        if (!runCommand(command)) {
-          flash(`${LABELS[command]} does nothing here`);
+        const ran = runCommand(command);
+        if (ran.state === "blocked") {
+          flash(ran.why);
+        } else if (ran.state === "absent") {
+          flash(`${COMMANDS.get(command).label} does nothing here`);
         }
       },
     }));
@@ -358,7 +360,7 @@ function useGroups(mode: Mode, query: string): Found {
   const breakAt: Item[] = found.slice(0, 3).map((found) => ({
     id: `break:${found.name}`,
     label: `Break at ${found.name}`,
-    hint: describe("toggleBreakpoint"),
+    hint: COMMANDS.describe("toggleBreakpoint"),
     run: () =>
       void connection
         .request("addBreakpoint", { location: found.name })

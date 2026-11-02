@@ -3,13 +3,12 @@ import { useState } from "react";
 import { type ActionName, action, continueLabel } from "../actions";
 import { assert } from "../assert";
 import { base } from "../base";
-import { describe } from "../keys";
 import { targetName } from "../model";
 import { useConnection, useModel, useStoreApi } from "../store";
 import { useTab } from "../tab";
 import { setRemote, standalone } from "../target";
 import { chooseTheme, THEMES, type Theme, useChosenTheme } from "../theme";
-import { useCommands } from "./commands";
+import { COMMANDS, useCommands } from "./commands";
 import { People } from "./People";
 import { Share } from "./Share";
 import { Status } from "./Status";
@@ -29,7 +28,7 @@ export function Toolbar() {
   const control = useModel((model) => model.hello?.role === "control");
   const debugging = useModel((model) => Boolean(targetName(model.state)));
   const navigate = useNavigate();
-  const run = useCommands();
+  const { run } = useCommands();
   const [failure, setFailure] = useState<string | null>(null);
 
   return (
@@ -116,7 +115,7 @@ function ActionButton({
   });
   const running = useModel((model) => model.state?.inferior.state === "running");
   const text = useModel((model) => label ?? continueLabel(model));
-  const key = describe(name);
+  const key = COMMANDS.describe(name);
   const primary =
     (name === "continue" || name === "pause") && why === null && (name === "pause" || !running);
   return (

@@ -2,9 +2,14 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { BINDINGS, commandFor, describe as describeKey, type KeyLike } from "../src/keys";
+import { COMMANDS } from "../src/ui/commands";
 import { joinWords, parseEnvironment, splitWords } from "../src/words";
+import { type Command, READY, registry } from "../src/workbench/commands";
+import type { Chord, KeyLike } from "../src/workbench/keys";
 import { altLetterOrDigit, keyPress } from "./arbitraries/keys";
+
+const commandFor = COMMANDS.match;
+const describeKey = COMMANDS.describe;
 
 const key = (name: string, modifiers: Partial<KeyLike> = {}): KeyLike => ({
   key: name,
@@ -77,11 +82,6 @@ describe("debugger keys", () => {
     );
   });
 
-  it("never binds one press to two commands", () => {
-    const presses = BINDINGS.map((b) => `${b.key}/${b.shift}/${b.ctrl}/${b.alt}`);
-    expect(new Set(presses).size).toBe(presses.length);
-  });
-
   it("writes keys as tooltips show them", () => {
     expect(describeKey("continue")).toBe("F5");
     expect(describeKey("kill")).toBe("⇧F5");
@@ -90,6 +90,35 @@ describe("debugger keys", () => {
     expect(describeKey("palette")).toBe("Ctrl+K");
     expect(describeKey("over", true)).toBe("n");
     expect(describeKey("frameUp")).toBeNull();
+  });
+});
+
+describe("the command registry", () => {
+  const command = (keys: Chord[]): Command<null> => ({
+    label: "x",
+    menu: null,
+    keys,
+    available: () => READY,
+    run: () => {},
+  });
+
+  it("refuses a press bound to two commands", () => {
+    expect(() => registry({ a: command([{ key: "F5" }]), b: command([{ key: "F5" }]) })).toThrow(
+      "F5 is bound to a and to b",
+    );
+    // A letter is one press, with or without Shift.
+    expect(() =>
+      registry({ a: command([{ key: "?", shift: true }]), b: command([{ key: "?" }]) }),
+    ).toThrow();
+    expect(() =>
+      registry({ a: command([{ key: "F5", shift: true }]), b: command([{ key: "F5" }]) }),
+    ).not.toThrow();
+  });
+
+  it("offers every command in a menu, under a name of its own", () => {
+    const labels = COMMANDS.ids.map((id) => COMMANDS.get(id).label);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(COMMANDS.ids.filter((id) => COMMANDS.get(id).menu === null)).toEqual([]);
   });
 });
 
