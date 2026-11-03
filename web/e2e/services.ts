@@ -1,9 +1,10 @@
 // The page served on its own, as `just web` serves it, and the services
 // backend behind its `/api/`: a stand-in, or the real server from the
 // services repository with a fake Postmark that keeps every email it is
-// asked to send.
+// asked to send, and a fake Cloud KMS that encrypts its TOTP secrets.
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
@@ -113,6 +114,72 @@ async function fakePostmark(received: (mail: Mail) => void): Promise<Served> {
   });
 }
 
+/** The key services is told to encrypt TOTP secrets with. */
+const KMS_KEY = "projects/e2e/locations/local/keyRings/services/cryptoKeys/totp";
+
+/** Cloud KMS's encrypt and decrypt, and the metadata server's access token,
+ * which services' real KMS client asks for. Ciphertexts are AES-256-GCM
+ * under a key of its own, bound to the authenticated data as KMS binds them,
+ * so a secret only opens for the account it was sealed for. */
+async function fakeKms(): Promise<Served> {
+  const key = randomBytes(32);
+  const json = (response: ServerResponse, status: number, body: unknown) => {
+    response.writeHead(status, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(body));
+  };
+  return listen((request, response) => {
+    const url = new URL(request.url ?? "/", "http://kms");
+    if (url.pathname === "/computeMetadata/v1/instance/service-accounts/default/token") {
+      if (request.headers["metadata-flavor"] !== "Google") {
+        json(response, 403, {});
+        return;
+      }
+      json(response, 200, { access_token: "fake-token", expires_in: 3599, token_type: "Bearer" });
+      return;
+    }
+    let body = "";
+    request.on("data", (chunk: Buffer) => {
+      body += chunk.toString();
+    });
+    request.on("end", () => {
+      if (request.headers.authorization !== "Bearer fake-token") {
+        json(response, 401, { error: { message: "no token" } });
+        return;
+      }
+      const fields = JSON.parse(body) as Record<string, string>;
+      const aad = Buffer.from(fields.additionalAuthenticatedData ?? "", "base64");
+      if (url.pathname === `/v1/${KMS_KEY}:encrypt`) {
+        const iv = randomBytes(12);
+        const cipher = createCipheriv("aes-256-gcm", key, iv).setAAD(aad);
+        const sealed = Buffer.concat([
+          cipher.update(Buffer.from(fields.plaintext ?? "", "base64")),
+          cipher.final(),
+        ]);
+        json(response, 200, {
+          name: `${KMS_KEY}/cryptoKeyVersions/1`,
+          ciphertext: Buffer.concat([iv, cipher.getAuthTag(), sealed]).toString("base64"),
+        });
+      } else if (url.pathname === `/v1/${KMS_KEY}:decrypt`) {
+        const ciphertext = Buffer.from(fields.ciphertext ?? "", "base64");
+        try {
+          const decipher = createDecipheriv("aes-256-gcm", key, ciphertext.subarray(0, 12))
+            .setAAD(aad)
+            .setAuthTag(ciphertext.subarray(12, 28));
+          const plaintext = Buffer.concat([
+            decipher.update(ciphertext.subarray(28)),
+            decipher.final(),
+          ]);
+          json(response, 200, { plaintext: plaintext.toString("base64") });
+        } catch {
+          json(response, 400, { error: { message: "Decryption failed" } });
+        }
+      } else {
+        json(response, 404, {});
+      }
+    });
+  });
+}
+
 /** Passes a request on to services as `just web`'s proxy does. Services'
  * session cookie is `__Host-session`, which a browser keeps only over
  * HTTPS, so the browser holds it as `dev-session` (vite.config.ts). */
@@ -157,9 +224,15 @@ export async function startServices(): Promise<Services> {
     }
   });
 
+  const kms = await fakeKms().catch((error: Error) => {
+    postmark.server.close();
+    throw error;
+  });
+
   let api = "";
   const page = await standalonePage(proxy(() => api)).catch((error: Error) => {
     postmark.server.close();
+    kms.server.close();
     throw error;
   });
 
@@ -178,6 +251,12 @@ export async function startServices(): Promise<Services> {
       "Microscope <noreply@microscope.dev>",
       "--public-url",
       `${page.origin}/`,
+      "--totp-kms-key",
+      KMS_KEY,
+      "--totp-kms-api-url",
+      `${kms.origin}/`,
+      "--totp-metadata-url",
+      `${kms.origin}/`,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -186,6 +265,7 @@ export async function startServices(): Promise<Services> {
     await stopChild(child);
     page.server.close();
     postmark.server.close();
+    kms.server.close();
   };
   const address = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`services never listened: ${log}`)), 10_000);

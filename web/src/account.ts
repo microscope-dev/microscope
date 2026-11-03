@@ -6,6 +6,10 @@
 // to `/confirm-email`, and signing in takes the password and then the code
 // or the link (`/login-link`) it emails. Without email, a password alone
 // signs in, and signing up signs in too.
+//
+// An account with two-factor authentication finishes signing in with a code
+// from its authenticator app, or one of its recovery codes, and never gets
+// an emailed code.
 
 import { createStore, useStore } from "zustand";
 import { standalone } from "./target";
@@ -14,6 +18,7 @@ export interface User {
   id: number;
   username: string;
   email: string;
+  totp_enabled: boolean;
 }
 
 /** What services answered when it refused, with its HTTP status. */
@@ -72,18 +77,70 @@ const signedIn = (user: User): User => {
   return user;
 };
 
-/** Signs in with a password: done, or a challenge to finish with the code
- * services emailed. */
+/** How a challenge is finished: the code services emailed, or a code from
+ * an authenticator app. */
+export type Method = "email" | "totp";
+
+/** Signs in with a password: done, or a challenge to finish by `method`. */
 export async function signIn(
   usernameOrEmail: string,
   password: string,
-): Promise<{ user: User } | { challenge: string }> {
+): Promise<{ user: User } | { challenge: string; method: Method }> {
   const response = await post("/api/login", { username_or_email: usernameOrEmail, password });
   if (response.status === 202) {
-    const { challenge } = (await response.json()) as { challenge: string };
-    return { challenge };
+    return (await response.json()) as { challenge: string; method: Method };
   }
   return { user: signedIn((await response.json()) as User) };
+}
+
+export async function enterTotp(challenge: string, code: string): Promise<User> {
+  const response = await post("/api/login/totp", { challenge, code });
+  return signedIn((await response.json()) as User);
+}
+
+export async function enterRecoveryCode(challenge: string, recoveryCode: string): Promise<User> {
+  const response = await post("/api/login/recovery", { challenge, recovery_code: recoveryCode });
+  return signedIn((await response.json()) as User);
+}
+
+/** Asks services for the account again, after a change to it. */
+async function refresh(): Promise<void> {
+  const user = await currentUser();
+  changes += 1;
+  account.setState({ now: user ? { kind: "in", user } : { kind: "out" } });
+}
+
+/** A new secret for an authenticator app, which is not in use until a code
+ * from it confirms it. `uri` is the otpauth:// address a QR code carries. */
+export async function startTotpSetup(password: string): Promise<{ secret: string; uri: string }> {
+  const response = await post("/api/users/me/totp", { password });
+  return (await response.json()) as { secret: string; uri: string };
+}
+
+/** Turns two-factor authentication on, and returns the recovery codes,
+ * which services shows this once. */
+export async function confirmTotpSetup(code: string): Promise<string[]> {
+  const response = await post("/api/users/me/totp/confirm", { code });
+  const { recovery_codes } = (await response.json()) as { recovery_codes: string[] };
+  return recovery_codes;
+}
+
+/** Shows the account with two-factor authentication on, once its recovery
+ * codes are saved. */
+export function totpConfirmed(): Promise<void> {
+  return refresh();
+}
+
+/** `code` is from the authenticator app, or a recovery code. */
+export async function disableTotp(password: string, code: string): Promise<void> {
+  await post("/api/users/me/totp/disable", { password, code });
+  await refresh();
+}
+
+export async function replaceRecoveryCodes(password: string, code: string): Promise<string[]> {
+  const response = await post("/api/users/me/totp/recovery-codes", { password, code });
+  const { recovery_codes } = (await response.json()) as { recovery_codes: string[] };
+  return recovery_codes;
 }
 
 export async function enterCode(challenge: string, code: string): Promise<User> {

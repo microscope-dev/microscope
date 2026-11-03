@@ -1,7 +1,16 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
   "files": {
-    "includes": ["src/**", "!src/protocol.gen.ts", "test/**/*.ts", "test/**/*.tsx", "e2e/**", "*.ts", "*.json"]
+    "includes": [
+      "src/**",
+      "!src/protocol.gen.ts",
+      "!src/vendor",
+      "test/**/*.ts",
+      "test/**/*.tsx",
+      "e2e/**",
+      "*.ts",
+      "*.json"
+    ]
   },
   "formatter": { "indentStyle": "space", "lineWidth": 100 },
   "linter": {

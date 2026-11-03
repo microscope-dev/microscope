@@ -7,18 +7,27 @@ import { type FormEvent, type ReactNode, useEffect, useId, useState } from "reac
 import {
   account,
   checkAccount,
+  confirmTotpSetup,
+  disableTotp,
   enterCode,
+  enterRecoveryCode,
+  enterTotp,
   Refused,
+  replaceRecoveryCodes,
   resendConfirmation,
   signIn,
   signOut,
   signUp,
+  startTotpSetup,
+  totpConfirmed,
+  type User,
   useAccount,
   useNotice,
 } from "../account";
 import { isPagePath } from "../focus";
 import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
+import { qrcodegen } from "../vendor/qrcodegen";
 
 /** Why the microscope the page last connected to sent it back, if it did. */
 function refused(): string | null {
@@ -133,6 +142,8 @@ type Step =
   | { kind: "sign-in" }
   | { kind: "sign-up" }
   | { kind: "code"; challenge: string }
+  | { kind: "totp"; challenge: string }
+  | { kind: "recovery"; challenge: string }
   | { kind: "sent"; email: string };
 
 export function AccountBody() {
@@ -187,6 +198,7 @@ export function AccountBody() {
               Sign out
             </button>
           </div>
+          <TwoFactor user={now.user} />
         </>
       ) : step.kind === "sign-up" ? (
         <SignUp go={go} />
@@ -194,6 +206,10 @@ export function AccountBody() {
         <Sent email={step.email} go={go} />
       ) : step.kind === "code" ? (
         <Code challenge={step.challenge} go={go} />
+      ) : step.kind === "totp" ? (
+        <Totp challenge={step.challenge} go={go} />
+      ) : step.kind === "recovery" ? (
+        <Recovery challenge={step.challenge} go={go} />
       ) : (
         <SignIn go={go} />
       )}
@@ -261,7 +277,7 @@ function SignIn({ go }: { go: Go }) {
   const { working, error, submit } = useSubmit(async () => {
     const signed = await signIn(name, password);
     if ("challenge" in signed) {
-      go({ kind: "code", challenge: signed.challenge });
+      go({ kind: signed.method === "totp" ? "totp" : "code", challenge: signed.challenge });
     }
   });
   // Services says so only once the password is right.
@@ -435,6 +451,377 @@ function Code({ challenge, go }: { challenge: string; go: Go }) {
         </button>
         <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
           Start over
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** After a right password, for an account with two-factor authentication. */
+function Totp({ challenge, go }: { challenge: string; go: Go }) {
+  const [code, setCode] = useState("");
+  const { working, error, submit } = useSubmit(async () => {
+    await enterTotp(challenge, code.trim());
+  });
+  const recover = () => go({ kind: "recovery", challenge });
+  // Too many wrong codes today: only a recovery code gets in now.
+  const locked = error instanceof Refused && error.status === 429;
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <h2>Enter the code from your authenticator app</h2>
+      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" autoFocus code />
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button
+          type="submit"
+          className={locked ? "button" : "button primary"}
+          disabled={working || !/^\d{6}$/.test(code.trim())}
+        >
+          Sign in
+        </button>
+        {locked && (
+          <button type="button" className="button primary" onClick={recover}>
+            Use a recovery code
+          </button>
+        )}
+        <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
+          Start over
+        </button>
+      </div>
+      {!locked && (
+        <p className="muted">
+          Lost your device?
+          <button type="button" className="link-button" onClick={recover}>
+            Use a recovery code
+          </button>
+        </p>
+      )}
+    </form>
+  );
+}
+
+function Recovery({ challenge, go }: { challenge: string; go: Go }) {
+  const [code, setCode] = useState("");
+  const { working, error, submit } = useSubmit(async () => {
+    await enterRecoveryCode(challenge, code.trim());
+  });
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <h2>Enter a recovery code</h2>
+      <Field
+        label="Recovery code"
+        value={code}
+        set={setCode}
+        autoComplete="off"
+        note="Each code works once. We email you when one is used."
+        autoFocus
+      />
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button type="submit" className="button primary" disabled={working || !code.trim()}>
+          Sign in
+        </button>
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => go({ kind: "totp", challenge })}
+        >
+          Use the app instead
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** Where turning two-factor authentication on or off has got to. */
+type Setup =
+  | { kind: "idle" }
+  | { kind: "password" }
+  | { kind: "scan"; secret: string; uri: string }
+  | { kind: "codes"; codes: string[]; enabling: boolean }
+  | { kind: "reauth"; action: "disable" | "codes" };
+
+/** Two-factor authentication for the signed-in account: off, being set up,
+ * or on, with the forms that change it. */
+function TwoFactor({ user }: { user: User }) {
+  const [setup, setSetup] = useState<Setup>({ kind: "idle" });
+  const idle = () => setSetup({ kind: "idle" });
+  return (
+    <>
+      <h2>Two-factor authentication</h2>
+      {setup.kind === "password" ? (
+        <SetupPassword next={setSetup} cancel={idle} />
+      ) : setup.kind === "scan" ? (
+        <Scan secret={setup.secret} uri={setup.uri} next={setSetup} cancel={idle} />
+      ) : setup.kind === "codes" ? (
+        <RecoveryCodes
+          codes={setup.codes}
+          done={() => {
+            idle();
+            if (setup.enabling) {
+              void totpConfirmed();
+            }
+          }}
+        />
+      ) : setup.kind === "reauth" ? (
+        <Reauthenticate action={setup.action} next={setSetup} cancel={idle} />
+      ) : user.totp_enabled ? (
+        <>
+          <p className="muted">On. Signing in takes your password and a code from your app.</p>
+          <div className="actions">
+            <button
+              type="button"
+              className="button"
+              onClick={() => setSetup({ kind: "reauth", action: "codes" })}
+            >
+              New recovery codes
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setSetup({ kind: "reauth", action: "disable" })}
+            >
+              Turn off
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="muted">
+            Off. Turn it on, and signing in will take a code from an authenticator app as well as
+            your password.
+          </p>
+          <div className="actions">
+            <button type="button" className="button" onClick={() => setSetup({ kind: "password" })}>
+              Set up
+            </button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+type Next = (setup: Setup) => void;
+
+function SetupPassword({ next, cancel }: { next: Next; cancel: () => void }) {
+  const [password, setPassword] = useState("");
+  const { working, error, submit } = useSubmit(async () => {
+    const { secret, uri } = await startTotpSetup(password);
+    next({ kind: "scan", secret, uri });
+  });
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <Field
+        label="Password"
+        type="password"
+        value={password}
+        set={setPassword}
+        autoComplete="current-password"
+        note="Enter your password to start."
+        autoFocus
+      />
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button type="submit" className="button primary" disabled={working || !password}>
+          Continue
+        </button>
+        <button type="button" className="link-button" onClick={cancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Scan(props: { secret: string; uri: string; next: Next; cancel: () => void }) {
+  const [code, setCode] = useState("");
+  const { working, error, submit } = useSubmit(async () => {
+    const codes = await confirmTotpSetup(code.trim());
+    props.next({ kind: "codes", codes, enabling: true });
+  });
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <div className="totp-scan">
+        <Qr text={props.uri} />
+        <div className="totp-key">
+          <span>
+            Scan this with an authenticator app, such as 1Password or Google Authenticator.
+          </span>
+          <span className="muted">Can't scan it? Enter this key:</span>
+          <code data-testid="totp-secret">{props.secret.match(/.{1,4}/g)?.join(" ")}</code>
+          <div className="actions">
+            <Copy text={props.secret} label="Copy key" />
+          </div>
+        </div>
+      </div>
+      <Field
+        label="Code from the app"
+        value={code}
+        set={setCode}
+        autoComplete="one-time-code"
+        note="Turning it on signs you out everywhere else."
+        autoFocus
+        code
+      />
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button
+          type="submit"
+          className="button primary"
+          disabled={working || !/^\d{6}$/.test(code.trim())}
+        >
+          Turn on
+        </button>
+        <button type="button" className="link-button" onClick={props.cancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** The otpauth:// address as a QR code, drawn here so the secret never
+ * leaves the page. Black on white in either theme, which every camera
+ * reads. */
+function Qr({ text }: { text: string }) {
+  const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
+  const quiet = 4;
+  let path = "";
+  for (let y = 0; y < qr.size; y++) {
+    for (let x = 0; x < qr.size; x++) {
+      if (qr.getModule(x, y)) {
+        path += `M${x + quiet} ${y + quiet}h1v1h-1z`;
+      }
+    }
+  }
+  const side = qr.size + quiet * 2;
+  return (
+    <svg
+      className="totp-qr"
+      viewBox={`0 0 ${side} ${side}`}
+      role="img"
+      aria-label="QR code for your authenticator app"
+      shapeRendering="crispEdges"
+    >
+      <rect width={side} height={side} fill="#fff" />
+      <path d={path} fill="#000" />
+    </svg>
+  );
+}
+
+/** A button that copies `text`, where the browser allows it: only pages
+ * served over HTTPS or from localhost can write to the clipboard. */
+function Copy({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!navigator.clipboard) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      className="button"
+      onClick={() => {
+        void navigator.clipboard.writeText(text).then(() => setCopied(true));
+      }}
+    >
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
+  const [saved, setSaved] = useState(false);
+  const text = `Microscope recovery codes. Each signs you in once.\n\n${codes.join("\n")}\n`;
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "microscope-recovery-codes.txt";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <div className="pane-form">
+      <p>
+        <b>Save your recovery codes.</b> If you lose your authenticator, each of these signs you in
+        once. This is the only time they are shown.
+      </p>
+      <ul className="totp-codes" aria-label="Recovery codes">
+        {codes.map((code) => (
+          <li key={code}>{code}</li>
+        ))}
+      </ul>
+      <div className="actions">
+        <Copy text={text} label="Copy" />
+        <button type="button" className="button" onClick={download}>
+          Download .txt
+        </button>
+      </div>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={saved}
+          onChange={(event) => setSaved(event.target.checked)}
+        />
+        I saved these codes somewhere safe
+      </label>
+      <div className="actions">
+        <button type="button" className="button primary" disabled={!saved} onClick={done}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Turning it off or replacing the recovery codes takes the password and a
+ * second factor, so a stolen session alone can do neither. */
+function Reauthenticate(props: { action: "disable" | "codes"; next: Next; cancel: () => void }) {
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const { working, error, submit } = useSubmit(async () => {
+    if (props.action === "disable") {
+      await disableTotp(password, code.trim());
+      props.cancel();
+    } else {
+      const codes = await replaceRecoveryCodes(password, code.trim());
+      props.next({ kind: "codes", codes, enabling: false });
+    }
+  });
+  const verb = props.action === "disable" ? "Turn off" : "Make new codes";
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <p className="muted">
+        {props.action === "disable"
+          ? "Turning it off takes your password and a code."
+          : "New recovery codes replace the old ones, which stop working."}
+      </p>
+      <Field
+        label="Password"
+        type="password"
+        value={password}
+        set={setPassword}
+        autoComplete="current-password"
+        autoFocus
+      />
+      <Field
+        label="Code from your app, or a recovery code"
+        value={code}
+        set={setCode}
+        autoComplete="one-time-code"
+      />
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button
+          type="submit"
+          className="button primary"
+          disabled={working || !password || !code.trim()}
+        >
+          {verb}
+        </button>
+        <button type="button" className="link-button" onClick={props.cancel}>
+          Cancel
         </button>
       </div>
     </form>

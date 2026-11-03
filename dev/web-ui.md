@@ -178,9 +178,20 @@ emails. The links in those emails lead to the page's `/confirm-email` and
 Account pane, which says how the link went. Without email, a password alone
 signs in.
 
+An account can turn on two-factor authentication from the same pane: its
+password, then a QR code of services' `otpauth://` address (drawn in the
+page by the vendored `web/src/vendor/qrcodegen.ts`, so the secret never
+leaves it), then a code from the app, then ten recovery codes shown once.
+Such an account signs in with its password and then a code from the app or
+a recovery code, never an emailed code. Turning it off or replacing the
+recovery codes takes the password and a code.
+
 `web/e2e/accounts.spec.ts` runs this against the real services server, with
 a fake Postmark that keeps each email so the test can follow its link or
-type its code. Services hashes passwords at argon2's minimum costs there
+type its code. `web/e2e/totp.spec.ts` does the same for two-factor
+authentication, with a fake Cloud KMS behind services' real KMS client
+(`--totp-kms-api-url`, `--totp-metadata-url`); it computes codes from the
+key the page shows. `TOTP_SHOTS=<dir>` saves a screenshot of each step. Services hashes passwords at argon2's minimum costs there
 (`--insecure-fast-password-hashing`, debug builds only). It runs services
 from `../services/target/debug`, or from `MICROSCOPE_SERVICES_BINARY`, and
 skips when that is not built. Build it and start its database from the

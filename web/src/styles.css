@@ -863,6 +863,48 @@ textarea.input {
   color: var(--ink-2);
 }
 
+/* Setting up two-factor authentication: the QR code beside its key, which
+   wraps under it in a narrow pane. */
+.totp-scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.totp-qr {
+  flex: none;
+  width: 164px;
+  height: 164px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.totp-key {
+  display: grid;
+  flex: 1 1 220px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.totp-key code {
+  font: 12.5px / 1.5 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.totp-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 4px 24px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper);
+  font: 12.5px / 1.6 var(--mono);
+  list-style: none;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
