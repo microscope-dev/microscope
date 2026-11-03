@@ -4,7 +4,7 @@
 
 import { Link, Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
-import { followEmailLink } from "../account";
+import { followEmailLink, followSignIn } from "../account";
 import { KIND } from "../documents";
 import { type Note, targetName } from "../model";
 import { useModel } from "../store";
@@ -13,6 +13,7 @@ import { change, workbench } from "../workbench/store";
 import { PICKED } from "./Picker";
 import { profileLayout, showPane, showProfile, welcomeLayout } from "./panes";
 import { profileParams } from "./profile/ProfilePage";
+import { orgLink } from "./SingleSignOn";
 import { Workbench } from "./Workspace";
 
 /** `/`: the session when there is one; else what to start from, which is
@@ -63,6 +64,30 @@ export function EmailLink({ link }: { link: "confirm" | "login" }) {
     showPane(KIND.account);
     void navigate({ to: "/", replace: true });
   }, [link, navigate]);
+  return <Workbench focus={null} wants="start" />;
+}
+
+/** `/signed-in#…`, where services sends the browser back after single
+ * sign-on: the Account pane, saying how it went. */
+export function SignedIn() {
+  const navigate = useNavigate();
+  useLayoutEffect(() => {
+    followSignIn();
+    showPane(KIND.account);
+    void navigate({ to: "/", replace: true });
+  }, [navigate]);
+  return <Workbench focus={null} wants="start" />;
+}
+
+/** `/sso#key=`, an organization's single sign-on link: the Account pane,
+ * offering the way through it. */
+export function OrgSignIn() {
+  const navigate = useNavigate();
+  useLayoutEffect(() => {
+    orgLink.setState({ key: new URLSearchParams(window.location.hash.slice(1)).get("key") });
+    showPane(KIND.account);
+    void navigate({ to: "/", replace: true });
+  }, [navigate]);
   return <Workbench focus={null} wants="start" />;
 }
 

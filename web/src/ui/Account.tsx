@@ -4,6 +4,7 @@
 // a join link works without an account.
 
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { useStore } from "zustand";
 import {
   account,
   checkAccount,
@@ -29,6 +30,7 @@ import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
 import { qrcodegen } from "../vendor/qrcodegen";
 import { Organizations } from "./Orgs";
+import { ContinueWith, OrgLink, SignInMethods } from "./SingleSignOn";
 
 /** Why the microscope the page last connected to sent it back, if it did. */
 function refused(): string | null {
@@ -163,6 +165,14 @@ export function AccountBody() {
   // Whoever signs in or out starts over next time.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only the kind matters
   useEffect(() => setStep({ kind: "sign-in" }), [now.kind]);
+  // Single sign-on came back for a code from the account's authenticator app.
+  const challenge = useStore(account, (state) => state.challenge);
+  useEffect(() => {
+    if (challenge !== null && now.kind === "out") {
+      account.setState({ challenge: null });
+      setStep({ kind: "totp", challenge });
+    }
+  }, [challenge, now.kind]);
 
   return (
     <div className="pane-body pane-text">
@@ -174,6 +184,7 @@ export function AccountBody() {
             {notice.text}
           </div>
         ))}
+      <OrgLink />
       {now.kind === "checking" ? (
         <p className="muted">Checking whether you are signed in…</p>
       ) : now.kind === "unavailable" ? (
@@ -200,6 +211,7 @@ export function AccountBody() {
             </button>
           </div>
           <Organizations />
+          <SignInMethods />
           <TwoFactor user={now.user} />
         </>
       ) : step.kind === "sign-up" ? (
@@ -319,6 +331,7 @@ function SignIn({ go }: { go: Go }) {
           </span>
         </div>
       </form>
+      <ContinueWith />
       {unconfirmed && (
         <Resend email={name.includes("@") ? name : ""} go={go}>
           <h2>Confirm your email address</h2>
@@ -341,42 +354,45 @@ function SignUp({ go }: { go: Go }) {
     }
   });
   return (
-    <form className="pane-form" onSubmit={submit}>
-      <h2>Create an account</h2>
-      <Field
-        label="Username"
-        value={username}
-        set={setUsername}
-        autoComplete="username"
-        note="3 to 32 letters, digits, _ or -."
-        autoFocus
-      />
-      <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" />
-      <Field
-        label="Password"
-        type="password"
-        value={password}
-        set={setPassword}
-        autoComplete="new-password"
-        note="At least 8 characters."
-      />
-      {error && <span className="error">{error.message}</span>}
-      <div className="actions">
-        <button
-          type="submit"
-          className="button primary"
-          disabled={working || !username.trim() || !email.trim() || !password}
-        >
-          Create account
-        </button>
-        <span className="muted">
-          Have one?
-          <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
-            Sign in
+    <>
+      <form className="pane-form" onSubmit={submit}>
+        <h2>Create an account</h2>
+        <Field
+          label="Username"
+          value={username}
+          set={setUsername}
+          autoComplete="username"
+          note="3 to 32 letters, digits, _ or -."
+          autoFocus
+        />
+        <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" />
+        <Field
+          label="Password"
+          type="password"
+          value={password}
+          set={setPassword}
+          autoComplete="new-password"
+          note="At least 8 characters."
+        />
+        {error && <span className="error">{error.message}</span>}
+        <div className="actions">
+          <button
+            type="submit"
+            className="button primary"
+            disabled={working || !username.trim() || !email.trim() || !password}
+          >
+            Create account
           </button>
-        </span>
-      </div>
-    </form>
+          <span className="muted">
+            Have one?
+            <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
+              Sign in
+            </button>
+          </span>
+        </div>
+      </form>
+      <ContinueWith />
+    </>
   );
 }
 

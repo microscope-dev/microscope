@@ -10,6 +10,9 @@
 // An account with two-factor authentication finishes signing in with a code
 // from its authenticator app, or one of its recovery codes, and never gets
 // an emailed code.
+//
+// Signing in through Google, GitHub, or an organization's identity provider
+// leaves the page and comes back to `/signed-in` (sso.ts).
 
 import { createStore, useStore } from "zustand";
 import { standalone } from "./target";
@@ -187,9 +190,15 @@ export interface Notice {
   readonly text: string;
 }
 
-export const account = createStore<{ now: Account; notice: Notice | null }>(() => ({
+export const account = createStore<{
+  now: Account;
+  notice: Notice | null;
+  /** A TOTP challenge single sign-on left for the Account pane to finish. */
+  challenge: string | null;
+}>(() => ({
   now: { kind: "checking" },
   notice: null,
+  challenge: null,
 }));
 
 export function useAccount(): Account {
@@ -242,14 +251,54 @@ function ask(): Promise<Account> {
   );
 }
 
-/** Takes the token from an emailed link's `#token=…` out of the address
- * bar, so nothing later can copy it. Null once it is gone. */
-function takeToken(): string | null {
-  const token = new URLSearchParams(window.location.hash.slice(1)).get("token");
-  if (token !== null) {
+/** Takes the fragment out of the address bar, so nothing later can copy
+ * what it carried. */
+function takeFragment(): URLSearchParams {
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  if (window.location.hash) {
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
   }
-  return token;
+  return fragment;
+}
+
+/** The token from an emailed link's `#token=…`, or null. */
+function takeToken(): string | null {
+  return takeFragment().get("token");
+}
+
+/** Follows services back from Google, GitHub, or an identity provider, to
+ * `/signed-in`. Its fragment says what went wrong, what to know, or the
+ * TOTP challenge left to finish; with none, services signed the person in
+ * and set the session cookie. */
+export function followSignIn(): void {
+  const fragment = takeFragment();
+  if (!standalone) {
+    return;
+  }
+  const error = fragment.get("error");
+  const notice = fragment.get("notice");
+  const challenge = fragment.get("challenge");
+  changes += 1;
+  // Only what the fragment carried changes: once taken, the fragment is
+  // gone, and following again, as React's development build does, must not
+  // erase what the first time found.
+  account.setState({
+    now: { kind: "checking" },
+    ...(error !== null
+      ? { notice: { ok: false, text: error } }
+      : notice !== null
+        ? { notice: { ok: true, text: notice } }
+        : {}),
+    ...(challenge !== null && fragment.get("method") === "totp" ? { challenge } : {}),
+  });
+  following = ask()
+    .then((now) => {
+      changes += 1;
+      account.setState({ now });
+    })
+    .finally(() => {
+      following = null;
+    });
 }
 
 /** Follows the link a confirmation or login email sent: `/confirm-email`

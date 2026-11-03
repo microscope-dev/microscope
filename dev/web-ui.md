@@ -167,7 +167,8 @@ good only from the server's own pages.
 The standalone page also offers an optional sign-in to the services backend,
 which it reaches under its own `/api/`. Vite proxies that to
 `MICROSCOPE_SERVICES_URL`, by default `http://127.0.0.1:8080`, and renames
-services' `__Host-session` cookie, which a browser keeps only over HTTPS. Start
+services' `__Host-` cookies to `dev-`, since a browser keeps those only over
+HTTPS. Start
 services from its own repository with `just up` and `just run`. Without it,
 the page says sign-in is unavailable and connecting still works.
 
@@ -186,6 +187,22 @@ leaves it), then a code from the app, then ten recovery codes shown once.
 Such an account signs in with its password and then a code from the app or
 a recovery code, never an emailed code. Turning it off or replacing the
 recovery codes takes the password and a code.
+
+Single sign-on (`web/src/sso.ts`, `web/src/ui/SingleSignOn.tsx`) signs in
+with Google, GitHub, or an organization's own SAML identity provider,
+whichever services' operator turned on (`--sso-providers`). Signing in
+follows a plain link to services' `/api/sso/PROVIDER/start`; connecting
+another way in to a signed-in account POSTs to `.../connect` first, which
+ties the sign-in to that account. Either way the browser comes back to the
+page's `/signed-in`, whose fragment carries an error, a notice, or a TOTP
+challenge for the Account pane, and nothing when services set the session.
+The Account pane lists the account's sign-in methods and will not
+disconnect the last one. An organization's owners set up SAML in its
+Settings: services' values to paste into the identity provider, the
+identity provider's entity ID, SSO URL, and certificates, and a sign-in
+link, `/sso#key=KEY`, to hand to members. Anyone it signs in joins the
+organization. Locally, run services' `just mock-idp` and pass `just run`
+the flags it prints; its sign-in pages list made-up people.
 
 A signed-in account also has organizations and projects
 (`web/src/orgs.ts`, `web/src/ui/Orgs.tsx`). The Account pane lists the
@@ -206,7 +223,11 @@ a fake Postmark that keeps each email so the test can follow its link or
 type its code. `web/e2e/totp.spec.ts` does the same for two-factor
 authentication, with a fake Cloud KMS behind services' real KMS client
 (`--totp-kms-api-url`, `--totp-metadata-url`); it computes codes from the
-key the page shows. `TOTP_SHOTS=<dir>` saves a screenshot of each step. Services hashes passwords at argon2's minimum costs there
+key the page shows. `TOTP_SHOTS=<dir>` saves a screenshot of each step.
+`web/e2e/sso.spec.ts` runs single sign-on against services and its
+`mock-idp` binary, built beside it, including a forged SAML assertion and a
+tampered Google token that must sign nobody in. `SSO_SHOTS=<dir>` saves
+screenshots. Services hashes passwords at argon2's minimum costs there
 (`--insecure-fast-password-hashing`, debug builds only). It runs services
 from `../services/target/debug`, or from `MICROSCOPE_SERVICES_BINARY`, and
 skips when that is not built. Build it and start its database from the

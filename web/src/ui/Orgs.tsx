@@ -55,6 +55,7 @@ import type { PaneProps } from "../workbench/kinds";
 import { close, type Json, type Pane, type PaneId, setParams } from "../workbench/layout";
 import { change } from "../workbench/store";
 import { showOrg, showPane } from "./panes";
+import { OrgSingleSignOn } from "./SingleSignOn";
 
 /** A form a command asked a pane to open: New project or New organization. */
 export const asked = createStore<{ form: "project" | "org" | null }>(() => ({ form: null }));
@@ -85,7 +86,7 @@ export const orgName = (pane: Pane): string => orgParams(pane).name;
 
 /** One request a control makes: whether it is in flight, and why services
  * refused it. */
-function useAction() {
+export function useAction() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = (send: () => Promise<unknown>) => {
@@ -100,7 +101,7 @@ function useAction() {
 
 /** An answer a pane asks for itself, again whenever `key` changes or it
  * calls `again`. */
-function useLoaded<T>(load: () => Promise<T>, key: string) {
+export function useLoaded<T>(load: () => Promise<T>, key: string) {
   const [state, setState] = useState<{ data: T | null; error: string | null }>({
     data: null,
     error: null,
@@ -213,7 +214,13 @@ function NameForm(props: {
 }
 
 /** A button for what cannot be undone, which asks first. */
-function Confirm(props: { label: string; question: string; act: () => Promise<unknown> }) {
+export function Confirm(props: {
+  label: string;
+  question: string;
+  act: () => Promise<unknown>;
+  /** What backing out is called, when "Cancel" would mean the act itself. */
+  keep?: string;
+}) {
   const [asking, setAsking] = useState(false);
   const { working, error, run } = useAction();
   if (!asking) {
@@ -235,7 +242,7 @@ function Confirm(props: { label: string; question: string; act: () => Promise<un
         {props.label}
       </button>
       <button type="button" className="link-button" onClick={() => setAsking(false)}>
-        Cancel
+        {props.keep ?? "Cancel"}
       </button>
       {error && (
         <span className="error" role="alert">
@@ -280,7 +287,7 @@ function Choice<T extends string>(props: {
 }
 
 /** Loading, or why loading failed, for a list a pane asked for. */
-function Loading({ error, what }: { error: string | null; what: string }) {
+export function Loading({ error, what }: { error: string | null; what: string }) {
   return error ? (
     <p className="error" role="alert">
       Could not load {what}: {error}.
@@ -1270,6 +1277,7 @@ function Settings(props: { org: Org; pane: PaneId }) {
       )}
       <h2>Base permission</h2>
       <BasePermission org={org} />
+      <OrgSingleSignOn org={org} />
       <h2>Delete</h2>
       <p className="muted">
         Deleting {org.name} deletes its projects and teams, and removes everyone from it. This

@@ -78,7 +78,7 @@ export const PERMISSION_LABEL: Record<Permission, string> = {
 
 export const ROLE_LABEL: Record<Role, string> = { owner: "Owner", member: "Member" };
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
     credentials: "same-origin",

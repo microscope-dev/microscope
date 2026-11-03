@@ -988,6 +988,23 @@ textarea.input {
   background: var(--paper);
 }
 
+/* Values a person may need, folded away once they are set. */
+.disclosure > summary {
+  width: max-content;
+  padding: 3px 0;
+  color: var(--ink-2);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.disclosure > summary:hover {
+  color: var(--ink);
+}
+
+.disclosure > :not(summary) {
+  margin-top: 8px;
+}
+
 .confirm {
   display: inline-flex;
   flex-wrap: wrap;

@@ -267,6 +267,45 @@ it("lets a person accept an invitation from their Account pane", async () => {
   expect(page.getByRole("list", { name: "Invitations" }).elements()).toHaveLength(0);
 });
 
+it("lists sign-in methods only when there is one to connect or one connected", async () => {
+  const off = { google: false, github: false, saml: true };
+  const saml = { id: 3, provider: "saml", email: ME.email, org_id: 7, org_name: "acme" };
+  const methods = () => page.getByRole("list", { name: "Sign-in methods" });
+  const show = (providers: unknown, identities: unknown[]) => {
+    const asked = services({
+      "GET /api/orgs": [200, []],
+      "GET /api/projects": [200, []],
+      "GET /api/users/me/invitations": [200, []],
+      "GET /api/sso/providers": [200, providers],
+      "GET /api/users/me/identities": [200, { has_password: true, identities }],
+    });
+    render(<AccountBody />);
+    return asked;
+  };
+
+  // Nothing to connect, and nothing connected: no section at all.
+  const asked = show(off, []);
+  await expect
+    .poll(() => asked)
+    .toEqual(expect.arrayContaining(["GET /api/sso/providers", "GET /api/users/me/identities"]));
+  await expect.element(page.getByText(/^You are not in any organization/)).toBeVisible();
+  await new Promise((settle) => setTimeout(settle, 50));
+  expect(page.getByRole("heading", { name: "Sign-in methods" }).elements()).toHaveLength(0);
+  cleanup();
+
+  // An organization's single sign-on, connected, still shows and can go.
+  show(off, [saml]);
+  await expect.poll(() => text(methods())).toMatch(/^Password\s*acme's single sign-on/);
+  await expect.element(methods().getByRole("button", { name: "Disconnect" })).toBeVisible();
+  cleanup();
+
+  // GitHub offered: something to connect.
+  show({ ...off, github: true }, []);
+  await expect.poll(() => text(methods())).toBe("Password");
+  await expect.element(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
+  expect(page.getByRole("button", { name: "Connect Google" }).elements()).toHaveLength(0);
+});
+
 it("says what went wrong when services cannot be asked", async () => {
   services({
     "GET /api/orgs": [500, { error: "database is down" }],

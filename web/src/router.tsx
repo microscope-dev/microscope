@@ -14,7 +14,15 @@ import { validateProfileLook } from "./profile/look";
 import { Frame } from "./ui/Frame";
 import { Join } from "./ui/Join";
 import { pickerSearch } from "./ui/Picker";
-import { EmailLink, Home, Pick, ProfileRoute, SessionRoute } from "./ui/Routes";
+import {
+  EmailLink,
+  Home,
+  OrgSignIn,
+  Pick,
+  ProfileRoute,
+  SessionRoute,
+  SignedIn,
+} from "./ui/Routes";
 import { Workspace } from "./ui/Workspace";
 
 const rootRoute = createRootRoute({ component: Frame });
@@ -47,6 +55,19 @@ const loginLinkRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login-link",
   component: () => <EmailLink link="login" />,
+});
+
+// Services sends single sign-on back here, and organizations hand out these.
+const signedInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/signed-in",
+  component: SignedIn,
+});
+
+const orgSignInRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sso",
+  component: OrgSignIn,
 });
 
 const sessionRoute = createRoute({
@@ -98,6 +119,8 @@ const routeTree = rootRoute.addChildren([
   pickRoute,
   confirmEmailRoute,
   loginLinkRoute,
+  signedInRoute,
+  orgSignInRoute,
   profileRoute,
   sessionRoute.addChildren([sessionIndexRoute, liveRoute, stopRoute, taskRoute]),
 ]);

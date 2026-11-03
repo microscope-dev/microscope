@@ -1,7 +1,8 @@
 // The page served on its own, as `just web` serves it, and the services
 // backend behind its `/api/`: a stand-in, or the real server from the
 // services repository with a fake Postmark that keeps every email it is
-// asked to send, and a fake Cloud KMS that encrypts its TOTP secrets.
+// asked to send, a fake Cloud KMS that encrypts its TOTP secrets, and
+// services' own mock of Google, GitHub, and a SAML identity provider.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
@@ -17,6 +18,7 @@ import {
 import type { AddressInfo } from "node:net";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
+import { fromServices, toServices } from "../dev-cookies";
 import { root } from "./server";
 
 export type Handler = (request: IncomingMessage, response: ServerResponse) => void;
@@ -70,6 +72,9 @@ export const servicesBinary =
 
 export const haveServices = existsSync(servicesBinary);
 
+/** Services' mock identity provider, built beside it. */
+const mockIdpBinary = path.join(path.dirname(servicesBinary), "mock-idp");
+
 /** An email services asked Postmark to send. */
 export interface Mail {
   to: string;
@@ -85,6 +90,8 @@ export interface Mail {
 export interface Services extends Served {
   /** The next email to `to` that this test has not taken yet. */
   mail(to: string): Promise<Mail>;
+  /** The mock identity provider's base URL, such as `http://127.0.0.1:41235`. */
+  idp: string;
   log: string[];
   stop(): Promise<void>;
 }
@@ -180,22 +187,19 @@ async function fakeKms(): Promise<Served> {
   });
 }
 
-/** Passes a request on to services as `just web`'s proxy does. Services'
- * session cookie is `__Host-session`, which a browser keeps only over
- * HTTPS, so the browser holds it as `dev-session` (vite.config.ts). */
+/** Passes a request on to services as `just web`'s proxy does, with its
+ * cookies renamed for plain HTTP (dev-cookies.ts). */
 function proxy(target: () => string): Handler {
   return (request, response) => {
     const headers = { ...request.headers };
     if (typeof headers.cookie === "string") {
-      headers.cookie = headers.cookie.replace(/(^|;\s*)dev-session=/, "$1__Host-session=");
+      headers.cookie = toServices(headers.cookie);
     }
     const upstream = forward(
       `${target()}${request.url}`,
       { method: request.method, headers },
       (answer) => {
-        const cookies = answer.headers["set-cookie"]?.map((cookie) =>
-          cookie.replace(/^__Host-session=/, "dev-session=").replace(/;\s*Secure/i, ""),
-        );
+        const cookies = answer.headers["set-cookie"]?.map(fromServices);
         response.writeHead(answer.statusCode ?? 502, {
           ...answer.headers,
           ...(cookies ? { "set-cookie": cookies } : {}),
@@ -211,10 +215,41 @@ function proxy(target: () => string): Handler {
   };
 }
 
+/** Runs services' mock identity provider until `stop`, and the flags that
+ * point services at it. */
+async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promise<void> }> {
+  const child = spawn(mockIdpBinary, ["--listen", "127.0.0.1:0"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  createInterface({ input: child.stderr }).on("line", (line) => log.push(`mock-idp: ${line}`));
+  const stop = () => stopChild(child);
+  const base = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`mock-idp never listened: ${log}`)), 10_000);
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      try {
+        const fields = JSON.parse(line) as { message?: string; base_url?: string };
+        if (fields.message === "listening" && fields.base_url) {
+          clearTimeout(timer);
+          resolve(fields.base_url);
+        }
+      } catch {}
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  }).catch(async (error: Error) => {
+    await stop();
+    throw error;
+  });
+  return { base, stop };
+}
+
 /** Starts the page, a fake Postmark, and services with email turned on,
- * whose links lead to the page. Services needs its database: `just up` in
- * the services repository starts one. */
-export async function startServices(): Promise<Services> {
+ * whose links lead to the page. With `sso`, services signs in through the
+ * mock identity provider too. Services needs its database: `just up` in the services repository
+ * starts one. */
+export async function startServices(options: { sso?: boolean } = {}): Promise<Services> {
   const inbox: Mail[] = [];
   const waiting: (() => void)[] = [];
   const postmark = await fakePostmark((mail) => {
@@ -237,6 +272,32 @@ export async function startServices(): Promise<Services> {
   });
 
   const log: string[] = [];
+  const idp = options.sso
+    ? await mockIdp(log).catch((error: Error) => {
+        page.server.close();
+        postmark.server.close();
+        kms.server.close();
+        throw error;
+      })
+    : null;
+  const ssoFlags = idp
+    ? [
+        "--google-client-id",
+        "mock-client",
+        "--google-client-secret",
+        "mock-secret",
+        "--google-issuer-url",
+        `${idp.base}/google`,
+        "--github-client-id",
+        "mock-client",
+        "--github-client-secret",
+        "mock-secret",
+        "--github-url",
+        `${idp.base}/github/`,
+        "--github-api-url",
+        `${idp.base}/github-api/`,
+      ]
+    : [];
   const child = spawn(
     servicesBinary,
     [
@@ -257,12 +318,14 @@ export async function startServices(): Promise<Services> {
       `${kms.origin}/`,
       "--totp-metadata-url",
       `${kms.origin}/`,
+      ...ssoFlags,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   createInterface({ input: child.stderr }).on("line", (line) => log.push(`stderr: ${line}`));
   const stop = async () => {
     await stopChild(child);
+    await idp?.stop();
     page.server.close();
     postmark.server.close();
     kms.server.close();
@@ -295,6 +358,7 @@ export async function startServices(): Promise<Services> {
   return {
     ...page,
     log,
+    idp: idp?.base ?? "",
     mail: async (to) => {
       const deadline = Date.now() + 5_000;
       for (;;) {
