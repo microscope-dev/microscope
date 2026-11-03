@@ -2,17 +2,17 @@
 // is a defect: make it faster, or give it a budget of its own below with the
 // reason it cannot be faster. A test in a browser waits on real key presses,
 // garbage collection, and modules loading cold, so its budget leaves room
-// for that: about twice the slowest ordinary test on jlinux1. A budget of a
-// test's own is about half again its time. `just web-props` runs without
-// budgets.
+// for that. Budgets fit jlinux3, the slowest machine we run on, where tests
+// take about twice as long as on jlinux1. A budget of a test's own is about
+// half again its time. `just web-props` runs without budgets.
 
 import { afterEach, beforeEach, expect, inject } from "vitest";
 
 /** Tests outside a browser: logic over data. */
-const UNIT = 50;
+const UNIT = 150;
 
 /** Tests rendering in Chromium. */
-const BROWSER = 500;
+const BROWSER = 1_500;
 
 /** Tests that cannot meet their project's budget, by file and full name. */
 export const OWN: Record<string, { ms: number; why: string }> = {
@@ -27,15 +27,15 @@ export const OWN: Record<string, { ms: number; why: string }> = {
   "test/sandbox.test.tsx :: the sandbox > ends a draw that runs too long, and the card draws again afterwards":
     { ms: 3_000, why: "waits out the sandbox's real 2s draw deadline" },
   "test/path-input.test.tsx :: passes Tab through an empty field and stops descending at a directory":
-    { ms: 800, why: "types paths a key at a time through the browser" },
+    { ms: 2_000, why: "types paths a key at a time through the browser" },
   "test/path-input.test.tsx :: never completes typed text with suggestions for older text": {
-    ms: 800,
+    ms: 2_000,
     why: "types paths a key at a time through the browser",
   },
   "test/docking.test.tsx :: keeps the screen and the layout model alike through any run of drags and clicks":
-    { ms: 1_500, why: "a hundred runs of up to a dozen drags and clicks, each checked on screen" },
+    { ms: 4_500, why: "a hundred runs of up to a dozen drags and clicks, each checked on screen" },
   "test/sandbox.test.tsx :: the sandbox > runs four draws at once and queues the rest": {
-    ms: 1_000,
+    ms: 2_500,
     why: "holds four real worker draws open while a fifth queues",
   },
 };
@@ -43,7 +43,7 @@ export const OWN: Record<string, { ms: number; why: string }> = {
 /** Files whose every test has a budget of its own, and why. */
 export const FILES: Record<string, { ms: number; why: string }> = {
   "test/journeys.test.tsx": {
-    ms: 1_500,
+    ms: 3_500,
     why: "a journey is several steps of a person's, each rendering the whole page",
   },
 };
