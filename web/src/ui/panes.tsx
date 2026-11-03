@@ -39,6 +39,7 @@ import {
 } from "./Documents";
 import { Drawings } from "./Drawings";
 import { Memory } from "./Memory";
+import { OrgBody, orgName, ProjectsBody } from "./Orgs";
 import { Output, OutputBadge } from "./Output";
 import { StartBody } from "./Picker";
 import { Processes, ProcessesBadge } from "./Processes";
@@ -125,6 +126,15 @@ export const KINDS = kinds<Need>([
   view(KIND.explorer, "Explorer", ExplorerBody, { needs: null }),
   view(KIND.connect, "Connect", ConnectBody, { needs: null }),
   view(KIND.account, "Account", AccountBody, { needs: null }),
+  view(KIND.projects, "Projects", ProjectsBody, { needs: null }),
+  {
+    id: KIND.org,
+    title: (pane) => orgName(pane) || "Organization",
+    Body: OrgBody,
+    needs: null,
+    keepAlive: true,
+    closable: () => true,
+  },
   view(KIND.launch, "Launch", StartBody, { needs: "control" }),
   view(KIND.attach, "Attach", StartBody, { needs: "control" }),
   view(KIND.core, "Core dump", StartBody, { needs: "control" }),
@@ -238,6 +248,22 @@ export function showProfile(id: string, name: string, look: ProfileLook = {}): P
   );
   change(() => activate(opened.layout, opened.pane));
   return opened.pane;
+}
+
+/** Shows a shared organization's pane, opening it where there is room
+ * when it is not open, and moves the keyboard into it. */
+export function showOrg(id: number, name: string): void {
+  const before = workbench.getState().layout;
+  const found = paneOf(before, KIND.org, String(id));
+  const opened = found
+    ? { layout: before, pane: found }
+    : open(
+        before,
+        { kind: KIND.org, key: String(id), params: { name } },
+        documentsGroup(before, tab.getState().files),
+      );
+  change(() => activate(opened.layout, opened.pane));
+  requestAnimationFrame(() => focusPane(opened.pane));
 }
 
 /** Today's arrangement: nothing moves for someone who knows the page. */

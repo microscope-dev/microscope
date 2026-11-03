@@ -42,6 +42,8 @@ export const KIND = {
   explorer: kind("explorer"),
   connect: kind("connect"),
   account: kind("account"),
+  projects: kind("projects"),
+  org: kind("org"),
   launch: kind("launch"),
   attach: kind("attach"),
   core: kind("core"),

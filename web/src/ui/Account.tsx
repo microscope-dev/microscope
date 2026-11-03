@@ -28,6 +28,7 @@ import { isPagePath } from "../focus";
 import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
 import { qrcodegen } from "../vendor/qrcodegen";
+import { Organizations } from "./Orgs";
 
 /** Why the microscope the page last connected to sent it back, if it did. */
 function refused(): string | null {
@@ -198,6 +199,7 @@ export function AccountBody() {
               Sign out
             </button>
           </div>
+          <Organizations />
           <TwoFactor user={now.user} />
         </>
       ) : step.kind === "sign-up" ? (

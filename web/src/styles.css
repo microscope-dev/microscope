@@ -905,6 +905,133 @@ textarea.input {
   list-style: none;
 }
 
+/* Organizations and projects: lists of what a person manages, each row a
+   name, what it is to them, and what they may do, which wraps under the
+   name in a narrow pane. A row's details open beneath it. */
+.pane-text h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.group-head,
+.org-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.project-group {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.roster {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  list-style: none;
+}
+
+.roster > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: 38px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.roster > li:first-child {
+  border-top: 0;
+}
+
+.roster .name {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.roster .link-button.name {
+  padding: 0;
+  font: 500 13px var(--sans);
+  text-align: left;
+}
+
+.roster .end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* What takes a row's whole width: a form or details opened beneath it. */
+.wide {
+  flex: 1 1 100%;
+}
+
+.nested {
+  display: grid;
+  gap: 6px;
+  padding: 2px 0 4px 12px;
+}
+
+.nested .roster {
+  background: var(--paper);
+}
+
+.confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.inline-form > label {
+  align-self: center;
+  color: var(--ink-2);
+}
+
+.inline-form .field.grow {
+  flex: 1 1 180px;
+}
+
+.input.compact {
+  width: auto;
+  padding: 2px 6px;
+}
+
+/* Choices among words, such as a role, read as the words around them do. */
+.org select.input,
+.projects select.input {
+  font-family: var(--sans);
+}
+
+/* The one button that deletes or removes, once its question is asked. */
+.button.danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.button.danger:hover:not(:disabled) {
+  background: var(--error-bg);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

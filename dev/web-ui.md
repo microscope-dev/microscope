@@ -25,6 +25,7 @@ form sits outside the workbench.
 | `web/src/ui/panes.tsx`, `web/src/ui/commands.ts` | Every pane kind, the layout presets, and every command |
 | `web/src/ui/` | Pane bodies and the frame around the workbench |
 | `web/src/target.ts`, `web/src/account.ts`, `web/src/ui/Account.tsx` | The page served on its own: which microscope it talks to, and services sign-in |
+| `web/src/orgs.ts`, `web/src/ui/Orgs.tsx` | Services' organizations, teams, and projects, and the panes that manage them |
 | `web/src/protocol.gen.ts` | Generated TypeScript protocol; do not edit by hand |
 | `web/src/visualize/`, `sdk/web/` | Sandboxed visualizers and their public type contract |
 | `web/test/` | Fast TypeScript, React, replay, and sandbox tests |
@@ -185,6 +186,20 @@ leaves it), then a code from the app, then ten recovery codes shown once.
 Such an account signs in with its password and then a code from the app or
 a recovery code, never an emailed code. Turning it off or replacing the
 recovery codes takes the password and a code.
+
+A signed-in account also has organizations and projects
+(`web/src/orgs.ts`, `web/src/ui/Orgs.tsx`). The Account pane lists the
+person's shared organizations and pending invitations, and makes new
+organizations; services never returns the personal organization each user
+has, so the page never shows it. The Projects pane lists every project the
+person can read, their own first and then each organization's by name. An
+Organization pane (kind `org`, keyed by the organization's id) has Members,
+Projects, Teams, and Settings. The Projects, New project, and New
+organization commands are absent until someone signs in. Every answer
+carries the person's role or permission, which decides only which controls
+show; services checks each request, and its refusal shows where the control
+was. `useDirectory` shares one load of organizations, projects, and
+invitations between the panes, and `reload` asks again after a change.
 
 `web/e2e/accounts.spec.ts` runs this against the real services server, with
 a fake Postmark that keeps each email so the test can follow its link or

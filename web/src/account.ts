@@ -32,7 +32,7 @@ export class Refused extends Error {
 }
 
 /** What services said went wrong, or why it could not be asked. */
-async function failure(response: Response): Promise<Refused> {
+export async function failure(response: Response): Promise<Refused> {
   const body: unknown = await response.json().catch(() => null);
   const error = (body as { error?: unknown } | null)?.error;
   return new Refused(

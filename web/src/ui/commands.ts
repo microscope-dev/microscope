@@ -6,6 +6,7 @@
 
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
+import { account } from "../account";
 import { type ActionName, action } from "../actions";
 import { breakpointAt, toggleBreakpoint } from "../breakpoints";
 import type { Connection } from "../connection";
@@ -55,6 +56,7 @@ import { MENU_BAR } from "../workbench/MenuBar";
 import { change, workbench } from "../workbench/store";
 import { chooseTab, closeTab, reopenTab } from "../workbench/tabs";
 import { go } from "./navigation";
+import { asked } from "./Orgs";
 import { applyLayout, debugLayout, KINDS, showPane, welcomeLayout } from "./panes";
 
 interface Context {
@@ -254,6 +256,8 @@ function breakpoint(edit: boolean): Spec {
 
 const always = (): Availability => READY;
 
+const signedIn = (): Availability => (account.getState().now.kind === "in" ? READY : ABSENT);
+
 /** A Window menu arrangement, blocked for as long as it says why. */
 function arrange(label: string, keys: Chord[], why: () => Why, run: () => void): Spec {
   return {
@@ -413,6 +417,27 @@ export const COMMANDS = registry({
   account: {
     ...pane(KIND.account, "Account", "File"),
     available: () => (standalone ? READY : ABSENT),
+  },
+  // Only someone signed in to services has projects and organizations.
+  projects: {
+    ...pane(KIND.projects, "Projects", "File"),
+    available: signedIn,
+  },
+  newProject: {
+    ...pane(KIND.projects, "New project…", "File"),
+    available: signedIn,
+    run: () => {
+      asked.setState({ form: "project" });
+      showPane(KIND.projects);
+    },
+  },
+  newOrganization: {
+    ...pane(KIND.account, "New organization…", "File"),
+    available: signedIn,
+    run: () => {
+      asked.setState({ form: "org" });
+      showPane(KIND.account);
+    },
   },
   share: {
     label: "Share…",

@@ -5,7 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Page } from "@playwright/test";
-import { allowErrors, test as base, expect, expectErrors } from "./server";
+import { allowErrors, test as base, expect, expectErrors, menu } from "./server";
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 
 const test = base.extend<{ services: Services }>({
@@ -193,4 +193,118 @@ test("the link in a login email signs in the browser that opens it, once", async
 
   await page.goto(`${services.origin}/login-link#token=00`);
   await expect(account(page)).toContainText("Could not sign in: login link is invalid");
+});
+
+/** Signs a new person up, confirms their address, and signs them in with
+ * the emailed code. */
+async function join(page: Page, services: Services, who: ReturnType<typeof person>) {
+  await page.goto(`${services.origin}/`);
+  await account(page).getByRole("button", { name: "Create one" }).click();
+  await account(page).getByLabel("Username").fill(who.username);
+  await account(page).getByLabel("Email").fill(who.email);
+  await account(page).getByLabel("Password").fill(who.password);
+  await account(page).getByRole("button", { name: "Create account" }).click();
+  await page.goto((await services.mail(who.email)).link);
+  await expect(account(page)).toContainText("Your email address is confirmed");
+  await signIn(page, who.username, who.password);
+  await account(page)
+    .getByLabel("Code")
+    .fill((await services.mail(who.email)).code ?? "");
+  await account(page).getByRole("button", { name: "Sign in" }).click();
+  await expect(account(page)).toContainText(`Signed in as ${who.username}`);
+}
+
+test("an owner shares a project with a team, and a member sees the access it gives", async ({
+  page,
+  browser,
+  services,
+}) => {
+  const owner = person();
+  const user = person();
+  const org = `acme ${randomBytes(3).toString("hex")}`;
+  const projects = (on: Page) => on.getByRole("tabpanel", { name: "Projects" });
+  const orgPane = (on: Page) => on.getByRole("tabpanel", { name: org });
+  const section = (on: Page, name: string) =>
+    orgPane(on).getByRole("group", { name: "Sections" }).getByRole("button", { name });
+
+  const elsewhere = await browser.newContext();
+  try {
+    const other = await elsewhere.newPage();
+
+    // Someone makes a project of their own.
+    await join(other, services, user);
+    await menu(other, "File", "New project…");
+    await projects(other).getByLabel("Project name").fill("notes");
+    await projects(other).getByRole("button", { name: "Create project" }).click();
+    await expect(projects(other).getByRole("list", { name: "Your projects" })).toContainText(
+      /notes\s*Admin/,
+    );
+
+    // An owner makes an organization and a project in it, and invites them.
+    await join(page, services, owner);
+    await menu(page, "File", "New organization…");
+    await account(page).getByLabel("Organization name").fill(org);
+    await account(page).getByRole("button", { name: "Create organization" }).click();
+    await expect(orgPane(page).getByRole("heading", { name: org })).toBeVisible();
+    await section(page, "Projects").click();
+    await orgPane(page).getByRole("button", { name: "New project" }).click();
+    await orgPane(page).getByLabel("Project name").fill("api");
+    await orgPane(page).getByRole("button", { name: "Create project" }).click();
+    await expect(orgPane(page).getByRole("list", { name: `${org} projects` })).toContainText(
+      /api\s*Admin/,
+    );
+    await section(page, "Members").click();
+    await orgPane(page).getByLabel("Username").fill(user.username);
+    await orgPane(page).getByRole("button", { name: "Invite" }).click();
+    await expect(orgPane(page).getByRole("list", { name: "Invited" })).toContainText(user.username);
+
+    // They accept.
+    await other.reload();
+    await menu(other, "File", "Account");
+    const invitations = account(other).getByRole("list", { name: "Invitations" });
+    await expect(invitations).toContainText(
+      `${org} invites you as a member (from ${owner.username})`,
+    );
+    await invitations.getByRole("button", { name: "Accept" }).click();
+    await expect(account(other).getByRole("list", { name: "Organizations" })).toHaveText(
+      new RegExp(`^${org}\\s*Member$`),
+    );
+    await expect(invitations).toHaveCount(0);
+
+    // The owner makes a team, puts them in it, and gives it write.
+    await section(page, "Teams").click();
+    await orgPane(page).getByRole("button", { name: "New team" }).click();
+    await orgPane(page).getByLabel("Team name").fill("core");
+    await orgPane(page).getByRole("button", { name: "Create team" }).click();
+    await orgPane(page)
+      .getByRole("list", { name: "Teams" })
+      .getByRole("button", { name: "Members" })
+      .click();
+    await orgPane(page).getByLabel("Add").selectOption({ label: user.username });
+    await orgPane(page).getByRole("button", { name: "Add to team" }).click();
+    await expect(orgPane(page).getByRole("list", { name: "Members of core" })).toContainText(
+      user.username,
+    );
+    await section(page, "Projects").click();
+    await orgPane(page).getByRole("button", { name: "Team access" }).click();
+    await orgPane(page).getByLabel("Give", { exact: true }).selectOption({ label: "core" });
+    await orgPane(page).getByLabel("access", { exact: true }).selectOption("write");
+    await orgPane(page).getByRole("button", { name: "Give access" }).click();
+    await expect(orgPane(page).getByRole("combobox", { name: "Access for core" })).toHaveValue(
+      "write",
+    );
+
+    // They see both projects, with what each lets them do, and nothing of
+    // anyone's own projects but theirs.
+    await other.reload();
+    await menu(other, "File", "Projects");
+    await expect(projects(other).getByRole("list", { name: "Your projects" })).toHaveText(
+      /^notes\s*Admin/,
+    );
+    const shared = projects(other).getByRole("list", { name: `${org} projects` });
+    await expect(shared).toHaveText(/^api\s*Write$/);
+    await expect(projects(other).getByRole("heading")).toHaveText(["Yours", org]);
+  } finally {
+    await elsewhere.close();
+  }
 });
