@@ -5,29 +5,30 @@
 
 import { randomBytes } from "node:crypto";
 import type { Page } from "@playwright/test";
-import { allowErrors, expect, expectErrors, test } from "./server";
+import { allowErrors, test as base, expect, expectErrors } from "./server";
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 
+const test = base.extend<{ services: Services }>({
+  services: async ({ context }, use, info) => {
+    // Services' answer when nobody is signed in, which each pane asks as it opens.
+    allowErrors(/GET \S+\/api\/users\/me: 401$/);
+    const services = await startServices();
+    try {
+      await use(services);
+    } finally {
+      // Pages go before services, so none sees it vanish.
+      for (const page of context.pages()) {
+        await page.close();
+      }
+      await services.stop();
+      if (info.status !== info.expectedStatus) {
+        await info.attach("services.log", { body: services.log.join("\n") });
+      }
+    }
+  },
+});
+
 test.skip(!haveServices, `services is not built at ${servicesBinary}`);
-
-let services: Services;
-
-test.beforeEach(async () => {
-  // Services' answer when nobody is signed in, which each pane asks as it opens.
-  allowErrors(/GET \S+\/api\/users\/me: 401$/);
-  services = await startServices();
-});
-
-test.afterEach(async ({ context }, info) => {
-  // Pages go before services, so none sees it vanish.
-  for (const page of context.pages()) {
-    await page.close();
-  }
-  await services.stop();
-  if (info.status !== info.expectedStatus) {
-    await info.attach("services.log", { body: services.log.join("\n") });
-  }
-});
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
@@ -45,6 +46,7 @@ async function signIn(page: Page, name: string, password: string): Promise<void>
 
 test("signs up, confirms the email by its link, and signs in with the emailed code", async ({
   page,
+  services,
 }) => {
   const who = person();
   expectErrors(/POST \S+\/api\/login: 403$/, /POST \S+\/api\/login\/code: 401$/);
@@ -104,6 +106,7 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
 test("the link in a login email signs in the browser that opens it, once", async ({
   page,
   browser,
+  services,
 }) => {
   const who = person();
   expectErrors(
@@ -135,8 +138,40 @@ test("the link in a login email signs in the browser that opens it, once", async
   const phone = await browser.newContext();
   try {
     const other = await phone.newPage();
+    // While the link is held, whatever the page asks services about who is
+    // signed in must not show the form: the pane waits for the link.
+    const asked: Promise<unknown>[] = [];
+    other.on("request", (request) => {
+      if (request.url().endsWith("/api/users/me")) {
+        asked.push(request.response());
+      }
+    });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = () => {};
+    const holding = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    await other.route("**/api/login/link", async (route) => {
+      entered();
+      await held;
+      await route.continue();
+    });
     await other.goto(login.link);
+    await holding;
+    await expect(account(other)).toContainText("Checking whether you are signed in");
+    // Two frames, so every pane's effects have asked what they will.
+    await other.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+    );
+    await Promise.all(asked);
+    await expect(account(other)).toContainText("Checking whether you are signed in");
+    await expect(account(other).getByLabel("Username or email")).toHaveCount(0);
+    release();
     await expect(account(other)).toContainText(`Signed in as ${who.username}`);
+    await other.unroute("**/api/login/link");
     await expect(other).toHaveURL(`${services.origin}/`);
 
     // The link finished the login, so neither it nor the code works again.

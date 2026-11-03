@@ -158,7 +158,10 @@ export async function startServices(): Promise<Services> {
   });
 
   let api = "";
-  const page = await standalonePage(proxy(() => api));
+  const page = await standalonePage(proxy(() => api)).catch((error: Error) => {
+    postmark.server.close();
+    throw error;
+  });
 
   const log: string[] = [];
   const child = spawn(
@@ -179,6 +182,11 @@ export async function startServices(): Promise<Services> {
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   createInterface({ input: child.stderr }).on("line", (line) => log.push(`stderr: ${line}`));
+  const stop = async () => {
+    await stopChild(child);
+    page.server.close();
+    postmark.server.close();
+  };
   const address = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`services never listened: ${log}`)), 10_000);
     createInterface({ input: child.stdout }).on("line", (line) => {
@@ -198,6 +206,9 @@ export async function startServices(): Promise<Services> {
       clearTimeout(timer);
       reject(new Error(`services exited with ${code}; is its database up? ${log.join("\n")}`));
     });
+  }).catch(async (error: Error) => {
+    await stop();
+    throw error;
   });
   api = `http://${address}`;
 
@@ -221,11 +232,7 @@ export async function startServices(): Promise<Services> {
         });
       }
     },
-    stop: async () => {
-      await stopChild(child);
-      page.server.close();
-      postmark.server.close();
-    },
+    stop,
   };
 }
 

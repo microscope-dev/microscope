@@ -146,6 +146,9 @@ export function useNotice(): Notice | null {
 /** The question to services in flight, which panes opening together share. */
 let asking: Promise<void> | null = null;
 
+/** A login link's request in flight, until its answer is applied. */
+let following: Promise<void> | null = null;
+
 /** Asks services who is signed in. A page `microscope web` serves has no
  * services behind it. */
 export function checkAccount(): Promise<void> {
@@ -154,6 +157,10 @@ export function checkAccount(): Promise<void> {
       now: { kind: "unavailable", why: "this page is served by microscope web, which has none" },
     });
     return Promise.resolve();
+  }
+  // A login link being followed decides who is signed in itself.
+  if (following !== null) {
+    return following;
   }
   if (asking === null) {
     const before = changes;
@@ -201,16 +208,20 @@ export function followEmailLink(link: "confirm" | "login"): void {
       .then(() => done({ ok: true, text: "Your email address is confirmed. You can sign in now." }))
       .catch((error: Error) => done({ ok: false, text: `Could not confirm: ${error.message}.` }));
   } else {
-    // The sign-in form would only flash while the link is checked.
+    // Until the link is answered, the pane shows neither the sign-in form
+    // nor an older check's answer.
     changes += 1;
     account.setState({ now: { kind: "checking" } });
-    post("/api/login/link", { token })
+    following = post("/api/login/link", { token })
       .then(async (response) => {
         signedIn((await response.json()) as User);
       })
-      .catch((error: Error) => {
+      .catch(async (error: Error) => {
         done({ ok: false, text: `Could not sign in: ${error.message}.` });
-        void ask().then((now) => account.setState({ now }));
+        account.setState({ now: await ask() });
+      })
+      .finally(() => {
+        following = null;
       });
   }
 }
