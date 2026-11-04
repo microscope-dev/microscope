@@ -302,10 +302,15 @@ impl std::ops::Deref for ProcessGroup {
     }
 }
 
+/// A group dropped without [`ProcessGroup::shutdown`] ends the same way,
+/// on its driver's task, without waiting for it, as a dropped [`Debugger`]
+/// does. Aborting the driver would stop it partway through whatever it was
+/// doing to its members.
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
+        if self.task.take().is_some() {
+            let (reply, _) = oneshot::channel();
+            let _ = self.handle.commands.send(Command::Shutdown(reply));
         }
     }
 }
