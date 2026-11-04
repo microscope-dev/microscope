@@ -572,6 +572,12 @@ impl Cli {
     /// Ctrl-C.
     pub async fn run(&self, session: &Session) -> Result<()> {
         let session_batch = session.batch;
+
+        // One listener for the session: a Ctrl-C while a pause is under way
+        // waits in it, where a listener made anew each time would miss it.
+        let mut interrupts =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                .context("failed to listen for Ctrl-C")?;
         let session = self.run_inputs(session);
         tokio::pin!(session);
         loop {
@@ -601,10 +607,7 @@ impl Cli {
 
                     return Ok(());
                 }
-                signal = tokio::signal::ctrl_c() => {
-                    signal.context("failed to listen for Ctrl-C")?;
-                    self.interrupt().await;
-                }
+                Some(()) = interrupts.recv() => self.interrupt().await,
             }
         }
     }
