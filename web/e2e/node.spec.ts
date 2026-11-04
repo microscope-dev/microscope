@@ -77,17 +77,17 @@ test("npm start stops at the app's breakpoint, its node beside npm's", async ({
   await page.keyboard.press("F5");
 
   // The app is the node npm's shell executed, which stopped the group.
-  await page.getByRole("tab", { name: /^Processes/ }).click();
+  await page.getByRole("tab", { name: /^Processes/u }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
-  const app = switcher.getByRole("button", { name: /stopped here/ });
-  await expect(app).toContainText(/\[\d+\] node · executed by \[\d+\]/, START);
+  const app = switcher.getByRole("button", { name: /stopped here/u });
+  await expect(app).toContainText(/\[\d+\] node · executed by \[\d+\]/u, START);
   await expect(app).toHaveAttribute("aria-pressed", "true");
-  await expect(switcher.getByRole("button", { name: /^\[1\] / })).toContainText("launched");
+  await expect(switcher.getByRole("button", { name: /^\[1\] /u })).toContainText("launched");
   await expect(page.locator(".cm-frame-line")).toContainText("console.log('listening', port);");
 
   // Continuing runs the app and npm to their ends.
   await page.keyboard.press("F5");
-  await expect(switcher.getByRole("button", { name: /^\[1\] / })).toContainText("exited", START);
+  await expect(switcher.getByRole("button", { name: /^\[1\] /u })).toContainText("exited", START);
   await expect(page.getByTestId("status")).toContainText("Exited");
 });
 
@@ -110,24 +110,24 @@ test("node --test stops in each file's node at its breakpoint", async ({ page, m
 
   // Each file runs in a node of its own, started by the runner, which
   // stops where its file's breakpoint is; the runner runs neither.
-  await page.getByRole("tab", { name: /^Processes/ }).click();
+  await page.getByRole("tab", { name: /^Processes/u }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
-  const stopped = switcher.getByRole("button", { name: /stopped here/ });
+  const stopped = switcher.getByRole("button", { name: /stopped here/u });
   const numbers: string[] = [];
   for (const _ of ["first", "second"]) {
     for (const number of numbers) {
       await expect(stopped).not.toContainText(`[${number}]`, START);
     }
-    await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[\d+\]/, START);
+    await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[\d+\]/u, START);
     await expect(stopped).toHaveAttribute("aria-pressed", "true");
-    await expect(stopped).not.toContainText(/^\[1\]/);
+    await expect(stopped).not.toContainText(/^\[1\]/u);
     await expect(page.locator(".cm-frame-line")).toContainText("return answer;");
-    const number = /^\[(\d+)\]/.exec((await stopped.textContent()) ?? "")?.[1] ?? "";
+    const number = /^\[(\d+)\]/u.exec((await stopped.textContent()) ?? "")?.[1] ?? "";
     expect(numbers).not.toContain(number);
     numbers.push(number);
     await page.keyboard.press("F5");
   }
-  await expect(switcher.getByRole("button", { name: /^\[1\] / })).toContainText("exited", START);
+  await expect(switcher.getByRole("button", { name: /^\[1\] /u })).toContainText("exited", START);
   await expect(page.getByTestId("status")).toContainText("Exited");
 });
 
@@ -154,12 +154,12 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   await breakAt(page, server, ["app.js:2"]);
   await page.keyboard.press("F5");
 
-  await page.getByRole("tab", { name: /^Processes/ }).click();
+  await page.getByRole("tab", { name: /^Processes/u }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
-  const stopped = switcher.getByRole("button", { name: /stopped here/ });
-  await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/, START);
+  const stopped = switcher.getByRole("button", { name: /stopped here/u });
+  await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/u, START);
   await expect(page.locator(".cm-frame-line")).toContainText("const marker =");
-  const first = /^\[(\d+)\]/.exec((await stopped.textContent()) ?? "")?.[1] ?? "";
+  const first = /^\[(\d+)\]/u.exec((await stopped.textContent()) ?? "")?.[1] ?? "";
   await page.keyboard.press("F5");
 
   // The watcher ends the app with SIGTERM to start it again, which stops
@@ -175,11 +175,11 @@ test("node --watch stops in the app, and again in the app it restarts", async ({
   // The restarted app stops at the same line, and the one it replaced has
   // exited.
   await expect(stopped).not.toContainText(`[${first}]`, START);
-  await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/);
+  await expect(stopped).toContainText(/\[\d+\] node · (forked|executed) by \[1\]/u);
   await expect(page.locator(".cm-frame-line")).toContainText("const marker =");
   await switcher.locator("summary").click();
   await expect(
-    switcher.getByRole("button", { name: new RegExp(`^\\[${first}\\] `) }),
+    switcher.getByRole("button", { name: new RegExp(`^\\[${first}\\] `, "u") }),
   ).toContainText("exited");
 });
 
@@ -193,32 +193,32 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
 
   // A timer is what it waits for, then the program's callback, and opens
   // no stack; a pool job runs on its thread.
-  await page.getByRole("tab", { name: /^Tasks/ }).click();
+  await page.getByRole("tab", { name: /^Tasks/u }).click();
   const tasks = page.getByTestId("tasks");
   const timer = tasks.getByRole("listitem", { name: "task 2", exact: true });
   await expect(timer).toContainText("timeout 30000 ms");
   await expect(timer).toContainText(
-    /callback sessionTimeout at \S*tests\/fixtures\/node\/tasks\.js:78$/,
+    /callback sessionTimeout at \S*tests\/fixtures\/node\/tasks\.js:78$/u,
   );
   await expect(timer.getByRole("button")).toHaveCount(0);
   const opened = tasks.getByRole("listitem", { name: "task 5", exact: true });
   await expect(opened).toContainText("fs open");
   await expect(opened).toContainText("callback configOpened");
-  await expect(tasks.getByRole("button", { name: /^task \d+$/ })).toHaveCount(2);
+  await expect(tasks.getByRole("button", { name: /^task \d+$/u })).toHaveCount(2);
   await expect(tasks).toContainText("thread-pool job");
 
   // Grouped, only the pool jobs open a stack. Their numbers, bit 62 and
   // the thread ids the core's log names, are above 2^53, and are shown
   // exactly.
   const log = await readFile(`${fixture("node-tasks-26.core")}.log`, "utf8");
-  const jobs = [...log.matchAll(/^TRUTH\tpool\t(\d+)$/gm)]
+  const jobs = [...log.matchAll(/^TRUTH\tpool\t(\d+)$/gmu)]
     .map((match) => ((1n << 62n) | BigInt(match[1] ?? "")).toString())
-    .sort();
+    .toSorted();
   expect(jobs).toHaveLength(2);
   await page.getByRole("button", { name: "group" }).click();
   const groups = page.getByTestId("task-group");
   await expect(groups.getByRole("button")).toHaveCount(2);
-  const shown = (await groups.getByRole("button").allTextContents()).sort();
+  const shown = (await groups.getByRole("button").allTextContents()).toSorted();
   expect(shown).toEqual(jobs);
   const uncalled = groups.filter({ hasText: "no callback" });
   await expect(uncalled).toContainText("16 in");
@@ -228,7 +228,7 @@ test("a Node core's tasks panel lists its event loops' work, each with its callb
   // A pool job opens its own thread's stack, through libuv's worker.
   const job = jobs[0] ?? "";
   await groups.getByRole("button", { name: `task ${job}`, exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/task/\\d+\\.${job}/f/`));
-  await expect(page.getByRole("tab", { name: /^Call Stack/ })).toContainText(`task ${job}`);
+  await expect(page).toHaveURL(new RegExp(`/task/\\d+\\.${job}/f/`, "u"));
+  await expect(page.getByRole("tab", { name: /^Call Stack/u })).toContainText(`task ${job}`);
   await expect(page.getByTestId("stack")).toContainText("worker");
 });

@@ -18,14 +18,14 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on("pageerror", (error) => console.error(`page error: ${error.message}`));
   await page.goto(server.link);
-  await page.waitForURL(/\/s\//);
+  await page.waitForURL(/\/s\//u);
   const adder = page.getByRole("textbox", { name: "Add a breakpoint" });
   await adder.fill("metrics.c:119");
   await adder.press("Enter");
   await adder.press("Escape");
   let stop = 2;
   await page.keyboard.press("F5");
-  await page.waitForURL(/\/stop\/2\//);
+  await page.waitForURL(/\/stop\/2\//u);
   await page.keyboard.press("Alt+v");
   const board = page.getByRole("region", { name: "Drawing of m", exact: true });
   const head = board.locator(".drawing-head");

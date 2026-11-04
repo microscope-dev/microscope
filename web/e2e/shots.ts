@@ -43,7 +43,7 @@ try {
   });
   const status = page.getByTestId("status");
   await page.goto(server.link);
-  await page.waitForURL(/\/s\//);
+  await page.waitForURL(/\/s\//u);
   await shoot(page, "1-loaded");
 
   await page.keyboard.press("F5");
@@ -125,7 +125,7 @@ async function shootProfile(page: Page): Promise<void> {
   try {
     await page.setViewportSize({ width: 1440, height: 800 });
     await page.goto(served.link);
-    await page.waitForURL(/\/profile\//);
+    await page.waitForURL(/\/profile\//u);
     await page.getByTestId("accounting").waitFor();
     await shoot(page, "0-profile", 300);
   } finally {
@@ -141,7 +141,7 @@ async function shootDrawings(page: Page): Promise<void> {
   try {
     await page.setViewportSize({ width: 1440, height: 800 });
     await page.goto(metrics.link);
-    await page.waitForURL(/\/s\//);
+    await page.waitForURL(/\/s\//u);
     const adder = page.getByRole("textbox", { name: "Add a breakpoint" });
     await adder.fill("metrics.c:119");
     await adder.press("Enter");
@@ -167,7 +167,7 @@ async function shootMesh(page: Page): Promise<void> {
   try {
     await page.setViewportSize({ width: 1440, height: 800 });
     await page.goto(mesh.link);
-    await page.waitForURL(/\/s\//);
+    await page.waitForURL(/\/s\//u);
     const adder = page.getByRole("textbox", { name: "Add a breakpoint" });
     await adder.fill("mesh.cpp:124");
     await adder.press("Enter");

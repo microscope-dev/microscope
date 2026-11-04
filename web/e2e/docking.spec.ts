@@ -23,13 +23,15 @@ const groups = (page: Page) =>
 /** The group holding a tab with this title. */
 const groupOf = (page: Page, title: string) =>
   page.locator("[data-group]").filter({
-    has: page.locator('[role="tab"] [data-part=tab-title]', { hasText: new RegExp(`^${title}$`) }),
+    has: page.locator('[role="tab"] [data-part=tab-title]', {
+      hasText: new RegExp(`^${title}$`, "u"),
+    }),
   });
 
 const tab = (page: Page, title: string) =>
-  page
-    .getByRole("tab")
-    .filter({ has: page.locator("[data-part=tab-title]", { hasText: new RegExp(`^${title}$`) }) });
+  page.getByRole("tab").filter({
+    has: page.locator("[data-part=tab-title]", { hasText: new RegExp(`^${title}$`, "u") }),
+  });
 
 async function box(_page: Page, locator: ReturnType<Page["locator"]>) {
   const found = await locator.boundingBox();
@@ -208,7 +210,7 @@ test("the Window keys move, split, float, close, and reopen tabs, and a reload k
     page.locator("[data-part=window], [data-group]").evaluateAll((elements) =>
       elements.map((element) => {
         const rect = element.getBoundingClientRect();
-        return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
+        return [rect.x, rect.y, rect.width, rect.height].map((value) => Math.round(value));
       }),
     );
   const arranged = await groups(page);

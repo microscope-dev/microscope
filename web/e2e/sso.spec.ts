@@ -14,15 +14,15 @@ import { allowErrors, test as base, expect, expectErrors, menu } from "./server"
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 
 const test = base.extend<{ services: Services }>({
-  services: async ({ context }, use, info) => {
+  services: async ({ context }, provide, info) => {
     allowErrors(
-      /GET \S+\/api\/users\/me: 401$/,
+      /GET \S+\/api\/users\/me: 401$/u,
       // The mock's sign-in pages have no icon.
-      /GET http:\/\/127\.0\.0\.1:\d+\/favicon\.ico: 404$/,
+      /GET http:\/\/127\.0\.0\.1:\d+\/favicon\.ico: 404$/u,
     );
     const services = await startServices({ sso: true });
     try {
-      await use(services);
+      await provide(services);
     } finally {
       for (const page of context.pages()) {
         await page.close();
@@ -98,7 +98,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   await atProvider(page, { email });
   await expect(account(page)).toContainText(`(${email})`);
   await expect(page).toHaveURL(`${services.origin}/`);
-  await expect(methods(page)).toHaveText(/^Google\s*\S+@example\.com$/);
+  await expect(methods(page)).toHaveText(/^Google\s*\S+@example\.com$/u);
   await shot(page, "02-google-only");
 
   // Connecting GitHub leaves and comes back to the same account.
@@ -110,7 +110,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   await expect(methods(page).getByRole("listitem")).toHaveCount(2);
   await expect(methods(page).getByRole("button", { name: "Disconnect" })).toHaveCount(2);
   await shot(page, "03-both");
-  const username = /Signed in as (\S+)/.exec((await account(page).textContent()) ?? "")?.[1];
+  const username = /Signed in as (\S+)/u.exec((await account(page).textContent()) ?? "")?.[1];
   expect(username).toBeTruthy();
 
   // GitHub signs in to it.
@@ -123,7 +123,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   const google = methods(page).getByRole("listitem").filter({ hasText: "Google" });
   await google.getByRole("button", { name: "Disconnect" }).click();
   await google.getByRole("button", { name: "Disconnect" }).click();
-  await expect(methods(page)).toHaveText(/^GitHub\s*\S+$/);
+  await expect(methods(page)).toHaveText(/^GitHub\s*\S+$/u);
   await expect(account(page).getByRole("button", { name: "Connect Google" })).toBeVisible();
 
   // Google now makes a different account, since it is no longer connected
@@ -158,7 +158,7 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
   services,
 }) => {
   const org = `acme ${randomBytes(3).toString("hex")}`;
-  expectErrors(/PUT \S+\/api\/orgs\/\d+\/sso: 400$/);
+  expectErrors(/PUT \S+\/api\/orgs\/\d+\/sso: 400$/u);
   const orgPane = page.getByRole("tabpanel", { name: org });
 
   // An owner, signed up with Google, makes an organization.
@@ -186,7 +186,7 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
   await orgPane.getByRole("button", { name: "Cancel setup" }).click();
   await orgPane.getByRole("button", { name: "Set up single sign-on" }).click();
   await expect(orgPane.getByLabel("ACS URL (reply URL)")).toHaveValue(
-    new RegExp(`^${services.origin}/api/sso/saml/[0-9a-f]{32}/acs$`),
+    new RegExp(`^${services.origin}/api/sso/saml/[0-9a-f]{32}/acs$`, "u"),
   );
   await shot(page, "05-org-setup", orgPane);
   const certificate = await (await fetch(`${services.idp}/saml/certificate.pem`)).text();
@@ -201,7 +201,7 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
   await form.getByLabel("Signing certificate", { exact: true }).fill(certificate);
   await form.getByRole("button", { name: "Save" }).click();
   const link = orgPane.getByLabel("Sign-in link");
-  await expect(link).toHaveValue(new RegExp(`^${services.origin}/sso#key=[0-9a-f]{32}$`));
+  await expect(link).toHaveValue(new RegExp(`^${services.origin}/sso#key=[0-9a-f]{32}$`, "u"));
   await expect(orgPane.getByRole("list", { name: "Identity provider" })).toContainText(
     `${services.idp}/saml`,
   );
@@ -245,9 +245,11 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
     await atProvider(other, { email });
     await expect(account(other)).toContainText(`(${email})`);
     await expect(account(other).getByRole("list", { name: "Organizations" })).toHaveText(
-      new RegExp(`^${org}\\s*Member$`),
+      new RegExp(`^${org}\\s*Member$`, "u"),
     );
-    await expect(methods(other)).toHaveText(new RegExp(`^${org}'s single sign-on\\s*${email}$`));
+    await expect(methods(other)).toHaveText(
+      new RegExp(`^${org}'s single sign-on\\s*${email}$`, "u"),
+    );
   } finally {
     await elsewhere.close();
   }
@@ -287,15 +289,15 @@ test("a change to how an account signs in asks for the password once the sign-in
 }) => {
   test.setTimeout(30_000);
   expectErrors(
-    /DELETE \S+\/api\/users\/me\/identities\/\d+: 403$/,
-    /POST \S+\/api\/users\/me\/verify: 403$/,
+    /DELETE \S+\/api\/users\/me\/identities\/\d+: 403$/u,
+    /POST \S+\/api\/users\/me\/verify: 403$/u,
   );
   const { email, password } = await passwordAccount(page, services);
 
   // Just signed in, so connecting needs nothing more.
   await account(page).getByRole("button", { name: "Connect Google" }).click();
   await atProvider(page, { email });
-  await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/);
+  await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/u);
 
   // Services' answer once ten minutes have passed, which the page cannot
   // wait for: the first disconnect gets it. Everything after is real.
@@ -325,7 +327,7 @@ test("a change to how an account signs in asks for the password once the sign-in
   await prove.getByLabel("Password").fill(password);
   await prove.getByRole("button", { name: "Confirm" }).click();
   await expect(prove).toHaveCount(0);
-  await expect(methods(page)).toHaveText(/^Password$/);
+  await expect(methods(page)).toHaveText(/^Password$/u);
 });
 
 test("an account with two-factor authentication still needs its code after Google", async ({
@@ -338,7 +340,7 @@ test("an account with two-factor authentication still needs its code after Googl
   // It connects Google, then turns on two-factor authentication.
   await account(page).getByRole("button", { name: "Connect Google" }).click();
   await atProvider(page, { email });
-  await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/);
+  await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/u);
   await account(page).getByRole("button", { name: "Set up" }).click();
   await account(page).getByLabel("Password").fill(password);
   await account(page).getByRole("button", { name: "Continue" }).click();

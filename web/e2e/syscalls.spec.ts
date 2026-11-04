@@ -37,11 +37,11 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
   // Narrowed to failed opens, the one call left is placed at its line.
   await page.getByLabel("Selection").fill("trace=openat status=failed");
   await page.getByLabel("Selection").press("Enter");
-  await expect(page).toHaveURL(/sf=trace%3Dopenat/);
+  await expect(page).toHaveURL(/sf=trace%3Dopenat/u);
   const table = page.getByTestId("syscall-table");
   await expect(table.locator("tbody tr")).toHaveCount(1);
   await table.locator('tr[data-row="openat"] td').nth(1).click();
-  await expect(page).toHaveURL(/sc=openat/);
+  await expect(page).toHaveURL(/sc=openat/u);
   const detail = page.getByTestId("syscall-detail");
   await expect(detail).toContainText("ENOENT");
   await expect(page.getByTestId("syscall-callers")).toContainText("files · syscalls.c:24");
@@ -49,19 +49,19 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
 
   // Its line reads as strace prints it, and opens to its arguments.
   await view.getByRole("button", { name: "Log", exact: true }).click();
-  await expect(page).toHaveURL(/st=log/);
+  await expect(page).toHaveURL(/st=log/u);
   const line = page
     .getByTestId("syscall-log")
     .getByRole("button")
     .filter({ hasText: '"missing", O_RDONLY) = -1 ENOENT' });
   await line.click();
-  await expect(page).toHaveURL(/ev=\d+/);
+  await expect(page).toHaveURL(/ev=\d+/u);
   const call = page.getByTestId("syscall-call");
   await expect(call.getByRole("rowheader", { name: "filename" })).toBeVisible();
-  await expect(call.getByRole("listitem").filter({ hasText: /^files$/ })).toBeVisible();
+  await expect(call.getByRole("listitem").filter({ hasText: /^files$/u })).toBeVisible();
   // And to the line that made it.
   const site = call.getByTestId("syscall-site");
-  await expect(site.locator("figcaption")).toContainText(/^files · .*syscalls\.c:24$/);
+  await expect(site.locator("figcaption")).toContainText(/^files · .*syscalls\.c:24$/u);
   await expect(site.locator(".made")).toContainText('"missing"');
 
   // The address opens the same view.
@@ -78,16 +78,16 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
   await page.getByLabel("Selection").press("Enter");
   await view.getByRole("button", { name: "Files", exact: true }).click();
   const files = page.getByTestId("syscall-files");
-  await expect(files.getByRole("cell", { name: /\/present$/ })).toHaveCount(1);
-  await expect(files.getByRole("cell", { name: /\/missing$/ })).toHaveCount(1);
+  await expect(files.getByRole("cell", { name: /\/present$/u })).toHaveCount(1);
+  await expect(files.getByRole("cell", { name: /\/missing$/u })).toHaveCount(1);
 
   // Grouped by file, the failed open is the missing file's.
   await view.getByRole("button", { name: "Summary", exact: true }).click();
   await page.getByLabel("Selection").fill("trace=openat");
   await page.getByLabel("Selection").press("Enter");
   await page.getByLabel("Group").selectOption("path");
-  await expect(page).toHaveURL(/sg=path/);
-  await expect(table.getByRole("cell", { name: /\/missing$/ })).toHaveCount(1);
+  await expect(page).toHaveURL(/sg=path/u);
+  await expect(table.getByRole("cell", { name: /\/missing$/u })).toHaveCount(1);
   await page.getByLabel("Group").selectOption("syscall");
 
   // A cell of the heat map lists its calls: of its time and latency.
@@ -103,18 +103,18 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
       }
     }
   });
-  await expect(page).toHaveURL(/st=log/);
-  await expect(page).toHaveURL(/sl=\d+/);
+  await expect(page).toHaveURL(/st=log/u);
+  await expect(page).toHaveURL(/sl=\d+/u);
   const band = view.getByRole("button", { name: "Remove the latency band" });
   await expect(band).toBeVisible();
   const calls = page.getByTestId("syscall-log").getByRole("button");
   await expect(calls.first()).toContainText("openat(");
   for (const shown of await calls.all()) {
-    await expect(shown).toContainText(/openat\(|\+\+\+/);
+    await expect(shown).toContainText(/openat\(|\+\+\+/u);
   }
   await band.click();
-  await expect(page).not.toHaveURL(/sl=/);
-  await page.getByRole("button", { name: /^Remove .* – / }).click();
+  await expect(page).not.toHaveURL(/sl=/u);
+  await page.getByRole("button", { name: /^Remove .* – /u }).click();
 
   // Dragging across the lanes selects a range, which a chip names.
   await view.getByRole("button", { name: "Summary", exact: true }).click();
@@ -127,7 +127,7 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
   await page.mouse.down();
   await page.mouse.move(area.x + area.width / 2, area.y + 4, { steps: 4 });
   await page.mouse.up();
-  await expect(page).toHaveURL(/range=\d+-\d+/);
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
 });
 
 test("a family's processes are listed parents first, each with how it ended", async ({
@@ -159,7 +159,7 @@ test("a trace recorded from the page shows what its program is blocked in, until
   await record.getByLabel("Program").fill(fixture("syscalls"));
   await record.getByLabel("Arguments").fill("pause");
   await record.getByRole("button", { name: "Record" }).click();
-  await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/);
+  await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/u);
   await expect(page.getByTestId("recording")).toContainText("Recording syscalls");
 
   // The pause shows in flight once the trace publishes it.

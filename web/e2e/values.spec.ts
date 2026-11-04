@@ -11,13 +11,13 @@ test.use({ program: [fixture("kvstore")] });
 /** Moves the pointer over `word` in the source line holding `line`. */
 async function hoverWord(page: Page, line: string, word: string) {
   const point = await page.evaluate(
-    ([line, word]) => {
+    ([text, target]) => {
       const element = [...document.querySelectorAll(".cm-line")].find((candidate) =>
-        candidate.textContent?.includes(line as string),
+        candidate.textContent?.includes(text as string),
       );
       const walker = document.createTreeWalker(element as Node, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        const at = node.textContent?.indexOf(word as string) ?? -1;
+        const at = node.textContent?.indexOf(target as string) ?? -1;
         if (at >= 0) {
           const range = document.createRange();
           range.setStart(node, at + 1);
@@ -45,7 +45,7 @@ test("the value tree stays open across stops and marks what changed", async ({
   const variables = page.getByTestId("variables");
   await expect(variables).toContainText("Arguments");
   await page.getByRole("button", { name: "Open req" }).click();
-  await expect(page).toHaveURL(/[?&]x=args\/req(&|$)/);
+  await expect(page).toHaveURL(/[?&]x=args\/req(&|$)/u);
   const key = valueRow(page, "variables", "key");
   await expect(key).toContainText('"user:1000"');
 
@@ -54,7 +54,7 @@ test("the value tree stays open across stops and marks what changed", async ({
   await expect(page.getByTestId("stops")).toContainText("#3");
   await expect(key).toContainText('"user:1001"');
   await expect(key.locator(".value-text.changed")).toContainText('was "user:1000"');
-  await expect(page).toHaveURL(/[?&]x=args\/req(&|$)/);
+  await expect(page).toHaveURL(/[?&]x=args\/req(&|$)/u);
 
   // Beside the lines just run, their values.
   await expect(page.locator(".cm-inline-values").first()).toBeVisible();
@@ -75,7 +75,7 @@ test("watches travel in the link, and a changed value reaches every tab", async 
   const add = page.getByRole("textbox", { name: "Add a watch", exact: true });
   await add.fill("s->stats.puts + 100");
   await add.press("Enter");
-  await expect(page).toHaveURL(/[?&]w=s-%3Estats.puts/);
+  await expect(page).toHaveURL(/[?&]w=s-%3Estats.puts/u);
   await expect(valueRow(page, "watches", "s->stats.puts \\+ 100")).toContainText("100");
 
   const other = await context.newPage();
@@ -110,7 +110,7 @@ test("the console evaluates, runs commands, and completes in the frame shown", a
   // Commands run in the frame the tab shows.
   await page
     .getByTestId("stack")
-    .getByRole("button", { name: /worker/ })
+    .getByRole("button", { name: /worker/u })
     .click();
   await line.fill("frame");
   await line.press("Enter");

@@ -38,7 +38,7 @@ test("a profile is explored, and its address opens the same view", async ({
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}$/);
+  await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}$/u);
   const accounting = page.getByTestId("accounting");
   await expect(accounting).toContainText("6 executions sampled");
   await expect(accounting).toContainText("each call of leaf");
@@ -49,7 +49,7 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(functions.getByRole("option").first()).toContainText("100.0%");
   await expect(functions.getByRole("option").first()).toContainText("leaf");
   await functions.getByRole("option").filter({ hasText: "leaf" }).click();
-  await expect(page).toHaveURL(/fn=leaf/);
+  await expect(page).toHaveURL(/fn=leaf/u);
   const callers = page.getByRole("tree", { name: "Callers" }).getByRole("treeitem");
   await expect(callers.nth(0)).toContainText("leaf");
   await expect(callers.nth(1)).toContainText("middle");
@@ -64,7 +64,7 @@ test("a profile is explored, and its address opens the same view", async ({
     .first()
     .click();
   await page.getByTestId("details").getByRole("button", { name: "Merge" }).click();
-  await expect(page).toHaveURL(/tf=merge:middle/);
+  await expect(page).toHaveURL(/tf=merge:middle/u);
   await expect(page.getByText("merge middle")).toBeVisible();
   const tree = page.getByRole("tree", { name: "Call tree" });
   await expect(tree.getByRole("treeitem").filter({ hasText: "leaf" }).first()).toBeVisible();
@@ -88,7 +88,7 @@ test("a profile is explored, and its address opens the same view", async ({
   await page.mouse.move(box.x + 4, box.y + 4);
   await expect(page.getByTestId("flame-tip")).toContainText("total");
   await page.mouse.click(box.x + 4, box.y + 4);
-  await expect(page).toHaveURL(/z=/);
+  await expect(page).toHaveURL(/z=/u);
   await expect(page.getByRole("button", { name: "Reset zoom" })).toBeVisible();
 
   // Dragging across the timeline selects a range, which a chip names.
@@ -101,8 +101,8 @@ test("a profile is explored, and its address opens the same view", async ({
   await page.mouse.down();
   await page.mouse.move(area.x + area.width / 2, area.y + 4, { steps: 4 });
   await page.mouse.up();
-  await expect(page).toHaveURL(/range=\d+-\d+/);
-  await expect(page.getByRole("button", { name: /^Remove .* – / })).toBeVisible();
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
+  await expect(page.getByRole("button", { name: /^Remove .* – /u })).toBeVisible();
 });
 
 test("each thread's lane says how long it was off its CPU, and the footer what recording cost", async ({
@@ -119,17 +119,19 @@ test("each thread's lane says how long it was off its CPU, and the footer what r
   await join(page, served.link);
   const lanes = page.getByTestId("timeline");
   // The sleeper naps five times for 20 ms; the spinners share one CPU.
-  await expect(lanes.getByRole("button", { name: /^sleeper/ })).toHaveAttribute(
+  await expect(lanes.getByRole("button", { name: /^sleeper/u })).toHaveAttribute(
     "title",
-    /off its CPU (\d{3} ms|[\d.]+ s) blocked/,
+    /off its CPU (\d{3} ms|[\d.]+ s) blocked/u,
   );
-  const spinners = lanes.getByRole("button", { name: /^spinner/ });
+  const spinners = lanes.getByRole("button", { name: /^spinner/u });
   await expect(spinners).toHaveCount(2);
   for (const spinner of await spinners.all()) {
-    await expect(spinner).toHaveAttribute("title", /, (?!0 ns)[\d.]+ \S+ preempted$/);
+    await expect(spinner).toHaveAttribute("title", /, (?!0 ns)[\d.]+ \S+ preempted$/u);
   }
-  await expect(page.getByTestId("accounting")).toContainText(/microscope [\d.]+% of a CPU/);
+  await expect(page.getByTestId("accounting")).toContainText(/microscope [\d.]+% of a CPU/u);
 });
+
+const level = (rows: number[][]) => rows.map((_, index) => [index * 18, 18]);
 
 test("with many threads, each lane's name is as tall as its lane and level with it", async ({
   page,
@@ -157,7 +159,6 @@ test("with many threads, each lane's name is as tall as its lane and level with 
         return [Math.round(at.top - (lanes?.top ?? 0)), Math.round(at.height)];
       });
     });
-  const level = (rows: number[][]) => rows.map((_, index) => [index * 18, 18]);
   const before = await measured();
   expect(before).toEqual(level(before));
   await timeline.evaluate((box) => {
@@ -178,7 +179,7 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   const record = page.getByRole("tabpanel", { name: "Record" });
   await record.getByLabel("Program").fill(fixture("spin"));
   await record.getByRole("button", { name: "Record" }).click();
-  await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/);
+  await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/u);
   await expect(page.getByTestId("recording")).toContainText("Recording spin");
 
   // Its samples arrive while it runs.
@@ -205,7 +206,9 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   // The program waits on its standard input the whole time it is recorded.
   const file = info.outputPath("waits.usprof");
   const program = spawn(fixture("profile-go-waits"), [], { stdio: ["pipe", "ignore", "ignore"] });
-  const exited = new Promise((done) => program.once("exit", done));
+  const exited = new Promise((done) => {
+    program.once("exit", done);
+  });
   try {
     execFileSync(
       path.join(root, "target", "debug", "microscope"),
@@ -225,7 +228,7 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
 
   // The waits' functions are the receivers', and by task each is its own.
   await page.getByRole("button", { name: "Waits", exact: true }).click();
-  await expect(page).toHaveURL(/src=waits/);
+  await expect(page).toHaveURL(/src=waits/u);
   await page.getByRole("button", { name: "Functions" }).click();
   const functions = page.getByRole("listbox", { name: "Functions" });
   await expect(functions.getByRole("option").filter({ hasText: "main.receive" })).toHaveCount(1);
@@ -238,11 +241,11 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   await page.getByRole("button", { name: "CPU" }).click();
   await page.getByRole("checkbox", { name: "By task" }).uncheck();
   await page.getByRole("checkbox", { name: "Task lanes" }).check();
-  const spinner = page.getByTestId("timeline").getByRole("button", { name: /phase=spin/ });
+  const spinner = page.getByTestId("timeline").getByRole("button", { name: /phase=spin/u });
   await spinner.click();
-  await expect(page).toHaveURL(/tk=\d+/);
+  await expect(page).toHaveURL(/tk=\d+/u);
   await expect(
-    page.getByRole("button", { name: /Remove goroutine \d+ \{phase=spin\}/ }),
+    page.getByRole("button", { name: /Remove goroutine \d+ \{phase=spin\}/u }),
   ).toBeVisible();
   await expect(tree.filter({ hasText: "main.spin" }).first()).toBeVisible();
 });
@@ -261,22 +264,22 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   await join(page, served.link);
   await expect(page.getByTestId("accounting")).toContainText("probe events, lost 0");
   await page.getByRole("button", { name: "Zones", exact: true }).click();
-  await expect(page).toHaveURL(/view=zones/);
-  await expect(page.getByRole("img", { name: /^Zones over/ })).toBeVisible();
+  await expect(page).toHaveURL(/view=zones/u);
+  await expect(page.getByRole("img", { name: /^Zones over/u })).toBeVisible();
   await expect(page.getByRole("img", { name: "Plot round, 3 values from 0 – 2" })).toBeVisible();
 
   // A site's zones, measured; its longest selects its span.
   const find = page.getByTestId("find-zone");
   await find.getByRole("button", { name: "outer", exact: true }).click();
-  await expect(page).toHaveURL(/zs=outer/);
+  await expect(page).toHaveURL(/zs=outer/u);
   const stats = page.getByTestId("zone-stats");
   await expect(stats.locator("dd").first()).toHaveText("3");
   await stats.getByRole("listitem").first().getByRole("button").click();
-  await expect(page).toHaveURL(/range=\d+-\d+/);
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
 
   // Ctrl and the wheel zoom about the pointer, dragging pans, and the
   // ruler names the times in view.
-  const tracks = page.getByRole("img", { name: /^Zones over/ });
+  const tracks = page.getByRole("img", { name: /^Zones over/u });
   const range = () => {
     const [start = 0, end = 0] = (new URL(page.url()).searchParams.get("range") ?? "")
       .split("-")
@@ -294,7 +297,7 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
     .toBeGreaterThan(selected.end - selected.start);
   await expect(
     page.getByTestId("zones").getByRole("img", { name: "Time", exact: true }),
-  ).toContainText(/\d s|ms|µs/);
+  ).toContainText(/\d s|ms|µs/u);
   const zoomed = range();
   await page.mouse.down();
   await page.mouse.move(bounds.x + bounds.width / 2 + 80, bounds.y + 4, { steps: 4 });
@@ -313,14 +316,14 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   // A label's values are filters of every view: in that span, the round
   // around it.
   await find.getByRole("button", { name: "round", exact: true }).click();
-  const value = stats.getByRole("button", { name: /^round=\d$/ });
+  const value = stats.getByRole("button", { name: /^round=\d$/u });
   await expect(value).toHaveCount(1);
   const round = (await value.textContent()) ?? "";
   await value.click();
-  await expect(page).toHaveURL(new RegExp(`lb=${encodeURIComponent(round)}`));
+  await expect(page).toHaveURL(new RegExp(`lb=${encodeURIComponent(round)}`, "u"));
   await expect(page.getByRole("button", { name: `Remove ${round}` })).toBeVisible();
   await stats.getByRole("button", { name: "By round" }).click();
-  await expect(page).toHaveURL(/bl=round/);
+  await expect(page).toHaveURL(/bl=round/u);
   await expect(page.getByRole("combobox", { name: "Root by label" })).toHaveValue("round");
 });
 
@@ -385,11 +388,11 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await page.mouse.down();
   await page.mouse.move(area.x + area.width - 1, area.y + 4, { steps: 4 });
   await page.mouse.up();
-  await expect(page).toHaveURL(/range=\d+-\d+/);
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
   const compare = page.getByRole("combobox", { name: "Compare with" });
   await compare.selectOption("range");
-  await expect(page).toHaveURL(/br=\d+-\d+/);
-  await expect(page).not.toHaveURL(/[?&]range=/);
+  await expect(page).toHaveURL(/br=\d+-\d+/u);
+  await expect(page).not.toHaveURL(/[?&]range=/u);
   await page.getByRole("button", { name: "Functions" }).click();
   const functions = page.getByRole("listbox", { name: "Functions" });
   const row = (name: string) =>
@@ -397,22 +400,22 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await expect(row("leaf")).toContainText("±0");
 
   // Against the calls of middle, leaf is all new and middle all gone.
-  await page.getByRole("button", { name: /^Remove diff with this profile/ }).click();
-  await expect(page).not.toHaveURL(/br=/);
+  await page.getByRole("button", { name: /^Remove diff with this profile/u }).click();
+  await expect(page).not.toHaveURL(/br=/u);
   await compare.selectOption({ label: "diff with middle.usprof" });
-  await expect(page).toHaveURL(/bp=[0-9a-f]{16}/);
+  await expect(page).toHaveURL(/bp=[0-9a-f]{16}/u);
   // In time by default, as report --base compares them.
-  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+6 executions new change$/);
-  await expect(row("middle")).toHaveAttribute("aria-label", /, −\d+ executions? gone change$/);
+  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+6 executions new change$/u);
+  await expect(row("middle")).toHaveAttribute("aria-label", /, −\d+ executions? gone change$/u);
   await expect(page.getByRole("button", { name: "by change" })).toBeVisible();
 
   // In share, each side's part of its own profile; the choice is in the address.
   await page.getByRole("button", { name: "share", exact: true }).click();
-  await expect(page).toHaveURL(/dm=share/);
-  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+100\.0 pp change$/);
+  await expect(page).toHaveURL(/dm=share/u);
+  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+100\.0 pp change$/u);
   await expect(row("middle")).toContainText("−100.0 pp");
   await page.getByRole("button", { name: "time", exact: true }).click();
-  await expect(page).not.toHaveURL(/dm=/);
+  await expect(page).not.toHaveURL(/dm=/u);
   await expect(row("leaf")).toContainText("new");
 });
 
@@ -450,12 +453,12 @@ test("a function's samples show on its source lines and its instructions", async
 
   // Every call of leaf is on one line of it, and on its first instruction.
   await page.getByRole("button", { name: "Source", exact: true }).click();
-  await expect(page).toHaveURL(/ann=lines/);
+  await expect(page).toHaveURL(/ann=lines/u);
   const lines = page.getByTestId("source-lines");
   await expect(lines.locator(".hot")).toHaveCount(1);
   await expect(lines.locator(".hot")).toContainText("100.0%");
   await page.getByRole("button", { name: "Assembly", exact: true }).click();
-  await expect(page).toHaveURL(/ann=code/);
+  await expect(page).toHaveURL(/ann=code/u);
   const code = page.getByTestId("code");
   await expect(code.locator(".annotated-head").first()).toContainText("leaf");
   await expect(code.locator(".annotated-row").first()).toContainText("100.0%");

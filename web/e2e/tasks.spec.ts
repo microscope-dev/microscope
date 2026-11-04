@@ -20,13 +20,13 @@ test("tasks are listed, grouped, and chosen, and a link names the task", async (
   await expect(page.getByTestId("status")).toContainText("Stopped");
 
   // Two runtimes and two local sets hold eight tasks, each parked.
-  await page.getByRole("tab", { name: /^Tasks/ }).click();
+  await page.getByRole("tab", { name: /^Tasks/u }).click();
   const tasks = page.getByTestId("tasks");
   const task = (number: number) => tasks.getByRole("button", { name: `task ${number}` });
-  await expect(tasks.getByRole("button", { name: /^task \d+$/ })).toHaveCount(8);
+  await expect(tasks.getByRole("button", { name: /^task \d+$/u })).toHaveCount(8);
   await expect(task(3)).toContainText("sleep");
   await expect(task(3)).toContainText("sleeping until");
-  await expect(task(7)).toHaveAttribute("title", /local set/);
+  await expect(task(7)).toHaveAttribute("title", /local set/u);
 
   // Grouped, the four sleeping tasks share their place.
   await page.getByRole("button", { name: "group" }).click();
@@ -40,10 +40,10 @@ test("tasks are listed, grouped, and chosen, and a link names the task", async (
   // Chosen, a task shows its own stack of async frames, at the frame of
   // the code the program wrote, with its locals.
   await task(7).click();
-  await expect(page).toHaveURL(/\/task\/\d+\.7\/f\/1/);
+  await expect(page).toHaveURL(/\/task\/\d+\.7\/f\/1/u);
   await expect(page.getByRole("tabpanel", { name: "Variables" })).toContainText("notify");
   await expect(task(7)).toHaveAttribute("aria-current", "true");
-  const stack = page.getByRole("tab", { name: /^Call Stack/ });
+  const stack = page.getByRole("tab", { name: /^Call Stack/u });
   await expect(stack).toContainText("task 7");
   await expect(page.getByTestId("stack")).toContainText("async");
   await expect(page.getByTestId("threads").locator("[aria-current]")).toHaveCount(0);
@@ -52,6 +52,6 @@ test("tasks are listed, grouped, and chosen, and a link names the task", async (
   await page.goto(page.url());
   await expect(stack).toContainText("task 7");
   await expect(page.getByTestId("stack")).toContainText("async");
-  await page.getByRole("tab", { name: /^Tasks/ }).click();
+  await page.getByRole("tab", { name: /^Tasks/u }).click();
   await expect(task(7)).toHaveAttribute("aria-current", "true");
 });

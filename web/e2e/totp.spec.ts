@@ -14,11 +14,11 @@ import { allowErrors, test as base, expect, expectErrors } from "./server";
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 
 const test = base.extend<{ services: Services }>({
-  services: async ({ context }, use, info) => {
-    allowErrors(/GET \S+\/api\/users\/me: 401$/);
+  services: async ({ context }, provide, info) => {
+    allowErrors(/GET \S+\/api\/users\/me: 401$/u);
     const services = await startServices();
     try {
-      await use(services);
+      await provide(services);
     } finally {
       for (const page of context.pages()) {
         await page.close();
@@ -58,9 +58,9 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   const email = `${username}@example.com`;
   const password = "correct horse battery";
   expectErrors(
-    /POST \S+\/api\/users\/me\/totp\/confirm: 400$/,
-    /POST \S+\/api\/login\/totp: 401$/,
-    /POST \S+\/api\/users\/me\/totp\/disable: 403$/,
+    /POST \S+\/api\/users\/me\/totp\/confirm: 400$/u,
+    /POST \S+\/api\/login\/totp: 401$/u,
+    /POST \S+\/api\/users\/me\/totp\/disable: 403$/u,
   );
 
   // Tall enough that a screenshot holds the whole Account pane.
@@ -94,7 +94,7 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   const shown = await account(page).getByTestId("totp-secret").textContent();
   const secret = base32(shown ?? "");
   expect(secret.length).toBe(20);
-  const qr = account(page).getByRole("img", { name: /QR code/ });
+  const qr = account(page).getByRole("img", { name: /QR code/u });
   await expect(qr).toBeVisible();
   await shot(page, "03-scan");
   if (process.env.TOTP_SHOTS) {
@@ -111,7 +111,7 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await expect(list.getByRole("listitem")).toHaveCount(10);
   const recovery = await list.getByRole("listitem").allTextContents();
   for (const code of recovery) {
-    expect(code).toMatch(/^[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{4}$/);
+    expect(code).toMatch(/^[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{4}-[a-z2-7]{4}$/u);
   }
   const done = account(page).getByRole("button", { name: "Done" });
   await expect(done).toBeDisabled();

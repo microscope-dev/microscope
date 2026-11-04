@@ -60,7 +60,7 @@ test("Copy CSV keeps a lazy drawing in view when an earlier drawing grows", asyn
     </section>
   `);
   await page.evaluate(() => {
-    const earlier = document.getElementById("earlier") as HTMLElement;
+    const earlier = document.querySelector("#earlier") as HTMLElement;
     const board = document.querySelector("section") as HTMLElement;
     const button = board.querySelector("button") as HTMLButtonElement;
     let grew = false;
@@ -68,27 +68,27 @@ test("Copy CSV keeps a lazy drawing in view when an earlier drawing grows", asyn
       if (!entries.some((entry) => entry.isIntersecting)) {
         return;
       }
-      if (!grew) {
+      if (grew) {
+        button.hidden = false;
+        observer.disconnect();
+      } else {
         // The earlier renderer finishes before this card starts its draw.
         grew = true;
         earlier.style.height = "2000px";
-      } else {
-        button.hidden = false;
-        observer.disconnect();
       }
     });
     observer.observe(board);
-    button.onclick = () => {
+    button.addEventListener("click", () => {
       (window as unknown as { copied: string }).copied = "path,value\nvalues[0],7\n";
-    };
+    });
   });
   expect(await copyCsv(page, card(page, "bytes"))).toEqual(new Map([["values[0]", "7"]]));
 });
 
-test.describe("a C program's metrics", () => {
-  const metrics = (page: Page, microscope: Microscope) =>
-    open(page, microscope, "metrics", "c/metrics/metrics.views");
+const metrics = (page: Page, microscope: Microscope) =>
+  open(page, microscope, "metrics", "c/metrics/metrics.views");
 
+test.describe("a C program's metrics", () => {
   test("line-plot keeps a one-sample spike and gaps for NaN, against a ghost of the stop before", async ({
     page,
     microscope,
@@ -103,12 +103,12 @@ test.describe("a C program's metrics", () => {
     expect(values).toHaveLength(600);
     // The spike is at 3/5 of the way, 250 plus the tick, and NaN at 1/10.
     expect(values[361]).toBe(251);
-    expect(values.filter(Number.isNaN)).toHaveLength(1);
-    const finite = values.filter(Number.isFinite);
+    expect(values.filter((value) => Number.isNaN(value))).toHaveLength(1);
+    const finite = values.filter((value) => Number.isFinite(value));
     const least = values.indexOf(Math.min(...finite));
     const caption = board.locator(".drawing-caption");
     await expect(caption).toContainText("n=600");
-    await expect(caption).toContainText(new RegExp(`min \\S+ at \\[${least}\\]`));
+    await expect(caption).toContainText(new RegExp(`min \\S+ at \\[${least}\\]`, "u"));
     await expect(caption).toContainText("max 251 at [361]");
     await expect(caption).toContainText("1 NaN, left as gaps");
     // More values than columns, yet the spike's column names it exactly.
@@ -128,7 +128,7 @@ test.describe("a C program's metrics", () => {
     await showTab(board, "histogram");
     const latency = numbers(await copyCsv(page, board), "values");
     expect(latency).toHaveLength(5000);
-    const sorted = [...latency].sort((a, b) => a - b);
+    const sorted = latency.toSorted((a, b) => a - b);
     await expect(board.locator(".drawing-caption")).toContainText("n=5000");
     const drawn = await titles(board);
     for (const [name, p] of [
@@ -139,7 +139,7 @@ test.describe("a C program's metrics", () => {
       expect(drawn).toContain(`${name} ${quantile(sorted, p)}`);
     }
     const bins = drawn
-      .flatMap((title) => /^\[.*[)\]]: (\d+) · /.exec(title)?.[1] ?? [])
+      .flatMap((title) => /^\[.*[)\]]: (\d+) · /u.exec(title)?.[1] ?? [])
       .map(Number);
     expect(bins.reduce((a, b) => a + b, 0)).toBe(5000);
     expect(drawn.some((title) => title.endsWith("· 100% up to here"))).toBe(true);
@@ -167,9 +167,9 @@ test.describe("a C program's metrics", () => {
     const rows = await copyCsv(page, board);
     const names = ["search", "items", "login", "cart"];
     expect(names.map((_, index) => rows.get(`labels[${index}]`))).toEqual(names);
-    const search = numbers(rows, "groups[0]").sort((a, b) => a - b);
+    const search = numbers(rows, "groups[0]").toSorted((a, b) => a - b);
     expect(search).toHaveLength(300);
-    const box = board.getByRole("button", { name: /^search: n=300/ });
+    const box = board.getByRole("button", { name: /^search: n=300/u });
     const summary = await box.locator("title").textContent();
     expect(summary?.split("\n")).toEqual(
       expect.arrayContaining([
@@ -220,7 +220,7 @@ test.describe("a C program's metrics", () => {
     const drawn = await titles(board);
     expect(drawn).toContain(`[0]: x ${x[0]}, y ${y[0]}`);
     expect(drawn).toContain(`[699]: x ${x[699]}, y ${y[699]}`);
-    expect(drawn.filter((title) => /^\[\d+\]: x /.test(title))).toHaveLength(700);
+    expect(drawn.filter((title) => /^\[\d+\]: x /u.test(title))).toHaveLength(700);
     const lines = await board.locator(".drawing-body svg line").count();
 
     // Every point's time grows by a tenth a tick.
@@ -240,7 +240,7 @@ test.describe("a C program's metrics", () => {
     expect(rows.get("values[3][8]")).toBe("NaN");
     expect(rows.get("row_labels[3]")).toBe("cpu3");
     const misses = Array.from({ length: 8 }, (_, row) => numbers(rows, `values[${row}]`));
-    const all = misses.flat().filter(Number.isFinite);
+    const all = misses.flat().filter((miss) => Number.isFinite(miss));
     await expect(board.locator(".drawing-caption")).toHaveText(
       `8 × 24 cells · diverging around 0 · min ${Math.min(...all)} · max ${Math.max(...all)} · 1 NaN, hatched`,
     );
@@ -276,7 +276,7 @@ test.describe("a C program's metrics", () => {
       );
     expect(await gray(0, 0)).toBe(16);
     expect(await gray(5, 3)).toBe(144);
-    await expect(board.locator(".drawing-caption")).toHaveText(/^64 × 40 gray8 · at \d+×$/);
+    await expect(board.locator(".drawing-caption")).toHaveText(/^64 × 40 gray8 · at \d+×$/u);
     const point = async (column: number, row: number) => {
       const box = await image.boundingBox();
       if (box === null) {
@@ -327,7 +327,7 @@ test.describe("a C program's metrics", () => {
     );
     // A bit opens the word it is part of.
     await board
-      .locator("svg rect", { has: page.locator("title", { hasText: /^value bit 2: 1$/ }) })
+      .locator("svg rect", { has: page.locator("title", { hasText: /^value bit 2: 1$/u }) })
       .click();
     await expect(page.getByRole("dialog", { name: "Part m.flags" })).toBeVisible();
   });
@@ -347,12 +347,12 @@ test.describe("a card's header", () => {
       tabs.evaluateAll((buttons) =>
         buttons.map((button) => {
           const box = button.getBoundingClientRect();
-          const card = (button.closest("section") as HTMLElement).getBoundingClientRect();
+          const section = (button.closest("section") as HTMLElement).getBoundingClientRect();
           return {
             x: Math.round(box.x),
             y: Math.round(box.y),
             height: Math.round(box.height),
-            inside: box.left >= card.left && box.right <= card.right,
+            inside: box.left >= section.left && box.right <= section.right,
           };
         }),
       );
@@ -387,7 +387,7 @@ test.describe("a Go program's counters", () => {
     }
     expect(entries).toHaveLength(56);
     expect(new Map(entries).get("/api/search")).toBe(600);
-    const sorted = [...entries].sort(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0));
+    const sorted = entries.toSorted(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0));
     const bars = (await titles(hits)).filter(
       (title) => !title.includes("stop before") && title.includes(": "),
     );
@@ -431,13 +431,13 @@ test.describe("a Go program's counters", () => {
     expect(values).toHaveLength(10);
     const total = values.reduce((a, b) => a + b, 0);
     await expect(bytes.locator("svg text", { hasText: String(total) })).toBeVisible();
-    const slices = (await titles(bytes)).filter((title) => / · [\d.]+%/.test(title));
+    const slices = (await titles(bytes)).filter((title) => / · [\d.]+%/u.test(title));
     expect(slices).toHaveLength(8);
     expect(slices[0]).toBe(
       `text/html: 100000 · ${Number(((100000 / total) * 100).toPrecision(3))}%`,
     );
-    expect(slices.at(-1)).toMatch(/^Other \(3\): /);
-    const shares = slices.map((title) => Number(/ · ([\d.]+)%/.exec(title)?.[1]));
+    expect(slices.at(-1)).toMatch(/^Other \(3\): /u);
+    const shares = slices.map((title) => Number(/ · ([\d.]+)%/u.exec(title)?.[1]));
     expect(Math.abs(shares.reduce((a, b) => a + b, 0) - 100)).toBeLessThan(0.05 * slices.length);
 
     await step(page, bytes, "#3");
@@ -484,7 +484,7 @@ test.describe("a Rust program's profile", () => {
     // The same profile as folded stacks draws the same frames.
     const folded = card(page, "folded");
     await expect(folded.locator(".drawing-caption")).toHaveText(caption);
-    expect((await titles(folded)).sort()).toEqual([...drawn].sort());
+    expect((await titles(folded)).toSorted()).toEqual(drawn.toSorted());
 
     await profile.getByRole("button", { name: titleOf(score) }).click();
     await expect(page.getByRole("dialog", { name: `Part profile.nodes[${score}]` })).toContainText(
@@ -518,7 +518,7 @@ test.describe("Draw as…", () => {
       await expect(page.getByTestId("stops")).toContainText(stop);
     }
     await page.getByRole("button", { name: "Draw window as…" }).first().click();
-    await page.getByRole("menuitem", { name: /^line-plot/ }).click();
+    await page.getByRole("menuitem", { name: /^line-plot/u }).click();
     const line = page.getByRole("region", { name: "Drawing of window as line-plot" });
     const rows = await copyCsv(page, line);
     const values = numbers(rows, "values");
@@ -537,7 +537,7 @@ test.describe("Draw as…", () => {
       .click();
 
     await page.getByRole("button", { name: "Draw window as…" }).first().click();
-    await page.getByRole("menuitem", { name: /^histogram/ }).click();
+    await page.getByRole("menuitem", { name: /^histogram/u }).click();
     const histogram = page.getByRole("region", { name: "Drawing of window as histogram" });
     await expect(histogram.locator(".drawing-caption")).toContainText("n=5");
   });
@@ -564,8 +564,8 @@ test.describe("a C++ program's own renderer", () => {
           key: node.querySelector("title")?.textContent ?? "",
           x: node.getBoundingClientRect().x,
         }))
-        .filter((node) => /^\d+: node/.test(node.key))
-        .sort((a, b) => a.x - b.x)
+        .filter((node) => /^\d+: node/u.test(node.key))
+        .toSorted((a, b) => a.x - b.x)
         .map((node) => node.key),
     );
     expect(keys).toEqual(["30: node 1, depth 1", "50: node 0, depth 0", "70: node 2, depth 1"]);
@@ -577,11 +577,13 @@ test.describe("a C++ program's own renderer", () => {
       .click();
 
     await page.getByRole("button", { name: "Draw counts as…" }).first().click();
-    await page.getByRole("menuitem", { name: /^bar-chart/ }).click();
+    await page.getByRole("menuitem", { name: /^bar-chart/u }).click();
     const counts = page.getByRole("region", { name: "Drawing of counts as bar-chart" });
     // "tree", "map", "node" so far.
     await expect
-      .poll(async () => (await titles(counts)).filter((title) => /^\w+: \d+$/.test(title)).sort())
+      .poll(async () =>
+        (await titles(counts)).filter((title) => /^\w+: \d+$/u.test(title)).toSorted(),
+      )
       .toEqual(["map: 1", "node: 1", "tree: 1"]);
   });
 });

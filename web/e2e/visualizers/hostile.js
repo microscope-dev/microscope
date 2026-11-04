@@ -22,17 +22,21 @@ async function attempt(present, run) {
 }
 
 const settle = (promise, ms = 300) =>
-  Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve("pending"), ms))]);
+  Promise.race([
+    promise,
+    new Promise((resolve) => {
+      setTimeout(() => resolve("pending"), ms);
+    }),
+  ]);
 
-// biome-ignore lint/security/noGlobalEval: a way back to the global scope it tries
-// biome-ignore lint/complexity/noCommaOperator: indirect eval runs in the global scope
+// oxlint-disable-next-line no-eval -- a way back to the global scope it tries
 const global = (0, eval)("this");
 const recovered = (name) =>
   [
     globalThis[name],
     Object.getPrototypeOf(globalThis)?.[name],
     globalThis.constructor?.prototype?.[name],
-    Function("return this")()[name],
+    new Function("return this")()[name],
     global[name],
   ].find((found) => found !== undefined);
 
@@ -67,6 +71,7 @@ const probes = {
   caches: () => attempt(recovered("caches"), () => settle(recovered("caches").open("x"))),
   broadcast: () =>
     attempt(recovered("BroadcastChannel"), () =>
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel takes no target origin
       new (recovered("BroadcastChannel"))("microscope").postMessage("x"),
     ),
   webrtc: () =>
@@ -105,7 +110,9 @@ if (mode === "live") {
     // A context drawing with the GPU while the probes run.
     const gl = canvas.getContext("webgl2");
     const kind = gl === null ? "2d" : "webgl2";
-    if (gl !== null) {
+    if (gl === null) {
+      canvas.getContext("2d")?.fillRect(0, 0, 1, 1);
+    } else {
       gl.clearColor(0, 0.5, 0, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       const texture = gl.createTexture();
@@ -121,8 +128,6 @@ if (mode === "live") {
         gl.UNSIGNED_BYTE,
         new Uint8Array(4),
       );
-    } else {
-      canvas.getContext("2d")?.fillRect(0, 0, 1, 1);
     }
     microscope.caption([kind, ...(await outcomes()), "probes done"].join(" · "));
     return { frame() {} };

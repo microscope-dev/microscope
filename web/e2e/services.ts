@@ -33,7 +33,9 @@ export interface Served {
 /** Listens on 127.0.0.1, named in the origin as `host`. */
 async function listen(handler: Handler, host = "127.0.0.1"): Promise<Served> {
   const server = createServer(handler);
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  await new Promise<void>((done) => {
+    server.listen(0, "127.0.0.1", done);
+  });
   const { port } = server.address() as AddressInfo;
   return { origin: `http://${host}:${port}`, server };
 }
@@ -42,7 +44,7 @@ async function listen(handler: Handler, host = "127.0.0.1"): Promise<Served> {
  * The page's origin names `host`. */
 export function standalonePage(api: Handler, host?: string): Promise<Served> {
   const dir = path.join(root, "build", "web");
-  return listen((request, response) => {
+  return listen(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://page");
     if (url.pathname.startsWith("/api/")) {
       api(request, response);
@@ -50,21 +52,20 @@ export function standalonePage(api: Handler, host?: string): Promise<Served> {
     }
     // Assets by name, and the page for every other address.
     const file = url.pathname.startsWith("/assets/") ? url.pathname : "/index.html";
-    readFile(path.join(dir, path.normalize(file)))
-      .then((body) => {
-        response.writeHead(200, {
-          "Content-Type": file.endsWith(".js")
-            ? "text/javascript"
-            : file.endsWith(".css")
-              ? "text/css"
-              : "text/html",
-        });
-        response.end(body);
-      })
-      .catch(() => {
-        response.writeHead(404);
-        response.end();
+    try {
+      const body = await readFile(path.join(dir, path.normalize(file)));
+      response.writeHead(200, {
+        "Content-Type": file.endsWith(".js")
+          ? "text/javascript"
+          : file.endsWith(".css")
+            ? "text/css"
+            : "text/html",
       });
+      response.end(body);
+    } catch {
+      response.writeHead(404);
+      response.end();
+    }
   }, host);
 }
 
@@ -100,7 +101,7 @@ export interface Services extends Served {
 }
 
 /** Postmark's single-message API, keeping each message and sending none. */
-async function fakePostmark(received: (mail: Mail) => void): Promise<Served> {
+function fakePostmark(received: (mail: Mail) => void): Promise<Served> {
   let sent = 0;
   return listen((request, response) => {
     let body = "";
@@ -114,14 +115,19 @@ async function fakePostmark(received: (mail: Mail) => void): Promise<Served> {
         to: message.To,
         subject: message.Subject,
         paragraphs,
-        link: paragraphs.find((each) => /^https?:\/\//.test(each)) ?? "",
-        code: paragraphs.find((each) => /^\d{6}$/.test(each)) ?? null,
+        link: paragraphs.find((each) => /^https?:\/\//u.test(each)) ?? "",
+        code: paragraphs.find((each) => /^\d{6}$/u.test(each)) ?? null,
       });
       sent += 1;
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ ErrorCode: 0, Message: "OK", MessageID: `fake-${sent}` }));
     });
   });
+}
+
+function json(response: ServerResponse, status: number, body: unknown) {
+  response.writeHead(status, { "Content-Type": "application/json" });
+  response.end(JSON.stringify(body));
 }
 
 /** The key services is told to encrypt TOTP secrets with. */
@@ -131,12 +137,8 @@ const KMS_KEY = "projects/e2e/locations/local/keyRings/services/cryptoKeys/totp"
  * which services' real KMS client asks for. Ciphertexts are AES-256-GCM
  * under a key of its own, bound to the authenticated data as KMS binds them,
  * so a secret only opens for the account it was sealed for. */
-async function fakeKms(): Promise<Served> {
+function fakeKms(): Promise<Served> {
   const key = randomBytes(32);
-  const json = (response: ServerResponse, status: number, body: unknown) => {
-    response.writeHead(status, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(body));
-  };
   return listen((request, response) => {
     const url = new URL(request.url ?? "/", "http://kms");
     if (url.pathname === "/computeMetadata/v1/instance/service-accounts/default/token") {

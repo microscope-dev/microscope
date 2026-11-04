@@ -24,14 +24,14 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
   await expect(program).toHaveText("python3.14 page.py");
   expect(await program.evaluate((name) => name.scrollWidth <= name.clientWidth)).toBe(true);
   const location = `page.py:${marked + 1}`;
-  const input = page.getByPlaceholder(/breakpoint at/);
+  const input = page.getByPlaceholder(/breakpoint at/u);
   await input.click();
   await input.fill(location);
   await input.press("Enter");
   await expect(page.getByTestId("breakpoints")).toContainText(location);
   await page.keyboard.press("F5");
   // The agent's frames are inside the program's, which the stop selects.
-  await expect(page).toHaveURL(/\/f\/[1-9]\d*(\?|$)/);
+  await expect(page).toHaveURL(/\/f\/[1-9]\d*(\?|$)/u);
   const line = page.locator(".cm-frame-line");
   await expect(line).toContainText('shelf.add(Item("bolt"');
   await expect(line).toBeInViewport();
@@ -47,7 +47,7 @@ test("a Python breakpoint stops on the program's line, in view", async ({ page, 
   // An interpreted frame has no registers, which is no failure.
   const registers = page.getByRole("tabpanel", { name: "Registers" }).locator(".empty");
   await expect(registers).toContainText("interpreted");
-  await expect(registers).not.toHaveClass(/error/);
+  await expect(registers).not.toHaveClass(/error/u);
 });
 
 test.describe("an exception chosen as the program runs", () => {
@@ -61,7 +61,7 @@ test.describe("an exception chosen as the program runs", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await join(page, microscope.link);
     const breakpoints = page.getByRole("tabpanel", { name: "Breakpoints" });
-    const input = page.getByPlaceholder(/breakpoint at/);
+    const input = page.getByPlaceholder(/breakpoint at/u);
     await input.click();
     await input.fill(`uat.py:${area + 1}`);
     await input.press("Enter");
@@ -72,7 +72,7 @@ test.describe("an exception chosen as the program runs", () => {
     const raised = breakpoints.getByRole("checkbox", { name: "Every Python exception" });
     await expect(raised).not.toBeChecked();
     const summary = breakpoints.getByTestId("exceptions").locator("summary");
-    const before = Number(/(\d+) of/.exec((await summary.textContent()) ?? "")?.[1]);
+    const before = Number(/(\d+) of/u.exec((await summary.textContent()) ?? "")?.[1]);
     await raised.click();
     await expect(raised).toBeChecked();
     await expect(summary).toContainText(`${before + 1} of`);
@@ -104,7 +104,7 @@ test.describe("a Python program's own files", () => {
     const results = page.getByRole("listbox", { name: "Results" });
     await expect(results.getByRole("option").first()).toContainText("page.py");
     await page.keyboard.press("Enter");
-    await expect(source).toHaveAttribute("data-path", /\/page\.py$/);
+    await expect(source).toHaveAttribute("data-path", /\/page\.py$/u);
     await expect(source).toContainText("def stocked(");
   });
 });
@@ -132,13 +132,13 @@ test.describe("a breakpoint in a script named relatively", () => {
     await expect(breakpoints).toContainText("pending until a module with its code loads");
     const waiting = page.locator(".cm-breakpoints .dot.pending");
     await expect(waiting).toHaveCount(1);
-    await expect(waiting).toHaveAttribute("title", /pending until a module with its code loads/);
+    await expect(waiting).toHaveAttribute("title", /pending until a module with its code loads/u);
 
     await page.keyboard.press("F5");
     await expect(page.locator(".cm-frame-line")).toContainText("result = side * side");
     // The stop is in the file the breakpoint was set in, which shows it set.
     const files = documents(page).getByRole("button", {
-      name: /^Close (?!Disassembly$|Memory$|Drawings$)/,
+      name: /^Close (?!Disassembly$|Memory$|Drawings$)/u,
     });
     await expect(files).toHaveCount(1);
     await expect(source).toHaveAttribute("data-path", uat);

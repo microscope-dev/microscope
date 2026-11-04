@@ -2,15 +2,20 @@
 
 import { expect, join, test } from "./server";
 
+const look = (url: string) => {
+  const { pathname, searchParams } = new URL(url);
+  return { pathname, watches: searchParams.getAll("w") };
+};
+
 test("a view link shows a coworker the same session without its controls", async ({
   page,
   browser,
   microscope,
 }) => {
   await join(page, microscope.link);
-  await page.getByRole("button", { name: /Run/ }).click();
+  await page.getByRole("button", { name: /Run/u }).click();
   await expect(page.getByTestId("status")).toContainText("Running");
-  await page.getByRole("button", { name: /Pause/ }).click();
+  await page.getByRole("button", { name: /Pause/u }).click();
   await expect(page.getByTestId("status")).toContainText("Stopped");
   // The link carries the whole look, even watches holding `&` and `#`.
   await page.goto(`${page.url()}?w=${encodeURIComponent("a & b#c")}&w=d`);
@@ -20,17 +25,13 @@ test("a view link shows a coworker the same session without its controls", async
   const dialog = page.getByRole("dialog", { name: "Share this session" });
   await expect(dialog).toBeInViewport({ ratio: 1 });
   const field = dialog.getByRole("textbox", { name: "Join link" });
-  await expect(field).toHaveValue(/\/join\?to=.*#v-/);
+  await expect(field).toHaveValue(/\/join\?to=.*#v-/u);
   const link = await field.inputValue();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
   const coworker = await (await browser.newContext()).newPage();
   await coworker.goto(link);
-  const look = (url: string) => {
-    const { pathname, searchParams } = new URL(url);
-    return { pathname, watches: searchParams.getAll("w") };
-  };
   await expect.poll(() => look(coworker.url())).toEqual(look(page.url()));
   expect(look(page.url()).watches).toEqual(["a & b#c", "d"]);
   await expect(coworker.getByTestId("status")).toHaveText(
@@ -54,8 +55,8 @@ test("a view link shows a coworker the same session without its controls", async
 
   // Hovering the controller says where they look; clicking goes there.
   await page.keyboard.press("u");
-  await expect(page).toHaveURL(/\/f\/1\?/);
-  const owner = coworker.getByRole("button", { name: /Go to tester's focus, .*frame 1/ });
+  await expect(page).toHaveURL(/\/f\/1\?/u);
+  const owner = coworker.getByRole("button", { name: /Go to tester's focus, .*frame 1/u });
   await owner.click();
   await expect.poll(() => look(coworker.url())).toEqual(look(page.url()));
 

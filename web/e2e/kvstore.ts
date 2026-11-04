@@ -20,5 +20,5 @@ export const valueRow = (page: Page, pane: string, name: string) =>
   page
     .getByTestId(pane)
     .locator(".value-row")
-    .filter({ has: page.locator(".value-name", { hasText: new RegExp(`^${name}$`) }) })
+    .filter({ has: page.locator(".value-name", { hasText: new RegExp(`^${name}$`, "u") }) })
     .first();

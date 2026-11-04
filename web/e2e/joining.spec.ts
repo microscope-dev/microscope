@@ -9,7 +9,7 @@ test("a join link opens the session and leaves no token in the address", async (
   await join(page, microscope.link);
   expect(page.url()).not.toContain("#");
   await expect(page.locator(".status")).toContainText("Not started");
-  await expect(page).toHaveTitle(/spin/);
+  await expect(page).toHaveTitle(/spin/u);
 });
 
 test("a cookie from an earlier microscope on the same port asks for a link", async ({

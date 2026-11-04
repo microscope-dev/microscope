@@ -21,9 +21,9 @@ test("a child that stops shows in the switcher, and the panes switch processes",
   await expect(page.getByTestId("breakpoints")).toContainText("child_work");
   await page.keyboard.press("F5");
 
-  await page.getByRole("tab", { name: /^Processes/ }).click();
+  await page.getByRole("tab", { name: /^Processes/u }).click();
   const switcher = page.getByRole("navigation", { name: "Processes" });
-  const child = switcher.getByRole("button", { name: /\[2\] process-tree/ });
+  const child = switcher.getByRole("button", { name: /\[2\] process-tree/u });
   await expect(child).toHaveAttribute("aria-pressed", "true");
   await expect(child).toContainText("forked by [1]");
   await expect(child).toContainText("stopped here");
@@ -31,8 +31,8 @@ test("a child that stops shows in the switcher, and the panes switch processes",
   await expect(page.getByTestId("stack")).toContainText("child_work");
 
   // The program's own process, waiting for its child.
-  await switcher.getByRole("button", { name: /\[1\] process-tree/ }).click();
-  await expect(switcher.getByRole("button", { name: /\[1\] process-tree/ })).toHaveAttribute(
+  await switcher.getByRole("button", { name: /\[1\] process-tree/u }).click();
+  await expect(switcher.getByRole("button", { name: /\[1\] process-tree/u })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
@@ -41,12 +41,12 @@ test("a child that stops shows in the switcher, and the panes switch processes",
 
   // Continuing runs every process, until the next child stops.
   await page.keyboard.press("F5");
-  await expect(switcher.getByRole("button", { name: /\[3\] process-tree/ })).toHaveAttribute(
+  await expect(switcher.getByRole("button", { name: /\[3\] process-tree/u })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
   await switcher.locator("summary").click();
-  await expect(switcher.getByRole("button", { name: /\[2\] process-tree/ })).toContainText(
+  await expect(switcher.getByRole("button", { name: /\[2\] process-tree/u })).toContainText(
     "exited",
   );
 });

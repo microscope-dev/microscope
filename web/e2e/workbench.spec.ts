@@ -29,7 +29,7 @@ test.describe("with nothing to debug", () => {
     await launch.getByRole("button", { name: "Load", exact: true }).click();
 
     // The pane closes, and the session opens in the Debug layout.
-    await expect(page).toHaveURL(/\/s\/[0-9a-f]+$/);
+    await expect(page).toHaveURL(/\/s\/[0-9a-f]+$/u);
     await expect(page.getByTestId("status")).toContainText("Not started");
     await expect(tab(page, "spin.c")).toBeVisible();
     await expect(tab(page, "Launch")).toHaveCount(0);
@@ -44,8 +44,8 @@ test.describe("with nothing to debug", () => {
       await attach.getByRole("textbox", { name: "Process" }).fill(String(program.pid));
       await attach.getByRole("button", { name: `Attach to ${program.pid}` }).click();
       // Attaching stops the process where it was.
-      await expect(page).toHaveURL(/\/s\/[0-9a-f]+\/stop\//);
-      await expect(page).toHaveTitle(/^spin/);
+      await expect(page).toHaveURL(/\/s\/[0-9a-f]+\/stop\//u);
+      await expect(page).toHaveTitle(/^spin/u);
       await expect(tab(page, "Attach")).toHaveCount(0);
     } finally {
       program.kill();
@@ -99,7 +99,7 @@ test("a page served on its own signs in, then connects with a join link", async 
 }) => {
   const served = await standalonePage(standIn());
   // Services says nobody is signed in yet.
-  expectErrors(/\/api\/users\/me: 401$/);
+  expectErrors(/\/api\/users\/me: 401$/u);
   try {
     await page.goto(`${served.origin}/`);
     await expect(tab(page, "Welcome")).toHaveAttribute("aria-selected", "true");
@@ -116,7 +116,7 @@ test("a page served on its own signs in, then connects with a join link", async 
     const connect = page.getByRole("tabpanel", { name: "Connect" });
     await connect.getByLabel("Join link").fill(microscope.link);
     await connect.getByRole("button", { name: "Connect" }).click();
-    await expect(page).toHaveURL(new RegExp(`^${served.origin}/s/[0-9a-f]+$`));
+    await expect(page).toHaveURL(new RegExp(`^${served.origin}/s/[0-9a-f]+$`, "u"));
     await expect(page.getByTestId("status")).toContainText("Not started");
   } finally {
     served.server.close();

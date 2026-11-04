@@ -12,11 +12,11 @@ import { allowErrors, test as base, expect, expectErrors } from "./server";
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 
 const test = base.extend<{ services: Services }>({
-  services: async ({ context }, use, info) => {
-    allowErrors(/GET \S+\/api\/users\/me: 401$/);
+  services: async ({ context }, provide, info) => {
+    allowErrors(/GET \S+\/api\/users\/me: 401$/u);
     const services = await startServices({ localhost: true });
     try {
-      await use(services);
+      await provide(services);
     } finally {
       for (const page of context.pages()) {
         await page.close();
@@ -94,7 +94,7 @@ async function signOut(page: Page): Promise<void> {
 test("adds a passkey, signs in with it and no code, and removes it", async ({ page, services }) => {
   test.setTimeout(30_000);
   // The removed passkey, which the device still offers.
-  expectErrors(/POST \S+\/api\/passkeys\/sign-in\/finish: 401$/);
+  expectErrors(/POST \S+\/api\/passkeys\/sign-in\/finish: 401$/u);
   const { cdp, id } = await device(page);
   const { username } = await join(page, services);
 
@@ -126,7 +126,7 @@ test("adds a passkey, signs in with it and no code, and removes it", async ({ pa
 
   // In a browser without that autofill, the button does it.
   await page.addInitScript(() => {
-    PublicKeyCredential.isConditionalMediationAvailable = async () => false;
+    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
   });
   await page.reload();
   await signOut(page);

@@ -11,7 +11,7 @@ import { card, drawAt } from "./drawings";
 import { expect, fixture, join, type Microscope, menu, root, test } from "./server";
 
 /** The squares a board's drawing outlines as changed since the stop before. */
-async function outlined(page: Page): Promise<string[]> {
+function outlined(page: Page): Promise<string[]> {
   return card(page, "self")
     .locator("rect[stroke]")
     .evaluateAll((rects) =>
@@ -29,7 +29,7 @@ test.describe("a program's own renderer", () => {
     await join(page, microscope.link);
     await drawAt(page, "main.rs:108");
     const board = card(page, "self");
-    await expect(page.getByRole("tab", { name: /Drawings\s*1/ })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /Drawings\s*1/u })).toBeVisible();
     // Pieces are named by their squares' titles.
     await expect(board.getByRole("button", { name: "e1: White King" })).toBeVisible();
     await expect(board.getByRole("button", { name: "d8: Black Queen" })).toBeVisible();
@@ -50,7 +50,7 @@ test.describe("a program's own renderer", () => {
     const part = page.getByRole("dialog", { name: "Part self.mailbox[28]" });
     await expect(part).toContainText("Some");
     await part.getByRole("button", { name: "Watch", exact: true }).click();
-    await expect(page).toHaveURL(/[?&]w=self.mailbox%5B28%5D/);
+    await expect(page).toHaveURL(/[?&]w=self.mailbox%5B28%5D/u);
     await part.getByRole("button", { name: "Close" }).click();
     await expect(part).toBeHidden();
 
@@ -69,15 +69,15 @@ test.describe("a program's own renderer", () => {
     await add.fill("self.fullmove");
     await add.press("Enter");
     await page.getByRole("button", { name: "Draw self.fullmove as…" }).first().click();
-    await page.getByRole("menuitem", { name: /^chess-board/ }).click();
-    await expect(page).toHaveURL(/[?&]d=self.fullmove~chess-board/);
+    await page.getByRole("menuitem", { name: /^chess-board/u }).click();
+    await expect(page).toHaveURL(/[?&]d=self.fullmove~chess-board/u);
     // The board's renderer reads squares the number does not have.
     const pinned = page.getByRole("region", { name: "Drawing of self.fullmove as chess-board" });
-    await expect(pinned.getByRole("alert")).toContainText(/chess-board\.js:\d+:\d+: TypeError/);
+    await expect(pinned.getByRole("alert")).toContainText(/chess-board\.js:\d+:\d+: TypeError/u);
     // Removing it unpins it.
     await pinned.getByRole("button", { name: "Stop drawing self.fullmove" }).click();
     await expect(pinned).toBeHidden();
-    await expect(page).not.toHaveURL(/[?&]d=/);
+    await expect(page).not.toHaveURL(/[?&]d=/u);
   });
 });
 
@@ -90,13 +90,12 @@ async function life(page: Page, microscope: Microscope, views: string): Promise<
 
 /** How many of a life board's cells are alive, and how many were just born,
  * from the pixels the page shows. */
-async function cells(page: Page): Promise<{ alive: number; born: number }> {
+function cells(page: Page): Promise<{ alive: number; born: number }> {
   return card(page, "life")
     .locator("canvas")
     .evaluate((canvas: HTMLCanvasElement) => {
-      const { data } = canvas
-        .getContext("2d")
-        ?.getImageData(0, 0, canvas.width, canvas.height) as ImageData;
+      const context = canvas.getContext("2d") as CanvasRenderingContext2D;
+      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
       let alive = 0;
       let born = 0;
       for (let at = 0; at < data.length; at += 4) {
@@ -130,9 +129,9 @@ test.describe("a session's views file", () => {
     // Drawing a value the frame already draws pins that card, which can
     // then stop being pinned.
     await page.getByRole("button", { name: "Draw life", exact: true }).first().click();
-    await expect(page).toHaveURL(/[?&]d=life(&|$)/);
+    await expect(page).toHaveURL(/[?&]d=life(&|$)/u);
     await board.getByRole("button", { name: "Stop drawing life" }).click();
-    await expect(page).not.toHaveURL(/[?&]d=/);
+    await expect(page).not.toHaveURL(/[?&]d=/u);
     await expect(board).toBeVisible();
   });
 
@@ -144,8 +143,9 @@ test.describe("a session's views file", () => {
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
-          writeText: async (text: string) => {
+          writeText: (text: string) => {
             (window as unknown as { copied: string }).copied = text;
+            return Promise.resolve();
           },
         },
       });
@@ -259,7 +259,7 @@ extend c life {
     await program.fill(fixture("life"));
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Load", exact: true }).click();
-    await page.getByRole("button", { name: /End it and continue/ }).click();
+    await page.getByRole("button", { name: /End it and continue/u }).click();
     await expect(page.getByTestId("status")).toContainText("Not started");
     const adder = page.getByRole("textbox", { name: "Add a breakpoint" });
     await adder.fill("life.c:59");
@@ -292,11 +292,12 @@ extend c life {
     await drawAt(page, "life.c:59");
     const board = card(page, "life");
     const caption = board.locator(".drawing-caption");
-    await expect(caption).toHaveText(/^\d+$/);
+    await expect(caption).toHaveText(/^\d+$/u);
     const offered = () =>
       board.locator(".drawing-body").evaluate((body: HTMLElement) => {
         const style = getComputedStyle(body);
         const padding =
+          // oxlint-disable-next-line unicorn/prefer-number-coercion -- the values end in "px", which Number() turns into NaN
           Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
         return Math.floor(body.clientWidth - padding);
       });
@@ -389,7 +390,6 @@ extend c life {
     );
     await writeFile(
       path.join(directory, "throws.js"),
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: the renderer's own template
       "microscope.draw(({ generation }) => {\n  throw new RangeError(`no generation ${generation}`);\n});\n",
     );
     await writeFile(
@@ -426,7 +426,7 @@ extend c life {
       "The renderer took longer than 2 s, so it was stopped.",
     );
     await page.keyboard.press("Alt+s");
-    await expect(page).not.toHaveURL(/view=drawings/);
+    await expect(page).not.toHaveURL(/view=drawings/u);
 
     // A renderer nobody provides is named.
     const url = new URL(page.url());

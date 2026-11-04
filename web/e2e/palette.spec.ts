@@ -19,12 +19,12 @@ test("the palette finds functions, files, lines, and commands", async ({ page, m
   await search(page).fill("hreq");
   await expect(
     palette(page)
-      .getByRole("option", { name: /handle_request/ })
+      .getByRole("option", { name: /handle_request/u })
       .first(),
   ).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(palette(page)).toHaveCount(0);
-  await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:89/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:89/u);
 
   // Each function offers a breakpoint.
   await page.keyboard.press("Control+k");
@@ -37,11 +37,11 @@ test("the palette finds functions, files, lines, and commands", async ({ page, m
   await search(page).fill("kvst");
   await expect(palette(page).getByRole("option").first()).toContainText("kvstore.c");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:1(&|$)/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:1(&|$)/u);
   await page.keyboard.press("Control+g");
   await search(page).fill("120");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:120(&|$)/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*kvstore\.c:120(&|$)/u);
 
   // Commands run from it, and Escape closes it without running anything.
   await page.keyboard.press("Control+k");
@@ -67,19 +67,19 @@ test("every stop is in the palette, and ? lists every key", async ({ page, micro
   await page.keyboard.press("Control+k");
   await search(page).fill("#2");
   await palette(page)
-    .getByRole("option", { name: /#2 breakpoint/ })
+    .getByRole("option", { name: /#2 breakpoint/u })
     .click();
-  await expect(page).toHaveURL(/\/stop\/2\//);
+  await expect(page).toHaveURL(/\/stop\/2\//u);
   await expect(page.getByTestId("passed")).toContainText("Stop #2 has passed");
 
   // A stop the session never reached is not one that passed.
-  await page.goto(page.url().replace(/\/stop\/2\//, "/stop/99/"));
+  await page.goto(page.url().replace(/\/stop\/2\//u, "/stop/99/"));
   await expect(page.getByTestId("passed")).toContainText("This session has not reached stop #99");
 
   await page.keyboard.press("?");
   const keys = page.getByRole("tab", { name: "Keyboard shortcuts", exact: true });
   await expect(keys).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("row", { name: /^Step over F10/ })).toBeVisible();
+  await expect(page.getByRole("row", { name: /^Step over F10/u })).toBeVisible();
 });
 
 test("closing the file shown shows its neighbor, and a middle click closes a tab", async ({
@@ -101,12 +101,12 @@ test("closing the file shown shows its neighbor, and a middle click closes a tab
   await tab("stdio.h").click({ button: "middle" });
   await expect(tab("stdio.h")).toHaveCount(0);
   await expect(tab("pthread.h")).toHaveAttribute("aria-selected", "true");
-  await expect(page).toHaveURL(/[?&]src=[^&]*pthread\.h:1(&|$)/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*pthread\.h:1(&|$)/u);
 
   await files.getByRole("button", { name: "Close pthread.h" }).click();
   await expect(tab("pthread.h")).toHaveCount(0);
   // The program's own file follows the focus again.
-  await expect(page).not.toHaveURL(/[?&]src=/);
+  await expect(page).not.toHaveURL(/[?&]src=/u);
   await expect(tab("kvstore.c")).toHaveAttribute("aria-selected", "true");
 
   // The last file closed leaves nothing shown.
@@ -153,7 +153,7 @@ test("a closed file opens again when asked for at the place it was closed", asyn
   await closed();
   await page
     .getByTestId("breakpoints")
-    .getByRole("button", { name: /kvstore\.c:92/ })
+    .getByRole("button", { name: /kvstore\.c:92/u })
     .click();
   await reopened();
 
@@ -174,14 +174,14 @@ test("a file's tab shows where it was, and the frame's file follows the frame", 
   await page.keyboard.press("Control+g");
   await search(page).fill("stdio.h:50");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/u);
 
   await files.getByRole("tab", { name: "kvstore.c", exact: true }).click();
-  await expect(page).not.toHaveURL(/[?&]src=/);
+  await expect(page).not.toHaveURL(/[?&]src=/u);
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");
 
   await files.getByRole("tab", { name: "stdio.h", exact: true }).click();
-  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/u);
 });
 
 test("a reload keeps the tab's files, and where each was shown", async ({ page, microscope }) => {
@@ -198,10 +198,14 @@ test("a reload keeps the tab's files, and where each was shown", async ({ page, 
 
   await page.reload();
   await expect(tab("pthread.h")).toHaveAttribute("aria-selected", "true");
-  await expect(files.getByRole("button", { name: /^Close .*\.[ch]$/ })).toHaveText(["×", "×", "×"]);
+  await expect(files.getByRole("button", { name: /^Close .*\.[ch]$/u })).toHaveText([
+    "×",
+    "×",
+    "×",
+  ]);
   await expect(files).toContainText("kvstore.c");
   await tab("stdio.h").click();
-  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h:50(&|$)/u);
 });
 
 test("closing the last file drops it from the address", async ({ page, microscope }) => {
@@ -211,13 +215,13 @@ test("closing the last file drops it from the address", async ({ page, microscop
   await page.keyboard.press("Control+p");
   await search(page).fill("stdio.h");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h/);
+  await expect(page).toHaveURL(/[?&]src=[^&]*stdio\.h/u);
   await files.getByRole("button", { name: "Close kvstore.c" }).click();
   await files.getByRole("button", { name: "Close stdio.h" }).click();
 
-  await expect(page).not.toHaveURL(/[?&]src=/);
+  await expect(page).not.toHaveURL(/[?&]src=/u);
   await expect(page.getByText("No file open.")).toBeVisible();
-  await expect(files.getByRole("button", { name: /^Close .*\.[ch]$/ })).toHaveCount(0);
+  await expect(files.getByRole("button", { name: /^Close .*\.[ch]$/u })).toHaveCount(0);
   // Its frame still opens its file again.
   await page.getByTestId("stack").getByRole("button").first().click();
   await expect(page.locator(".cm-pc-line")).toContainText("int status = 0;");

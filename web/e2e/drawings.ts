@@ -14,7 +14,7 @@ export async function drawAt(page: Page, location: string, stop = "#2"): Promise
   await page.keyboard.press("F5");
   await expect(page.getByTestId("stops")).toContainText(stop);
   await page.keyboard.press("Alt+v");
-  await expect(page).toHaveURL(/[?&]view=drawings/);
+  await expect(page).toHaveURL(/[?&]view=drawings/u);
 }
 
 /** The card that draws `path`. */
@@ -28,8 +28,9 @@ export async function stubClipboard(page: Page): Promise<void> {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
-        writeText: async (text: string) => {
+        writeText: (text: string) => {
           (window as unknown as { copied: string }).copied = text;
+          return Promise.resolve();
         },
       },
     });
@@ -56,7 +57,7 @@ export async function copyCsv(page: Page, board: Locator): Promise<Map<string, s
   const text = (await copied()) as string;
   const lines = text.trimEnd().split("\n");
   expect(lines[0]).toBe("path,value");
-  return new Map(lines.slice(1).map(csvRow));
+  return new Map(lines.slice(1).map((line) => csvRow(line)));
 }
 
 /** One CSV row of a path and a value, either of them quoted. */
@@ -97,7 +98,7 @@ export const titles = (board: Locator) =>
 /** Shows a card's drawing by `renderer`, among the several its value offers. */
 export async function showTab(board: Locator, renderer: string): Promise<void> {
   const tab = board
-    .getByRole("group", { name: /^Drawings of / })
+    .getByRole("group", { name: /^Drawings of /u })
     .getByRole("button", { name: renderer, exact: true });
   await tab.click();
   await expect(tab).toHaveAttribute("aria-pressed", "true");

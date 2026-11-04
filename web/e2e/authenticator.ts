@@ -8,7 +8,7 @@ export function base32(text: string): Buffer {
   const bytes: number[] = [];
   let buffer = 0;
   let bits = 0;
-  for (const char of text.replace(/\s/g, "")) {
+  for (const char of text.replaceAll(/\s/gu, "")) {
     buffer = (buffer << 5) | alphabet.indexOf(char);
     bits += 5;
     if (bits >= 8) {
@@ -32,10 +32,10 @@ export function totp(secret: Buffer, ahead = 0): string {
 
 /** A six digit code that no step near now produces. */
 export function wrong(secret: Buffer): string {
-  const valid = [-1, 0, 1, 2].map((ahead) => totp(secret, ahead));
+  const valid = new Set([-1, 0, 1, 2].map((ahead) => totp(secret, ahead)));
   for (let n = 0; ; n++) {
     const code = String(n).padStart(6, "0");
-    if (!valid.includes(code)) {
+    if (!valid.has(code)) {
       return code;
     }
   }

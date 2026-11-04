@@ -66,15 +66,15 @@ test("the Launch pane completes a path and loads it in place of the program", as
   await page.keyboard.press("Tab");
   await expect(program).toHaveValue("build/test-programs/");
   await program.pressSequentially("basic");
-  await page.getByRole("option", { name: /^basic\s*executable$/ }).click();
+  await page.getByRole("option", { name: /^basic\s*executable$/u }).click();
   await expect(program).toHaveValue("build/test-programs/basic");
   await page.getByRole("button", { name: "Load", exact: true }).click();
   // Spin is still loaded, so loading asks first.
-  await page.getByRole("button", { name: /End it and continue/ }).click();
+  await page.getByRole("button", { name: /End it and continue/u }).click();
   // The address follows to the new session.
   await expect(page).not.toHaveURL(first);
-  await expect(page).toHaveURL(/\/s\/[0-9a-f]+$/);
-  await expect(page).toHaveTitle(/^basic/);
+  await expect(page).toHaveURL(/\/s\/[0-9a-f]+$/u);
+  await expect(page).toHaveTitle(/^basic/u);
 
   // A tab that watched the old session follows to the new one; a link to
   // it opened later says it ended, and offers the current one.
@@ -106,7 +106,7 @@ test("a program chosen from a Start pane keeps nothing of the one it replaced", 
   await page.getByRole("combobox", { name: "Core dump" }).fill(fixture("crash-gcc-o0-segv.core"));
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Open", exact: true }).click();
-  await page.getByRole("button", { name: /End it and continue/ }).click();
+  await page.getByRole("button", { name: /End it and continue/u }).click();
   await expect(page.getByTestId("status")).toContainText("Core dump");
 
   // The core's own file, and registers with nothing to compare against.
@@ -128,7 +128,7 @@ test("a replacement that fails leaves the old session running", async ({ page, m
   await page.getByRole("combobox", { name: "Program" }).fill("/nonexistent/program");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Load", exact: true }).click();
-  await page.getByRole("button", { name: /End it and continue/ }).click();
+  await page.getByRole("button", { name: /End it and continue/u }).click();
   await expect(page.getByRole("alert")).toContainText("No such file");
   // The failure is not a program worth recalling.
   await expect(page.getByRole("button", { name: "program", exact: true })).toHaveCount(0);

@@ -39,7 +39,7 @@ test("a million samples arrive at once and draw as a line that keeps their extre
 
   const { points, width } = await board.locator(".drawing-body svg").evaluate((svg) => {
     const lines = [...svg.querySelectorAll("polyline")].map(
-      (line) => (line.getAttribute("points") ?? "").trim().split(/[\s,]+/).length / 2,
+      (line) => (line.getAttribute("points") ?? "").trim().split(/[\s,]+/u).length / 2,
     );
     return { points: Math.max(...lines), width: (svg as SVGSVGElement).viewBox.baseVal.width };
   });

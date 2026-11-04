@@ -18,7 +18,7 @@ test("the stack marks the functions that left by tail calls", async ({ page, mic
   const frame = (name: string) =>
     stack
       .getByRole("button")
-      .filter({ has: page.locator(".fn", { hasText: new RegExp(`^${name}`) }) });
+      .filter({ has: page.locator(".fn", { hasText: new RegExp(`^${name}`, "u") }) });
   await expect(frame("leaf")).not.toContainText("tail call");
   await expect(frame("middle")).toContainText("tail call");
   await expect(frame("top")).toContainText("tail call");

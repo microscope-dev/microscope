@@ -35,17 +35,17 @@ async function shown(board: Locator, stop = "2"): Promise<void> {
 /** A 32 by 20 grid of the canvas's pixels, as `#rrggbb`. The page may read
  * them: it only shows the bitmaps the renderer sends. */
 function sample(canvas: Locator): Promise<string[]> {
-  return canvas.evaluate((shown: HTMLCanvasElement) => {
+  return canvas.evaluate((source: HTMLCanvasElement) => {
     const copy = document.createElement("canvas");
-    copy.width = shown.width;
-    copy.height = shown.height;
+    copy.width = source.width;
+    copy.height = source.height;
     const draw = copy.getContext("2d") as CanvasRenderingContext2D;
-    draw.drawImage(shown, 0, 0);
+    draw.drawImage(source, 0, 0);
     const colors: string[] = [];
     for (let row = 0; row < 20; row++) {
       for (let column = 0; column < 32; column++) {
-        const x = Math.floor(((column + 0.5) * shown.width) / 32);
-        const y = Math.floor(((row + 0.5) * shown.height) / 20);
+        const x = Math.floor(((column + 0.5) * source.width) / 32);
+        const y = Math.floor(((row + 0.5) * source.height) / 20);
         const [r, g, b] = draw.getImageData(x, y, 1, 1).data;
         colors.push(
           `#${[r, g, b].map((part) => (part ?? 0).toString(16).padStart(2, "0")).join("")}`,
@@ -115,7 +115,7 @@ test.describe("the built-in mesh viewer", () => {
     const covered = first.findIndex((color) => color !== surface);
     await page.mouse.move(...(await at(canvas, covered)));
     await expect(board.getByRole("tooltip")).toHaveText(
-      /^vertex \d+: \(-?[\d.]+, -?[\d.]+, -?[\d.]+\)$/,
+      /^vertex \d+: \(-?[\d.]+, -?[\d.]+, -?[\d.]+\)$/u,
     );
 
     // Dragging turns it.
@@ -152,17 +152,17 @@ test.describe("the built-in mesh viewer", () => {
 
   test("names what is wrong with a mesh and draws none of it", async ({ page, microscope }) => {
     await open(page, microscope);
-    for (const [path, problem] of [
+    for (const [name, problem] of [
       ["flown", "vertex 2 is at (NaN, 1, 0)"],
       ["stray", "index 4 is 7, past the last vertex, 3"],
     ]) {
-      const board = card(page, path as string);
+      const board = card(page, name as string);
       await shown(board);
       await expect(board.locator(".drawing-caption")).toHaveText(
         `4 vertices · 2 triangles · not drawn: ${problem}`,
       );
       const drawn = await sample(canvasOf(board));
-      expect(new Set(drawn).size, path).toBe(1);
+      expect(new Set(drawn).size, name).toBe(1);
     }
   });
 
@@ -190,7 +190,7 @@ test("says WebGL is unavailable where it is", async ({ page, microscope, browser
   await open(page, microscope);
   const board = card(page, "mesh");
   await expect(board.getByRole("alert")).toContainText(
-    /^mesh\.js:\d+:\d+: Error: WebGL is unavailable in this browser Restart$/,
+    /^mesh\.js:\d+:\d+: Error: WebGL is unavailable in this browser Restart$/u,
   );
   await expect(board.getByRole("button", { name: "Restart" })).toBeVisible();
 });

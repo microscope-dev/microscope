@@ -11,12 +11,12 @@ import { allowErrors, test as base, expect, expectErrors, menu } from "./server"
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 
 const test = base.extend<{ services: Services }>({
-  services: async ({ context }, use, info) => {
+  services: async ({ context }, provide, info) => {
     // Services' answer when nobody is signed in, which each pane asks as it opens.
-    allowErrors(/GET \S+\/api\/users\/me: 401$/);
+    allowErrors(/GET \S+\/api\/users\/me: 401$/u);
     const services = await startServices();
     try {
-      await use(services);
+      await provide(services);
     } finally {
       // Pages go before services, so none sees it vanish.
       for (const page of context.pages()) {
@@ -33,6 +33,7 @@ const test = base.extend<{ services: Services }>({
 test.skip(!haveServices, `services is not built at ${servicesBinary}`);
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
+const projects = (on: Page) => on.getByRole("tabpanel", { name: "Projects" });
 
 /** A new person's name, unique in the shared database. */
 function person(): { username: string; email: string; password: string } {
@@ -51,7 +52,7 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   services,
 }) => {
   const who = person();
-  expectErrors(/POST \S+\/api\/login: 403$/, /POST \S+\/api\/login\/code: 401$/);
+  expectErrors(/POST \S+\/api\/login: 403$/u, /POST \S+\/api\/login\/code: 401$/u);
 
   await page.goto(`${services.origin}/`);
   await account(page).getByRole("button", { name: "Create one" }).click();
@@ -62,7 +63,7 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   await expect(account(page)).toContainText(`A confirmation link is on its way to ${who.email}`);
   const confirmation = await services.mail(who.email);
   expect(confirmation.subject).toBe("Confirm your Microscope email address");
-  expect(confirmation.link).toMatch(new RegExp(`^${services.origin}/confirm-email#token=`));
+  expect(confirmation.link).toMatch(new RegExp(`^${services.origin}/confirm-email#token=`, "u"));
 
   // Until the address is confirmed, the password is not enough, and the
   // pane offers another link.
@@ -83,7 +84,7 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   const login = await services.mail(who.email);
   expect(login.subject).toBe("Your Microscope login code");
   const code = login.code ?? "";
-  expect(code).toMatch(/^\d{6}$/);
+  expect(code).toMatch(/^\d{6}$/u);
 
   const field = account(page).getByLabel("Code");
   await field.fill(code === "000000" ? "111111" : "000000");
@@ -112,9 +113,9 @@ test("the link in a login email signs in the browser that opens it, once", async
 }) => {
   const who = person();
   expectErrors(
-    /POST \S+\/api\/email-confirmations: 400$/,
-    /POST \S+\/api\/login\/code: 401$/,
-    /POST \S+\/api\/login\/link: 401$/,
+    /POST \S+\/api\/email-confirmations: 400$/u,
+    /POST \S+\/api\/login\/code: 401$/u,
+    /POST \S+\/api\/login\/link: 401$/u,
   );
 
   // A link that is not one says so.
@@ -134,7 +135,7 @@ test("the link in a login email signs in the browser that opens it, once", async
   await signIn(page, who.email, who.password);
   await expect(account(page).getByLabel("Code")).toBeVisible();
   const login = await services.mail(who.email);
-  expect(login.link).toMatch(new RegExp(`^${services.origin}/login-link#token=`));
+  expect(login.link).toMatch(new RegExp(`^${services.origin}/login-link#token=`, "u"));
 
   // Another device: its own browser, with nothing of this one's.
   const phone = await browser.newContext();
@@ -148,11 +149,11 @@ test("the link in a login email signs in the browser that opens it, once", async
         asked.push(request.response());
       }
     });
-    let release = () => {};
+    let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
-    let entered = () => {};
+    let entered!: () => void;
     const holding = new Promise<void>((resolve) => {
       entered = resolve;
     });
@@ -166,7 +167,10 @@ test("the link in a login email signs in the browser that opens it, once", async
     await expect(account(other)).toContainText("Checking whether you are signed in");
     // Two frames, so every pane's effects have asked what they will.
     await other.evaluate(
-      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+      () =>
+        new Promise((done) => {
+          requestAnimationFrame(() => requestAnimationFrame(done));
+        }),
     );
     await Promise.all(asked);
     await expect(account(other)).toContainText("Checking whether you are signed in");
@@ -224,9 +228,9 @@ test("a forgotten password is reset by its emailed link, which signs out every d
   const who = person();
   // The short password, then the link used a second time.
   expectErrors(
-    /POST \S+\/api\/password-resets\/complete: 400$/,
-    /POST \S+\/api\/password-resets\/complete: 400$/,
-    /POST \S+\/api\/login: 401$/,
+    /POST \S+\/api\/password-resets\/complete: 400$/u,
+    /POST \S+\/api\/password-resets\/complete: 400$/u,
+    /POST \S+\/api\/login: 401$/u,
   );
 
   // Signed in on another device, which the reset signs out.
@@ -245,7 +249,9 @@ test("a forgotten password is reset by its emailed link, which signs out every d
     );
     const mail = await services.mail(who.email);
     expect(mail.subject).toBe("Reset your Microscope password");
-    expect(mail.link).toMatch(new RegExp(`^${services.origin}/reset-password#token=[0-9a-f]{64}$`));
+    expect(mail.link).toMatch(
+      new RegExp(`^${services.origin}/reset-password#token=[0-9a-f]{64}$`, "u"),
+    );
 
     // The token leaves the address bar as soon as the page has it.
     await page.goto(mail.link);
@@ -328,7 +334,6 @@ test("an owner shares a project with a team, and a member sees the access it giv
   const owner = person();
   const user = person();
   const org = `acme ${randomBytes(3).toString("hex")}`;
-  const projects = (on: Page) => on.getByRole("tabpanel", { name: "Projects" });
   const orgPane = (on: Page) => on.getByRole("tabpanel", { name: org });
   const section = (on: Page, name: string) =>
     orgPane(on).getByRole("group", { name: "Sections" }).getByRole("button", { name });
@@ -343,7 +348,7 @@ test("an owner shares a project with a team, and a member sees the access it giv
     await projects(other).getByLabel("Project name").fill("notes");
     await projects(other).getByRole("button", { name: "Create project" }).click();
     await expect(projects(other).getByRole("list", { name: "Your projects" })).toContainText(
-      /notes\s*Admin/,
+      /notes\s*Admin/u,
     );
 
     // An owner makes an organization and a project in it, and invites them.
@@ -357,7 +362,7 @@ test("an owner shares a project with a team, and a member sees the access it giv
     await orgPane(page).getByLabel("Project name").fill("api");
     await orgPane(page).getByRole("button", { name: "Create project" }).click();
     await expect(orgPane(page).getByRole("list", { name: `${org} projects` })).toContainText(
-      /api\s*Admin/,
+      /api\s*Admin/u,
     );
     await section(page, "Members").click();
     await orgPane(page).getByLabel("Username").fill(user.username);
@@ -373,7 +378,7 @@ test("an owner shares a project with a team, and a member sees the access it giv
     );
     await invitations.getByRole("button", { name: "Accept" }).click();
     await expect(account(other).getByRole("list", { name: "Organizations" })).toHaveText(
-      new RegExp(`^${org}\\s*Member$`),
+      new RegExp(`^${org}\\s*Member$`, "u"),
     );
     await expect(invitations).toHaveCount(0);
 
@@ -405,10 +410,10 @@ test("an owner shares a project with a team, and a member sees the access it giv
     await other.reload();
     await menu(other, "File", "Projects");
     await expect(projects(other).getByRole("list", { name: "Your projects" })).toHaveText(
-      /^notes\s*Admin/,
+      /^notes\s*Admin/u,
     );
     const shared = projects(other).getByRole("list", { name: `${org} projects` });
-    await expect(shared).toHaveText(/^api\s*Write$/);
+    await expect(shared).toHaveText(/^api\s*Write$/u);
     await expect(projects(other).getByRole("heading")).toHaveText(["Yours", org]);
   } finally {
     await elsewhere.close();

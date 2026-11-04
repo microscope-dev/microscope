@@ -24,7 +24,7 @@ async function probe(
 ): Promise<void> {
   // Firefox reports the import() its policy blocked.
   if (browserName === "firefox") {
-    expectErrors(/Content-Security-Policy: .*import\.js/);
+    expectErrors(/Content-Security-Policy: .*import\.js/u);
   }
   const arrived: string[] = [];
   const http = createServer((request, response) => {
@@ -32,10 +32,14 @@ async function probe(
     response.setHeader("Access-Control-Allow-Origin", "*");
     response.end("x");
   });
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => {
+    http.listen(0, "127.0.0.1", resolve);
+  });
   const udp = createSocket("udp4");
   udp.on("message", (message) => arrived.push(`udp ${message.toString("hex").slice(0, 16)}`));
-  await new Promise<void>((resolve) => udp.bind(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => {
+    udp.bind(0, "127.0.0.1", resolve);
+  });
   const ports = {
     http: (http.address() as AddressInfo).port,
     udp: udp.address().port,
@@ -62,14 +66,14 @@ async function probe(
     const found = await outcomes(card(page, "life"));
     expect(found.length).toBeGreaterThan(15);
     for (const outcome of found) {
-      expect(outcome).toMatch(/: (absent|blocked)$/);
+      expect(outcome).toMatch(/: (absent|blocked)$/u);
     }
 
     // What the test sends itself arrives, after anything the renderer sent.
     await fetch(`http://127.0.0.1:${ports.http}/control`);
     udp.send("control", ports.udp, "127.0.0.1");
     await expect.poll(() => arrived.length).toBe(2);
-    expect(arrived.sort()).toEqual([
+    expect(arrived.toSorted()).toEqual([
       "http GET /control",
       `udp ${Buffer.from("control").toString("hex")}`,
     ]);
@@ -97,7 +101,7 @@ test("a hostile live renderer reaches nothing, with WebGL in use", async ({
 }) => {
   await probe(page, microscope, browserName, "live", async (drawn) => {
     const caption = drawn.locator(".drawing-caption");
-    await expect(caption).toHaveText(/ · probes done$/);
+    await expect(caption).toHaveText(/ · probes done$/u);
     const [kind, ...found] = (await caption.textContent())?.split(" · ") ?? [];
     // Headless Firefox has no WebGL; Chromium's runs on SwiftShader.
     expect(kind).toBe(browserName === "firefox" ? "2d" : "webgl2");

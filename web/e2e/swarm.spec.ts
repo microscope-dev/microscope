@@ -53,7 +53,9 @@ async function readMenus(page: Page): Promise<Item[]> {
           keys: (element.getAttribute("aria-keyshortcuts") ?? "").split(" ").filter(Boolean),
         })),
       );
-    items.push(...listed.map((item) => ({ menu, ...item })));
+    for (const item of listed) {
+      items.push({ menu, ...item });
+    }
     await page.keyboard.press("Escape");
   }
   return items.filter((item) => !SKIPPED.has(item.label));
@@ -78,6 +80,18 @@ async function exposed(tab: Locator): Promise<boolean> {
     const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
     return hit !== null && element.contains(hit);
   });
+}
+
+async function clickTab(chosen: Locator, done: string[]): Promise<void> {
+  const name = await chosen.textContent();
+  // A floating window may cover it, as it would for a person.
+  if (await exposed(chosen)) {
+    await chosen.click();
+    await expect(chosen, `clicked ${name}`).toHaveAttribute("aria-selected", "true");
+    done.push(`click ${name}`);
+  } else {
+    done.push(`covered ${name}`);
+  }
 }
 
 /** What must hold after every action. */
@@ -140,16 +154,7 @@ test("random commands, keys, and drags leave a working page", async ({ page, mic
         if (count > 0) {
           // Activating a document can reorder the visible groups.
           const id = await tabs.nth(Math.floor(next() * count)).getAttribute("id");
-          const chosen = page.locator(`[id="${id}"]`);
-          const name = await chosen.textContent();
-          // A floating window may cover it, as it would for a person.
-          if (await exposed(chosen)) {
-            await chosen.click();
-            await expect(chosen, `clicked ${name}`).toHaveAttribute("aria-selected", "true");
-            done.push(`click ${name}`);
-          } else {
-            done.push(`covered ${name}`);
-          }
+          await clickTab(page.locator(`[id="${id}"]`), done);
         }
       } else {
         // A tab dragged to a random point of the dock.
@@ -173,10 +178,11 @@ test("random commands, keys, and drags leave a working page", async ({ page, mic
 
     // Whatever was asked for arrives.
     await dismiss(page);
-    await expect(page.getByText(/^Loading/).filter({ visible: true })).toHaveCount(0);
+    await expect(page.getByText(/^Loading/u).filter({ visible: true })).toHaveCount(0);
   } catch (failure) {
     throw new Error(
       `swarm seed ${seed} failed after: ${done.slice(-10).join(", ")}\n${String(failure)}`,
+      { cause: failure },
     );
   }
 });

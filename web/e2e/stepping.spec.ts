@@ -7,7 +7,7 @@ import { expect, fixture, join, test } from "./server";
 
 test.use({ program: [fixture("kvstore")] });
 
-const stopUrl = /\/stop\/(\d+)\/t\/\d+\/f\/(\d+)(\?|$)/;
+const stopUrl = /\/stop\/(\d+)\/t\/\d+\/f\/(\d+)(\?|$)/u;
 
 /** The source line holding `text`. */
 const line = (page: Page, text: string) =>
@@ -15,7 +15,7 @@ const line = (page: Page, text: string) =>
 
 /** The gutter's number for line `n`. */
 const number = (page: Page, n: number) =>
-  page.locator(".cm-lineNumbers .cm-gutterElement", { hasText: new RegExp(`^${n}$`) });
+  page.locator(".cm-lineNumbers .cm-gutterElement", { hasText: new RegExp(`^${n}$`, "u") });
 
 /**
  * Scrolls the source so line `n` is near the top: the editor only renders the
@@ -25,9 +25,9 @@ async function scrollTo(page: Page, n: number) {
   await page
     .getByTestId("source")
     .locator(".cm-scroller")
-    .evaluate((scroller, n) => {
+    .evaluate((scroller, lineNumber) => {
       const height = scroller.querySelector(".cm-line")?.getBoundingClientRect().height ?? 18;
-      scroller.scrollTop = Math.max(0, (n - 5) * height);
+      scroller.scrollTop = Math.max(0, (lineNumber - 5) * height);
     }, n);
   await expect(number(page, n)).toBeInViewport();
 }
@@ -52,7 +52,7 @@ async function breakInHandleRequest(page: Page) {
   await expect(page).toHaveURL(stopUrl);
   await expect(page.locator(".cm-pc-line")).toContainText("pthread_mutex_lock(&s->lock);");
   // The other worker would hit it again mid-step.
-  await page.getByRole("button", { name: /Remove breakpoint/ }).click();
+  await page.getByRole("button", { name: /Remove breakpoint/u }).click();
   await expect(page.getByTestId("breakpoints").locator("[data-breakpoint]")).toHaveCount(0);
 }
 
@@ -91,20 +91,20 @@ test("a breakpoint stops the program where the page shows, and steps replace the
   // The caller's frame shows its line; every pane moves with it.
   await page
     .getByTestId("stack")
-    .getByRole("button", { name: /worker/ })
+    .getByRole("button", { name: /worker/u })
     .click();
-  await expect(page).toHaveURL(/\/f\/1(\?|$)/);
+  await expect(page).toHaveURL(/\/f\/1(\?|$)/u);
   await expect(page.locator(".cm-frame-line")).toContainText("handle_request(&server, &req)");
   await page.keyboard.press("d");
-  await expect(page).toHaveURL(/\/f\/0(\?|$)/);
+  await expect(page).toHaveURL(/\/f\/0(\?|$)/u);
   await page.keyboard.press("u");
-  await expect(page).toHaveURL(/\/f\/1(\?|$)/);
+  await expect(page).toHaveURL(/\/f\/1(\?|$)/u);
 
   // Stepping out of the innermost frame returns to its caller.
   await page.keyboard.press("d");
-  await expect(page).toHaveURL(/\/f\/0(\?|$)/);
+  await expect(page).toHaveURL(/\/f\/0(\?|$)/u);
   await stepOut(page);
-  await expect(page).toHaveURL(/\/f\/0(\?|$)/);
+  await expect(page).toHaveURL(/\/f\/0(\?|$)/u);
   await expect(page.locator(".cm-pc-line")).toContainText("handle_request(&server, &req)");
 });
 
@@ -137,7 +137,7 @@ test("i lists the calls of the line, and steps into the one chosen", async ({
   const before = page.url();
   await page.keyboard.press("i");
   const calls = page.getByRole("group", { name: "Calls" });
-  await expect(calls.getByRole("option")).toHaveText([/^table_find/]);
+  await expect(calls.getByRole("option")).toHaveText([/^table_find/u]);
   await page.keyboard.press("Enter");
   await expect(page).not.toHaveURL(before);
   await expect(page.getByRole("tabpanel", { name: "Call Stack" })).toContainText("table_find");
@@ -155,7 +155,7 @@ test("the gutter sets and clears breakpoints, and conditions narrow them", async
   await expect(breakpoints).toContainText("kvstore.c:90");
   await expect(page.locator(".cm-breakpoints .dot.plain")).toHaveCount(1);
 
-  await breakpoints.getByRole("button", { name: /Edit breakpoint/ }).click();
+  await breakpoints.getByRole("button", { name: /Edit breakpoint/u }).click();
   await page.getByRole("textbox", { name: "Stop if" }).fill("req->op == OP_GET");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(breakpoints).toContainText("if req->op == OP_GET");
@@ -164,7 +164,7 @@ test("the gutter sets and clears breakpoints, and conditions narrow them", async
   await page.keyboard.press("F5");
   await expect(page).toHaveURL(stopUrl);
   // Only every third request is a get, so at least two hits did not stop.
-  await expect(breakpoints).toContainText(/(^|\D)([3-9]|\d\d+) hits/);
+  await expect(breakpoints).toContainText(/(^|\D)([3-9]|\d\d+) hits/u);
 
   // The stop may have scrolled the source; measure the line where it is now.
   await scrollTo(page, 90);
@@ -195,8 +195,8 @@ test("a tab that shows the latest stop follows the program, and a pinned one sta
   await stepOver(page);
   await expect(other).toHaveURL(pinned);
   const passed = other.getByTestId("passed");
-  await expect(passed).toContainText(/Stop #\d+ has passed/);
-  await passed.getByRole("button", { name: /Go to stop/ }).click();
+  await expect(passed).toContainText(/Stop #\d+ has passed/u);
+  await passed.getByRole("button", { name: /Go to stop/u }).click();
   await expect(other).toHaveURL(page.url());
 
   // A link to a stop that has passed opens on a banner, not on newer values.

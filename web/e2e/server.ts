@@ -81,24 +81,24 @@ function stopChild(child: ChildProcess): Promise<void> {
  * `microscope` serves `program`. A failing test keeps each server's output and
  * flight recording in its output directory.
  */
-export const test = base.extend<{ program: string[]; microscope: Microscope; quiet: undefined }>({
+export const test = base.extend<{ program: string[]; microscope: Microscope; quiet: void }>({
   // Every page stays free of console errors, such as a blocked font or a
   // failed request, unless a test expects one.
   quiet: [
-    async ({ context }, use) => {
+    async ({ context }, provide) => {
       const errors: string[] = [];
       const watch = (page: Page) => {
         page.on("console", (message) => {
           // A failed request is recorded once, by its response, below. Firefox
           // also reports a font download it aborted as the page went away
           // (NS_BINDING_ABORTED), which no blocked or missing font causes.
-          const aborted = /downloadable font: download failed.*status=2152398850/.test(
+          const aborted = /downloadable font: download failed.*status=2152398850/u.test(
             message.text(),
           );
           if (
             message.type() === "error" &&
             !aborted &&
-            !/failed to load resource/i.test(message.text())
+            !/failed to load resource/iu.test(message.text())
           ) {
             errors.push(`${page.url()}: ${message.text().slice(0, 300)}`);
           }
@@ -110,9 +110,11 @@ export const test = base.extend<{ program: string[]; microscope: Microscope; qui
           }
         });
       };
-      context.pages().forEach(watch);
+      for (const page of context.pages()) {
+        watch(page);
+      }
       context.on("page", watch);
-      await use(undefined);
+      await provide();
       const allowed = allowedErrors.get(test.info().testId) ?? [];
       const unexpected = errors.filter((error) => !allowed.some((each) => each.test(error)));
       const expected = (expectedErrors.get(test.info().testId) ?? []).map((error) =>
@@ -123,13 +125,13 @@ export const test = base.extend<{ program: string[]; microscope: Microscope; qui
     { auto: true },
   ],
   program: [[fixture("spin")], { option: true }],
-  microscope: async ({ program, context }, use, info) => {
+  microscope: async ({ program, context }, provide, info) => {
     const servers: Microscope[] = [];
     await mkdir(info.outputDir, { recursive: true });
     const recording = (index: number) => info.outputPath(`microscope-${index}.flight.log`);
     const first = await startMicroscope(program, recording(0));
     servers.push(first);
-    await use({
+    await provide({
       ...first,
       start: async (args) => {
         const another = await startMicroscope(args, recording(servers.length));
@@ -193,7 +195,7 @@ export async function join(page: Page, link: string): Promise<void> {
   await page.goto(link);
   const welcome = page.getByRole("tab", { name: "Welcome", exact: true });
   await expect(async () => {
-    const path = new URL(page.url()).pathname;
-    expect(/^\/(s|profile)\/[0-9a-f]+/.test(path) || (await welcome.isVisible())).toBe(true);
+    const { pathname } = new URL(page.url());
+    expect(/^\/(s|profile)\/[0-9a-f]+/u.test(pathname) || (await welcome.isVisible())).toBe(true);
   }).toPass();
 }
