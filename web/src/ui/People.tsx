@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+
 import { assert } from "../assert";
 import { isPagePath } from "../focus";
 import type { Person } from "../protocol";

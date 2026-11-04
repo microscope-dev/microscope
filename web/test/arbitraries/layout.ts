@@ -4,6 +4,7 @@
 // shrinks to a shorter run.
 
 import fc from "fast-check";
+
 import {
   activate,
   close,

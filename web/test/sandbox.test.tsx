@@ -4,6 +4,7 @@
 // policy, and Firefox are covered by e2e/sandbox.spec.ts.
 
 import { afterEach, describe, expect, it } from "vitest";
+
 import { validate } from "../src/visualize/picture";
 import { type DrawContext, type Outcome, palette as pagePalette } from "../src/visualize/sandbox";
 import { buildSvg } from "../src/visualize/svg";

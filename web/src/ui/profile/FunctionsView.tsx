@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
+
 import { assert } from "../../assert";
 import { diffModeOf, withLook } from "../../profile/look";
 import { changeOf, formatCount, formatPercent, formatWeight } from "../../profile/paint";

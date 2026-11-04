@@ -31,7 +31,8 @@ microscope.draw((input, { previous, width, paths }) => {
   const before = new Map();
   if (previous !== null) {
     try {
-      for (const group of groupsOf(previous.groups ?? previous.values, null, previous.labels)) before.set(group.name, group.stats.median);
+      for (const group of groupsOf(previous.groups ?? previous.values, null, previous.labels))
+        before.set(group.name, group.stats.median);
     } catch {
       // The stop before had no groups this chart reads.
     }
@@ -66,8 +67,22 @@ microscope.draw((input, { previous, width, paths }) => {
   const shapes = [];
   for (const tick of axis.ticks) {
     shapes.push(
-      microscope.line({ x1: LEFT, y1: toY(tick), x2: right, y2: toY(tick), stroke: tick === 0 ? theme.ink3 : theme.line }),
-      microscope.text({ x: LEFT - 6, y: toY(tick), text: label(tick), size: 11, anchor: "end", baseline: "middle", fill: theme.ink3 }),
+      microscope.line({
+        x1: LEFT,
+        y1: toY(tick),
+        x2: right,
+        y2: toY(tick),
+        stroke: tick === 0 ? theme.ink3 : theme.line,
+      }),
+      microscope.text({
+        x: LEFT - 6,
+        y: toY(tick),
+        text: label(tick),
+        size: 11,
+        anchor: "end",
+        baseline: "middle",
+        fill: theme.ink3,
+      }),
     );
   }
   const slot = (right - LEFT) / groups.length;
@@ -80,29 +95,80 @@ microscope.draw((input, { previous, width, paths }) => {
     const cx = LEFT + slot * k + slot / 2 - (error !== null ? box / 2 : 0);
     const color = theme.series[0];
     const whisker = (from, to) => {
-      shapes.push(microscope.line({ x1: cx, y1: toY(from), x2: cx, y2: toY(to), stroke: theme.ink2 }));
-      shapes.push(microscope.line({ x1: cx - box / 4, y1: toY(to), x2: cx + box / 4, y2: toY(to), stroke: theme.ink2 }));
+      shapes.push(
+        microscope.line({ x1: cx, y1: toY(from), x2: cx, y2: toY(to), stroke: theme.ink2 }),
+      );
+      shapes.push(
+        microscope.line({
+          x1: cx - box / 4,
+          y1: toY(to),
+          x2: cx + box / 4,
+          y2: toY(to),
+          stroke: theme.ink2,
+        }),
+      );
     };
     whisker(stats.q3, stats.high);
     whisker(stats.q1, stats.low);
     const summary = [
       `${group.name}${stats.n !== null ? `: n=${stats.n}` : ""}`,
-      `min ${exact(stats.min)}`, `q1 ${exact(stats.q1)}`, `median ${exact(stats.median)}`, `q3 ${exact(stats.q3)}`, `max ${exact(stats.max)}`,
+      `min ${exact(stats.min)}`,
+      `q1 ${exact(stats.q1)}`,
+      `median ${exact(stats.median)}`,
+      `q3 ${exact(stats.q3)}`,
+      `max ${exact(stats.max)}`,
     ];
     if (stats.n !== null) summary.push(`whiskers ${exact(stats.low)} to ${exact(stats.high)}`);
-    shapes.push(microscope.rect({
-      x: cx - box / 2, y: toY(stats.q3), width: box, height: Math.max(1, toY(stats.q1) - toY(stats.q3)), radius: 2,
-      fill: color, opacity: 0.85, stroke: color, strokeWidth: 1.2,
-      title: summary.join("\n"),
-      select: group.select,
-    }));
-    shapes.push(microscope.line({ x1: cx - box / 2, y1: toY(stats.median), x2: cx + box / 2, y2: toY(stats.median), stroke: theme.surface, strokeWidth: 2.5 }));
+    shapes.push(
+      microscope.rect({
+        x: cx - box / 2,
+        y: toY(stats.q3),
+        width: box,
+        height: Math.max(1, toY(stats.q1) - toY(stats.q3)),
+        radius: 2,
+        fill: color,
+        opacity: 0.85,
+        stroke: color,
+        strokeWidth: 1.2,
+        title: summary.join("\n"),
+        select: group.select,
+      }),
+    );
+    shapes.push(
+      microscope.line({
+        x1: cx - box / 2,
+        y1: toY(stats.median),
+        x2: cx + box / 2,
+        y2: toY(stats.median),
+        stroke: theme.surface,
+        strokeWidth: 2.5,
+      }),
+    );
     const was = before.get(group.name);
     if (was !== undefined && Number.isFinite(was) && was !== stats.median) {
-      shapes.push(microscope.line({ x1: cx - box / 2 - 6, y1: toY(was), x2: cx - box / 2 - 1, y2: toY(was), stroke: theme.ink, strokeWidth: 2, title: `${group.name}: median ${exact(was)} at the stop before` }));
+      shapes.push(
+        microscope.line({
+          x1: cx - box / 2 - 6,
+          y1: toY(was),
+          x2: cx - box / 2 - 1,
+          y2: toY(was),
+          stroke: theme.ink,
+          strokeWidth: 2,
+          title: `${group.name}: median ${exact(was)} at the stop before`,
+        }),
+      );
     }
     for (const outlier of stats.outliers.slice(0, MOST_OUTLIERS)) {
-      shapes.push(microscope.circle({ x: cx, y: toY(outlier), r: 2.5, fill: "none", stroke: theme.ink2, title: `${group.name}: outlier ${exact(outlier)}` }));
+      shapes.push(
+        microscope.circle({
+          x: cx,
+          y: toY(outlier),
+          r: 2.5,
+          fill: "none",
+          stroke: theme.ink2,
+          title: `${group.name}: outlier ${exact(outlier)}`,
+        }),
+      );
     }
     outliers += stats.outliers.length;
     hidden += Math.max(0, stats.outliers.length - MOST_OUTLIERS);
@@ -110,27 +176,93 @@ microscope.draw((input, { previous, width, paths }) => {
       const ex = cx + box / 2 + 10;
       const title = `${group.name}: mean ${short(error.mean)} ${errors.label} (${short(error.mean - error.half)} to ${short(error.mean + error.half)})`;
       shapes.push(
-        microscope.line({ x1: ex, y1: toY(error.mean + error.half), x2: ex, y2: toY(error.mean - error.half), stroke: theme.series[1], strokeWidth: 1.5, title }),
-        microscope.line({ x1: ex - 4, y1: toY(error.mean + error.half), x2: ex + 4, y2: toY(error.mean + error.half), stroke: theme.series[1], strokeWidth: 1.5 }),
-        microscope.line({ x1: ex - 4, y1: toY(error.mean - error.half), x2: ex + 4, y2: toY(error.mean - error.half), stroke: theme.series[1], strokeWidth: 1.5 }),
-        microscope.circle({ x: ex, y: toY(error.mean), r: 3, fill: theme.series[1], stroke: theme.surface, strokeWidth: 1.5, title }),
+        microscope.line({
+          x1: ex,
+          y1: toY(error.mean + error.half),
+          x2: ex,
+          y2: toY(error.mean - error.half),
+          stroke: theme.series[1],
+          strokeWidth: 1.5,
+          title,
+        }),
+        microscope.line({
+          x1: ex - 4,
+          y1: toY(error.mean + error.half),
+          x2: ex + 4,
+          y2: toY(error.mean + error.half),
+          stroke: theme.series[1],
+          strokeWidth: 1.5,
+        }),
+        microscope.line({
+          x1: ex - 4,
+          y1: toY(error.mean - error.half),
+          x2: ex + 4,
+          y2: toY(error.mean - error.half),
+          stroke: theme.series[1],
+          strokeWidth: 1.5,
+        }),
+        microscope.circle({
+          x: ex,
+          y: toY(error.mean),
+          r: 3,
+          fill: theme.series[1],
+          stroke: theme.surface,
+          strokeWidth: 1.5,
+          title,
+        }),
       );
     }
     const middle = LEFT + slot * k + slot / 2;
-    shapes.push(microscope.text({ x: middle, y: bottom + 15, text: truncate(group.name, slot), size: 11, anchor: "middle", fill: theme.ink2, title: group.name }));
+    shapes.push(
+      microscope.text({
+        x: middle,
+        y: bottom + 15,
+        text: truncate(group.name, slot),
+        size: 11,
+        anchor: "middle",
+        fill: theme.ink2,
+        title: group.name,
+      }),
+    );
     if (stats.n !== null) {
-      shapes.push(microscope.text({ x: middle, y: bottom + 28, text: `n=${stats.n}`, size: 10, anchor: "middle", fill: theme.ink3 }));
+      shapes.push(
+        microscope.text({
+          x: middle,
+          y: bottom + 28,
+          text: `n=${stats.n}`,
+          size: 10,
+          anchor: "middle",
+          fill: theme.ink3,
+        }),
+      );
     }
   });
   if (errors.some((error) => error !== null)) {
     shapes.push(
-      microscope.line({ x1: right - 110, y1: 10, x2: right - 98, y2: 10, stroke: theme.series[1], strokeWidth: 2 }),
-      microscope.text({ x: right - 94, y: 10, text: `mean ${errors.label}`, size: 11, baseline: "middle", fill: theme.ink2 }),
+      microscope.line({
+        x1: right - 110,
+        y1: 10,
+        x2: right - 98,
+        y2: 10,
+        stroke: theme.series[1],
+        strokeWidth: 2,
+      }),
+      microscope.text({
+        x: right - 94,
+        y: 10,
+        text: `mean ${errors.label}`,
+        size: 11,
+        baseline: "middle",
+        fill: theme.ink2,
+      }),
     );
   }
   const caption = [`${groups.length} ${groups.length === 1 ? "group" : "groups"}`];
-  if (groups.some((group) => group.stats.n !== null)) caption.push("quartiles: linear (type 7)", "whiskers: 1.5 × IQR");
-  caption.push(`${outliers} ${outliers === 1 ? "outlier" : "outliers"}${hidden > 0 ? `, ${hidden} counted but not drawn` : ""}`);
+  if (groups.some((group) => group.stats.n !== null))
+    caption.push("quartiles: linear (type 7)", "whiskers: 1.5 × IQR");
+  caption.push(
+    `${outliers} ${outliers === 1 ? "outlier" : "outliers"}${hidden > 0 ? `, ${hidden} counted but not drawn` : ""}`,
+  );
   const odd = groups.reduce((total, group) => total + group.stats.odd, 0);
   if (odd > 0) caption.push(`${odd} NaN or ±∞ left out`);
   if (before.size > 0) caption.push("tick = median at the stop before");
@@ -147,9 +279,14 @@ function groupsOf(value, path, labels) {
     keyed = true;
   } else if (Array.isArray(value)) {
     if (labels !== undefined && labels !== null && labels.length !== value.length) {
-      throw new RangeError(`\`labels\` holds ${labels.length}, and there are ${value.length} groups`);
+      throw new RangeError(
+        `\`labels\` holds ${labels.length}, and there are ${value.length} groups`,
+      );
     }
-    pairs = value.map((group, index) => [labels === undefined || labels === null ? `[${index}]` : nameOf(labels[index]), group]);
+    pairs = value.map((group, index) => [
+      labels === undefined || labels === null ? `[${index}]` : nameOf(labels[index]),
+      group,
+    ]);
   } else if (isRecord(value)) {
     pairs = Object.entries(value);
   } else {
@@ -173,7 +310,12 @@ function partOf(path, keyed, array, key, index) {
 
 /** Whether `entry` is a map's [key, group] pair. */
 function isEntry(entry) {
-  return Array.isArray(entry) && entry.length === 2 && !isSequence(entry[0]) && (isSequence(entry[1]) || isRecord(entry[1]));
+  return (
+    Array.isArray(entry) &&
+    entry.length === 2 &&
+    !isSequence(entry[0]) &&
+    (isSequence(entry[1]) || isRecord(entry[1]))
+  );
 }
 
 function isSequence(value) {
@@ -195,7 +337,20 @@ function statsOf(group, name) {
       return Number(v);
     };
     const [min, q1, median, q3, max] = ["min", "q1", "median", "q3", "max"].map(read);
-    return { n: null, min, q1, median, q3, max, low: min, high: max, outliers: [], odd: 0, mean: Number.NaN, sd: Number.NaN };
+    return {
+      n: null,
+      min,
+      q1,
+      median,
+      q3,
+      max,
+      low: min,
+      high: max,
+      outliers: [],
+      odd: 0,
+      mean: Number.NaN,
+      sd: Number.NaN,
+    };
   }
   const raw = numbers(group, `group ${name}`);
   const samples = new Float64Array(raw.length);
@@ -234,7 +389,20 @@ function statsOf(group, name) {
       high = Math.max(high, v);
     }
   }
-  return { n, min, q1, median, q3, max, low, high, outliers, odd, mean, sd: n > 1 ? Math.sqrt(squares / (n - 1)) : 0 };
+  return {
+    n,
+    min,
+    q1,
+    median,
+    q3,
+    max,
+    low,
+    high,
+    outliers,
+    odd,
+    mean,
+    sd: n > 1 ? Math.sqrt(squares / (n - 1)) : 0,
+  };
 }
 
 /** Each group's error bar, if any, and what the bars are. */
@@ -245,8 +413,12 @@ function errorsOf(input, groups) {
   let named = "";
   if (kind === "sd" || kind === "ci95") {
     errors = groups.map((group) => {
-      if (group.stats.n === null) throw new TypeError(`\`error = "${kind}"\` needs samples, and group ${group.name} is a summary`);
-      const half = kind === "sd" ? group.stats.sd : (1.96 * group.stats.sd) / Math.sqrt(group.stats.n);
+      if (group.stats.n === null)
+        throw new TypeError(
+          `\`error = "${kind}"\` needs samples, and group ${group.name} is a summary`,
+        );
+      const half =
+        kind === "sd" ? group.stats.sd : (1.96 * group.stats.sd) / Math.sqrt(group.stats.n);
       return { mean: group.stats.mean, half };
     });
     named = kind === "sd" ? "±1 sd" : "95% CI";
@@ -259,7 +431,9 @@ function errorsOf(input, groups) {
     errors = groups.map((_, k) => ({ mean: means[k], half: halves[k] }));
     named = "± error";
   }
-  return Object.assign(errors, { label: typeof input.error_label === "string" ? input.error_label : named });
+  return Object.assign(errors, {
+    label: typeof input.error_label === "string" ? input.error_label : named,
+  });
 }
 
 /** The p-quantile by selection, linear between order statistics (type 7);
@@ -353,7 +527,8 @@ function nice(lo, hi, count = 5) {
   const start = Math.floor(lo / step) * step;
   const end = Math.ceil(hi / step) * step;
   const ticks = [];
-  for (let k = 0; start + k * step <= end + step / 2; k++) ticks.push(Number((start + k * step).toPrecision(12)));
+  for (let k = 0; start + k * step <= end + step / 2; k++)
+    ticks.push(Number((start + k * step).toPrecision(12)));
   return { lo: start, hi: end, ticks };
 }
 

@@ -2,6 +2,7 @@
 // decode into geometry that nests, as real servers' answers do.
 
 import { describe, expect, it } from "vitest";
+
 import { parseSearch, stringifySearch } from "../src/focus";
 import {
   type ProfileLook,

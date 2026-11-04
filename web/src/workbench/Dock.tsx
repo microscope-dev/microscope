@@ -12,15 +12,17 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+
 import { classOf } from "./classes";
 import { DockContext, type DockSetup, useDock } from "./context";
-import styles from "./Dock.module.css";
 import { pressWindow, rememberSize } from "./drag";
 import { GroupView } from "./Group";
 import { activate, dock, type GroupId, groups, type PaneId, type Rect, reframe } from "./layout";
-import { NodeView } from "./SplitView";
 import { keepOnScreen } from "./snap";
+import { NodeView } from "./SplitView";
 import { change, useLayout, workbench } from "./store";
+
+import styles from "./Dock.module.css";
 
 const css = classOf(styles);
 

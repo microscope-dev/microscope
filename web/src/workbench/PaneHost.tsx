@@ -3,11 +3,13 @@
 // workbench keeps running.
 
 import { Component, memo, type ReactNode } from "react";
+
 import { classOf } from "./classes";
 import { useDock } from "./context";
 import type { Pane, PaneId } from "./layout";
-import styles from "./PaneHost.module.css";
 import { VisibleContext } from "./visible";
+
+import styles from "./PaneHost.module.css";
 
 const css = classOf(styles);
 

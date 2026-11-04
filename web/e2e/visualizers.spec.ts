@@ -4,7 +4,9 @@
 
 import { copyFile, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+
 import type { Page } from "@playwright/test";
+
 import { card, drawAt } from "./drawings";
 import { expect, fixture, join, type Microscope, menu, root, test } from "./server";
 

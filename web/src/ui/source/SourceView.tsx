@@ -22,6 +22,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+
 import { assert } from "../../assert";
 import { PENDING } from "../../breakpoints";
 import { expressionAt } from "../../expressions";

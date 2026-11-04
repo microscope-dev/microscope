@@ -1,6 +1,7 @@
 // Shared profile state. View changes update the URL so the view can be linked.
 
 import { createContext, useContext, useRef } from "react";
+
 import { type Requested, useRequest } from "../../data";
 import type { ProfileLook } from "../../profile/look";
 import type { Method, ParamsOf, ProfileQuery, ProfileSummary, Results } from "../../protocol";

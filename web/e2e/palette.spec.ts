@@ -1,6 +1,7 @@
 // The command palette, the Keyboard shortcuts pane, and themes.
 
 import type { Page } from "@playwright/test";
+
 import { stopInHandleRequest } from "./kvstore";
 import { documents, expect, fixture, join, test } from "./server";
 

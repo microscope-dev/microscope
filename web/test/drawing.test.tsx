@@ -7,6 +7,7 @@ import { cleanup, render } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import { cache } from "../src/data";
 import type { Look } from "../src/focus";
 import { SessionContext } from "../src/store";

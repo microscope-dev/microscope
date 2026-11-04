@@ -2,6 +2,7 @@
 // a run that holds the frame chosen.
 
 import { describe, expect, it } from "vitest";
+
 import type { Backtrace, Frame } from "../src/protocol";
 import { type StackRow, stackRows } from "../src/stack";
 

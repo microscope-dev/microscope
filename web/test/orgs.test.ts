@@ -2,6 +2,7 @@
 // orders projects: the person's own first, then each organization's.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import { account, Refused } from "../src/account";
 import {
   createProject,

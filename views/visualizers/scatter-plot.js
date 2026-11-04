@@ -62,14 +62,41 @@ microscope.draw((input, { previous, width, paths }) => {
   const shapes = [];
   for (const tick of yAxis.ticks) {
     shapes.push(
-      microscope.line({ x1: LEFT, y1: toY(tick), x2: right, y2: toY(tick), stroke: tick === 0 ? theme.ink3 : theme.line }),
-      microscope.text({ x: LEFT - 6, y: toY(tick), text: label(tick), size: 11, anchor: "end", baseline: "middle", fill: theme.ink3 }),
+      microscope.line({
+        x1: LEFT,
+        y1: toY(tick),
+        x2: right,
+        y2: toY(tick),
+        stroke: tick === 0 ? theme.ink3 : theme.line,
+      }),
+      microscope.text({
+        x: LEFT - 6,
+        y: toY(tick),
+        text: label(tick),
+        size: 11,
+        anchor: "end",
+        baseline: "middle",
+        fill: theme.ink3,
+      }),
     );
   }
   for (const tick of xAxis.ticks) {
     shapes.push(
-      microscope.line({ x1: toX(tick), y1: TOP, x2: toX(tick), y2: bottom, stroke: tick === 0 ? theme.ink3 : theme.line }),
-      microscope.text({ x: toX(tick), y: bottom + 16, text: label(tick), size: 11, anchor: "middle", fill: theme.ink3 }),
+      microscope.line({
+        x1: toX(tick),
+        y1: TOP,
+        x2: toX(tick),
+        y2: bottom,
+        stroke: tick === 0 ? theme.ink3 : theme.line,
+      }),
+      microscope.text({
+        x: toX(tick),
+        y: bottom + 16,
+        text: label(tick),
+        size: 11,
+        anchor: "middle",
+        fill: theme.ink3,
+      }),
     );
   }
   const hue = (g) => (g < 0 ? theme.ink3 : theme.series[g]);
@@ -95,9 +122,23 @@ microscope.draw((input, { previous, width, paths }) => {
     const scale = Math.log1p(most) || 1;
     for (let at = 0; at < counts.length; at++) {
       if (counts[at] === 0) continue;
-      pixels.set([red, green, blue, Math.round(60 + 195 * (Math.log1p(counts[at]) / scale))], at * 4);
+      pixels.set(
+        [red, green, blue, Math.round(60 + 195 * (Math.log1p(counts[at]) / scale))],
+        at * 4,
+      );
     }
-    shapes.push(microscope.image({ x: LEFT, y: TOP, width: right - LEFT, height: bottom - TOP, pixels, columns, rows, title: "points" }));
+    shapes.push(
+      microscope.image({
+        x: LEFT,
+        y: TOP,
+        width: right - LEFT,
+        height: bottom - TOP,
+        pixels,
+        columns,
+        rows,
+        title: "points",
+      }),
+    );
   } else {
     // Trails from where moved points were at the stop before.
     if (previous !== null && n <= MOST_TRAILS) {
@@ -110,7 +151,17 @@ microscope.draw((input, { previous, width, paths }) => {
             const x1 = points.x[i];
             const y1 = points.y[i];
             if ([x0, y0, x1, y1].every(Number.isFinite) && (x0 !== x1 || y0 !== y1)) {
-              shapes.push(microscope.line({ x1: toX(x0), y1: toY(y0), x2: toX(x1), y2: toY(y1), stroke: theme.ink3, strokeWidth: 1, opacity: 0.7 }));
+              shapes.push(
+                microscope.line({
+                  x1: toX(x0),
+                  y1: toY(y0),
+                  x2: toX(x1),
+                  y2: toY(y1),
+                  stroke: theme.ink3,
+                  strokeWidth: 1,
+                  opacity: 0.7,
+                }),
+              );
             }
           }
         }
@@ -124,11 +175,19 @@ microscope.draw((input, { previous, width, paths }) => {
       const y = points.y[i];
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       const name = labels === null ? "" : ` ${nameOf(labels[i])}`;
-      shapes.push(microscope.circle({
-        x: toX(x), y: toY(y), r: 4, fill: hue(groups.of[i]), stroke: theme.surface, strokeWidth: 1.5,
-        title: `[${i}]${name}: x ${exact(points.x, points.rawX, i)}, y ${exact(points.y, points.rawY, i)}${groups.names.length > 0 ? ` (${groups.label(i)})` : ""}`,
-        select: select === null ? undefined : points.form === "values" ? `${select}[${i}]` : undefined,
-      }));
+      shapes.push(
+        microscope.circle({
+          x: toX(x),
+          y: toY(y),
+          r: 4,
+          fill: hue(groups.of[i]),
+          stroke: theme.surface,
+          strokeWidth: 1.5,
+          title: `[${i}]${name}: x ${exact(points.x, points.rawX, i)}, y ${exact(points.y, points.rawY, i)}${groups.names.length > 0 ? ` (${groups.label(i)})` : ""}`,
+          select:
+            select === null ? undefined : points.form === "values" ? `${select}[${i}]` : undefined,
+        }),
+      );
     }
   }
 
@@ -140,7 +199,14 @@ microscope.draw((input, { previous, width, paths }) => {
     for (const key of keys) {
       shapes.push(
         microscope.circle({ x: lx + 4, y: 10, r: 4, fill: key.fill }),
-        microscope.text({ x: lx + 12, y: 10, text: key.name, size: 11, baseline: "middle", fill: theme.ink2 }),
+        microscope.text({
+          x: lx + 12,
+          y: 10,
+          text: key.name,
+          size: 11,
+          baseline: "middle",
+          fill: theme.ink2,
+        }),
       );
       lx += 26 + key.name.length * 6.5;
     }
@@ -148,7 +214,9 @@ microscope.draw((input, { previous, width, paths }) => {
 
   const caption = [`n=${n}`];
   if (groups.names.length > 0) {
-    caption.push(`groups: ${groups.names.map((name, g) => `${name} ${groups.counts[g]}`).join(", ")}${groups.other > 0 ? `, other ${groups.other}` : ""}`);
+    caption.push(
+      `groups: ${groups.names.map((name, g) => `${name} ${groups.counts[g]}`).join(", ")}${groups.other > 0 ? `, other ${groups.other}` : ""}`,
+    );
   }
   if (usable > 0) {
     caption.push(
@@ -171,10 +239,19 @@ microscope.draw((input, { previous, width, paths }) => {
     }
     if (from.values !== undefined && Array.isArray(from.values)) {
       const pairs = from.values.map((point, i) => {
-        const parts = Array.isArray(point) ? point : typeof point === "object" && point !== null ? Object.values(point) : [];
+        const parts = Array.isArray(point)
+          ? point
+          : typeof point === "object" && point !== null
+            ? Object.values(point)
+            : [];
         const [px, py] = parts;
-        if ((typeof px !== "number" && typeof px !== "bigint") || (typeof py !== "number" && typeof py !== "bigint")) {
-          throw new TypeError(`scatter-plot draws pairs of numbers, and \`values[${i}]\` is not one`);
+        if (
+          (typeof px !== "number" && typeof px !== "bigint") ||
+          (typeof py !== "number" && typeof py !== "bigint")
+        ) {
+          throw new TypeError(
+            `scatter-plot draws pairs of numbers, and \`values[${i}]\` is not one`,
+          );
         }
         return [px, py];
       });
@@ -207,7 +284,11 @@ function groupsOf(group, n) {
   // Hues follow names: the three most common, in name order.
   const tally = new Map();
   for (const name of seen) tally.set(name, (tally.get(name) ?? 0) + 1);
-  const chosen = [...tally.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 3).map(([name]) => name).sort();
+  const chosen = [...tally.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .slice(0, 3)
+    .map(([name]) => name)
+    .sort();
   names.push(...chosen);
   for (let i = 0; i < n; i++) {
     const g = names.indexOf(seen[i]);
@@ -262,7 +343,9 @@ function exact(values, raw, i) {
 /** A caption's number: integers whole, floats to six significant digits;
  * titles and the Table have every digit. */
 function brief(text) {
-  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text)) ? String(Number(Number(text).toPrecision(6))) : text;
+  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text))
+    ? String(Number(Number(text).toPrecision(6)))
+    : text;
 }
 
 function rgb(color) {
@@ -283,7 +366,8 @@ function nice(lo, hi, count = 5) {
   const start = Math.floor(lo / step) * step;
   const end = Math.ceil(hi / step) * step;
   const ticks = [];
-  for (let k = 0; start + k * step <= end + step / 2; k++) ticks.push(Number((start + k * step).toPrecision(12)));
+  for (let k = 0; start + k * step <= end + step / 2; k++)
+    ticks.push(Number((start + k * step).toPrecision(12)));
   return { lo: start, hi: end, ticks };
 }
 

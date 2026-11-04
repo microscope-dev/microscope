@@ -7,6 +7,7 @@
 
 import { useEffect } from "react";
 import { createStore, useStore } from "zustand";
+
 import { type Account, account, failure, useAccount } from "./account";
 
 export type Permission = "none" | "read" | "write" | "admin";

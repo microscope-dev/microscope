@@ -3,6 +3,7 @@
 // run the real frame and worker scripts in Chromium.
 
 import { describe, expect, it } from "vitest";
+
 import { context, pixel, renderer, sandbox, Watched } from "./sandboxes";
 
 // Fills its canvas with the input's color and says, after each frame, what

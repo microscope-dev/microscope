@@ -4,6 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
+
 import { expect, fixture, join, menu, root, test } from "./server";
 
 // The test serves a trace it records, not a program.

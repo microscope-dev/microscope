@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+
 import { type SyscallTab, syscallQueryOf, withLook } from "../../profile/look";
 import { formatCount } from "../../profile/paint";
 import { bucketLabel } from "../../profile/syscalls";

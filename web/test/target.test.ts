@@ -1,6 +1,7 @@
 // Reading the join links a page served on its own is given.
 
 import { describe, expect, it } from "vitest";
+
 import { parseJoinLink } from "../src/target";
 
 describe("a join link", () => {

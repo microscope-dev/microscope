@@ -4,9 +4,11 @@
 // arrow keys move along the bar and down a menu, Enter runs, Escape closes.
 
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+
 import { assert } from "../assert";
 import { classOf } from "./classes";
 import type { Availability, Menu, Registry } from "./commands";
+
 import styles from "./MenuBar.module.css";
 
 const css = classOf(styles);

@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
+
 import type { Picture, Shape } from "../src/visualize/picture";
 import { palette } from "./palette";
 import { draw, shapesOf, texts, titles } from "./renderer";

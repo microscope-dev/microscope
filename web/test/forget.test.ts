@@ -2,6 +2,7 @@
 // program's values, its settings, or the connection change.
 
 import { describe, expect, it } from "vitest";
+
 import type { Connection } from "../src/connection";
 import { Cache } from "../src/data";
 import { forget, type Marks } from "../src/forget";

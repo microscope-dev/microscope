@@ -3,6 +3,7 @@
 
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
+
 import type { StopEntry } from "../src/protocol";
 import { Registers } from "../src/ui/Registers";
 import { Stack } from "../src/ui/Stack";

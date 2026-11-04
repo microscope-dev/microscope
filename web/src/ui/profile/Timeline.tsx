@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+
 import { rangeOf, withLook } from "../../profile/look";
 import { formatCount, formatDuration, largest } from "../../profile/paint";
 import type { ProfileLane, ProfileSummary, ProfileThread } from "../../protocol";

@@ -8,6 +8,7 @@ import {
   createRouter,
   type RouterHistory,
 } from "@tanstack/react-router";
+
 import { base } from "./base";
 import { parseSearch, stringifySearch, validateLook } from "./focus";
 import { validateProfileLook } from "./profile/look";

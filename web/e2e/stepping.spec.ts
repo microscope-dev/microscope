@@ -2,6 +2,7 @@
 // shows, with the address bar naming every place.
 
 import type { Page } from "@playwright/test";
+
 import { expect, fixture, join, test } from "./server";
 
 test.use({ program: [fixture("kvstore")] });

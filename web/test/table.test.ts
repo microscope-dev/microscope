@@ -2,6 +2,7 @@
 // renderer received it, one row per number, however many there are.
 
 import { describe, expect, it } from "vitest";
+
 import { csv, inputRows } from "../src/visualize/table";
 
 describe("inputRows", () => {

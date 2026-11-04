@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { best, score } from "../src/palette";
 
 describe("palette matching", () => {

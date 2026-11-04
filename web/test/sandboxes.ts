@@ -2,6 +2,7 @@
 // same sandbox the server's page gets; each test's end disposes of them.
 
 import { afterEach, expect } from "vitest";
+
 import frameSource from "../src/visualize/frame.js?raw";
 import {
   type LiveContext,

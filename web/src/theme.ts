@@ -3,6 +3,7 @@
 
 import { useSyncExternalStore } from "react";
 import { createStore, useStore } from "zustand";
+
 import { read, write } from "./storage";
 
 export type Theme = "system" | "light" | "dark";

@@ -22,7 +22,8 @@ microscope.draw((input, { previous, width, paths }) => {
   const before = new Map();
   if (previous !== null) {
     try {
-      for (const bar of barsOf(previous, {}).bars) before.set(keyed ? bar.label : bar.index, bar.value);
+      for (const bar of barsOf(previous, {}).bars)
+        before.set(keyed ? bar.label : bar.index, bar.value);
     } catch {
       // The stop before had nothing this chart reads.
     }
@@ -51,8 +52,16 @@ microscope.draw((input, { previous, width, paths }) => {
   }
 
   const finite = shown.filter((bar) => Number.isFinite(bar.value));
-  let lo = Math.min(0, ...finite.map((bar) => bar.value), ...[...before.values()].filter(Number.isFinite));
-  let hi = Math.max(0, ...finite.map((bar) => bar.value), ...[...before.values()].filter(Number.isFinite));
+  let lo = Math.min(
+    0,
+    ...finite.map((bar) => bar.value),
+    ...[...before.values()].filter(Number.isFinite),
+  );
+  let hi = Math.max(
+    0,
+    ...finite.map((bar) => bar.value),
+    ...[...before.values()].filter(Number.isFinite),
+  );
   if (other !== null) hi = Math.max(hi, Number(other.total));
   if (lo === hi) hi = 1;
   const axis = nice(lo, hi);
@@ -66,7 +75,10 @@ microscope.draw((input, { previous, width, paths }) => {
   const color = theme.series[0];
 
   if (!vertical) {
-    const labelWidth = Math.min(180, Math.max(48, ...shown.map((bar) => bar.label.length * 6.4 + 8)));
+    const labelWidth = Math.min(
+      180,
+      Math.max(48, ...shown.map((bar) => bar.label.length * 6.4 + 8)),
+    );
     const left = labelWidth + 8;
     const right = W - 72;
     const ROW = 22;
@@ -74,8 +86,21 @@ microscope.draw((input, { previous, width, paths }) => {
     const toX = (v) => left + ((v - axis.lo) / (axis.hi - axis.lo)) * (right - left);
     for (const tick of axis.ticks) {
       shapes.push(
-        microscope.line({ x1: toX(tick), y1: 4, x2: toX(tick), y2: H - 22, stroke: tick === 0 ? theme.ink3 : theme.line }),
-        microscope.text({ x: toX(tick), y: H - 8, text: label(tick), size: 11, anchor: "middle", fill: theme.ink3 }),
+        microscope.line({
+          x1: toX(tick),
+          y1: 4,
+          x2: toX(tick),
+          y2: H - 22,
+          stroke: tick === 0 ? theme.ink3 : theme.line,
+        }),
+        microscope.text({
+          x: toX(tick),
+          y: H - 8,
+          text: label(tick),
+          size: 11,
+          anchor: "middle",
+          fill: theme.ink3,
+        }),
       );
     }
     const row = (k, bar, fill, title, select) => {
@@ -83,20 +108,67 @@ microscope.draw((input, { previous, width, paths }) => {
       const zero = toX(0);
       const end = Number.isFinite(bar.value) ? toX(bar.value) : zero;
       shapes.push(
-        microscope.rect({ x: Math.min(zero, end), y, width: Math.max(1, Math.abs(end - zero)), height: 14, radius: 2, fill, title, select }),
-        microscope.text({ x: left - 8, y: y + 7, text: truncate(bar.label, labelWidth), size: 11, anchor: "end", baseline: "middle", fill: theme.ink2, title: bar.label }),
-        microscope.text({ x: bar.value < 0 ? Math.min(zero, end) - 5 : Math.max(zero, end) + 5, y: y + 7, text: bar.text, size: 11, family: "mono", anchor: bar.value < 0 ? "end" : "start", baseline: "middle", fill: theme.ink }),
+        microscope.rect({
+          x: Math.min(zero, end),
+          y,
+          width: Math.max(1, Math.abs(end - zero)),
+          height: 14,
+          radius: 2,
+          fill,
+          title,
+          select,
+        }),
+        microscope.text({
+          x: left - 8,
+          y: y + 7,
+          text: truncate(bar.label, labelWidth),
+          size: 11,
+          anchor: "end",
+          baseline: "middle",
+          fill: theme.ink2,
+          title: bar.label,
+        }),
+        microscope.text({
+          x: bar.value < 0 ? Math.min(zero, end) - 5 : Math.max(zero, end) + 5,
+          y: y + 7,
+          text: bar.text,
+          size: 11,
+          family: "mono",
+          anchor: bar.value < 0 ? "end" : "start",
+          baseline: "middle",
+          fill: theme.ink,
+        }),
       );
       const was = before.get(bar.key);
       if (was !== undefined && Number.isFinite(was) && was !== bar.value) {
-        shapes.push(microscope.line({ x1: toX(was), y1: y - 2, x2: toX(was), y2: y + 16, stroke: theme.ink, strokeWidth: 1.5, title: `${bar.label} at the stop before: ${was}` }));
+        shapes.push(
+          microscope.line({
+            x1: toX(was),
+            y1: y - 2,
+            x2: toX(was),
+            y2: y + 16,
+            stroke: theme.ink,
+            strokeWidth: 1.5,
+            title: `${bar.label} at the stop before: ${was}`,
+          }),
+        );
       }
     };
     shown.forEach((bar, k) => row(k, bar, color, titleOf(bar), bar.select));
     if (other !== null) {
       const total = other.total;
-      row(shown.length, { label: `Other (${other.count} more)`, value: Number(total), text: String(total), key: null }, theme.ink3,
-        `Other: ${other.count} more entries, total ${total}`, undefined);
+      row(
+        shown.length,
+        {
+          label: `Other (${other.count} more)`,
+          value: Number(total),
+          text: String(total),
+          key: null,
+        },
+        theme.ink3,
+        `Other: ${other.count} more entries, total ${total}`,
+        undefined,
+      );
     }
     return microscope.picture({ width: W, height: H, shapes, caption: captionOf() });
   }
@@ -111,8 +183,22 @@ microscope.draw((input, { previous, width, paths }) => {
   const toY = (v) => bottom - ((v - axis.lo) / (axis.hi - axis.lo)) * (bottom - top);
   for (const tick of axis.ticks) {
     shapes.push(
-      microscope.line({ x1: left, y1: toY(tick), x2: right, y2: toY(tick), stroke: tick === 0 ? theme.ink3 : theme.line }),
-      microscope.text({ x: left - 6, y: toY(tick), text: label(tick), size: 11, anchor: "end", baseline: "middle", fill: theme.ink3 }),
+      microscope.line({
+        x1: left,
+        y1: toY(tick),
+        x2: right,
+        y2: toY(tick),
+        stroke: tick === 0 ? theme.ink3 : theme.line,
+      }),
+      microscope.text({
+        x: left - 6,
+        y: toY(tick),
+        text: label(tick),
+        size: 11,
+        anchor: "end",
+        baseline: "middle",
+        fill: theme.ink3,
+      }),
     );
   }
   const every = Math.max(1, Math.ceil(rows / Math.max(1, Math.floor((right - left) / 44))));
@@ -120,24 +206,71 @@ microscope.draw((input, { previous, width, paths }) => {
     const x = left + k * slot + (slot - bar) / 2;
     const zero = toY(0);
     const end = Number.isFinite(item.value) ? toY(item.value) : zero;
-    shapes.push(microscope.rect({ x, y: Math.min(zero, end), width: bar, height: Math.max(1, Math.abs(end - zero)), radius: Math.min(2, bar / 2), fill, title, select }));
+    shapes.push(
+      microscope.rect({
+        x,
+        y: Math.min(zero, end),
+        width: bar,
+        height: Math.max(1, Math.abs(end - zero)),
+        radius: Math.min(2, bar / 2),
+        fill,
+        title,
+        select,
+      }),
+    );
     if (k % every === 0) {
-      shapes.push(microscope.text({ x: x + bar / 2, y: bottom + 14, text: truncate(item.label, slot * every), size: 11, anchor: "middle", fill: theme.ink3, title: item.label }));
+      shapes.push(
+        microscope.text({
+          x: x + bar / 2,
+          y: bottom + 14,
+          text: truncate(item.label, slot * every),
+          size: 11,
+          anchor: "middle",
+          fill: theme.ink3,
+          title: item.label,
+        }),
+      );
     }
     const was = before.get(item.key);
     if (was !== undefined && Number.isFinite(was) && was !== item.value) {
-      shapes.push(microscope.line({ x1: x - 2, y1: toY(was), x2: x + bar + 2, y2: toY(was), stroke: theme.ink, strokeWidth: 1.5, title: `${item.label} at the stop before: ${was}` }));
+      shapes.push(
+        microscope.line({
+          x1: x - 2,
+          y1: toY(was),
+          x2: x + bar + 2,
+          y2: toY(was),
+          stroke: theme.ink,
+          strokeWidth: 1.5,
+          title: `${item.label} at the stop before: ${was}`,
+        }),
+      );
     }
   };
   shown.forEach((item, k) => column(k, item, color, titleOf(item), item.select));
   if (other !== null) {
-    column(shown.length, { label: "Other", value: Number(other.total), key: null }, theme.ink3, `Other: ${other.count} more entries, total ${other.total}`, undefined);
+    column(
+      shown.length,
+      { label: "Other", value: Number(other.total), key: null },
+      theme.ink3,
+      `Other: ${other.count} more entries, total ${other.total}`,
+      undefined,
+    );
   }
   // The largest bar's value, over it.
   const largest = finite.reduce((best, item) => (item.value > best.value ? item : best), finite[0]);
   if (largest !== undefined && largest.value > 0) {
     const k = shown.indexOf(largest);
-    shapes.push(microscope.text({ x: left + k * slot + slot / 2, y: toY(largest.value) - 5, text: largest.text, size: 11, family: "mono", anchor: "middle", fill: theme.ink }));
+    shapes.push(
+      microscope.text({
+        x: left + k * slot + slot / 2,
+        y: toY(largest.value) - 5,
+        text: largest.text,
+        size: 11,
+        family: "mono",
+        anchor: "middle",
+        fill: theme.ink,
+      }),
+    );
   }
   return microscope.picture({ width: W, height: H, shapes, caption: captionOf() });
 
@@ -146,16 +279,31 @@ microscope.draw((input, { previous, width, paths }) => {
   }
 
   function captionOf() {
-    const parts = [`${bars.length} ${bars.length === 1 ? "entry" : "entries"}`, `total ${sum(bars.map((item) => item.raw))}`];
+    const parts = [
+      `${bars.length} ${bars.length === 1 ? "entry" : "entries"}`,
+      `total ${sum(bars.map((item) => item.raw))}`,
+    ];
     const counted = bars.filter((item) => Number.isFinite(item.value));
-    const most = counted.reduce((best, item) => (item.value > best.value ? item : best), counted[0]);
+    const most = counted.reduce(
+      (best, item) => (item.value > best.value ? item : best),
+      counted[0],
+    );
     if (most !== undefined) parts.push(`max ${most.text} at ${most.label}`);
     const negative = bars.filter((item) => item.value < 0).length;
     if (negative > 0) parts.push(`${negative} negative`);
     const odd = bars.filter((item) => !Number.isFinite(item.value)).length;
     if (odd > 0) parts.push(`${odd} NaN or ±∞, drawn as nothing`);
-    parts.push(order === "value" ? (keyed ? "sorted by value (a map's order may be random)" : "sorted by value") : order === "label" ? "sorted by label" : "in the program's order");
-    if (other !== null) parts.push(`top ${MOST} + Other (${other.count} more, total ${other.total})`);
+    parts.push(
+      order === "value"
+        ? keyed
+          ? "sorted by value (a map's order may be random)"
+          : "sorted by value"
+        : order === "label"
+          ? "sorted by label"
+          : "in the program's order",
+    );
+    if (other !== null)
+      parts.push(`top ${MOST} + Other (${other.count} more, total ${other.total})`);
     if (cut > 0) parts.push(`the first ${MOST_IN_ORDER}; ${cut} more in the Table`);
     if (before.size > 0) parts.push("| = the stop before");
     return parts.join(" · ");
@@ -173,19 +321,30 @@ function barsOf(input, paths) {
   if (pairs !== null) {
     return {
       keyed: true,
-      bars: pairs.map(([key, value], index) => bar(nameOf(key), value, index, `entries[${index}]`, nameOf(key), undefined)),
+      bars: pairs.map(([key, value], index) =>
+        bar(nameOf(key), value, index, `entries[${index}]`, nameOf(key), undefined),
+      ),
     };
   }
   const values = sequence(source, input.entries !== undefined ? "entries" : "values");
-  const labels = input.labels === undefined || input.labels === null ? null : sequence(input.labels, "labels");
+  const labels =
+    input.labels === undefined || input.labels === null ? null : sequence(input.labels, "labels");
   if (labels !== null && labels.length !== values.length) {
-    throw new RangeError(`\`labels\` holds ${labels.length}, and the values number ${values.length}`);
+    throw new RangeError(
+      `\`labels\` holds ${labels.length}, and the values number ${values.length}`,
+    );
   }
   return {
     keyed: false,
     bars: Array.from(values, (value, index) =>
-      bar(labels === null ? `[${index}]` : nameOf(labels[index]), value, index, `values[${index}]`, index,
-        path === null || path === undefined ? undefined : `${path}[${index}]`),
+      bar(
+        labels === null ? `[${index}]` : nameOf(labels[index]),
+        value,
+        index,
+        `values[${index}]`,
+        index,
+        path === null || path === undefined ? undefined : `${path}[${index}]`,
+      ),
     ),
   };
 }
@@ -199,10 +358,19 @@ function bar(label, value, index, what, key, select) {
 
 /** A map's [key, value] pairs, or a record's members, or null. */
 function asEntries(value) {
-  if (Array.isArray(value) && value.length > 0 && value.every((entry) => Array.isArray(entry) && entry.length === 2)) {
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => Array.isArray(entry) && entry.length === 2)
+  ) {
     return value;
   }
-  if (typeof value === "object" && value !== null && !Array.isArray(value) && !ArrayBuffer.isView(value)) {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !ArrayBuffer.isView(value)
+  ) {
     return Object.entries(value);
   }
   return null;
@@ -260,7 +428,8 @@ function nice(lo, hi, count = 5) {
   const start = Math.floor(lo / step) * step;
   const end = Math.ceil(hi / step) * step;
   const ticks = [];
-  for (let k = 0; start + k * step <= end + step / 2; k++) ticks.push(Number((start + k * step).toPrecision(12)));
+  for (let k = 0; start + k * step <= end + step / 2; k++)
+    ticks.push(Number((start + k * step).toPrecision(12)));
   return { lo: start, hi: end, ticks };
 }
 

@@ -4,6 +4,7 @@
 // pointer, and the keys while the canvas has focus, as numbers and flags.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
 import { assert } from "../assert";
 import { Tip } from "../visualize/draw";
 import { isSelect } from "../visualize/picture";

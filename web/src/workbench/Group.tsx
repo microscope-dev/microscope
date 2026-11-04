@@ -3,16 +3,18 @@
 // their scroll, unless their kind says they are too costly to keep.
 
 import { type ComponentType, type KeyboardEvent, memo, useEffect, useRef } from "react";
+
 import { assert } from "../assert";
 import { classOf } from "./classes";
 import { panelId, tabId, useDock } from "./context";
 import { pressTab } from "./drag";
-import styles from "./Group.module.css";
 import type { PaneProps } from "./kinds";
 import { activate, type GroupId, groups, type Layout, type Pane, type PaneId } from "./layout";
 import { PaneHost } from "./PaneHost";
 import { change, useLayout } from "./store";
 import { chooseTab, closeTab } from "./tabs";
+
+import styles from "./Group.module.css";
 
 const css = classOf(styles);
 

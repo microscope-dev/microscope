@@ -1,6 +1,7 @@
 // The program's output, what logpoints wrote, and the program's input.
 
 import { useState } from "react";
+
 import { controls } from "../model";
 import { useConnection, useModel } from "../store";
 import { useFollowBottom } from "./scroll";

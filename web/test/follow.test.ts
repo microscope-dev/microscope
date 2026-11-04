@@ -2,6 +2,7 @@
 // checked against the stops real servers reported.
 
 import { describe, expect, it } from "vitest";
+
 import { follow, latestStop, stopNote } from "../src/follow";
 import type { State } from "../src/protocol";
 import { received } from "./transcripts";

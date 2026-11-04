@@ -2,6 +2,7 @@
 // names where it went wrong.
 
 import { describe, expect, it } from "vitest";
+
 import { isPathData, MOST_SHAPES, type Picture, validate } from "../src/visualize/picture";
 
 const picture = (shapes: unknown[], extra: object = {}) => ({

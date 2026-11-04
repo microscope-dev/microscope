@@ -57,16 +57,32 @@ microscope.draw((input, { previous, width, paths }) => {
     const was = before.get(key);
     const moved = was !== undefined && was !== total;
     if (moved) changed += 1;
-    shapes.push(microscope.rect({
-      x: x + 0.5, y, width: Math.max(0.5, span - 1), height: ROW - 2, radius: 2,
-      fill: tint(name, theme),
-      stroke: moved ? theme.ink : undefined, strokeWidth: moved ? 1.5 : undefined,
-      title: `${name}\nself ${tree.self[node]} · total ${total} · ${Number(share.toPrecision(3))}% of all${moved ? `\nwas ${was} at the stop before` : ""}`,
-      select: tree.select(node),
-    }));
+    shapes.push(
+      microscope.rect({
+        x: x + 0.5,
+        y,
+        width: Math.max(0.5, span - 1),
+        height: ROW - 2,
+        radius: 2,
+        fill: tint(name, theme),
+        stroke: moved ? theme.ink : undefined,
+        strokeWidth: moved ? 1.5 : undefined,
+        title: `${name}\nself ${tree.self[node]} · total ${total} · ${Number(share.toPrecision(3))}% of all${moved ? `\nwas ${was} at the stop before` : ""}`,
+        select: tree.select(node),
+      }),
+    );
     const fits = Math.floor((span - 8) / 6.2);
     if (fits >= 3) {
-      shapes.push(microscope.text({ x: x + 4, y: y + ROW / 2 - 1, text: name.length > fits ? `${name.slice(0, fits - 1)}…` : name, size: 11, baseline: "middle", fill: theme.ink }));
+      shapes.push(
+        microscope.text({
+          x: x + 4,
+          y: y + ROW / 2 - 1,
+          text: name.length > fits ? `${name.slice(0, fits - 1)}…` : name,
+          size: 11,
+          baseline: "middle",
+          fill: theme.ink,
+        }),
+      );
     }
     let at = x;
     for (const child of tree.children[node]) {
@@ -76,11 +92,20 @@ microscope.draw((input, { previous, width, paths }) => {
   };
   draw(tree.root, left, 0, tree.names[tree.root]);
 
-  const caption = [`${tree.names.length - (tree.synthetic ? 1 : 0)} frames`, `${whole} in all`, "width = total"];
+  const caption = [
+    `${tree.names.length - (tree.synthetic ? 1 : 0)} frames`,
+    `${whole} in all`,
+    "width = total",
+  ];
   if (hidden > 0) caption.push(`${hidden} frames under 1 px, counted not drawn`);
   if (cut > 0) caption.push(`${cut} frames deeper than ${MOST_DEPTH}, not drawn`);
   if (before.size > 0) caption.push(`${changed} outlined: total changed since the stop before`);
-  return microscope.picture({ width: W, height: 8 + (deepest + 1) * ROW, shapes, caption: caption.join(" · ") });
+  return microscope.picture({
+    width: W,
+    height: 8 + (deepest + 1) * ROW,
+    shapes,
+    caption: caption.join(" · "),
+  });
 });
 
 /** The call tree: names, own values, totals, children, and a root. */
@@ -89,7 +114,11 @@ function treeOf(given, givenPaths) {
   let input = given;
   let paths = givenPaths;
   if (given.nodes === undefined && given.stacks === undefined && given.values !== undefined) {
-    const records = Array.isArray(given.values) && given.values.every((item) => typeof item === "object" && item !== null && !Array.isArray(item));
+    const records =
+      Array.isArray(given.values) &&
+      given.values.every(
+        (item) => typeof item === "object" && item !== null && !Array.isArray(item),
+      );
     input = records ? { nodes: given.values } : { stacks: given.values };
     paths = records ? { nodes: givenPaths.values } : {};
   }
@@ -101,9 +130,16 @@ function treeOf(given, givenPaths) {
   const parents = [];
   let select = (/** @type {number} */ _node) => /** @type {string | undefined} */ (undefined);
   if (input.nodes !== undefined && input.nodes !== null) {
-    if (!Array.isArray(input.nodes)) throw new TypeError("`nodes` must be an array of records of name, value, and parent");
+    if (!Array.isArray(input.nodes))
+      throw new TypeError("`nodes` must be an array of records of name, value, and parent");
     input.nodes.forEach((node, index) => {
-      if (typeof node !== "object" || node === null || node.name === undefined || node.value === undefined || node.parent === undefined) {
+      if (
+        typeof node !== "object" ||
+        node === null ||
+        node.name === undefined ||
+        node.value === undefined ||
+        node.parent === undefined
+      ) {
         throw new TypeError(`\`nodes[${index}]\` must be a record of name, value, and parent`);
       }
       names.push(typeof node.name === "string" ? node.name : String(node.name?.name ?? node.name));
@@ -111,13 +147,15 @@ function treeOf(given, givenPaths) {
       parents.push(Number(node.parent));
     });
     const path = paths.nodes;
-    if (path !== null && path !== undefined) select = (node) => (node < input.nodes.length ? `${path}[${node}]` : undefined);
+    if (path !== null && path !== undefined)
+      select = (node) => (node < input.nodes.length ? `${path}[${node}]` : undefined);
   } else if (input.stacks !== undefined && input.stacks !== null) {
     const pairs = Array.isArray(input.stacks) ? input.stacks : Object.entries(input.stacks);
     const index = new Map();
     pairs.forEach((pair, k) => {
       const [stack, value] = Array.isArray(pair) ? pair : [pair?.stack, pair?.count];
-      if (typeof stack !== "string") throw new TypeError(`\`stacks[${k}]\` must pair "a;b;c" text with a count`);
+      if (typeof stack !== "string")
+        throw new TypeError(`\`stacks[${k}]\` must pair "a;b;c" text with a count`);
       let parent = -1;
       let key = "";
       for (const frame of stack.split(";")) {
@@ -135,7 +173,9 @@ function treeOf(given, givenPaths) {
       if (parent >= 0) self[parent] = add(self[parent], count(value, `stacks[${k}]`));
     });
   } else {
-    throw new TypeError("flame-graph takes `nodes`, records of name, value, and parent, or `stacks`, folded text with counts");
+    throw new TypeError(
+      "flame-graph takes `nodes`, records of name, value, and parent, or `stacks`, folded text with counts",
+    );
   }
   const n = names.length;
   /** @type {number[][]} */
@@ -180,7 +220,8 @@ function treeOf(given, givenPaths) {
     }
   }
   // Wider frames first, so the eye finds the heaviest paths at the left.
-  for (const list of children) list.sort((a, b) => (Number(total[b]) - Number(total[a])) || (names[a] < names[b] ? -1 : 1));
+  for (const list of children)
+    list.sort((a, b) => Number(total[b]) - Number(total[a]) || (names[a] < names[b] ? -1 : 1));
   const walk = (visit) => {
     const pending = [[root, names[root]]];
     while (pending.length > 0) {
@@ -201,7 +242,11 @@ function count(value, what) {
 /** Exact sums: bigints stay whole, and so do numbers while they can. */
 function add(a, b) {
   if (typeof a === "bigint" || typeof b === "bigint") {
-    if ((typeof a === "number" && !Number.isInteger(a)) || (typeof b === "number" && !Number.isInteger(b))) return Number(a) + Number(b);
+    if (
+      (typeof a === "number" && !Number.isInteger(a)) ||
+      (typeof b === "number" && !Number.isInteger(b))
+    )
+      return Number(a) + Number(b);
     return BigInt(a) + BigInt(b);
   }
   return a + b;

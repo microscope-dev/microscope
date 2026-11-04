@@ -1,5 +1,6 @@
 import { useLocation } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+
 import type { Role } from "../protocol";
 import { useConnection, useModel } from "../store";
 import { tab, useTab } from "../tab";

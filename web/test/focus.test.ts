@@ -1,6 +1,7 @@
 // Links name a focus exactly: what goes into the address bar comes back out.
 
 import { describe, expect, it } from "vitest";
+
 import {
   followedLook,
   formatPinned,

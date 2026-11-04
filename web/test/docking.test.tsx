@@ -9,6 +9,7 @@ import fc from "fast-check";
 import { act } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import "../src/styles.css";
 import { Dock } from "../src/workbench/Dock";
 import { kinds, type PaneKind } from "../src/workbench/kinds";

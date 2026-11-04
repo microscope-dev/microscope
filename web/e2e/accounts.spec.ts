@@ -4,7 +4,9 @@
 // repository, built, with its database up (`just up` there).
 
 import { randomBytes } from "node:crypto";
+
 import type { Page } from "@playwright/test";
+
 import { allowErrors, test as base, expect, expectErrors, menu } from "./server";
 import { haveServices, type Services, servicesBinary, startServices } from "./services";
 

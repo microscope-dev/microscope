@@ -2,6 +2,7 @@ import react from "@vitejs/plugin-react";
 import { playwright } from "@vitest/browser-playwright";
 import type { ProxyOptions } from "vite";
 import { defineConfig } from "vitest/config";
+
 import { fromServices, toServices } from "./dev-cookies";
 
 // `just web` serves the page on its own, which talks to microscope at the

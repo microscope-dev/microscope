@@ -2,16 +2,25 @@
 // VS Code integration: DAP sessions, launch/attach pickers, expression hovers,
 // and inline values for in-scope variables.
 
-'use strict';
+"use strict";
 
-const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const vscode = require('vscode');
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const vscode = require("vscode");
 
 const LANGUAGES = [
-    'c', 'cpp', 'rust', 'go', 'zig', 'python', 'javascript', 'typescript', 'javascriptreact', 'typescriptreact',
+  "c",
+  "cpp",
+  "rust",
+  "go",
+  "zig",
+  "python",
+  "javascript",
+  "typescript",
+  "javascriptreact",
+  "typescriptreact",
 ];
 
 /** The microscope sessions running now. */
@@ -19,57 +28,64 @@ const sessions = new Set();
 
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
-    const languages = LANGUAGES.map((language) => ({ language }));
-    context.subscriptions.push(
-        vscode.debug.registerDebugAdapterDescriptorFactory('microscope', { createDebugAdapterDescriptor }),
-        vscode.debug.registerDebugConfigurationProvider('microscope', { resolveDebugConfiguration }),
-        vscode.debug.registerDebugConfigurationProvider(
-            'microscope',
-            { provideDebugConfigurations },
-            vscode.DebugConfigurationProviderTriggerKind.Dynamic,
-        ),
-        vscode.commands.registerCommand('microscope.pickProcess', pickProcess),
-        vscode.commands.registerCommand('microscope.toggleHexadecimal', toggleHexadecimal),
-        vscode.languages.registerEvaluatableExpressionProvider(languages, { provideEvaluatableExpression }),
-        vscode.languages.registerInlineValuesProvider(languages, { provideInlineValues }),
-        vscode.debug.onDidStartDebugSession((session) => {
-            if (session.type === 'microscope') {
-                sessions.add(session);
-                if (hexadecimal()) {
-                    sendValueFormat(session);
-                }
-            }
-        }),
-        vscode.debug.onDidTerminateDebugSession((session) => sessions.delete(session)),
-        vscode.workspace.onDidChangeConfiguration((event) => {
-            if (event.affectsConfiguration('microscope.hexadecimal')) {
-                updateHexadecimal();
-            }
-        }),
-    );
-    updateHexadecimal();
+  const languages = LANGUAGES.map((language) => ({ language }));
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory("microscope", {
+      createDebugAdapterDescriptor,
+    }),
+    vscode.debug.registerDebugConfigurationProvider("microscope", { resolveDebugConfiguration }),
+    vscode.debug.registerDebugConfigurationProvider(
+      "microscope",
+      { provideDebugConfigurations },
+      vscode.DebugConfigurationProviderTriggerKind.Dynamic,
+    ),
+    vscode.commands.registerCommand("microscope.pickProcess", pickProcess),
+    vscode.commands.registerCommand("microscope.toggleHexadecimal", toggleHexadecimal),
+    vscode.languages.registerEvaluatableExpressionProvider(languages, {
+      provideEvaluatableExpression,
+    }),
+    vscode.languages.registerInlineValuesProvider(languages, { provideInlineValues }),
+    vscode.debug.onDidStartDebugSession((session) => {
+      if (session.type === "microscope") {
+        sessions.add(session);
+        if (hexadecimal()) {
+          sendValueFormat(session);
+        }
+      }
+    }),
+    vscode.debug.onDidTerminateDebugSession((session) => sessions.delete(session)),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("microscope.hexadecimal")) {
+        updateHexadecimal();
+      }
+    }),
+  );
+  updateHexadecimal();
 }
 
 /** @param {vscode.DebugSession} session */
 function createDebugAdapterDescriptor(session) {
-    // Child sessions reuse the parent's adapter.
-    const member = session.configuration.__microscopeMember;
-    if (member !== undefined) {
-        return new vscode.DebugAdapterNamedPipeServer(member.socket);
-    }
-    const folder = session.workspaceFolder;
-    const settings = vscode.workspace.getConfiguration('microscope', folder);
-    const setting = settings.get('path', 'microscope');
-    const command = typeof setting === 'string' ? findExecutable(setting, folder?.uri.fsPath) : undefined;
-    if (command === undefined) {
-        throw new Error(`Cannot find microscope at "${setting}". Install microscope on PATH or set microscope.path.`);
-    }
-    const args = ['dap'];
-    const log = settings.get('logFile', '');
-    if (log) {
-        args.push('--log', expandPath(log, folder?.uri.fsPath));
-    }
-    return new vscode.DebugAdapterExecutable(command, args);
+  // Child sessions reuse the parent's adapter.
+  const member = session.configuration.__microscopeMember;
+  if (member !== undefined) {
+    return new vscode.DebugAdapterNamedPipeServer(member.socket);
+  }
+  const folder = session.workspaceFolder;
+  const settings = vscode.workspace.getConfiguration("microscope", folder);
+  const setting = settings.get("path", "microscope");
+  const command =
+    typeof setting === "string" ? findExecutable(setting, folder?.uri.fsPath) : undefined;
+  if (command === undefined) {
+    throw new Error(
+      `Cannot find microscope at "${setting}". Install microscope on PATH or set microscope.path.`,
+    );
+  }
+  const args = ["dap"];
+  const log = settings.get("logFile", "");
+  if (log) {
+    args.push("--log", expandPath(log, folder?.uri.fsPath));
+  }
+  return new vscode.DebugAdapterExecutable(command, args);
 }
 
 /**
@@ -80,10 +96,10 @@ function createDebugAdapterDescriptor(session) {
  * @param {string | undefined} workspaceFolder
  */
 function expandPath(setting, workspaceFolder) {
-    const expanded = setting
-        .replaceAll('${workspaceFolder}', workspaceFolder ?? '')
-        .replaceAll('${userHome}', os.homedir());
-    return path.resolve(workspaceFolder ?? process.cwd(), expanded);
+  const expanded = setting
+    .replaceAll("${workspaceFolder}", workspaceFolder ?? "")
+    .replaceAll("${userHome}", os.homedir());
+  return path.resolve(workspaceFolder ?? process.cwd(), expanded);
 }
 
 /**
@@ -96,23 +112,26 @@ function expandPath(setting, workspaceFolder) {
  * @returns {string | undefined}
  */
 function findExecutable(setting, workspaceFolder) {
-    if (setting.includes('${workspaceFolder}') && workspaceFolder === undefined) {
-        return undefined;
-    }
-    const candidates = setting.includes('/')
-        ? [expandPath(setting, workspaceFolder)]
-        : (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map((directory) => path.join(directory, setting));
-    return candidates.find(isExecutableFile);
+  if (setting.includes("${workspaceFolder}") && workspaceFolder === undefined) {
+    return undefined;
+  }
+  const candidates = setting.includes("/")
+    ? [expandPath(setting, workspaceFolder)]
+    : (process.env.PATH ?? "")
+        .split(path.delimiter)
+        .filter(Boolean)
+        .map((directory) => path.join(directory, setting));
+  return candidates.find(isExecutableFile);
 }
 
 /** @param {string} file */
 function isExecutableFile(file) {
-    try {
-        fs.accessSync(file, fs.constants.X_OK);
-        return fs.statSync(file).isFile();
-    } catch {
-        return false;
-    }
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -123,18 +142,24 @@ function isExecutableFile(file) {
  * @param {vscode.DebugConfiguration} configuration
  */
 function resolveDebugConfiguration(folder, configuration) {
-    if (configuration.request !== undefined) {
-        return configuration;
-    }
-    if (folder === undefined) {
-        vscode.window.showErrorMessage('Open a folder to create a launch.json for microscope.');
-        return undefined;
-    }
-    return null;
+  if (configuration.request !== undefined) {
+    return configuration;
+  }
+  if (folder === undefined) {
+    vscode.window.showErrorMessage("Open a folder to create a launch.json for microscope.");
+    return undefined;
+  }
+  return null;
 }
 
 /** Directories no program to debug is built into. */
-const SKIPPED_DIRECTORIES = new Set(['node_modules', 'deps', 'build-script-build', 'incremental', '.fingerprint']);
+const SKIPPED_DIRECTORIES = new Set([
+  "node_modules",
+  "deps",
+  "build-script-build",
+  "incremental",
+  ".fingerprint",
+]);
 /** How deep, and through how many entries, the workspace is searched. */
 const PROGRAM_SEARCH = { depth: 4, entries: 5000, programs: 50 };
 
@@ -145,20 +170,23 @@ const PROGRAM_SEARCH = { depth: 4, entries: 5000, programs: 50 };
  * @param {vscode.WorkspaceFolder | undefined} folder
  */
 function provideDebugConfigurations(folder) {
-    if (folder === undefined) {
-        return [];
-    }
-    return programs(folder.uri.fsPath).map((program) => {
-        const relative = path.relative(folder.uri.fsPath, program);
-        assert.ok(relative !== '' && !relative.startsWith('..'), 'program found outside the workspace folder');
-        return {
-            type: 'microscope',
-            request: 'launch',
-            name: `microscope: ${relative}`,
-            program: `\${workspaceFolder}/${relative}`,
-            cwd: '${workspaceFolder}',
-        };
-    });
+  if (folder === undefined) {
+    return [];
+  }
+  return programs(folder.uri.fsPath).map((program) => {
+    const relative = path.relative(folder.uri.fsPath, program);
+    assert.ok(
+      relative !== "" && !relative.startsWith(".."),
+      "program found outside the workspace folder",
+    );
+    return {
+      type: "microscope",
+      request: "launch",
+      name: `microscope: ${relative}`,
+      program: `\${workspaceFolder}/${relative}`,
+      cwd: "${workspaceFolder}",
+    };
+  });
 }
 
 /**
@@ -170,41 +198,48 @@ function provideDebugConfigurations(folder) {
  * @returns {string[]}
  */
 function programs(root) {
-    const found = [];
-    let entries = 0;
-    let level = [root];
-    for (let depth = 0; depth <= PROGRAM_SEARCH.depth && level.length > 0; depth++) {
-        const next = [];
-        for (const directory of level) {
-            let children;
-            try {
-                children = fs.readdirSync(directory, { withFileTypes: true })
-                    .sort((first, second) => first.name.localeCompare(second.name));
-            } catch {
-                continue;
-            }
-            for (const child of children) {
-                if (++entries > PROGRAM_SEARCH.entries || found.length >= PROGRAM_SEARCH.programs) {
-                    assert.ok(found.length <= PROGRAM_SEARCH.programs, `found ${found.length} programs, over the limit`);
-                    return found;
-                }
-                const file = path.join(directory, child.name);
-                if (child.name.startsWith('.')) {
-                    continue;
-                } else if (child.isDirectory()) {
-                    if (!SKIPPED_DIRECTORIES.has(child.name)) {
-                        next.push(file);
-                    }
-                } else if (child.isFile() && isExecutableFile(file) && isProgram(file)) {
-                    found.push(file);
-                }
-            }
+  const found = [];
+  let entries = 0;
+  let level = [root];
+  for (let depth = 0; depth <= PROGRAM_SEARCH.depth && level.length > 0; depth++) {
+    const next = [];
+    for (const directory of level) {
+      let children;
+      try {
+        children = fs
+          .readdirSync(directory, { withFileTypes: true })
+          .sort((first, second) => first.name.localeCompare(second.name));
+      } catch {
+        continue;
+      }
+      for (const child of children) {
+        if (++entries > PROGRAM_SEARCH.entries || found.length >= PROGRAM_SEARCH.programs) {
+          assert.ok(
+            found.length <= PROGRAM_SEARCH.programs,
+            `found ${found.length} programs, over the limit`,
+          );
+          return found;
         }
-        level = next;
+        const file = path.join(directory, child.name);
+        if (child.name.startsWith(".")) {
+          continue;
+        } else if (child.isDirectory()) {
+          if (!SKIPPED_DIRECTORIES.has(child.name)) {
+            next.push(file);
+          }
+        } else if (child.isFile() && isExecutableFile(file) && isProgram(file)) {
+          found.push(file);
+        }
+      }
     }
-    assert.ok(found.length <= PROGRAM_SEARCH.programs, `found ${found.length} programs, over the limit`);
-    assert.ok(entries <= PROGRAM_SEARCH.entries, `searched ${entries} entries, over the limit`);
-    return found;
+    level = next;
+  }
+  assert.ok(
+    found.length <= PROGRAM_SEARCH.programs,
+    `found ${found.length} programs, over the limit`,
+  );
+  assert.ok(entries <= PROGRAM_SEARCH.entries, `searched ${entries} entries, over the limit`);
+  return found;
 }
 
 /**
@@ -214,47 +249,53 @@ function programs(root) {
  * @param {string} file
  */
 function isProgram(file) {
-    let descriptor;
-    try {
-        descriptor = fs.openSync(file, 'r');
-        const header = Buffer.alloc(64);
-        if (fs.readSync(descriptor, header, 0, 64, 0) < 64
-            || header.readUInt32BE(0) !== 0x7f454c46 // \x7fELF
-            || header[4] !== 2 // 64-bit
-            || header[5] !== 1 // little-endian
-            || header.readUInt16LE(18) !== 62) { // x86-64
-            return false;
-        }
-        const type = header.readUInt16LE(16);
-        if (type === 2) { // ET_EXEC
-            return true;
-        }
-        if (type !== 3) { // ET_DYN
-            return false;
-        }
-        const offset = Number(header.readBigUInt64LE(32));
-        const size = header.readUInt16LE(54);
-        const count = header.readUInt16LE(56);
-        if (size < 4 || count > 256) {
-            return false;
-        }
-        const headers = Buffer.alloc(size * count);
-        if (fs.readSync(descriptor, headers, 0, headers.length, offset) < headers.length) {
-            return false;
-        }
-        for (let index = 0; index < count; index++) {
-            if (headers.readUInt32LE(index * size) === 3) { // PT_INTERP
-                return true;
-            }
-        }
-        return false;
-    } catch {
-        return false;
-    } finally {
-        if (descriptor !== undefined) {
-            fs.closeSync(descriptor);
-        }
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, "r");
+    const header = Buffer.alloc(64);
+    if (
+      fs.readSync(descriptor, header, 0, 64, 0) < 64 ||
+      header.readUInt32BE(0) !== 0x7f454c46 || // \x7fELF
+      header[4] !== 2 || // 64-bit
+      header[5] !== 1 || // little-endian
+      header.readUInt16LE(18) !== 62
+    ) {
+      // x86-64
+      return false;
     }
+    const type = header.readUInt16LE(16);
+    if (type === 2) {
+      // ET_EXEC
+      return true;
+    }
+    if (type !== 3) {
+      // ET_DYN
+      return false;
+    }
+    const offset = Number(header.readBigUInt64LE(32));
+    const size = header.readUInt16LE(54);
+    const count = header.readUInt16LE(56);
+    if (size < 4 || count > 256) {
+      return false;
+    }
+    const headers = Buffer.alloc(size * count);
+    if (fs.readSync(descriptor, headers, 0, headers.length, offset) < headers.length) {
+      return false;
+    }
+    for (let index = 0; index < count; index++) {
+      if (headers.readUInt32LE(index * size) === 3) {
+        // PT_INTERP
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== undefined) {
+      fs.closeSync(descriptor);
+    }
+  }
 }
 
 /**
@@ -266,32 +307,33 @@ function isProgram(file) {
  * @param {vscode.DebugConfiguration | undefined} configuration
  */
 async function pickProcess(configuration) {
-    // VS Code has substituted the configuration's other variables already.
-    const program = typeof configuration?.program === 'string' ? realPath(configuration.program) : undefined;
-    const items = processes()
-        .filter((entry) => program === undefined || entry.executable === program)
-        .map((entry) => ({
-            label: entry.name,
-            description: String(entry.pid),
-            detail: entry.commandLine,
-            pid: entry.pid,
-        }));
-    const picked = await vscode.window.showQuickPick(items, {
-        title: program === undefined ? 'Attach to a process' : `Attach to a process running ${program}`,
-        placeHolder: 'Filter by name, process ID, or command line',
-        matchOnDescription: true,
-        matchOnDetail: true,
-    });
-    return picked === undefined ? undefined : String(picked.pid);
+  // VS Code has substituted the configuration's other variables already.
+  const program =
+    typeof configuration?.program === "string" ? realPath(configuration.program) : undefined;
+  const items = processes()
+    .filter((entry) => program === undefined || entry.executable === program)
+    .map((entry) => ({
+      label: entry.name,
+      description: String(entry.pid),
+      detail: entry.commandLine,
+      pid: entry.pid,
+    }));
+  const picked = await vscode.window.showQuickPick(items, {
+    title: program === undefined ? "Attach to a process" : `Attach to a process running ${program}`,
+    placeHolder: "Filter by name, process ID, or command line",
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  return picked === undefined ? undefined : String(picked.pid);
 }
 
 /** @param {string} file */
 function realPath(file) {
-    try {
-        return fs.realpathSync(file);
-    } catch {
-        return file;
-    }
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return file;
+  }
 }
 
 /**
@@ -301,68 +343,78 @@ function realPath(file) {
  * @returns {{ pid: number, name: string, commandLine: string, executable?: string, started: number }[]}
  */
 function processes() {
-    const uid = process.getuid?.();
-    const found = [];
-    for (const entry of fs.readdirSync('/proc')) {
-        const pid = Number(entry);
-        if (!Number.isInteger(pid) || pid === process.pid) {
-            continue;
-        }
-        try {
-            const directory = `/proc/${pid}`;
-            if (fs.statSync(directory).uid !== uid) {
-                continue;
-            }
-            // The fields follow the parenthesized name, which may itself contain
-            // spaces and parentheses. fields[0] is the state, field 3 of stat,
-            // so field 22, the start time, is fields[19].
-            const stat = fs.readFileSync(`${directory}/stat`, 'utf8');
-            const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-            // A zombie has exited and cannot be traced.
-            if (fields[0] === 'Z') {
-                continue;
-            }
-            const name = fs.readFileSync(`${directory}/comm`, 'utf8').trimEnd();
-            const commandLine = fs.readFileSync(`${directory}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ');
-            let executable;
-            try {
-                executable = fs.readlinkSync(`${directory}/exe`);
-            } catch {
-                // The process has no executable to read, or it just exited.
-            }
-            found.push({ pid, name, commandLine: commandLine || `[${name}]`, executable, started: Number(fields[19]) });
-        } catch {
-            // The process exited while it was being read.
-        }
+  const uid = process.getuid?.();
+  const found = [];
+  for (const entry of fs.readdirSync("/proc")) {
+    const pid = Number(entry);
+    if (!Number.isInteger(pid) || pid === process.pid) {
+      continue;
     }
-    return found.sort((first, second) => second.started - first.started || second.pid - first.pid);
+    try {
+      const directory = `/proc/${pid}`;
+      if (fs.statSync(directory).uid !== uid) {
+        continue;
+      }
+      // The fields follow the parenthesized name, which may itself contain
+      // spaces and parentheses. fields[0] is the state, field 3 of stat,
+      // so field 22, the start time, is fields[19].
+      const stat = fs.readFileSync(`${directory}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      // A zombie has exited and cannot be traced.
+      if (fields[0] === "Z") {
+        continue;
+      }
+      const name = fs.readFileSync(`${directory}/comm`, "utf8").trimEnd();
+      const commandLine = fs
+        .readFileSync(`${directory}/cmdline`, "utf8")
+        .split("\0")
+        .filter(Boolean)
+        .join(" ");
+      let executable;
+      try {
+        executable = fs.readlinkSync(`${directory}/exe`);
+      } catch {
+        // The process has no executable to read, or it just exited.
+      }
+      found.push({
+        pid,
+        name,
+        commandLine: commandLine || `[${name}]`,
+        executable,
+        started: Number(fields[19]),
+      });
+    } catch {
+      // The process exited while it was being read.
+    }
+  }
+  return found.sort((first, second) => second.started - first.started || second.pid - first.pid);
 }
 
-const hexadecimal = () => vscode.workspace.getConfiguration('microscope').get('hexadecimal', false);
+const hexadecimal = () => vscode.workspace.getConfiguration("microscope").get("hexadecimal", false);
 
 /** Flips the microscope.hexadecimal setting, which every microscope session follows. */
 async function toggleHexadecimal() {
-    await vscode.workspace.getConfiguration('microscope')
-        .update('hexadecimal', !hexadecimal(), vscode.ConfigurationTarget.Global);
+  await vscode.workspace
+    .getConfiguration("microscope")
+    .update("hexadecimal", !hexadecimal(), vscode.ConfigurationTarget.Global);
 }
 
 /** Shows the setting's state to menus and tells running sessions. */
 function updateHexadecimal() {
-    vscode.commands.executeCommand('setContext', 'microscope.hexadecimal', hexadecimal());
-    for (const session of sessions) {
-        assert.ok(session.type === 'microscope', 'session set holds a session of another type');
-        sendValueFormat(session);
-    }
+  vscode.commands.executeCommand("setContext", "microscope.hexadecimal", hexadecimal());
+  for (const session of sessions) {
+    assert.ok(session.type === "microscope", "session set holds a session of another type");
+    sendValueFormat(session);
+  }
 }
 
 /** @param {vscode.DebugSession} session */
 function sendValueFormat(session) {
-    session.customRequest('microscope/setValueFormat', { hex: hexadecimal() }).then(undefined, () => {
-        // The session ended, or has not started a program yet; a new one is
-        // told when it starts.
-    });
+  session.customRequest("microscope/setValueFormat", { hex: hexadecimal() }).then(undefined, () => {
+    // The session ended, or has not started a program yet; a new one is
+    // told when it starts.
+  });
 }
-
 
 /**
  * The expression a hover at a position names: the chain of names, members,
@@ -373,15 +425,15 @@ function sendValueFormat(session) {
  * @param {vscode.Position} position
  */
 function provideEvaluatableExpression(document, position) {
-    if (vscode.debug.activeDebugSession?.type !== 'microscope') {
-        return undefined;
-    }
-    const found = expressionAt(document.lineAt(position.line).text, position.character);
-    if (found === undefined) {
-        return undefined;
-    }
-    const range = new vscode.Range(position.line, found.start, position.line, found.end);
-    return new vscode.EvaluatableExpression(range, found.expression);
+  if (vscode.debug.activeDebugSession?.type !== "microscope") {
+    return undefined;
+  }
+  const found = expressionAt(document.lineAt(position.line).text, position.character);
+  if (found === undefined) {
+    return undefined;
+  }
+  const range = new vscode.Range(position.line, found.start, position.line, found.end);
+  return new vscode.EvaluatableExpression(range, found.expression);
 }
 
 const NAME = /^[A-Za-z0-9_]$/;
@@ -395,72 +447,75 @@ const NAME = /^[A-Za-z0-9_]$/;
  * @returns {{ expression: string, start: number, end: number } | undefined}
  */
 function expressionAt(text, column) {
-    let start = column;
-    let end = column;
-    while (start > 0 && NAME.test(text[start - 1])) {
-        start--;
-    }
-    while (end < text.length && NAME.test(text[end])) {
-        end++;
-    }
-    if (start === end || /[0-9]/.test(text[start])) {
-        return undefined;
-    }
-    // Walk back over what joins the name to the operands before it.
-    for (;;) {
-        assert.ok(start >= 0, `expression starts at ${start}`);
-        assert.ok(start <= column, `expression starts at ${start}, after column ${column}`);
-        let at = start;
-        if (text.startsWith('->', at - 2)) {
-            at -= 2;
-        } else if (text.startsWith('::', at - 2)) {
-            at -= 2;
-            if (at === 0 || !NAME.test(text[at - 1])) {
-                start = at;
-                break;
-            }
-        } else if (text[at - 1] === '.') {
-            at -= 1;
-        } else {
-            break;
-        }
-        // Indices of the operand, then its name.
-        while (text[at - 1] === ']') {
-            const open = opening(text, at - 1);
-            if (open === undefined) {
-                return { expression: text.slice(start, end), start, end };
-            }
-            at = open;
-        }
-        if (text[at - 1] === ')') {
-            const open = opening(text, at - 1);
-            if (open === undefined) {
-                break;
-            }
-            // A call's result, which the debugger refuses rather than
-            // guessing, or a length or size, is one operand with its name.
-            at = open;
-            while (at > 0 && NAME.test(text[at - 1])) {
-                at--;
-            }
-        } else {
-            const name = at;
-            while (at > 0 && NAME.test(text[at - 1])) {
-                at--;
-            }
-            if (at === name) {
-                break;
-            }
-        }
-        start = at;
-    }
-    if (text[start - 1] === '$') {
-        start--;
-    }
+  let start = column;
+  let end = column;
+  while (start > 0 && NAME.test(text[start - 1])) {
+    start--;
+  }
+  while (end < text.length && NAME.test(text[end])) {
+    end++;
+  }
+  if (start === end || /[0-9]/.test(text[start])) {
+    return undefined;
+  }
+  // Walk back over what joins the name to the operands before it.
+  for (;;) {
     assert.ok(start >= 0, `expression starts at ${start}`);
-    assert.ok(start < end, `expression spans ${start} to ${end}`);
-    assert.ok(start <= column && column <= end, `expression spans ${start} to ${end}, not column ${column}`);
-    return { expression: text.slice(start, end), start, end };
+    assert.ok(start <= column, `expression starts at ${start}, after column ${column}`);
+    let at = start;
+    if (text.startsWith("->", at - 2)) {
+      at -= 2;
+    } else if (text.startsWith("::", at - 2)) {
+      at -= 2;
+      if (at === 0 || !NAME.test(text[at - 1])) {
+        start = at;
+        break;
+      }
+    } else if (text[at - 1] === ".") {
+      at -= 1;
+    } else {
+      break;
+    }
+    // Indices of the operand, then its name.
+    while (text[at - 1] === "]") {
+      const open = opening(text, at - 1);
+      if (open === undefined) {
+        return { expression: text.slice(start, end), start, end };
+      }
+      at = open;
+    }
+    if (text[at - 1] === ")") {
+      const open = opening(text, at - 1);
+      if (open === undefined) {
+        break;
+      }
+      // A call's result, which the debugger refuses rather than
+      // guessing, or a length or size, is one operand with its name.
+      at = open;
+      while (at > 0 && NAME.test(text[at - 1])) {
+        at--;
+      }
+    } else {
+      const name = at;
+      while (at > 0 && NAME.test(text[at - 1])) {
+        at--;
+      }
+      if (at === name) {
+        break;
+      }
+    }
+    start = at;
+  }
+  if (text[start - 1] === "$") {
+    start--;
+  }
+  assert.ok(start >= 0, `expression starts at ${start}`);
+  assert.ok(start < end, `expression spans ${start} to ${end}`);
+  assert.ok(
+    start <= column && column <= end,
+    `expression spans ${start} to ${end}, not column ${column}`,
+  );
+  return { expression: text.slice(start, end), start, end };
 }
 
 /**
@@ -470,24 +525,24 @@ function expressionAt(text, column) {
  * @param {number} close
  */
 function opening(text, close) {
-    const pairs = { ']': '[', ')': '(' };
-    assert.ok(text[close] in pairs, `no closing bracket at column ${close}`);
-    const stack = [];
-    for (let index = close; index >= 0; index--) {
-        const character = text[index];
-        if (character in pairs) {
-            stack.push(pairs[character]);
-        } else if (character === '[' || character === '(') {
-            if (stack.pop() !== character) {
-                return undefined;
-            }
-            if (stack.length === 0) {
-                assert.ok(index < close, `bracket closing at ${close} opens at ${index}`);
-                return index;
-            }
-        }
+  const pairs = { "]": "[", ")": "(" };
+  assert.ok(text[close] in pairs, `no closing bracket at column ${close}`);
+  const stack = [];
+  for (let index = close; index >= 0; index--) {
+    const character = text[index];
+    if (character in pairs) {
+      stack.push(pairs[character]);
+    } else if (character === "[" || character === "(") {
+      if (stack.pop() !== character) {
+        return undefined;
+      }
+      if (stack.length === 0) {
+        assert.ok(index < close, `bracket closing at ${close} opens at ${index}`);
+        return index;
+      }
     }
-    return undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -499,19 +554,19 @@ function opening(text, close) {
  * @param {vscode.InlineValueContext} context
  */
 async function provideInlineValues(document, viewPort, context) {
-    const session = vscode.debug.activeDebugSession;
-    if (session?.type !== 'microscope') {
-        return undefined;
+  const session = vscode.debug.activeDebugSession;
+  if (session?.type !== "microscope") {
+    return undefined;
+  }
+  try {
+    return await inlineValues(session, document, viewPort, context);
+  } catch (error) {
+    if (error instanceof assert.AssertionError) {
+      throw error;
     }
-    try {
-        return await inlineValues(session, document, viewPort, context);
-    } catch (error) {
-        if (error instanceof assert.AssertionError) {
-            throw error;
-        }
-        // The program ran on, and the stop's references are gone.
-        return undefined;
-    }
+    // The program ran on, and the stop's references are gone.
+    return undefined;
+  }
 }
 
 /**
@@ -521,33 +576,45 @@ async function provideInlineValues(document, viewPort, context) {
  * @param {vscode.InlineValueContext} context
  */
 async function inlineValues(session, document, viewPort, context) {
-    const stop = context.stoppedLocation.end.line;
-    const lines = document.getText(new vscode.Range(0, 0, stop + 1, 0)).split('\n');
-    const values = [];
-    const { scopes } = await session.customRequest('scopes', { frameId: context.frameId });
-    for (const scope of scopes) {
-        if (scope.expensive || !scope.variablesReference) {
-            continue;
-        }
-        const { variables } = await session.customRequest('variables', { variablesReference: scope.variablesReference });
-        for (const variable of variables) {
-            // A variable without a name to evaluate is one another hides.
-            if (!variable.declarationLocationReference || !variable.evaluateName) {
-                continue;
-            }
-            const declared = await session.customRequest('locations', { locationReference: variable.declarationLocationReference });
-            if (!declared.source?.path || realPath(declared.source.path) !== realPath(document.uri.fsPath)) {
-                continue;
-            }
-            for (const use of uses(lines, variable.name, declared.line - 1, stop)) {
-                if (use.line >= viewPort.start.line && use.line <= viewPort.end.line) {
-                    const range = new vscode.Range(use.line, use.start, use.line, use.start + variable.name.length);
-                    values.push(new vscode.InlineValueText(range, `${variable.name} = ${variable.value}`));
-                }
-            }
-        }
+  const stop = context.stoppedLocation.end.line;
+  const lines = document.getText(new vscode.Range(0, 0, stop + 1, 0)).split("\n");
+  const values = [];
+  const { scopes } = await session.customRequest("scopes", { frameId: context.frameId });
+  for (const scope of scopes) {
+    if (scope.expensive || !scope.variablesReference) {
+      continue;
     }
-    return values;
+    const { variables } = await session.customRequest("variables", {
+      variablesReference: scope.variablesReference,
+    });
+    for (const variable of variables) {
+      // A variable without a name to evaluate is one another hides.
+      if (!variable.declarationLocationReference || !variable.evaluateName) {
+        continue;
+      }
+      const declared = await session.customRequest("locations", {
+        locationReference: variable.declarationLocationReference,
+      });
+      if (
+        !declared.source?.path ||
+        realPath(declared.source.path) !== realPath(document.uri.fsPath)
+      ) {
+        continue;
+      }
+      for (const use of uses(lines, variable.name, declared.line - 1, stop)) {
+        if (use.line >= viewPort.start.line && use.line <= viewPort.end.line) {
+          const range = new vscode.Range(
+            use.line,
+            use.start,
+            use.line,
+            use.start + variable.name.length,
+          );
+          values.push(new vscode.InlineValueText(range, `${variable.name} = ${variable.value}`));
+        }
+      }
+    }
+  }
+  return values;
 }
 
 /**
@@ -562,70 +629,79 @@ async function inlineValues(session, document, viewPort, context) {
  * @returns {{ line: number, start: number }[]}
  */
 function uses(lines, name, first, last) {
-    if (first < 0) {
-        return [];
-    }
-    const found = [];
-    // Each line's block depth where it starts, and its first use.
-    const depths = [];
-    let depth = 0;
-    let comment = false;
-    for (let line = first; line <= last && line < lines.length; line++) {
-        depths.push({ line, depth, start: undefined, lowest: depth });
-        const entry = depths[depths.length - 1];
-        const text = lines[line];
-        for (let column = 0; column < text.length; column++) {
-            const character = text[column];
-            if (comment) {
-                if (text.startsWith('*/', column)) {
-                    comment = false;
-                    column++;
-                }
-            } else if (text.startsWith('/*', column)) {
-                comment = true;
-                column++;
-            } else if (text.startsWith('//', column) || text.startsWith('\\\\', column)) {
-                break;
-            } else if (character === '"' || character === '`') {
-                column = closing(text, column, character);
-            } else if (character === '\'' && /^'(\\.[^']*|[^\\'])'/.test(text.slice(column))) {
-                column = closing(text, column, '\'');
-            } else if (character === '{') {
-                depth++;
-            } else if (character === '}') {
-                depth--;
-                entry.lowest = Math.min(entry.lowest, depth);
-            } else if (NAME.test(character) && (column === 0 || !NAME.test(text[column - 1]))) {
-                let end = column;
-                while (end < text.length && NAME.test(text[end])) {
-                    end++;
-                }
-                const selected = /(\.|->|::)\s*$/.test(text.slice(0, column));
-                if (entry.start === undefined && !selected && text.slice(column, end) === name) {
-                    entry.start = column;
-                }
-                column = end - 1;
-            }
+  if (first < 0) {
+    return [];
+  }
+  const found = [];
+  // Each line's block depth where it starts, and its first use.
+  const depths = [];
+  let depth = 0;
+  let comment = false;
+  for (let line = first; line <= last && line < lines.length; line++) {
+    depths.push({ line, depth, start: undefined, lowest: depth });
+    const entry = depths[depths.length - 1];
+    const text = lines[line];
+    for (let column = 0; column < text.length; column++) {
+      const character = text[column];
+      if (comment) {
+        if (text.startsWith("*/", column)) {
+          comment = false;
+          column++;
         }
-    }
-    // A line is in a block that closes before the stop when the depth after
-    // it falls below the depth it starts at.
-    let lowest = depth;
-    for (let index = depths.length - 1; index >= 0; index--) {
-        const entry = depths[index];
-        lowest = Math.min(lowest, entry.lowest);
-        if (index === 0 && lowest < 0) {
-            return [];
+      } else if (text.startsWith("/*", column)) {
+        comment = true;
+        column++;
+      } else if (text.startsWith("//", column) || text.startsWith("\\\\", column)) {
+        break;
+      } else if (character === '"' || character === "`") {
+        column = closing(text, column, character);
+      } else if (character === "'" && /^'(\\.[^']*|[^\\'])'/.test(text.slice(column))) {
+        column = closing(text, column, "'");
+      } else if (character === "{") {
+        depth++;
+      } else if (character === "}") {
+        depth--;
+        entry.lowest = Math.min(entry.lowest, depth);
+      } else if (NAME.test(character) && (column === 0 || !NAME.test(text[column - 1]))) {
+        let end = column;
+        while (end < text.length && NAME.test(text[end])) {
+          end++;
         }
-        if (entry.start !== undefined && entry.depth <= lowest) {
-            assert.ok(entry.line >= first && entry.line <= last, `use on line ${entry.line}, outside ${first} to ${last}`);
-            assert.ok(lines[entry.line].startsWith(name, entry.start), `use on line ${entry.line} at ${entry.start} is not the name`);
-            assert.ok(found.length === 0 || found[found.length - 1].line > entry.line, `use on line ${entry.line} out of order`);
-            found.push({ line: entry.line, start: entry.start });
+        const selected = /(\.|->|::)\s*$/.test(text.slice(0, column));
+        if (entry.start === undefined && !selected && text.slice(column, end) === name) {
+          entry.start = column;
         }
-        lowest = Math.min(lowest, entry.depth);
+        column = end - 1;
+      }
     }
-    return found.reverse();
+  }
+  // A line is in a block that closes before the stop when the depth after
+  // it falls below the depth it starts at.
+  let lowest = depth;
+  for (let index = depths.length - 1; index >= 0; index--) {
+    const entry = depths[index];
+    lowest = Math.min(lowest, entry.lowest);
+    if (index === 0 && lowest < 0) {
+      return [];
+    }
+    if (entry.start !== undefined && entry.depth <= lowest) {
+      assert.ok(
+        entry.line >= first && entry.line <= last,
+        `use on line ${entry.line}, outside ${first} to ${last}`,
+      );
+      assert.ok(
+        lines[entry.line].startsWith(name, entry.start),
+        `use on line ${entry.line} at ${entry.start} is not the name`,
+      );
+      assert.ok(
+        found.length === 0 || found[found.length - 1].line > entry.line,
+        `use on line ${entry.line} out of order`,
+      );
+      found.push({ line: entry.line, start: entry.start });
+    }
+    lowest = Math.min(lowest, entry.depth);
+  }
+  return found.reverse();
 }
 
 /**
@@ -636,18 +712,24 @@ function uses(lines, name, first, last) {
  * @param {string} quote
  */
 function closing(text, open, quote) {
-    assert.ok(text[open] === quote, `no opening quote at column ${open}`);
-    for (let column = open + 1; column < text.length; column++) {
-        if (text[column] === '\\' && quote !== '`') {
-            column++;
-        } else if (text[column] === quote) {
-            return column;
-        }
+  assert.ok(text[open] === quote, `no opening quote at column ${open}`);
+  for (let column = open + 1; column < text.length; column++) {
+    if (text[column] === "\\" && quote !== "`") {
+      column++;
+    } else if (text[column] === quote) {
+      return column;
     }
-    return text.length;
+  }
+  return text.length;
 }
 
 module.exports = {
-    activate, findExecutable, processes, programs, expressionAt, uses, provideInlineValues,
-    provideDebugConfigurations,
+  activate,
+  findExecutable,
+  processes,
+  programs,
+  expressionAt,
+  uses,
+  provideInlineValues,
+  provideDebugConfigurations,
 };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { initialTab, openFile, shownAt, tab } from "../src/tab";
 
 describe("open files", () => {

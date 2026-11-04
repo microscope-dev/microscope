@@ -7,7 +7,9 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+
 import type { Locator, Page } from "@playwright/test";
+
 import { card, drawAt } from "./drawings";
 import { expect, fixture, join, type Microscope, root, test } from "./server";
 

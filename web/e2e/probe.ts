@@ -6,7 +6,9 @@
 // hand the program that argument.
 
 import * as path from "node:path";
+
 import { chromium } from "@playwright/test";
+
 import { root, startMicroscope } from "./server.ts";
 
 const [program, ...given] = process.argv.slice(2);

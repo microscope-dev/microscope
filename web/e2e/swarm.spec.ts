@@ -6,6 +6,7 @@
 // `just web-e2e` runs a short swarm; `MICROSCOPE_SWARM_STEPS=1000` runs one at depth.
 
 import type { Locator, Page } from "@playwright/test";
+
 import { expect, fixture, join, test } from "./server";
 
 test.use({ program: [fixture("kvstore")] });

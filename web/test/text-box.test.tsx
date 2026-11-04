@@ -1,6 +1,7 @@
 // Which focused elements take letter keys instead of the debugger.
 
 import { afterEach, describe, expect, it } from "vitest";
+
 import { isTextBox, keepsEscape } from "../src/workbench/keys";
 
 function element(html: string, selector: string): Element | null {

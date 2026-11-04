@@ -198,8 +198,14 @@ microscope.live((canvas, input) => {
       const z = positions[i * 3 + 2];
       const w = transform[3] * x + transform[7] * y + transform[11] * z + transform[15];
       if (w <= 0) continue;
-      const sx = ((transform[0] * x + transform[4] * y + transform[8] * z + transform[12]) / w + 1) * 0.5 * width;
-      const sy = (1 - (transform[1] * x + transform[5] * y + transform[9] * z + transform[13]) / w) * 0.5 * height;
+      const sx =
+        ((transform[0] * x + transform[4] * y + transform[8] * z + transform[12]) / w + 1) *
+        0.5 *
+        width;
+      const sy =
+        (1 - (transform[1] * x + transform[5] * y + transform[9] * z + transform[13]) / w) *
+        0.5 *
+        height;
       const d = (sx - pointer.x) ** 2 + (sy - pointer.y) ** 2;
       const depth = (transform[2] * x + transform[6] * y + transform[10] * z + transform[14]) / w;
       // Of the vertices about as near, the one in front.
@@ -337,9 +343,13 @@ function read(input) {
       break;
     }
     // The GPU places it in floats, which a large transform can overflow.
-    const placed = [0, 1, 2].map((row) => model[row] * x + model[4 + row] * y + model[8 + row] * z + model[12 + row]);
+    const placed = [0, 1, 2].map(
+      (row) => model[row] * x + model[4 + row] * y + model[8 + row] * z + model[12 + row],
+    );
     if (!placed.every((value) => Number.isFinite(Math.fround(value)))) {
-      problems.push(`${at}, which its transform carries to (${placed.map(short).join(", ")}), past a float's range`);
+      problems.push(
+        `${at}, which its transform carries to (${placed.map(short).join(", ")}), past a float's range`,
+      );
       break;
     }
   }
@@ -350,7 +360,10 @@ function read(input) {
   }
   let indices;
   if (input.indices === undefined) {
-    indices = count <= 0xffff ? Uint16Array.from({ length: count }, (_, i) => i) : Uint32Array.from({ length: count }, (_, i) => i);
+    indices =
+      count <= 0xffff
+        ? Uint16Array.from({ length: count }, (_, i) => i)
+        : Uint32Array.from({ length: count }, (_, i) => i);
   } else {
     const bytes = input.indices;
     if (!(bytes instanceof Uint8Array)) {
@@ -429,7 +442,8 @@ function whole(value, name) {
   return number;
 }
 
-const short = (value) => (Number.isFinite(value) ? String(Number(value.toPrecision(5))) : String(value));
+const short = (value) =>
+  Number.isFinite(value) ? String(Number(value.toPrecision(5))) : String(value);
 const grouped = (value) => value.toLocaleString("en-US");
 
 /** A `#rrggbb` color as three numbers from 0 to 1. */
@@ -458,12 +472,33 @@ function multiply(a, b) {
 
 function perspective(field, aspect, near, far) {
   const f = 1 / Math.tan(field / 2);
-  return [f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0];
+  return [
+    f / aspect,
+    0,
+    0,
+    0,
+    0,
+    f,
+    0,
+    0,
+    0,
+    0,
+    (far + near) / (near - far),
+    -1,
+    0,
+    0,
+    (2 * far * near) / (near - far),
+    0,
+  ];
 }
 
 function lookAt(eye, center) {
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const cross = (a, b) => [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
   const unit = (a) => {
     const length = Math.hypot(a[0], a[1], a[2]) || 1;
     return [a[0] / length, a[1] / length, a[2] / length];
@@ -472,7 +507,24 @@ function lookAt(eye, center) {
   const z = unit(sub(eye, center));
   const x = unit(cross([0, 1, 0], z));
   const y = cross(z, x);
-  return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1];
+  return [
+    x[0],
+    y[0],
+    z[0],
+    0,
+    x[1],
+    y[1],
+    z[1],
+    0,
+    x[2],
+    y[2],
+    z[2],
+    0,
+    -dot(x, eye),
+    -dot(y, eye),
+    -dot(z, eye),
+    1,
+  ];
 }
 
 /** The inverse transpose of the model's upper 3×3, for normals. */

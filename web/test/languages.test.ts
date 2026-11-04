@@ -10,6 +10,7 @@ import {
 import { Language } from "@codemirror/language";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { describe, expect, it } from "vitest";
+
 import { language, tokenStyle } from "../src/ui/source/languages";
 
 /** The highlighted tokens of `text`, as [text, class] pairs. */

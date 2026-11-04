@@ -1,6 +1,7 @@
 // What the notice for an ended session says about how it ended.
 
 import { describe, expect, it } from "vitest";
+
 import type { Note } from "../src/model";
 import { endedNotice } from "../src/ui/Routes";
 

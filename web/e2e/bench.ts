@@ -5,7 +5,9 @@
 // the times depend on the machine.
 
 import * as path from "node:path";
+
 import { chromium } from "@playwright/test";
+
 import { fixture, root, startMicroscope } from "./server.ts";
 
 const rounds = Number(process.argv[2] ?? 5);

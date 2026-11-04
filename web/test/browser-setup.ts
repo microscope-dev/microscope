@@ -2,6 +2,7 @@
 // browser, as a fresh page does.
 
 import { afterEach } from "vitest";
+
 import { resetWorkbench } from "../src/workbench/store";
 
 afterEach(() => {

@@ -4,6 +4,7 @@
 // page.
 
 import type { ComponentType } from "react";
+
 import { assert } from "../assert";
 import type { KindId, Pane, PaneId } from "./layout";
 

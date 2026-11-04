@@ -1,21 +1,14 @@
 {
   "name": "microscope",
   "displayName": "microscope",
-  "description": "Debug native Linux programs written in C, C++, Rust, Go, and Zig, and Python and Node.js programs, with microscope",
   "version": "0.1.0",
-  "publisher": "microscope",
-  "license": "MIT",
-  "engines": {
-    "vscode": "^1.90.0"
-  },
+  "description": "Debug native Linux programs written in C, C++, Rust, Go, and Zig, and Python and Node.js programs, with microscope",
   "categories": [
     "Debuggers"
   ],
+  "license": "MIT",
+  "publisher": "microscope",
   "main": "./extension.js",
-  "activationEvents": [
-    "onDebugResolve:microscope",
-    "onDebugDynamicConfigurations:microscope"
-  ],
   "contributes": {
     "configuration": {
       "title": "microscope",
@@ -63,34 +56,85 @@
       ]
     },
     "breakpoints": [
-      { "language": "c" },
-      { "language": "cpp" },
-      { "language": "rust" },
-      { "language": "go" },
-      { "language": "zig" },
-      { "language": "odin" },
-      { "language": "FortranFreeForm" },
-      { "language": "FortranFixedForm" },
-      { "language": "d" },
-      { "language": "nim" },
-      { "language": "ada" },
-      { "language": "python" },
-      { "language": "javascript" },
-      { "language": "typescript" },
-      { "language": "javascriptreact" },
-      { "language": "typescriptreact" }
+      {
+        "language": "c"
+      },
+      {
+        "language": "cpp"
+      },
+      {
+        "language": "rust"
+      },
+      {
+        "language": "go"
+      },
+      {
+        "language": "zig"
+      },
+      {
+        "language": "odin"
+      },
+      {
+        "language": "FortranFreeForm"
+      },
+      {
+        "language": "FortranFixedForm"
+      },
+      {
+        "language": "d"
+      },
+      {
+        "language": "nim"
+      },
+      {
+        "language": "ada"
+      },
+      {
+        "language": "python"
+      },
+      {
+        "language": "javascript"
+      },
+      {
+        "language": "typescript"
+      },
+      {
+        "language": "javascriptreact"
+      },
+      {
+        "language": "typescriptreact"
+      }
     ],
     "debuggers": [
       {
         "type": "microscope",
         "label": "microscope",
-        "languages": ["c", "cpp", "rust", "go", "zig", "odin", "FortranFreeForm", "FortranFixedForm", "d", "nim", "ada", "python", "javascript", "typescript", "javascriptreact", "typescriptreact"],
+        "languages": [
+          "c",
+          "cpp",
+          "rust",
+          "go",
+          "zig",
+          "odin",
+          "FortranFreeForm",
+          "FortranFixedForm",
+          "d",
+          "nim",
+          "ada",
+          "python",
+          "javascript",
+          "typescript",
+          "javascriptreact",
+          "typescriptreact"
+        ],
         "variables": {
           "pickProcess": "microscope.pickProcess"
         },
         "configurationAttributes": {
           "launch": {
-            "required": ["program"],
+            "required": [
+              "program"
+            ],
             "properties": {
               "program": {
                 "type": "string",
@@ -98,7 +142,9 @@
               },
               "args": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "Arguments passed to the program."
               },
@@ -108,7 +154,12 @@
               },
               "env": {
                 "type": "object",
-                "additionalProperties": { "type": ["string", "null"] },
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "default": {},
                 "description": "Environment variables set over the adapter's environment; null removes one."
               },
@@ -121,14 +172,43 @@
                 "description": "Which processes the program starts are debugged too, each shown in a session of its own with the program's breakpoints. auto debugs those that run the program or a runtime microscope models, such as Node.js or Python, and watches the rest until they run one; all debugs every one; none lets them run on their own. A table also names programs to debug and what a stop stops.",
                 "default": "auto",
                 "oneOf": [
-                  { "type": "string", "enum": ["auto", "all", "none"] },
+                  {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "all",
+                      "none"
+                    ]
+                  },
                   {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                      "mode": { "type": "string", "enum": ["auto", "all", "none"], "default": "auto" },
-                      "programs": { "type": "array", "items": { "type": "string" }, "description": "Programs to debug too, by file name, where * matches any run of characters and ? any one." },
-                      "stop": { "type": "string", "enum": ["group", "process"], "default": "group", "description": "group stops every process when one stops; process stops only that one." }
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "auto",
+                          "all",
+                          "none"
+                        ],
+                        "default": "auto"
+                      },
+                      "programs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Programs to debug too, by file name, where * matches any run of characters and ? any one."
+                      },
+                      "stop": {
+                        "type": "string",
+                        "enum": [
+                          "group",
+                          "process"
+                        ],
+                        "default": "group",
+                        "description": "group stops every process when one stops; process stops only that one."
+                      }
                     }
                   }
                 ]
@@ -140,7 +220,11 @@
               },
               "console": {
                 "type": "string",
-                "enum": ["internalConsole", "integratedTerminal", "externalTerminal"],
+                "enum": [
+                  "internalConsole",
+                  "integratedTerminal",
+                  "externalTerminal"
+                ],
                 "enumDescriptions": [
                   "The program's output appears in the debug console, and its input is empty.",
                   "The program runs in the integrated terminal, which owns its input and output.",
@@ -150,19 +234,26 @@
                 "description": "Where the program's standard streams go."
               },
               "sourceMap": {
-                "type": ["array", "object"],
+                "type": [
+                  "array",
+                  "object"
+                ],
                 "default": [],
                 "description": "Rules that read source files recorded under one path from another: [[\"/build/src\", \"${workspaceFolder}/src\"]]. Earlier rules are tried first."
               },
               "viewFiles": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "View files that present values, ahead of the project's .microscope/views, the user's, the program's own, and the built-in views. Later files come first."
               },
               "debugDirectories": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "Directories searched for the separate debug files of stripped modules, by build-id under .build-id and by .gnu_debuglink, before NIX_DEBUG_INFO_DIRS and /usr/lib/debug."
               },
@@ -173,13 +264,19 @@
               },
               "disassemblySyntax": {
                 "type": "string",
-                "enum": ["intel", "att"],
+                "enum": [
+                  "intel",
+                  "att"
+                ],
                 "default": "intel",
                 "description": "The assembly syntax of the disassembly view."
               },
               "threads": {
                 "type": "string",
-                "enum": ["tasks", "system"],
+                "enum": [
+                  "tasks",
+                  "system"
+                ],
                 "default": "tasks",
                 "description": "Show a runtime's tasks, such as Go's goroutines, as threads, or the system threads."
               },
@@ -201,15 +298,22 @@
               },
               "skipFiles": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "Globs of source files steps pass through without stopping, such as **/node_modules/**. JavaScript steps honor them."
               },
               "signals": {
                 "type": "object",
                 "additionalProperties": {
-                  "type": ["string", "array"],
-                  "items": { "type": "string" }
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 "default": {},
                 "description": "How each signal is handled, over the exception filters: stop, nostop, print, noprint, pass, or nopass, such as {\"SIGUSR1\": \"nostop\"}."
@@ -219,7 +323,10 @@
           "attach": {
             "properties": {
               "pid": {
-                "type": ["integer", "string"],
+                "type": [
+                  "integer",
+                  "string"
+                ],
                 "default": "${command:pickProcess}",
                 "description": "The process to attach to. ${command:pickProcess} picks one when the session starts."
               },
@@ -240,14 +347,43 @@
                 "description": "Which processes the program starts are debugged too, each shown in a session of its own with the program's breakpoints. auto debugs those that run the program or a runtime microscope models, such as Node.js or Python, and watches the rest until they run one; all debugs every one; none lets them run on their own. A table also names programs to debug and what a stop stops.",
                 "default": "auto",
                 "oneOf": [
-                  { "type": "string", "enum": ["auto", "all", "none"] },
+                  {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "all",
+                      "none"
+                    ]
+                  },
                   {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                      "mode": { "type": "string", "enum": ["auto", "all", "none"], "default": "auto" },
-                      "programs": { "type": "array", "items": { "type": "string" }, "description": "Programs to debug too, by file name, where * matches any run of characters and ? any one." },
-                      "stop": { "type": "string", "enum": ["group", "process"], "default": "group", "description": "group stops every process when one stops; process stops only that one." }
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "auto",
+                          "all",
+                          "none"
+                        ],
+                        "default": "auto"
+                      },
+                      "programs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Programs to debug too, by file name, where * matches any run of characters and ? any one."
+                      },
+                      "stop": {
+                        "type": "string",
+                        "enum": [
+                          "group",
+                          "process"
+                        ],
+                        "default": "group",
+                        "description": "group stops every process when one stops; process stops only that one."
+                      }
                     }
                   }
                 ]
@@ -263,7 +399,9 @@
               },
               "modulePaths": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "Directories searched for core dump modules missing from their recorded paths."
               },
@@ -273,19 +411,26 @@
                 "description": "Use module files that cannot be proven to match the core dump."
               },
               "sourceMap": {
-                "type": ["array", "object"],
+                "type": [
+                  "array",
+                  "object"
+                ],
                 "default": [],
                 "description": "Rules that read source files recorded under one path from another."
               },
               "viewFiles": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "View files that present values, ahead of the project's .microscope/views, the user's, the program's own, and the built-in views. Later files come first."
               },
               "debugDirectories": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "Directories searched for the separate debug files of stripped modules, by build-id under .build-id and by .gnu_debuglink, before NIX_DEBUG_INFO_DIRS and /usr/lib/debug."
               },
@@ -296,13 +441,19 @@
               },
               "disassemblySyntax": {
                 "type": "string",
-                "enum": ["intel", "att"],
+                "enum": [
+                  "intel",
+                  "att"
+                ],
                 "default": "intel",
                 "description": "The assembly syntax of the disassembly view."
               },
               "threads": {
                 "type": "string",
-                "enum": ["tasks", "system"],
+                "enum": [
+                  "tasks",
+                  "system"
+                ],
                 "default": "tasks",
                 "description": "Show a runtime's tasks, such as Go's goroutines, as threads, or the system threads."
               },
@@ -324,7 +475,9 @@
               },
               "skipFiles": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "default": [],
                 "description": "Globs of source files steps pass through without stopping, such as **/node_modules/**. JavaScript steps honor them."
               },
@@ -378,7 +531,9 @@
               "request": "launch",
               "name": "Launch Python script",
               "program": "${1:/usr/bin/python3}",
-              "args": ["^\"\\${file}\""],
+              "args": [
+                "^\"\\${file}\""
+              ],
               "cwd": "^\"\\${workspaceFolder}\""
             }
           },
@@ -390,7 +545,9 @@
               "request": "launch",
               "name": "Launch Node.js script",
               "program": "${1:/usr/bin/node}",
-              "args": ["^\"\\${file}\""],
+              "args": [
+                "^\"\\${file}\""
+              ],
               "cwd": "^\"\\${workspaceFolder}\""
             }
           },
@@ -417,5 +574,12 @@
         ]
       }
     ]
+  },
+  "activationEvents": [
+    "onDebugDynamicConfigurations:microscope",
+    "onDebugResolve:microscope"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
   }
 }

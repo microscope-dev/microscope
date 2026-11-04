@@ -1,6 +1,7 @@
 // A drawing's inputs come out of its binary frame exactly, or not at all.
 
 import { describe, expect, it } from "vitest";
+
 import type { DrawInput } from "../src/protocol";
 import { DecodeError, decodeInputs } from "../src/visualize/decode";
 

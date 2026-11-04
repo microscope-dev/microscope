@@ -1,6 +1,7 @@
 // Every pane names a thread the same way.
 
 import { expect, it } from "vitest";
+
 import { threadLabel } from "../src/ui/names";
 
 it("names a thread by its number, and its name when it has one", () => {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+
 import { assert } from "../../assert";
 import { formatRange, rangeOf, withLook } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant, formatSpan, hue } from "../../profile/paint";

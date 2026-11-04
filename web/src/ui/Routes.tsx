@@ -4,14 +4,15 @@
 
 import { Link, Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
+
 import { followEmailLink, followSignIn } from "../account";
 import { KIND } from "../documents";
 import { type Note, targetName } from "../model";
 import { useModel } from "../store";
 import { activate, type Json, paneOf, setParams } from "../workbench/layout";
 import { change, workbench } from "../workbench/store";
-import { PICKED } from "./Picker";
 import { profileLayout, showPane, showProfile, welcomeLayout } from "./panes";
+import { PICKED } from "./Picker";
 import { profileParams } from "./profile/ProfilePage";
 import { orgLink } from "./SingleSignOn";
 import { Workbench } from "./Workspace";

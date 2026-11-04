@@ -1,4 +1,5 @@
 import { useState } from "react";
+
 import { withLook } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant } from "../../profile/paint";
 import type { SyscallQuery, SyscallSite, SyscallToken } from "../../protocol";

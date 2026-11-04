@@ -2,6 +2,7 @@
 // History lasts across reloads, in this browser.
 
 import { createStore } from "zustand";
+
 import { assert } from "./assert";
 import type { ConsoleResult } from "./protocol";
 import { read, write } from "./storage";

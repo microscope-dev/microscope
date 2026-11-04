@@ -3,6 +3,7 @@
 // React's development build runs every effect twice.
 
 import { afterEach, expect, it, vi } from "vitest";
+
 import { account, followSignIn } from "../src/account";
 
 afterEach(() => {

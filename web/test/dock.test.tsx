@@ -6,6 +6,7 @@
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import "../src/styles.css";
 import { Dock } from "../src/workbench/Dock";
 import { kinds, type PaneKind, type PaneProps } from "../src/workbench/kinds";

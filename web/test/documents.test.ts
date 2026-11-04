@@ -4,6 +4,7 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+
 import { arrange, documentsGroup, KIND } from "../src/documents";
 import type { View } from "../src/focus";
 import {

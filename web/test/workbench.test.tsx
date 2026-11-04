@@ -6,6 +6,7 @@
 
 import { afterEach, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
+
 import { KIND, single } from "../src/documents";
 import { debugLayout, misplaced, profileLayout, welcomeLayout } from "../src/ui/panes";
 import { type KindId, type Layout, open } from "../src/workbench/layout";

@@ -2,6 +2,7 @@
 // actions, checked against a stop a real server reported.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import { ACTION_NAMES, action } from "../src/actions";
 import { toggleBreakpoint } from "../src/breakpoints";
 import type { Connection } from "../src/connection";

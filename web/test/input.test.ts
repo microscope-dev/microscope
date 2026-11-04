@@ -2,6 +2,7 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+
 import { COMMANDS } from "../src/ui/commands";
 import { joinWords, parseEnvironment, splitWords } from "../src/words";
 import { type Command, READY, registry } from "../src/workbench/commands";

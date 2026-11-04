@@ -3,8 +3,10 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+
 import {
   activate,
   build,

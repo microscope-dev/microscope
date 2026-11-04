@@ -4,7 +4,9 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+
 import type { Page } from "@playwright/test";
+
 import { expect, fixture, join, type Microscope, test } from "./server";
 
 const node = path.join(process.env.MICROSCOPE_NODE ?? "", "26", "node");

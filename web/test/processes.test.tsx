@@ -3,9 +3,11 @@
 
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import type { Group, Member } from "../src/protocol";
 import { Processes } from "../src/ui/Processes";
 import { mountPane, stoppedState, unmountPane } from "./pane";
+
 import "../src/styles.css";
 
 afterEach(unmountPane);

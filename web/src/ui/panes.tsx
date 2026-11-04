@@ -4,6 +4,7 @@
 // middle, values on the right), Welcome, and Profile.
 
 import { useContext } from "react";
+
 import { DOCUMENT_KINDS, documentsGroup, KIND, single, sourcePane } from "../documents";
 import type { View } from "../focus";
 import type { ProfileLook } from "../profile/look";
@@ -41,9 +42,9 @@ import { Drawings } from "./Drawings";
 import { Memory } from "./Memory";
 import { OrgBody, orgName, ProjectsBody } from "./Orgs";
 import { Output, OutputBadge } from "./Output";
+import { fileName } from "./paths";
 import { StartBody } from "./Picker";
 import { Processes, ProcessesBadge } from "./Processes";
-import { fileName } from "./paths";
 import { ProfileBody, profileParams } from "./profile/ProfilePage";
 import { Registers, RegistersBadge } from "./Registers";
 import { KeysBody, SettingsBody } from "./Settings";

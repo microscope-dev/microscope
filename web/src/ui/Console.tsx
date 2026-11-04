@@ -5,6 +5,7 @@
 
 import { useId, useRef, useState } from "react";
 import { useStore } from "zustand";
+
 import { assert } from "../assert";
 import { commonPrefix, consoleStore, finished, started } from "../console";
 import type { Completion } from "../protocol";

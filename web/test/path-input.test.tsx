@@ -4,6 +4,7 @@ import { cleanup, render } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import type { PathEntry } from "../src/protocol";
 import { SessionContext } from "../src/store";
 import { PathInput } from "../src/ui/Picker";

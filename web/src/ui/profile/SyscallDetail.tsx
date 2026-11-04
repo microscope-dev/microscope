@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+
 import { withLook } from "../../profile/look";
 import { formatCount, formatDuration, largest } from "../../profile/paint";
 import { bucketLabel, heatAlpha, shownBuckets } from "../../profile/syscalls";

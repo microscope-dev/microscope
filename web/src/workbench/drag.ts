@@ -4,8 +4,8 @@
 // renders nothing until it ends. Escape cancels it.
 
 import type { PointerEvent as ReactPointerEvent } from "react";
+
 import { classOf } from "./classes";
-import styles from "./Dock.module.css";
 import { type Drop, type Measured, type MeasuredGroup, type Point, resolveDrop } from "./drop";
 import {
   dock,
@@ -19,6 +19,8 @@ import {
 } from "./layout";
 import { keepOnScreen, snapWindow } from "./snap";
 import { change, workbench } from "./store";
+
+import styles from "./Dock.module.css";
 
 const css = classOf(styles);
 

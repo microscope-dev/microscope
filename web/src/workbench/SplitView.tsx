@@ -4,6 +4,7 @@
 // it renders nothing until the layout takes the new weights.
 
 import { Fragment, type KeyboardEvent, memo, type PointerEvent, useRef } from "react";
+
 import { assert } from "../assert";
 import { classOf } from "./classes";
 import { useDock } from "./context";
@@ -17,9 +18,10 @@ import {
   type SplitId,
   splits,
 } from "./layout";
-import styles from "./SplitView.module.css";
 import { snapSplitter } from "./snap";
 import { change, useLayout } from "./store";
+
+import styles from "./SplitView.module.css";
 
 const css = classOf(styles);
 

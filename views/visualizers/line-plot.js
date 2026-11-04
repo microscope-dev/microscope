@@ -111,13 +111,36 @@ microscope.draw((input, { previous, width, paths }) => {
   for (const tick of axis.ticks) {
     const y = toY(tick);
     shapes.push(
-      microscope.line({ x1: LEFT, y1: y, x2: right, y2: y, stroke: tick === 0 ? theme.ink3 : theme.line }),
-      microscope.text({ x: LEFT - 6, y, text: label(tick), size: 11, anchor: "end", baseline: "middle", fill: theme.ink3 }),
+      microscope.line({
+        x1: LEFT,
+        y1: y,
+        x2: right,
+        y2: y,
+        stroke: tick === 0 ? theme.ink3 : theme.line,
+      }),
+      microscope.text({
+        x: LEFT - 6,
+        y,
+        text: label(tick),
+        size: 11,
+        anchor: "end",
+        baseline: "middle",
+        fill: theme.ink3,
+      }),
     );
   }
   for (const tick of xAxis.ticks) {
     const px = LEFT + ((tick - xAxis.lo) / (xAxis.hi - xAxis.lo || 1)) * (right - LEFT);
-    shapes.push(microscope.text({ x: px, y: bottom + 16, text: label(tick), size: 11, anchor: "middle", fill: theme.ink3 }));
+    shapes.push(
+      microscope.text({
+        x: px,
+        y: bottom + 16,
+        text: label(tick),
+        size: 11,
+        anchor: "middle",
+        fill: theme.ink3,
+      }),
+    );
   }
 
   // The stop before, as a faint line beneath.
@@ -126,8 +149,11 @@ microscope.draw((input, { previous, width, paths }) => {
     const now = series.find((line) => line.name === ghost.name);
     if (now === undefined || ghost.values.length !== now.values.length) continue;
     ghosted = true;
-    for (const points of trace(ghost.values, toX, toY, decimated ? spans : null, columnX, log).lines) {
-      shapes.push(microscope.polyline({ points, stroke: theme.ink3, strokeWidth: 1, opacity: 0.6 }));
+    for (const points of trace(ghost.values, toX, toY, decimated ? spans : null, columnX, log)
+      .lines) {
+      shapes.push(
+        microscope.polyline({ points, stroke: theme.ink3, strokeWidth: 1, opacity: 0.6 }),
+      );
     }
   }
 
@@ -154,7 +180,16 @@ microscope.draw((input, { previous, width, paths }) => {
       for (let i = 0; i < line.values.length; i++) {
         const v = line.values[i];
         if (Number.isFinite(v) && !(log && v <= 0)) {
-          shapes.push(microscope.circle({ x: toX(i), y: toY(v), r: 3, fill: color, stroke: theme.surface, strokeWidth: 1.5 }));
+          shapes.push(
+            microscope.circle({
+              x: toX(i),
+              y: toY(v),
+              r: 3,
+              fill: color,
+              stroke: theme.surface,
+              strokeWidth: 1.5,
+            }),
+          );
         }
       }
     }
@@ -162,7 +197,13 @@ microscope.draw((input, { previous, width, paths }) => {
       const px = toX(i);
       const y = up ? TOP : bottom;
       const d = up ? 5 : -5;
-      shapes.push(microscope.polygon({ points: [px - 4, y + d, px + 4, y + d, px, y], fill: color, title: `[${i}] ${line.name}: ${up ? "+" : "-"}∞` }));
+      shapes.push(
+        microscope.polygon({
+          points: [px - 4, y + d, px + 4, y + d, px, y],
+          fill: color,
+          title: `[${i}] ${line.name}: ${up ? "+" : "-"}∞`,
+        }),
+      );
     }
   }
 
@@ -173,7 +214,11 @@ microscope.draw((input, { previous, width, paths }) => {
   const single = series.length === 1 && input.values !== undefined && paths.values !== null;
   for (const { column: mark, first, last } of marks) {
     const left = decimated ? LEFT + mark : mark === 0 ? LEFT : (toX(mark - 1) + toX(mark)) / 2;
-    const end = decimated ? LEFT + mark + 1 : mark === count - 1 ? right : (toX(mark) + toX(mark + 1)) / 2;
+    const end = decimated
+      ? LEFT + mark + 1
+      : mark === count - 1
+        ? right
+        : (toX(mark) + toX(mark + 1)) / 2;
     const lines = [first === last ? `[${first}]` : `[${first}…${last}]`];
     if (x !== null && first === last) lines[0] += ` x = ${exact(x[first], input.x, first)}`;
     for (const { line } of traced) {
@@ -190,7 +235,11 @@ microscope.draw((input, { previous, width, paths }) => {
     }
     shapes.push(
       microscope.rect({
-        x: left, y: TOP, width: Math.max(0.5, end - left), height: bottom - TOP, fill: "transparent",
+        x: left,
+        y: TOP,
+        width: Math.max(0.5, end - left),
+        height: bottom - TOP,
+        fill: "transparent",
         title: lines.join("\n"),
         select: single && first === last ? `${paths.values}[${first}]` : undefined,
       }),
@@ -205,8 +254,22 @@ microscope.draw((input, { previous, width, paths }) => {
     let lx = LEFT;
     for (const key of keys) {
       shapes.push(
-        microscope.line({ x1: lx, y1: 10, x2: lx + 12, y2: 10, stroke: key.stroke, strokeWidth: 2 }),
-        microscope.text({ x: lx + 16, y: 10, text: key.name, size: 11, baseline: "middle", fill: theme.ink2 }),
+        microscope.line({
+          x1: lx,
+          y1: 10,
+          x2: lx + 12,
+          y2: 10,
+          stroke: key.stroke,
+          strokeWidth: 2,
+        }),
+        microscope.text({
+          x: lx + 16,
+          y: 10,
+          text: key.name,
+          size: 11,
+          baseline: "middle",
+          fill: theme.ink2,
+        }),
       );
       lx += 28 + key.name.length * 6.5;
     }
@@ -223,8 +286,23 @@ microscope.draw((input, { previous, width, paths }) => {
   }
   for (const { line, i, y } of ends) {
     shapes.push(
-      microscope.line({ x1: right + 4, y1: y, x2: right + 12, y2: y, stroke: theme.series[line.hue], strokeWidth: 2 }),
-      microscope.text({ x: right + 15, y, text: label(line.values[i]), size: 11, baseline: "middle", family: "mono", fill: theme.ink }),
+      microscope.line({
+        x1: right + 4,
+        y1: y,
+        x2: right + 12,
+        y2: y,
+        stroke: theme.series[line.hue],
+        strokeWidth: 2,
+      }),
+      microscope.text({
+        x: right + 15,
+        y,
+        text: label(line.values[i]),
+        size: 11,
+        baseline: "middle",
+        family: "mono",
+        fill: theme.ink,
+      }),
     );
   }
 
@@ -244,12 +322,17 @@ microscope.draw((input, { previous, width, paths }) => {
   }
   lows.sort((a, b) => a.line.values[a.at] - b.line.values[b.at]);
   highs.sort((a, b) => b.line.values[b.at] - a.line.values[a.at]);
-  const who = (/** @type {{ line: { name: string } }} */ s) => (series.length > 1 ? `${s.line.name} ` : "");
+  const who = (/** @type {{ line: { name: string } }} */ s) =>
+    series.length > 1 ? `${s.line.name} ` : "";
   const [lowest] = lows;
   const [highest] = highs;
   if (lowest !== undefined && highest !== undefined) {
-    caption.push(`min ${who(lowest)}${brief(exact(lowest.line.values[lowest.at], lowest.line.raw, lowest.at))} at [${lowest.at}]`);
-    caption.push(`max ${who(highest)}${brief(exact(highest.line.values[highest.at], highest.line.raw, highest.at))} at [${highest.at}]`);
+    caption.push(
+      `min ${who(lowest)}${brief(exact(lowest.line.values[lowest.at], lowest.line.raw, lowest.at))} at [${lowest.at}]`,
+    );
+    caption.push(
+      `max ${who(highest)}${brief(exact(highest.line.values[highest.at], highest.line.raw, highest.at))} at [${highest.at}]`,
+    );
   }
   if (series.length === 1) {
     const mean = meanOf(series[0].values);
@@ -260,7 +343,9 @@ microscope.draw((input, { previous, width, paths }) => {
   if (nonPositive > 0) caption.push(`${nonPositive} ≤ 0 left out of the log scale`);
   if (decimated) caption.push(`${short(count / columns)} values a column: min/max band`);
   if (input.series !== undefined && seriesCount(input.series) > series.length) {
-    caption.push(`${seriesCount(input.series) - series.length} more series not drawn; the Table has them`);
+    caption.push(
+      `${seriesCount(input.series) - series.length} more series not drawn; the Table has them`,
+    );
   }
   if (log) caption.push("log scale");
   return microscope.picture({ width: W, height: HEIGHT, shapes, caption: caption.join(" · ") });
@@ -306,7 +391,12 @@ function entries(value, what) {
   if (Array.isArray(value) && value.every((entry) => Array.isArray(entry) && entry.length === 2)) {
     return value;
   }
-  if (typeof value === "object" && value !== null && !Array.isArray(value) && !ArrayBuffer.isView(value)) {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !ArrayBuffer.isView(value)
+  ) {
     return Object.entries(value);
   }
   throw new TypeError(`\`${what}\` must be a map or a record of names to numbers`);
@@ -361,7 +451,9 @@ function exact(v, raw, i) {
 /** A caption's number: integers whole, floats to six significant digits;
  * titles and the Table have every digit. */
 function brief(text) {
-  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text)) ? String(Number(Number(text).toPrecision(6))) : text;
+  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text))
+    ? String(Number(Number(text).toPrecision(6)))
+    : text;
 }
 
 /** The polylines, bands, and edges of one series, decimated by column
@@ -390,7 +482,8 @@ function trace(values, toX, toY, spans, columnX, log) {
     for (let i = 0; i < values.length; i++) {
       const v = values[i];
       if (Number.isNaN(v)) nans += 1;
-      if (v === Number.POSITIVE_INFINITY || v === Number.NEGATIVE_INFINITY) infinities.push([i, v > 0]);
+      if (v === Number.POSITIVE_INFINITY || v === Number.NEGATIVE_INFINITY)
+        infinities.push([i, v > 0]);
       if (!usable(v)) {
         finish();
         continue;
@@ -409,7 +502,8 @@ function trace(values, toX, toY, spans, columnX, log) {
     for (let i = span.first; i <= span.last && i < values.length; i++) {
       const v = values[i];
       if (Number.isNaN(v)) nans += 1;
-      if (v === Number.POSITIVE_INFINITY || v === Number.NEGATIVE_INFINITY) infinities.push([i, v > 0]);
+      if (v === Number.POSITIVE_INFINITY || v === Number.NEGATIVE_INFINITY)
+        infinities.push([i, v > 0]);
       if (!usable(v)) {
         gap = true;
       } else {
@@ -477,7 +571,8 @@ function nice(lo, hi, count = 5) {
   const start = Math.floor(lo / step) * step;
   const end = Math.ceil(hi / step) * step;
   const ticks = [];
-  for (let k = 0; start + k * step <= end + step / 2; k++) ticks.push(Number((start + k * step).toPrecision(12)));
+  for (let k = 0; start + k * step <= end + step / 2; k++)
+    ticks.push(Number((start + k * step).toPrecision(12)));
   return { lo: start, hi: end, ticks };
 }
 

@@ -2,6 +2,7 @@
 // buckets, and shades as the server counts.
 
 import { describe, expect, it } from "vitest";
+
 import { parseSearch, stringifySearch } from "../src/focus";
 import { type ProfileLook, syscallQueryOf, validateProfileLook } from "../src/profile/look";
 import {

@@ -2,6 +2,7 @@
 // typed into as a person would, in Chromium and Firefox.
 
 import { expect, type Page } from "@playwright/test";
+
 import { parseChord, toPlaywright, type User, type ValuePane } from "./user";
 
 const PANES: Record<ValuePane, string> = { Variables: "variables", Watch: "watches" };

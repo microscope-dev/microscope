@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { commands } from "vitest/browser";
+
 import type { LivePointer } from "../src/visualize/sandbox";
 import { palette } from "./palette";
 import { context, pixel, sandbox, Watched } from "./sandboxes";

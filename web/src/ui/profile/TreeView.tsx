@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
+
 import { assert } from "../../assert";
 import { diffModeOf } from "../../profile/look";
 import { type Changed, changeOf, formatPercent } from "../../profile/paint";
@@ -88,7 +89,7 @@ export function TreeRows({
     if (!tree) {
       return shown;
     }
-    for (let node = 0; node < tree.count; ) {
+    for (let node = 0; node < tree.count;) {
       shown.push(node);
       node = open.has(node) ? node + 1 : (tree.end[node] ?? node + 1);
     }

@@ -3,6 +3,7 @@
 
 import { createContext, useContext } from "react";
 import { createStore, type StoreApi, useStore } from "zustand";
+
 import { Connection, type ConnectionOptions } from "./connection";
 import { initialModel, type Model, type ModelEvent, reduce } from "./model";
 

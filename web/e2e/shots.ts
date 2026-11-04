@@ -4,7 +4,9 @@
 import { spawnSync } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
 import * as path from "node:path";
+
 import { chromium, type Page } from "@playwright/test";
+
 import { fixture, menu, root, startMicroscope } from "./server.ts";
 
 const out = path.join(root, "target", "web-shots");

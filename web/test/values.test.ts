@@ -2,6 +2,7 @@
 // since the stop before; hovers and inline values find expressions in text.
 
 import { describe, expect, it } from "vitest";
+
 import { expressionAt, expressionsIn } from "../src/expressions";
 import type { Row } from "../src/protocol";
 import { childKey, Recall, toggled } from "../src/tree";

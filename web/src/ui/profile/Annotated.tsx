@@ -1,4 +1,5 @@
 import { type RefObject, useEffect, useMemo, useRef } from "react";
+
 import { formatCount, formatPercent, largest } from "../../profile/paint";
 import { useAnswer, useProfile } from "./context";
 import { Unanswered } from "./parts";

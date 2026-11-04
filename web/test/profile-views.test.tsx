@@ -6,6 +6,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { type ReactNode, useMemo, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import type { TransportHandlers } from "../src/connection";
 import { type ProfileLook, queryOf } from "../src/profile/look";
 import {

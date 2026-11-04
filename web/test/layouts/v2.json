@@ -11,10 +11,7 @@
           "node": {
             "type": "group",
             "id": "g0",
-            "tabs": [
-              "p1",
-              "p2"
-            ],
+            "tabs": ["p1", "p2"],
             "active": "p1"
           }
         },
@@ -30,9 +27,7 @@
                 "node": {
                   "type": "group",
                   "id": "g3",
-                  "tabs": [
-                    "p4"
-                  ],
+                  "tabs": ["p4"],
                   "active": "p4"
                 }
               },
@@ -41,9 +36,7 @@
                 "node": {
                   "type": "group",
                   "id": "g7",
-                  "tabs": [
-                    "p8"
-                  ],
+                  "tabs": ["p8"],
                   "active": "p8"
                 }
               }
@@ -54,9 +47,7 @@
     },
     "floating": [],
     "maximized": null,
-    "hidden": [
-      "g0"
-    ],
+    "hidden": ["g0"],
     "focused": "g3",
     "panes": {
       "p1": {

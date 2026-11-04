@@ -5,6 +5,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
+
 import "../src/styles.css";
 import { createAppRouter } from "../src/router";
 import { SessionContext } from "../src/store";

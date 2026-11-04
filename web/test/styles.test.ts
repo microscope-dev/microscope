@@ -2,6 +2,7 @@
 // chosen theme, so the two copies must not drift apart.
 
 import { readFileSync } from "node:fs";
+
 import { expect, it } from "vitest";
 
 const css = readFileSync("src/styles.css", "utf8");

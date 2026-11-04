@@ -2,6 +2,7 @@
 // which locks itself down first, and its picture through the validator.
 
 import { afterEach } from "vitest";
+
 import { type Picture, type Shape, validate } from "../src/visualize/picture";
 import type { DrawContext } from "../src/visualize/sandbox";
 import workerSource from "../src/visualize/worker.js?raw";

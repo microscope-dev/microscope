@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { dumpRows, readAs, target, targetText } from "../src/memory";
 
 describe("memory", () => {

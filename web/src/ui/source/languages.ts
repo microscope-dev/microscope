@@ -17,6 +17,7 @@ import {
 } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 import { tags } from "@lezer/highlight";
+
 import { assert } from "../../assert";
 import { PYTHON_KEYWORDS, pythonKeywordHolds } from "../../python";
 

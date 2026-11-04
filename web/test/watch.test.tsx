@@ -3,6 +3,7 @@
 
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
+
 import { Registers } from "../src/ui/Registers";
 import { Watch } from "../src/ui/Values";
 import { mountPane, unmountPane } from "./pane";

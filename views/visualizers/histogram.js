@@ -40,16 +40,27 @@ microscope.draw((input, { previous, width }) => {
     counts = Array.from(numbers(input.counts, "counts"));
     edges = Array.from(numbers(input.edges, "edges"));
     if (edges.length !== counts.length + 1) {
-      throw new RangeError(`\`edges\` holds ${edges.length}, and \`counts\` needs ${counts.length + 1}, one more`);
+      throw new RangeError(
+        `\`edges\` holds ${edges.length}, and \`counts\` needs ${counts.length + 1}, one more`,
+      );
     }
     for (let k = 1; k < edges.length; k++) {
-      if (!(edges[k] > edges[k - 1])) throw new RangeError(`\`edges\` must rise, and edges[${k}] does not`);
+      if (!(edges[k] > edges[k - 1]))
+        throw new RangeError(`\`edges\` must rise, and edges[${k}] does not`);
     }
-    if (counts.some((count) => !(count >= 0))) throw new RangeError("`counts` must not be negative");
+    if (counts.some((count) => !(count >= 0)))
+      throw new RangeError("`counts` must not be negative");
     n = counts.reduce((total, count) => total + count, 0);
-    marks = [["p50", 0.5], ["p90", 0.9], ["p99", 0.99]].map(([name, p]) => [String(name), binnedQuantile(counts, edges, Number(p), n)]);
+    marks = [
+      ["p50", 0.5],
+      ["p90", 0.9],
+      ["p99", 0.99],
+    ].map(([name, p]) => [String(name), binnedQuantile(counts, edges, Number(p), n)]);
     caption.push(`n=${exactCount(input.counts)}`, `${counts.length} bins as given`);
-    rebin = (from) => (from.counts !== undefined && from.counts.length === counts.length ? Array.from(numbers(from.counts, "counts")) : null);
+    rebin = (from) =>
+      from.counts !== undefined && from.counts.length === counts.length
+        ? Array.from(numbers(from.counts, "counts"))
+        : null;
   } else if (input.values !== undefined && input.values !== null) {
     const raw = numbers(input.values, "values");
     const samples = new Float64Array(raw.length);
@@ -82,7 +93,12 @@ microscope.draw((input, { previous, width }) => {
       const fd = iqr > 0 ? (2 * iqr) / Math.cbrt(n) : 0;
       const wanted = fd > 0 ? Math.ceil((hi - lo) / fd) : Math.ceil(Math.log2(Math.max(1, n)) + 1);
       bins = Math.max(1, Math.min(MOST_BINS, wanted));
-      how = fd > 0 ? (wanted > MOST_BINS ? `${bins} bins (Freedman–Diaconis wanted ${wanted})` : `${bins} bins (Freedman–Diaconis)`) : `${bins} bins (Sturges: the middle half is one value)`;
+      how =
+        fd > 0
+          ? wanted > MOST_BINS
+            ? `${bins} bins (Freedman–Diaconis wanted ${wanted})`
+            : `${bins} bins (Freedman–Diaconis)`
+          : `${bins} bins (Sturges: the middle half is one value)`;
     }
     if (lo === hi) {
       lo -= 0.5;
@@ -93,9 +109,19 @@ microscope.draw((input, { previous, width }) => {
     const bin = (v) => Math.min(bins - 1, Math.max(0, Math.floor((v - lo) / step)));
     counts = new Array(bins).fill(0);
     for (const v of finite) counts[bin(v)] += 1;
-    if (n > 0) marks = [["p50", q(0.5)], ["p90", q(0.9)], ["p99", q(0.99)]];
+    if (n > 0)
+      marks = [
+        ["p50", q(0.5)],
+        ["p90", q(0.9)],
+        ["p99", q(0.99)],
+      ];
     caption.push(`n=${n}`, `${how} of ${short(step)}`);
-    if (n > 0) caption.push(`min ${brief(exact(lo))}`, `max ${brief(exact(hi))}`, `mean ${short(total / n)}`);
+    if (n > 0)
+      caption.push(
+        `min ${brief(exact(lo))}`,
+        `max ${brief(exact(hi))}`,
+        `mean ${short(total / n)}`,
+      );
     rebin = (from) => {
       if (from.values === undefined) return null;
       const before = numbers(from.values, "values");
@@ -122,7 +148,10 @@ microscope.draw((input, { previous, width }) => {
   const most = Math.max(1, ...counts, ...(before ?? []));
   const yAxis = log ? logTicks(most) : nice(0, most);
   const toY = (count) => {
-    if (log) return count <= 0 ? bottom : bottom - (Math.log10(count) / Math.log10(yAxis.hi)) * (bottom - TOP);
+    if (log)
+      return count <= 0
+        ? bottom
+        : bottom - (Math.log10(count) / Math.log10(yAxis.hi)) * (bottom - TOP);
     return bottom - (count / yAxis.hi) * (bottom - TOP);
   };
   const xlo = edges[0];
@@ -132,12 +161,35 @@ microscope.draw((input, { previous, width }) => {
   const shapes = [];
   for (const tick of yAxis.ticks) {
     shapes.push(
-      microscope.line({ x1: LEFT, y1: toY(tick), x2: right, y2: toY(tick), stroke: tick === 0 ? theme.ink3 : theme.line }),
-      microscope.text({ x: LEFT - 6, y: toY(tick), text: label(tick), size: 11, anchor: "end", baseline: "middle", fill: theme.ink3 }),
+      microscope.line({
+        x1: LEFT,
+        y1: toY(tick),
+        x2: right,
+        y2: toY(tick),
+        stroke: tick === 0 ? theme.ink3 : theme.line,
+      }),
+      microscope.text({
+        x: LEFT - 6,
+        y: toY(tick),
+        text: label(tick),
+        size: 11,
+        anchor: "end",
+        baseline: "middle",
+        fill: theme.ink3,
+      }),
     );
   }
   for (const tick of nice(xlo, xhi).ticks.filter((t) => t >= xlo && t <= xhi)) {
-    shapes.push(microscope.text({ x: toX(tick), y: bottom + 16, text: label(tick), size: 11, anchor: "middle", fill: theme.ink3 }));
+    shapes.push(
+      microscope.text({
+        x: toX(tick),
+        y: bottom + 16,
+        text: label(tick),
+        size: 11,
+        anchor: "middle",
+        fill: theme.ink3,
+      }),
+    );
   }
   let running = 0;
   counts.forEach((count, k) => {
@@ -145,11 +197,16 @@ microscope.draw((input, { previous, width }) => {
     const x0 = toX(edges[k]);
     const x1 = toX(edges[k + 1]);
     const share = n > 0 ? (100 * running) / n : 0;
-    shapes.push(microscope.rect({
-      x: x0 + 0.5, y: toY(count), width: Math.max(0.5, x1 - x0 - 1), height: Math.max(0, bottom - toY(count)),
-      fill: theme.series[0],
-      title: `[${exact(edges[k])}, ${exact(edges[k + 1])}${k === counts.length - 1 ? "]" : ")"}: ${count} · ${short(share)}% up to here`,
-    }));
+    shapes.push(
+      microscope.rect({
+        x: x0 + 0.5,
+        y: toY(count),
+        width: Math.max(0.5, x1 - x0 - 1),
+        height: Math.max(0, bottom - toY(count)),
+        fill: theme.series[0],
+        title: `[${exact(edges[k])}, ${exact(edges[k + 1])}${k === counts.length - 1 ? "]" : ")"}: ${count} · ${short(share)}% up to here`,
+      }),
+    );
   });
   if (before !== null) {
     const outline = [LEFT, bottom];
@@ -157,7 +214,15 @@ microscope.draw((input, { previous, width }) => {
       outline.push(toX(edges[k]), toY(count), toX(edges[k + 1]), toY(count));
     });
     outline.push(right, bottom);
-    shapes.push(microscope.polyline({ points: outline, stroke: theme.ink, strokeWidth: 1, opacity: 0.7, title: "the stop before" }));
+    shapes.push(
+      microscope.polyline({
+        points: outline,
+        stroke: theme.ink,
+        strokeWidth: 1,
+        opacity: 0.7,
+        title: "the stop before",
+      }),
+    );
   }
   // Each quantile's line, and its label above the plot; labels that would
   // overlap stack instead.
@@ -170,13 +235,31 @@ microscope.draw((input, { previous, width }) => {
     lastX = x;
     const end = x > right - 60;
     shapes.push(
-      microscope.line({ x1: x, y1: TOP - 6, x2: x, y2: bottom, stroke: theme.ink, strokeWidth: 1, dash: [3, 2], title: `${name} ${exact(at)}` }),
-      microscope.text({ x: end ? x - 3 : x + 3, y: TOP - 8 - row * 12, text: `${name} ${short(at)}`, size: 11, anchor: end ? "end" : "start", fill: theme.ink, title: `${name} ${exact(at)}` }),
+      microscope.line({
+        x1: x,
+        y1: TOP - 6,
+        x2: x,
+        y2: bottom,
+        stroke: theme.ink,
+        strokeWidth: 1,
+        dash: [3, 2],
+        title: `${name} ${exact(at)}`,
+      }),
+      microscope.text({
+        x: end ? x - 3 : x + 3,
+        y: TOP - 8 - row * 12,
+        text: `${name} ${short(at)}`,
+        size: 11,
+        anchor: end ? "end" : "start",
+        fill: theme.ink,
+        title: `${name} ${exact(at)}`,
+      }),
     );
   }
 
   if (odd > 0) caption.push(`${odd} NaN or ±∞, not counted`);
-  if (input.values !== undefined && input.counts === undefined) caption.push("quantiles: linear (type 7)");
+  if (input.values !== undefined && input.counts === undefined)
+    caption.push("quantiles: linear (type 7)");
   if (input.counts !== undefined) caption.push("quantiles interpolate within bins");
   if (before !== null) caption.push("outline = the stop before");
   if (log) caption.push("log counts");
@@ -275,7 +358,9 @@ function exact(v) {
 /** A caption's number: integers whole, floats to six significant digits;
  * titles and the Table have every digit. */
 function brief(text) {
-  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text)) ? String(Number(Number(text).toPrecision(6))) : text;
+  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text))
+    ? String(Number(Number(text).toPrecision(6)))
+    : text;
 }
 
 function short(v) {
@@ -291,7 +376,8 @@ function nice(lo, hi, count = 5) {
   const start = Math.floor(lo / step) * step;
   const end = Math.ceil(hi / step) * step;
   const ticks = [];
-  for (let k = 0; start + k * step <= end + step / 2; k++) ticks.push(Number((start + k * step).toPrecision(12)));
+  for (let k = 0; start + k * step <= end + step / 2; k++)
+    ticks.push(Number((start + k * step).toPrecision(12)));
   return { lo: start, hi: end, ticks };
 }
 

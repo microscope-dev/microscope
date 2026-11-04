@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+
 import { assert } from "../assert";
 import { stopPath } from "../focus";
 import { stopKind } from "../model";

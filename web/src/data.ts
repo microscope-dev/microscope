@@ -3,6 +3,7 @@
 // dropped connection are discarded and retried on reconnection.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+
 import { assert } from "./assert";
 import type { Connection } from "./connection";
 import { type Method, type ParamsOf, RequestError, type Results } from "./protocol";

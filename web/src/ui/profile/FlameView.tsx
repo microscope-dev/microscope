@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+
 import { assert } from "../../assert";
 import { diffModeOf, withLook } from "../../profile/look";
 import { changeFill, changeOf, fill, formatPercent, formatWeight } from "../../profile/paint";
@@ -93,7 +94,7 @@ function matching(tree: CallTree, search: string) {
   const needle = search.toLowerCase();
   const nodes = new Set<number>();
   let weight = 0;
-  for (let node = 0; node < tree.count; ) {
+  for (let node = 0; node < tree.count;) {
     if (nameOf(tree, node).toLowerCase().includes(needle)) {
       weight += tree.total[node] ?? 0;
       for (let inner = node; inner < (tree.end[node] ?? node + 1); inner += 1) {

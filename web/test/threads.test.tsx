@@ -2,6 +2,7 @@
 
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
+
 import { Threads } from "../src/ui/Threads";
 import { mountPane, stoppedState, unmountPane } from "./pane";
 

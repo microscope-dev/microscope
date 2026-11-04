@@ -23,7 +23,8 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   const grid = gridOf(input);
   const { rows, columns, values } = grid;
   const before = previous === null ? null : safeGrid(previous);
-  const changed = before !== null && before.rows === rows && before.columns === columns ? before.values : null;
+  const changed =
+    before !== null && before.rows === rows && before.columns === columns ? before.values : null;
   const log = input.log === true;
 
   let lo = Number.POSITIVE_INFINITY;
@@ -57,18 +58,37 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   const diverging = dark ? ["#4f8fe0", "#3a3f47", "#e8615f"] : ["#2266c4", "#ececec", "#d23f3e"];
   const most = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
   const color = (v) => {
-    if (!Number.isFinite(v)) return v > 0 ? (scale === "diverging" ? diverging[2] : ramp[1]) : v < 0 ? diverging[0] : theme.line;
+    if (!Number.isFinite(v))
+      return v > 0
+        ? scale === "diverging"
+          ? diverging[2]
+          : ramp[1]
+        : v < 0
+          ? diverging[0]
+          : theme.line;
     if (scale === "diverging") {
-      return v < 0 ? microscope.color.scale(-v / most, diverging[1], diverging[0]) : microscope.color.scale(v / most, diverging[1], diverging[2]);
+      return v < 0
+        ? microscope.color.scale(-v / most, diverging[1], diverging[0])
+        : microscope.color.scale(v / most, diverging[1], diverging[2]);
     }
-    if (log) return v <= 0 ? ramp[0] : microscope.color.scale((Math.log10(v) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo) || 1), ramp[0], ramp[1]);
+    if (log)
+      return v <= 0
+        ? ramp[0]
+        : microscope.color.scale(
+            (Math.log10(v) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo) || 1),
+            ramp[0],
+            ramp[1],
+          );
     return microscope.color.scale((v - lo) / (hi - lo || 1), ramp[0], ramp[1]);
   };
 
   const rowLabels = labelsOf(input.row_labels, rows, "row_labels");
   const columnLabels = labelsOf(input.column_labels, columns, "column_labels");
   const W = Math.round(Math.min(Math.max(width, 320), 1600));
-  const left = rowLabels === null ? 36 : Math.min(120, 10 + Math.max(...rowLabels.map((name) => name.length)) * 6.4);
+  const left =
+    rowLabels === null
+      ? 36
+      : Math.min(120, 10 + Math.max(...rowLabels.map((name) => name.length)) * 6.4);
   const room = W - left - 12;
   const cell = Math.max(0.25, Math.min(28, room / columns, 480 / rows));
   const top = 8;
@@ -93,14 +113,52 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
         const title = `${name}: ${exact(grid, i)}`;
         const inset = cell > 4 ? 0.5 : 0;
         if (Number.isNaN(v)) {
-          shapes.push(microscope.rect({ x: x + inset, y: y + inset, width: cell - inset * 2, height: cell - inset * 2, fill: theme.line, title, select: part(r, c) }));
-          shapes.push(microscope.line({ x1: x + inset, y1: y + cell - inset, x2: x + cell - inset, y2: y + inset, stroke: theme.ink3 }));
+          shapes.push(
+            microscope.rect({
+              x: x + inset,
+              y: y + inset,
+              width: cell - inset * 2,
+              height: cell - inset * 2,
+              fill: theme.line,
+              title,
+              select: part(r, c),
+            }),
+          );
+          shapes.push(
+            microscope.line({
+              x1: x + inset,
+              y1: y + cell - inset,
+              x2: x + cell - inset,
+              y2: y + inset,
+              stroke: theme.ink3,
+            }),
+          );
         } else {
-          shapes.push(microscope.rect({ x: x + inset, y: y + inset, width: cell - inset * 2, height: cell - inset * 2, fill: color(v), title, select: part(r, c) }));
+          shapes.push(
+            microscope.rect({
+              x: x + inset,
+              y: y + inset,
+              width: cell - inset * 2,
+              height: cell - inset * 2,
+              fill: color(v),
+              title,
+              select: part(r, c),
+            }),
+          );
         }
         if (changed !== null && !Object.is(changed[i], v)) {
           changes += 1;
-          shapes.push(microscope.rect({ x: x + 0.75, y: y + 0.75, width: Math.max(0.5, cell - 1.5), height: Math.max(0.5, cell - 1.5), fill: "none", stroke: theme.ink, strokeWidth: 1.5 }));
+          shapes.push(
+            microscope.rect({
+              x: x + 0.75,
+              y: y + 0.75,
+              width: Math.max(0.5, cell - 1.5),
+              height: Math.max(0.5, cell - 1.5),
+              fill: "none",
+              stroke: theme.ink,
+              strokeWidth: 1.5,
+            }),
+          );
         }
       }
     }
@@ -139,26 +197,81 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
         const x = p % across;
         const y = Math.floor(p / across);
         const shade = (x + y) % 4 < 2 ? 255 : 200;
-        pixels.set([Math.round((hr * shade) / 255), Math.round((hg * shade) / 255), Math.round((hb * shade) / 255), 255], p * 4);
+        pixels.set(
+          [
+            Math.round((hr * shade) / 255),
+            Math.round((hg * shade) / 255),
+            Math.round((hb * shade) / 255),
+            255,
+          ],
+          p * 4,
+        );
       } else {
         pixels.set([...rgb(color(v)), 255], p * 4);
       }
       if (overlay !== null && moved[p]) overlay.set([...rgb(theme.ink), 200], p * 4);
     }
-    shapes.push(microscope.image({ x: left, y: top, width: gridWidth, height: gridHeight, pixels, columns: across, rows: down, title: across < columns || down < rows ? "each pixel the largest of its cells" : "cells" }));
+    shapes.push(
+      microscope.image({
+        x: left,
+        y: top,
+        width: gridWidth,
+        height: gridHeight,
+        pixels,
+        columns: across,
+        rows: down,
+        title: across < columns || down < rows ? "each pixel the largest of its cells" : "cells",
+      }),
+    );
     if (overlay !== null && changes > 0) {
-      shapes.push(microscope.image({ x: left, y: top, width: gridWidth, height: gridHeight, pixels: overlay, columns: across, rows: down }));
+      shapes.push(
+        microscope.image({
+          x: left,
+          y: top,
+          width: gridWidth,
+          height: gridHeight,
+          pixels: overlay,
+          columns: across,
+          rows: down,
+        }),
+      );
     }
   }
 
   // Row and column labels, as many as fit.
   const everyRow = roundStep(13 / cell);
   for (let r = 0; r < rows; r += everyRow) {
-    shapes.push(microscope.text({ x: left - 4, y: top + r * cell + cell / 2, text: truncate(rowLabels?.[r] ?? String(r), left - 6), size: 10, anchor: "end", baseline: "middle", fill: theme.ink3 }));
+    shapes.push(
+      microscope.text({
+        x: left - 4,
+        y: top + r * cell + cell / 2,
+        text: truncate(rowLabels?.[r] ?? String(r), left - 6),
+        size: 10,
+        anchor: "end",
+        baseline: "middle",
+        fill: theme.ink3,
+      }),
+    );
   }
-  const everyColumn = roundStep(((columnLabels === null ? String(columns).length : Math.max(...columnLabels.map((name) => name.length))) * 6 + 10) / cell);
+  const everyColumn = roundStep(
+    ((columnLabels === null
+      ? String(columns).length
+      : Math.max(...columnLabels.map((name) => name.length))) *
+      6 +
+      10) /
+      cell,
+  );
   for (let c = 0; c < columns; c += everyColumn) {
-    shapes.push(microscope.text({ x: left + c * cell + cell / 2, y: top + gridHeight + 12, text: columnLabels?.[c] ?? String(c), size: 10, anchor: "middle", fill: theme.ink3 }));
+    shapes.push(
+      microscope.text({
+        x: left + c * cell + cell / 2,
+        y: top + gridHeight + 12,
+        text: columnLabels?.[c] ?? String(c),
+        size: 10,
+        anchor: "middle",
+        fill: theme.ink3,
+      }),
+    );
   }
 
   // The legend: the ramp as a smooth image, with its ends and zero.
@@ -168,13 +281,48 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   const ramped = new Uint8ClampedArray(steps * 4);
   for (let k = 0; k < steps; k++) {
     const t = k / (steps - 1);
-    const v = scale === "diverging" ? -most + t * 2 * most : log ? 10 ** (Math.log10(lo) + t * (Math.log10(hi) - Math.log10(lo))) : lo + t * (hi - lo);
+    const v =
+      scale === "diverging"
+        ? -most + t * 2 * most
+        : log
+          ? 10 ** (Math.log10(lo) + t * (Math.log10(hi) - Math.log10(lo)))
+          : lo + t * (hi - lo);
     ramped.set([...rgb(color(v)), 255], k * 4);
   }
-  shapes.push(microscope.image({ x: left, y: ly, width: lw, height: 8, pixels: ramped, columns: steps, rows: 1, smooth: true }));
-  const ends = scale === "diverging" ? [[0, `-${label(most)}`], [0.5, "0"], [1, label(most)]] : [[0, label(lo)], [1, label(hi)]];
+  shapes.push(
+    microscope.image({
+      x: left,
+      y: ly,
+      width: lw,
+      height: 8,
+      pixels: ramped,
+      columns: steps,
+      rows: 1,
+      smooth: true,
+    }),
+  );
+  const ends =
+    scale === "diverging"
+      ? [
+          [0, `-${label(most)}`],
+          [0.5, "0"],
+          [1, label(most)],
+        ]
+      : [
+          [0, label(lo)],
+          [1, label(hi)],
+        ];
   for (const [t, text] of ends) {
-    shapes.push(microscope.text({ x: left + Number(t) * lw, y: ly + 20, text: String(text), size: 10, anchor: t === 0 ? "start" : t === 1 ? "end" : "middle", fill: theme.ink3 }));
+    shapes.push(
+      microscope.text({
+        x: left + Number(t) * lw,
+        y: ly + 20,
+        text: String(text),
+        size: 10,
+        anchor: t === 0 ? "start" : t === 1 ? "end" : "middle",
+        fill: theme.ink3,
+      }),
+    );
   }
   let lx = left + lw + 16;
   if (nans > 0) {
@@ -187,19 +335,40 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   }
   if (changes > 0) {
     shapes.push(
-      microscope.rect({ x: lx, y: ly - 0.5, width: 10, height: 9, fill: "none", stroke: theme.ink, strokeWidth: 1.5 }),
+      microscope.rect({
+        x: lx,
+        y: ly - 0.5,
+        width: 10,
+        height: 9,
+        fill: "none",
+        stroke: theme.ink,
+        strokeWidth: 1.5,
+      }),
       microscope.text({ x: lx + 14, y: ly + 7, text: "changed", size: 10, fill: theme.ink3 }),
     );
   }
 
   const caption = [`${rows} × ${columns} cells`];
-  caption.push(scale === "diverging" ? "diverging around 0" : log ? "sequential, log" : "sequential");
+  caption.push(
+    scale === "diverging" ? "diverging around 0" : log ? "sequential, log" : "sequential",
+  );
   caption.push(`min ${label(lo)}`, `max ${label(hi)}`);
   if (nans > 0) caption.push(`${nans} NaN, hatched`);
   if (infinite > 0) caption.push(`${infinite} ±∞, at the ramp's ends`);
-  if (imaged && (Math.floor(gridWidth) < columns || Math.floor(gridHeight) < rows)) caption.push("each pixel the largest of its cells");
-  if (changed !== null) caption.push(changes === 0 ? "unchanged since the stop before" : `${changes} changed since the stop before`);
-  return microscope.picture({ width: W, height: Math.ceil(ly + 30), shapes, caption: caption.join(" · ") });
+  if (imaged && (Math.floor(gridWidth) < columns || Math.floor(gridHeight) < rows))
+    caption.push("each pixel the largest of its cells");
+  if (changed !== null)
+    caption.push(
+      changes === 0
+        ? "unchanged since the stop before"
+        : `${changes} changed since the stop before`,
+    );
+  return microscope.picture({
+    width: W,
+    height: Math.ceil(ly + 30),
+    shapes,
+    caption: caption.join(" · "),
+  });
 });
 
 /** The grid's numbers row by row, its size, and its exact values. */
@@ -208,19 +377,30 @@ function gridOf(input) {
   if (values === undefined || values === null) {
     throw new TypeError("heatmap takes `values`: numbers with `columns`, or an array of rows");
   }
-  if (Array.isArray(values) && values.length > 0 && values.every((row) => Array.isArray(row) || ArrayBuffer.isView(row))) {
+  if (
+    Array.isArray(values) &&
+    values.length > 0 &&
+    values.every((row) => Array.isArray(row) || ArrayBuffer.isView(row))
+  ) {
     const lines = /** @type {ArrayLike<any>[]} */ (values);
     const columns = lines[0].length;
     const flat = new Float64Array(lines.length * columns);
     /** @type {ArrayLike<any>[]} */
     const raw = [];
     lines.forEach((row, r) => {
-      if (row.length !== columns) throw new RangeError(`row ${r} holds ${row.length}, and row 0 holds ${columns}`);
+      if (row.length !== columns)
+        throw new RangeError(`row ${r} holds ${row.length}, and row 0 holds ${columns}`);
       const numbers = toNumbers(row, `values[${r}]`);
       flat.set(numbers, r * columns);
       raw.push(row);
     });
-    return { rows: values.length, columns, values: flat, nested: true, raw: (i) => raw[Math.floor(i / columns)][i % columns] };
+    return {
+      rows: values.length,
+      columns,
+      values: flat,
+      nested: true,
+      raw: (i) => raw[Math.floor(i / columns)][i % columns],
+    };
   }
   const flat = toNumbers(values, "values");
   const columns = Number(input.columns);
@@ -230,7 +410,13 @@ function gridOf(input) {
   if (flat.length % columns !== 0) {
     throw new RangeError(`\`values\` holds ${flat.length}, which is not rows of ${columns}`);
   }
-  return { rows: flat.length / columns, columns, values: flat, nested: false, raw: (i) => values[i] };
+  return {
+    rows: flat.length / columns,
+    columns,
+    values: flat,
+    nested: false,
+    raw: (i) => values[i],
+  };
 }
 
 function safeGrid(previous) {
@@ -251,8 +437,13 @@ function exact(grid, i) {
 
 function labelsOf(value, count, what) {
   if (value === undefined || value === null) return null;
-  const names = Array.from(value, (item) => (typeof item === "object" && item !== null && typeof item.name === "string" ? item.name : String(item)));
-  if (names.length !== count) throw new RangeError(`\`${what}\` holds ${names.length}, and there are ${count}`);
+  const names = Array.from(value, (item) =>
+    typeof item === "object" && item !== null && typeof item.name === "string"
+      ? item.name
+      : String(item),
+  );
+  if (names.length !== count)
+    throw new RangeError(`\`${what}\` holds ${names.length}, and there are ${count}`);
   return names;
 }
 

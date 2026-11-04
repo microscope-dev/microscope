@@ -3,6 +3,7 @@
 // so a group's selector re-renders it only when it changed.
 
 import { createStore, useStore } from "zustand";
+
 import { emptyLayout, type GroupId, type Layout, type Node, type Pane } from "./layout";
 
 /** A closed tab, and where it was, to open it there again. */

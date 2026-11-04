@@ -3,8 +3,10 @@
 
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
+
 import { Breakpoints } from "../src/ui/Breakpoints";
 import { mountPane, unmountPane } from "./pane";
+
 import "../src/styles.css";
 
 afterEach(unmountPane);

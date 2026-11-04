@@ -177,7 +177,7 @@ export function layout(tree: CallTree, zoom: number | null, narrowest: number): 
   // The next free x of each depth: siblings follow each other, and a
   // node's first child starts where it does.
   const next: number[] = [];
-  for (let node = from; node < to; ) {
+  for (let node = from; node < to;) {
     const depth = tree.depth[node] ?? 0;
     const x = next[depth] ?? 0;
     const width = (tree.total[node] ?? 0) * scale;

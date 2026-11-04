@@ -2,6 +2,7 @@
 // watches a link carries, hovers and inline values, and the console.
 
 import type { Page } from "@playwright/test";
+
 import { stopInHandleRequest, valueRow } from "./kvstore";
 import { expect, fixture, join, test } from "./server";
 

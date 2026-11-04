@@ -2,6 +2,7 @@
 // when it chooses, so tests can hold an answer back.
 
 import { vi } from "vitest";
+
 import type { TransportHandlers } from "../src/connection";
 import { type ErrorKind, PROTOCOL_VERSION, type ServerMessage } from "../src/protocol";
 import { createSession, type Session } from "../src/store";

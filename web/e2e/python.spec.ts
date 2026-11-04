@@ -3,6 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
+
 import { documents, expect, join, root, test } from "./server";
 
 const script = path.join(root, "tests", "fixtures", "python", "page.py");

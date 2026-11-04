@@ -5,6 +5,7 @@
 
 import { Link } from "@tanstack/react-router";
 import { useEffect } from "react";
+
 import { checkAccount, useAccount } from "../account";
 import { targetName } from "../model";
 import { useModel } from "../store";
