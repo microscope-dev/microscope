@@ -112,7 +112,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   expect(username).toBeTruthy();
 
   // GitHub signs in to it.
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await continueWith(page, "GitHub");
   await atProvider(page, { email, login });
   await expect(account(page)).toContainText(`Signed in as ${username} (${email})`);
@@ -126,7 +126,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
 
   // Google now makes a different account, since it is no longer connected
   // and the address is taken: services refuses rather than link by email.
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await continueWith(page, "Google");
   await atProvider(page, { email });
   await expect(account(page).getByRole("alert")).toContainText(`An account already uses ${email}`);
@@ -348,7 +348,7 @@ test("an account with two-factor authentication still needs its code after Googl
   await expect(account(page)).toContainText("On. Signing in takes your password");
 
   // Google alone is not enough.
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await continueWith(page, "Google");
   await atProvider(page, { email });
   await expect(account(page)).toContainText("Enter the code from your authenticator app");

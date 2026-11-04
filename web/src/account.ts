@@ -209,6 +209,16 @@ export async function signOut(): Promise<void> {
   account.setState({ now: { kind: "out" }, notice: null });
 }
 
+/** Ends every session the account has, this browser's too. */
+export async function signOutEverywhere(): Promise<void> {
+  await post("/api/logout/everywhere", null);
+  changes += 1;
+  account.setState({
+    now: { kind: "out" },
+    notice: { ok: true, text: "You are signed out on every device." },
+  });
+}
+
 /** Who is signed in, as far as the page knows. */
 export type Account =
   | { readonly kind: "checking" }

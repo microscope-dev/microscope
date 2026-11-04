@@ -20,6 +20,7 @@ import {
   resetPassword,
   signIn,
   signOut,
+  signOutEverywhere,
   signUp,
   startTotpSetup,
   totpConfirmed,
@@ -157,6 +158,7 @@ export function AccountBody() {
   const now = useAccount();
   const notice = useNotice();
   const [error, setError] = useState<string | null>(null);
+  const [everywhere, setEverywhere] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "sign-in" });
   // What an emailed link did stops mattering once the person moves on.
   const go = (next: Step) => {
@@ -207,16 +209,42 @@ export function AccountBody() {
           <p className="muted">Your programs, sessions, and profiles will show up here.</p>
           {error && <span className="error">{error}</span>}
           <div className="actions">
-            <button
-              type="button"
-              className="button"
-              onClick={() => {
-                setError(null);
-                signOut().catch((failure: Error) => setError(failure.message));
-              }}
-            >
-              Sign out
-            </button>
+            {everywhere ? (
+              <span className="confirm">
+                <span>Sign out on every device?</span>
+                <button
+                  type="button"
+                  className="button danger"
+                  onClick={() => {
+                    setError(null);
+                    signOutEverywhere()
+                      .catch((failure: Error) => setError(failure.message))
+                      .finally(() => setEverywhere(false));
+                  }}
+                >
+                  Sign out everywhere
+                </button>
+                <button type="button" className="link-button" onClick={() => setEverywhere(false)}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => {
+                    setError(null);
+                    signOut().catch((failure: Error) => setError(failure.message));
+                  }}
+                >
+                  Sign out
+                </button>
+                <button type="button" className="button" onClick={() => setEverywhere(true)}>
+                  Sign out everywhere
+                </button>
+              </>
+            )}
           </div>
           <Organizations />
           <SignInMethods />

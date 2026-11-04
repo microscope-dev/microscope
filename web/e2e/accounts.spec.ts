@@ -97,7 +97,7 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   // The session is services' cookie, which outlives the page.
   await page.reload();
   await expect(account(page)).toContainText(`Signed in as ${who.username}`);
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(account(page).getByLabel("Username or email")).toBeVisible();
   await page.reload();
   await expect(account(page).getByLabel("Username or email")).toBeVisible();
@@ -275,6 +275,44 @@ test("a forgotten password is reset by its emailed link, which signs out every d
       .fill((await services.mail(who.email)).code ?? "");
     await account(page).getByRole("button", { name: "Sign in" }).click();
     await expect(account(page)).toContainText(`Signed in as ${who.username}`);
+  } finally {
+    await laptop.close();
+  }
+});
+
+test("signing out everywhere ends the account's sessions on every device", async ({
+  page,
+  browser,
+  services,
+}) => {
+  const who = person();
+  const laptop = await browser.newContext();
+  try {
+    const other = await laptop.newPage();
+    await join(other, services, who);
+    await page.goto(`${services.origin}/`);
+    await signIn(page, who.email, who.password);
+    await account(page)
+      .getByLabel("Code")
+      .fill((await services.mail(who.email)).code ?? "");
+    await account(page).getByRole("button", { name: "Sign in" }).click();
+    await expect(account(page)).toContainText(`Signed in as ${who.username}`);
+
+    // It asks first, and backing out changes nothing.
+    await account(page).getByRole("button", { name: "Sign out everywhere" }).click();
+    await expect(account(page)).toContainText("Sign out on every device?");
+    await account(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(account(page)).not.toContainText("Sign out on every device");
+
+    await account(page).getByRole("button", { name: "Sign out everywhere" }).click();
+    await account(page).getByRole("button", { name: "Sign out everywhere" }).click();
+    await expect(account(page)).toContainText("You are signed out on every device.");
+    await expect(account(page).getByLabel("Username or email")).toBeVisible();
+
+    await other.reload();
+    await expect(account(other).getByLabel("Username or email")).toBeVisible();
+    await page.reload();
+    await expect(account(page).getByLabel("Username or email")).toBeVisible();
   } finally {
     await laptop.close();
   }

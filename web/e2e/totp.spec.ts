@@ -121,7 +121,7 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await shot(page, "05-on");
 
   // Signing in now takes an authenticator code, and no email is sent.
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page, username, password);
   await expect(account(page)).toContainText("Enter the code from your authenticator app");
   await account(page).getByLabel("Code").fill(wrong(secret));
@@ -138,7 +138,7 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await expect(account(page)).toContainText("On. Signing in takes your password");
 
   // A recovery code, typed the way people copy them.
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page, email, password);
   await account(page).getByRole("button", { name: "Use a recovery code" }).click();
   await account(page)
@@ -166,7 +166,7 @@ test("sets up two-factor authentication, signs in with it, and turns it off", as
   await shot(page, "08-off-again");
 
   // A password and the emailed code sign in again.
-  await account(page).getByRole("button", { name: "Sign out" }).click();
+  await account(page).getByRole("button", { name: "Sign out", exact: true }).click();
   await signIn(page, username, password);
   await expect(account(page)).toContainText("Enter the code from your email");
 });
