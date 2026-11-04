@@ -2,7 +2,7 @@
   "name": "microscope-docs",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.11.0",
+  "packageManager": "pnpm@12.9.0",
   "scripts": {
     "dev": "vitepress dev .",
     "build": "vitepress build .",

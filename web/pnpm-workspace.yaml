@@ -1,2 +1,6 @@
+# Give compromised releases seven days to be noticed.
+minimumReleaseAge: 10080
+# Nix supplies pnpm; never download a different package manager.
+pmOnFail: error
 minimumReleaseAgeExclude:
   - vite@8.3.3

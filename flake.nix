@@ -3,16 +3,20 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    # The shell's Node.js and pnpm, locked apart from the compilers that
+    # build test fixtures so they can follow the other microscope-dev repos.
+    nixpkgs-js.url = "github:NixOS/nixpkgs/nixos-26.05";
     rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { self, nixpkgs, rust-overlay }:
+  outputs = { self, nixpkgs, nixpkgs-js, rust-overlay }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
         inherit system;
         overlays = [ rust-overlay.overlays.default ];
       };
+      jsPkgs = import nixpkgs-js { inherit system; };
       rust = pkgs.rust-bin.nightly."2026-07-11".default.override {
         extensions = [ "clippy" "miri" "rust-src" "rustfmt" ];
         # For fully static builds of microscope: `just build-static`.
@@ -1153,9 +1157,8 @@
           gnatmake
           pkg-config
           util-linux
-          nodejs_24
-          pnpm
-          biome
+          jsPkgs.nodejs_24
+          jsPkgs.pnpm_12
           # A display of its own for the VS Code acceptance test, whose window
           # needs focus that a desktop's compositor may refuse it.
           xvfb

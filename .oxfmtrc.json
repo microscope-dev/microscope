@@ -1,0 +1,6 @@
+{
+  "$schema": "./web/node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "ignorePatterns": ["pnpm-lock.yaml", "web/src/protocol.gen.ts", "web/src/vendor/"],
+  "sortImports": true
+}

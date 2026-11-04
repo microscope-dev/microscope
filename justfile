@@ -15,6 +15,9 @@ max_test_threads := "16"
 # frees; see `fuzz`.
 decoding_fuzz_targets := "disassembly dispatch elf-symbols"
 
+# The JavaScript and TypeScript that oxlint and oxfmt check.
+js_files := "web/src web/test web/e2e web/*.ts web/*.json editors/vscode views/visualizers"
+
 # Lints the Rust code and runs the complete test suite.
 default: check
 
@@ -310,11 +313,21 @@ web HOST="0.0.0.0": web-deps
 web-build: web-deps
     cd web && ./node_modules/.bin/vite build --logLevel warn
 
-# Type-checks and lints the page, checks renderers against sdk/web's
+# Lints the page, type-checks it, checks renderers against sdk/web's
 # declarations, and runs the page's tests outside a browser and
 # its component tests in headless Chromium. Arguments go to Vitest.
-web-test *ARGS: web-deps
-    cd web && ./node_modules/.bin/tsc --noEmit && ./node_modules/.bin/tsc -p ../sdk/web && biome check src test e2e && ./node_modules/.bin/vitest run "$@"
+web-test *ARGS: web-lint
+    cd web && ./node_modules/.bin/tsc && ./node_modules/.bin/tsc -p ../sdk/web && ./node_modules/.bin/vitest run "$@"
+
+# Lints the page, the VS Code extension, and the built-in renderers, and checks
+# their formatting. Warnings and unused suppressions fail.
+web-lint: web-deps
+    web/node_modules/.bin/oxlint {{ js_files }}
+    web/node_modules/.bin/oxfmt --check {{ js_files }}
+
+# Formats the page, the VS Code extension, and the built-in renderers in place.
+web-fmt: web-deps
+    web/node_modules/.bin/oxfmt {{ js_files }}
 
 # Reruns the page's tests on every save, in and outside the browser.
 web-watch: web-deps

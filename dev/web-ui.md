@@ -136,8 +136,8 @@ just web-e2e
 just web-e2e --project=chromium -g NAME
 ```
 
-`just web-test` runs TypeScript, Biome, and Vitest. End-to-end tests run real
-servers in Chromium and Firefox. The test budgets, journeys, and property tests are
+`just web-test` runs oxlint, oxfmt, TypeScript, and Vitest; `just web-fmt`
+formats. End-to-end tests run real servers in Chromium and Firefox. The test budgets, journeys, and property tests are
 described in [testing](testing.md#web-tests).
 
 Replay tests use recorded server transcripts. Update them with `just
@@ -266,7 +266,7 @@ from `../services/target/debug`, or from `MICROSCOPE_SERVICES_BINARY`, and
 skips when that is not built. Build it and start its database from the
 services repository with `just build` and `just up`.
 
-Use binaries in `web/node_modules/.bin` or the Nix shell's `biome`. Do not use
+Use binaries in `web/node_modules/.bin`. Do not use
 `npx`, which can download a different package when a command is missing.
 
 ## Server boundary

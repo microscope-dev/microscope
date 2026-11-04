@@ -1,0 +1,88 @@
+{
+  "$schema": "./web/node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "eslint",
+    "typescript",
+    "unicorn",
+    "oxc",
+    "import",
+    "promise",
+    "node",
+    "react",
+    "react-perf",
+    "jsx-a11y"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "error",
+    "perf": "error",
+    "restriction": "off",
+    "style": "off"
+  },
+  "options": {
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "env": { "es2024": true },
+  "ignorePatterns": ["web/src/protocol.gen.ts", "web/src/vendor/"],
+  "rules": {
+    "eqeqeq": "error",
+    "no-console": "error",
+    "no-debugger": "error",
+    "no-var": "error",
+    "no-eval": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-namespace": "error",
+    // Stylesheets and fonts are imported for their effect.
+    "import/no-unassigned-import": ["error", { "allow": ["**/*.css", "@fontsource/**"] }],
+    // A component's own autoFocus prop is not the HTML attribute.
+    "jsx-a11y/no-autofocus": ["error", { "ignoreNonDOM": true }],
+    // The automatic JSX runtime needs no React in scope.
+    "react/react-in-jsx-scope": "off",
+    // Sizes are judged in review, not by a count.
+    "max-lines": "off",
+    "max-lines-per-function": "off",
+    "import/max-dependencies": "off"
+  },
+  "overrides": [
+    { "files": ["web/src/**"], "env": { "browser": true } },
+    {
+      "files": ["web/test/**", "web/e2e/**", "web/*.ts"],
+      "env": { "browser": true, "node": true }
+    },
+    {
+      "files": ["web/test/**", "web/e2e/**", "editors/vscode/test/**"],
+      "rules": {
+        // A test's steps run one after another on purpose.
+        "no-await-in-loop": "off"
+      }
+    },
+    {
+      // Command-line scripts report on the console.
+      "files": [
+        "web/e2e/bench.ts",
+        "web/e2e/probe.ts",
+        "web/e2e/shots.ts",
+        "editors/vscode/test/uat.js"
+      ],
+      "rules": { "no-console": "off" }
+    },
+    {
+      "files": ["web/test/**"],
+      "plugins": ["vitest"],
+      "rules": {
+        // It flags every `||` and ternary, not only a skipped assertion,
+        // which no-conditional-expect still catches.
+        "vitest/no-conditional-in-test": "off"
+      }
+    },
+    { "files": ["editors/vscode/**"], "env": { "node": true, "commonjs": true } },
+    {
+      "files": ["views/visualizers/**", "web/e2e/visualizers/**"],
+      "env": { "worker": true },
+      "globals": { "microscope": "readonly" }
+    }
+  ]
+}

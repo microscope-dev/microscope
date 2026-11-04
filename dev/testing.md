@@ -453,8 +453,8 @@ request order.
 
 ## Web tests
 
-`just web-test` runs TypeScript checking, SDK declaration checking, Biome,
-Vitest unit tests, and browser component tests. Fake-server transcripts let UI
+`just web-test` runs oxlint and oxfmt, TypeScript checking, SDK declaration
+checking, Vitest unit tests, and browser component tests. Fake-server transcripts let UI
 tests drive deterministic state without starting ptrace sessions.
 
 `just web-e2e` starts real servers and browsers. Use it for routing, joining,
