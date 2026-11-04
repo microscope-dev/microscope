@@ -58,6 +58,36 @@ async fn a_loaded_program_waits_for_continue_then_runs_to_its_exit_with_output()
     tab.save_traffic("run-to-exit");
 }
 
+/// Input typed while the program does not read waits for it, however much
+/// there is, and reaches it whole, once, and in order: more than a pipe
+/// holds, then a line after it.
+#[tokio::test]
+async fn input_a_stopped_program_has_not_read_reaches_it_whole_and_in_order() {
+    let program = fixture("stdin-digest");
+    let web = Web::start("input", &["--stop-at-entry", &program]);
+    let mut tab = web.control("tab").await;
+    tab.ok("continue", json!({})).await;
+    let stopped = tab.inferior("stopped").await;
+
+    let large = "0123456789abcdef".repeat(16 * 1024);
+    let typed = [large.as_str(), "the last line\n"];
+    tab.ok("input", json!({"text": typed[0]})).await;
+    tab.ok("input", json!({"text": typed[1], "eof": true})).await;
+
+    tab.ok("continue", json!({"stop": stopped["inferior"]["stop"]}))
+        .await;
+    let stdout = tab.output_until("stdout", "\n").await;
+    let bytes = typed.concat().into_bytes();
+    let digest = bytes.iter().fold(14_695_981_039_346_656_037_u64, |digest, byte| {
+        (digest ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+    });
+    assert_eq!(
+        stdout,
+        format!("stdin: {} bytes, digest {digest:016x}\n", bytes.len())
+    );
+    tab.inferior("exited").await;
+}
+
 #[tokio::test]
 async fn two_tabs_share_one_session_and_only_one_continue_of_a_stop_wins() {
     let program = fixture("spin");

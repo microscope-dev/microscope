@@ -32,7 +32,7 @@ use microscope::{
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::unix::pipe;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::auth::{Tokens, random_hex};
@@ -57,8 +57,11 @@ const OUTPUT_HISTORY: usize = 256 * 1024;
 /// The most bytes one `output` message carries.
 const OUTPUT_CHUNK: usize = 32 * 1024;
 
-/// How long writing the program's input may wait for it to read.
+/// How long a tab's input may wait for room in the program's queue.
 const INPUT_WAIT: Duration = Duration::from_secs(5);
+
+/// The most inputs queued for a program that is not reading them.
+const INPUT_QUEUE: usize = 16;
 
 /// How a launched program starts.
 #[derive(Debug, Clone, Default)]
@@ -222,8 +225,8 @@ struct Target {
     console_member: Arc<AtomicU32>,
     launch: Option<LaunchSpec>,
 
-    /// The launched program's standard input, until closed.
-    input: Arc<tokio::sync::Mutex<Option<pipe::Sender>>>,
+    /// The launched program's standard input, once it has one.
+    input: Option<Input>,
     pump: JoinHandle<()>,
     readers: Vec<JoinHandle<()>>,
     name: String,
@@ -238,6 +241,50 @@ struct Target {
     /// Counts changes to settings no event announces, such as signal
     /// policies.
     settings: Arc<AtomicU64>,
+}
+
+/// A launched program's standard input, which a task of its own writes. A
+/// tab's text is queued and reaches the program whole and in order whenever
+/// it reads. A write stopped partway, as a timeout around it stops it,
+/// would give the program part of the text while the tab heard that none
+/// of it went.
+struct Input {
+    queue: mpsc::Sender<protocol::Input>,
+
+    /// Dropped with the target, which closes the input even while the
+    /// program is not reading: what it would read is no one's now.
+    _open: oneshot::Sender<()>,
+}
+
+impl Input {
+    fn new(mut pipe: pipe::Sender, outlet: Outlet) -> Self {
+        let (queue, mut queued) = mpsc::channel::<protocol::Input>(INPUT_QUEUE);
+        let (open, closed) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let write = async {
+                while let Some(input) = queued.recv().await {
+                    if let Err(error) = pipe.write_all(input.text.as_bytes()).await {
+                        outlet.publish(
+                            Stream::Log,
+                            &format!("the program's input closed: {error}\n"),
+                        );
+                        return;
+                    }
+
+                    if input.eof {
+                        return;
+                    }
+                }
+            };
+
+            tokio::select! {
+                () = write => {}
+                _ = closed => {}
+            }
+        });
+
+        Self { queue, _open: open }
+    }
 }
 
 #[derive(Default)]
@@ -963,37 +1010,29 @@ impl Session {
     }
 
     async fn input(&self, input: protocol::Input) -> Result<(), Failure> {
-        let writer = self
+        let queue = self
             .target
             .lock()
             .await
             .as_ref()
-            .map(|target| Arc::clone(&target.input))
-            .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
-        let mut open = writer.lock().await;
-        let Some(pipe) = open.as_mut() else {
-            return Err(Failure::new(
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?
+            .input
+            .as_ref()
+            .map(|input| input.queue.clone());
+        let closed = || {
+            Failure::new(
                 ErrorKind::Invalid,
                 "the program's input is closed; it reads input only while it runs",
-            ));
+            )
         };
+        let queue = queue.ok_or_else(closed)?;
 
-        let written = tokio::time::timeout(INPUT_WAIT, pipe.write_all(input.text.as_bytes()))
+        // A wait for room that gives up has queued nothing.
+        let permit = tokio::time::timeout(INPUT_WAIT, queue.reserve())
             .await
-            .map_err(|_| Failure::new(ErrorKind::Failed, "the program is not reading its input"))?;
-        if let Err(error) = written {
-            *open = None;
-            return Err(Failure::new(
-                ErrorKind::Failed,
-                format!("the program's input closed: {error}"),
-            ));
-        }
-
-        if input.eof {
-            *open = None;
-        }
-
-        drop(open);
+            .map_err(|_| Failure::new(ErrorKind::Failed, "the program is not reading its input"))?
+            .map_err(|_| closed())?;
+        permit.send(input);
         Ok(())
     }
 
@@ -1810,10 +1849,7 @@ impl Session {
         let writes = Arc::clone(&describer.writes);
         let settings = Arc::clone(&describer.settings);
         let session = describer.id.clone();
-        let outlet = Outlet {
-            history: Arc::clone(&self.history),
-            messages: self.messages.clone(),
-        };
+        let outlet = self.outlet();
         let mut pump = Pump::new(
             Arc::clone(&self.state),
             outlet.clone(),
@@ -1845,7 +1881,7 @@ impl Session {
             selection,
             console_member: Arc::new(AtomicU32::new(1)),
             launch: launch.clone(),
-            input: Arc::default(),
+            input: None,
             pump,
             readers: Vec::new(),
             name,
@@ -1859,7 +1895,7 @@ impl Session {
             let (readers, input) = self.launch(&handle, &spec).await?;
             if let Some(target) = target.as_mut() {
                 target.readers = readers;
-                *target.input.lock().await = Some(input);
+                target.input = Some(input);
             }
         }
 
@@ -1906,7 +1942,7 @@ impl Session {
 
         if let Some(target) = self.target.lock().await.as_mut() {
             target.readers.extend(readers);
-            *target.input.lock().await = Some(input);
+            target.input = Some(input);
         }
 
         Ok(())
@@ -1916,7 +1952,7 @@ impl Session {
         &self,
         handle: &DebuggerHandle,
         spec: &LaunchSpec,
-    ) -> Result<(Vec<JoinHandle<()>>, pipe::Sender), Failure> {
+    ) -> Result<(Vec<JoinHandle<()>>, Input), Failure> {
         let failed = |error: std::io::Error| Failure::new(ErrorKind::Failed, error.to_string());
         let (stdin_read, stdin_write) = output::pipe().map_err(failed)?;
         let (stdout_read, stdout_write) = output::pipe().map_err(failed)?;
@@ -1948,16 +1984,20 @@ impl Session {
             .filter_map(|(read, stream)| self.read_output(read, stream).ok())
             .collect();
 
-        Ok((readers, input))
+        Ok((readers, Input::new(input, self.outlet())))
+    }
+
+    fn outlet(&self) -> Outlet {
+        Outlet {
+            history: Arc::clone(&self.history),
+            messages: self.messages.clone(),
+        }
     }
 
     /// Forwards a program stream to every tab until its writers close it.
     fn read_output(&self, read: OwnedFd, stream: Stream) -> std::io::Result<JoinHandle<()>> {
         let mut receiver = pipe::Receiver::from_owned_fd(read)?;
-        let outlet = Outlet {
-            history: Arc::clone(&self.history),
-            messages: self.messages.clone(),
-        };
+        let outlet = self.outlet();
 
         Ok(tokio::spawn(async move {
             let mut pending = Vec::with_capacity(OUTPUT_CHUNK);
