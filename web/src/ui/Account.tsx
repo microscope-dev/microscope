@@ -25,6 +25,7 @@ import {
   useAccount,
   useNotice,
 } from "../account";
+import { useFeatures } from "../features";
 import { isPagePath } from "../focus";
 import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
@@ -345,11 +346,15 @@ function SignIn({ go }: { go: Go }) {
 }
 
 function SignUp({ go }: { go: Go }) {
+  const offered = useFeatures();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const { working, error, submit } = useSubmit(async () => {
-    if (await signUp(username, email, password)) {
+    // The button waits for the features, so they are here.
+    const confirming = offered?.email === true;
+    await signUp(username, email, password, confirming);
+    if (confirming) {
       go({ kind: "sent", email });
     }
   });
@@ -379,7 +384,7 @@ function SignUp({ go }: { go: Go }) {
           <button
             type="submit"
             className="button primary"
-            disabled={working || !username.trim() || !email.trim() || !password}
+            disabled={working || !offered || !username.trim() || !email.trim() || !password}
           >
             Create account
           </button>
@@ -562,8 +567,14 @@ type Setup =
 /** Two-factor authentication for the signed-in account: off, being set up,
  * or on, with the forms that change it. */
 function TwoFactor({ user }: { user: User }) {
+  const offered = useFeatures();
   const [setup, setSetup] = useState<Setup>({ kind: "idle" });
   const idle = () => setSetup({ kind: "idle" });
+  // A server without TOTP has nothing to offer here, unless the account
+  // turned it on before, which it can still turn off with a recovery code.
+  if (!offered || (!offered.totp && !user.totp_enabled)) {
+    return null;
+  }
   return (
     <>
       <h2>Two-factor authentication</h2>

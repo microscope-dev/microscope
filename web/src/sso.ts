@@ -43,9 +43,6 @@ export interface OrgSso {
   idp: { entity_id: string; sso_url: string; certificates: string[] } | null;
 }
 
-/** The providers services' operator turned on. */
-export const providers = () => request<Providers>("GET", "/api/sso/providers");
-
 /** Where a sign-in through `provider` starts, for a link. */
 export const startUrl = (provider: "google" | "github") => `/api/sso/${provider}/start`;
 

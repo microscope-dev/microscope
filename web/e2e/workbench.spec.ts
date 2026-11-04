@@ -65,6 +65,23 @@ function standIn(): Handler {
       json(signedIn ? 200 : 401, signedIn ? dev : { error: "not signed in" });
       return;
     }
+    if (request.url === "/api/features") {
+      const none = { google: false, github: false, saml: false };
+      json(200, { email: false, totp: false, sso: none });
+      return;
+    }
+    // A new account: in no organization, with no projects, invitations, or
+    // outside sign-ins.
+    const empty: Record<string, unknown> = {
+      "/api/orgs": [],
+      "/api/projects": [],
+      "/api/users/me/invitations": [],
+      "/api/users/me/identities": { has_password: true, identities: [] },
+    };
+    if (signedIn && request.url && request.url in empty) {
+      json(200, empty[request.url]);
+      return;
+    }
     if (request.url === "/api/login") {
       signedIn = true;
       json(200, dev);

@@ -31,7 +31,8 @@ function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) 
       const route = `${init.method ?? "GET"} ${path}`;
       asked.push(route);
       const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
-      const found = route === "GET /api/users/me" ? ([200, ME] as Answer) : routes[route];
+      const found =
+        routes[route] ?? (route === "GET /api/users/me" ? ([200, ME] as Answer) : undefined);
       const [status, answer] = typeof found === "function" ? found(body) : (found ?? [404]);
       return status === 204 || answer === undefined
         ? new Response(null, { status: status === 404 ? 404 : status })
@@ -276,7 +277,7 @@ it("lists sign-in methods only when there is one to connect or one connected", a
       "GET /api/orgs": [200, []],
       "GET /api/projects": [200, []],
       "GET /api/users/me/invitations": [200, []],
-      "GET /api/sso/providers": [200, providers],
+      "GET /api/features": [200, { email: false, totp: true, sso: providers }],
       "GET /api/users/me/identities": [200, { has_password: true, identities }],
     });
     render(<AccountBody />);
@@ -287,7 +288,7 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   const asked = show(off, []);
   await expect
     .poll(() => asked)
-    .toEqual(expect.arrayContaining(["GET /api/sso/providers", "GET /api/users/me/identities"]));
+    .toEqual(expect.arrayContaining(["GET /api/features", "GET /api/users/me/identities"]));
   await expect.element(page.getByText(/^You are not in any organization/)).toBeVisible();
   await new Promise((settle) => setTimeout(settle, 50));
   expect(page.getByRole("heading", { name: "Sign-in methods" }).elements()).toHaveLength(0);
@@ -304,6 +305,41 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   await expect.poll(() => text(methods())).toBe("Password");
   await expect.element(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
   expect(page.getByRole("button", { name: "Connect Google" }).elements()).toHaveLength(0);
+});
+
+it("offers two-factor authentication only when the server can keep its secrets", async () => {
+  const heading = () => page.getByRole("heading", { name: "Two-factor authentication" });
+  const show = (totp: boolean, user: User) => {
+    const asked = services({
+      "GET /api/orgs": [200, []],
+      "GET /api/projects": [200, []],
+      "GET /api/users/me/invitations": [200, []],
+      "GET /api/features": [
+        200,
+        { email: false, totp, sso: { google: false, github: false, saml: false } },
+      ],
+      "GET /api/users/me/identities": [200, { has_password: true, identities: [] }],
+      "GET /api/users/me": [200, user],
+    });
+    account.setState({ now: { kind: "in", user } });
+    render(<AccountBody />);
+    return asked;
+  };
+
+  const asked = show(false, ME);
+  await expect.poll(() => asked).toContain("GET /api/features");
+  await expect.element(page.getByText(/^You are not in any organization/)).toBeVisible();
+  await new Promise((settle) => setTimeout(settle, 50));
+  expect(heading().elements()).toHaveLength(0);
+  cleanup();
+
+  // An account that turned it on before can still see it, to turn it off.
+  show(false, { ...ME, totp_enabled: true });
+  await expect.element(heading()).toBeVisible();
+  cleanup();
+
+  show(true, ME);
+  await expect.element(heading()).toBeVisible();
 });
 
 it("says what went wrong when services cannot be asked", async () => {

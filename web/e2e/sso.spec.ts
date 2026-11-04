@@ -96,7 +96,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   await atProvider(page, { email });
   await expect(account(page)).toContainText(`(${email})`);
   await expect(page).toHaveURL(`${services.origin}/`);
-  await expect(methods(page)).toHaveText(/^Google\s*\S+@example\.com\s*Your only way in$/);
+  await expect(methods(page)).toHaveText(/^Google\s*\S+@example\.com$/);
   await shot(page, "02-google-only");
 
   // Connecting GitHub leaves and comes back to the same account.
@@ -121,7 +121,7 @@ test("signs up with Google, connects GitHub, and signs in with either", async ({
   const google = methods(page).getByRole("listitem").filter({ hasText: "Google" });
   await google.getByRole("button", { name: "Disconnect" }).click();
   await google.getByRole("button", { name: "Disconnect" }).click();
-  await expect(methods(page)).toHaveText(/^GitHub\s*\S+\s*Your only way in$/);
+  await expect(methods(page)).toHaveText(/^GitHub\s*\S+$/);
   await expect(account(page).getByRole("button", { name: "Connect Google" })).toBeVisible();
 
   // Google now makes a different account, since it is no longer connected
@@ -245,9 +245,7 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
     await expect(account(other).getByRole("list", { name: "Organizations" })).toHaveText(
       new RegExp(`^${org}\\s*Member$`),
     );
-    await expect(methods(other)).toHaveText(
-      new RegExp(`^${org}'s single sign-on\\s*${email}\\s*Your only way in$`),
-    );
+    await expect(methods(other)).toHaveText(new RegExp(`^${org}'s single sign-on\\s*${email}$`));
   } finally {
     await elsewhere.close();
   }

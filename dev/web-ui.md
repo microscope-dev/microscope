@@ -190,7 +190,11 @@ recovery codes takes the password and a code.
 
 Single sign-on (`web/src/sso.ts`, `web/src/ui/SingleSignOn.tsx`) signs in
 with Google, GitHub, or an organization's own SAML identity provider,
-whichever services' operator turned on (`--sso-providers`). Signing in
+whichever services' operator turned on (`--sso-providers`).
+`GET /api/features` says which are on, whether services sends email, and
+whether accounts can turn on two-factor authentication;
+`web/src/features.ts` reads it, and the page hides what the server does not
+offer. Signing in
 follows a plain link to services' `/api/sso/PROVIDER/start`; connecting
 another way in to a signed-in account POSTs to `.../connect` first, which
 ties the sign-in to that account. Either way the browser comes back to the

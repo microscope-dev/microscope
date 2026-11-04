@@ -2,9 +2,10 @@
 // buttons that sign in with Google or GitHub, the account's ways in, an
 // organization's sign-in link, and the identity provider its owners set up.
 
-import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { createStore, useStore } from "zustand";
 import { useAccount } from "../account";
+import { useFeatures } from "../features";
 import type { Org } from "../orgs";
 import {
   configureOrgSso,
@@ -18,7 +19,6 @@ import {
   type OrgSso,
   PROVIDER_LABEL,
   type Providers,
-  providers,
   removeOrgSso,
   samlLink,
   samlStartUrl,
@@ -28,18 +28,7 @@ import { Confirm, Loading, useAction, useLoaded } from "./Orgs";
 
 /** The providers services offers, or null until it says, or if it cannot. */
 function useProviders(): Providers | null {
-  const [offered, setOffered] = useState<Providers | null>(null);
-  useEffect(() => {
-    let live = true;
-    providers().then(
-      (answer) => live && setOffered(answer),
-      () => {},
-    );
-    return () => {
-      live = false;
-    };
-  }, []);
-  return offered;
+  return useFeatures()?.sso ?? null;
 }
 
 /** Signing in or up with Google or GitHub, for whichever services offers. */
@@ -170,8 +159,9 @@ export function SignInMethods() {
             <li key={identity.id}>
               <span className="name">{describe(identity)}</span>
               <span className="muted">{identity.email}</span>
-              <span className="end">
-                {ways > 1 ? (
+              {/* The last way in cannot go, so it has no Disconnect. */}
+              {ways > 1 && (
+                <span className="end">
                   <Confirm
                     label="Disconnect"
                     question={`Stop signing in with ${describe(identity)}?`}
@@ -180,10 +170,8 @@ export function SignInMethods() {
                       methods.again();
                     }}
                   />
-                ) : (
-                  <span className="muted">Your only way in</span>
-                )}
-              </span>
+                </span>
+              )}
             </li>
           ))}
         </ul>

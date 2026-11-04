@@ -151,15 +151,18 @@ export async function enterCode(challenge: string, code: string): Promise<User> 
   return signedIn((await response.json()) as User);
 }
 
-/** Makes an account. Returns whether its email must be confirmed before it
- * can sign in; when it need not be, services signed it in already. */
-export async function signUp(username: string, email: string, password: string): Promise<boolean> {
-  await post("/api/users", { username, email, password });
-  const user = await currentUser();
-  if (user) {
-    signedIn(user);
+/** Makes an account. A server that sends email has its address confirmed
+ * first (`/api/features`); one that does not signed it in already. */
+export async function signUp(
+  username: string,
+  email: string,
+  password: string,
+  confirming: boolean,
+): Promise<void> {
+  const response = await post("/api/users", { username, email, password });
+  if (!confirming) {
+    signedIn((await response.json()) as User);
   }
-  return user === null;
 }
 
 /** Asks for another confirmation link. Services answers the same whether
