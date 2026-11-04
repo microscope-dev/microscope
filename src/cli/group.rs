@@ -19,12 +19,15 @@ pub struct Group {
     source_paths: SourcePathMap,
 
     /// The group's events, read by a run while it waits and by the prompt
-    /// between commands, so each prints once.
+    /// between commands, so each prints once. A holder awaits only a
+    /// receive, which a cancelled one leaves as it found it.
+    #[expect(clippy::disallowed_types, reason = "held only across a receive")]
     events: tokio::sync::Mutex<broadcast::Receiver<GroupEvent>>,
 }
 
 impl Group {
     pub fn new(handle: GroupHandle, source_paths: SourcePathMap) -> Self {
+        #[expect(clippy::disallowed_types, reason = "held only across a receive")]
         let events = tokio::sync::Mutex::new(handle.subscribe());
         Self {
             handle,

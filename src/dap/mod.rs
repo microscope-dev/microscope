@@ -280,10 +280,16 @@ async fn serve<R, W>(
     // it is a large future.
     let session = Session::new(client, cancelled).serving(route, log);
     Box::pin(session.run(inbox, shutdown)).await;
+
+    // A client that has not closed its stream keeps the reader waiting for
+    // messages no session will take.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the reader only reads messages, which no one takes now"
+    )]
     reader.abort();
     if let Some(console) = console {
-        console.abort();
-        let _ = console.await;
+        console.end().await;
     }
 
     let _ = reader.await;

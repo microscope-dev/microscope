@@ -1,6 +1,7 @@
 //! Forwards a pipe's bytes to the client as `output` events.
 
 use std::os::fd::OwnedFd;
+use std::time::Duration;
 
 use serde_json::json;
 use tokio::io::AsyncReadExt as _;
@@ -18,16 +19,46 @@ pub fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     Ok(nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)?)
 }
 
+/// A task that forwards a program's output and holds nothing else, so it
+/// can be stopped at any await: only output it had not forwarded is lost,
+/// which no one would see once it is told to stop.
+pub struct Forwarder(JoinHandle<()>);
+
+impl Forwarder {
+    pub fn spawn(forward: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self(tokio::spawn(forward))
+    }
+
+    /// Stops forwarding at once.
+    pub fn stop(&self) {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a forwarder holds nothing a cancellation leaves half done"
+        )]
+        self.0.abort();
+    }
+
+    /// Waits for the output already written, as the stream's end brings it,
+    /// for at most `within`, then stops.
+    pub async fn finish(mut self, within: Duration) {
+        if tokio::time::timeout(within, &mut self.0).await.is_err() {
+            self.stop();
+        }
+    }
+
+    /// Stops forwarding and waits until it has.
+    pub async fn end(self) {
+        self.stop();
+        let _ = self.0.await;
+    }
+}
+
 /// Forwards everything written to the pipe until every writer closes it.
 /// Text is decoded as UTF-8, replacing invalid bytes, without splitting a
 /// character between events.
-pub fn spawn(
-    read: OwnedFd,
-    category: &'static str,
-    client: Client,
-) -> std::io::Result<JoinHandle<()>> {
+pub fn spawn(read: OwnedFd, category: &'static str, client: Client) -> std::io::Result<Forwarder> {
     let mut receiver = pipe::Receiver::from_owned_fd(read)?;
-    Ok(tokio::spawn(async move {
+    Ok(Forwarder::spawn(async move {
         let mut pending = Vec::with_capacity(CHUNK);
         let mut buffer = vec![0; CHUNK];
         loop {

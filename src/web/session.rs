@@ -63,6 +63,17 @@ const INPUT_WAIT: Duration = Duration::from_secs(5);
 /// The most inputs queued for a program that is not reading them.
 const INPUT_QUEUE: usize = 16;
 
+/// A lock held across awaits, so that requests take turns: one at a time
+/// changes what is debugged, or runs a console command. A holder that
+/// stopped partway would leave the next one its half-done change, so each
+/// holder runs on a request task of its own (see `connection::dispatch`),
+/// which nothing cancels.
+#[expect(
+    clippy::disallowed_types,
+    reason = "no holder is cancelled: each runs on a request task of its own"
+)]
+type Turns<T> = tokio::sync::Mutex<T>;
+
 /// How a launched program starts.
 #[derive(Debug, Clone, Default)]
 pub struct LaunchSpec {
@@ -174,7 +185,7 @@ pub struct Session {
 
     /// The current debugger; locked across a change of what is debugged, so
     /// changes happen one at a time.
-    target: tokio::sync::Mutex<Option<Target>>,
+    target: Turns<Option<Target>>,
     state: Arc<watch::Sender<Arc<State>>>,
 
     /// Output, presence, and notices, already serialized.
@@ -229,12 +240,12 @@ struct Target {
     /// The launched program's standard input, once it has one.
     input: Option<Input>,
     pump: JoinHandle<()>,
-    readers: Vec<JoinHandle<()>>,
+    readers: Vec<output::Forwarder>,
     name: String,
 
     /// Runs the console's commands, one at a time: each selects the tab's
     /// frame first, so the selection never changes under another's.
-    console: Arc<tokio::sync::Mutex<Cli>>,
+    console: Arc<Turns<Cli>>,
 
     /// Counts the changes tabs make to the program's values.
     writes: Arc<AtomicU64>,
@@ -326,7 +337,7 @@ impl Session {
             link_base,
             tokens,
             default_name,
-            target: tokio::sync::Mutex::new(None),
+            target: Turns::new(None),
             state: Arc::new(state),
             messages,
             history: Arc::default(),
@@ -1468,7 +1479,7 @@ impl Session {
     }
 
     /// The session's console, which keeps what `catch` chose.
-    async fn shared_console(&self) -> Result<Arc<tokio::sync::Mutex<Cli>>, Failure> {
+    async fn shared_console(&self) -> Result<Arc<Turns<Cli>>, Failure> {
         self.target
             .lock()
             .await
@@ -1890,7 +1901,7 @@ impl Session {
 
         *target = Some(Target {
             id: session,
-            console: Arc::new(tokio::sync::Mutex::new(console)),
+            console: Arc::new(Turns::new(console)),
             writes,
             settings,
             debugger,
@@ -1970,7 +1981,7 @@ impl Session {
         &self,
         handle: &DebuggerHandle,
         spec: &LaunchSpec,
-    ) -> Result<(Vec<JoinHandle<()>>, Input), Failure> {
+    ) -> Result<(Vec<output::Forwarder>, Input), Failure> {
         let failed = |error: std::io::Error| Failure::new(ErrorKind::Failed, error.to_string());
         let (stdin_read, stdin_write) = output::pipe().map_err(failed)?;
         let (stdout_read, stdout_write) = output::pipe().map_err(failed)?;
@@ -2013,11 +2024,11 @@ impl Session {
     }
 
     /// Forwards a program stream to every tab until its writers close it.
-    fn read_output(&self, read: OwnedFd, stream: Stream) -> std::io::Result<JoinHandle<()>> {
+    fn read_output(&self, read: OwnedFd, stream: Stream) -> std::io::Result<output::Forwarder> {
         let mut receiver = pipe::Receiver::from_owned_fd(read)?;
         let outlet = self.outlet();
 
-        Ok(tokio::spawn(async move {
+        Ok(output::Forwarder::spawn(async move {
             let mut pending = Vec::with_capacity(OUTPUT_CHUNK);
             let mut buffer = vec![0; OUTPUT_CHUNK];
 
@@ -2035,6 +2046,12 @@ impl Session {
     /// Ends a target: a launched program is killed, an attached one
     /// detached.
     async fn end(&self, mut target: Target) -> Result<(), Failure> {
+        // The pump publishes whole states and changes nothing else, and the
+        // state after the end is published once the target has ended.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the pump changes nothing a cancellation leaves half done"
+        )]
         target.pump.abort();
         let _ = (&mut target.pump).await;
         let shutdown = shut_down(target.debugger.take(), target.group.take()).await;
@@ -2042,7 +2059,7 @@ impl Session {
         // The program's end closes its streams; a reader still waiting is
         // on a stream a forked child kept open.
         for reader in &target.readers {
-            reader.abort();
+            reader.stop();
         }
 
         shutdown.map_err(Failure::from)

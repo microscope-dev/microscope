@@ -336,7 +336,7 @@ struct Target {
     /// Recorded source paths by the canonical local path they map to.
     recorded_paths: Option<HashMap<PathBuf, PathBuf>>,
     process: Option<ProcessId>,
-    pumps: Vec<JoinHandle<()>>,
+    pumps: Vec<output::Forwarder>,
 
     /// The settings child sessions carry over.
     inherited: serde_json::Map<String, Value>,
@@ -1528,12 +1528,16 @@ impl Session {
         if let Some(target) = self.target.as_mut() {
             let _ = target.owner.end().await;
             for pump in target.pumps.drain(..) {
-                pump.abort();
+                pump.stop();
             }
         }
 
         // The client no longer answers for sessions it was asked to start.
         for follow in self.follows.drain(..) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a follow only waits for the client's answer, which no one takes now"
+            )]
             follow.abort();
         }
     }
@@ -2073,10 +2077,8 @@ impl Session {
     async fn exited(&mut self, status: &ExitStatus) -> Result<(), Closed> {
         if let Some(target) = self.target.as_mut() {
             // The program's last output comes before its exit.
-            for mut pump in target.pumps.drain(..) {
-                if tokio::time::timeout(OUTPUT_DRAIN, &mut pump).await.is_err() {
-                    pump.abort();
-                }
+            for pump in target.pumps.drain(..) {
+                pump.finish(OUTPUT_DRAIN).await;
             }
         }
 

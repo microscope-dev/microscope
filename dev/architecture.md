@@ -127,6 +127,39 @@ reap every process it owns, waiter threads must end, replies must resolve, and
 clients must observe a terminal event or error. Tests check the process table,
 not only returned futures.
 
+### Cancellation
+
+A future that is dropped stops at the await it reached, and nothing after
+that await runs. In microscope that happens when a `select!` branch loses,
+a timeout expires, a task is aborted, or the runtime shuts down. Code that
+changed shared state before an await and fixes it after leaves it broken.
+Oxide's [RFD 397](https://rfd.shared.oxide.computer/rfd/0397) and
+[RFD 400](https://rfd.shared.oxide.computer/rfd/0400) describe the problem
+and the patterns used here.
+
+- A `select!` branch and a timeout wrap only futures that are safe to drop:
+  `mpsc` and `broadcast` receives, `watch::changed`, `Sender::reserve`,
+  accepts, signals, sleeps. Resume a future that is not, through `&mut`,
+  instead of making it again on every pass.
+- Work that must not stop partway runs on a task of its own that nothing
+  aborts, and others send it messages. Debugger requests do this: the
+  controller performs a request whole whether or not the caller still
+  waits for the reply. So do the web server's requests and a launched
+  program's input.
+- Shared data lives under a `std::sync::Mutex` that is never held across an
+  await. A `tokio::sync::Mutex` holder that is cancelled releases the lock
+  with its change half done; Clippy refuses the type unless an `#[expect]`
+  says why no holder can be cancelled.
+- Ask a task to stop rather than aborting it. Clippy refuses `abort`
+  unless an `#[expect]` says why nothing the task can be doing matters,
+  as for `dap::output::Forwarder`, which only forwards output.
+- Dropping an owner requests the same cleanup as shutting it down, without
+  waiting: `Debugger` and `ProcessGroup` both do. Prefer the explicit
+  `shutdown`, which reports whether cleanup succeeded.
+- Blocking work, such as reading a program's debug information, runs under
+  `spawn_blocking`. A runtime thread that blocks stalls every task on it,
+  and a read of a FIFO never ends.
+
 ## Requests, replies, and events
 
 `src/protocol.rs` holds request inputs and public event records. Each request
