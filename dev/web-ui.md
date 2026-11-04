@@ -221,6 +221,18 @@ link, `/sso#key=KEY`, to hand to members. Anyone it signs in joins the
 organization. Locally, run services' `just mock-idp` and pass `just run`
 the flags it prints; its sign-in pages list made-up people.
 
+Passkeys (`web/src/passkeys.ts`) are on when `GET /api/features` reports
+`passkeys`, which services does once it has a `--public-url` whose host is a
+domain: a passkey belongs to a domain, never an IP address. A signed-in
+account adds one from its sign-in methods, through `proven` like connecting
+Google; there is no signing up with one. The sign-in form has a "Sign in
+with a passkey" button and offers passkeys in the username field's autofill
+(`autocomplete="username webauthn"`), and the button stops the autofill's
+request before making its own. A passkey checks who is there itself, so it
+signs in without an emailed code or TOTP. Services sends WebAuthn's options
+as JSON with base64url bytes; the page converts them by hand, since the
+browser's own JSON helpers are newer than some browsers people use.
+
 A signed-in account also has organizations and projects
 (`web/src/orgs.ts`, `web/src/ui/Orgs.tsx`). The Account pane lists the
 person's shared organizations and pending invitations, and makes new
@@ -244,6 +256,10 @@ key the page shows. `TOTP_SHOTS=<dir>` saves a screenshot of each step.
 `web/e2e/sso.spec.ts` runs single sign-on against services and its
 `mock-idp` binary, built beside it, including a forged SAML assertion and a
 tampered Google token that must sign nobody in. `SSO_SHOTS=<dir>` saves
+screenshots. `web/e2e/passkeys.spec.ts` adds, uses, and removes a passkey
+with Chromium's virtual authenticator, which makes real keys; it serves the
+page from `localhost` (`startServices({ localhost: true })`) and skips in
+Firefox, which has no such authenticator. `PASSKEY_SHOTS=<dir>` saves
 screenshots. Services hashes passwords at argon2's minimum costs there
 (`--insecure-fast-password-hashing`, debug builds only). It runs services
 from `../services/target/debug`, or from `MICROSCOPE_SERVICES_BINARY`, and

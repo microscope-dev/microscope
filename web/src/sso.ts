@@ -16,6 +16,7 @@
 import { createStore } from "zustand";
 import { Refused } from "./account";
 import { request } from "./orgs";
+import type { Passkey } from "./passkeys";
 
 export type Provider = "google" | "github" | "saml";
 
@@ -37,9 +38,11 @@ export interface Identity {
   org_name: string | null;
 }
 
+/** The ways into the signed-in account. */
 export interface Identities {
   has_password: boolean;
   identities: Identity[];
+  passkeys: Passkey[];
 }
 
 /** What an organization's owners paste into their identity provider, and

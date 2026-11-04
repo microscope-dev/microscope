@@ -8,6 +8,14 @@ import { checkAccount, Refused, useAccount } from "../account";
 import { useFeatures } from "../features";
 import type { Org } from "../orgs";
 import {
+  addPasskey,
+  deviceName,
+  type Passkey,
+  removePasskey,
+  signInWithPasskey,
+  supported,
+} from "../passkeys";
+import {
   configureOrgSso,
   connect,
   connectSaml,
@@ -34,20 +42,27 @@ function useProviders(): Providers | null {
   return useFeatures()?.sso ?? null;
 }
 
-/** Signing in or up with Google or GitHub, for whichever services offers. */
-export function ContinueWith() {
+/** Whether services and this browser can both add passkeys. */
+function usePasskeys(): boolean {
+  return useFeatures()?.passkeys === true && supported();
+}
+
+/** Signing in or up with Google or GitHub, for whichever services offers,
+ * after any other way in the form gives as `children`. */
+export function ContinueWith({ children }: { children?: ReactNode }) {
   const offered = useProviders();
-  if (!offered || (!offered.google && !offered.github)) {
+  if (!children && (!offered || (!offered.google && !offered.github))) {
     return null;
   }
   return (
     <div className="actions">
-      {offered.google && (
+      {children}
+      {offered?.google && (
         <a className="button" href={startUrl("google")}>
           Continue with Google
         </a>
       )}
-      {offered.github && (
+      {offered?.github && (
         <a className="button" href={startUrl("github")}>
           Continue with GitHub
         </a>
@@ -128,25 +143,54 @@ function describe(identity: Identity): string {
     : PROVIDER_LABEL[identity.provider];
 }
 
-/** The ways into the signed-in account: its password, and each outside
- * account connected to it. The last one cannot go. Absent while there is
- * nothing to connect and nothing connected. */
+const day = (unix: number) =>
+  new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: "medium" });
+
+function used(passkey: Passkey): string {
+  return passkey.last_used_at === null
+    ? `Added ${day(passkey.created_at)}`
+    : `Last used ${day(passkey.last_used_at)}`;
+}
+
+/** The ways into the signed-in account: its password, each outside account
+ * connected to it, and its passkeys. The last one cannot go. Absent while
+ * there is nothing to add and nothing added. */
 export function SignInMethods() {
   const offered = useProviders();
+  const passkeys = usePasskeys();
   const methods = useLoaded(identities, "");
   const { working, error, run } = useAction();
+  const [naming, setNaming] = useState<string | null>(null);
+  const nameId = useId();
   const known = methods.data;
-  const ways = known ? known.identities.length + (known.has_password ? 1 : 0) : 0;
+  const ways = known
+    ? known.identities.length + known.passkeys.length + (known.has_password ? 1 : 0)
+    : 0;
   const unconnected = (["google", "github"] as const).filter(
     (provider) =>
       offered?.[provider] && !known?.identities.some((each) => each.provider === provider),
   );
   const nothing =
     (!known && !methods.error) ||
-    (known?.identities.length === 0 && !offered?.google && !offered?.github);
+    (known?.identities.length === 0 &&
+      known.passkeys.length === 0 &&
+      !offered?.google &&
+      !offered?.github &&
+      !passkeys);
   if (nothing) {
     return null;
   }
+  const add = (event: FormEvent) => {
+    event.preventDefault();
+    const name = naming?.trim() ?? "";
+    run(() =>
+      proven("methods", async () => {
+        await addPasskey(name);
+        setNaming(null);
+        methods.again();
+      }),
+    );
+  };
   return (
     <>
       <h2>Sign-in methods</h2>
@@ -180,10 +224,58 @@ export function SignInMethods() {
               )}
             </li>
           ))}
+          {known.passkeys.map((passkey) => (
+            <li key={`passkey-${passkey.id}`}>
+              <span className="name">Passkey: {passkey.name}</span>
+              <span className="muted">{used(passkey)}</span>
+              {ways > 1 && (
+                <span className="end">
+                  <Confirm
+                    label="Remove"
+                    question={`Stop signing in with ${passkey.name}?`}
+                    act={() =>
+                      proven("methods", async () => {
+                        await removePasskey(passkey.id);
+                        methods.again();
+                      })
+                    }
+                  />
+                </span>
+              )}
+            </li>
+          ))}
         </ul>
       )}
-      {unconnected.length > 0 && (
+      {naming !== null && (
+        <form className="pane-form" aria-label="Add a passkey" onSubmit={add}>
+          <div className="field">
+            <label htmlFor={nameId}>Passkey name</label>
+            <input
+              id={nameId}
+              className="input"
+              maxLength={64}
+              data-autofocus
+              value={naming}
+              onChange={(event) => setNaming(event.target.value)}
+            />
+          </div>
+          <div className="actions">
+            <button type="submit" className="button primary" disabled={working || !naming.trim()}>
+              Add passkey
+            </button>
+            <button type="button" className="link-button" onClick={() => setNaming(null)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      {(unconnected.length > 0 || (passkeys && naming === null)) && (
         <div className="actions">
+          {passkeys && naming === null && (
+            <button type="button" className="button" onClick={() => setNaming(deviceName())}>
+              Add a passkey
+            </button>
+          )}
           {unconnected.map((provider) => (
             <button
               key={provider}
@@ -215,6 +307,7 @@ function ProveItsYou({ asked }: { asked: "methods" | "org-link" }) {
 }
 
 function Prove({ retry }: { retry: () => Promise<void> }) {
+  const now = useAccount();
   const methods = useLoaded(identities, "");
   const [password, setPassword] = useState("");
   const { working, error, run } = useAction();
@@ -238,6 +331,19 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
       await retry();
     });
   };
+  // Signing in again with a passkey makes this session a recent one. The
+  // change waits unless it signed in to the same account.
+  const passkey = () =>
+    run(async () => {
+      const user = await signInWithPasskey();
+      if (user && now.kind === "in" && user.id === now.user.id) {
+        done();
+        await retry();
+      } else if (user) {
+        done();
+      }
+    });
+  const byPasskey = (known?.passkeys.length ?? 0) > 0 && supported();
   const cancel = (
     <button type="button" className="link-button" onClick={done}>
       Cancel
@@ -283,11 +389,21 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
         <div className="pane-form">
           {heading}
           <p className="muted">
-            {again.length > 0
+            {again.length > 0 || byPasskey
               ? "Sign in again to change how you sign in."
               : "Sign out, then sign in again with your organization's link."}
           </p>
+          {error && (
+            <span className="error" role="alert">
+              {error}
+            </span>
+          )}
           <div className="actions">
+            {byPasskey && (
+              <button type="button" className="button primary" disabled={working} onClick={passkey}>
+                Sign in again with a passkey
+              </button>
+            )}
             {again.map((provider) => (
               <a key={provider} className="button primary" href={startUrl(provider)}>
                 Sign in again with {PROVIDER_LABEL[provider]}

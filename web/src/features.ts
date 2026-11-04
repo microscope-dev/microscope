@@ -13,6 +13,8 @@ export interface Features {
   /** Whether accounts can turn on two-factor authentication. */
   totp: boolean;
   sso: Providers;
+  /** Whether accounts can add passkeys and sign in with them. */
+  passkeys: boolean;
 }
 
 export const features = () => request<Features>("GET", "/api/features");

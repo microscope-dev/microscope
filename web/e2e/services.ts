@@ -29,15 +29,17 @@ export interface Served {
   server: Server;
 }
 
-async function listen(handler: Handler): Promise<Served> {
+/** Listens on 127.0.0.1, named in the origin as `host`. */
+async function listen(handler: Handler, host = "127.0.0.1"): Promise<Served> {
   const server = createServer(handler);
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const { port } = server.address() as AddressInfo;
-  return { origin: `http://127.0.0.1:${port}`, server };
+  return { origin: `http://${host}:${port}`, server };
 }
 
-/** Serves the built page, and hands every request under `/api/` to `api`. */
-export function standalonePage(api: Handler): Promise<Served> {
+/** Serves the built page, and hands every request under `/api/` to `api`.
+ * The page's origin names `host`. */
+export function standalonePage(api: Handler, host?: string): Promise<Served> {
   const dir = path.join(root, "build", "web");
   return listen((request, response) => {
     const url = new URL(request.url ?? "/", "http://page");
@@ -62,7 +64,7 @@ export function standalonePage(api: Handler): Promise<Served> {
         response.writeHead(404);
         response.end();
       });
-  });
+  }, host);
 }
 
 /** Where the services binary is, built from its own repository. */
@@ -247,9 +249,13 @@ async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promi
 
 /** Starts the page, a fake Postmark, and services with email turned on,
  * whose links lead to the page. With `sso`, services signs in through the
- * mock identity provider too. Services needs its database: `just up` in the services repository
- * starts one. */
-export async function startServices(options: { sso?: boolean } = {}): Promise<Services> {
+ * mock identity provider too. With `localhost`, the page is served from
+ * localhost rather than 127.0.0.1, which passkeys need: they belong to a
+ * domain, never an IP address. Services needs its database: `just up` in
+ * the services repository starts one. */
+export async function startServices(
+  options: { sso?: boolean; localhost?: boolean } = {},
+): Promise<Services> {
   const inbox: Mail[] = [];
   const waiting: (() => void)[] = [];
   const postmark = await fakePostmark((mail) => {
@@ -265,7 +271,10 @@ export async function startServices(options: { sso?: boolean } = {}): Promise<Se
   });
 
   let api = "";
-  const page = await standalonePage(proxy(() => api)).catch((error: Error) => {
+  const page = await standalonePage(
+    proxy(() => api),
+    options.localhost ? "localhost" : undefined,
+  ).catch((error: Error) => {
     postmark.server.close();
     kms.server.close();
     throw error;

@@ -274,13 +274,13 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   const off = { google: false, github: false, saml: true };
   const saml = { id: 3, provider: "saml", email: ME.email, org_id: 7, org_name: "acme" };
   const methods = () => page.getByRole("list", { name: "Sign-in methods" });
-  const show = (providers: unknown, identities: unknown[]) => {
+  const show = (providers: unknown, identities: unknown[], passkeys = false) => {
     const asked = services({
       "GET /api/orgs": [200, []],
       "GET /api/projects": [200, []],
       "GET /api/users/me/invitations": [200, []],
-      "GET /api/features": [200, { email: false, totp: true, sso: providers }],
-      "GET /api/users/me/identities": [200, { has_password: true, identities }],
+      "GET /api/features": [200, { email: false, totp: true, sso: providers, passkeys }],
+      "GET /api/users/me/identities": [200, { has_password: true, identities, passkeys: [] }],
     });
     render(<AccountBody />);
     return asked;
@@ -307,6 +307,139 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   await expect.poll(() => text(methods())).toBe("Password");
   await expect.element(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
   expect(page.getByRole("button", { name: "Connect Google" }).elements()).toHaveLength(0);
+  expect(page.getByRole("button", { name: "Add a passkey" }).elements()).toHaveLength(0);
+  cleanup();
+
+  // Passkeys offered: something to add.
+  show(off, [], true);
+  await expect.element(page.getByRole("button", { name: "Add a passkey" })).toBeVisible();
+});
+
+const PASSKEY = { id: 9, name: "Mac", backed_up: true, created_at: 1_790_000_000 };
+
+it("lists passkeys, and keeps the last way in", async () => {
+  const methods = () => page.getByRole("list", { name: "Sign-in methods" });
+  const show = (has_password: boolean, passkeys: unknown[]) => {
+    services({
+      "GET /api/orgs": [200, []],
+      "GET /api/projects": [200, []],
+      "GET /api/users/me/invitations": [200, []],
+      "GET /api/features": [
+        200,
+        {
+          email: false,
+          totp: false,
+          sso: { google: false, github: false, saml: false },
+          passkeys: true,
+        },
+      ],
+      "GET /api/users/me/identities": [200, { has_password, identities: [], passkeys }],
+    });
+    render(<AccountBody />);
+  };
+
+  show(true, [
+    { ...PASSKEY, last_used_at: null },
+    { ...PASSKEY, id: 10, name: "YubiKey", last_used_at: 1_792_000_000 },
+  ]);
+  const mac = methods().getByRole("listitem").filter({ hasText: "Passkey: Mac" });
+  const key = methods().getByRole("listitem").filter({ hasText: "Passkey: YubiKey" });
+  const day = (unix: number) =>
+    new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: "medium" });
+  await expect.element(mac).toHaveTextContent(`Passkey: MacAdded ${day(1_790_000_000)}Remove`);
+  await expect
+    .element(key)
+    .toHaveTextContent(`Passkey: YubiKeyLast used ${day(1_792_000_000)}Remove`);
+  cleanup();
+
+  // Its only way in has nothing to remove it with.
+  show(false, [{ ...PASSKEY, last_used_at: null }]);
+  await expect.poll(() => text(methods())).toMatch(/^Passkey: Mac/);
+  expect(methods().getByRole("button").elements()).toHaveLength(0);
+});
+
+it("adds a passkey once the person proves who they are, sending what the device made", async () => {
+  const options = {
+    challenge: "AAEC_-8",
+    rp: { id: "localhost", name: "Microscope" },
+    user: { id: "BAUG", name: ME.email, displayName: ME.username },
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+    excludeCredentials: [{ type: "public-key", id: "-_8" }],
+    authenticatorSelection: { residentKey: "required", userVerification: "required" },
+    attestation: "none",
+  };
+  let verified = false;
+  let added: unknown = null;
+  services({
+    "GET /api/orgs": [200, []],
+    "GET /api/projects": [200, []],
+    "GET /api/users/me/invitations": [200, []],
+    "GET /api/features": [
+      200,
+      {
+        email: false,
+        totp: false,
+        sso: { google: false, github: false, saml: false },
+        passkeys: true,
+      },
+    ],
+    "GET /api/users/me/identities": () => [
+      200,
+      {
+        has_password: true,
+        identities: [],
+        passkeys: added ? [{ ...PASSKEY, last_used_at: null }] : [],
+      },
+    ],
+    "POST /api/passkeys/register/start": () =>
+      verified ? [200, options] : [403, { error: "confirm it is you first" }],
+    "POST /api/users/me/verify": () => {
+      verified = true;
+      return [204];
+    },
+    "POST /api/passkeys/register/finish": (body) => {
+      added = body;
+      return [201, { id: 9, name: "Mac" }];
+    },
+  });
+  const made: CredentialCreationOptions[] = [];
+  vi.spyOn(navigator.credentials, "create").mockImplementation(async (asked) => {
+    made.push(asked as CredentialCreationOptions);
+    return {
+      rawId: new Uint8Array([0xfb, 0xff, 0x01]).buffer,
+      response: {
+        clientDataJSON: new TextEncoder().encode("{}").buffer,
+        attestationObject: new Uint8Array([0xa0]).buffer,
+      },
+    } as unknown as Credential;
+  });
+  render(<AccountBody />);
+
+  await userEvent.click(page.getByRole("button", { name: "Add a passkey" }));
+  await userEvent.fill(page.getByLabelText("Passkey name"), " Mac ");
+  await userEvent.click(page.getByRole("button", { name: "Add passkey" }));
+  const prove = page.getByRole("region", { name: "Confirm it's you" });
+  await userEvent.fill(prove.getByLabelText("Password"), "the password");
+  await userEvent.click(prove.getByRole("button", { name: "Confirm" }));
+
+  await expect
+    .poll(() => text(page.getByRole("list", { name: "Sign-in methods" })))
+    .toMatch(/Passkey: Mac/);
+  expect(added).toEqual({
+    credential_id: "-_8B",
+    client_data_json: "e30",
+    attestation_object: "oA",
+    name: "Mac",
+  });
+  expect(made).toHaveLength(1);
+  const key = made[0]?.publicKey;
+  expect([...new Uint8Array(key?.challenge as ArrayBuffer)]).toEqual([0, 1, 2, 0xff, 0xef]);
+  expect([...new Uint8Array(key?.user.id as ArrayBuffer)]).toEqual([4, 5, 6]);
+  expect([...new Uint8Array(key?.excludeCredentials?.[0]?.id as ArrayBuffer)]).toEqual([
+    0xfb, 0xff,
+  ]);
+  expect(key?.rp).toEqual({ id: "localhost", name: "Microscope" });
+  await expect.element(page.getByLabelText("Passkey name")).not.toBeInTheDocument();
 });
 
 it("offers two-factor authentication only when the server can keep its secrets", async () => {
@@ -320,7 +453,7 @@ it("offers two-factor authentication only when the server can keep its secrets",
         200,
         { email: false, totp, sso: { google: false, github: false, saml: false } },
       ],
-      "GET /api/users/me/identities": [200, { has_password: true, identities: [] }],
+      "GET /api/users/me/identities": [200, { has_password: true, identities: [], passkeys: [] }],
       "GET /api/users/me": [200, user],
     });
     account.setState({ now: { kind: "in", user } });
@@ -381,7 +514,7 @@ it("a reset link for another account leaves this browser signed in as it was", a
       200,
       { email: true, totp: false, sso: { google: false, github: false, saml: false } },
     ],
-    "GET /api/users/me/identities": [200, { has_password: true, identities: [] }],
+    "GET /api/users/me/identities": [200, { has_password: true, identities: [], passkeys: [] }],
     "POST /api/password-resets/complete": [204],
   });
   account.setState({ reset: "ab".repeat(32) });
@@ -409,7 +542,10 @@ it("an account without a password proves who it is by signing in again", async (
       200,
       { email: false, totp: false, sso: { google: true, github: true, saml: false } },
     ],
-    "GET /api/users/me/identities": [200, { has_password: false, identities: [google, github] }],
+    "GET /api/users/me/identities": [
+      200,
+      { has_password: false, identities: [google, github], passkeys: [] },
+    ],
     "DELETE /api/users/me/identities/4": [403, { error: "confirm it is you first" }],
   });
   render(<AccountBody />);

@@ -3,7 +3,7 @@
 // connected to it already. Signing in to the services backend is optional:
 // a join link works without an account.
 
-import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useStore } from "zustand";
 import {
   account,
@@ -30,6 +30,7 @@ import {
 } from "../account";
 import { useFeatures } from "../features";
 import { isPagePath } from "../focus";
+import { autofillAvailable, signInWithPasskey, supported } from "../passkeys";
 import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
 import { qrcodegen } from "../vendor/qrcodegen";
@@ -323,8 +324,46 @@ function Field(props: {
   );
 }
 
+/** Signing in with a passkey: the button's, and the username field's
+ * autofill while the form is open, which the button stops first. */
+function usePasskeySignIn(on: boolean) {
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const autofill = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!on) {
+      return;
+    }
+    const controller = new AbortController();
+    autofill.current = controller;
+    autofillAvailable()
+      .then((available) =>
+        available ? signInWithPasskey({ autofill: true, signal: controller.signal }) : null,
+      )
+      .catch((failure: Error) => {
+        if (!controller.signal.aborted) {
+          setError(failure.message);
+        }
+      });
+    return () => controller.abort();
+  }, [on]);
+
+  const start = () => {
+    autofill.current?.abort();
+    setWorking(true);
+    setError(null);
+    signInWithPasskey()
+      .catch((failure: Error) => setError(failure.message))
+      .finally(() => setWorking(false));
+  };
+  return { working, error, start };
+}
+
 function SignIn({ go }: { go: Go }) {
   const offered = useFeatures();
+  const passkeys = offered?.passkeys === true && supported();
+  const passkey = usePasskeySignIn(passkeys);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const { working, error, submit } = useSubmit(async () => {
@@ -343,7 +382,7 @@ function SignIn({ go }: { go: Go }) {
           label="Username or email"
           value={name}
           set={setName}
-          autoComplete="username"
+          autoComplete={passkeys ? "username webauthn" : "username"}
           autoFocus
         />
         <Field
@@ -379,7 +418,23 @@ function SignIn({ go }: { go: Go }) {
           </span>
         </div>
       </form>
-      <ContinueWith />
+      <ContinueWith>
+        {passkeys && (
+          <button
+            type="button"
+            className="button"
+            disabled={passkey.working}
+            onClick={passkey.start}
+          >
+            Sign in with a passkey
+          </button>
+        )}
+      </ContinueWith>
+      {passkey.error && (
+        <span className="error" role="alert">
+          {passkey.error}
+        </span>
+      )}
       {unconfirmed && (
         <Resend email={name.includes("@") ? name : ""} go={go}>
           <h2>Confirm your email address</h2>

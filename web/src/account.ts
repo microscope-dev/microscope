@@ -100,6 +100,13 @@ export async function signIn(
   return { user: signedIn((await response.json()) as User) };
 }
 
+/** Signs in with a passkey's answer to a challenge (passkeys.ts), which is
+ * two factors on its own. */
+export async function passkeySignedIn(answer: unknown): Promise<User> {
+  const response = await post("/api/passkeys/sign-in/finish", answer);
+  return signedIn((await response.json()) as User);
+}
+
 export async function enterTotp(challenge: string, code: string): Promise<User> {
   const response = await post("/api/login/totp", { challenge, code });
   return signedIn((await response.json()) as User);

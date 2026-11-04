@@ -67,7 +67,7 @@ function standIn(): Handler {
     }
     if (request.url === "/api/features") {
       const none = { google: false, github: false, saml: false };
-      json(200, { email: false, totp: false, sso: none });
+      json(200, { email: false, totp: false, sso: none, passkeys: false });
       return;
     }
     // A new account: in no organization, with no projects, invitations, or
@@ -76,7 +76,7 @@ function standIn(): Handler {
       "/api/orgs": [],
       "/api/projects": [],
       "/api/users/me/invitations": [],
-      "/api/users/me/identities": { has_password: true, identities: [] },
+      "/api/users/me/identities": { has_password: true, identities: [], passkeys: [] },
     };
     if (signedIn && request.url && request.url in empty) {
       json(200, empty[request.url]);
