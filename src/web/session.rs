@@ -200,7 +200,8 @@ pub struct Session {
     /// too.
     follow: Mutex<FollowPolicy>,
 
-    /// Whether the server is stopping, which ends a program's load.
+    /// Whether the server is stopping, which ends a program's load and
+    /// refuses any new target.
     stopping: watch::Sender<bool>,
 }
 
@@ -1755,6 +1756,16 @@ impl Session {
     /// `replace` allows it. A failure names the session it ended, if any.
     async fn replace(&self, start: Start, replace: bool) -> Result<(), (Failure, Option<String>)> {
         let mut target = self.target.lock().await;
+
+        // The server ends its target under this lock as it stops, and
+        // exits next, so nothing would end a target opened after that.
+        if *self.stopping.borrow() {
+            return Err((
+                Failure::new(ErrorKind::Busy, "the server is stopping"),
+                None,
+            ));
+        }
+
         if let Some(current) = target.as_ref()
             && !replace
         {
@@ -1803,6 +1814,8 @@ impl Session {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
+        let id =
+            random_hex(4).map_err(|error| Failure::new(ErrorKind::Failed, error.to_string()))?;
         self.loading(&start);
         let policy = self
             .follow
@@ -1821,8 +1834,6 @@ impl Session {
         let handle = opened.handle();
         let attached = matches!(start, Start::Attach(_));
         let (info, launch, run) = describe_target(start, &handle);
-        let id =
-            random_hex(4).map_err(|error| Failure::new(ErrorKind::Failed, error.to_string()))?;
         let name = Path::new(&info.program).file_name().map_or_else(
             || info.program.clone(),
             |name| name.to_string_lossy().into_owned(),
@@ -1862,10 +1873,17 @@ impl Session {
                 protocol::Joined::Launched
             },
         );
-        let first = pump
-            .first_state()
-            .await
-            .ok_or_else(|| Failure::new(ErrorKind::Failed, "the debugger ended as it started"))?;
+        // A debugger that ended as it started leaves nothing debugged: the
+        // page stops showing the load, and the session has let go of its
+        // process before another can be traced.
+        let Some(first) = pump.first_state().await else {
+            let _ = shut_down(debugger, group).await;
+            self.state.send_replace(Arc::new(State::idle(None)));
+            return Err(Failure::new(
+                ErrorKind::Failed,
+                "the debugger ended as it started",
+            ));
+        };
         self.state.send_replace(Arc::new(first));
         let console = self.console_for(&handle, members.as_ref(), &outlet).await;
         let pump = tokio::spawn(pump.run(events));
@@ -2019,11 +2037,7 @@ impl Session {
     async fn end(&self, mut target: Target) -> Result<(), Failure> {
         target.pump.abort();
         let _ = (&mut target.pump).await;
-        let shutdown = match (target.debugger.take(), target.group.take()) {
-            (Some(debugger), _) => debugger.shutdown().await,
-            (None, Some(group)) => group.shutdown().await,
-            (None, None) => Ok(()),
-        };
+        let shutdown = shut_down(target.debugger.take(), target.group.take()).await;
 
         // The program's end closes its streams; a reader still waiting is
         // on a stream a forked child kept open.
@@ -2034,8 +2048,10 @@ impl Session {
         shutdown.map_err(Failure::from)
     }
 
-    /// Ends whatever is being debugged, as the server exits.
+    /// Ends whatever is being debugged, as the server exits, and starts
+    /// nothing after.
     pub async fn shutdown(&self) {
+        self.stop_loading();
         let current = self.target.lock().await.take();
         if let Some(target) = current {
             let _ = self.end(target).await;
@@ -2352,6 +2368,19 @@ async fn open(
     }
 }
 
+/// Ends a target's debugger: a launched program is killed, an attached
+/// one detached.
+async fn shut_down(
+    debugger: Option<Debugger>,
+    group: Option<ProcessGroup>,
+) -> microscope::Result<()> {
+    match (debugger, group) {
+        (Some(debugger), _) => debugger.shutdown().await,
+        (None, Some(group)) => group.shutdown().await,
+        (None, None) => Ok(()),
+    }
+}
+
 /// What `load` read, unless the server stops first. A load can block for
 /// good, as on a FIFO no one writes, and its thread cannot be interrupted:
 /// a stopping server leaves it behind.
@@ -2558,6 +2587,45 @@ fn frame_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tab's request can start a program while the server stops, after
+    /// the server ended what it debugged and before it exits. Nothing would
+    /// end that program: an attached one would be left with microscope's
+    /// traps in it, and die at the next.
+    #[tokio::test]
+    async fn nothing_starts_once_the_session_is_shut_down() {
+        struct Killed(std::process::Child);
+        impl Drop for Killed {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/spin");
+        let child = Killed(
+            std::process::Command::new(fixture)
+                .spawn()
+                .expect("start the program"),
+        );
+        let session = Session::new(
+            std::env::temp_dir(),
+            String::new(),
+            Tokens::mint().expect("tokens"),
+            microscope::DebugFileOptions::default(),
+            Vec::new(),
+        );
+        session.shutdown().await;
+
+        let process = ProcessId::new(u64::from(child.0.id()));
+        let started = session.start(Start::Attach(process), true).await;
+        let attached = session.target.lock().await.take();
+        if let Some(target) = attached {
+            let _ = session.end(target).await;
+            panic!("a program was attached to after the session shut down");
+        }
+        assert!(started.is_err(), "the attach fails");
+    }
 
     /// A tab can count a change while the pump builds a state from the
     /// counts before it. Publishing that state keeps the newer count, so
