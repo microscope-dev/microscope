@@ -1,5 +1,6 @@
 // What the strip says a command did lasts only until the next one runs.
 
+import { useCallback } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -12,8 +13,9 @@ afterEach(unmountPane);
 
 function Palette() {
   const { run } = useCommands();
+  const openPalette = useCallback(() => run("palette"), [run]);
   return (
-    <button type="button" onClick={() => run("palette")}>
+    <button type="button" onClick={openPalette}>
       Open the palette
     </button>
   );

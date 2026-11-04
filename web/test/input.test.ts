@@ -1,6 +1,6 @@
 // What people type: debugger keys, program arguments, and environments.
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { COMMANDS } from "../src/ui/commands";
@@ -20,6 +20,9 @@ const key = (name: string, modifiers: Partial<KeyLike> = {}): KeyLike => ({
   metaKey: false,
   ...modifiers,
 });
+
+const pressCode = (typed: string, code: string, modifiers: Partial<KeyLike>) =>
+  commandFor({ ...key(typed, modifiers), code }, false);
 
 describe("debugger keys", () => {
   it("maps VS Code's run keys whether or not a text box has focus", () => {
@@ -76,7 +79,7 @@ describe("debugger keys", () => {
   it("reads an Alt chord by its physical key, whatever Alt makes it type", () => {
     fc.assert(
       fc.property(altLetterOrDigit, fc.boolean(), ({ letter, typed, shiftKey }, inTextBox) => {
-        const code = /\d/.test(letter) ? `Digit${letter}` : `Key${letter.toUpperCase()}`;
+        const code = /\d/u.test(letter) ? `Digit${letter}` : `Key${letter.toUpperCase()}`;
         const press = { key: typed, code, shiftKey, ctrlKey: false, altKey: true, metaKey: false };
         expect(commandFor(press, inTextBox)).toBe(commandFor({ ...press, key: letter }, inTextBox));
       }),
@@ -103,26 +106,24 @@ describe("debugger keys", () => {
 
   it("reads bracket and backslash chords by the key pressed, whatever it types", () => {
     // Alt+Shift+] types ’ on a Mac, and Shift makes \ a |.
-    const press = (typed: string, code: string, modifiers: Partial<KeyLike>) =>
-      commandFor({ ...key(typed, modifiers), code }, false);
-    expect(press("’", "BracketRight", { altKey: true, shiftKey: true })).toBe("moveTabRight");
-    expect(press("‘", "BracketLeft", { altKey: true })).toBe("previousTab");
-    expect(press("\\", "Backslash", { ctrlKey: true })).toBe("splitRight");
-    expect(press("|", "Backslash", { ctrlKey: true, shiftKey: true })).toBe("splitDown");
+    expect(pressCode("’", "BracketRight", { altKey: true, shiftKey: true })).toBe("moveTabRight");
+    expect(pressCode("‘", "BracketLeft", { altKey: true })).toBe("previousTab");
+    expect(pressCode("\\", "Backslash", { ctrlKey: true })).toBe("splitRight");
+    expect(pressCode("|", "Backslash", { ctrlKey: true, shiftKey: true })).toBe("splitDown");
     // Without Alt or Ctrl, a bracket is typed, not a chord.
-    expect(press("}", "BracketRight", { shiftKey: true })).toBeNull();
+    expect(pressCode("}", "BracketRight", { shiftKey: true })).toBeNull();
   });
 });
 
-describe("the command registry", () => {
-  const command = (keys: Chord[]): Command<null> => ({
-    label: "x",
-    menu: null,
-    keys,
-    available: () => READY,
-    run: () => {},
-  });
+const command = (keys: Chord[]): Command<null> => ({
+  label: "x",
+  menu: null,
+  keys,
+  available: () => READY,
+  run: () => {},
+});
 
+describe("the command registry", () => {
   it("refuses a press bound to two commands", () => {
     expect(() => registry({ a: command([{ key: "F5" }]), b: command([{ key: "F5" }]) })).toThrow(
       "F5 is bound to a and to b",
@@ -130,7 +131,7 @@ describe("the command registry", () => {
     // A letter is one press, with or without Shift.
     expect(() =>
       registry({ a: command([{ key: "?", shift: true }]), b: command([{ key: "?" }]) }),
-    ).toThrow();
+    ).toThrow("? is bound to a and to b");
     expect(() =>
       registry({ a: command([{ key: "F5", shift: true }]), b: command([{ key: "F5" }]) }),
     ).not.toThrow();

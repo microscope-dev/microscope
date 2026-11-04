@@ -69,18 +69,19 @@ describe("places and paths", () => {
       "lib/a.c",
       "gen/table.c",
     ];
-    for (const path of files) {
-      expect(recordedPath(linkPath(path, cwd, files), cwd, files), path).toBe(path);
-    }
+    expect(files.map((path) => recordedPath(linkPath(path, cwd, files), cwd, files))).toEqual(
+      files,
+    );
     expect(linkPath("/home/me/kv/src/server.c", cwd, files)).toBe("src/server.c");
     expect(linkPath("/home/me/kvstore/a.c", cwd, files)).toBe("/home/me/kvstore/a.c");
     // A short form that names another recorded file stays long.
     expect(linkPath("/home/me/kv/lib/a.c", cwd, files)).toBe("/home/me/kv/lib/a.c");
     expect(linkPath("gen/table.c", cwd, files)).toBe("gen/table.c");
     // Until the files are known, links stay whole and relative ones name nothing.
-    expect(linkPath("/home/me/kv/src/server.c", cwd, undefined)).toBe("/home/me/kv/src/server.c");
-    expect(recordedPath("src/server.c", cwd, undefined)).toBeNull();
-    expect(recordedPath("/usr/include/stdio.h", cwd, undefined)).toBe("/usr/include/stdio.h");
+    const noFiles = undefined;
+    expect(linkPath("/home/me/kv/src/server.c", cwd, noFiles)).toBe("/home/me/kv/src/server.c");
+    expect(recordedPath("src/server.c", cwd, noFiles)).toBeNull();
+    expect(recordedPath("/usr/include/stdio.h", cwd, noFiles)).toBe("/usr/include/stdio.h");
   });
 
   it("reads a stop's numbers, refusing anything else", () => {
@@ -106,9 +107,10 @@ describe("places and paths", () => {
     const at = { stop: 7, thread: 0, task: { runtime: 2, number: "31" }, frame: 3 };
     expect(stopPath("k7q2", at)).toBe("/s/k7q2/stop/7/task/2.31/f/3");
     expect(parseAt({ stop: "7", task: "2.31", frame: "3" })).toEqual(at);
-    for (const task of ["2", "2.x", "2.31.4", "", ".31", "2.+31", "2.031", "2."]) {
-      expect(parseAt({ stop: "7", task, frame: "0" }), task).toBeNull();
-    }
+    const read = ["2", "2.x", "2.31.4", "", ".31", "2.+31", "2.031", "2."].filter(
+      (task) => parseAt({ stop: "7", task, frame: "0" }) !== null,
+    );
+    expect(read).toEqual([]);
   });
 
   it("keeps a task number above 2^53 exact, apart from its neighbour", () => {
@@ -162,9 +164,7 @@ describe("a pinned drawing", () => {
   ];
 
   it("reads back as it was written", () => {
-    for (const pinned of pins) {
-      expect(parsePinned(formatPinned(pinned)), formatPinned(pinned)).toEqual(pinned);
-    }
+    expect(pins.map((pinned) => parsePinned(formatPinned(pinned)))).toEqual(pins);
   });
 
   it("reads links written before a path could end in its marker", () => {
@@ -180,10 +180,12 @@ describe("a pinned drawing", () => {
 });
 
 it("only paths on this page are followed from someone else's link", () => {
-  for (const path of ["/", "/s/ab/stop/3/t/9/f/0?w=a%26b", "/pick"]) {
-    expect(isPagePath(path), path).toBe(true);
-  }
-  for (const path of [undefined, "", "//host/", "/\\host/", "https://host/", "s/ab", "/a\nb"]) {
-    expect(isPagePath(path), String(path)).toBe(false);
-  }
+  expect(
+    ["/", "/s/ab/stop/3/t/9/f/0?w=a%26b", "/pick"].filter((path) => !isPagePath(path)),
+  ).toEqual([]);
+  expect(
+    [undefined, "", "//host/", "/\\host/", "https://host/", "s/ab", "/a\nb"].filter((path) =>
+      isPagePath(path),
+    ),
+  ).toEqual([]);
 });

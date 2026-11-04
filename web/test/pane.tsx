@@ -51,6 +51,7 @@ export async function mountPane(
 ): Promise<FakeServer> {
   const server = await fakeServer();
   server.send({ type: "state", ...state });
+  // oxlint-disable-next-line react-perf/jsx-no-new-object-as-prop -- built once per mount, so stable across renders
   const shown: Focus = {
     session: "s1",
     state,

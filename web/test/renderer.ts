@@ -25,19 +25,22 @@ export async function run(
   const worker = new Worker(url);
   workers.push(worker);
   const answers: Record<string, unknown>[] = [];
-  let wake = () => {};
+  let wake: (() => void) | undefined;
   worker.addEventListener("message", (event) => {
     answers.push(event.data);
-    wake();
+    wake?.();
   });
+  const answered = () =>
+    new Promise<void>((resolve) => {
+      wake = resolve;
+    });
   const next = async () => {
     while (answers.length === 0) {
-      await new Promise<void>((resolve) => {
-        wake = resolve;
-      });
+      await answered();
     }
     return answers.shift() as Record<string, unknown>;
   };
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a Worker's postMessage takes no target origin
   worker.postMessage({ type: "load", source, name: "renderer" });
   const loaded = await next();
   if (loaded.error !== null) {
@@ -51,6 +54,7 @@ export async function run(
     palette,
     ...context,
   };
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a Worker's postMessage takes no target origin
   worker.postMessage({ type: "draw", id: 1, input, context: full });
   return next();
 }
@@ -90,5 +94,5 @@ export function texts(picture: Picture): string[] {
 
 /** The title of every titled shape. */
 export function titles(picture: Picture): string[] {
-  return shapesOf(picture).flatMap((shape) => (shape.title !== undefined ? [shape.title] : []));
+  return shapesOf(picture).flatMap((shape) => (shape.title === undefined ? [] : [shape.title]));
 }

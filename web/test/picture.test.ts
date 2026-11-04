@@ -59,84 +59,84 @@ describe("validate", () => {
 
   // Each is refused, with where and why.
   const refused: [string, unknown, RegExp][] = [
-    ["not a picture", { type: "rect" }, /did not return microscope\.picture/],
-    ["an unknown property", picture([], { onload: "x" }), /`onload` is not one of its properties/],
+    ["not a picture", { type: "rect" }, /did not return microscope\.picture/u],
+    ["an unknown property", picture([], { onload: "x" }), /`onload` is not one of its properties/u],
     [
       "a url( color",
       picture([{ type: "rect", x: 0, y: 0, width: 1, height: 1, fill: "url(#x)" }]),
-      /shape 0 \(rect\): `fill` is not a color/,
+      /shape 0 \(rect\): `fill` is not a color/u,
     ],
     [
       "a color with a function inside",
       picture([{ type: "circle", x: 0, y: 0, r: 1, fill: "rgb(var(--x), 0, 0)" }]),
-      /`fill` is not a color/,
+      /`fill` is not a color/u,
     ],
     [
       "an unknown shape",
       picture([{ type: "foreignObject", x: 0, y: 0 }]),
-      /shape 0: "foreignObject" is not a shape/,
+      /shape 0: "foreignObject" is not a shape/u,
     ],
     [
       "a script in an unknown property",
       picture([{ type: "text", x: 0, y: 0, text: "a", onclick: "alert(1)" }]),
-      /`onclick` is not one of its properties/,
+      /`onclick` is not one of its properties/u,
     ],
     [
       "NaN",
       picture([{ type: "circle", x: Number.NaN, y: 0, r: 1 }]),
-      /shape 0 \(circle\): `x` must be a finite number, not NaN/,
+      /shape 0 \(circle\): `x` must be a finite number, not NaN/u,
     ],
     [
       "Infinity in points",
       picture([{ type: "polyline", points: [0, 0, 1, Number.POSITIVE_INFINITY] }]),
-      /`points\[3\]` must be a finite number/,
+      /`points\[3\]` must be a finite number/u,
     ],
     [
       "an odd number of coordinates",
       picture([{ type: "polygon", points: [0, 0, 1] }]),
-      /x, y pairs/,
+      /x, y pairs/u,
     ],
     [
       "a negative size",
       picture([{ type: "rect", x: 0, y: 0, width: -1, height: 1 }]),
-      /`width` must not be negative/,
+      /`width` must not be negative/u,
     ],
     [
       "path data with junk",
       picture([{ type: "path", d: "M0 0 L10 10 url(#x)" }]),
-      /`d` is not SVG path data/,
+      /`d` is not SVG path data/u,
     ],
     [
       "a missing property",
       picture([{ type: "line", x1: 0, y1: 0, x2: 1 }]),
-      /shape 0 \(line\): `y2` is missing/,
+      /shape 0 \(line\): `y2` is missing/u,
     ],
     [
       "a __proto__ key",
       picture([JSON.parse('{"type":"circle","x":0,"y":0,"r":1,"__proto__":{"fill":"red"}}')]),
-      /`__proto__` is not one of its properties/,
+      /`__proto__` is not one of its properties/u,
     ],
     [
       "a select that is an expression",
       picture([{ type: "rect", x: 0, y: 0, width: 1, height: 1, select: "f(x)" }]),
-      /`select` must be member names and indices/,
+      /`select` must be member names and indices/u,
     ],
     [
       "a select that assigns",
       picture([{ type: "rect", x: 0, y: 0, width: 1, height: 1, select: "a = 1" }]),
-      /`select` must be member names and indices/,
+      /`select` must be member names and indices/u,
     ],
     [
       "too much text",
       picture([{ type: "text", x: 0, y: 0, text: "x".repeat(4097) }]),
-      /longer than 4096 characters/,
+      /longer than 4096 characters/u,
     ],
     [
       "too many shapes",
       picture(
         Array.from({ length: MOST_SHAPES + 1 }, () => ({ type: "circle", x: 0, y: 0, r: 1 })),
       ),
-      /more than 100000 shapes/,
+      /more than 100000 shapes/u,
     ],
     [
       "groups nested too deep",
@@ -148,7 +148,7 @@ describe("validate", () => {
           r: 1,
         }),
       ]),
-      /nest more than 32 deep/,
+      /nest more than 32 deep/u,
     ],
     [
       "pixels of the wrong size",
@@ -164,7 +164,7 @@ describe("validate", () => {
           rows: 1,
         },
       ]),
-      /holds 3 bytes, not 4 for 1×1 RGBA pixels/,
+      /holds 3 bytes, not 4 for 1×1 RGBA pixels/u,
     ],
     [
       "pixels as an ordinary array",
@@ -180,27 +180,27 @@ describe("validate", () => {
           rows: 1,
         },
       ]),
-      /`pixels` must be a Uint8ClampedArray/,
+      /`pixels` must be a Uint8ClampedArray/u,
     ],
-    ["a shape that is not a plain object", picture([new Date()]), /shape 0 is not a plain object/],
+    ["a shape that is not a plain object", picture([new Date()]), /shape 0 is not a plain object/u],
     [
       "a nested shape's fault, named by its place",
       picture([
         { type: "circle", x: 0, y: 0, r: 1 },
         { type: "group", shapes: [{ type: "text", x: 0, y: 0, text: 5 }] },
       ]),
-      /shape 1 \(group\) › shape 0 \(text\): `text` must be a string, not 5/,
+      /shape 1 \(group\) › shape 0 \(text\): `text` must be a string, not 5/u,
     ],
-    ["a width of 0", picture([], { width: 0 }), /the picture's width must be more than 0/],
+    ["a width of 0", picture([], { width: 0 }), /the picture's width must be more than 0/u],
     [
       "a height too great to draw",
       picture([], { height: 40_000 }),
-      /the picture's height must be at most 32768/,
+      /the picture's height must be at most 32768/u,
     ],
     [
       "an opacity over one",
       picture([{ type: "circle", x: 0, y: 0, r: 1, opacity: 2 }]),
-      /`opacity` must be from 0 to 1/,
+      /`opacity` must be from 0 to 1/u,
     ],
   ];
   for (const [name, value, message] of refused) {
@@ -218,14 +218,20 @@ describe("validate", () => {
 
 describe("path data", () => {
   it("accepts commands with whole repetitions of their numbers", () => {
-    for (const d of ["M0 0", "m1,2 3,4", "M0 0 C1 1 2 2 3 3 S4 4 5 5", "M0 0z", "M.5-1e3 1.5.5"]) {
-      expect(isPathData(d), d).toBe(true);
-    }
+    const refused = [
+      "M0 0",
+      "m1,2 3,4",
+      "M0 0 C1 1 2 2 3 3 S4 4 5 5",
+      "M0 0z",
+      "M.5-1e3 1.5.5",
+    ].filter((d) => !isPathData(d));
+    expect(refused).toEqual([]);
   });
 
   it("refuses data that does not start with a move or breaks a command", () => {
-    for (const d of ["L0 0", "M0", "M0 0 L1", "M0 0 Z 1", "M0 0 X1 1", "", "M0 0;"]) {
-      expect(isPathData(d), d).toBe(false);
-    }
+    const accepted = ["L0 0", "M0", "M0 0 L1", "M0 0 Z 1", "M0 0 X1 1", "", "M0 0;"].filter((d) =>
+      isPathData(d),
+    );
+    expect(accepted).toEqual([]);
   });
 });

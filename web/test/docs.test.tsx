@@ -22,7 +22,7 @@ function run(source: string, input: unknown): Promise<Record<string, unknown>> {
 }
 
 const examples = [
-  ...docs.matchAll(/```microscope-renderer-example\n([\s\S]*?)\n---\n([\s\S]*?)\n```/g),
+  ...docs.matchAll(/```microscope-renderer-example\n([\s\S]*?)\n---\n([\s\S]*?)\n```/gu),
 ].map(([, source, input]) => ({ source: source as string, input: input as string }));
 
 it("has renderer examples", () => {
@@ -33,13 +33,13 @@ for (const [index, example] of examples.entries()) {
   it(`runs example ${index + 1} to a picture the page accepts`, async () => {
     const input = new Function(`return ${example.input};`)();
     const answer = await run(example.source, input);
-    expect(answer.type, JSON.stringify(answer)).toBe("picture");
+    expect(answer).toMatchObject({ type: "picture" });
     expect(() => validate(answer.picture)).not.toThrow();
   });
 }
 
 const liveExamples = [
-  ...docs.matchAll(/```microscope-live-example\n([\s\S]*?)\n---\n([\s\S]*?)\n```/g),
+  ...docs.matchAll(/```microscope-live-example\n([\s\S]*?)\n---\n([\s\S]*?)\n```/gu),
 ].map(([, source, input]) => ({ source: source as string, input: input as string }));
 
 for (const [index, example] of liveExamples.entries()) {
@@ -71,7 +71,7 @@ it("has a live example", () => {
 });
 
 it("shows the life fixture's own files", async () => {
-  const blocks = [...docs.matchAll(/```(?:js|text)\n([\s\S]*?)```/g)].map(([, body]) => body);
+  const blocks = [...docs.matchAll(/```(?:js|text)\n([\s\S]*?)```/gu)].map(([, body]) => body);
   expect(blocks).toContain(await commands.readFile("../tests/fixtures/c/life/life.js"));
   expect(blocks).toContain(await commands.readFile("../tests/fixtures/c/life/life.views"));
 });

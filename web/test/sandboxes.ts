@@ -96,7 +96,8 @@ export class Watched {
   /** The next message of `type`, failing on any other. */
   async expect<T extends Heard["type"]>(type: T): Promise<Extract<Heard, { type: T }>> {
     const message = await this.next();
-    expect(message.type, JSON.stringify(message)).toBe(type);
+    // oxlint-disable-next-line vitest/no-standalone-expect -- a helper that tests call
+    expect(message).toMatchObject({ type });
     return message as Extract<Heard, { type: T }>;
   }
 
@@ -109,8 +110,8 @@ export class Watched {
 /** The color of a frame's pixel, as `#rrggbb`. */
 export function pixel(bitmap: ImageBitmap, x: number, y: number): string {
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const context = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D;
-  context.drawImage(bitmap, 0, 0);
-  const [r, g, b] = context.getImageData(x, y, 1, 1).data;
+  const canvasContext = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D;
+  canvasContext.drawImage(bitmap, 0, 0);
+  const [r, g, b] = canvasContext.getImageData(x, y, 1, 1).data;
   return `#${[r, g, b].map((part) => (part ?? 0).toString(16).padStart(2, "0")).join("")}`;
 }

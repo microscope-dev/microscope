@@ -35,7 +35,8 @@ export async function openPage(
   const router = createAppRouter(createMemoryHistory({ initialEntries: ["/"] }));
   // The page fills the window, as index.html has it.
   await page.viewport(1440, 900);
-  const container = document.body.appendChild(document.createElement("div"));
+  const container = document.createElement("div");
+  document.body.append(container);
   container.style.height = "100vh";
   render(
     createElement(
@@ -81,6 +82,7 @@ class FastUser implements User {
     await userEvent.fill(adder, location);
     await userEvent.keyboard("{Enter}");
     await vi.waitFor(
+      // oxlint-disable-next-line vitest/no-standalone-expect -- a driver step that tests call
       () => expect(one('[data-testid="breakpoints"]').textContent).toContain(location),
       DEADLINE,
     );
@@ -89,6 +91,7 @@ class FastUser implements User {
 
   async expectCurrentLine(text: string): Promise<void> {
     await vi.waitFor(
+      // oxlint-disable-next-line vitest/no-standalone-expect -- a driver step that tests call
       () => expect(one('[data-testid="source"] .cm-pc-line').textContent).toContain(text),
       DEADLINE,
     );
@@ -108,6 +111,7 @@ class FastUser implements User {
   }
 
   async expectGroups(groups: string[][]): Promise<void> {
+    // oxlint-disable-next-line vitest/no-standalone-expect -- a driver step that tests call
     await vi.waitFor(() => expect(readGroups()).toEqual(groups), DEADLINE);
   }
 
@@ -117,8 +121,11 @@ class FastUser implements User {
       const row = rows.find(
         (candidate) => candidate.querySelector(".value-name")?.textContent === name,
       );
-      expect(row, `${pane} has no value named ${name}`).toBeDefined();
-      expect(row?.querySelector(".value-text")?.firstChild?.textContent).toBe(text);
+      if (!row) {
+        throw new Error(`${pane} has no value named ${name}`);
+      }
+      // oxlint-disable-next-line vitest/no-standalone-expect -- a driver step that tests call
+      expect(row.querySelector(".value-text")?.firstChild?.textContent).toBe(text);
     }, DEADLINE);
   }
 }

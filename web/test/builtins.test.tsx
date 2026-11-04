@@ -18,12 +18,13 @@ const ofType = <T extends Shape["type"]>(picture: Picture, type: T) =>
     { type: T | (T extends "polyline" | "polygon" ? "polyline" | "polygon" : never) }
   >[];
 
+const bars = (picture: Picture) =>
+  ofType(picture, "rect").filter(
+    (rect) => rect.title !== undefined && !rect.title.includes("stop before"),
+  );
+
 describe("bar-chart", async () => {
   const chart = await source("bar-chart");
-  const bars = (picture: Picture) =>
-    ofType(picture, "rect").filter(
-      (rect) => rect.title !== undefined && !rect.title.includes("stop before"),
-    );
 
   it("sorts a map by value and folds past 40 into Other, with its count and total", async () => {
     // A Go map's entries arrive in any order.
@@ -35,7 +36,7 @@ describe("bar-chart", async () => {
     const drawn = bars(picture);
     expect(drawn).toHaveLength(41);
     const values = drawn.slice(0, 40).map((rect) => Number(rect.title?.split(": ")[1]));
-    expect(values).toEqual([...values].sort((a, b) => b - a));
+    expect(values).toEqual(values.toSorted((a, b) => b - a));
     expect(values[0]).toBe(45);
     // 1 to 5 are left: 15 in all.
     expect(drawn[40]?.title).toBe("Other: 5 more entries, total 15");
@@ -157,15 +158,16 @@ describe("scatter-plot", async () => {
   });
 });
 
+const quantile = (sorted: number[], p: number) => {
+  const h = (sorted.length - 1) * p;
+  const lo = Math.floor(h);
+  const a = sorted[lo] as number;
+  const b = sorted[Math.min(lo + 1, sorted.length - 1)] as number;
+  return a + (h - lo) * (b - a);
+};
+
 describe("histogram", async () => {
   const chart = await source("histogram");
-  const quantile = (sorted: number[], p: number) => {
-    const h = (sorted.length - 1) * p;
-    const lo = Math.floor(h);
-    const a = sorted[lo] as number;
-    const b = sorted[Math.min(lo + 1, sorted.length - 1)] as number;
-    return a + (h - lo) * (b - a);
-  };
 
   it("cuts Freedman–Diaconis bins and titles each with its count and running share", async () => {
     const values = new Float64Array(1000).map((_, i) => i);
@@ -189,8 +191,8 @@ describe("histogram", async () => {
     const values = new Float64Array(10_001).map(() => Math.exp(random() * 4));
     values[17] = Number.NaN;
     const sorted = Array.from(values)
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b);
+      .filter((value) => Number.isFinite(value))
+      .toSorted((a, b) => a - b);
     const picture = await draw(chart, { values });
     for (const [name, p] of [
       ["p50", 0.5],
@@ -281,20 +283,21 @@ describe("box-plot", async () => {
   });
 });
 
+const slices = (picture: Picture) =>
+  ofType(picture, "path").filter((path) => path.title !== undefined);
+
 describe("donut-chart", async () => {
   const chart = await source("donut-chart");
-  const slices = (picture: Picture) =>
-    ofType(picture, "path").filter((path) => path.title !== undefined);
 
   it("draws seven slices largest first, folds the rest into Other, and adds up to the whole", async () => {
     const entries = Array.from({ length: 10 }, (_, i) => [`type${i}`, BigInt(100 - i * 9)]);
-    const picture = await draw(chart, { entries: entries.reverse() });
+    const picture = await draw(chart, { entries: entries.toReversed() });
     const drawn = slices(picture);
     expect(drawn).toHaveLength(8);
     expect(drawn[0]?.title).toBe("type0: 100 · 16.8%");
     expect(drawn[7]?.title).toBe("Other (3): 84 · 14.1%");
     expect(drawn[7]?.fill).toBe(palette.ink3);
-    const shares = drawn.map((slice) => Number(/· ([\d.]+)%/.exec(slice.title ?? "")?.[1]));
+    const shares = drawn.map((slice) => Number(/· ([\d.]+)%/u.exec(slice.title ?? "")?.[1]));
     expect(Math.abs(shares.reduce((a, b) => a + b, 0) - 100)).toBeLessThan(0.5);
     expect(picture.caption).toBe("10 slices · total 595 · 7 largest + Other (3, 14.1%)");
     expect(texts(picture)).toContain("595");
@@ -321,10 +324,11 @@ describe("donut-chart", async () => {
   });
 });
 
+const cells = (picture: Picture) =>
+  ofType(picture, "rect").filter((rect) => rect.title !== undefined);
+
 describe("heatmap", async () => {
   const chart = await source("heatmap");
-  const cells = (picture: Picture) =>
-    ofType(picture, "rect").filter((rect) => rect.title !== undefined);
 
   it("diverges around zero, hatches NaN, and opens each cell", async () => {
     const values = [new Float64Array([-4, 0, 4]), new Float64Array([2, Number.NaN, -2])];
@@ -389,10 +393,11 @@ describe("heatmap", async () => {
   });
 });
 
+const frames = (picture: Picture) =>
+  ofType(picture, "rect").filter((rect) => rect.title !== undefined);
+
 describe("flame-graph", async () => {
   const chart = await source("flame-graph");
-  const frames = (picture: Picture) =>
-    ofType(picture, "rect").filter((rect) => rect.title !== undefined);
 
   it("sums totals from parent indices, and the same from folded stacks", async () => {
     const nodes = [
@@ -474,17 +479,18 @@ describe("flame-graph", async () => {
   });
 });
 
+const image = (picture: Picture) =>
+  ofType(picture, "image")[0] as unknown as { pixels: Uint8Array; columns: number };
+
 describe("bitmap", async () => {
   const chart = await source("bitmap");
-  const image = (picture: Picture) =>
-    ofType(picture, "image")[0] as unknown as { pixels: Uint8Array; columns: number };
 
   it("draws gray, RGBA, RGB565, and one-bit pixels at a whole zoom", async () => {
     const gray = await draw(chart, {
       pixels: new Uint8Array([0, 128, 255, 64, 1, 2, 3, 4]),
       columns: 4,
     });
-    expect([...image(gray).pixels.slice(4, 8)]).toEqual([128, 128, 128, 255]);
+    expect(Array.from(image(gray).pixels.slice(4, 8))).toEqual([128, 128, 128, 255]);
     expect(gray.caption).toBe("4 × 2 gray8 · at 200×");
     expect(gray.width).toBe(800);
     const red = await draw(chart, {
@@ -522,16 +528,18 @@ describe("bitmap", async () => {
   });
 });
 
+const overlay = (picture: Picture) =>
+  ofType(picture, "image")[1] as unknown as {
+    pixels: Uint8ClampedArray;
+    columns: number;
+    rows: number;
+  };
+
+const alpha = (overlaid: ReturnType<typeof overlay>, column: number, row: number) =>
+  overlaid.pixels[(row * overlaid.columns + column) * 4 + 3];
+
 describe("bitmap changes", async () => {
   const chart = await source("bitmap");
-  const overlay = (picture: Picture) =>
-    ofType(picture, "image")[1] as unknown as {
-      pixels: Uint8ClampedArray;
-      columns: number;
-      rows: number;
-    };
-  const alpha = (image: ReturnType<typeof overlay>, column: number, row: number) =>
-    image.pixels[(row * image.columns + column) * 4 + 3];
 
   it("outlines changed pixels, so an image that changed everywhere still shows", async () => {
     const before = new Uint8Array(16);
@@ -636,7 +644,7 @@ describe("unchanged since the stop before", () => {
     expect(bitmap.caption).toBe("2 × 2 gray8 · at 320× · unchanged since the stop before");
     const grid = { values: new Float64Array([1, 2, 3, 4]), columns: 2 };
     const heatmap = await draw(await source("heatmap"), grid, { previous: grid });
-    expect(heatmap.caption).toMatch(/ · unchanged since the stop before$/);
+    expect(heatmap.caption).toMatch(/ · unchanged since the stop before$/u);
   });
 });
 
@@ -653,7 +661,7 @@ describe("line-plot", async () => {
     expect(columnTitles.some((title) => title.includes("min -50 at [70001]"))).toBe(true);
     expect(picture.caption).toContain("max 50 at [61234]");
     expect(picture.caption).toContain("min -50 at [70001]");
-    expect(picture.caption).toMatch(/values a column: min\/max band/);
+    expect(picture.caption).toMatch(/values a column: min\/max band/u);
     // At most four vertices a column: first, lowest, highest, last.
     const lines = ofType(picture, "polyline").filter((line) => line.stroke === palette.series[0]);
     const vertices = lines.reduce((total, line) => total + line.points.length / 2, 0);
@@ -729,12 +737,12 @@ describe("line-plot", async () => {
       const strokes = ofType(picture, "polyline").map((line) => line.stroke);
       expect(strokes).toContain(palette.series[0]);
       expect(strokes).toContain(palette.series[1]);
-      const alpha = ofType(picture, "polyline").find(
+      const tallest = ofType(picture, "polyline").find(
         (line) =>
           line.points[1] ===
           Math.max(...ofType(picture, "polyline").map((l) => l.points[1] as number)),
       );
-      expect(alpha?.stroke).toBe(palette.series[0]);
+      expect(tallest?.stroke).toBe(palette.series[0]);
       expect(texts(picture)).toEqual(expect.arrayContaining(["alpha", "beta"]));
       expect(picture.caption?.startsWith("2 series × 3")).toBe(true);
     }

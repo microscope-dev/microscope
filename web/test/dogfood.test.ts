@@ -17,7 +17,7 @@ function files(directory: string): string[] {
 }
 
 it("knows the eleven built-ins", () => {
-  expect(builtIns.sort()).toEqual([
+  expect(builtIns.toSorted()).toEqual([
     "bar-chart",
     "bitmap",
     "bits",
@@ -36,7 +36,7 @@ it("names no built-in anywhere in the page", () => {
   const named = files("src").flatMap((file) => {
     const text = readFileSync(file, "utf8");
     return builtIns
-      .filter((name) => new RegExp(`["'\`]${name}["'\`]`).test(text))
+      .filter((name) => new RegExp(`["'\`]${name}["'\`]`, "u").test(text))
       .map((name) => `${file} names ${name}`);
   });
   expect(named).toEqual([]);

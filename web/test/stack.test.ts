@@ -18,7 +18,7 @@ const frame = (index: number): Frame => ({
 });
 
 const trace: Backtrace = {
-  frames: [0, 1, 2, 3, 4, 5, 6].map(frame),
+  frames: [0, 1, 2, 3, 4, 5, 6].map((index) => frame(index)),
   folds: [
     { first: 1, count: 2 },
     { first: 4, count: 3 },

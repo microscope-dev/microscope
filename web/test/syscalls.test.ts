@@ -49,9 +49,9 @@ describe("the Syscalls view's address", () => {
 
 describe("what the Syscalls view draws", () => {
   it("names buckets by the durations the server puts in them", () => {
-    expect([0, 1, 2, 11].map(bucketFloor)).toEqual([0, 1, 2, 1024]);
+    expect([0, 1, 2, 11].map((bucket) => bucketFloor(bucket))).toEqual([0, 1, 2, 1024]);
     expect(bucketLabel(0)).toBe("0");
-    expect(bucketLabel(11)).toMatch(/^≥ 1\.0\d* µs$/);
+    expect(bucketLabel(11)).toMatch(/^≥ 1\.0\d* µs$/u);
   });
 
   it("stacks series from the bottom in each slice", () => {
@@ -80,7 +80,7 @@ describe("what the Syscalls view draws", () => {
 
   it("gives each class its own hue and keeps red for errors", () => {
     const classes = ["file", "net", "desc", "memory", "process", "signal", "ipc", "clock"];
-    const hues = classes.map((name) => Number(/hsl\((\d+)/.exec(seriesColor(name, false))?.[1]));
+    const hues = classes.map((name) => Number(/hsl\((\d+)/u.exec(seriesColor(name, false))?.[1]));
     expect(new Set(hues).size).toBe(classes.length);
     for (const hue of hues) {
       expect(hue > 20 && hue < 340).toBe(true);
@@ -88,9 +88,9 @@ describe("what the Syscalls view draws", () => {
   });
 });
 
-describe("what a trace's footer says of how it was made", () => {
-  const settings = (pairs: [string, string][]) => pairs.map(([name, value]) => ({ name, value }));
+const settings = (pairs: [string, string][]) => pairs.map(([name, value]) => ({ name, value }));
 
+describe("what a trace's footer says of how it was made", () => {
   it("names the engine and how it attached, with the reason on hover", () => {
     expect(tracedBy(settings([["syscalls", "ptrace"]]))).toEqual({ text: " by ptrace" });
     expect(

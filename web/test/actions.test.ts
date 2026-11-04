@@ -135,7 +135,9 @@ describe("toggling a breakpoint", () => {
 
   it("says why it failed", async () => {
     const connection = {
-      request: vi.fn(() => Promise.reject(new Error("no code at /src/main.c:7"))),
+      request: vi.fn<() => Promise<never>>(() =>
+        Promise.reject(new Error("no code at /src/main.c:7")),
+      ),
     } as unknown as Connection;
     await toggleBreakpoint(connection, undefined, "/src/main.c:7");
     expect(tab.getState().flash?.text).toBe("no code at /src/main.c:7");

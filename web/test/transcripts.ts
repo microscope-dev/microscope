@@ -18,7 +18,7 @@ export function transcriptNames(): string[] {
   return readdirSync(directory)
     .filter((name) => name.endsWith(".jsonl"))
     .map((name) => name.slice(0, -".jsonl".length))
-    .sort();
+    .toSorted();
 }
 
 export function transcript(name: string): Line[] {

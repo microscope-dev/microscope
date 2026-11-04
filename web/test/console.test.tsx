@@ -29,10 +29,10 @@ it("walks the completions with the arrow keys and takes one with Enter", async (
   await completeVa();
   await userEvent.keyboard("{ArrowDown}{ArrowDown}");
   await expect
-    .element(page.getByRole("option", { name: /vars/ }))
+    .element(page.getByRole("option", { name: /vars/u }))
     .toHaveAttribute("aria-selected", "true");
   const active = field().element().getAttribute("aria-activedescendant");
-  expect(active && document.getElementById(active)?.textContent).toContain("vars");
+  expect(active && document.querySelector(`#${CSS.escape(active)}`)?.textContent).toContain("vars");
   await userEvent.keyboard("{Enter}");
   await expect.element(field()).toHaveValue("vars");
   await expect.element(page.getByRole("listbox")).not.toBeInTheDocument();
@@ -40,7 +40,7 @@ it("walks the completions with the arrow keys and takes one with Enter", async (
 
 it("takes a clicked completion and keeps typing in the field", async () => {
   await completeVa();
-  await userEvent.click(page.getByRole("option", { name: /value/ }));
+  await userEvent.click(page.getByRole("option", { name: /value/u }));
   await expect.element(field()).toHaveValue("value");
   await expect.element(field()).toHaveFocus();
 });

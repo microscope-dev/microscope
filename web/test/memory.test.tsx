@@ -16,16 +16,16 @@ it("selects and writes bytes from the keyboard, and shows a failed write", async
     bytes: "0102030405060708090a0b0c0d0e0f10".repeat(16),
     unreadable: null,
   });
-  const first = page.getByRole("button", { name: /at 0x1000$/ });
+  const first = page.getByRole("button", { name: /at 0x1000$/u });
   await expect.element(first).toBeVisible();
 
-  (page.getByRole("button", { name: /Later/ }).element() as HTMLElement).focus();
+  (page.getByRole("button", { name: /Later/u }).element() as HTMLElement).focus();
   await userEvent.keyboard("{Tab}");
   await expect.element(first).toHaveFocus();
   await userEvent.keyboard("{ArrowRight}");
-  await expect.element(page.getByRole("button", { name: /at 0x1001$/ })).toHaveFocus();
+  await expect.element(page.getByRole("button", { name: /at 0x1001$/u })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}");
-  await expect.element(page.getByRole("button", { name: /at 0x1011$/ })).toHaveFocus();
+  await expect.element(page.getByRole("button", { name: /at 0x1011$/u })).toHaveFocus();
   await expect.element(page.getByTestId("selection").getByText("1 byte at 0x1011")).toBeVisible();
 
   await userEvent.keyboard("{Enter}");
@@ -51,7 +51,7 @@ it("keeps every arrow key pressed faster than the page draws", async () => {
     bytes: "00".repeat(256),
     unreadable: null,
   });
-  const first = page.getByRole("button", { name: /at 0x1000$/ });
+  const first = page.getByRole("button", { name: /at 0x1000$/u });
   await expect.element(first).toBeVisible();
   (first.element() as HTMLElement).focus();
 
@@ -59,7 +59,7 @@ it("keeps every arrow key pressed faster than the page draws", async () => {
   for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowDown"]) {
     document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   }
-  await expect.element(page.getByRole("button", { name: /at 0x1013$/ })).toHaveFocus();
+  await expect.element(page.getByRole("button", { name: /at 0x1013$/u })).toHaveFocus();
 });
 
 it("shows the last page of the address space without running past its end", async () => {
@@ -72,6 +72,6 @@ it("shows the last page of the address space without running past its end", asyn
     unreadable: "0xffffffffffffff00",
   });
   await expect.element(page.getByText("fffffffffffffff0", { exact: true })).toBeVisible();
-  expect(document.body.textContent).not.toMatch(/10000000000000000/);
-  await expect.element(page.getByRole("button", { name: /Later/ })).toBeDisabled();
+  expect(document.body.textContent).not.toMatch(/10000000000000000/u);
+  await expect.element(page.getByRole("button", { name: /Later/u })).toBeDisabled();
 });

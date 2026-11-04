@@ -4,7 +4,7 @@
 // and an image says which of its pixels is under the pointer.
 
 import { cleanup, render } from "@testing-library/react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -139,7 +139,7 @@ describe("buildPicture", () => {
     const looping: unknown[] = [{ type: "group", shapes: [] }, image];
     (looping[0] as { shapes: unknown[] }).shapes = looping;
     const refused = { type: "picture", width: 1, height: 1, shapes: looping };
-    expect(() => validate(refused)).toThrow();
+    expect(() => validate(refused)).toThrow("groups nest more than 32 deep");
     closeImages(refused);
     // A closed bitmap has no pixels left.
     expect(rendered.width).toBe(0);
@@ -246,6 +246,8 @@ async function drawings(look: Look): Promise<FakeServer> {
 const failed = (server: FakeServer, id: number, message: string) =>
   server.send({ type: "error", id, error: { kind: "failed", message } });
 
+const item = (name: RegExp) => page.getByRole("menuitem", { name });
+
 describe("a card", () => {
   afterEach(() => {
     cleanup();
@@ -312,19 +314,18 @@ describe("a card", () => {
         { name: "grid", origin: "views/board.js", digest: "b" },
       ],
     });
-    const item = (name: RegExp) => page.getByRole("menuitem", { name });
-    await expect.element(item(/chess/)).toHaveFocus();
+    await expect.element(item(/chess/u)).toHaveFocus();
     await userEvent.keyboard("{ArrowDown}");
-    await expect.element(item(/grid/)).toHaveFocus();
+    await expect.element(item(/grid/u)).toHaveFocus();
     await userEvent.keyboard("{ArrowDown}");
-    await expect.element(item(/chess/)).toHaveFocus();
+    await expect.element(item(/chess/u)).toHaveFocus();
     await userEvent.keyboard("{Escape}");
     await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
     await expect.element(button).toHaveFocus();
 
     // A click elsewhere closes it too.
     await userEvent.click(button);
-    await expect.element(item(/chess/)).toHaveFocus();
+    await expect.element(item(/chess/u)).toHaveFocus();
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
 
@@ -339,12 +340,14 @@ describe("a card", () => {
     focus.current = { session: "s1", state: {}, at, look: {}, trace: undefined, stale: null };
     function Part() {
       const [open, setOpen] = useState(false);
+      const openPart = useCallback(() => setOpen(true), []);
+      const closePart = useCallback(() => setOpen(false), []);
       return (
         <>
-          <button type="button" onClick={() => setOpen(true)}>
+          <button type="button" onClick={openPart}>
             square
           </button>
-          {open && <Selected at={at} path="board[3]" onClose={() => setOpen(false)} />}
+          {open && <Selected at={at} path="board[3]" onClose={closePart} />}
         </>
       );
     }

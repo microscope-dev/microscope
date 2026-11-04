@@ -26,9 +26,10 @@ describe("a focused element", () => {
 
   it("leaves letters to the debugger when it is not", () => {
     expect(isTextBox(null)).toBe(false);
-    for (const type of ["checkbox", "radio", "button", "submit"]) {
-      expect(isTextBox(element(`<input type="${type}">`, "input")), type).toBe(false);
-    }
+    const boxes = ["checkbox", "radio", "button", "submit"].filter((type) =>
+      isTextBox(element(`<input type="${type}">`, "input")),
+    );
+    expect(boxes).toEqual([]);
     expect(isTextBox(element("<button>go</button>", "button"))).toBe(false);
     expect(isTextBox(element("<div>x</div>", "div"))).toBe(false);
   });

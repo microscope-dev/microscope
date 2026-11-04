@@ -14,7 +14,7 @@ afterEach(() => {
 it("keeps the error and the challenge when followed a second time", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(null, { status: 401 })),
+    vi.fn(() => Promise.resolve(new Response(null, { status: 401 }))),
   );
   window.history.replaceState(null, "", "/signed-in#error=An%20account%20already%20uses%20it.");
   followSignIn();

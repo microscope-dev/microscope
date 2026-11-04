@@ -3,7 +3,7 @@
 // layout it is applied to, so every generated run is a plausible one and
 // shrinks to a shorter run.
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 
 import {
   activate,
@@ -120,7 +120,7 @@ function pick<T>(list: readonly T[], index: number): T | undefined {
 }
 
 function paneAt(layout: Layout, index: number): PaneId | undefined {
-  return pick(Object.keys(layout.panes).sort() as PaneId[], index);
+  return pick(Object.keys(layout.panes).toSorted() as PaneId[], index);
 }
 
 function targetAt(layout: Layout, chosen: TargetChoice): Target | undefined {
@@ -184,5 +184,10 @@ export function apply(layout: Layout, chosen: Step): Layout {
   }
 }
 
+/** The layout a run of operations makes from an empty one. */
+export function runLayout(run: readonly Step[]): Layout {
+  return run.reduce((made, chosen) => apply(made, chosen), emptyLayout());
+}
+
 /** A layout some run of operations made. */
-export const layout: fc.Arbitrary<Layout> = steps.map((run) => run.reduce(apply, emptyLayout()));
+export const layout: fc.Arbitrary<Layout> = steps.map((run) => runLayout(run));

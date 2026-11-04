@@ -11,9 +11,11 @@ import "../src/styles.css";
 
 afterEach(unmountPane);
 
+const COLUMN = { width: 260 };
+
 it("wraps a long refusal instead of widening the pane", async () => {
   const server = await mountPane(
-    <div style={{ width: 260 }} data-testid="column">
+    <div style={COLUMN} data-testid="column">
       <Breakpoints />
     </div>,
   );
@@ -25,7 +27,7 @@ it("wraps a long refusal instead of widening the pane", async () => {
     id: (await server.next("addBreakpoint")).id,
     error: { kind: "invalid", message: `no function named '${location}' was found` },
   });
-  await expect.element(page.getByText(/no function named/)).toBeVisible();
+  await expect.element(page.getByText(/no function named/u)).toBeVisible();
 
   const column = document.querySelector("[data-testid=column]") as HTMLElement;
   const widest = Math.max(

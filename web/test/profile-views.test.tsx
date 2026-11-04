@@ -49,10 +49,10 @@ class Server {
         this.#handlers = handlers;
         return {
           send: (text) => this.requests.push(JSON.parse(text) as Asked),
-          close: () => undefined,
+          close: () => {},
         };
       },
-      authorized: async () => true,
+      authorized: () => Promise.resolve(true),
       backoff: [0],
     });
   }
@@ -162,8 +162,12 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
   };
 }
 
+const HARNESS_WIDTH = { width: 900 };
+const WIDE = { width: 5000 };
+const NO_LOOK: ProfileLook = {};
+
 /** Changes the look from outside, as the address bar would. */
-let changeLook: (change: (look: ProfileLook) => ProfileLook) => void = () => undefined;
+let changeLook: (change: (look: ProfileLook) => ProfileLook) => void = () => {};
 
 function Harness({
   summary,
@@ -175,6 +179,7 @@ function Harness({
   children: ReactNode;
 }) {
   const [look, setLook] = useState(initial);
+  // oxlint-disable-next-line react/globals -- lets a test change the look from outside
   changeLook = (change) => act(() => setLook(change));
   const focus = useMemo<ProfileFocus>(
     () => ({
@@ -190,14 +195,14 @@ function Harness({
   return (
     <ProfileContext value={focus}>
       <output data-testid="look">{JSON.stringify(look)}</output>
-      <div style={{ width: 900 }}>{children}</div>
+      <div style={HARNESS_WIDTH}>{children}</div>
     </ProfileContext>
   );
 }
 
 async function mount(
   view: ReactNode,
-  { summary = summaryOf(), look = {} }: { summary?: ProfileSummary; look?: ProfileLook } = {},
+  { summary = summaryOf(), look = NO_LOOK }: { summary?: ProfileSummary; look?: ProfileLook } = {},
 ): Promise<Server> {
   const server = new Server();
   await server.open();
@@ -253,7 +258,7 @@ const TREE = treeOf([
 /** The name of the row a tree or listbox's keyboard is on. */
 function activeName(container: Element): string | undefined {
   const id = container.getAttribute("aria-activedescendant");
-  const row = id ? document.getElementById(id) : null;
+  const row = id ? document.querySelector(`#${CSS.escape(id)}`) : null;
   return row?.querySelector(".name")?.textContent ?? undefined;
 }
 
@@ -298,7 +303,7 @@ it("walks a call tree with the arrow keys and selects with Enter", async () => {
   await vi.waitFor(() => expect(lookShown().fn).toBe("thread"), POLL);
   await expect
     .element(tree.getByRole("treeitem", { selected: true }))
-    .toHaveAccessibleName(/^thread,/);
+    .toHaveAccessibleName(/^thread,/u);
 });
 
 it("names each row's shares for those who cannot see the columns", async () => {
@@ -332,7 +337,7 @@ it("walks the functions with the arrow keys, same-named functions included", asy
   });
   const list = page.getByRole("listbox", { name: "Functions" });
   await expect.element(list.getByRole("option")).toHaveLength(3);
-  expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+  expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key/u);
   (list.element() as HTMLElement).focus();
   await userEvent.keyboard("{ArrowDown}{ArrowDown}");
   expect(activeName(list.element())).toBe("leaf");
@@ -354,14 +359,15 @@ it("says when no function was sampled", async () => {
   await expect.element(page.getByText("No samples are selected.")).toBeVisible();
 });
 
+const file = (hottest: number) => ({
+  path: "/src/app.c",
+  first: 1,
+  text: Array.from({ length: 300 }, (_, at) => `line ${at + 1}`),
+  unread: null,
+  lines: [[hottest, 5, 5]],
+});
+
 it("brings each function's own hottest line into view once its lines arrive", async () => {
-  const file = (hottest: number) => ({
-    path: "/src/app.c",
-    first: 1,
-    text: Array.from({ length: 300 }, (_, at) => `line ${at + 1}`),
-    unread: null,
-    lines: [[hottest, 5, 5]],
-  });
   const server = await mount(<FunctionsView />, { look: { fn: "first", ann: "lines" } });
   await expect.element(page.getByText("Reading the source lines of first…")).toBeVisible();
   server.answer(await server.next("profileLines"), { weight: 10, files: [file(1)] });
@@ -390,7 +396,7 @@ it("says it is reading a flame graph, and reads a function's cost from the serve
     base: null,
   });
   await expect
-    .element(page.getByTestId("details").getByText(/80.0% total, 70.0% own/))
+    .element(page.getByTestId("details").getByText(/80.0% total, 70.0% own/u))
     .toBeVisible();
 });
 
@@ -408,13 +414,14 @@ function mouseAt(target: Element, type: string, x: number, y: number): void {
   });
 }
 
+const tip = () => document.querySelector("[data-testid=flame-tip] .mono")?.textContent;
+
 it("forgets the frame it hovered once another tree arrives", async () => {
   const server = await mount(<FlameView />);
   server.answer(await server.next("profileTree"), ...TREE);
   const canvas = page.getByRole("img", { name: "Flame graph" });
   await expect.element(canvas).toBeVisible();
   mouseAt(canvas.element(), "mousemove", 10, 5);
-  const tip = () => document.querySelector("[data-testid=flame-tip] .mono")?.textContent;
   await vi.waitFor(() => expect(tip()).toBe("main"), POLL);
   changeLook((look) => ({ ...look, invert: "1" }));
   server.answer(await server.next("profileTree"), ...treeOf([["other", 1, 1, 0]]));
@@ -434,7 +441,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
   }));
   const summary = summaryOf({ timed: true, threads });
   const server = await mount(
-    <div style={{ width: 5000 }}>
+    <div style={WIDE}>
       <Timeline />
     </div>,
     { summary },
@@ -447,12 +454,12 @@ it("draws a lane per thread for hundreds of threads", async () => {
     lanes: threads.map((thread) => ({
       thread: thread.row,
       task: null,
-      weights: new Array(buckets).fill(1),
+      weights: Array.from({ length: buckets }, () => 1),
       blocked: [],
       preempted: [],
     })),
   });
-  const canvas = page.getByRole("img", { name: /Samples and time off CPU/ });
+  const canvas = page.getByRole("img", { name: /Samples and time off CPU/u });
   await vi.waitFor(() => {
     const element = canvas.element() as HTMLCanvasElement;
     const pixels = element.getContext("2d")?.getImageData(0, 0, 4, 18).data ?? [];
@@ -501,6 +508,9 @@ const SUMMARY = {
   rows: [ROW],
 };
 
+const sorting = (column: string) =>
+  page.getByRole("button", { name: column, exact: true }).element().closest("th")?.ariaSort;
+
 it("selects a call from its name's button, and sorts by a column it names", async () => {
   const server = await mount(<SyscallsView />, { summary: traced() });
   server.answer(await server.next("syscallSummary"), SUMMARY);
@@ -510,8 +520,6 @@ it("selects a call from its name's button, and sorts by a column it names", asyn
   await userEvent.keyboard("{Enter}");
   await expect.element(call).toHaveAttribute("aria-pressed", "true");
   expect(lookShown().sc).toBe("read");
-  const sorting = (column: string) =>
-    page.getByRole("button", { name: column, exact: true }).element().closest("th")?.ariaSort;
   expect(sorting("total")).toBe("descending");
   expect(sorting("calls")).toBeNull();
   await page.getByRole("button", { name: "name", exact: true }).click();
@@ -546,7 +554,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
     most: 5,
   });
   const map = page.getByRole("img", { name: "Latency heat map" });
-  await expect.element(page.getByText(/0 to/)).toBeVisible();
+  await expect.element(page.getByText(/0 to/u)).toBeVisible();
   const bounds = map.element().getBoundingClientRect();
   // A mouse event's coordinates are whole pixels, so on a canvas whose top
   // falls between two, a click on its top row reads as just above it.
@@ -583,7 +591,7 @@ it("says it is reading the log, and why a call could not be read", async () => {
       },
     ],
   });
-  await page.getByRole("button", { name: /read/ }).click();
+  await page.getByRole("button", { name: /read/u }).click();
   server.fail(await server.next("syscallCall"), "the call is cut short");
   await expect.element(page.getByText("the call is cut short")).toBeVisible();
 });
@@ -635,7 +643,7 @@ async function mountPage(summary: ProfileSummary, known: boolean): Promise<Serve
   }
   function Page() {
     const [look, setLook] = useState<ProfileLook>({});
-    return <Profile profile={summary.id} look={look} setLook={(change) => setLook(change)} />;
+    return <Profile profile={summary.id} look={look} setLook={setLook} />;
   }
   render(
     <SessionContext value={server.session}>
@@ -657,7 +665,7 @@ it("says a profile it does not serve is missing, and any other failure as it is"
   await expect
     .element(page.getByRole("heading", { name: "Could not read the profile" }))
     .toBeVisible();
-  await expect.element(page.getByText(/its columns are cut short/)).toBeVisible();
+  await expect.element(page.getByText(/its columns are cut short/u)).toBeVisible();
   await expect.element(page.getByText("microscope web PROFILE.usprof")).not.toBeInTheDocument();
 });
 
@@ -671,12 +679,12 @@ it("keeps what it shows while disconnected, and says so", async () => {
   await expect.element(page.getByTestId("matched")).toBeVisible();
 
   server.drop();
-  await expect.element(page.getByText(/^Disconnected/)).toBeVisible();
+  await expect.element(page.getByText(/^Disconnected/u)).toBeVisible();
   await expect.element(search).toHaveValue("lea");
   await expect.element(page.getByRole("img", { name: "Flame graph" })).toBeVisible();
 
   await server.open();
-  await expect.element(page.getByText(/^Disconnected/)).not.toBeInTheDocument();
+  await expect.element(page.getByText(/^Disconnected/u)).not.toBeInTheDocument();
   await expect.element(search).toHaveValue("lea");
   await expect.element(page.getByTestId("matched")).toBeVisible();
 });

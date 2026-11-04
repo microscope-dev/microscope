@@ -36,24 +36,19 @@ describe("every recorded transcript", () => {
     const models = replay(messages);
     for (const model of models) {
       // Every state names its session exactly when something is debugged.
-      if (model.state) {
-        expect(model.state.session === null).toBe(model.state.target === null);
-      }
+      expect(model.state?.session === null).toBe(model.state?.target === null);
       // Each model is something the status and actions can describe.
       expect(shown(model).label).not.toBe("");
-      for (const name of ["continue", "pause", "kill", "restart"] as const) {
-        action(name, model);
+      for (const command of ["continue", "pause", "kill", "restart"] as const) {
+        action(command, model);
       }
     }
     // Revisions within one session never go backward.
     let last: { session: string | null; revision: number } | null = null;
-    for (const message of messages) {
-      if (message.type === "state") {
-        if (last && last.session === message.session) {
-          expect(message.revision).toBeGreaterThanOrEqual(last.revision);
-        }
-        last = { session: message.session, revision: message.revision };
-      }
+    for (const message of messages.filter((each) => each.type === "state")) {
+      const floor = last?.session === message.session ? last.revision : Number.NEGATIVE_INFINITY;
+      expect(message.revision).toBeGreaterThanOrEqual(floor);
+      last = { session: message.session, revision: message.revision };
     }
   });
 });
@@ -136,12 +131,11 @@ describe("a Start pane replacing a session", () => {
   it("drops the old program's output when another starts", () => {
     const sessions = new Set(models.map((model) => model.state?.session).filter(Boolean));
     expect(sessions.size).toBeGreaterThanOrEqual(2);
-    for (const [index, model] of models.entries()) {
+    const starts = models.filter((model, index) => {
       const previous = models[index - 1];
-      if (previous?.state?.session && model.state?.session !== previous.state.session) {
-        expect(model.output).toEqual([]);
-      }
-    }
+      return Boolean(previous?.state?.session) && model.state?.session !== previous?.state?.session;
+    });
+    expect(starts.map((model) => model.output)).toEqual(starts.map(() => []));
   });
 
   it("ends with nothing debugged after a failed launch", () => {
@@ -152,19 +146,19 @@ describe("a Start pane replacing a session", () => {
   });
 });
 
-describe("what a tab keeps", () => {
-  const message = (message: unknown, at = 0): ModelEvent => ({
-    type: "message",
-    message: message as ServerMessage,
-    at,
-  });
+const messageEvent = (body: unknown, at = 0): ModelEvent => ({
+  type: "message",
+  message: body as ServerMessage,
+  at,
+});
 
+describe("what a tab keeps", () => {
   it("keeps the latest 50 notices", () => {
     let model = initialModel;
     for (let at = 0; at < 60; at += 1) {
       model = reduce(
         model,
-        message({ type: "notice", connection: 1, name: "ada", text: `${at}` }, at),
+        messageEvent({ type: "notice", connection: 1, name: "ada", text: `${at}` }, at),
       );
     }
     expect(model.notices).toHaveLength(50);
@@ -176,19 +170,19 @@ describe("what a tab keeps", () => {
     let model = initialModel;
     const chunk = "x".repeat(256 * 1024);
     for (let index = 0; index < 6; index += 1) {
-      model = reduce(model, message({ type: "output", stream: "stdout", text: chunk }));
+      model = reduce(model, messageEvent({ type: "output", stream: "stdout", text: chunk }));
     }
     expect(model.outputBytes).toBe(1024 * 1024);
     expect(model.output.map((piece) => piece.seq)).toEqual([2, 3, 4, 5]);
     const huge = "y".repeat(2 * 1024 * 1024);
-    model = reduce(model, message({ type: "output", stream: "stderr", text: huge }));
+    model = reduce(model, messageEvent({ type: "output", stream: "stderr", text: huge }));
     expect(model.output.map((piece) => piece.seq)).toEqual([6]);
     expect(model.outputBytes).toBe(huge.length);
   });
 
   it("ignores a message type it does not know", () => {
     const model = replay(received("steps")).at(-1) as Model;
-    expect(reduce(model, message({ type: "fromTheFuture", detail: 1 }))).toBe(model);
+    expect(reduce(model, messageEvent({ type: "fromTheFuture", detail: 1 }))).toBe(model);
   });
 });
 
@@ -234,16 +228,17 @@ describe("the connection, driven by recorded traffic", () => {
       if (line.to !== "page" || !("message" in line)) {
         continue;
       }
-      if (line.message.type === "result") {
-        // An answer's bytes come with it.
-        const payload = frames.get(line.message.id);
-        const result = payload
-          ? { ...(line.message.result as object), payload }
-          : line.message.result;
-        expect(await answers.get(line.message.id)).toEqual({ ok: result });
-      } else if (line.message.type === "error") {
-        expect(await answers.get(line.message.id)).toEqual({ error: line.message.error.message });
+      const { message } = line;
+      if (message.type !== "result" && message.type !== "error") {
+        continue;
       }
+      // An answer's bytes come with it.
+      const payload = frames.get(message.id);
+      const wanted =
+        message.type === "error"
+          ? { error: message.error.message }
+          : { ok: payload ? { ...(message.result as object), payload } : message.result };
+      expect(await answers.get(message.id)).toEqual(wanted);
     }
     // Answers never reach the model; everything else does, in order.
     const forwarded = events.flatMap((event) => (event.type === "message" ? [event.message] : []));
@@ -255,15 +250,15 @@ describe("the connection, driven by recorded traffic", () => {
 });
 
 /** A connection whose transport has opened, recording what it sends. */
-async function openConnection(emit: (event: ModelEvent) => void = () => undefined) {
+async function openConnection(emit: (event: ModelEvent) => void = () => {}) {
   let handlers: TransportHandlers | null = null;
   const sent: string[] = [];
   const connection = new Connection({
     connect: (given) => {
       handlers = given;
-      return { send: (text) => sent.push(text), close: () => undefined };
+      return { send: (text) => sent.push(text), close: () => {} };
     },
-    authorized: async () => true,
+    authorized: () => Promise.resolve(true),
     emit,
   });
   connection.start();

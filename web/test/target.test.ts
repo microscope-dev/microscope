@@ -19,14 +19,13 @@ describe("a join link", () => {
   });
 
   it("is refused without a token, a join path, or an http scheme", () => {
-    for (const text of [
+    const accepted = [
       "http://127.0.0.1:7341/join",
       "http://127.0.0.1:7341/#c-1",
       "http://127.0.0.1:7341/joined#c-1",
       "ftp://127.0.0.1/join#c-1",
       "127.0.0.1:7341",
-    ]) {
-      expect(parseJoinLink(text), text).toBeNull();
-    }
+    ].filter((text) => parseJoinLink(text) !== null);
+    expect(accepted).toEqual([]);
   });
 });

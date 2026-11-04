@@ -63,7 +63,7 @@ afterEach(() => {
   }
   const elapsed = performance.now() - started;
   const { testPath, currentTestName } = expect.getState();
-  const file = (testPath ?? "").replace(/^.*\/web\//, "");
+  const file = (testPath ?? "").replace(/^.*\/web\//u, "");
   const name = `${file} :: ${currentTestName ?? ""}`;
   const own = OWN[name] ?? FILES[file];
   const budget = own?.ms ?? (typeof window === "undefined" ? UNIT : BROWSER);

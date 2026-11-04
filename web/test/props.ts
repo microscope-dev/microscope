@@ -2,7 +2,7 @@
 // property on every save, or PROPTEST_CASES of them for the deeper search
 // `just web-props` makes, as `just props` does for the Rust tests.
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 import { inject } from "vitest";
 
 declare module "vitest" {

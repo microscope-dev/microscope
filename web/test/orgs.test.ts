@@ -96,14 +96,14 @@ function serve(answer: (method: string, path: string) => Response) {
   const asked: { method: string; path: string; body: unknown }[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (path: string, init: RequestInit = {}) => {
+    vi.fn((path: string, init: RequestInit = {}) => {
       const method = init.method ?? "GET";
       asked.push({
         method,
         path,
         body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
       });
-      return answer(method, path);
+      return Promise.resolve(answer(method, path));
     }),
   );
   return asked;
@@ -142,12 +142,12 @@ describe("the client", () => {
   });
 });
 
-describe("the directory", () => {
-  const signIn = (id: number) =>
-    account.setState({
-      now: { kind: "in", user: { id, username: `u${id}`, email: "", totp_enabled: false } },
-    });
+const signIn = (id: number) =>
+  account.setState({
+    now: { kind: "in", user: { id, username: `u${id}`, email: "", totp_enabled: false } },
+  });
 
+describe("the directory", () => {
   it("keeps the newest answer when an older one comes back last", async () => {
     signIn(1);
     const pending: ((orgs: Org[]) => void)[] = [];
@@ -155,7 +155,11 @@ describe("the directory", () => {
       "fetch",
       vi.fn(async (path: string) => {
         if (path === "/api/orgs") {
-          return json(await new Promise<Org[]>((resolve) => pending.push(resolve)));
+          return json(
+            await new Promise<Org[]>((resolve) => {
+              pending.push(resolve);
+            }),
+          );
         }
         return json([]);
       }),
@@ -181,7 +185,9 @@ describe("the directory", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
-        await new Promise<void>((resolve) => held.push(resolve));
+        await new Promise<void>((resolve) => {
+          held.push(resolve);
+        });
         return json([]);
       }),
     );

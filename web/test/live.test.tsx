@@ -42,6 +42,19 @@ microscope.live((canvas, input, context) => {
   };
 });`;
 
+const at = (x: number) => ({
+  type: "move" as const,
+  x,
+  y: 0,
+  dx: 0,
+  dy: 0,
+  buttons: 0,
+  wheel: 0,
+  shift: false,
+  ctrl: false,
+  alt: false,
+});
+
 describe("a live renderer", () => {
   it("is drawn by a session of its own, which the page drives", async () => {
     const box = sandbox();
@@ -139,7 +152,7 @@ describe("a live renderer", () => {
     const failed = await broken.expect("failed");
     expect(failed.failure).toMatchObject({
       kind: "failed",
-      failure: { message: expect.stringMatching(/^SyntaxError/), file: "broken.js" },
+      failure: { message: expect.stringMatching(/^SyntaxError/u), file: "broken.js" },
     });
   });
 
@@ -188,18 +201,6 @@ describe("a live renderer", () => {
 }));`;
     const late = new Watched(box, "5", echo);
     await late.expect("waiting");
-    const at = (x: number) => ({
-      type: "move" as const,
-      x,
-      y: 0,
-      dx: 0,
-      dy: 0,
-      buttons: 0,
-      wheel: 0,
-      shift: false,
-      ctrl: false,
-      alt: false,
-    });
     late.session.pointer(at(4));
     late.session.key({ key: "q", shift: false, ctrl: false, alt: false });
     late.session.pointer(at(9));

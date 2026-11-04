@@ -15,13 +15,15 @@ it("continues once for a double click", async () => {
   tab.setState({ at: { stop: 1, thread: 1, frame: 0 } });
   const sent: string[] = [];
   server.onRequest((request) => sent.push(request.method));
-  const button = page.getByRole("button", { name: /Continue/ });
+  const button = page.getByRole("button", { name: /Continue/u });
   await expect.element(button).toBeEnabled();
 
   await userEvent.dblClick(button);
   await expect.poll(() => sent, POLL).toContain("continue");
   // The second click lands while the first is still being answered.
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 20);
+  });
   expect(sent.filter((method) => method === "continue")).toEqual(["continue"]);
   server.answer(await server.next("continue"), null);
 });

@@ -10,11 +10,13 @@ import { fakeServer } from "./fake-server";
 
 afterEach(cleanup);
 
+const ignore = () => {};
+
 it("says the list failed, and a later Refresh clears the error", async () => {
   const server = await fakeServer();
   render(
     <SessionContext value={server.session}>
-      <AttachForm working={false} submit={() => undefined} />
+      <AttachForm working={false} submit={ignore} />
     </SessionContext>,
   );
   server.send({
@@ -31,7 +33,7 @@ it("says the list failed, and a later Refresh clears the error", async () => {
     processes: [{ pid: 41, command: "kvstore" }],
     ptraceScope: null,
   });
-  await expect.element(page.getByRole("option", { name: /kvstore/ })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /kvstore/u })).toBeVisible();
   await expect.element(page.getByText("cannot read /proc")).not.toBeInTheDocument();
 });
 
@@ -39,14 +41,14 @@ it("chooses the first process after ArrowDown in an empty list", async () => {
   const server = await fakeServer();
   render(
     <SessionContext value={server.session}>
-      <AttachForm working={false} submit={() => undefined} />
+      <AttachForm working={false} submit={ignore} />
     </SessionContext>,
   );
   server.answer(await server.next("processes"), {
     processes: [{ pid: 41, command: "kvstore" }],
     ptraceScope: null,
   });
-  await expect.element(page.getByRole("option", { name: /kvstore/ })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /kvstore/u })).toBeVisible();
   await userEvent.click(page.getByRole("textbox"));
   await userEvent.keyboard("redis");
   await expect.element(page.getByText("No process matches.")).toBeVisible();
@@ -61,7 +63,7 @@ it("chooses the first process after ArrowDown in an empty list", async () => {
     ptraceScope: null,
   });
   await expect
-    .element(page.getByRole("option", { name: /redis/ }))
+    .element(page.getByRole("option", { name: /redis/u }))
     .toHaveAttribute("aria-selected", "true");
   await expect.element(page.getByRole("button", { name: "Attach to 42" })).toBeEnabled();
 });
@@ -70,7 +72,7 @@ it("puts the process whose pid was typed ahead of newer ones that only mention i
   const server = await fakeServer();
   render(
     <SessionContext value={server.session}>
-      <AttachForm working={false} submit={() => undefined} />
+      <AttachForm working={false} submit={ignore} />
     </SessionContext>,
   );
   server.answer(await server.next("processes"), {
@@ -83,7 +85,7 @@ it("puts the process whose pid was typed ahead of newer ones that only mention i
   await userEvent.click(page.getByRole("textbox"));
   await userEvent.keyboard("41");
   await expect
-    .element(page.getByRole("option", { name: /kvstore/ }))
+    .element(page.getByRole("option", { name: /kvstore/u }))
     .toHaveAttribute("aria-selected", "true");
   await expect.element(page.getByRole("button", { name: "Attach to 41" })).toBeEnabled();
 });

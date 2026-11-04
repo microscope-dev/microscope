@@ -73,7 +73,7 @@ export function toKeyboard(chord: Chord): string {
   );
   const up = chord.modifiers
     .map((modifier) => `{/${modifier === "Ctrl" ? "Control" : modifier}}`)
-    .reverse();
+    .toReversed();
   return [...down, key, ...up].join("");
 }
 

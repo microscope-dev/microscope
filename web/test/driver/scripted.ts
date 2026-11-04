@@ -6,6 +6,7 @@
 // kept in `unhandled`, which a test expects to be empty: a journey says
 // everything its page asks.
 
+// oxlint-disable-next-line max-classes-per-file -- Refusal is this file's own error type
 import type {
   Frame,
   Method,
@@ -98,7 +99,7 @@ export class ScriptedDebugger {
         const [file, line] = location.split(":");
         const path = Object.keys(files).find((candidate) => candidate.endsWith(`/${file}`));
         const stop = this.#script.stops.find(
-          (stop) => stop.place.path === path && stop.place.line === Number(line),
+          (candidate) => candidate.place.path === path && candidate.place.line === Number(line),
         );
         this.#breakpoints = [
           ...this.#breakpoints,

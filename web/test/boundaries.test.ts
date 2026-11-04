@@ -24,19 +24,19 @@ interface Rule {
 
 const RULES: readonly Rule[] = [
   {
-    from: /^src\//,
-    to: /^(test|e2e)\//,
+    from: /^src\//u,
+    to: /^(test|e2e)\//u,
     why: "the page never depends on its tests",
   },
   {
-    from: /^src\//,
-    to: /^src\/ui\//,
-    except: /^src\/(ui\/|router\.tsx$|main\.tsx$)/,
+    from: /^src\//u,
+    to: /^src\/ui\//u,
+    except: /^src\/(ui\/|router\.tsx$|main\.tsx$)/u,
     why: "state and logic sit below the views, which only the entry points assemble",
   },
   {
-    from: /^src\/workbench\//,
-    to: /^src\/(?!workbench\/|assert$)/,
+    from: /^src\/workbench\//u,
+    to: /^src\/(?!workbench\/|assert$)/u,
     why: "the workbench is the frame every pane builds on, so it knows nothing of what panes show",
   },
 ];
@@ -47,14 +47,14 @@ function files(directory: string): string[] {
     if (entry.isDirectory()) {
       return files(path);
     }
-    return /\.(ts|tsx)$/.test(entry.name) && !entry.name.endsWith(".gen.ts") ? [path] : [];
+    return /\.(ts|tsx)$/u.test(entry.name) && !entry.name.endsWith(".gen.ts") ? [path] : [];
   });
 }
 
 /** Every relative import in `file`, as a path from web/, with its line. */
 function imports(file: string): { target: string; line: number }[] {
   const found: { target: string; line: number }[] = [];
-  const pattern = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/g;
+  const pattern = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/gu;
   for (const [index, text] of readFileSync(join(web, file), "utf8").split("\n").entries()) {
     for (const match of text.matchAll(pattern)) {
       const specifier = match[1] as string;
@@ -89,15 +89,18 @@ describe("module boundaries", () => {
 
 describe("the speed budget", () => {
   it("names files and title segments that exist", () => {
-    for (const name of Object.keys(OWN)) {
+    const unnamed = Object.keys(OWN).flatMap((name) => {
       const [file, title] = name.split(" :: ") as [string, string];
       const source = readFileSync(join(web, file), "utf8");
-      for (const segment of title.split(" > ")) {
-        expect(source, name).toContain(JSON.stringify(segment));
-      }
-    }
-    for (const file of Object.keys(FILES)) {
-      expect(readdirSync(join(web, dirname(file))), file).toContain(file.split("/").at(-1));
-    }
+      return title
+        .split(" > ")
+        .filter((segment) => !source.includes(JSON.stringify(segment)))
+        .map((segment) => `${name}: ${segment}`);
+    });
+    expect(unnamed).toEqual([]);
+    const missing = Object.keys(FILES).filter(
+      (file) => !readdirSync(join(web, dirname(file))).includes(file.split("/").at(-1) ?? ""),
+    );
+    expect(missing).toEqual([]);
   });
 });

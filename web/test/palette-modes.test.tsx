@@ -49,7 +49,7 @@ it("says why a pending breakpoint shows nothing", async () => {
   await mountPane(<Palette />, { state }, state);
   tab.setState({ palette: "all" });
   await userEvent.keyboard("later_fn");
-  await userEvent.click(page.getByRole("option", { name: /later_fn/ }));
+  await userEvent.click(page.getByRole("option", { name: /later_fn/u }));
   expect(tab.getState().flash?.text).toBe("later_fn is pending until a module with its code loads");
 });
 

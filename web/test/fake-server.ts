@@ -51,10 +51,10 @@ export async function fakeServer(): Promise<FakeServer> {
             }
           });
         },
-        close: () => undefined,
+        close: () => {},
       };
     },
-    authorized: async () => true,
+    authorized: () => Promise.resolve(true),
   });
   session.connection.start();
   const handlers = await vi.waitFor(() => {

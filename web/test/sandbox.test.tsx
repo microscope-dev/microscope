@@ -36,6 +36,7 @@ class Probe {
       this.messages.push(event.data);
       this.wake?.();
     });
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a Worker's postMessage takes no target origin
     this.worker.postMessage({ type: "load", source, name });
     probes.push(this);
   }
@@ -49,7 +50,8 @@ class Probe {
     return this.messages.shift() as Record<string, unknown>;
   }
 
-  async draw(input: unknown, given: DrawContext = context): Promise<Record<string, unknown>> {
+  draw(input: unknown, given: DrawContext = context): Promise<Record<string, unknown>> {
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a Worker's postMessage takes no target origin
     this.worker.postMessage({ type: "draw", id: 7, input, context: given });
     return this.next();
   }
@@ -57,7 +59,8 @@ class Probe {
   /** What a reporting renderer reported. */
   async report(input: unknown = {}): Promise<unknown> {
     const answer = await this.draw(input);
-    expect(answer.type, JSON.stringify(answer)).toBe("picture");
+    // oxlint-disable-next-line vitest/no-standalone-expect -- a helper that tests call
+    expect(answer).toMatchObject({ type: "picture" });
     const picture = validate(answer.picture);
     const text = picture.shapes[0];
     if (text?.type !== "text") {
@@ -183,7 +186,7 @@ describe("the worker", () => {
       id: 7,
       error: { file: "board.js", line: 2 },
     });
-    expect((answer.error as { message: string }).message).toMatch(/^TypeError: /);
+    expect((answer.error as { message: string }).message).toMatch(/^TypeError: /u);
 
     const rejecting = new Probe(
       "microscope.draw(async () => {\n\n  throw new RangeError('no squares');\n});",
@@ -200,7 +203,7 @@ describe("the worker", () => {
     const broken = new Probe("microscope.draw(() => {", "broken");
     expect(await broken.next()).toMatchObject({
       type: "loaded",
-      error: { message: expect.stringMatching(/^SyntaxError: /), file: "broken.js" },
+      error: { message: expect.stringMatching(/^SyntaxError: /u), file: "broken.js" },
     });
     const idle = new Probe("const x = 1;", "idle");
     expect(await idle.next()).toMatchObject({
@@ -298,7 +301,7 @@ const counting = renderer(
    ] }));`,
 );
 const textOf = (outcome: Outcome) => {
-  expect(outcome.kind, JSON.stringify(outcome)).toBe("picture");
+  expect(outcome).toMatchObject({ kind: "picture" });
   const shape = validate((outcome as { picture: unknown }).picture).shapes[0];
   return shape?.type === "text" ? shape.text : null;
 };
@@ -362,13 +365,13 @@ describe("the sandbox", () => {
     const outcome = await box.draw("x", renderer("broken", "microscope.draw("), {}, context);
     expect(outcome).toMatchObject({
       kind: "failed",
-      failure: { message: expect.stringMatching(/^SyntaxError/), file: "broken.js" },
+      failure: { message: expect.stringMatching(/^SyntaxError/u), file: "broken.js" },
     });
   });
 });
 
 describe("the builder", () => {
-  it("draws text as text, with titles, and selects on click, Enter, and Space", async () => {
+  it("draws text as text, with titles, and selects on click, Enter, and Space", () => {
     const selected: string[] = [];
     const picture = validate({
       type: "picture",
@@ -432,8 +435,8 @@ describe("the theme", () => {
       const colors = pagePalette("light");
       expect(colors.surface).toBe("#ffffff");
       expect(colors.ink).toBe("#1a2230");
-      for (const color of [...Object.values(colors).flat()]) {
-        expect(color).toMatch(/^#[0-9a-f]{6}$/);
+      for (const color of Object.values(colors).flat()) {
+        expect(color).toMatch(/^#[0-9a-f]{6}$/u);
       }
     } finally {
       root.style.removeProperty("--surface");

@@ -10,10 +10,10 @@ const css = readFileSync("src/styles.css", "utf8");
 /** The custom properties declared in the first rule that `selector` opens. */
 function declared(selector: string): Map<string, string> {
   const start = css.indexOf(`${selector} {`);
-  expect(start, selector).toBeGreaterThanOrEqual(0);
+  expect(css).toContain(`${selector} {`);
   const body = css.slice(start, css.indexOf("}", start));
   const properties = new Map<string, string>();
-  for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) {
+  for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/gu)) {
     if (name !== undefined && value !== undefined) {
       properties.set(name, value.trim());
     }
@@ -36,7 +36,7 @@ it("gives every color the dark theme changes a light value", () => {
 });
 
 it("declares every property the rules use", () => {
-  const used = new Set([...css.matchAll(/var\((--[\w-]+)/g)].map((match) => match[1]));
+  const used = new Set([...css.matchAll(/var\((--[\w-]+)/gu)].map((match) => match[1]));
   const missing = [...used].filter((name) => name !== undefined && !light.has(name));
   expect(missing).toEqual([]);
 });

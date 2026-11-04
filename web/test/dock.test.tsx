@@ -8,6 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
 import "../src/styles.css";
+import type { DockSetup } from "../src/workbench/context";
 import { Dock } from "../src/workbench/Dock";
 import { kinds, type PaneKind, type PaneProps } from "../src/workbench/kinds";
 import { build, type KindId, type Pane } from "../src/workbench/layout";
@@ -48,18 +49,19 @@ const KINDS = kinds([
 
 const pane = (kindId: string, key: string): Pane => ({ kind: kindId as KindId, key, params: null });
 
+const DOCK_BOX = { display: "flex", width: "900px", height: "500px" };
+const SETUP: DockSetup = {
+  kinds: KINDS,
+  useMissing: (need) => (need === "stop" ? "The program is not stopped." : null),
+};
+
 async function mount(shape: Parameters<typeof build>[0]) {
   await page.viewport(1000, 600);
   renders.clear();
   workbench.setState({ layout: build(shape) });
   render(
-    <div style={{ display: "flex", width: "900px", height: "500px" }}>
-      <Dock
-        setup={{
-          kinds: KINDS,
-          useMissing: (need) => (need === "stop" ? "The program is not stopped." : null),
-        }}
-      />
+    <div style={DOCK_BOX}>
+      <Dock setup={SETUP} />
     </div>,
   );
 }
@@ -144,10 +146,14 @@ it("says why a pane is empty, and keeps working when one throws", async () => {
   });
   const failed = page.getByRole("alert");
   await expect.element(failed.getByText("Variables stopped working.")).toBeVisible();
-  await expect.element(failed.getByText(/the answer was malformed/)).toBeVisible();
+  await expect.element(failed.getByText(/the answer was malformed/u)).toBeVisible();
   await expect.element(page.getByText("The program is not stopped.")).toBeVisible();
   await expect.element(page.getByText("Threads shown")).toBeVisible();
 });
+
+const threads = () =>
+  (document.querySelector('[data-group] [role="tablist"]') as HTMLElement).getBoundingClientRect()
+    .width;
 
 it("resizes a split by keyboard, and evens it out with Enter", async () => {
   await mount({
@@ -159,9 +165,6 @@ it("resizes a split by keyboard, and evens it out with Enter", async () => {
   });
   const separator = page.getByRole("separator", { name: "Resize Threads and Registers" });
   await expect.element(separator).toHaveAttribute("aria-valuenow", "50");
-  const threads = () =>
-    (document.querySelector('[data-group] [role="tablist"]') as HTMLElement).getBoundingClientRect()
-      .width;
   const wide = threads();
   (separator.element() as HTMLElement).focus();
   await userEvent.keyboard("{ArrowRight}{ArrowRight}");

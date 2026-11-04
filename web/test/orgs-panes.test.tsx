@@ -25,7 +25,7 @@ function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) 
   const real = globalThis.fetch;
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
       const path = String(input);
       if (!path.startsWith("/api/")) {
         return real(input, init);
@@ -36,12 +36,14 @@ function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) 
       const found =
         routes[route] ?? (route === "GET /api/users/me" ? ([200, ME] as Answer) : undefined);
       const [status, answer] = typeof found === "function" ? found(body) : (found ?? [404]);
-      return status === 204 || answer === undefined
-        ? new Response(null, { status: status === 404 ? 404 : status })
-        : new Response(JSON.stringify(answer), {
-            status,
-            headers: { "Content-Type": "application/json" },
-          });
+      return Promise.resolve(
+        status === 204 || answer === undefined
+          ? new Response(null, { status: status === 404 ? 404 : status })
+          : new Response(JSON.stringify(answer), {
+              status,
+              headers: { "Content-Type": "application/json" },
+            }),
+      );
     }),
   );
   account.setState({ now: { kind: "in", user: ME }, notice: null });
@@ -66,6 +68,7 @@ const inAcme = { id: 7, name: "acme" };
 const text = (locator: Locator) => locator.query()?.textContent ?? "";
 
 const orgPane = (org: Org) => (
+  // oxlint-disable-next-line react-perf/jsx-no-new-object-as-prop -- built from the test's org
   <OrgBody id={"p1" as PaneId} pane={{ kind: KIND.org, key: String(org.id), params: null }} />
 );
 
@@ -86,10 +89,10 @@ it("lists the person's own projects first, then each organization's, with their 
   });
   render(<ProjectsBody />);
   const own = page.getByRole("list", { name: "Your projects" });
-  await expect.poll(() => text(own)).toMatch(/mine\s*Admin/);
+  await expect.poll(() => text(own)).toMatch(/mine\s*Admin/u);
   await expect.element(own.getByRole("button", { name: "Rename" })).toBeVisible();
   const shared = page.getByRole("list", { name: "acme projects" });
-  await expect.poll(() => text(shared)).toMatch(/api\s*Write/);
+  await expect.poll(() => text(shared)).toMatch(/api\s*Write/u);
   // Write is not admin: no renaming or deleting.
   expect(shared.getByRole("button").elements()).toHaveLength(0);
   // Owning no organization, a new project can only be the person's own.
@@ -154,7 +157,7 @@ it("gives an owner the members' controls and who is invited", async () => {
   await expect.element(page.getByRole("button", { name: "Leave" })).toBeVisible();
   await expect
     .poll(() => text(page.getByRole("list", { name: "Invited" })))
-    .toMatch(/cy\s*Member\s*Cancel invitation/);
+    .toMatch(/cy\s*Member\s*Cancel invitation/u);
 });
 
 it("gives an owner the projects' controls and each one's team access", async () => {
@@ -202,8 +205,8 @@ it("shows a member what is there but nothing they may not change", async () => {
   });
   render(orgPane(acme("member")));
   const list = page.getByRole("list", { name: "Members" });
-  await expect.poll(() => text(list)).toMatch(/ana \(you\)\s*Member\s*Leave/);
-  await expect.poll(() => text(list)).toMatch(/bo\s*Owner/);
+  await expect.poll(() => text(list)).toMatch(/ana \(you\)\s*Member\s*Leave/u);
+  await expect.poll(() => text(list)).toMatch(/bo\s*Owner/u);
   expect(page.getByLabelText("Username").elements()).toHaveLength(0);
   expect(page.getByRole("combobox").elements()).toHaveLength(0);
   expect(page.getByRole("button", { name: "Remove" }).elements()).toHaveLength(0);
@@ -213,19 +216,19 @@ it("shows a member what is there but nothing they may not change", async () => {
   await userEvent.click(page.getByRole("button", { name: "Team access" }));
   await expect
     .poll(() => text(page.getByRole("list", { name: "Teams with access to api" })))
-    .toMatch(/core\s*Write/);
+    .toMatch(/core\s*Write/u);
   expect(page.getByRole("combobox").elements()).toHaveLength(0);
 
   await userEvent.click(page.getByRole("button", { name: "Teams" }));
   await userEvent.click(page.getByRole("button", { name: "Members", exact: true }).last());
   await expect.element(page.getByRole("list", { name: "Members of core" })).toHaveTextContent("bo");
-  expect(page.getByRole("button", { name: /New team|Rename|Delete|Remove/ }).elements()).toEqual(
+  expect(page.getByRole("button", { name: /New team|Rename|Delete|Remove/u }).elements()).toEqual(
     [],
   );
 
   await userEvent.click(page.getByRole("button", { name: "Settings" }));
-  await expect.element(page.getByText(/Every member gets read on every project/)).toBeVisible();
-  expect(page.getByRole("button", { name: /Delete|Rename|Save/ }).elements()).toEqual([]);
+  await expect.element(page.getByText(/Every member gets read on every project/u)).toBeVisible();
+  expect(page.getByRole("button", { name: /Delete|Rename|Save/u }).elements()).toEqual([]);
 });
 
 it("says why services would not let a member leave", async () => {
@@ -263,48 +266,52 @@ it("lets a person accept an invitation from their Account pane", async () => {
   render(<AccountBody />);
   const invitations = page.getByRole("list", { name: "Invitations" });
   await expect.poll(() => text(invitations)).toContain("acme invites you as a member (from bo)");
-  await expect.element(page.getByText(/^You are not in any organization/)).toBeVisible();
+  await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
   await userEvent.click(invitations.getByRole("button", { name: "Accept" }));
   await expect
     .poll(() => text(page.getByRole("list", { name: "Organizations" })))
-    .toMatch(/acme\s*Member/);
+    .toMatch(/acme\s*Member/u);
   expect(page.getByRole("list", { name: "Invitations" }).elements()).toHaveLength(0);
 });
+
+const methods = () => page.getByRole("list", { name: "Sign-in methods" });
+
+const showSignInMethods = (providers: unknown, identities: unknown[], passkeys = false) => {
+  const asked = services({
+    "GET /api/orgs": [200, []],
+    "GET /api/projects": [200, []],
+    "GET /api/users/me/invitations": [200, []],
+    "GET /api/features": [200, { email: false, totp: true, sso: providers, passkeys }],
+    "GET /api/users/me/identities": [200, { has_password: true, identities, passkeys: [] }],
+  });
+  render(<AccountBody />);
+  return asked;
+};
 
 it("lists sign-in methods only when there is one to connect or one connected", async () => {
   const off = { google: false, github: false, saml: true };
   const saml = { id: 3, provider: "saml", email: ME.email, org_id: 7, org_name: "acme" };
-  const methods = () => page.getByRole("list", { name: "Sign-in methods" });
-  const show = (providers: unknown, identities: unknown[], passkeys = false) => {
-    const asked = services({
-      "GET /api/orgs": [200, []],
-      "GET /api/projects": [200, []],
-      "GET /api/users/me/invitations": [200, []],
-      "GET /api/features": [200, { email: false, totp: true, sso: providers, passkeys }],
-      "GET /api/users/me/identities": [200, { has_password: true, identities, passkeys: [] }],
-    });
-    render(<AccountBody />);
-    return asked;
-  };
 
   // Nothing to connect, and nothing connected: no section at all.
-  const asked = show(off, []);
+  const asked = showSignInMethods(off, []);
   await expect
     .poll(() => asked)
     .toEqual(expect.arrayContaining(["GET /api/features", "GET /api/users/me/identities"]));
-  await expect.element(page.getByText(/^You are not in any organization/)).toBeVisible();
-  await new Promise((settle) => setTimeout(settle, 50));
+  await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
+  await new Promise((settle) => {
+    setTimeout(settle, 50);
+  });
   expect(page.getByRole("heading", { name: "Sign-in methods" }).elements()).toHaveLength(0);
   cleanup();
 
   // An organization's single sign-on, connected, still shows and can go.
-  show(off, [saml]);
-  await expect.poll(() => text(methods())).toMatch(/^Password\s*acme's single sign-on/);
+  showSignInMethods(off, [saml]);
+  await expect.poll(() => text(methods())).toMatch(/^Password\s*acme's single sign-on/u);
   await expect.element(methods().getByRole("button", { name: "Disconnect" })).toBeVisible();
   cleanup();
 
   // GitHub offered: something to connect.
-  show({ ...off, github: true }, []);
+  showSignInMethods({ ...off, github: true }, []);
   await expect.poll(() => text(methods())).toBe("Password");
   await expect.element(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
   expect(page.getByRole("button", { name: "Connect Google" }).elements()).toHaveLength(0);
@@ -312,41 +319,41 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   cleanup();
 
   // Passkeys offered: something to add.
-  show(off, [], true);
+  showSignInMethods(off, [], true);
   await expect.element(page.getByRole("button", { name: "Add a passkey" })).toBeVisible();
 });
 
 const PASSKEY = { id: 9, name: "Mac", backed_up: true, created_at: 1_790_000_000 };
 
-it("lists passkeys, and keeps the last way in", async () => {
-  const methods = () => page.getByRole("list", { name: "Sign-in methods" });
-  const show = (has_password: boolean, passkeys: unknown[]) => {
-    services({
-      "GET /api/orgs": [200, []],
-      "GET /api/projects": [200, []],
-      "GET /api/users/me/invitations": [200, []],
-      "GET /api/features": [
-        200,
-        {
-          email: false,
-          totp: false,
-          sso: { google: false, github: false, saml: false },
-          passkeys: true,
-        },
-      ],
-      "GET /api/users/me/identities": [200, { has_password, identities: [], passkeys }],
-    });
-    render(<AccountBody />);
-  };
+const day = (unix: number) =>
+  new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: "medium" });
 
-  show(true, [
+const showPasskeys = (has_password: boolean, passkeys: unknown[]) => {
+  services({
+    "GET /api/orgs": [200, []],
+    "GET /api/projects": [200, []],
+    "GET /api/users/me/invitations": [200, []],
+    "GET /api/features": [
+      200,
+      {
+        email: false,
+        totp: false,
+        sso: { google: false, github: false, saml: false },
+        passkeys: true,
+      },
+    ],
+    "GET /api/users/me/identities": [200, { has_password, identities: [], passkeys }],
+  });
+  render(<AccountBody />);
+};
+
+it("lists passkeys, and keeps the last way in", async () => {
+  showPasskeys(true, [
     { ...PASSKEY, last_used_at: null },
     { ...PASSKEY, id: 10, name: "YubiKey", last_used_at: 1_792_000_000 },
   ]);
   const mac = methods().getByRole("listitem").filter({ hasText: "Passkey: Mac" });
   const key = methods().getByRole("listitem").filter({ hasText: "Passkey: YubiKey" });
-  const day = (unix: number) =>
-    new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: "medium" });
   await expect.element(mac).toHaveTextContent(`Passkey: MacAdded ${day(1_790_000_000)}Remove`);
   await expect
     .element(key)
@@ -354,8 +361,8 @@ it("lists passkeys, and keeps the last way in", async () => {
   cleanup();
 
   // Its only way in has nothing to remove it with.
-  show(false, [{ ...PASSKEY, last_used_at: null }]);
-  await expect.poll(() => text(methods())).toMatch(/^Passkey: Mac/);
+  showPasskeys(false, [{ ...PASSKEY, last_used_at: null }]);
+  await expect.poll(() => text(methods())).toMatch(/^Passkey: Mac/u);
   expect(methods().getByRole("button").elements()).toHaveLength(0);
 });
 
@@ -404,15 +411,15 @@ it("adds a passkey once the person proves who they are, sending what the device 
     },
   });
   const made: CredentialCreationOptions[] = [];
-  vi.spyOn(navigator.credentials, "create").mockImplementation(async (asked) => {
+  vi.spyOn(navigator.credentials, "create").mockImplementation((asked) => {
     made.push(asked as CredentialCreationOptions);
-    return {
+    return Promise.resolve({
       rawId: new Uint8Array([0xfb, 0xff, 0x01]).buffer,
       response: {
         clientDataJSON: new TextEncoder().encode("{}").buffer,
         attestationObject: new Uint8Array([0xa0]).buffer,
       },
-    } as unknown as Credential;
+    } as unknown as Credential);
   });
   render(<AccountBody />);
 
@@ -425,7 +432,7 @@ it("adds a passkey once the person proves who they are, sending what the device 
 
   await expect
     .poll(() => text(page.getByRole("list", { name: "Sign-in methods" })))
-    .toMatch(/Passkey: Mac/);
+    .toMatch(/Passkey: Mac/u);
   expect(added).toEqual({
     credential_id: "-_8B",
     client_data_json: "e30",
@@ -443,64 +450,68 @@ it("adds a passkey once the person proves who they are, sending what the device 
   await expect.element(page.getByLabelText("Passkey name")).not.toBeInTheDocument();
 });
 
-it("offers two-factor authentication only when the server can keep its secrets", async () => {
-  const heading = () => page.getByRole("heading", { name: "Two-factor authentication" });
-  const show = (totp: boolean, user: User) => {
-    const asked = services({
-      "GET /api/orgs": [200, []],
-      "GET /api/projects": [200, []],
-      "GET /api/users/me/invitations": [200, []],
-      "GET /api/features": [
-        200,
-        { email: false, totp, sso: { google: false, github: false, saml: false } },
-      ],
-      "GET /api/users/me/identities": [200, { has_password: true, identities: [], passkeys: [] }],
-      "GET /api/users/me": [200, user],
-    });
-    account.setState({ now: { kind: "in", user } });
-    render(<AccountBody />);
-    return asked;
-  };
+const twoFactorHeading = () => page.getByRole("heading", { name: "Two-factor authentication" });
+const showTwoFactor = (totp: boolean, user: User) => {
+  const asked = services({
+    "GET /api/orgs": [200, []],
+    "GET /api/projects": [200, []],
+    "GET /api/users/me/invitations": [200, []],
+    "GET /api/features": [
+      200,
+      { email: false, totp, sso: { google: false, github: false, saml: false } },
+    ],
+    "GET /api/users/me/identities": [200, { has_password: true, identities: [], passkeys: [] }],
+    "GET /api/users/me": [200, user],
+  });
+  account.setState({ now: { kind: "in", user } });
+  render(<AccountBody />);
+  return asked;
+};
 
-  const asked = show(false, ME);
+it("offers two-factor authentication only when the server can keep its secrets", async () => {
+  const asked = showTwoFactor(false, ME);
   await expect.poll(() => asked).toContain("GET /api/features");
-  await expect.element(page.getByText(/^You are not in any organization/)).toBeVisible();
-  await new Promise((settle) => setTimeout(settle, 50));
-  expect(heading().elements()).toHaveLength(0);
+  await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
+  await new Promise((settle) => {
+    setTimeout(settle, 50);
+  });
+  expect(twoFactorHeading().elements()).toHaveLength(0);
   cleanup();
 
   // An account that turned it on before can still see it, to turn it off.
-  show(false, { ...ME, totp_enabled: true });
-  await expect.element(heading()).toBeVisible();
+  showTwoFactor(false, { ...ME, totp_enabled: true });
+  await expect.element(twoFactorHeading()).toBeVisible();
   cleanup();
 
-  show(true, ME);
-  await expect.element(heading()).toBeVisible();
+  showTwoFactor(true, ME);
+  await expect.element(twoFactorHeading()).toBeVisible();
 });
 
-it("offers a password reset only when the server sends email", async () => {
-  const forgot = () => page.getByRole("button", { name: "Forgot password?" });
-  const show = (email: boolean) => {
-    const asked = services({
-      "GET /api/users/me": [401, { error: "not logged in" }],
-      "GET /api/features": [
-        200,
-        { email, totp: false, sso: { google: false, github: false, saml: false } },
-      ],
-    });
-    account.setState({ now: { kind: "out" } });
-    render(<AccountBody />);
-    return asked;
-  };
+const forgot = () => page.getByRole("button", { name: "Forgot password?" });
+const showSignedOut = (email: boolean) => {
+  const asked = services({
+    "GET /api/users/me": [401, { error: "not logged in" }],
+    "GET /api/features": [
+      200,
+      { email, totp: false, sso: { google: false, github: false, saml: false } },
+    ],
+  });
+  account.setState({ now: { kind: "out" } });
+  render(<AccountBody />);
+  return asked;
+};
 
-  const asked = show(false);
+it("offers a password reset only when the server sends email", async () => {
+  const asked = showSignedOut(false);
   await expect.poll(() => asked).toContain("GET /api/features");
   await expect.element(page.getByLabelText("Username or email")).toBeVisible();
-  await new Promise((settle) => setTimeout(settle, 50));
+  await new Promise((settle) => {
+    setTimeout(settle, 50);
+  });
   expect(forgot().elements()).toHaveLength(0);
   cleanup();
 
-  show(true);
+  showSignedOut(true);
   await userEvent.fill(page.getByLabelText("Username or email"), "ana@example.com ");
   await userEvent.click(forgot());
   await expect.element(page.getByLabelText("Email")).toHaveValue("ana@example.com");
@@ -523,12 +534,12 @@ it("a reset link for another account leaves this browser signed in as it was", a
   await userEvent.fill(page.getByLabelText("New password"), "a whole new password");
   await userEvent.click(page.getByRole("button", { name: "Change password" }));
   await expect
-    .element(page.getByText(/that account is signed out everywhere/))
+    .element(page.getByText(/that account is signed out everywhere/u))
     .toHaveTextContent(
       "The password is changed, and that account is signed out everywhere. You are still signed in as ana.",
     );
   await expect
-    .element(page.getByText(/^Signed in as/))
+    .element(page.getByText(/^Signed in as/u))
     .toHaveTextContent("Signed in as ana (ana@example.com).");
 });
 
@@ -582,11 +593,12 @@ it("says what went wrong when services cannot be asked", async () => {
     .toHaveTextContent("Could not load your projects: database is down.");
 });
 
+const jsonResponse = (value: unknown) =>
+  new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+
 it("shows the next person only their own projects, even while the last person's are still being asked for", async () => {
   const bo: User = { id: 2, username: "bo", email: "bo@example.com", totp_enabled: false };
   const held: (() => void)[] = [];
-  const answer = (value: unknown) =>
-    new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -594,16 +606,18 @@ it("shows the next person only their own projects, even while the last person's 
       const now = account.getState().now;
       const who = now.kind === "in" ? now.user : null;
       if (path === "/api/users/me") {
-        return answer(who);
+        return jsonResponse(who);
       }
       if (who?.id === ME.id) {
         // Ana's questions are still out when Bo signs in, and answer afterwards.
-        await new Promise<void>((resolve) => held.push(resolve));
-        return answer(
+        await new Promise<void>((resolve) => {
+          held.push(resolve);
+        });
+        return jsonResponse(
           path === "/api/projects" ? [{ id: 1, name: "anas", org: null, permission: "admin" }] : [],
         );
       }
-      return answer(
+      return jsonResponse(
         path === "/api/projects" ? [{ id: 2, name: "bos", org: null, permission: "admin" }] : [],
       );
     }),
@@ -617,13 +631,15 @@ it("shows the next person only their own projects, even while the last person's 
 
   account.setState({ now: { kind: "in", user: bo }, notice: null });
   const own = page.getByRole("list", { name: "Your projects" });
-  await expect.poll(() => text(own)).toMatch(/bos/);
+  await expect.poll(() => text(own)).toMatch(/bos/u);
 
   for (const release of held) {
     release();
   }
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(text(own)).not.toMatch(/anas/);
+  await new Promise((resolve) => {
+    setTimeout(resolve, 50);
+  });
+  expect(text(own)).not.toMatch(/anas/u);
 });
 
 it("tells same-named organizations apart, and says when the members to add could not load", async () => {

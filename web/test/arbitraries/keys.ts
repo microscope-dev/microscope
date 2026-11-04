@@ -1,7 +1,7 @@
 // Key presses as a browser reports them, for property tests of anything that
 // reads the keyboard.
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 
 import type { KeyLike } from "../../src/workbench/keys";
 

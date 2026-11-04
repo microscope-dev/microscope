@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -31,7 +31,7 @@ import {
   toggleHidden,
 } from "../src/workbench/layout";
 import { loadLayout, saveLayout } from "../src/workbench/saved";
-import { apply, step, steps } from "./arbitraries/layout";
+import { apply, runLayout, step, steps } from "./arbitraries/layout";
 
 /** Opens panes named by kind into the focused group. */
 function opened(layout: Layout, ...kinds: string[]): [Layout, ...PaneId[]] {
@@ -263,31 +263,33 @@ it("restores the dock when another docked group takes focus, but not for a float
   expect(splitAgain.maximized).toBeNull();
 });
 
+const paneFor = (kind: string) => ({ kind: kind as KindId, key: "", params: null });
+
+const groupWith = (layout: Layout, kind: string) =>
+  groups(layout).find((group) => layout.panes[group.active as PaneId]?.kind === kind) as {
+    id: GroupId;
+    active: PaneId;
+  };
+
 describe("hiding a dock", () => {
-  const pane = (kind: string) => ({ kind: kind as KindId, key: "", params: null });
   // Threads | (source over console) | watch, with Threads focused.
   const start = build({
     axis: "row",
     children: [
-      [0.2, [pane("threads")]],
+      [0.2, [paneFor("threads")]],
       [
         0.6,
         {
           axis: "column",
           children: [
-            [0.7, [pane("source")]],
-            [0.3, [pane("console")]],
+            [0.7, [paneFor("source")]],
+            [0.3, [paneFor("console")]],
           ],
         },
       ],
-      [0.2, [pane("watch")]],
+      [0.2, [paneFor("watch")]],
     ],
   });
-  const groupWith = (layout: Layout, kind: string) =>
-    groups(layout).find((group) => layout.panes[group.active as PaneId]?.kind === kind) as {
-      id: GroupId;
-      active: PaneId;
-    };
   const source = groupWith(start, "source").id;
   const threads = groupWith(start, "threads");
   const consoleGroup = groupWith(start, "console").id;
@@ -339,7 +341,7 @@ describe("any run of operations", () => {
   it("only gains a pane by opening one and only loses one by closing it", () => {
     fc.assert(
       fc.property(steps, step, (run, chosen) => {
-        const before = run.reduce(apply, emptyLayout());
+        const before = runLayout(run);
         const after = apply(before, chosen);
         const lost = Object.keys(before.panes).filter((id) => !(id in after.panes));
         const gained = Object.keys(after.panes).filter((id) => !(id in before.panes));
@@ -355,9 +357,9 @@ describe("any run of operations", () => {
   it("shows a moved pane, in the group it lands in, which gets focus", () => {
     fc.assert(
       fc.property(steps, fc.nat(), fc.nat(), fc.nat({ max: 6 }), (run, pane, group, index) => {
-        const before = run.reduce(apply, emptyLayout());
+        const before = runLayout(run);
         const after = apply(before, { op: "move", pane, target: { type: "tab", group, index } });
-        const moved = (Object.keys(before.panes).sort() as PaneId[])[
+        const moved = (Object.keys(before.panes).toSorted() as PaneId[])[
           pane % Object.keys(before.panes).length
         ];
         fc.pre(moved !== undefined);
@@ -373,7 +375,7 @@ describe("a saved layout", () => {
   it("loads as the layout that was saved", () => {
     fc.assert(
       fc.property(steps, (run) => {
-        const layout = run.reduce(apply, emptyLayout());
+        const layout = runLayout(run);
         expect(loadLayout(saveLayout(layout))).toEqual({ ok: true, layout });
       }),
     );
@@ -382,16 +384,15 @@ describe("a saved layout", () => {
   it("is refused, never thrown on or half read, when it is damaged", () => {
     fc.assert(
       fc.property(steps, fc.nat(), fc.jsonValue(), (run, at, value) => {
-        const saved = JSON.parse(saveLayout(run.reduce(apply, emptyLayout())));
+        const saved = JSON.parse(saveLayout(runLayout(run)));
         const places = paths(saved);
         const place = places[at % places.length] as (string | number)[];
         const damaged = place.length === 0 ? value : setAt(saved, place, value);
         const loaded = loadLayout(JSON.stringify(damaged));
-        if (loaded.ok) {
-          expect(checkLayout(loaded.layout)).toEqual([]);
-        } else {
-          expect(loaded.why).not.toBe("");
-        }
+        const problems = loaded.ok ? checkLayout(loaded.layout) : [];
+        const why = loaded.ok ? null : loaded.why;
+        expect(problems).toEqual([]);
+        expect(why).not.toBe("");
       }),
     );
   });
@@ -410,11 +411,11 @@ describe("a saved layout", () => {
       expect(checkLayout(damaged)).not.toEqual([]);
     }
     const loaded = loadLayout(saveLayout({ ...emptyLayout(), next: Number.MAX_SAFE_INTEGER - 4 }));
-    expect(loaded.ok).toBe(true);
-    if (loaded.ok) {
-      const [layout] = opened(loaded.layout, "a", "b");
-      expect(shape(layout)).toEqual(["a", "*b"]);
+    if (!loaded.ok) {
+      throw new Error(`the layout did not load: ${loaded.why}`);
     }
+    const [layout] = opened(loaded.layout, "a", "b");
+    expect(shape(layout)).toEqual(["a", "*b"]);
   });
 
   // Every version of the saved shape ever written stays loadable.

@@ -23,8 +23,17 @@ const hello = (version = PROTOCOL_VERSION) =>
     cwd: "/",
   });
 
+const transition = (type: string, persisted: boolean) =>
+  Object.assign(new Event(type), { persisted });
+
+const answering = (status: number) =>
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.resolve(new Response(null, { status }))),
+  );
+
 /** A connection whose every attempt is recorded and driven by the test. */
-function harness(authorized: () => Promise<boolean> = async () => true) {
+function harness(authorized: () => Promise<boolean> = () => Promise.resolve(true)) {
   const attempts: TransportHandlers[] = [];
   const sent: string[] = [];
   const events: ModelEvent[] = [];
@@ -86,12 +95,9 @@ describe("a dropped connection", () => {
 
   it("retries when the server cannot even be asked", async () => {
     let up = false;
-    const { connection, attempts } = harness(async () => {
-      if (!up) {
-        throw new Error("connection refused");
-      }
-      return true;
-    });
+    const { connection, attempts } = harness(() =>
+      up ? Promise.resolve(true) : Promise.reject(new Error("connection refused")),
+    );
     connection.start();
     await vi.advanceTimersByTimeAsync(100);
     expect(attempts).toHaveLength(0);
@@ -113,7 +119,7 @@ describe("a dropped connection", () => {
 
 describe("a refused browser", () => {
   it("stops trying when it holds no token", async () => {
-    const { connection, attempts, links } = harness(async () => false);
+    const { connection, attempts, links } = harness(() => Promise.resolve(false));
     connection.start();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(attempts).toHaveLength(0);
@@ -154,9 +160,6 @@ describe("answers", () => {
 });
 
 describe("a page the browser keeps to come back to", () => {
-  const transition = (type: string, persisted: boolean) =>
-    Object.assign(new Event(type), { persisted });
-
   it("leaves the session while kept, and rejoins when shown again", async () => {
     const { connection, attempts } = harness();
     const page = new EventTarget();
@@ -196,12 +199,6 @@ describe("a join link", () => {
     vi.unstubAllGlobals();
   });
 
-  const answering = (status: number) =>
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(null, { status })),
-    );
-
   it("is accepted or refused by the server", async () => {
     answering(204);
     await expect(login("good")).resolves.toBe(true);
@@ -211,26 +208,21 @@ describe("a join link", () => {
 
   it("is not called refused when the server could not answer", async () => {
     answering(502);
-    await expect(login("good")).rejects.toThrow();
+    await expect(login("good")).rejects.toThrow("unexpected status 502");
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => {
-        throw new TypeError("Failed to fetch");
-      }),
+      vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))),
     );
-    await expect(login("good")).rejects.toThrow();
+    await expect(login("good")).rejects.toThrow("Failed to fetch");
   });
 
   it("is traded again after a failure, but once after an answer", async () => {
     let up = false;
-    const trade = vi.fn(async (token: string) => {
-      if (!up) {
-        throw new TypeError("Failed to fetch");
-      }
-      return token === "good";
-    });
+    const trade = vi.fn<(token: string) => Promise<boolean>>((token: string) =>
+      up ? Promise.resolve(token === "good") : Promise.reject(new TypeError("Failed to fetch")),
+    );
     const join = tradeOnce(trade);
-    await expect(join("good")).rejects.toThrow();
+    await expect(join("good")).rejects.toThrow("Failed to fetch");
     up = true;
     await expect(join("good")).resolves.toBe(true);
     await expect(join("good")).resolves.toBe(true);
@@ -238,59 +230,56 @@ describe("a join link", () => {
   });
 });
 
+/** Like a browser socket: closing only asks, the close event comes
+ * later, and sending while not open throws. */
+function lateHarness() {
+  const sockets: { handlers: TransportHandlers; open: boolean; sent: number }[] = [];
+  const events: ModelEvent[] = [];
+  const connection = new Connection({
+    connect: (handlers) => {
+      const socket = { handlers, open: false, sent: 0 };
+      sockets.push(socket);
+      return {
+        send: () => {
+          if (!socket.open) {
+            throw new DOMException("not open", "InvalidStateError");
+          }
+          socket.sent += 1;
+        },
+        close: () => {},
+      };
+    },
+    authorized: () => Promise.resolve(true),
+    emit: (event) => events.push(event),
+    backoff: [100, 1000],
+  });
+  const opened = (index: number) => {
+    const socket = sockets[index];
+    if (socket) {
+      socket.open = true;
+      socket.handlers.open();
+      socket.handlers.message(hello());
+    }
+  };
+  const closed = (index: number) => {
+    const socket = sockets[index];
+    if (socket) {
+      socket.open = false;
+      socket.handlers.close();
+    }
+  };
+  const links = () =>
+    events.flatMap((event): Link[] => (event.type === "link" ? [event.link] : []));
+  const page = new EventTarget();
+  leaveWhileCached(connection, page);
+  const bounce = () => {
+    page.dispatchEvent(transition("pagehide", true));
+    page.dispatchEvent(transition("pageshow", true));
+  };
+  return { connection, sockets, opened, closed, links, bounce };
+}
+
 describe("a socket that closes late", () => {
-  const transition = (type: string, persisted: boolean) =>
-    Object.assign(new Event(type), { persisted });
-
-  /** Like a browser socket: closing only asks, the close event comes
-   * later, and sending while not open throws. */
-  function lateHarness() {
-    const sockets: { handlers: TransportHandlers; open: boolean; sent: number }[] = [];
-    const events: ModelEvent[] = [];
-    const connection = new Connection({
-      connect: (handlers) => {
-        const socket = { handlers, open: false, sent: 0 };
-        sockets.push(socket);
-        return {
-          send: () => {
-            if (!socket.open) {
-              throw new DOMException("not open", "InvalidStateError");
-            }
-            socket.sent += 1;
-          },
-          close: () => {},
-        };
-      },
-      authorized: async () => true,
-      emit: (event) => events.push(event),
-      backoff: [100, 1000],
-    });
-    const opened = (index: number) => {
-      const socket = sockets[index];
-      if (socket) {
-        socket.open = true;
-        socket.handlers.open();
-        socket.handlers.message(hello());
-      }
-    };
-    const closed = (index: number) => {
-      const socket = sockets[index];
-      if (socket) {
-        socket.open = false;
-        socket.handlers.close();
-      }
-    };
-    const links = () =>
-      events.flatMap((event): Link[] => (event.type === "link" ? [event.link] : []));
-    const page = new EventTarget();
-    leaveWhileCached(connection, page);
-    const bounce = () => {
-      page.dispatchEvent(transition("pagehide", true));
-      page.dispatchEvent(transition("pageshow", true));
-    };
-    return { connection, sockets, opened, closed, links, bounce };
-  }
-
   it("does not reconnect when the old socket closes during authorization", async () => {
     const { connection, sockets, opened, closed, links, bounce } = lateHarness();
     connection.start();

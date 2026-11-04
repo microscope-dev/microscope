@@ -1,11 +1,12 @@
 // Where drags land and settle: dropping a tab, and snapping splitters and
 // floating windows.
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
   type Direction,
+  type Drop,
   type Measured,
   neighbor,
   type Point,
@@ -48,6 +49,8 @@ const measured: Measured = {
   ],
 };
 
+const highlight = (point: Point) => resolveDrop(measured, point)?.highlight;
+
 describe("dropping a tab", () => {
   it.each<[string, Point, unknown]>([
     ["a strip, left of a tab's middle", { x: 40, y: 15 }, { type: "tab", group: A, index: 0 }],
@@ -75,7 +78,6 @@ describe("dropping a tab", () => {
   });
 
   it("highlights where the pane will go", () => {
-    const highlight = (point: Point) => resolveDrop(measured, point)?.highlight;
     expect(highlight({ x: 60, y: 15 })).toEqual({ x: 99, y: 0, width: 2, height: 30 });
     expect(highlight({ x: 60, y: 300 })).toEqual({ x: 0, y: 0, width: 150, height: 600 });
     expect(highlight({ x: 150, y: 300 })).toEqual({ x: 0, y: 30, width: 300, height: 570 });
@@ -91,7 +93,7 @@ describe("dropping a tab", () => {
       fc.property(point, (at) => {
         const drop = resolveDrop(measured, at);
         expect(drop).not.toBeNull();
-        const { x, y, width, height } = drop?.highlight as Rect;
+        const { x, y, width, height } = (drop as Drop).highlight;
         expect(x).toBeGreaterThanOrEqual(-1);
         expect(x + width).toBeLessThanOrEqual(1000);
         expect(y).toBeGreaterThanOrEqual(0);
@@ -101,16 +103,16 @@ describe("dropping a tab", () => {
   });
 });
 
-describe("dropping a window by its title bar", () => {
-  const at = (point: Point) => resolveDrop(measured, point, false)?.target ?? null;
+const dropAt = (point: Point) => resolveDrop(measured, point, false)?.target ?? null;
 
+describe("dropping a window by its title bar", () => {
   it("docks on a strip or the dock's edge, and moves anywhere else", () => {
-    expect(at({ x: 60, y: 15 })).toEqual({ type: "tab", group: A, index: 1 });
-    expect(at({ x: 5, y: 300 })).toEqual({ type: "edge", side: "left" });
-    expect(at({ x: 150, y: 300 })).toBeNull();
-    expect(at({ x: 60, y: 300 })).toBeNull();
+    expect(dropAt({ x: 60, y: 15 })).toEqual({ type: "tab", group: A, index: 1 });
+    expect(dropAt({ x: 5, y: 300 })).toEqual({ type: "edge", side: "left" });
+    expect(dropAt({ x: 150, y: 300 })).toBeNull();
+    expect(dropAt({ x: 60, y: 300 })).toBeNull();
     // Over another window's body, though a docked body lies beneath.
-    expect(at({ x: 600, y: 300 })).toBeNull();
+    expect(dropAt({ x: 600, y: 300 })).toBeNull();
   });
 });
 
@@ -162,21 +164,24 @@ describe("a dragged splitter", () => {
         neighbors: fc.array(fc.double({ min: 0, max: 1200, noNaN: true }), { maxLength: 3 }),
         free: fc.boolean(),
       })
-      .map(({ least, span, ...rest }) => ({
-        ...rest,
-        least,
-        most: least + span,
-        start: 0,
-        length: 1200,
-      }));
+      .map(({ least, span, ...rest }) =>
+        Object.assign(rest, {
+          least,
+          most: least + span,
+          start: 0,
+          length: 1200,
+        }),
+      );
     fc.assert(
       fc.property(bounded, (dragged) => {
         const settled = snapSplitter(dragged);
         expect(settled).toBeGreaterThanOrEqual(dragged.least);
         expect(settled).toBeLessThanOrEqual(dragged.most);
-        if (settled > dragged.least && settled < dragged.most) {
-          expect(Math.abs(settled - dragged.at)).toBeLessThanOrEqual(dragged.free ? 0 : 6);
-        }
+        const inside = settled > dragged.least && settled < dragged.most;
+        const slack = dragged.free ? 0 : 6;
+        expect(Math.abs(settled - dragged.at)).toBeLessThanOrEqual(
+          inside ? slack : Number.POSITIVE_INFINITY,
+        );
       }),
     );
   });

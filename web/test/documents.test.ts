@@ -2,13 +2,14 @@
 // the layout: a Source pane for each open file in order, the stand-in when
 // none is open, the shown document active, and nothing else disturbed.
 
-import fc from "fast-check";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { arrange, documentsGroup, KIND } from "../src/documents";
 import type { View } from "../src/focus";
 import {
   checkLayout,
+  type GroupId,
   groupOf,
   groups,
   type Layout,
@@ -27,7 +28,7 @@ const sources = (laid: Layout) =>
   (Object.entries(laid.panes) as [PaneId, Pane][])
     .filter(([, pane]) => pane.kind === KIND.source)
     .map(([, pane]) => pane.key)
-    .sort();
+    .toSorted();
 
 describe("arranging the documents", () => {
   it("opens a Source pane for each file, in order, and shows what the address names", () => {
@@ -37,7 +38,7 @@ describe("arranging the documents", () => {
         const after = arrange(before, open, file, shown);
 
         expect(checkLayout(after)).toEqual([]);
-        expect(sources(after)).toEqual(open.length > 0 ? [...open].sort() : [""]);
+        expect(sources(after)).toEqual(open.length > 0 ? open.toSorted() : [""]);
 
         const into = documentsGroup(after, open);
         const group = groups(after).find((candidate) => candidate.id === into);
@@ -45,9 +46,9 @@ describe("arranging the documents", () => {
         const tabs = (group?.tabs ?? []).map((tab) => after.panes[tab] as Pane);
         const order = tabs.filter((pane) => pane.kind === KIND.source).map((pane) => pane.key);
         expect(tabs.slice(0, order.length).every((pane) => pane.kind === KIND.source)).toBe(true);
-        if (open.length > 0) {
-          expect(order).toEqual(open.filter((path) => order.includes(path)));
-        }
+        expect(order).toEqual(
+          open.length > 0 ? open.filter((path) => order.includes(path)) : order,
+        );
 
         const wanted =
           shown === "source"
@@ -57,17 +58,17 @@ describe("arranging the documents", () => {
         expect(groupOf(after, wanted as PaneId)?.active).toBe(wanted);
 
         // What the person was working in stays theirs.
-        if (groups(after).some((candidate) => candidate.id === before.focused)) {
-          expect(after.focused).toBe(before.focused);
-          if (groups(after).some((candidate) => candidate.id === before.maximized)) {
-            expect(after.maximized).toBe(before.maximized);
-          }
-        }
-        for (const [id, pane] of Object.entries(before.panes) as [PaneId, Pane][]) {
-          if (pane.kind !== KIND.source) {
-            expect(after.panes[id]).toEqual(pane);
-          }
-        }
+        const stays = (id: GroupId | null) =>
+          groups(after).some((candidate) => candidate.id === id);
+        const focusStays = stays(before.focused);
+        expect(after.focused).toBe(focusStays ? before.focused : after.focused);
+        expect(after.maximized).toBe(
+          focusStays && stays(before.maximized) ? before.maximized : after.maximized,
+        );
+        const others = (Object.entries(before.panes) as [PaneId, Pane][])
+          .filter(([, pane]) => pane.kind !== KIND.source)
+          .map(([id]) => id);
+        expect(others.map((id) => after.panes[id])).toEqual(others.map((id) => before.panes[id]));
       }),
     );
   });

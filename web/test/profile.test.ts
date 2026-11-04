@@ -176,6 +176,8 @@ const tree = encode([
   ["leaf", 2, 2, 1],
 ]);
 
+const twelfths = (fraction: number) => Math.round(fraction * 12 * 1e9) / 1e9;
+
 describe("a call tree's geometry", () => {
   it("finds each node's caller and subtree", () => {
     expect([...tree.parent]).toEqual([-1, 0, 1, 0, -1, 4]);
@@ -188,7 +190,6 @@ describe("a call tree's geometry", () => {
   it("nests every node inside its caller, siblings side by side", () => {
     const rects = layout(tree, null, 0);
     // In twelfths of the width, the weight of everything.
-    const twelfths = (fraction: number) => Math.round(fraction * 12 * 1e9) / 1e9;
     expect(rects.map(({ node, x, width }) => [node, twelfths(x), twelfths(width)])).toEqual([
       [0, 0, 10],
       [1, 0, 6],
@@ -216,7 +217,7 @@ describe("a call tree's geometry", () => {
 
   it("refuses columns that do not fit the tree", () => {
     const answer: ProfileTree = { nodes: 2, weight: 1, samples: 1, keys: [], base: null };
-    expect(() => decodeTree(answer, new Uint8Array(24))).toThrow(/48 bytes/);
+    expect(() => decodeTree(answer, new Uint8Array(24))).toThrow(/48 bytes/u);
   });
 
   it("decodes a diff's base weights after its own columns", () => {
@@ -240,15 +241,16 @@ describe("a call tree's geometry", () => {
     expect([diff.own[0], diff.baseOwn?.[0], diff.baseTotal?.[0], diff.baseWeight]).toEqual([
       3, 1, 5, 5,
     ]);
-    expect(() => decodeTree(answer, bytes.slice(0, 24))).toThrow(/40 bytes/);
+    expect(() => decodeTree(answer, bytes.slice(0, 24))).toThrow(/40 bytes/u);
   });
 });
+
+const hueOf = (fill: string) => Number(/^hsl\((\d+)/u.exec(fill)?.[1]);
+const lightness = (fill: string) => Number(/(\d+(?:\.\d+)?)%\)$/u.exec(fill)?.[1]);
 
 describe("a diff's colors", () => {
   it("are red where a share grew, blue where it shrank, stronger the more", () => {
     expect(diffFill(0.5, 0.5, false)).toBe(diffFill(0.2, 0.2, false));
-    const hueOf = (fill: string) => Number(/^hsl\((\d+)/.exec(fill)?.[1]);
-    const lightness = (fill: string) => Number(/(\d+(?:\.\d+)?)%\)$/.exec(fill)?.[1]);
     expect(hueOf(diffFill(0.5, 0.25, false))).toBe(0);
     expect(hueOf(diffFill(0.25, 0.5, false))).toBe(215);
     expect(lightness(diffFill(0.5, 0, false))).toBeLessThan(lightness(diffFill(0.5, 0.4, false)));
@@ -287,8 +289,6 @@ describe("a diff in time", () => {
   });
 
   it("is colored by cost, scaled to the larger side", () => {
-    const hueOf = (fill: string) => Number(/^hsl\((\d+)/.exec(fill)?.[1]);
-    const lightness = (fill: string) => Number(/(\d+(?:\.\d+)?)%\)$/.exec(fill)?.[1]);
     expect(hueOf(changeFill("time", after, before, false))).toBe(215);
     expect(hueOf(changeFill("share", after, before, false))).toBe(0);
     expect(hueOf(changeFill("time", [s, 1], [0, 1], false))).toBe(0);
@@ -320,24 +320,29 @@ describe("a real server's call trees", () => {
 
   it("decodes, and each node's total is its own and its callees'", () => {
     expect(trees.length).toBeGreaterThanOrEqual(3);
-    for (const tree of trees) {
+    for (const decoded of trees) {
       let roots = 0;
-      for (let node = 0; node < tree.count; node += 1) {
+      for (let node = 0; node < decoded.count; node += 1) {
         let callees = 0;
-        for (let child = node + 1; child < (tree.end[node] ?? 0); child = tree.end[child] ?? 0) {
-          callees += tree.total[child] ?? 0;
+        for (
+          let child = node + 1;
+          child < (decoded.end[node] ?? 0);
+          child = decoded.end[child] ?? 0
+        ) {
+          callees += decoded.total[child] ?? 0;
         }
-        expect(tree.total[node]).toBe((tree.own[node] ?? 0) + callees);
-        roots += tree.parent[node] === -1 ? (tree.total[node] ?? 0) : 0;
+        expect(decoded.total[node]).toBe((decoded.own[node] ?? 0) + callees);
+        roots += decoded.parent[node] === -1 ? (decoded.total[node] ?? 0) : 0;
       }
-      expect(roots).toBe(tree.weight);
-      for (const rect of layout(tree, null, 0)) {
-        const parent = tree.parent[rect.node] ?? -1;
+      expect(roots).toBe(decoded.weight);
+      for (const rect of layout(decoded, null, 0)) {
+        const parent = decoded.parent[rect.node] ?? -1;
         expect(rect.x + rect.width).toBeLessThanOrEqual(1 + 1e-9);
-        if (parent >= 0) {
-          const outer = layout(tree, null, 0).find((each) => each.node === parent);
-          expect(rect.x).toBeGreaterThanOrEqual(outer?.x ?? 0);
-        }
+        const outer =
+          parent >= 0
+            ? (layout(decoded, null, 0).find((each) => each.node === parent)?.x ?? 0)
+            : Number.NEGATIVE_INFINITY;
+        expect(rect.x).toBeGreaterThanOrEqual(outer);
       }
     }
   });
@@ -381,7 +386,7 @@ describe("a zones answer", () => {
     expect(track && blockAt(zones, track, 1, 45, 0)).toBeNull();
     expect(() =>
       decodeZones({ range: [0, 1], blocks: 2, names: [], marks: [], plots: [] }, bytes),
-    ).toThrow();
+    ).toThrow("2 zone blocks need 72 bytes, not 144");
   });
 
   it("a plot's bin strokes from its first value through its extremes to its last, which holds until the next", () => {
@@ -499,7 +504,7 @@ describe("the largest value", () => {
 
   it("reads more values than a call can take as arguments", () => {
     // A lane per thread of 2048 buckets, for 300 threads.
-    const values = new Array<number>(300 * 2048).fill(1);
+    const values = Array.from({ length: 300 * 2048 }, () => 1);
     values[123_456] = 7;
     expect(largest(values, 0)).toBe(7);
   });

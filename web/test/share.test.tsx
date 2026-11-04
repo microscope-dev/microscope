@@ -23,7 +23,9 @@ it("keeps the link for the access chosen last", async () => {
     .toHaveValue("http://x/join?control");
   server.answer(viewing, { url: "http://x/join?view" });
   // The late answer would land before the next frame if it were taken.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise((resolve) => {
+    setTimeout(resolve, 50);
+  });
   await expect
     .element(page.getByRole("textbox", { name: "Join link" }))
     .toHaveValue("http://x/join?control");

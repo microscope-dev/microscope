@@ -5,7 +5,7 @@
 // alike, and the tabs on screen must match the model's after every one.
 
 import { cleanup, render } from "@testing-library/react";
-import fc from "fast-check";
+import * as fc from "fast-check";
 import { act } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -48,6 +48,8 @@ const KIND: PaneKind<string> = {
   closable: () => true,
 };
 const KINDS = kinds([KIND]);
+const SETUP = { kinds: KINDS, useMissing: () => null };
+const DOCK_BOX = { display: "flex", width: "900px", height: "500px" };
 
 const pane = (key: string): Pane => ({ kind: KIND.id, key, params: null });
 
@@ -74,8 +76,8 @@ async function mount(layout: Layout = START()) {
   await page.viewport(1000, 600);
   workbench.setState({ layout, closed: [] });
   render(
-    <div style={{ display: "flex", width: "900px", height: "500px" }}>
-      <Dock setup={{ kinds: KINDS, useMissing: () => null }} />
+    <div style={DOCK_BOX}>
+      <Dock setup={SETUP} />
     </div>,
   );
 }
@@ -133,9 +135,11 @@ function expected(layout: Layout): string[][] {
     });
   const windows = layout.floating
     .map((window) => window.group)
-    .sort((a, b) => (a.id < b.id ? -1 : 1));
+    .toSorted((a, b) => (a.id < b.id ? -1 : 1));
   const floating = new Set(windows.map((group) => group.id));
-  return [...groups(layout).filter((group) => !floating.has(group.id)), ...windows].map(titles);
+  return [...groups(layout).filter((group) => !floating.has(group.id)), ...windows].map((group) =>
+    titles(group),
+  );
 }
 
 const groupElement = (id: string) => document.querySelector(`[data-group="${id}"]`) as HTMLElement;
@@ -255,8 +259,8 @@ it("resizes a floating window by keyboard and cancels an interrupted pointer res
   const grip = document.querySelector("[data-part=window-grip]") as HTMLElement;
   const before = window.getBoundingClientRect();
   act(() => grip.focus());
-  await act(async () => userEvent.keyboard("{ArrowLeft}"));
-  await act(async () => userEvent.keyboard("{ArrowUp}"));
+  await act(() => userEvent.keyboard("{ArrowLeft}"));
+  await act(() => userEvent.keyboard("{ArrowUp}"));
   const resized = window.getBoundingClientRect();
   expect(resized.width).toBe(before.width - 16);
   expect(resized.height).toBe(before.height - 16);
@@ -462,8 +466,8 @@ function perform(model: Layout, chosen: Action): Layout {
 
 it("keeps the screen and the layout model alike through any run of drags and clicks", async () => {
   await mount();
-  await fc.assert(
-    fc.asyncProperty(fc.array(action, { maxLength: 12 }), async (actions) => {
+  fc.assert(
+    fc.property(fc.array(action, { maxLength: 12 }), (actions) => {
       act(() => workbench.setState({ layout: START(), closed: [] }));
       let model = workbench.getState().layout;
       for (const chosen of actions) {

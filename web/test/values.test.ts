@@ -61,6 +61,8 @@ describe("changed values", () => {
   });
 });
 
+const python = (line: string) => expressionsIn(line, "app.py");
+
 describe("expressions in source", () => {
   it("find the name under the pointer with the members before it", () => {
     const line = "    entry_set(e, req->value, req->len);";
@@ -82,7 +84,6 @@ describe("expressions in source", () => {
   });
 
   it("read Python as Python: its keywords, constants, comments, and string prefixes", () => {
-    const python = (line: string) => expressionsIn(line, "app.py");
     expect(python("    while True:")).toEqual([]);
     expect(python("    if x is None and not done:")).toEqual(["x", "done"]);
     expect(python("    def take(self, name, count):")).toEqual(["self", "name", "count"]);
@@ -100,6 +101,20 @@ describe("expressions in source", () => {
   });
 });
 
+const row = (text: string): Row => ({
+  name: "item",
+  text,
+  detail: null,
+  type: null,
+  path: "item",
+  children: null,
+  editable: false,
+  memory: null,
+  memoryBytes: null,
+  truncated: false,
+  drawings: [],
+});
+
 describe("inline values", () => {
   const text = [
     "    def add(self, item):",
@@ -115,19 +130,6 @@ describe("inline values", () => {
   });
 
   it("leave out what the tree says better: aggregates and unavailable values", () => {
-    const row = (text: string): Row => ({
-      name: "item",
-      text,
-      detail: null,
-      type: null,
-      path: "item",
-      children: null,
-      editable: false,
-      memory: null,
-      memoryBytes: null,
-      truncated: false,
-      drawings: [],
-    });
     expect(shownInline(row("3"))).toBe(true);
     expect(shownInline(row("'bolt'"))).toBe(true);
     expect(shownInline(row("{x = 1}"))).toBe(false);

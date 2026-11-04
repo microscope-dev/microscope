@@ -1,6 +1,7 @@
 // The Processes pane: one process says so, and for several, each with how it
 // joined and where it is, choosing one.
 
+import type { CSSProperties } from "react";
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
@@ -24,6 +25,13 @@ function member(changes: Partial<Member> & { number: number }): Member {
     ...changes,
   };
 }
+
+const NARROW: CSSProperties = {
+  width: "390px",
+  display: "flex",
+  flexDirection: "column",
+  height: "200px",
+};
 
 const two: Group = {
   members: [
@@ -52,15 +60,15 @@ it("says so while the program has one process", async () => {
 
 it("lists each process, how it joined, and where it is, and selects one", async () => {
   const server = await mountPane(<Processes />, {}, stoppedState({ group: two }));
-  const child = page.getByRole("button", { name: /\[2\] tree/ });
+  const child = page.getByRole("button", { name: /\[2\] tree/u });
   await expect.element(child).toHaveAttribute("aria-pressed", "true");
   expect(child.element().textContent).toContain("forked by [1]");
   expect(child.element().textContent).toContain("◂ stopped here");
   await userEvent.click(page.getByText("Other processes (1)", { exact: true }));
   // A process that exited has nothing to show.
-  await expect.element(page.getByRole("button", { name: /\[3\] tree/ })).toBeDisabled();
+  await expect.element(page.getByRole("button", { name: /\[3\] tree/u })).toBeDisabled();
 
-  await userEvent.click(page.getByRole("button", { name: /\[1\] tree/ }));
+  await userEvent.click(page.getByRole("button", { name: /\[1\] tree/u }));
   const asked = await server.next("selectMember");
   expect(asked.params).toEqual({ member: 1 });
   server.answer(asked, null);
@@ -79,6 +87,7 @@ it.each([1440, 390])("folds a long process history and stays within a %ipx pane"
     }),
   );
   const server = await mountPane(
+    // oxlint-disable-next-line react-perf/jsx-no-new-object-as-prop -- the width is the test's parameter
     <div style={{ width: `${width}px`, display: "flex", flexDirection: "column", height: "400px" }}>
       <Processes />
     </div>,
@@ -88,15 +97,15 @@ it.each([1440, 390])("folds a long process history and stays within a %ipx pane"
   const switcher = page.getByRole("navigation", { name: "Processes" });
   const disclosure = page.getByText("Other processes (35)", { exact: true });
   await expect.element(disclosure).toBeVisible();
-  await expect.element(page.getByRole("button", { name: /\[3\] tree/ })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: /\[3\] tree/u })).not.toBeInTheDocument();
   await disclosure.element().focus();
   await userEvent.keyboard("{Enter}");
-  await expect.element(page.getByRole("button", { name: /\[37\] tree/ })).toBeDisabled();
+  await expect.element(page.getByRole("button", { name: /\[37\] tree/u })).toBeDisabled();
   expect(switcher.element().scrollWidth).toBe(switcher.element().clientWidth);
   // The pane scrolls within its own height.
   expect(switcher.element().getBoundingClientRect().height).toBeLessThanOrEqual(400);
 
-  await userEvent.click(page.getByRole("button", { name: /\[1\] tree/ }));
+  await userEvent.click(page.getByRole("button", { name: /\[1\] tree/u }));
   const asked = await server.next("selectMember");
   expect(asked.params).toEqual({ member: 1 });
   server.answer(asked, null);
@@ -109,7 +118,7 @@ it("lists many selectable processes without folding them into history", async ()
     member({ number: index + 1, state: index % 2 ? "running" : "stopped" }),
   );
   const server = await mountPane(
-    <div style={{ width: "390px", display: "flex", flexDirection: "column", height: "200px" }}>
+    <div style={NARROW}>
       <Processes />
     </div>,
     {},
@@ -119,13 +128,13 @@ it("lists many selectable processes without folding them into history", async ()
   await expect.element(switcher).toBeVisible();
   expect(switcher.element().scrollHeight).toBeGreaterThan(switcher.element().clientHeight);
   expect(switcher.element().querySelector("details")).toBeNull();
-  await userEvent.click(page.getByRole("button", { name: /\[37\] tree/ }));
+  await userEvent.click(page.getByRole("button", { name: /\[37\] tree/u }));
   expect((await server.next("selectMember")).params).toEqual({ member: 37 });
 });
 
 it("keeps a selected exited process outside the folded entries", async () => {
   await mountPane(<Processes />, {}, stoppedState({ group: { ...two, selected: 3, stopped: 3 } }));
-  const selected = page.getByRole("button", { name: /\[3\] tree/ });
+  const selected = page.getByRole("button", { name: /\[3\] tree/u });
   await expect.element(selected).toHaveAttribute("aria-pressed", "true");
   await expect.element(selected).toBeDisabled();
   expect(selected.element().textContent).toContain("stopped here");

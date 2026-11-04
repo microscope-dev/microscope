@@ -79,7 +79,7 @@ it("opens a menu by keyboard, walks it, and says why an item cannot run", async 
   // The program is stopped, so Pause cannot run, and says so.
   const pause = menu.getByRole("menuitem", { name: "Pause" });
   await expect.element(pause).toHaveAttribute("aria-disabled", "true");
-  expect(pause.element().getAttribute("title")).toMatch(/running|stopped/);
+  expect(pause.element().getAttribute("title")).toMatch(/running|stopped/u);
   await expect.element(pause).toHaveAttribute("aria-keyshortcuts", "F6");
 
   await userEvent.keyboard("{ArrowRight}");
@@ -107,7 +107,7 @@ it("keeps this browser's layout across a reload, and says once when it can't", a
   await expect.poll(() => readGroups()).toHaveLength(8);
   await expect
     .poll(() => document.querySelector("[data-testid=flash]")?.textContent)
-    .toMatch(/kept can't be used \(panes is not an object\), so it starts over/);
+    .toMatch(/kept can't be used \(panes is not an object\), so it starts over/u);
 });
 
 it("shows one group at a time in a narrow window, and any pane from its list", async () => {
@@ -120,8 +120,9 @@ it("shows one group at a time in a narrow window, and any pane from its list", a
   await expect.element(page.getByRole("tabpanel", { name: "Registers" })).toBeVisible();
 });
 
+const plus = (layout: Layout, kind: KindId) => open(layout, single(kind), layout.focused).layout;
+
 it("starts the layout over only when it holds nothing for the address", () => {
-  const plus = (layout: Layout, kind: KindId) => open(layout, single(kind), layout.focused).layout;
   // A session's panes show nothing without one; Settings does.
   expect(misplaced(debugLayout(), "start")).toBe(true);
   expect(misplaced(plus(debugLayout(), KIND.settings), "start")).toBe(false);
@@ -134,9 +135,12 @@ it("starts the layout over only when it holds nothing for the address", () => {
   expect(misplaced(profileLayout("ab", "spin.usprof", {}), "start")).toBe(false);
 });
 
+const firsts = () => readGroups().map((group) => group[0]);
+
+const area = (box: DOMRect) => box.width * box.height;
+
 it("hides the docks left of and below the code by key, and shows one for a pane opened in it", async () => {
   const { user } = await stopped();
-  const firsts = () => readGroups().map((group) => group[0]);
   await user.press("Ctrl+b");
   await expect
     .poll(firsts)
@@ -148,7 +152,6 @@ it("hides the docks left of and below the code by key, and shows one for a pane 
   await user.press("Ctrl+`");
   await expect.poll(firsts).toEqual(["*kvstore.c", "*Watch", "*Variables", "*Registers"]);
   // What is left fills the dock: the code takes the hidden docks' room.
-  const area = (box: DOMRect) => box.width * box.height;
   const dock = (document.querySelector("[data-part=dock]") as HTMLElement).getBoundingClientRect();
   const covered = [...document.querySelectorAll("[data-group]")]
     .map((group) => area(group.getBoundingClientRect()))

@@ -17,7 +17,7 @@ import { language, tokenStyle } from "../src/ui/source/languages";
 function tokens(path: string, text: string): [string, string][] {
   const syntax = language(path);
   if (!(syntax instanceof Language)) {
-    throw new Error(`no language for ${path}`);
+    throw new TypeError(`no language for ${path}`);
   }
   const found: [string, string][] = [];
   highlightTree(syntax.parser.parse(text), classHighlighter, (from, to, classes) => {
@@ -150,23 +150,23 @@ describe("stream languages", () => {
   });
 });
 
-describe("JavaScript and TypeScript", () => {
-  /** The text of each `tk-` theme role in `text`, as the source view colors it. */
-  function roles(path: string, text: string): Record<string, string[]> {
-    const syntax = language(path);
-    if (!(syntax instanceof Language)) {
-      throw new Error(`no language for ${path}`);
-    }
-    const found: Record<string, string[]> = {};
-    highlightTree(syntax.parser.parse(text), tokenStyle, (from, to, classes) => {
-      found[classes] = [...(found[classes] ?? []), text.slice(from, to)];
-    });
-    return found;
+/** The text of each `tk-` theme role in `text`, as the source view colors it. */
+function roles(path: string, text: string): Record<string, string[]> {
+  const syntax = language(path);
+  if (!(syntax instanceof Language)) {
+    throw new TypeError(`no language for ${path}`);
   }
+  const found: Record<string, string[]> = {};
+  highlightTree(syntax.parser.parse(text), tokenStyle, (from, to, classes) => {
+    found[classes] = [...(found[classes] ?? []), text.slice(from, to)];
+  });
+  return found;
+}
 
+describe("JavaScript and TypeScript", () => {
   it("choose the language by extension", () => {
     const chosen = ["a.js", "a.mjs", "a.cjs", "a.jsx", "a.ts", "a.mts", "a.cts", "a.TSX"].map(
-      language,
+      (path) => language(path),
     );
     expect(chosen).toEqual([
       javascriptLanguage,
