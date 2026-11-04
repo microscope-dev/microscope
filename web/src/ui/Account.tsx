@@ -15,7 +15,9 @@ import {
   enterTotp,
   Refused,
   replaceRecoveryCodes,
+  requestPasswordReset,
   resendConfirmation,
+  resetPassword,
   signIn,
   signOut,
   signUp,
@@ -148,7 +150,8 @@ type Step =
   | { kind: "code"; challenge: string }
   | { kind: "totp"; challenge: string }
   | { kind: "recovery"; challenge: string }
-  | { kind: "sent"; email: string };
+  | { kind: "sent"; email: string }
+  | { kind: "forgot"; email: string };
 
 export function AccountBody() {
   const now = useAccount();
@@ -174,6 +177,8 @@ export function AccountBody() {
       setStep({ kind: "totp", challenge });
     }
   }, [challenge, now.kind]);
+  // A password reset link asks for the new password first, signed in or not.
+  const reset = useStore(account, (state) => state.reset);
 
   return (
     <div className="pane-body pane-text">
@@ -186,7 +191,9 @@ export function AccountBody() {
           </div>
         ))}
       <OrgLink />
-      {now.kind === "checking" ? (
+      {reset !== null ? (
+        <NewPassword token={reset} />
+      ) : now.kind === "checking" ? (
         <p className="muted">Checking whether you are signed in…</p>
       ) : now.kind === "unavailable" ? (
         <p className="muted">
@@ -225,6 +232,8 @@ export function AccountBody() {
         <Totp challenge={step.challenge} go={go} />
       ) : step.kind === "recovery" ? (
         <Recovery challenge={step.challenge} go={go} />
+      ) : step.kind === "forgot" ? (
+        <Forgot email={step.email} go={go} />
       ) : (
         <SignIn go={go} />
       )}
@@ -287,6 +296,7 @@ function Field(props: {
 }
 
 function SignIn({ go }: { go: Go }) {
+  const offered = useFeatures();
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const { working, error, submit } = useSubmit(async () => {
@@ -324,6 +334,15 @@ function SignIn({ go }: { go: Go }) {
           >
             Sign in
           </button>
+          {offered?.email && (
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => go({ kind: "forgot", email: name.includes("@") ? name.trim() : "" })}
+            >
+              Forgot password?
+            </button>
+          )}
           <span className="muted">
             No account?
             <button type="button" className="link-button" onClick={() => go({ kind: "sign-up" })}>
@@ -447,6 +466,75 @@ function Resend(props: { email: string; go: Go; fixed?: boolean; children: React
             Sign in
           </button>
         )}
+      </div>
+    </form>
+  );
+}
+
+/** Asks for a password reset link. */
+function Forgot(props: { email: string; go: Go }) {
+  const [email, setEmail] = useState(props.email);
+  const [sent, setSent] = useState<string | null>(null);
+  const { working, error, submit } = useSubmit(async () => {
+    setSent(null);
+    await requestPasswordReset(email.trim());
+    setSent(email.trim());
+  });
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <h2>Reset your password</h2>
+      <p className="muted">We will email you a link to choose a new one.</p>
+      <Field
+        label="Email"
+        type="email"
+        value={email}
+        set={setEmail}
+        autoComplete="email"
+        autoFocus
+      />
+      {sent && (
+        <p role="status" className="muted">
+          If an account uses {sent}, a reset link is on its way.
+        </p>
+      )}
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button type="submit" className="button primary" disabled={working || !email.trim()}>
+          {sent ? "Send another link" : "Send reset link"}
+        </button>
+        <button type="button" className="link-button" onClick={() => props.go({ kind: "sign-in" })}>
+          Back to sign in
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** After following a password reset link. */
+function NewPassword({ token }: { token: string }) {
+  const [password, setPassword] = useState("");
+  const { working, error, submit } = useSubmit(() => resetPassword(token, password));
+  return (
+    <form className="pane-form" onSubmit={submit}>
+      <h2>Choose a new password</h2>
+      <p className="muted">Changing it signs your account out on every device.</p>
+      <Field
+        label="New password"
+        type="password"
+        value={password}
+        set={setPassword}
+        autoComplete="new-password"
+        note="At least 8 characters."
+        autoFocus
+      />
+      {error && <span className="error">{error.message}</span>}
+      <div className="actions">
+        <button type="submit" className="button primary" disabled={working || !password}>
+          Change password
+        </button>
+        <button type="button" className="button" onClick={() => account.setState({ reset: null })}>
+          Cancel
+        </button>
       </div>
     </form>
   );

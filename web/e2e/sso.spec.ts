@@ -256,16 +256,11 @@ test("an owner sets up SAML, and a new person signs in through it and joins", as
   await expect(orgPane.getByRole("button", { name: "Set up single sign-on" })).toBeVisible();
 });
 
-test("an account with two-factor authentication still needs its code after Google", async ({
-  page,
-  services,
-}) => {
-  test.setTimeout(30_000);
+/** A password account, confirmed and signed in with its emailed code. */
+async function passwordAccount(page: Page, services: Services) {
   const username = `e2e-${randomBytes(6).toString("hex")}`;
   const email = `${username}@example.com`;
   const password = "[REDACTED:password] horse battery";
-
-  // A password account, confirmed and signed in with its emailed code.
   await page.goto(`${services.origin}/`);
   await account(page).getByRole("button", { name: "Create one" }).click();
   await account(page).getByLabel("Username").fill(username);
@@ -281,6 +276,62 @@ test("an account with two-factor authentication still needs its code after Googl
     .fill((await services.mail(email)).code ?? "");
   await account(page).getByRole("button", { name: "Sign in" }).click();
   await expect(account(page)).toContainText(`Signed in as ${username}`);
+  return { username, email, password };
+}
+
+test("a change to how an account signs in asks for the password once the sign-in is old", async ({
+  page,
+  services,
+}) => {
+  test.setTimeout(30_000);
+  expectErrors(
+    /DELETE \S+\/api\/users\/me\/identities\/\d+: 403$/,
+    /POST \S+\/api\/users\/me\/verify: 403$/,
+  );
+  const { email, password } = await passwordAccount(page, services);
+
+  // Just signed in, so connecting needs nothing more.
+  await account(page).getByRole("button", { name: "Connect Google" }).click();
+  await atProvider(page, { email });
+  await expect(methods(page)).toHaveText(/^Password\s*Google\s*\S+\s*Disconnect$/);
+
+  // Services' answer once ten minutes have passed, which the page cannot
+  // wait for: the first disconnect gets it. Everything after is real.
+  let refused = false;
+  await page.route("**/api/users/me/identities/*", async (route) => {
+    if (route.request().method() === "DELETE" && !refused) {
+      refused = true;
+      await route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "confirm it is you first" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  const google = methods(page).getByRole("listitem").filter({ hasText: "Google" });
+  await google.getByRole("button", { name: "Disconnect" }).click();
+  await google.getByRole("button", { name: "Disconnect" }).click();
+  const prove = account(page).getByRole("region", { name: "Confirm it's you" });
+  await expect(prove).toContainText("Changing how you sign in takes your password.");
+  await shot(page, "09-confirm-its-you");
+
+  await prove.getByLabel("Password").fill("not the password");
+  await prove.getByRole("button", { name: "Confirm" }).click();
+  await expect(prove).toContainText("password is wrong");
+  await prove.getByLabel("Password").fill(password);
+  await prove.getByRole("button", { name: "Confirm" }).click();
+  await expect(prove).toHaveCount(0);
+  await expect(methods(page)).toHaveText(/^Password$/);
+});
+
+test("an account with two-factor authentication still needs its code after Google", async ({
+  page,
+  services,
+}) => {
+  test.setTimeout(30_000);
+  const { username, email, password } = await passwordAccount(page, services);
 
   // It connects Google, then turns on two-factor authentication.
   await account(page).getByRole("button", { name: "Connect Google" }).click();

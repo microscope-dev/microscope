@@ -6,8 +6,9 @@ import { request } from "./orgs";
 import type { Providers } from "./sso";
 
 export interface Features {
-  /** Whether services sends email: new accounts confirm their address, and
-   * signing in with a password also takes an emailed code. */
+  /** Whether services sends email: new accounts confirm their address,
+   * signing in with a password also takes an emailed code, and a forgotten
+   * password can be reset by email. */
   email: boolean;
   /** Whether accounts can turn on two-factor authentication. */
   totp: boolean;

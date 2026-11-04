@@ -7,6 +7,10 @@
 // or the link (`/login-link`) it emails. Without email, a password alone
 // signs in, and signing up signs in too.
 //
+// A forgotten password is reset by a link services emails, to
+// `/reset-password`, where the person chooses a new one. Changing it signs
+// the account out everywhere.
+//
 // An account with two-factor authentication finishes signing in with a code
 // from its authenticator app, or one of its recovery codes, and never gets
 // an emailed code.
@@ -171,6 +175,31 @@ export async function resendConfirmation(email: string): Promise<void> {
   await post("/api/email-confirmations/resend", { email });
 }
 
+/** Asks for a link to reset the password of the account at `email`.
+ * Services answers the same whether or not one exists. */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await post("/api/password-resets", { email });
+}
+
+/** Sets a new password with the token from a reset link. Services signs
+ * that account out everywhere. This browser may be signed in to another
+ * account, which stays signed in, so services is asked again. */
+export async function resetPassword(token: string, password: string): Promise<void> {
+  await post("/api/password-resets/complete", { token, password });
+  const user = await currentUser();
+  changes += 1;
+  account.setState({
+    now: user ? { kind: "in", user } : { kind: "out" },
+    reset: null,
+    notice: {
+      ok: true,
+      text: user
+        ? `The password is changed, and that account is signed out everywhere. You are still signed in as ${user.username}.`
+        : "Your password is changed, and every device is signed out. Sign in with the new password.",
+    },
+  });
+}
+
 export async function signOut(): Promise<void> {
   const response = await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
   if (!response.ok) {
@@ -198,10 +227,13 @@ export const account = createStore<{
   notice: Notice | null;
   /** A TOTP challenge single sign-on left for the Account pane to finish. */
   challenge: string | null;
+  /** The token from a password reset link, until a new password uses it. */
+  reset: string | null;
 }>(() => ({
   now: { kind: "checking" },
   notice: null,
   challenge: null,
+  reset: null,
 }));
 
 export function useAccount(): Account {
@@ -304,15 +336,18 @@ export function followSignIn(): void {
     });
 }
 
-/** Follows the link a confirmation or login email sent: `/confirm-email`
- * or `/login-link`. Says how it went in the Account pane. */
-export function followEmailLink(link: "confirm" | "login"): void {
+/** Follows the link a confirmation, login, or password reset email sent:
+ * `/confirm-email`, `/login-link`, or `/reset-password`. Says how it went
+ * in the Account pane, which asks for the new password after a reset link. */
+export function followEmailLink(link: "confirm" | "login" | "reset"): void {
   const token = takeToken();
   if (token === null || !standalone) {
     return;
   }
   const done = (notice: Notice) => account.setState({ notice });
-  if (link === "confirm") {
+  if (link === "reset") {
+    account.setState({ reset: token, notice: null });
+  } else if (link === "confirm") {
     post("/api/email-confirmations", { token })
       .then(() => done({ ok: true, text: "Your email address is confirmed. You can sign in now." }))
       .catch((error: Error) => done({ ok: false, text: `Could not confirm: ${error.message}.` }));

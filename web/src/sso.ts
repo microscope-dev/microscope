@@ -7,7 +7,14 @@
 // first, which binds the sign-in to that account, and then leaves.
 //
 // Services' server operator chooses which providers are on.
+//
+// Connecting or disconnecting one takes a session that proved who holds it
+// in the last ten minutes, by signing in or by the password, so a stolen
+// session cookie alone cannot add a way in. Without that, services refuses,
+// and `proven` asks the person to prove it and then tries again.
 
+import { createStore } from "zustand";
+import { Refused } from "./account";
 import { request } from "./orgs";
 
 export type Provider = "google" | "github" | "saml";
@@ -61,6 +68,35 @@ async function connectAt(path: string): Promise<void> {
 export const connect = (provider: "google" | "github") => connectAt(`/api/sso/${provider}/connect`);
 
 export const connectSaml = (key: string) => connectAt(`/api/sso/saml/${key}/connect`);
+
+/** What services answers a change that needs a recent proof. */
+const NOT_VERIFIED = "confirm it is you first";
+
+/** Proves who holds this session by the account's password. */
+export const verify = (password: string) =>
+  request<void>("POST", "/api/users/me/verify", { password });
+
+/** Where the person asked for a change that is waiting on a proof. */
+export type Asked = "methods" | "org-link";
+
+/** The change waiting for the person to prove who they are, if any. */
+export const proving = createStore<{ retry: (() => Promise<void>) | null; asked: Asked | null }>(
+  () => ({ retry: null, asked: null }),
+);
+
+/** Does `act`, or, when services wants a recent proof first, keeps it to
+ * try again once the person gives one. */
+export async function proven(asked: Asked, act: () => Promise<void>): Promise<void> {
+  try {
+    await act();
+  } catch (error) {
+    if (error instanceof Refused && error.status === 403 && error.message === NOT_VERIFIED) {
+      proving.setState({ retry: act, asked });
+      return;
+    }
+    throw error;
+  }
+}
 
 /** Which organization an `/sso#key=` link signs in to. */
 export const samlLink = (key: string) =>

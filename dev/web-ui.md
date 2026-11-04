@@ -180,6 +180,19 @@ emails. The links in those emails lead to the page's `/confirm-email` and
 Account pane, which says how the link went. Without email, a password alone
 signs in.
 
+When services sends email (`GET /api/features` reports `email`), the sign-in
+form also offers "Forgot password?". Services emails a link to the page's
+`/reset-password`, token in the fragment, and the Account pane asks for a
+new password, signed in or not. Changing it ends every session of that
+account, and the pane asks services again who this browser is.
+
+Connecting or disconnecting Google, GitHub, or an organization's single
+sign-on takes a session that proved who holds it in the last ten minutes,
+by signing in or by the password (`POST /api/users/me/verify`). When
+services refuses with "confirm it is you first", `proven` in
+`web/src/sso.ts` keeps the change, and the pane asks for the password, or
+for an account without one, to sign in again. Then it makes the change.
+
 An account can turn on two-factor authentication from the same pane: its
 password, then a QR code of services' `otpauth://` address (drawn in the
 page by the vendored `web/src/vendor/qrcodegen.ts`, so the secret never

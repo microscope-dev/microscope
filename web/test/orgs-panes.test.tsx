@@ -8,6 +8,7 @@ import { type Locator, page, userEvent } from "vitest/browser";
 import { account, checkAccount, type User } from "../src/account";
 import { KIND } from "../src/documents";
 import { directory, type Member, type Org, type Project } from "../src/orgs";
+import { proving } from "../src/sso";
 import { AccountBody } from "../src/ui/Account";
 import { OrgBody, ProjectsBody } from "../src/ui/Orgs";
 import type { PaneId } from "../src/workbench/layout";
@@ -49,7 +50,8 @@ function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  account.setState({ now: { kind: "checking" }, notice: null });
+  account.setState({ now: { kind: "checking" }, notice: null, reset: null });
+  proving.setState({ retry: null, asked: null });
   directory.setState(
     { user: null, orgs: null, projects: null, invitations: null, error: null },
     true,
@@ -340,6 +342,95 @@ it("offers two-factor authentication only when the server can keep its secrets",
 
   show(true, ME);
   await expect.element(heading()).toBeVisible();
+});
+
+it("offers a password reset only when the server sends email", async () => {
+  const forgot = () => page.getByRole("button", { name: "Forgot password?" });
+  const show = (email: boolean) => {
+    const asked = services({
+      "GET /api/users/me": [401, { error: "not logged in" }],
+      "GET /api/features": [
+        200,
+        { email, totp: false, sso: { google: false, github: false, saml: false } },
+      ],
+    });
+    account.setState({ now: { kind: "out" } });
+    render(<AccountBody />);
+    return asked;
+  };
+
+  const asked = show(false);
+  await expect.poll(() => asked).toContain("GET /api/features");
+  await expect.element(page.getByLabelText("Username or email")).toBeVisible();
+  await new Promise((settle) => setTimeout(settle, 50));
+  expect(forgot().elements()).toHaveLength(0);
+  cleanup();
+
+  show(true);
+  await userEvent.fill(page.getByLabelText("Username or email"), "ana@example.com ");
+  await userEvent.click(forgot());
+  await expect.element(page.getByLabelText("Email")).toHaveValue("ana@example.com");
+});
+
+it("a reset link for another account leaves this browser signed in as it was", async () => {
+  services({
+    "GET /api/orgs": [200, []],
+    "GET /api/projects": [200, []],
+    "GET /api/users/me/invitations": [200, []],
+    "GET /api/features": [
+      200,
+      { email: true, totp: false, sso: { google: false, github: false, saml: false } },
+    ],
+    "GET /api/users/me/identities": [200, { has_password: true, identities: [] }],
+    "POST /api/password-resets/complete": [204],
+  });
+  account.setState({ reset: "ab".repeat(32) });
+  render(<AccountBody />);
+  await userEvent.fill(page.getByLabelText("New password"), "a whole new password");
+  await userEvent.click(page.getByRole("button", { name: "Change password" }));
+  await expect
+    .element(page.getByText(/that account is signed out everywhere/))
+    .toHaveTextContent(
+      "The password is changed, and that account is signed out everywhere. You are still signed in as ana.",
+    );
+  await expect
+    .element(page.getByText(/^Signed in as/))
+    .toHaveTextContent("Signed in as ana (ana@example.com).");
+});
+
+it("an account without a password proves who it is by signing in again", async () => {
+  const google = { id: 3, provider: "google", email: ME.email, org_id: null, org_name: null };
+  const github = { id: 4, provider: "github", email: ME.email, org_id: null, org_name: null };
+  const asked = services({
+    "GET /api/orgs": [200, []],
+    "GET /api/projects": [200, []],
+    "GET /api/users/me/invitations": [200, []],
+    "GET /api/features": [
+      200,
+      { email: false, totp: false, sso: { google: true, github: true, saml: false } },
+    ],
+    "GET /api/users/me/identities": [200, { has_password: false, identities: [google, github] }],
+    "DELETE /api/users/me/identities/4": [403, { error: "confirm it is you first" }],
+  });
+  render(<AccountBody />);
+  const row = page.getByRole("listitem").filter({ hasText: "GitHub" });
+  await userEvent.click(row.getByRole("button", { name: "Disconnect" }));
+  await userEvent.click(row.getByRole("button", { name: "Disconnect" }));
+
+  const prove = page.getByRole("region", { name: "Confirm it's you" });
+  await expect
+    .element(prove.getByRole("link", { name: "Sign in again with Google" }))
+    .toHaveAttribute("href", "/api/sso/google/start");
+  await expect
+    .element(prove.getByRole("link", { name: "Sign in again with GitHub" }))
+    .toHaveAttribute("href", "/api/sso/github/start");
+  expect(prove.getByLabelText("Password").elements()).toHaveLength(0);
+  // The refusal is a question, not an error.
+  expect(page.getByRole("alert").elements()).toHaveLength(0);
+  expect(asked.filter((each) => each.startsWith("DELETE"))).toHaveLength(1);
+
+  await userEvent.click(prove.getByRole("button", { name: "Cancel" }));
+  await expect.element(prove).not.toBeInTheDocument();
 });
 
 it("says what went wrong when services cannot be asked", async () => {

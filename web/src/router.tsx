@@ -57,6 +57,12 @@ const loginLinkRoute = createRoute({
   component: () => <EmailLink link="login" />,
 });
 
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/reset-password",
+  component: () => <EmailLink link="reset" />,
+});
+
 // Services sends single sign-on back here, and organizations hand out these.
 const signedInRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -119,6 +125,7 @@ const routeTree = rootRoute.addChildren([
   pickRoute,
   confirmEmailRoute,
   loginLinkRoute,
+  resetPasswordRoute,
   signedInRoute,
   orgSignInRoute,
   profileRoute,

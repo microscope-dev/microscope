@@ -55,9 +55,10 @@ export function Pick() {
   return <Workbench focus={null} wants="start" />;
 }
 
-/** `/confirm-email#token=` and `/login-link#token=`, where the links in
- * services' emails lead: the Account pane, saying how following it went. */
-export function EmailLink({ link }: { link: "confirm" | "login" }) {
+/** `/confirm-email#token=`, `/login-link#token=`, and
+ * `/reset-password#token=`, where the links in services' emails lead: the
+ * Account pane, saying how following it went or asking for a new password. */
+export function EmailLink({ link }: { link: "confirm" | "login" | "reset" }) {
   const navigate = useNavigate();
   useLayoutEffect(() => {
     followEmailLink(link);

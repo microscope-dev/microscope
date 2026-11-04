@@ -214,6 +214,72 @@ async function join(page: Page, services: Services, who: ReturnType<typeof perso
   await expect(account(page)).toContainText(`Signed in as ${who.username}`);
 }
 
+test("a forgotten password is reset by its emailed link, which signs out every device", async ({
+  page,
+  browser,
+  services,
+}) => {
+  const who = person();
+  // The short password, then the link used a second time.
+  expectErrors(
+    /POST \S+\/api\/password-resets\/complete: 400$/,
+    /POST \S+\/api\/password-resets\/complete: 400$/,
+    /POST \S+\/api\/login: 401$/,
+  );
+
+  // Signed in on another device, which the reset signs out.
+  const laptop = await browser.newContext();
+  try {
+    const other = await laptop.newPage();
+    await join(other, services, who);
+
+    await page.goto(`${services.origin}/`);
+    await account(page).getByLabel("Username or email").fill(who.email);
+    await account(page).getByRole("button", { name: "Forgot password?" }).click();
+    await expect(account(page).getByLabel("Email")).toHaveValue(who.email);
+    await account(page).getByRole("button", { name: "Send reset link" }).click();
+    await expect(account(page)).toContainText(
+      `If an account uses ${who.email}, a reset link is on its way.`,
+    );
+    const mail = await services.mail(who.email);
+    expect(mail.subject).toBe("Reset your Microscope password");
+    expect(mail.link).toMatch(new RegExp(`^${services.origin}/reset-password#token=[0-9a-f]{64}$`));
+
+    // The token leaves the address bar as soon as the page has it.
+    await page.goto(mail.link);
+    await expect(page).toHaveURL(`${services.origin}/`);
+    const field = account(page).getByLabel("New password");
+    await field.fill("short");
+    await account(page).getByRole("button", { name: "Change password" }).click();
+    await expect(account(page)).toContainText("password must be 8 to 256 characters");
+    const fresh = "an entirely new password";
+    await field.fill(fresh);
+    await account(page).getByRole("button", { name: "Change password" }).click();
+    await expect(account(page)).toContainText("Your password is changed");
+
+    await other.reload();
+    await expect(account(other).getByLabel("Username or email")).toBeVisible();
+
+    // The link works once.
+    await page.goto(mail.link);
+    await account(page).getByLabel("New password").fill("yet another password");
+    await account(page).getByRole("button", { name: "Change password" }).click();
+    await expect(account(page)).toContainText("password reset link is invalid or has expired");
+    await account(page).getByRole("button", { name: "Cancel" }).click();
+
+    await signIn(page, who.email, who.password);
+    await expect(account(page)).toContainText("invalid username, email, or password");
+    await signIn(page, who.email, fresh);
+    await account(page)
+      .getByLabel("Code")
+      .fill((await services.mail(who.email)).code ?? "");
+    await account(page).getByRole("button", { name: "Sign in" }).click();
+    await expect(account(page)).toContainText(`Signed in as ${who.username}`);
+  } finally {
+    await laptop.close();
+  }
+});
+
 test("an owner shares a project with a team, and a member sees the access it gives", async ({
   page,
   browser,

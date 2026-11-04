@@ -4,7 +4,7 @@
 
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { createStore, useStore } from "zustand";
-import { useAccount } from "../account";
+import { checkAccount, Refused, useAccount } from "../account";
 import { useFeatures } from "../features";
 import type { Org } from "../orgs";
 import {
@@ -19,10 +19,13 @@ import {
   type OrgSso,
   PROVIDER_LABEL,
   type Providers,
+  proven,
+  proving,
   removeOrgSso,
   samlLink,
   samlStartUrl,
   startUrl,
+  verify,
 } from "../sso";
 import { Confirm, Loading, useAction, useLoaded } from "./Orgs";
 
@@ -96,7 +99,7 @@ export function OrgLink() {
             type="button"
             className="button primary"
             disabled={working}
-            onClick={() => run(() => connectSaml(key))}
+            onClick={() => run(() => proven("org-link", () => connectSaml(key)))}
           >
             Connect {org}
           </button>
@@ -114,6 +117,7 @@ export function OrgLink() {
           {error}
         </span>
       )}
+      <ProveItsYou asked="org-link" />
     </section>
   );
 }
@@ -165,10 +169,12 @@ export function SignInMethods() {
                   <Confirm
                     label="Disconnect"
                     question={`Stop signing in with ${describe(identity)}?`}
-                    act={async () => {
-                      await disconnect(identity.id);
-                      methods.again();
-                    }}
+                    act={() =>
+                      proven("methods", async () => {
+                        await disconnect(identity.id);
+                        methods.again();
+                      })
+                    }
                   />
                 </span>
               )}
@@ -184,7 +190,7 @@ export function SignInMethods() {
               type="button"
               className="button"
               disabled={working}
-              onClick={() => run(() => connect(provider))}
+              onClick={() => run(() => proven("methods", () => connect(provider)))}
             >
               Connect {PROVIDER_LABEL[provider]}
             </button>
@@ -196,7 +202,102 @@ export function SignInMethods() {
           {error}
         </span>
       )}
+      <ProveItsYou asked="methods" />
     </>
+  );
+}
+
+/** Asks the person to prove who they are before a change to how they sign
+ * in, below the control that asked, and then makes the change. */
+function ProveItsYou({ asked }: { asked: "methods" | "org-link" }) {
+  const retry = useStore(proving, (state) => (state.asked === asked ? state.retry : null));
+  return retry && <Prove retry={retry} />;
+}
+
+function Prove({ retry }: { retry: () => Promise<void> }) {
+  const methods = useLoaded(identities, "");
+  const [password, setPassword] = useState("");
+  const { working, error, run } = useAction();
+  const id = useId();
+  const done = () => proving.setState({ retry: null, asked: null });
+  const known = methods.data;
+  const again = (["google", "github"] as const).filter((provider) =>
+    known?.identities.some((each) => each.provider === provider),
+  );
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    run(async () => {
+      // Too many wrong passwords sign the session out, which the pane shows.
+      await verify(password).catch((failure: Error) => {
+        if (failure instanceof Refused && failure.status === 401) {
+          void checkAccount();
+        }
+        throw failure;
+      });
+      done();
+      await retry();
+    });
+  };
+  const cancel = (
+    <button type="button" className="link-button" onClick={done}>
+      Cancel
+    </button>
+  );
+  const heading = <h2>Confirm it's you</h2>;
+  return (
+    <section aria-label="Confirm it's you">
+      {!known ? (
+        <div className="pane-form">
+          {heading}
+          <Loading error={methods.error} what="your sign-in methods" />
+        </div>
+      ) : known.has_password ? (
+        <form className="pane-form" onSubmit={submit}>
+          {heading}
+          <p className="muted">Changing how you sign in takes your password.</p>
+          <div className="field">
+            <label htmlFor={id}>Password</label>
+            <input
+              id={id}
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              data-autofocus
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </div>
+          {error && (
+            <span className="error" role="alert">
+              {error}
+            </span>
+          )}
+          <div className="actions">
+            <button type="submit" className="button primary" disabled={working || !password}>
+              Confirm
+            </button>
+            {cancel}
+          </div>
+        </form>
+      ) : (
+        <div className="pane-form">
+          {heading}
+          <p className="muted">
+            {again.length > 0
+              ? "Sign in again to change how you sign in."
+              : "Sign out, then sign in again with your organization's link."}
+          </p>
+          <div className="actions">
+            {again.map((provider) => (
+              <a key={provider} className="button primary" href={startUrl(provider)}>
+                Sign in again with {PROVIDER_LABEL[provider]}
+              </a>
+            ))}
+            {cancel}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
