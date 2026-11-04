@@ -108,6 +108,9 @@ microscope.draw((input, { previous, width, paths }) => {
   });
 });
 
+/** @returns {undefined} */
+function noPart() {}
+
 /** The call tree: names, own values, totals, children, and a root. */
 function treeOf(given, givenPaths) {
   // Draw as… hands over `values`: records are nodes, and pairs stacks.
@@ -128,7 +131,8 @@ function treeOf(given, givenPaths) {
   const self = [];
   /** @type {number[]} */
   const parents = [];
-  let select = (/** @type {number} */ _node) => /** @type {string | undefined} */ (undefined);
+  /** @type {(node: number) => string | undefined} */
+  let select = noPart;
   if (input.nodes !== undefined && input.nodes !== null) {
     if (!Array.isArray(input.nodes))
       throw new TypeError("`nodes` must be an array of records of name, value, and parent");
@@ -197,13 +201,12 @@ function treeOf(given, givenPaths) {
     synthetic = true;
   }
   // Totals, children first, by an explicit stack: trees may be deep.
-  const total = /** @type {(number | bigint)[]} */ (self.slice());
-  const frames = /** @type {number[]} */ (names.map(() => 1));
+  const total = self.slice();
+  const frames = names.map(() => 1);
   const order = [];
   const stack = [root];
   const seen = new Uint8Array(names.length);
-  while (stack.length > 0) {
-    const node = /** @type {number} */ (stack.pop());
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
     if (seen[node]) throw new RangeError(`the nodes' parents form a cycle through ${names[node]}`);
     seen[node] = 1;
     order.push(node);
@@ -223,9 +226,10 @@ function treeOf(given, givenPaths) {
   for (const list of children)
     list.sort((a, b) => Number(total[b]) - Number(total[a]) || (names[a] < names[b] ? -1 : 1));
   const walk = (visit) => {
+    /** @type {[number, string][]} */
     const pending = [[root, names[root]]];
-    while (pending.length > 0) {
-      const [node, key] = /** @type {[number, string]} */ (pending.pop());
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      const [node, key] = next;
       visit(node, key);
       for (const child of children[node]) pending.push([child, `${key};${names[child]}`]);
     }
@@ -255,9 +259,10 @@ function add(a, b) {
 /** A light tint of a series hue chosen by the frame's package, so a name
  * keeps its color and its neighbors from the same package share it. */
 function tint(name, theme) {
-  const where = name.replace(/^[(*&]+/, "").split(/::|\.(?=[A-Za-z_(*])|\//)[0] ?? name;
+  const where = name.replace(/^[(*&]+/u, "").split(/::|\.(?=[A-Za-z_(*])|\//u)[0] ?? name;
   let hash = 2166136261;
   for (let k = 0; k < where.length; k++) {
+    // oxlint-disable-next-line unicorn/prefer-code-point -- the hash is over UTF-16 code units, as the colors have always been
     hash ^= where.charCodeAt(k);
     hash = Math.imul(hash, 16777619);
   }

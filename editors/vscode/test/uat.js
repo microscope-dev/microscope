@@ -35,17 +35,17 @@ vscode.debug.registerDebugAdapterTrackerFactory("microscope", {
       name = `${name}.restarted`;
     }
     transcripts.set(name, lines);
-    const notify = (direction, message) => {
-      waiters = waiters.filter((waiter) => !waiter(session, message, direction));
+    const notify = (direction, packet) => {
+      waiters = waiters.filter((waiter) => !waiter(session, packet, direction));
     };
     return {
-      onWillReceiveMessage: (message) => {
-        lines.push(`<- ${JSON.stringify(message)}`);
-        notify("client", message);
+      onWillReceiveMessage: (packet) => {
+        lines.push(`<- ${JSON.stringify(packet)}`);
+        notify("client", packet);
       },
-      onDidSendMessage: (message) => {
-        lines.push(`-> ${JSON.stringify(message)}`);
-        notify("adapter", message);
+      onDidSendMessage: (packet) => {
+        lines.push(`-> ${JSON.stringify(packet)}`);
+        notify("adapter", packet);
       },
       onError: (error) => lines.push(`!! ${error}`),
     };
@@ -146,7 +146,7 @@ function terminated(name) {
 function save() {
   fs.mkdirSync(record, { recursive: true });
   for (const [name, lines] of transcripts) {
-    const file = name.replace(/[^A-Za-z0-9._-]+/g, "-");
+    const file = name.replaceAll(/[^A-Za-z0-9._-]+/gu, "-");
     fs.writeFileSync(path.join(record, `${file}.log`), `${lines.join("\n")}\n`);
   }
 }
@@ -291,14 +291,16 @@ async function onSelection(command, text, context) {
   return result;
 }
 
+/** A console reply's text without its ANSI styling. */
+// eslint-disable-next-line no-control-regex
+const plain = (styled) => styled?.replaceAll(/\u001B\[[0-9;]*m/gu, "");
+
 /**
  * Evaluates a line in the debug console. Commands' output is styled for
  * VS Code, which shows ANSI styling; the result is returned without it.
  */
 async function inConsole(text) {
   const reply = await onSelection("editor.debug.action.selectionToRepl", text, "repl");
-  // eslint-disable-next-line no-control-regex
-  const plain = (styled) => styled?.replace(/\x1b\[[0-9;]*m/g, "");
   if (reply.body?.result !== undefined) {
     reply.body.result = plain(reply.body.result);
   }
@@ -318,7 +320,7 @@ async function createALaunchJson() {
     await vscode.commands.executeCommand("workbench.action.debug.start");
     await until("launch.json", () => fs.existsSync(launchJson));
     // VS Code writes its own comments at the top of the file.
-    const text = fs.readFileSync(launchJson, "utf8").replace(/^\s*\/\/.*$/gm, "");
+    const text = fs.readFileSync(launchJson, "utf8").replaceAll(/^\s*\/\/.*$/gmu, "");
     const { configurations } = JSON.parse(text);
     assert.deepStrictEqual(
       configurations.map(({ type, request: kind }) => ({ type, request: kind })),
@@ -332,6 +334,15 @@ async function createALaunchJson() {
   }
 }
 
+/** A launch of the basic fixture. */
+const launchBasic = (name) => ({
+  type: "microscope",
+  request: "launch",
+  name,
+  program: fixture("basic"),
+  cwd: root,
+});
+
 /** The microscope.path setting chooses the adapter, and a missing one is named. */
 async function findTheAdapterFromTheSetting() {
   const folder = workspace();
@@ -341,13 +352,6 @@ async function findTheAdapterFromTheSetting() {
     mode: 0o755,
   });
   const settings = vscode.workspace.getConfiguration("microscope");
-  const configuration = (name) => ({
-    type: "microscope",
-    request: "launch",
-    name,
-    program: fixture("basic"),
-    cwd: root,
-  });
   try {
     await settings.update(
       "path",
@@ -355,13 +359,13 @@ async function findTheAdapterFromTheSetting() {
       vscode.ConfigurationTarget.Global,
     );
     await assert.rejects(
-      vscode.debug.startDebugging(folder, configuration("vscode-missing-adapter")),
-      /Cannot find microscope at "\$\{workspaceFolder\}\/missing-microscope"/,
+      vscode.debug.startDebugging(folder, launchBasic("vscode-missing-adapter")),
+      /Cannot find microscope at "\$\{workspaceFolder\}\/missing-microscope"/u,
     );
     await settings.update("path", 7, vscode.ConfigurationTarget.Global);
     await assert.rejects(
-      vscode.debug.startDebugging(folder, configuration("vscode-invalid-adapter")),
-      /Cannot find microscope at "7"/,
+      vscode.debug.startDebugging(folder, launchBasic("vscode-invalid-adapter")),
+      /Cannot find microscope at "7"/u,
     );
 
     await settings.update(
@@ -371,7 +375,7 @@ async function findTheAdapterFromTheSetting() {
     );
     const exited = event("exited");
     const ended = terminated("vscode-setting");
-    assert.ok(await vscode.debug.startDebugging(folder, configuration("vscode-setting")));
+    assert.ok(await vscode.debug.startDebugging(folder, launchBasic("vscode-setting")));
     assert.strictEqual((await exited).message.body.exitCode, 0);
     await ended;
     assert.ok(fs.existsSync(marker), "the session ran the configured adapter");
@@ -405,8 +409,8 @@ async function logTheProtocolToAFile() {
     await exited;
     await ended;
     const text = fs.readFileSync(log, "utf8");
-    assert.match(text, /"command":"initialize"/);
-    assert.match(text, /"event":"exited"/);
+    assert.match(text, /"command":"initialize"/u);
+    assert.match(text, /"event":"exited"/u);
   } finally {
     await settings.update("logFile", undefined, vscode.ConfigurationTarget.Global);
     fs.rmSync(log, { force: true });
@@ -557,9 +561,9 @@ async function conditionsHitCountsLogpointsAndRefusals() {
     [true, true],
   );
   for (const [breakpoint, reason] of [
-    [lines[2], /invalid condition: expected an operand/],
-    [lines[3], /assign/],
-    [lines[4], /a bare count is ambiguous; write ==5 .* or >=5/],
+    [lines[2], /invalid condition: expected an operand/u],
+    [lines[3], /assign/u],
+    [lines[4], /a bare count is ambiguous; write ==5 .* or >=5/u],
   ]) {
     assert.strictEqual(breakpoint.verified, false, JSON.stringify(breakpoint));
     assert.match(breakpoint.message, reason);
@@ -567,7 +571,7 @@ async function conditionsHitCountsLogpointsAndRefusals() {
   const [caller, missing] = (await functions).body.breakpoints;
   assert.strictEqual(caller.verified, true);
   assert.strictEqual(missing.verified, false);
-  assert.match(missing.message, /no_such_function/);
+  assert.match(missing.message, /no_such_function/u);
 
   // The condition held at the fifth call, after logging each before it.
   await logged;
@@ -607,7 +611,7 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
   // VS Code shows values inline by asking the extension, which asks the
   // adapter where each variable is declared.
   const declared = request("locations");
-  const { session, frame } = await launchToStop(
+  const { frame } = await launchToStop(
     { name: "vscode-console", program: fixture("command-names") },
     "breakpoint",
   );
@@ -631,14 +635,14 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
     assert.ok(reply.success, JSON.stringify(reply));
     assert.strictEqual(reply.body.result, result, text);
   }
-  assert.match((await inConsole("bt")).body.result, /^#0 .*names/);
-  assert.match((await inConsole("whatis where")).body.result, /point \*/);
+  assert.match((await inConsole("bt")).body.result, /^#0 .*names/u);
+  assert.match((await inConsole("whatis where")).body.result, /point \*/u);
   // Mistakes are answered, not fatal.
   for (const [text, reason] of [
-    ["next", /`next` is not available in the debug console/],
-    ["x + missing", /missing[\s\S]*\^{7}/],
-    ["origin + 1", /type/],
-    ["1 / 0", /divi/],
+    ["next", /`next` is not available in the debug console/u],
+    ["x + missing", /missing[\s\S]*\^{7}/u],
+    ["origin + 1", /type/u],
+    ["1 / 0", /divi/u],
   ]) {
     const reply = await inConsole(text);
     assert.strictEqual(reply.success, false, text);
@@ -670,10 +674,10 @@ async function consoleWatchHoverHexadecimalAndInlineValues() {
     "evaluate",
     (arguments_) => arguments_.context === "hover" && arguments_.expression === "where->y",
   );
-  const shown = await vscode.window.showTextDocument(editor.document);
-  const text = shown.document.lineAt(line).text;
-  const column = text.indexOf("where->y") + "where->".length;
-  shown.selection = new vscode.Selection(line, column, line, column);
+  const opened = await vscode.window.showTextDocument(editor.document);
+  const lineText = opened.document.lineAt(line).text;
+  const hovered = lineText.indexOf("where->y") + "where->".length;
+  opened.selection = new vscode.Selection(line, hovered, line, hovered);
   await vscode.commands.executeCommand("editor.debug.action.showDebugHover");
   assert.strictEqual((await hover).body.result, "2");
   // So does hovering an indexed or qualified name, which VS Code alone
@@ -810,7 +814,7 @@ async function dataBreakpointsAndTheirModes() {
     "breakpoint",
     (body) => body.reason === "removed" && body.breakpoint.id === set.breakpoints[0].id,
   );
-  assert.match((await inConsole("unwatch all")).body.result, /1 watchpoint/);
+  assert.match((await inConsole("unwatch all")).body.result, /1 watchpoint/u);
   await removed;
   // The program raises signals of its own later.
   await session.customRequest("setExceptionBreakpoints", { filters: [] });
@@ -871,7 +875,7 @@ async function dataBreakpointConditions() {
 
   // A condition that cannot be evaluated stops at the next change and says why.
   await set({ condition: "no_such_value > 1" });
-  const explained = event("output", (body) => /could not be evaluated/.test(body.output));
+  const explained = event("output", (body) => /could not be evaluated/u.test(body.output));
   assert.deepStrictEqual(await next(first.id), ["last_call changed from 15 to 16", "16"]);
   assert.strictEqual(
     (await explained).message.body.output,
@@ -882,10 +886,10 @@ async function dataBreakpointConditions() {
   // Conditions that do not parse leave it unverified and unarmed.
   const refused = await set({ condition: "call = 3" });
   assert.strictEqual(refused.verified, false);
-  assert.match(refused.message, /cannot assign; compare with `==`/);
+  assert.match(refused.message, /cannot assign; compare with `==`/u);
   const bare = await set({ hitCondition: "5" });
   assert.strictEqual(bare.verified, false);
-  assert.match(bare.message, /a bare count is ambiguous; write ==5 .* or >=5/);
+  assert.match(bare.message, /a bare count is ambiguous; write ==5 .* or >=5/u);
   await finish();
 }
 
@@ -900,7 +904,7 @@ async function crashAtASignal() {
   // VS Code asks what the exception is, to show it at the stop.
   const info = (await exception).body;
   assert.strictEqual(info.exceptionId, "SIGSEGV");
-  const explained = event("output", (output) => /terminated by SIGSEGV/.test(output.output));
+  const explained = event("output", (output) => /terminated by SIGSEGV/u.test(output.output));
   await finish(139);
   await explained;
 }
@@ -922,10 +926,10 @@ async function goroutinesStepsPanicsAndStacks() {
   // Main's goroutine stopped, and its id is the thread's.
   assert.strictEqual(threadId, 1);
   const { threads } = await session.customRequest("threads");
-  const workers = threads.filter((thread) => / main\.worker — chan receive/.test(thread.name));
+  const workers = threads.filter((thread) => / main\.worker — chan receive/u.test(thread.name));
   assert.strictEqual(workers.length, 5, JSON.stringify(threads));
   assert.ok(
-    workers.some((thread) => /\{job: resize, tenant: "a b"\}/.test(thread.name)),
+    workers.some((thread) => /\{job: resize, tenant: "a b"\}/u.test(thread.name)),
     JSON.stringify(workers),
   );
 
@@ -941,12 +945,12 @@ async function goroutinesStepsPanicsAndStacks() {
   const panicked = event("stopped", (body) => body.reason === "exception");
   await vscode.commands.executeCommand("workbench.action.debug.stepOver");
   assert.strictEqual((await panicked).message.body.threadId, threadId);
-  const shown = await focus();
+  const atPanic = await focus();
   const { stackFrames } = await session.customRequest("stackTrace", { threadId });
-  const raised = stackFrames.find((frame) => frame.id === shown.frameId);
+  const raised = stackFrames.find((frame) => frame.id === atPanic.frameId);
   assert.strictEqual(raised?.name, "main.explode", JSON.stringify(stackFrames));
   const exception = await session.customRequest("exceptionInfo", { threadId });
-  assert.match(exception.description, /the workers are waiting/);
+  assert.match(exception.description, /the workers are waiting/u);
   await finish(2);
 
   const switched = new vscode.FunctionBreakpoint("runtime.readmemstats_m");
@@ -985,11 +989,6 @@ async function goroutinesStepsPanicsAndStacks() {
  */
 async function pythonBreakpointsStepsAndExceptions() {
   const script = path.join(root, "tests/fixtures/python/uat.py");
-  // The frame VS Code focused at a stop, as the adapter described it.
-  const shown = async (session, threadId, item) => {
-    const { stackFrames } = await session.customRequest("stackTrace", { threadId });
-    return stackFrames.find((frame) => frame.id === item.frameId);
-  };
   for (const build of ["3.14", "3.12"]) {
     vscode.debug.addBreakpoints([sourceBreakpoint(script, "# AREA_LINE")]);
     const {
@@ -1024,7 +1023,7 @@ async function pythonBreakpointsStepsAndExceptions() {
     frame = await shown(session, threadId, await focus());
     assert.strictEqual(frame?.name, "fail", build);
     const exception = await session.customRequest("exceptionInfo", { threadId });
-    assert.match(exception.description, /the shape is wrong/, build);
+    assert.match(exception.description, /the shape is wrong/u, build);
     await session.customRequest("setExceptionBreakpoints", { filters: [] });
     await finish(0);
   }
@@ -1123,7 +1122,7 @@ async function nodeBreakpointsStepsAndExceptions() {
       assert.strictEqual(frame?.name, "fail", build);
       assert.strictEqual(frame.line, lineOf(script, "// THROW_LINE") + 1, build);
       const exception = await session.customRequest("exceptionInfo", { threadId });
-      assert.match(exception.description, /the shape is wrong/, build);
+      assert.match(exception.description, /the shape is wrong/u, build);
       await session.customRequest("setExceptionBreakpoints", { filters: [] });
       await finish(0);
     });
@@ -1196,7 +1195,7 @@ async function nodeTypeScriptThroughSourceMaps() {
           assert.strictEqual(frame.source?.path, script, context);
           assert.strictEqual(frame.line, lineOf(script, "// THROW") + 1, context);
           const exception = await session.customRequest("exceptionInfo", { threadId });
-          assert.match(exception.description, /mapped/, context);
+          assert.match(exception.description, /mapped/u, context);
           await session.customRequest("setExceptionBreakpoints", { filters: [] });
           await finish(0);
         }
@@ -1267,7 +1266,9 @@ async function nodeAttachedByProcessId() {
       stdio: ["pipe", "pipe", "inherit"],
       env: {},
     });
-    const exit = new Promise((resolve) => target.once("exit", resolve));
+    const exit = new Promise((resolve) => {
+      target.once("exit", resolve);
+    });
     try {
       await within(
         `node ${build} to be ready`,
@@ -1459,7 +1460,9 @@ async function runInTheIntegratedTerminal() {
 /** Spawns the attach fixture and waits until it is ready to be attached to. */
 async function attachTarget() {
   const target = childProcess.spawn(fixture("attach"), [], { stdio: ["pipe", "pipe", "inherit"] });
-  const exit = new Promise((resolve) => target.once("exit", resolve));
+  const exit = new Promise((resolve) => {
+    target.once("exit", resolve);
+  });
   await new Promise((resolve, reject) => {
     target.stdout.once("data", (data) =>
       String(data).startsWith("READY") ? resolve() : reject(new Error(`readiness ${data}`)),
@@ -1542,6 +1545,7 @@ async function pickAProcess() {
     });
     let settled = false;
     started.then(
+      // oxlint-disable-next-line promise/always-return -- the callbacks only note that it settled
       () => {
         settled = true;
       },
@@ -1616,14 +1620,15 @@ async function followAForkedChild() {
   await started;
   assert.strictEqual(child.parentSession.id, parent.id);
   assert.strictEqual(child.configuration.pid, asking.configuration.pid);
+  // oxlint-disable-next-line no-underscore-dangle -- the name microscope gives a child session's configuration
   assert.strictEqual(child.configuration.__microscopeMember.number, 2);
   assert.strictEqual(child.name, asking.configuration.name);
-  for (const [session, stop] of [
+  for (const [session, stopped] of [
     [parent, parentStop],
     [child, childStop],
   ]) {
     assert.strictEqual(
-      (await topFrame(session, stop.body.threadId)).name,
+      (await topFrame(session, stopped.body.threadId)).name,
       "shared_work",
       session.name,
     );
@@ -1631,7 +1636,7 @@ async function followAForkedChild() {
   await remove(breakpoint);
 
   // The child runs to its end, and then its parent, which waited for it.
-  for (const [session, stop] of [
+  for (const [session, stopped] of [
     [child, childStop],
     [parent, parentStop],
   ]) {
@@ -1642,7 +1647,7 @@ async function followAForkedChild() {
     const ended = terminated(session.name);
     await vscode.commands.executeCommand("workbench.action.debug.continue", undefined, {
       sessionId: session.id,
-      threadId: stop.body.threadId,
+      threadId: stopped.body.threadId,
     });
     assert.strictEqual((await exited).message.body.exitCode, 0, session.name);
     await ended;
@@ -1662,7 +1667,7 @@ async function openACoreDump() {
     }),
   );
   const { session, message: sent } = await stopped;
-  assert.match(sent.body.text, /SIGSEGV/);
+  assert.match(sent.body.text, /SIGSEGV/u);
   assert.strictEqual((await capabilities).message.body.capabilities.supportsRestartRequest, false);
   const trace = await session.customRequest("stackTrace", { threadId: sent.body.threadId });
   assert.ok(
@@ -1694,15 +1699,15 @@ async function refuseBadConfigurationsAndOfferPrograms() {
     [
       "vscode-no-program",
       { request: "launch", program: fixture("no-such-program") },
-      /failed to load .*no-such-program/,
+      /failed to load .*no-such-program/u,
     ],
     [
       "vscode-bad-arguments",
       { request: "launch", program: fixture("basic"), args: "one" },
-      /invalid launch configuration at args/,
+      /invalid launch configuration at args/u,
     ],
-    ["vscode-no-process", { request: "attach", pid: 999999999 }, /process 999999999/],
-    ["vscode-no-core", { request: "attach", coreFile: fixture("no-such.core") }, /no-such\.core/],
+    ["vscode-no-process", { request: "attach", pid: 999999999 }, /process 999999999/u],
+    ["vscode-no-core", { request: "attach", coreFile: fixture("no-such.core") }, /no-such\.core/u],
   ]) {
     const refused = response(configuration.request, (reply) => !reply.success);
     const disconnected = request("disconnect");
@@ -1716,7 +1721,7 @@ async function refuseBadConfigurationsAndOfferPrograms() {
     // to open, and ends the session it never started.
     await assert.rejects(
       within("the refusal to be shown", started),
-      (error) => /refused to show dialog/.test(error.message) && reason.test(error.message),
+      (error) => /refused to show dialog/u.test(error.message) && reason.test(error.message),
     );
     await disconnected;
     assert.strictEqual(vscode.debug.activeDebugSession, undefined, name);
@@ -1779,7 +1784,7 @@ exports.run = async function run() {
       followAForkedChild,
       openACoreDump,
       refuseBadConfigurationsAndOfferPrograms,
-    ].filter((scenario) => only === undefined || only.includes(scenario.name))) {
+    ].filter((candidate) => only === undefined || only.includes(candidate.name))) {
       console.log(`uat: ${scenario.name}`);
       await scenario();
       console.log(`uat: ${scenario.name} passed`);

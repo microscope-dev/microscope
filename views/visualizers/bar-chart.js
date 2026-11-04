@@ -55,12 +55,12 @@ microscope.draw((input, { previous, width, paths }) => {
   let lo = Math.min(
     0,
     ...finite.map((bar) => bar.value),
-    ...[...before.values()].filter(Number.isFinite),
+    ...[...before.values()].filter((value) => Number.isFinite(value)),
   );
   let hi = Math.max(
     0,
     ...finite.map((bar) => bar.value),
-    ...[...before.values()].filter(Number.isFinite),
+    ...[...before.values()].filter((value) => Number.isFinite(value)),
   );
   if (other !== null) hi = Math.max(hi, Number(other.total));
   if (lo === hi) hi = 1;
@@ -167,7 +167,6 @@ microscope.draw((input, { previous, width, paths }) => {
         },
         theme.ink3,
         `Other: ${other.count} more entries, total ${total}`,
-        undefined,
       );
     }
     return microscope.picture({ width: W, height: H, shapes, caption: captionOf() });
@@ -179,7 +178,7 @@ microscope.draw((input, { previous, width, paths }) => {
   const bottom = 236;
   const H = 262;
   const slot = (right - left) / Math.max(1, rows);
-  const bar = Math.max(1, Math.min(24, slot - 2));
+  const thickness = Math.max(1, Math.min(24, slot - 2));
   const toY = (v) => bottom - ((v - axis.lo) / (axis.hi - axis.lo)) * (bottom - top);
   for (const tick of axis.ticks) {
     shapes.push(
@@ -203,16 +202,16 @@ microscope.draw((input, { previous, width, paths }) => {
   }
   const every = Math.max(1, Math.ceil(rows / Math.max(1, Math.floor((right - left) / 44))));
   const column = (k, item, fill, title, select) => {
-    const x = left + k * slot + (slot - bar) / 2;
+    const x = left + k * slot + (slot - thickness) / 2;
     const zero = toY(0);
     const end = Number.isFinite(item.value) ? toY(item.value) : zero;
     shapes.push(
       microscope.rect({
         x,
         y: Math.min(zero, end),
-        width: bar,
+        width: thickness,
         height: Math.max(1, Math.abs(end - zero)),
-        radius: Math.min(2, bar / 2),
+        radius: Math.min(2, thickness / 2),
         fill,
         title,
         select,
@@ -221,7 +220,7 @@ microscope.draw((input, { previous, width, paths }) => {
     if (k % every === 0) {
       shapes.push(
         microscope.text({
-          x: x + bar / 2,
+          x: x + thickness / 2,
           y: bottom + 14,
           text: truncate(item.label, slot * every),
           size: 11,
@@ -237,7 +236,7 @@ microscope.draw((input, { previous, width, paths }) => {
         microscope.line({
           x1: x - 2,
           y1: toY(was),
-          x2: x + bar + 2,
+          x2: x + thickness + 2,
           y2: toY(was),
           stroke: theme.ink,
           strokeWidth: 1.5,
@@ -253,7 +252,6 @@ microscope.draw((input, { previous, width, paths }) => {
       { label: "Other", value: Number(other.total), key: null },
       theme.ink3,
       `Other: ${other.count} more entries, total ${other.total}`,
-      undefined,
     );
   }
   // The largest bar's value, over it.
@@ -273,10 +271,6 @@ microscope.draw((input, { previous, width, paths }) => {
     );
   }
   return microscope.picture({ width: W, height: H, shapes, caption: captionOf() });
-
-  function titleOf(item) {
-    return `${item.label}: ${item.text}`;
-  }
 
   function captionOf() {
     const parts = [
@@ -310,23 +304,27 @@ microscope.draw((input, { previous, width, paths }) => {
   }
 });
 
+function titleOf(item) {
+  return `${item.label}: ${item.text}`;
+}
+
 /** The bars: each value with its label, exact text, and the part it is. */
 function barsOf(input, paths) {
   const source = input.entries ?? input.values;
   if (source === undefined || source === null) {
     throw new TypeError("bar-chart takes `values`, or `entries`: labels and their numbers");
   }
-  const path = input.entries !== undefined ? paths.entries : paths.values;
+  const path = input.entries === undefined ? paths.values : paths.entries;
   const pairs = asEntries(source);
   if (pairs !== null) {
     return {
       keyed: true,
       bars: pairs.map(([key, value], index) =>
-        bar(nameOf(key), value, index, `entries[${index}]`, nameOf(key), undefined),
+        barOf(nameOf(key), value, index, `entries[${index}]`, nameOf(key)),
       ),
     };
   }
-  const values = sequence(source, input.entries !== undefined ? "entries" : "values");
+  const values = sequence(source, input.entries === undefined ? "values" : "entries");
   const labels =
     input.labels === undefined || input.labels === null ? null : sequence(input.labels, "labels");
   if (labels !== null && labels.length !== values.length) {
@@ -337,7 +335,7 @@ function barsOf(input, paths) {
   return {
     keyed: false,
     bars: Array.from(values, (value, index) =>
-      bar(
+      barOf(
         labels === null ? `[${index}]` : nameOf(labels[index]),
         value,
         index,
@@ -349,11 +347,11 @@ function barsOf(input, paths) {
   };
 }
 
-function bar(label, value, index, what, key, select) {
+function barOf(name, value, index, what, key, select) {
   if (typeof value !== "number" && typeof value !== "bigint") {
     throw new TypeError(`bar-chart draws numbers, and \`${what}\` is ${describe(value)}`);
   }
-  return { label, value: Number(value), raw: value, text: exact(value), index, key, select };
+  return { label: name, value: Number(value), raw: value, text: exact(value), index, key, select };
 }
 
 /** A map's [key, value] pairs, or a record's members, or null. */
@@ -379,6 +377,7 @@ function asEntries(value) {
 /** @returns {ArrayLike<any>} */
 function sequence(value, what) {
   if (Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<any>} */ (/** @type {unknown} */ (value));
   }
   throw new TypeError(`\`${what}\` must be a sequence, not ${describe(value)}`);

@@ -24,7 +24,7 @@ const MOST_OUTLIERS = 1_000;
 
 microscope.draw((input, { previous, width, paths }) => {
   const theme = microscope.theme;
-  const named = input.groups !== undefined ? "groups" : "values";
+  const named = input.groups === undefined ? "values" : "groups";
   const groups = groupsOf(input[named], paths[named], input.labels);
   if (groups.length === 0) throw new RangeError("`groups` holds no groups");
   const errors = errorsOf(input, groups);
@@ -92,13 +92,11 @@ microscope.draw((input, { previous, width, paths }) => {
   groups.forEach((group, k) => {
     const { stats } = group;
     const error = errors[k];
-    const cx = LEFT + slot * k + slot / 2 - (error !== null ? box / 2 : 0);
+    const cx = LEFT + slot * k + slot / 2 - (error === null ? 0 : box / 2);
     const color = theme.series[0];
     const whisker = (from, to) => {
       shapes.push(
         microscope.line({ x1: cx, y1: toY(from), x2: cx, y2: toY(to), stroke: theme.ink2 }),
-      );
-      shapes.push(
         microscope.line({
           x1: cx - box / 4,
           y1: toY(to),
@@ -111,7 +109,7 @@ microscope.draw((input, { previous, width, paths }) => {
     whisker(stats.q3, stats.high);
     whisker(stats.q1, stats.low);
     const summary = [
-      `${group.name}${stats.n !== null ? `: n=${stats.n}` : ""}`,
+      `${group.name}${stats.n === null ? "" : `: n=${stats.n}`}`,
       `min ${exact(stats.min)}`,
       `q1 ${exact(stats.q1)}`,
       `median ${exact(stats.median)}`,
@@ -133,8 +131,6 @@ microscope.draw((input, { previous, width, paths }) => {
         title: summary.join("\n"),
         select: group.select,
       }),
-    );
-    shapes.push(
       microscope.line({
         x1: cx - box / 2,
         y1: toY(stats.median),
@@ -274,7 +270,7 @@ function groupsOf(value, path, labels) {
   /** @type {[any, any][]} */
   let pairs;
   let keyed = false;
-  if (Array.isArray(value) && value.length > 0 && value.every(isEntry)) {
+  if (Array.isArray(value) && value.length > 0 && value.every((item) => isEntry(item))) {
     pairs = value;
     keyed = true;
   } else if (Array.isArray(value)) {
@@ -302,9 +298,9 @@ function groupsOf(value, path, labels) {
 /** The part of the drawn value a group is: an array's element or a
  * record's member, never a map's entry, which is no member. */
 function partOf(path, keyed, array, key, index) {
-  if (path === null || path === undefined || keyed) return undefined;
+  if (path === null || path === undefined || keyed) return;
   if (array) return `${path}[${index}]`;
-  if (!/^[A-Za-z_]\w*$/.test(key)) return undefined;
+  if (!/^[A-Za-z_]\w*$/u.test(key)) return;
   return path === "" ? key : `${path}.${key}`;
 }
 
@@ -336,7 +332,9 @@ function statsOf(group, name) {
       }
       return Number(v);
     };
-    const [min, q1, median, q3, max] = ["min", "q1", "median", "q3", "max"].map(read);
+    const [min, q1, median, q3, max] = ["min", "q1", "median", "q3", "max"].map((member) =>
+      read(member),
+    );
     return {
       n: null,
       min,
@@ -480,6 +478,7 @@ function numbers(value, what) {
     return Float64Array.from(value, Number);
   }
   if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<number>} */ (/** @type {unknown} */ (value));
   }
   if (Array.isArray(value)) {

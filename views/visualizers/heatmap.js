@@ -96,73 +96,13 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
   const gridHeight = cell * rows;
   const shapes = [];
   const part = (r, c) => {
-    if (paths.values === null || paths.values === undefined) return undefined;
+    if (paths.values === null || paths.values === undefined) return;
     return grid.nested ? `${paths.values}[${r}][${c}]` : `${paths.values}[${r * columns + c}]`;
   };
   let changes = 0;
   const imaged = rows * columns > MOST_CELLS;
 
-  if (!imaged) {
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < columns; c++) {
-        const i = r * columns + c;
-        const v = values[i];
-        const x = left + c * cell;
-        const y = top + r * cell;
-        const name = `${rowLabels?.[r] ?? `[${r}]`}${columnLabels !== null ? ` ${columnLabels[c]}` : `[${c}]`}`;
-        const title = `${name}: ${exact(grid, i)}`;
-        const inset = cell > 4 ? 0.5 : 0;
-        if (Number.isNaN(v)) {
-          shapes.push(
-            microscope.rect({
-              x: x + inset,
-              y: y + inset,
-              width: cell - inset * 2,
-              height: cell - inset * 2,
-              fill: theme.line,
-              title,
-              select: part(r, c),
-            }),
-          );
-          shapes.push(
-            microscope.line({
-              x1: x + inset,
-              y1: y + cell - inset,
-              x2: x + cell - inset,
-              y2: y + inset,
-              stroke: theme.ink3,
-            }),
-          );
-        } else {
-          shapes.push(
-            microscope.rect({
-              x: x + inset,
-              y: y + inset,
-              width: cell - inset * 2,
-              height: cell - inset * 2,
-              fill: color(v),
-              title,
-              select: part(r, c),
-            }),
-          );
-        }
-        if (changed !== null && !Object.is(changed[i], v)) {
-          changes += 1;
-          shapes.push(
-            microscope.rect({
-              x: x + 0.75,
-              y: y + 0.75,
-              width: Math.max(0.5, cell - 1.5),
-              height: Math.max(0.5, cell - 1.5),
-              fill: "none",
-              stroke: theme.ink,
-              strokeWidth: 1.5,
-            }),
-          );
-        }
-      }
-    }
-  } else {
+  if (imaged) {
     // One pixel a cell, or each pixel the largest of the cells it covers.
     const across = Math.min(columns, Math.max(1, Math.floor(gridWidth)));
     const down = Math.min(rows, Math.max(1, Math.floor(gridHeight)));
@@ -235,6 +175,64 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
           rows: down,
         }),
       );
+    }
+  } else {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < columns; c++) {
+        const i = r * columns + c;
+        const v = values[i];
+        const x = left + c * cell;
+        const y = top + r * cell;
+        const name = `${rowLabels?.[r] ?? `[${r}]`}${columnLabels === null ? `[${c}]` : ` ${columnLabels[c]}`}`;
+        const title = `${name}: ${exact(grid, i)}`;
+        const inset = cell > 4 ? 0.5 : 0;
+        if (Number.isNaN(v)) {
+          shapes.push(
+            microscope.rect({
+              x: x + inset,
+              y: y + inset,
+              width: cell - inset * 2,
+              height: cell - inset * 2,
+              fill: theme.line,
+              title,
+              select: part(r, c),
+            }),
+            microscope.line({
+              x1: x + inset,
+              y1: y + cell - inset,
+              x2: x + cell - inset,
+              y2: y + inset,
+              stroke: theme.ink3,
+            }),
+          );
+        } else {
+          shapes.push(
+            microscope.rect({
+              x: x + inset,
+              y: y + inset,
+              width: cell - inset * 2,
+              height: cell - inset * 2,
+              fill: color(v),
+              title,
+              select: part(r, c),
+            }),
+          );
+        }
+        if (changed !== null && !Object.is(changed[i], v)) {
+          changes += 1;
+          shapes.push(
+            microscope.rect({
+              x: x + 0.75,
+              y: y + 0.75,
+              width: Math.max(0.5, cell - 1.5),
+              height: Math.max(0.5, cell - 1.5),
+              fill: "none",
+              stroke: theme.ink,
+              strokeWidth: 1.5,
+            }),
+          );
+        }
+      }
     }
   }
 
@@ -348,11 +346,12 @@ microscope.draw((input, { previous, width, paths, theme: mode }) => {
     );
   }
 
-  const caption = [`${rows} × ${columns} cells`];
-  caption.push(
+  const caption = [
+    `${rows} × ${columns} cells`,
     scale === "diverging" ? "diverging around 0" : log ? "sequential, log" : "sequential",
-  );
-  caption.push(`min ${label(lo)}`, `max ${label(hi)}`);
+    `min ${label(lo)}`,
+    `max ${label(hi)}`,
+  ];
   if (nans > 0) caption.push(`${nans} NaN, hatched`);
   if (infinite > 0) caption.push(`${infinite} ±∞, at the ramp's ends`);
   if (imaged && (Math.floor(gridWidth) < columns || Math.floor(gridHeight) < rows))
@@ -382,6 +381,7 @@ function gridOf(input) {
     values.length > 0 &&
     values.every((row) => Array.isArray(row) || ArrayBuffer.isView(row))
   ) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     const lines = /** @type {ArrayLike<any>[]} */ (values);
     const columns = lines[0].length;
     const flat = new Float64Array(lines.length * columns);
@@ -453,6 +453,7 @@ function toNumbers(value, what) {
     return Float64Array.from(value, Number);
   }
   if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<number>} */ (/** @type {unknown} */ (value));
   }
   if (Array.isArray(value)) {
@@ -466,7 +467,7 @@ function toNumbers(value, what) {
 }
 
 function rgb(color) {
-  const hex = /^#([0-9a-f]{6})$/i.exec(color)?.[1];
+  const hex = /^#([0-9a-f]{6})$/iu.exec(color)?.[1];
   if (hex === undefined) return [128, 128, 128];
   return [0, 2, 4].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
 }

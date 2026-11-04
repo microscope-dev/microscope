@@ -163,6 +163,7 @@ function wordsOf(values, width) {
   if (ArrayBuffer.isView(values) && !(values instanceof DataView)) {
     const bits = widths.find(([kind]) => values instanceof kind)?.[1];
     if (bits === undefined) throw new TypeError("bits draws integers, not floats");
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     const list = /** @type {ArrayLike<number | bigint>} */ (/** @type {unknown} */ (values));
     return {
       words: Array.from(list, (v) => BigInt.asUintN(bits, BigInt(v))),

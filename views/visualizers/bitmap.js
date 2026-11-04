@@ -118,6 +118,7 @@ function imageOf(input) {
     source.length > 0 &&
     source.every((row) => Array.isArray(row) || ArrayBuffer.isView(row))
   ) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     const lines = /** @type {ArrayLike<any>[]} */ (source);
     const width = lines[0].length;
     bytes = new Uint8Array(lines.length * width);
@@ -181,6 +182,7 @@ function byteRow(value, row) {
     return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
   if (Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     const list = /** @type {ArrayLike<any>} */ (/** @type {unknown} */ (value));
     return Uint8Array.from(list, (item, index) => {
       const v = Number(item);

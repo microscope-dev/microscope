@@ -68,21 +68,21 @@ microscope.live((canvas, input) => {
     gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(at.position);
     gl.vertexAttribPointer(at.position, 3, gl.FLOAT, false, 0, 0);
-    if (mesh.normals !== null) {
+    if (mesh.normals === null) {
+      gl.disableVertexAttribArray(at.normal);
+    } else {
       gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normal);
       gl.bufferData(gl.ARRAY_BUFFER, mesh.normals, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(at.normal);
       gl.vertexAttribPointer(at.normal, 3, gl.FLOAT, false, 0, 0);
-    } else {
-      gl.disableVertexAttribArray(at.normal);
     }
-    if (mesh.colors !== null) {
+    if (mesh.colors === null) {
+      gl.disableVertexAttribArray(at.color);
+    } else {
       gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
       gl.bufferData(gl.ARRAY_BUFFER, mesh.colors, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(at.color);
       gl.vertexAttribPointer(at.color, 4, gl.UNSIGNED_BYTE, true, 0, 0);
-    } else {
-      gl.disableVertexAttribArray(at.color);
     }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
@@ -111,11 +111,11 @@ microscope.live((canvas, input) => {
     return edgeCount;
   }
 
-  /** @param {Camera} camera */
-  function matrices(camera) {
+  /** @param {Camera} pose */
+  function matrices(pose) {
     const width = canvas.width;
     const height = canvas.height;
-    const { yaw, pitch, distance, center, radius } = camera;
+    const { yaw, pitch, distance, center, radius } = pose;
     const eye = [
       center[0] + distance * Math.cos(pitch) * Math.sin(yaw),
       center[1] + distance * Math.sin(pitch),
@@ -154,7 +154,7 @@ microscope.live((canvas, input) => {
     gl.uniformMatrix4fv(u.view, false, view);
     gl.uniformMatrix4fv(u.projection, false, projection);
     gl.uniformMatrix3fv(u.normalMatrix, false, normalMatrix(mesh.model));
-    gl.uniform1i(u.hasNormal, mesh.normals !== null ? 1 : 0);
+    gl.uniform1i(u.hasNormal, mesh.normals === null ? 0 : 1);
     gl.uniform3fv(u.eye, eye);
     const tint = rgb(microscope.theme.series[0]);
     if (mesh.colors === null) {
@@ -308,7 +308,7 @@ function read(input) {
   let model = up === "z" ? Z_UP : identity();
   if (input.transform !== undefined) {
     const numbers = Array.from(input.transform, Number);
-    if (numbers.length !== 16 || !numbers.every(Number.isFinite)) {
+    if (numbers.length !== 16 || !numbers.every((number) => Number.isFinite(number))) {
       throw new TypeError("`transform` is 16 finite numbers, a column-major matrix");
     }
     model = multiply(model, numbers);
@@ -338,7 +338,7 @@ function read(input) {
   for (let i = 0; i < count; i++) {
     const [x, y, z] = positions.subarray(i * 3, i * 3 + 3);
     const at = `vertex ${i} is at (${short(x)}, ${short(y)}, ${short(z)})`;
-    if (![x, y, z].every(Number.isFinite)) {
+    if (![x, y, z].every((coordinate) => Number.isFinite(coordinate))) {
       problems.push(at);
       break;
     }
@@ -348,7 +348,7 @@ function read(input) {
     );
     if (!placed.every((value) => Number.isFinite(Math.fround(value)))) {
       problems.push(
-        `${at}, which its transform carries to (${placed.map(short).join(", ")}), past a float's range`,
+        `${at}, which its transform carries to (${placed.map((value) => short(value)).join(", ")}), past a float's range`,
       );
       break;
     }
@@ -457,7 +457,7 @@ function identity() {
 
 /** a × b, both column-major. */
 function multiply(a, b) {
-  const out = new Array(16).fill(0);
+  const out = Array.from({ length: 16 }, () => 0);
   for (let column = 0; column < 4; column++) {
     for (let row = 0; row < 4; row++) {
       let sum = 0;
@@ -492,18 +492,24 @@ function perspective(field, aspect, near, far) {
   ];
 }
 
+function sub(a, b) {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function cross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function unit(a) {
+  const length = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / length, a[1] / length, a[2] / length];
+}
+
+function dot(a, b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
 function lookAt(eye, center) {
-  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-  const cross = (a, b) => [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-  const unit = (a) => {
-    const length = Math.hypot(a[0], a[1], a[2]) || 1;
-    return [a[0] / length, a[1] / length, a[2] / length];
-  };
-  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const z = unit(sub(eye, center));
   const x = unit(cross([0, 1, 0], z));
   const y = cross(z, x);
@@ -551,6 +557,7 @@ function normalMatrix(m) {
 /** The program every primitive draws with. */
 function link(gl) {
   const compile = (type, source) => {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     const shader = /** @type {WebGLShader} */ (gl.createShader(type));
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
@@ -559,6 +566,7 @@ function link(gl) {
     }
     return shader;
   };
+  // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
   const program = /** @type {WebGLProgram} */ (gl.createProgram());
   gl.attachShader(
     program,

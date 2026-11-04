@@ -66,6 +66,7 @@ function activate(context) {
 /** @param {vscode.DebugSession} session */
 function createDebugAdapterDescriptor(session) {
   // Child sessions reuse the parent's adapter.
+  // oxlint-disable-next-line no-underscore-dangle -- the name microscope gives a child session's configuration
   const member = session.configuration.__microscopeMember;
   if (member !== undefined) {
     return new vscode.DebugAdapterNamedPipeServer(member.socket);
@@ -113,7 +114,7 @@ function expandPath(setting, workspaceFolder) {
  */
 function findExecutable(setting, workspaceFolder) {
   if (setting.includes("${workspaceFolder}") && workspaceFolder === undefined) {
-    return undefined;
+    return;
   }
   const candidates = setting.includes("/")
     ? [expandPath(setting, workspaceFolder)]
@@ -121,7 +122,7 @@ function findExecutable(setting, workspaceFolder) {
         .split(path.delimiter)
         .filter(Boolean)
         .map((directory) => path.join(directory, setting));
-  return candidates.find(isExecutableFile);
+  return candidates.find((candidate) => isExecutableFile(candidate));
 }
 
 /** @param {string} file */
@@ -147,7 +148,7 @@ function resolveDebugConfiguration(folder, configuration) {
   }
   if (folder === undefined) {
     vscode.window.showErrorMessage("Open a folder to create a launch.json for microscope.");
-    return undefined;
+    return;
   }
   return null;
 }
@@ -208,7 +209,7 @@ function programs(root) {
       try {
         children = fs
           .readdirSync(directory, { withFileTypes: true })
-          .sort((first, second) => first.name.localeCompare(second.name));
+          .toSorted((first, second) => first.name.localeCompare(second.name));
       } catch {
         continue;
       }
@@ -223,10 +224,8 @@ function programs(root) {
         const file = path.join(directory, child.name);
         if (child.name.startsWith(".")) {
           continue;
-        } else if (child.isDirectory()) {
-          if (!SKIPPED_DIRECTORIES.has(child.name)) {
-            next.push(file);
-          }
+        } else if (child.isDirectory() && !SKIPPED_DIRECTORIES.has(child.name)) {
+          next.push(file);
         } else if (child.isFile() && isExecutableFile(file) && isProgram(file)) {
           found.push(file);
         }
@@ -253,14 +252,14 @@ function isProgram(file) {
   try {
     descriptor = fs.openSync(file, "r");
     const header = Buffer.alloc(64);
+    // \x7fELF, 64-bit, little-endian, and x86-64.
     if (
       fs.readSync(descriptor, header, 0, 64, 0) < 64 ||
-      header.readUInt32BE(0) !== 0x7f454c46 || // \x7fELF
-      header[4] !== 2 || // 64-bit
-      header[5] !== 1 || // little-endian
+      header.readUInt32BE(0) !== 0x7f454c46 ||
+      header[4] !== 2 ||
+      header[5] !== 1 ||
       header.readUInt16LE(18) !== 62
     ) {
-      // x86-64
       return false;
     }
     const type = header.readUInt16LE(16);
@@ -387,7 +386,9 @@ function processes() {
       // The process exited while it was being read.
     }
   }
-  return found.sort((first, second) => second.started - first.started || second.pid - first.pid);
+  return found.toSorted(
+    (first, second) => second.started - first.started || second.pid - first.pid,
+  );
 }
 
 const hexadecimal = () => vscode.workspace.getConfiguration("microscope").get("hexadecimal", false);
@@ -426,17 +427,17 @@ function sendValueFormat(session) {
  */
 function provideEvaluatableExpression(document, position) {
   if (vscode.debug.activeDebugSession?.type !== "microscope") {
-    return undefined;
+    return;
   }
   const found = expressionAt(document.lineAt(position.line).text, position.character);
   if (found === undefined) {
-    return undefined;
+    return;
   }
   const range = new vscode.Range(position.line, found.start, position.line, found.end);
   return new vscode.EvaluatableExpression(range, found.expression);
 }
 
-const NAME = /^[A-Za-z0-9_]$/;
+const NAME = /^[A-Za-z0-9_]$/u;
 
 /**
  * The expression ending with the name at a column of a line, and where it
@@ -455,8 +456,8 @@ function expressionAt(text, column) {
   while (end < text.length && NAME.test(text[end])) {
     end++;
   }
-  if (start === end || /[0-9]/.test(text[start])) {
-    return undefined;
+  if (start === end || /[0-9]/u.test(text[start])) {
+    return;
   }
   // Walk back over what joins the name to the operands before it.
   for (;;) {
@@ -534,7 +535,7 @@ function opening(text, close) {
       stack.push(pairs[character]);
     } else if (character === "[" || character === "(") {
       if (stack.pop() !== character) {
-        return undefined;
+        return;
       }
       if (stack.length === 0) {
         assert.ok(index < close, `bracket closing at ${close} opens at ${index}`);
@@ -542,7 +543,6 @@ function opening(text, close) {
       }
     }
   }
-  return undefined;
 }
 
 /**
@@ -556,7 +556,7 @@ function opening(text, close) {
 async function provideInlineValues(document, viewPort, context) {
   const session = vscode.debug.activeDebugSession;
   if (session?.type !== "microscope") {
-    return undefined;
+    return;
   }
   try {
     return await inlineValues(session, document, viewPort, context);
@@ -565,7 +565,6 @@ async function provideInlineValues(document, viewPort, context) {
       throw error;
     }
     // The program ran on, and the stop's references are gone.
-    return undefined;
   }
 }
 
@@ -584,6 +583,7 @@ async function inlineValues(session, document, viewPort, context) {
     if (scope.expensive || !scope.variablesReference) {
       continue;
     }
+    // oxlint-disable-next-line no-await-in-loop -- one request at a time, in the order the DAP traffic tests record
     const { variables } = await session.customRequest("variables", {
       variablesReference: scope.variablesReference,
     });
@@ -592,6 +592,7 @@ async function inlineValues(session, document, viewPort, context) {
       if (!variable.declarationLocationReference || !variable.evaluateName) {
         continue;
       }
+      // oxlint-disable-next-line no-await-in-loop -- one request at a time, in the order the DAP traffic tests record
       const declared = await session.customRequest("locations", {
         locationReference: variable.declarationLocationReference,
       });
@@ -639,7 +640,7 @@ function uses(lines, name, first, last) {
   let comment = false;
   for (let line = first; line <= last && line < lines.length; line++) {
     depths.push({ line, depth, start: undefined, lowest: depth });
-    const entry = depths[depths.length - 1];
+    const entry = depths.at(-1);
     const text = lines[line];
     for (let column = 0; column < text.length; column++) {
       const character = text[column];
@@ -655,7 +656,7 @@ function uses(lines, name, first, last) {
         break;
       } else if (character === '"' || character === "`") {
         column = closing(text, column, character);
-      } else if (character === "'" && /^'(\\.[^']*|[^\\'])'/.test(text.slice(column))) {
+      } else if (character === "'" && /^'(\\.[^']*|[^\\'])'/u.test(text.slice(column))) {
         column = closing(text, column, "'");
       } else if (character === "{") {
         depth++;
@@ -667,7 +668,7 @@ function uses(lines, name, first, last) {
         while (end < text.length && NAME.test(text[end])) {
           end++;
         }
-        const selected = /(\.|->|::)\s*$/.test(text.slice(0, column));
+        const selected = /(\.|->|::)\s*$/u.test(text.slice(0, column));
         if (entry.start === undefined && !selected && text.slice(column, end) === name) {
           entry.start = column;
         }
@@ -694,14 +695,14 @@ function uses(lines, name, first, last) {
         `use on line ${entry.line} at ${entry.start} is not the name`,
       );
       assert.ok(
-        found.length === 0 || found[found.length - 1].line > entry.line,
+        found.length === 0 || found.at(-1).line > entry.line,
         `use on line ${entry.line} out of order`,
       );
       found.push({ line: entry.line, start: entry.start });
     }
     lowest = Math.min(lowest, entry.depth);
   }
-  return found.reverse();
+  return found.toReversed();
 }
 
 /**

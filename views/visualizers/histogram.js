@@ -107,7 +107,7 @@ microscope.draw((input, { previous, width }) => {
     const step = (hi - lo) / bins;
     edges = Array.from({ length: bins + 1 }, (_, k) => (k === bins ? hi : lo + k * step));
     const bin = (v) => Math.min(bins - 1, Math.max(0, Math.floor((v - lo) / step)));
-    counts = new Array(bins).fill(0);
+    counts = Array.from({ length: bins }, () => 0);
     for (const v of finite) counts[bin(v)] += 1;
     if (n > 0)
       marks = [
@@ -125,7 +125,7 @@ microscope.draw((input, { previous, width }) => {
     rebin = (from) => {
       if (from.values === undefined) return null;
       const before = numbers(from.values, "values");
-      const binned = new Array(bins).fill(0);
+      const binned = Array.from({ length: bins }, () => 0);
       for (let i = 0; i < before.length; i++) {
         const v = before[i];
         if (Number.isFinite(v) && v >= lo && v <= hi) binned[bin(v)] += 1;
@@ -155,7 +155,7 @@ microscope.draw((input, { previous, width }) => {
     return bottom - (count / yAxis.hi) * (bottom - TOP);
   };
   const xlo = edges[0];
-  const xhi = edges[edges.length - 1];
+  const xhi = edges[counts.length];
   const toX = (v) => LEFT + ((v - xlo) / (xhi - xlo)) * (right - LEFT);
 
   const shapes = [];
@@ -319,7 +319,7 @@ function binnedQuantile(counts, edges, p, n) {
     }
     running += counts[k];
   }
-  return edges[edges.length - 1];
+  return edges[counts.length];
 }
 
 function exactCount(counts) {
@@ -339,6 +339,7 @@ function numbers(value, what) {
     return Float64Array.from(value, Number);
   }
   if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<number>} */ (/** @type {unknown} */ (value));
   }
   if (Array.isArray(value)) {
@@ -358,7 +359,7 @@ function exact(v) {
 /** A caption's number: integers whole, floats to six significant digits;
  * titles and the Table have every digit. */
 function brief(text) {
-  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text))
+  return /^-?\d*\.\d{7,}|e/iu.test(text) && Number.isFinite(Number(text))
     ? String(Number(Number(text).toPrecision(6)))
     : text;
 }
@@ -383,8 +384,12 @@ function nice(lo, hi, count = 5) {
 
 function logTicks(most) {
   const ticks = [1];
-  while (ticks[ticks.length - 1] < most) ticks.push(ticks[ticks.length - 1] * 10);
-  return { lo: 1, hi: Math.max(10, ticks[ticks.length - 1]), ticks };
+  let tick = 1;
+  while (tick < most) {
+    tick *= 10;
+    ticks.push(tick);
+  }
+  return { lo: 1, hi: Math.max(10, tick), ticks };
 }
 
 function label(v) {

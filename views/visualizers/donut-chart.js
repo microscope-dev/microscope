@@ -29,11 +29,11 @@ microscope.draw((input, { previous, width, paths }) => {
     }
   }
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
-  const sorted = slices.slice().sort((a, b) => b.value - a.value || (a.label < b.label ? -1 : 1));
+  const sorted = slices.toSorted((a, b) => b.value - a.value || (a.label < b.label ? -1 : 1));
   const drawn = sorted.slice(0, sorted.length > MOST + 1 ? MOST : MOST + 1);
   const rest = sorted.slice(drawn.length);
   // Hues follow names: the drawn labels in name order.
-  const names = drawn.map((slice) => slice.label).sort();
+  const names = drawn.map((slice) => slice.label).toSorted();
   const W = Math.round(Math.min(Math.max(width, 320), 1200));
   const cx = W / 2;
   const cy = HEIGHT / 2;
@@ -91,7 +91,12 @@ microscope.draw((input, { previous, width, paths }) => {
   for (const side of [1, -1]) {
     const here = labels
       .filter((item) => (Math.cos(item.middle) >= 0 ? 1 : -1) === side)
-      .map((item) => ({ ...item, y: cy + (outer + 14) * Math.sin(item.middle) }));
+      .map((item) => ({
+        slice: item.slice,
+        share: item.share,
+        middle: item.middle,
+        y: cy + (outer + 14) * Math.sin(item.middle),
+      }));
     here.sort((a, b) => a.y - b.y);
     for (let k = 1; k < here.length; k++) here[k].y = Math.max(here[k].y, here[k - 1].y + 26);
     for (const item of here) {
@@ -166,18 +171,18 @@ function slicesOf(input, paths) {
   if (source === undefined || source === null) {
     throw new TypeError("donut-chart takes `values`, or `entries`: labels and their numbers");
   }
-  const path = input.entries !== undefined ? paths.entries : paths.values;
+  const path = input.entries === undefined ? paths.values : paths.entries;
   const pairs = asEntries(source);
   const listed =
-    pairs !== null
-      ? pairs.map(([key, value]) => [nameOf(key), value, undefined])
-      : Array.from(sequence(source), (value, index) => [
+    pairs === null
+      ? Array.from(sequence(source), (value, index) => [
           input.labels === undefined || input.labels === null
             ? `[${index}]`
             : nameOf(input.labels[index]),
           value,
           path === null || path === undefined ? undefined : `${path}[${index}]`,
-        ]);
+        ])
+      : pairs.map(([key, value]) => [nameOf(key), value, undefined]);
   return listed.map(([label, value, select]) => {
     if (typeof value !== "number" && typeof value !== "bigint") {
       throw new TypeError(`donut-chart draws numbers, and ${label} is not one`);
@@ -244,6 +249,7 @@ function asEntries(value) {
 /** @returns {ArrayLike<any>} */
 function sequence(value) {
   if (Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<any>} */ (/** @type {unknown} */ (value));
   }
   throw new TypeError("donut-chart's values must be a sequence, map, or record");

@@ -113,18 +113,18 @@ microscope.draw((input, { previous, width, paths }) => {
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       const c = Math.min(columns - 1, Math.floor(toX(x) - LEFT));
       const r = Math.min(rows - 1, Math.floor(toY(y) - TOP));
-      const at = r * columns + c;
-      counts[at] += 1;
-      if (counts[at] > most) most = counts[at];
+      const cell = r * columns + c;
+      counts[cell] += 1;
+      if (counts[cell] > most) most = counts[cell];
     }
     const [red, green, blue] = rgb(theme.series[0]);
     const pixels = new Uint8ClampedArray(columns * rows * 4);
     const scale = Math.log1p(most) || 1;
-    for (let at = 0; at < counts.length; at++) {
-      if (counts[at] === 0) continue;
+    for (let cell = 0; cell < counts.length; cell++) {
+      if (counts[cell] === 0) continue;
       pixels.set(
-        [red, green, blue, Math.round(60 + 195 * (Math.log1p(counts[at]) / scale))],
-        at * 4,
+        [red, green, blue, Math.round(60 + 195 * (Math.log1p(counts[cell]) / scale))],
+        cell * 4,
       );
     }
     shapes.push(
@@ -141,30 +141,31 @@ microscope.draw((input, { previous, width, paths }) => {
     );
   } else {
     // Trails from where moved points were at the stop before.
+    const drawTrails = (before) => {
+      for (let i = 0; i < n; i++) {
+        const x0 = before.x[i];
+        const y0 = before.y[i];
+        const x1 = points.x[i];
+        const y1 = points.y[i];
+        if ([x0, y0, x1, y1].every((value) => Number.isFinite(value)) && (x0 !== x1 || y0 !== y1)) {
+          shapes.push(
+            microscope.line({
+              x1: toX(x0),
+              y1: toY(y0),
+              x2: toX(x1),
+              y2: toY(y1),
+              stroke: theme.ink3,
+              strokeWidth: 1,
+              opacity: 0.7,
+            }),
+          );
+        }
+      }
+    };
     if (previous !== null && n <= MOST_TRAILS) {
       try {
         const before = pointsOf(previous);
-        if (before.x.length === n) {
-          for (let i = 0; i < n; i++) {
-            const x0 = before.x[i];
-            const y0 = before.y[i];
-            const x1 = points.x[i];
-            const y1 = points.y[i];
-            if ([x0, y0, x1, y1].every(Number.isFinite) && (x0 !== x1 || y0 !== y1)) {
-              shapes.push(
-                microscope.line({
-                  x1: toX(x0),
-                  y1: toY(y0),
-                  x2: toX(x1),
-                  y2: toY(y1),
-                  stroke: theme.ink3,
-                  strokeWidth: 1,
-                  opacity: 0.7,
-                }),
-              );
-            }
-          }
-        }
+        if (before.x.length === n) drawTrails(before);
       } catch {
         // The stop before had no points this chart reads.
       }
@@ -285,10 +286,10 @@ function groupsOf(group, n) {
   const tally = new Map();
   for (const name of seen) tally.set(name, (tally.get(name) ?? 0) + 1);
   const chosen = [...tally.entries()]
-    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .toSorted((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
     .slice(0, 3)
     .map(([name]) => name)
-    .sort();
+    .toSorted();
   names.push(...chosen);
   for (let i = 0; i < n; i++) {
     const g = names.indexOf(seen[i]);
@@ -305,6 +306,7 @@ function numbers(value, what) {
     return Float64Array.from(value, Number);
   }
   if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<number>} */ (/** @type {unknown} */ (value));
   }
   if (Array.isArray(value)) {
@@ -343,13 +345,13 @@ function exact(values, raw, i) {
 /** A caption's number: integers whole, floats to six significant digits;
  * titles and the Table have every digit. */
 function brief(text) {
-  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text))
+  return /^-?\d*\.\d{7,}|e/iu.test(text) && Number.isFinite(Number(text))
     ? String(Number(Number(text).toPrecision(6)))
     : text;
 }
 
 function rgb(color) {
-  const hex = /^#([0-9a-f]{6})$/i.exec(color)?.[1] ?? "2a78d6";
+  const hex = /^#([0-9a-f]{6})$/iu.exec(color)?.[1] ?? "2a78d6";
   return [0, 2, 4].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
 }
 

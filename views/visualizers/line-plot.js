@@ -280,7 +280,7 @@ microscope.draw((input, { previous, width, paths }) => {
       return i === null ? null : { line, i, y: toY(line.values[i]) };
     })
     .filter((end) => end !== null)
-    .sort((a, b) => a.y - b.y);
+    .toSorted((a, b) => a.y - b.y);
   for (let k = 1; k < ends.length; k++) {
     ends[k].y = Math.max(ends[k].y, ends[k - 1].y + 13);
   }
@@ -307,8 +307,7 @@ microscope.draw((input, { previous, width, paths }) => {
   }
 
   // The caption: how many, the extremes, and what is not drawn as a value.
-  const caption = [];
-  caption.push(series.length > 1 ? `${series.length} series × ${count}` : `n=${count}`);
+  const caption = [series.length > 1 ? `${series.length} series × ${count}` : `n=${count}`];
   /** @type {{ line: (typeof series)[number], at: number }[]} */
   const lows = [];
   /** @type {{ line: (typeof series)[number], at: number }[]} */
@@ -322,15 +321,13 @@ microscope.draw((input, { previous, width, paths }) => {
   }
   lows.sort((a, b) => a.line.values[a.at] - b.line.values[b.at]);
   highs.sort((a, b) => b.line.values[b.at] - a.line.values[a.at]);
-  const who = (/** @type {{ line: { name: string } }} */ s) =>
-    series.length > 1 ? `${s.line.name} ` : "";
+  /** @param {{ line: { name: string } }} s */
+  const who = (s) => (series.length > 1 ? `${s.line.name} ` : "");
   const [lowest] = lows;
   const [highest] = highs;
   if (lowest !== undefined && highest !== undefined) {
     caption.push(
       `min ${who(lowest)}${brief(exact(lowest.line.values[lowest.at], lowest.line.raw, lowest.at))} at [${lowest.at}]`,
-    );
-    caption.push(
       `max ${who(highest)}${brief(exact(highest.line.values[highest.at], highest.line.raw, highest.at))} at [${highest.at}]`,
     );
   }
@@ -365,8 +362,13 @@ function seriesOf(input) {
     raw: values,
   }));
   const kept = named.slice(0, 8);
-  const order = kept.map((line) => line.name).sort();
-  return kept.map((line) => ({ ...line, hue: order.indexOf(line.name) }));
+  const order = kept.map((line) => line.name).toSorted();
+  return kept.map((line) => ({
+    name: line.name,
+    values: line.values,
+    raw: line.raw,
+    hue: order.indexOf(line.name),
+  }));
 }
 
 /** The previous stop's series, or none when its inputs no longer read. */
@@ -415,6 +417,7 @@ function numbers(value, what) {
     return Float64Array.from(value, Number);
   }
   if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    // oxlint-disable-next-line no-inline-comments -- a JSDoc type cast has to sit inline
     return /** @type {ArrayLike<number>} */ (/** @type {unknown} */ (value));
   }
   if (Array.isArray(value)) {
@@ -451,7 +454,7 @@ function exact(v, raw, i) {
 /** A caption's number: integers whole, floats to six significant digits;
  * titles and the Table have every digit. */
 function brief(text) {
-  return /^-?\d*\.\d{7,}|e/i.test(text) && Number.isFinite(Number(text))
+  return /^-?\d*\.\d{7,}|e/iu.test(text) && Number.isFinite(Number(text))
     ? String(Number(Number(text).toPrecision(6)))
     : text;
 }
@@ -504,13 +507,13 @@ function trace(values, toX, toY, spans, columnX, log) {
       if (Number.isNaN(v)) nans += 1;
       if (v === Number.POSITIVE_INFINITY || v === Number.NEGATIVE_INFINITY)
         infinities.push([i, v > 0]);
-      if (!usable(v)) {
-        gap = true;
-      } else {
+      if (usable(v)) {
         if (Number.isNaN(first)) first = v;
         last = v;
         if (v < lo) lo = v;
         if (v > hi) hi = v;
+      } else {
+        gap = true;
       }
     }
     const px = columnX(span.column);
