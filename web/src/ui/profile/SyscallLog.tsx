@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { withLook } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant } from "../../profile/paint";
-import type { SyscallQuery, SyscallSite, SyscallToken } from "../../protocol";
+import type { SyscallLine, SyscallQuery, SyscallSite, SyscallToken } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
 import { Unanswered } from "./parts";
 
@@ -11,7 +11,7 @@ export function Tokens({ tokens }: { tokens: SyscallToken[] }) {
   return (
     <>
       {tokens.map((token, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: tokens never move
+        // oxlint-disable-next-line react/no-array-index-key -- tokens never move
         <span key={index} className={`tk-${token.kind}`}>
           {token.text}
         </span>
@@ -25,9 +25,10 @@ const PAGE = 500;
 /** The trace as strace prints it, a page at a time; a call's line opens
  * its arguments, bytes, and stack. */
 export function Log({ query }: { query: SyscallQuery }) {
-  const { look, setLook, summary } = useProfile();
+  const { look } = useProfile();
   const [pages, setPages] = useState(1);
   const log = useAnswer("syscallLog", { ...query, offset: 0, limit: PAGE * pages });
+  const showMore = useCallback(() => setPages(pages + 1), [pages]);
   if (!log.data) {
     return (
       <div className="pane syscalls-log" data-testid="syscall-log">
@@ -40,36 +41,43 @@ export function Log({ query }: { query: SyscallQuery }) {
   return (
     <div className="pane syscalls-log" data-testid="syscall-log">
       <div className="log-lines mono">
-        {lines.map((line) => {
-          const open = look.ev === String(line.event);
-          return (
-            <div key={line.event} className={`log-line ${line.failed ? "failed" : ""}`}>
-              <button
-                type="button"
-                className="log-head"
-                disabled={!line.call}
-                aria-expanded={line.call ? open : undefined}
-                onClick={() =>
-                  setLook((look) => withLook(look, "ev", open ? undefined : String(line.event)))
-                }
-              >
-                <span className="muted">{formatInstant(line.time, 1000, summary.duration)}</span>{" "}
-                <span className="tk-pid">{line.tid}</span> <Tokens tokens={line.tokens} />
-                {line.durationNs !== null ? (
-                  <span className="tk-time"> &lt;{formatDuration(line.durationNs)}&gt;</span>
-                ) : null}
-              </button>
-              {open ? <Call event={line.event} /> : null}
-            </div>
-          );
-        })}
+        {lines.map((line) => (
+          <LogLine key={line.event} line={line} open={look.ev === String(line.event)} />
+        ))}
       </div>
       {left > 0 ? (
-        <button type="button" className="button" onClick={() => setPages(pages + 1)}>
+        <button type="button" className="button" onClick={showMore}>
           Show more ({formatCount(left)} left)
         </button>
       ) : null}
       {log.data.total === 0 ? <p className="muted">No call matches.</p> : null}
+    </div>
+  );
+}
+
+/** A call's line, and when open its arguments, bytes, and stack. */
+function LogLine({ line, open }: { line: SyscallLine; open: boolean }) {
+  const { setLook, summary } = useProfile();
+  const toggle = useCallback(
+    () => setLook((look) => withLook(look, "ev", open ? undefined : String(line.event))),
+    [setLook, open, line.event],
+  );
+  return (
+    <div className={`log-line ${line.failed ? "failed" : ""}`}>
+      <button
+        type="button"
+        className="log-head"
+        disabled={!line.call}
+        aria-expanded={line.call ? open : undefined}
+        onClick={toggle}
+      >
+        <span className="muted">{formatInstant(line.time, 1000, summary.duration)}</span>{" "}
+        <span className="tk-pid">{line.tid}</span> <Tokens tokens={line.tokens} />
+        {line.durationNs === null ? null : (
+          <span className="tk-time"> &lt;{formatDuration(line.durationNs)}&gt;</span>
+        )}
+      </button>
+      {open ? <Call event={line.event} /> : null}
     </div>
   );
 }
@@ -106,7 +114,7 @@ function Call({ event }: { event: number }) {
       {data.stack.length > 0 ? (
         <ol className="stack">
           {data.stack.map((name, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: a stack's frames never move
+            // oxlint-disable-next-line react/no-array-index-key -- a stack's frames never move
             <li key={index}>{name}</li>
           ))}
           {data.stackEnds ? <li className="muted">stack ends: {data.stackEnds}</li> : null}

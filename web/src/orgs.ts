@@ -93,28 +93,28 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
-const org = (id: number) => `/api/orgs/${id}`;
+const orgUrl = (id: number) => `/api/orgs/${id}`;
 const project = (id: number) => `/api/projects/${id}`;
 
 export const listOrgs = () => request<Org[]>("GET", "/api/orgs");
 export const createOrg = (name: string) => request<Org>("POST", "/api/orgs", { name });
 export const updateOrg = (id: number, change: { name?: string; base_permission?: Permission }) =>
-  request<Org>("PATCH", org(id), change);
-export const deleteOrg = (id: number) => request<void>("DELETE", org(id));
+  request<Org>("PATCH", orgUrl(id), change);
+export const deleteOrg = (id: number) => request<void>("DELETE", orgUrl(id));
 
-export const listMembers = (id: number) => request<Member[]>("GET", `${org(id)}/members`);
+export const listMembers = (id: number) => request<Member[]>("GET", `${orgUrl(id)}/members`);
 export const setRole = (id: number, user: number, role: Role) =>
-  request<Member>("PATCH", `${org(id)}/members/${user}`, { role });
+  request<Member>("PATCH", `${orgUrl(id)}/members/${user}`, { role });
 /** Removes someone, or, for the person's own id, leaves. */
 export const removeMember = (id: number, user: number) =>
-  request<void>("DELETE", `${org(id)}/members/${user}`);
+  request<void>("DELETE", `${orgUrl(id)}/members/${user}`);
 
 export const listInvitations = (id: number) =>
-  request<Invitation[]>("GET", `${org(id)}/invitations`);
+  request<Invitation[]>("GET", `${orgUrl(id)}/invitations`);
 export const invite = (id: number, username: string, role: Role) =>
-  request<Invitation>("POST", `${org(id)}/invitations`, { username, role });
+  request<Invitation>("POST", `${orgUrl(id)}/invitations`, { username, role });
 export const cancelInvitation = (id: number, user: number) =>
-  request<void>("DELETE", `${org(id)}/invitations/${user}`);
+  request<void>("DELETE", `${orgUrl(id)}/invitations/${user}`);
 
 export const myInvitations = () => request<MyInvitation[]>("GET", "/api/users/me/invitations");
 // An empty JSON body, so the browser asks before sending either from
@@ -138,19 +138,19 @@ export const grantTeam = (id: number, team: number, permission: Grant) =>
 export const revokeTeam = (id: number, team: number) =>
   request<void>("DELETE", `${project(id)}/teams/${team}`);
 
-export const listTeams = (id: number) => request<Team[]>("GET", `${org(id)}/teams`);
+export const listTeams = (id: number) => request<Team[]>("GET", `${orgUrl(id)}/teams`);
 export const createTeam = (id: number, name: string) =>
-  request<Team>("POST", `${org(id)}/teams`, { name });
+  request<Team>("POST", `${orgUrl(id)}/teams`, { name });
 export const renameTeam = (id: number, team: number, name: string) =>
-  request<Team>("PATCH", `${org(id)}/teams/${team}`, { name });
+  request<Team>("PATCH", `${orgUrl(id)}/teams/${team}`, { name });
 export const deleteTeam = (id: number, team: number) =>
-  request<void>("DELETE", `${org(id)}/teams/${team}`);
+  request<void>("DELETE", `${orgUrl(id)}/teams/${team}`);
 export const teamMembers = (id: number, team: number) =>
-  request<TeamMember[]>("GET", `${org(id)}/teams/${team}/members`);
+  request<TeamMember[]>("GET", `${orgUrl(id)}/teams/${team}/members`);
 export const addToTeam = (id: number, team: number, user: number) =>
-  request<void>("PUT", `${org(id)}/teams/${team}/members/${user}`);
+  request<void>("PUT", `${orgUrl(id)}/teams/${team}/members/${user}`);
 export const removeFromTeam = (id: number, team: number, user: number) =>
-  request<void>("DELETE", `${org(id)}/teams/${team}/members/${user}`);
+  request<void>("DELETE", `${orgUrl(id)}/teams/${team}/members/${user}`);
 
 /** What the signed-in person belongs to, can read, and is invited to,
  * which the Account, Projects, and Organization panes share. */
@@ -203,22 +203,26 @@ export function reload(): Promise<void> {
     const signed = account.getState().now;
     return mine === asked && signed.kind === "in" && signed.user.id === user;
   };
-  const loading = Promise.all([listOrgs(), listProjects(), myInvitations()])
-    .then(([orgs, projects, invitations]) => {
+  const loading = (async () => {
+    try {
+      const [orgs, projects, invitations] = await Promise.all([
+        listOrgs(),
+        listProjects(),
+        myInvitations(),
+      ]);
       if (current()) {
         directory.setState({ orgs, projects, invitations, error: null });
       }
-    })
-    .catch((error: Error) => {
+    } catch (error) {
       if (current()) {
-        directory.setState({ error: error.message });
+        directory.setState({ error: (error as Error).message });
       }
-    })
-    .finally(() => {
-      if (inFlight === loading) {
-        inFlight = null;
-      }
-    });
+    }
+  })().finally(() => {
+    if (inFlight === loading) {
+      inFlight = null;
+    }
+  });
   inFlight = loading;
   return loading;
 }
@@ -227,9 +231,9 @@ export function reload(): Promise<void> {
  * someone else signs in. Panes opening together share one question. */
 export function useDirectory(): Directory {
   const user = signedInAs(useAccount());
-  // biome-ignore lint/correctness/useExhaustiveDependencies: asks again only for another person
   useEffect(() => {
     void (inFlight ?? reload());
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- asks again only for another person
   }, [user]);
   return useStore(directory);
 }
@@ -278,9 +282,9 @@ export function groupProjects(
     }
     group.projects.push(each);
   }
-  const groups = [...shared.values()].sort((a, b) => byName(a.org, b.org));
+  const groups = [...shared.values()].toSorted((a, b) => byName(a.org, b.org));
   return [
-    { org: null, projects: own.sort(byName) },
-    ...groups.map((group) => ({ org: group.org, projects: group.projects.sort(byName) })),
+    { org: null, projects: own.toSorted(byName) },
+    ...groups.map((group) => ({ org: group.org, projects: group.projects.toSorted(byName) })),
   ];
 }

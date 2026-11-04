@@ -30,7 +30,7 @@ const ZIG_KEYWORDS = new Set(
   ).split(" "),
 );
 const ZIG_TYPES =
-  /^(?:[iu]\d+|f16|f32|f64|f80|f128|usize|isize|bool|void|noreturn|type|anyerror|comptime_int|comptime_float|c_\w+)$/;
+  /^(?:[iu]\d+|f16|f32|f64|f80|f128|usize|isize|bool|void|noreturn|type|anyerror|comptime_int|comptime_float|c_\w+)$/u;
 
 /** A small Zig tokenizer: keywords, types, strings, numbers, comments. */
 const zig = StreamLanguage.define<{ inString: false }>({
@@ -61,14 +61,16 @@ const zig = StreamLanguage.define<{ inString: false }>({
       return "string";
     }
     if (
-      stream.match(/^0x[0-9a-fA-F_]+|^0b[01_]+|^0o[0-7_]+|^\d[\d_]*(\.\d[\d_]*)?([eE][-+]?\d+)?/)
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+      stream.match(/^0x[0-9a-fA-F_]+|^0b[01_]+|^0o[0-7_]+|^\d[\d_]*(\.\d[\d_]*)?([eE][-+]?\d+)?/u)
     ) {
       return "number";
     }
-    if (stream.match(/^@\w+/)) {
+    // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+    if (stream.match(/^@\w+/u)) {
       return "builtin";
     }
-    const word = stream.match(/^[A-Za-z_]\w*/);
+    const word = stream.match(/^[A-Za-z_]\w*/u);
     if (word) {
       const text = stream.current();
       if (ZIG_KEYWORDS.has(text)) {
@@ -141,8 +143,10 @@ function simple(syntax: Syntax) {
     assert(state.depth >= 1, "reading a block comment at depth below 1");
     const [open, close, nests] = state.comment;
     while (!stream.eol()) {
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
       if (nests && stream.match(open)) {
         state.depth += 1;
+        // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
       } else if (stream.match(close)) {
         state.depth -= 1;
         if (state.depth === 0) {
@@ -162,6 +166,7 @@ function simple(syntax: Syntax) {
     const closing = state.closing;
     assert(closing !== null, "reading a raw string with no closing");
     while (!stream.eol()) {
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
       if (stream.match(closing)) {
         while (closing.startsWith('"') && stream.eat('"')) {}
         state.closing = null;
@@ -192,6 +197,7 @@ function simple(syntax: Syntax) {
         state.depth = 1;
         return inComment(stream, state);
       }
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
       if (stream.match(syntax.lineComment)) {
         stream.skipToEnd();
         return "comment";
@@ -219,22 +225,25 @@ function simple(syntax: Syntax) {
       if (quote === "'") {
         if (syntax.attributes) {
           // A quote after a name begins an attribute, as in `Items'Last`.
-          if (/[\w)]/.test(before) || !stream.match(/^'.'/)) {
+          // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+          if (/[\w)]/u.test(before) || !stream.match(/^'.'/u)) {
             stream.next();
             return null;
           }
           return "string";
         }
-        stream.match(/^'(?:\\.|[^'\\])*'?/);
+        stream.match(/^'(?:\\.|[^'\\])*'?/u);
         return "string";
       }
       if (
-        !/\w/.test(before) &&
-        stream.match(/^0x[0-9a-fA-F_]+|^\d[\d_]*(\.\d[\d_]*)?([eEdD][-+]?\d+)?/)
+        !/\w/u.test(before) &&
+        // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+        stream.match(/^0x[0-9a-fA-F_]+|^\d[\d_]*(\.\d[\d_]*)?([eEdD][-+]?\d+)?/u)
       ) {
         return "number";
       }
-      if (stream.match(/^[A-Za-z_]\w*/)) {
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+      if (stream.match(/^[A-Za-z_]\w*/u)) {
         const text = stream.current();
         if (keywords.has(syntax.ignoreCase ? text.toLowerCase() : text)) {
           return "keyword";
@@ -331,11 +340,11 @@ const ada = simple({
 });
 
 /** Python's string prefixes, in any case, before the quote that opens a string. */
-const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/i;
+const PYTHON_STRING_START = /^(?:rb|br|fr|rf|tr|rt|[rubft])?(?=['"])/iu;
 
 /** Hexadecimal, octal, binary, or decimal with an exponent and an imaginary suffix. */
 const PYTHON_NUMBER =
-  /^0[xX][\da-fA-F_]+|^0[oO][0-7_]+|^0[bB][01_]+|^\d[\d_]*(\.\d[\d_]*)?(?:[eE][-+]?\d[\d_]*)?[jJ]?/;
+  /^0[xX][\da-fA-F_]+|^0[oO][0-7_]+|^0[bB][01_]+|^\d[\d_]*(\.\d[\d_]*)?(?:[eE][-+]?\d[\d_]*)?[jJ]?/u;
 
 /** What each brace or bracket open in an f-string's field holds: the field's
  * expression, its format spec after a `:`, or a bracket in the expression. */
@@ -360,6 +369,7 @@ function readPythonString(stream: StringStream, state: PythonState, closing: str
   const triple = closing.length === 3;
   let continued = false;
   while (!stream.eol()) {
+    // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
     if (stream.match(closing)) {
       state.closing = null;
       return;
@@ -386,6 +396,7 @@ function readFormattedString(stream: StringStream, state: PythonState) {
   while (!stream.eol()) {
     if (state.inner !== null) {
       const inner = state.inner;
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
       if (stream.match(inner)) {
         state.inner = null;
       } else if (!stream.eat("\\") || !stream.eol()) {
@@ -393,7 +404,7 @@ function readFormattedString(stream: StringStream, state: PythonState) {
       }
       continue;
     }
-    const top = state.open[state.open.length - 1];
+    const top = state.open.at(-1);
     if (top === undefined || top === "spec") {
       if (!state.raw && stream.eat("\\")) {
         if (stream.eol()) {
@@ -403,6 +414,7 @@ function readFormattedString(stream: StringStream, state: PythonState) {
         }
         continue;
       }
+      // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
       if (top === undefined && stream.match(closing)) {
         state.closing = null;
         return;
@@ -419,7 +431,8 @@ function readFormattedString(stream: StringStream, state: PythonState) {
     }
     // An expression, whose strings end none of this one.
     const before = stream.string.charAt(stream.pos - 1);
-    if (!/\w/.test(before) && stream.match(PYTHON_STRING_START)) {
+    // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+    if (!/\w/u.test(before) && stream.match(PYTHON_STRING_START)) {
       const quote = stream.next();
       assert(quote === '"' || quote === "'", "python string prefix not before a quote");
       state.inner = stream.string.startsWith(quote.repeat(3), stream.pos - 1)
@@ -476,7 +489,7 @@ const python = StreamLanguage.define<PythonState>({
         ? quote.repeat(3)
         : quote;
       stream.pos += closing.length - 1;
-      if (/[ft]/.test(letters)) {
+      if (/[ft]/u.test(letters)) {
         state.closing = closing;
         state.formatted = true;
         state.raw = letters.includes("r");
@@ -489,10 +502,12 @@ const python = StreamLanguage.define<PythonState>({
       }
       return "string";
     }
+    // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
     if (stream.match(PYTHON_NUMBER)) {
       return "number";
     }
-    if (stream.match(/^[A-Za-z_]\w*/)) {
+    // oxlint-disable-next-line unicorn/prefer-regexp-test -- StringStream.match, not String#match
+    if (stream.match(/^[A-Za-z_]\w*/u)) {
       if (
         PYTHON_KEYWORDS.has(stream.current()) &&
         pythonKeywordHolds(

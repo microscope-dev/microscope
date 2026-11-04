@@ -155,7 +155,7 @@ export function open(
 /** The open pane of a kind and key. */
 export function paneOf(layout: Layout, kind: KindId, key: string): PaneId | null {
   const found = (Object.entries(layout.panes) as [PaneId, Pane][]).find(
-    ([, open]) => open.kind === kind && open.key === key,
+    ([, pane]) => pane.kind === kind && pane.key === key,
   );
   return found?.[0] ?? null;
 }
@@ -170,19 +170,19 @@ export type Shape =
 export function build(shape: Shape): Layout {
   let next = 0;
   const panes: Record<PaneId, Pane> = {};
-  const node = (shape: Shape): Node => {
-    if ("axis" in shape) {
+  const node = (part: Shape): Node => {
+    if ("axis" in part) {
       const id = `s${next++}` as SplitId;
-      const total = shape.children.reduce((sum, [weight]) => sum + weight, 0);
-      const children = shape.children.map(([weight, child]) => ({
+      const total = part.children.reduce((sum, [weight]) => sum + weight, 0);
+      const children = part.children.map(([weight, child]) => ({
         node: node(child),
         weight: weight / total,
       }));
-      return { type: "split", id, axis: shape.axis, children };
+      return { type: "split", id, axis: part.axis, children };
     }
-    assert(shape.length > 0, "a group to build has no panes");
+    assert(part.length > 0, "a group to build has no panes");
     const id = `g${next++}` as GroupId;
-    const tabs = shape.map((pane) => {
+    const tabs = part.map((pane) => {
       const tab = `p${next++}` as PaneId;
       panes[tab] = pane;
       return tab;
@@ -260,8 +260,8 @@ export function split(layout: Layout, group: GroupId, side: Side): Layout {
 }
 
 /** Shares a split's space anew. */
-export function resize(layout: Layout, split: SplitId, weights: readonly number[]): Layout {
-  const found = splits(layout.root).find((candidate) => candidate.id === split);
+export function resize(layout: Layout, id: SplitId, weights: readonly number[]): Layout {
+  const found = splits(layout.root).find((candidate) => candidate.id === id);
   if (
     !found ||
     weights.length !== found.children.length ||
@@ -274,7 +274,7 @@ export function resize(layout: Layout, split: SplitId, weights: readonly number[
     node: child.node,
     weight: (weights[index] as number) / total,
   }));
-  return settle({ ...layout, root: replaceNode(layout.root, split, { ...found, children }) });
+  return settle({ ...layout, root: replaceNode(layout.root, id, { ...found, children }) });
 }
 
 /** Floats a pane in a window of its own at `rect`, on top. A pane alone in
@@ -535,10 +535,10 @@ function replaceNode(node: Node, id: GroupId | SplitId, by: Node): Node {
 function settle(layout: Layout): Layout {
   assert(Number.isSafeInteger(layout.next), "layout ids exhausted");
   const before = groups(layout);
-  const dock = before.filter((group) => !layout.floating.some((w) => w.group === group));
+  const firstDocked = before.find((group) => !layout.floating.some((w) => w.group === group));
   const root = tidy(layout.root) ?? {
     type: "group",
-    id: (dock[0] as Group).id,
+    id: (firstDocked as Group).id,
     tabs: [],
     active: null,
   };
@@ -549,7 +549,7 @@ function settle(layout: Layout): Layout {
   let focused = layout.focused;
   if (!after.has(focused)) {
     const index = before.findIndex((group) => group.id === focused);
-    const nearest = [...before.slice(0, index).reverse(), ...before.slice(index + 1)].find(
+    const nearest = [...before.slice(0, index).toReversed(), ...before.slice(index + 1)].find(
       (group) => after.has(group.id),
     );
     focused =
@@ -600,13 +600,13 @@ function tidy(node: Node): Node | null {
   const total = children.reduce((sum, child) => sum + child.weight, 0);
   return {
     ...node,
-    children: children.map((child) => ({ ...child, weight: child.weight / total })),
+    children: children.map((child) => ({ node: child.node, weight: child.weight / total })),
   };
 }
 
 function validRect(rect: Rect): boolean {
   return (
-    [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
+    [rect.x, rect.y, rect.width, rect.height].every((value) => Number.isFinite(value)) &&
     rect.width > 0 &&
     rect.height > 0
   );
@@ -661,19 +661,19 @@ export function checkLayout(layout: Layout): string[] {
     broken.push("two panes have the same kind and key");
   }
 
-  for (const split of splits(layout.root)) {
-    counted(split.id);
-    if (split.children.length < 2) {
-      broken.push(`${split.id} has fewer than two children`);
+  for (const each of splits(layout.root)) {
+    counted(each.id);
+    if (each.children.length < 2) {
+      broken.push(`${each.id} has fewer than two children`);
     }
-    const total = split.children.reduce((sum, child) => sum + child.weight, 0);
-    if (!split.children.every((child) => child.weight > 0) || Math.abs(total - 1) > 1e-9) {
-      broken.push(`${split.id}'s weights are not positive and summing to 1`);
+    const total = each.children.reduce((sum, child) => sum + child.weight, 0);
+    if (!each.children.every((child) => child.weight > 0) || Math.abs(total - 1) > 1e-9) {
+      broken.push(`${each.id}'s weights are not positive and summing to 1`);
     }
     if (
-      split.children.some((child) => child.node.type === "split" && child.node.axis === split.axis)
+      each.children.some((child) => child.node.type === "split" && child.node.axis === each.axis)
     ) {
-      broken.push(`${split.id} holds a split along its own axis`);
+      broken.push(`${each.id} holds a split along its own axis`);
     }
   }
 

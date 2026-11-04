@@ -133,7 +133,7 @@ const NAMED = new Set(
 const NUMBER = String.raw`[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?%?`;
 const FUNCTION = new RegExp(
   String.raw`^(?:rgba?|hsla?)\(\s*${NUMBER}(?:deg)?(?:\s*[,\s]\s*${NUMBER}){2}(?:\s*[,/]\s*${NUMBER})?\s*\)$`,
-  "i",
+  "iu",
 );
 
 /** Whether `value` is a color the page shows: hex, rgb(), hsl(), or a name. */
@@ -142,7 +142,7 @@ function isColor(value: unknown): value is string {
     return false;
   }
   return (
-    /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value) ||
+    /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/iu.test(value) ||
     FUNCTION.test(value) ||
     NAMED.has(value.toLowerCase())
   );
@@ -153,7 +153,7 @@ export function isSelect(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length <= 1024 &&
-    /^(?:[A-Za-z_][A-Za-z0-9_]*|\[\d+\])(?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*$/.test(value)
+    /^(?:[A-Za-z_][A-Za-z0-9_]*|\[\d+\])(?:\.[A-Za-z_][A-Za-z0-9_]*|\[\d+\])*$/u.test(value)
   );
 }
 
@@ -177,7 +177,8 @@ export function isPathData(d: unknown): d is string {
   if (typeof d !== "string" || d.length > MOST_PATH) {
     return false;
   }
-  const token = /\s*,?\s*(?:([MmLlHhVvCcSsQqTtAaZz])|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))/y;
+  const token =
+    /\s*,?\s*(?:([MmLlHhVvCcSsQqTtAaZz])|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))/uy;
   let command: string | null = null;
   let count = 0;
   let at = 0;
@@ -193,7 +194,7 @@ export function isPathData(d: unknown): d is string {
     token.lastIndex = at;
     const found = token.exec(d);
     if (found === null) {
-      return /^\s*$/.test(d.slice(at));
+      return /^\s*$/u.test(d.slice(at));
     }
     at = token.lastIndex;
     if (found[1] !== undefined) {
@@ -472,15 +473,7 @@ function image(item: Record<string, unknown>, where: string, totals: Totals): vo
   if (item.smooth !== undefined && typeof item.smooth !== "boolean") {
     throw new PictureError(`${where}: \`smooth\` must be true or false`);
   }
-  if (item.rendered !== undefined) {
-    if (item.pixels !== undefined || item.columns !== undefined || item.rows !== undefined) {
-      throw new PictureError(`${where}: an image has either a canvas or pixels`);
-    }
-    if (typeof ImageBitmap === "undefined" || !(item.rendered instanceof ImageBitmap)) {
-      throw new PictureError(`${where}: \`rendered\` is not an image`);
-    }
-    totals.pixels += item.rendered.width * item.rendered.height;
-  } else {
+  if (item.rendered === undefined) {
     const { pixels, columns, rows } = item;
     for (const [name, count] of [
       ["columns", columns],
@@ -500,6 +493,14 @@ function image(item: Record<string, unknown>, where: string, totals: Totals): vo
       );
     }
     totals.pixels += count;
+  } else {
+    if (item.pixels !== undefined || item.columns !== undefined || item.rows !== undefined) {
+      throw new PictureError(`${where}: an image has either a canvas or pixels`);
+    }
+    if (typeof ImageBitmap === "undefined" || !(item.rendered instanceof ImageBitmap)) {
+      throw new PictureError(`${where}: \`rendered\` is not an image`);
+    }
+    totals.pixels += item.rendered.width * item.rendered.height;
   }
   if (totals.pixels > MOST_PIXELS) {
     throw new PictureError(`the picture's images hold more than ${MOST_PIXELS} pixels`);
@@ -508,8 +509,8 @@ function image(item: Record<string, unknown>, where: string, totals: Totals): vo
 
 /** Whether a shape is a line, which is drawn by its stroke, never filled,
  * and in ink unless it says otherwise. */
-export function isLine(shape: Shape): boolean {
-  return shape.type === "line" || shape.type === "polyline";
+export function isLine(item: Shape): boolean {
+  return item.type === "line" || item.type === "polyline";
 }
 
 /** Frees the images a renderer drew on canvases of its own, in a picture
@@ -520,16 +521,16 @@ export function closeImages(picture: unknown): void {
     return;
   }
   let budget = MOST_SHAPES;
-  const walk = (shapes: unknown, depth: number) => {
-    if (!Array.isArray(shapes) || depth > MOST_DEPTH) {
+  const walk = (list: unknown, depth: number) => {
+    if (!Array.isArray(list) || depth > MOST_DEPTH) {
       return;
     }
-    for (const shape of shapes) {
+    for (const item of list) {
       if (budget-- <= 0) {
         return;
       }
-      if (typeof shape === "object" && shape !== null) {
-        const { rendered, shapes: inner } = shape as Record<string, unknown>;
+      if (typeof item === "object" && item !== null) {
+        const { rendered, shapes: inner } = item as Record<string, unknown>;
         if (rendered instanceof ImageBitmap) {
           rendered.close();
         }
@@ -549,7 +550,12 @@ function describe(value: unknown): string {
   if (typeof value === "bigint") {
     return `${value}n`;
   }
-  if (typeof value === "number" || typeof value === "boolean" || value == null) {
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null ||
+    value === undefined
+  ) {
     return String(value);
   }
   return Array.isArray(value) ? "an array" : `a ${typeof value}`;

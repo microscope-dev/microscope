@@ -1,12 +1,14 @@
 // How the debugger handles each signal, and the modules the program has
 // loaded.
 
-import { useState } from "react";
+import { type ChangeEvent, useCallback, useState } from "react";
 
 import { useRequest } from "../data";
 import { controls } from "../model";
 import type { SignalPolicy } from "../protocol";
 import { useConnection, useModel } from "../store";
+
+type Field = "stop" | "print" | "pass";
 
 /** Whether a signal stops the program, is said, and reaches the program. */
 export function Signals() {
@@ -15,6 +17,15 @@ export function Signals() {
   const control = useModel(controls);
   const connection = useConnection();
   const [error, setError] = useState<string | null>(null);
+  const change = useCallback(
+    (policy: SignalPolicy, field: Field, on: boolean) => {
+      setError(null);
+      connection
+        .request("setSignal", { ...policy, [field]: on })
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [connection],
+  );
   if (!session) {
     return <div className="empty">Signals apply once something is being debugged.</div>;
   }
@@ -24,12 +35,6 @@ export function Signals() {
   if (!signals.data) {
     return <div className="empty">Reading signal policies…</div>;
   }
-  const change = (policy: SignalPolicy, field: "stop" | "print" | "pass", on: boolean) => {
-    setError(null);
-    connection
-      .request("setSignal", { ...policy, [field]: on })
-      .catch((failure: Error) => setError(failure.message));
-  };
   return (
     <div className="pane-body table-body">
       {error && <div className="error">{error}</div>}
@@ -50,14 +55,7 @@ export function Signals() {
               <td className="dim">{policy.signal}</td>
               {(["stop", "print", "pass"] as const).map((field) => (
                 <td key={field}>
-                  <input
-                    type="checkbox"
-                    aria-label={`${field[0]?.toUpperCase()}${field.slice(1)} on ${policy.name}`}
-                    checked={policy[field]}
-                    // A signal that stops is always said.
-                    disabled={!control || (field === "print" && policy.stop)}
-                    onChange={(event) => change(policy, field, event.target.checked)}
-                  />
+                  <PolicyBox policy={policy} field={field} control={control} onChange={change} />
                 </td>
               ))}
             </tr>
@@ -137,5 +135,32 @@ function Bound({ value }: { value: string | null }) {
     </td>
   ) : (
     <td className="mono">{value}</td>
+  );
+}
+
+function PolicyBox({
+  policy,
+  field,
+  control,
+  onChange,
+}: {
+  policy: SignalPolicy;
+  field: Field;
+  control: boolean;
+  onChange: (policy: SignalPolicy, field: Field, on: boolean) => void;
+}) {
+  const change = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => onChange(policy, field, event.target.checked),
+    [onChange, policy, field],
+  );
+  return (
+    <input
+      type="checkbox"
+      aria-label={`${field[0]?.toUpperCase()}${field.slice(1)} on ${policy.name}`}
+      checked={policy[field]}
+      // A signal that stops is always said.
+      disabled={!control || (field === "print" && policy.stop)}
+      onChange={change}
+    />
   );
 }

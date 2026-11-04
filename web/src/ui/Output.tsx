@@ -1,6 +1,6 @@
 // The program's output, what logpoints wrote, and the program's input.
 
-import { useState } from "react";
+import { type ChangeEvent, type FormEvent, type KeyboardEvent, useCallback, useState } from "react";
 
 import { controls } from "../model";
 import { useConnection, useModel } from "../store";
@@ -23,12 +23,12 @@ export function Output() {
 
 function Written() {
   const output = useModel((model) => model.output);
-  const body = useFollowBottom<HTMLDivElement>(output);
+  const { ref, onScroll } = useFollowBottom<HTMLDivElement>(output);
 
   return (
-    <div className="pane-body" ref={body.ref} onScroll={body.onScroll}>
+    <div className="pane-body" ref={ref} onScroll={onScroll}>
       {output.length === 0 ? (
-        <div className="empty">The program's output appears here.</div>
+        <div className="empty">The program&apos;s output appears here.</div>
       ) : (
         <pre className="output" data-testid="output">
           {output.map((piece) => (
@@ -52,24 +52,41 @@ function Input() {
   const connection = useConnection();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const send = useCallback(
+    (eof: boolean) => {
+      setError(null);
+      connection
+        .request("input", { text: eof ? text : `${text}\n`, eof })
+        .then(() => setText(""))
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [connection, text],
+  );
+  const onSubmit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      send(false);
+    },
+    [send],
+  );
+  const onChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+    [],
+  );
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "d" && event.ctrlKey) {
+        event.preventDefault();
+        send(true);
+      }
+    },
+    [send],
+  );
   if (!control || !running) {
     return null;
   }
-  const send = (eof: boolean) => {
-    setError(null);
-    connection
-      .request("input", { text: eof ? text : `${text}\n`, eof })
-      .then(() => setText(""))
-      .catch((failure: Error) => setError(failure.message));
-  };
   return (
-    <form
-      className="program-input"
-      onSubmit={(event) => {
-        event.preventDefault();
-        send(false);
-      }}
-    >
+    <form className="program-input" onSubmit={onSubmit}>
       <span className="prompt" aria-hidden="true">
         ›
       </span>
@@ -78,13 +95,8 @@ function Input() {
         aria-label="Program input"
         placeholder="input for the program; Enter sends a line, Ctrl+D ends its input"
         value={text}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "d" && event.ctrlKey) {
-            event.preventDefault();
-            send(true);
-          }
-        }}
+        onChange={onChange}
+        onKeyDown={onKeyDown}
       />
       {error && (
         <span className="error" title={error}>

@@ -36,14 +36,15 @@ export function inlineExpressions(
   const seen = new Set<string>();
   let count = 0;
   for (let number = line; number >= Math.max(1, line - BEFORE, first ?? 1); number -= 1) {
-    const found = expressionsIn(lines[number - 1] ?? "", path).filter((expression) => {
+    const found: string[] = [];
+    for (const expression of expressionsIn(lines[number - 1] ?? "", path)) {
       if (seen.has(expression) || count >= MOST) {
-        return false;
+        continue;
       }
       seen.add(expression);
       count += 1;
-      return true;
-    });
+      found.push(expression);
+    }
     if (found.length > 0) {
       shown.set(number, found);
     }
@@ -93,13 +94,14 @@ export function useInlineValues(
     }
     let live = true;
     const expressions = [...wanted.values()].flat();
-    void Promise.all(
-      expressions.map((expression) =>
-        cache
-          .get(connection, "evaluate", { ...at, expression })
-          .promise.then((settled) => [expression, settled] as const),
-      ),
-    ).then((settled) => {
+    const load = async () => {
+      const settled = await Promise.all(
+        expressions.map((expression) =>
+          cache
+            .get(connection, "evaluate", { ...at, expression })
+            .promise.then((outcome) => [expression, outcome] as const),
+        ),
+      );
       if (!live) {
         return;
       }
@@ -110,7 +112,8 @@ export function useInlineValues(
         }
       }
       setValues({ at, writes, rows });
-    });
+    };
+    void load();
     return () => {
       live = false;
     };

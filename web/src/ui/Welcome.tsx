@@ -4,12 +4,13 @@
 // and refused here as it is in the menus.
 
 import { Link } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo } from "react";
 
 import { checkAccount, useAccount } from "../account";
 import { targetName } from "../model";
 import { useModel } from "../store";
 import { remote, standalone } from "../target";
+import type { Availability } from "../workbench/commands";
 import { COMMANDS, type CommandId, useCommands } from "./commands";
 import { showProfile } from "./panes";
 import { fileName } from "./paths";
@@ -42,29 +43,44 @@ export function WelcomeBody() {
       </p>
       <ul className="welcome-actions">
         {ACTIONS.map((id) => {
-          const now = commands.availability(id);
-          if (now.state === "absent") {
+          const availability = commands.availability(id);
+          if (availability.state === "absent") {
             return null;
           }
-          const key = COMMANDS.describe(id) ?? COMMANDS.describe(id, true);
           return (
-            <li key={id}>
-              <button
-                type="button"
-                className="button"
-                disabled={now.state !== "ready"}
-                title={now.state === "blocked" ? now.why : undefined}
-                onClick={() => commands.run(id)}
-              >
-                {COMMANDS.get(id).label}
-              </button>
-              {key && <kbd>{key}</kbd>}
-              {now.state === "blocked" && <span className="muted">{now.why}</span>}
-            </li>
+            <WelcomeAction key={id} id={id} availability={availability} onRun={commands.run} />
           );
         })}
       </ul>
     </div>
+  );
+}
+
+function WelcomeAction({
+  id,
+  availability,
+  onRun,
+}: {
+  id: CommandId;
+  availability: Availability;
+  onRun: (id: CommandId) => unknown;
+}) {
+  const onClick = useCallback(() => onRun(id), [onRun, id]);
+  const key = COMMANDS.describe(id) ?? COMMANDS.describe(id, true);
+  return (
+    <li>
+      <button
+        type="button"
+        className="button"
+        disabled={availability.state !== "ready"}
+        title={availability.state === "blocked" ? availability.why : undefined}
+        onClick={onClick}
+      >
+        {COMMANDS.get(id).label}
+      </button>
+      {key && <kbd>{key}</kbd>}
+      {availability.state === "blocked" && <span className="muted">{availability.why}</span>}
+    </li>
   );
 }
 
@@ -97,9 +113,7 @@ export function ExplorerBody() {
       <h2>Session</h2>
       {state?.session && debugging ? (
         <p>
-          <Link to="/s/$session" params={{ session: state.session }}>
-            {debugging}
-          </Link>
+          <SessionLink session={state.session}>{debugging}</SessionLink>
         </p>
       ) : (
         <p className="muted">Nothing is being debugged.</p>
@@ -112,18 +126,30 @@ export function ExplorerBody() {
         <ul className="rows">
           {profiles.map((profile) => (
             <li key={profile.id}>
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => showProfile(profile.id, profile.name)}
-              >
-                {fileName(profile.name)}
-              </button>{" "}
+              <ProfileButton id={profile.id} name={profile.name} />{" "}
               {profile.recording && <span className="muted">recording</span>}
             </li>
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+export function SessionLink({ session, children }: { session: string; children: ReactNode }) {
+  const params = useMemo(() => ({ session }), [session]);
+  return (
+    <Link to="/s/$session" params={params}>
+      {children}
+    </Link>
+  );
+}
+
+function ProfileButton({ id, name }: { id: string; name: string }) {
+  const onClick = useCallback(() => showProfile(id, name), [id, name]);
+  return (
+    <button type="button" className="link-button" onClick={onClick}>
+      {fileName(name)}
+    </button>
   );
 }

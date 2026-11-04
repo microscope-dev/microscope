@@ -55,6 +55,7 @@
         });
       }
     });
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's postMessage takes no target origin
     worker.postMessage({ type: "load", source: renderer.source, name: renderer.name });
     cards.set(card, held);
     return held;
@@ -76,21 +77,18 @@
   function receive(event) {
     const message = event.data;
     if (message?.type === "draw") {
-      workerFor(message.card, message.renderer).worker.postMessage({
-        type: "draw",
-        id: message.id,
-        input: message.input,
-        context: message.context,
-      });
+      const { worker } = workerFor(message.card, message.renderer);
+      const { id, input, context } = message;
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's postMessage takes no target origin
+      worker.postMessage({ type: "draw", id, input, context });
     } else if (message?.type === "live-start") {
-      workerFor(message.card, message.renderer).worker.postMessage({
-        type: "live-start",
-        input: message.input,
-        context: message.context,
-        size: message.size,
-      });
+      const { worker } = workerFor(message.card, message.renderer);
+      const { input, context, size } = message;
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's postMessage takes no target origin
+      worker.postMessage({ type: "live-start", input, context, size });
     } else if (LIVE.has(message?.type)) {
       const { card, ...rest } = message;
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's postMessage takes no target origin
       cards.get(card)?.worker.postMessage(rest);
     } else if (message?.type === "release") {
       release(message.card);

@@ -115,13 +115,13 @@ export function traceNotes(settings: readonly Setting[]): TraceNote[] {
   }
   const steps = settings
     .flatMap((each) => {
-      const step = /^budget (\d+)$/.exec(each.name);
+      const step = /^budget (\d+)$/u.exec(each.name);
       return step ? [{ step: Number(step[1]), note: each.value }] : [];
     })
-    .sort((a, b) => a.step - b.step)
+    .toSorted((a, b) => a.step - b.step)
     .map((each) => each.note);
   if (steps.length > 0) {
-    notes.push({ text: `budget: ${steps[steps.length - 1]}`, title: steps.join("\n"), warn: true });
+    notes.push({ text: `budget: ${steps.at(-1)}`, title: steps.join("\n"), warn: true });
   }
   const trigger = settings.find((each) => each.name === "trigger")?.value;
   if (trigger) {

@@ -60,6 +60,7 @@ export function Status() {
   });
   return (
     // A status, so a change of run state is read out.
+    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled block, not a form output
     <div className="status" role="status" data-testid="status">
       {program && (
         <span className="program" title={command}>

@@ -3,7 +3,7 @@
 // alone.
 
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 
 import { base } from "../base";
 import { commandName } from "../model";
@@ -15,12 +15,23 @@ import { COMMANDS, useCommands } from "./commands";
 import { RunToolbar } from "./RunToolbar";
 import { StatusBar } from "./StatusBar";
 
+const JOINING = { gridTemplateRows: "1fr" };
+
 export function Frame() {
   const name = useModel((model) => commandName(model.state));
   const inferior = useModel((model) => model.state?.inferior.state);
   const location = useLocation();
-  const commands = useCommands();
+  const { availability, run } = useCommands();
   useKeys();
+  const runFromMenu = useCallback(
+    (id: Parameters<typeof run>[0]) => {
+      const ran = run(id);
+      if (ran.state === "blocked") {
+        flash(ran.why);
+      }
+    },
+    [run],
+  );
 
   useEffect(() => {
     const state = inferior === "stopped" ? "stopped" : inferior === "running" ? "running" : null;
@@ -30,7 +41,7 @@ export function Frame() {
   // Joining happens before there is anything to control.
   if (location.pathname === "/join") {
     return (
-      <div className="app" style={{ gridTemplateRows: "1fr" }}>
+      <div className="app" style={JOINING}>
         <Outlet />
       </div>
     );
@@ -43,16 +54,7 @@ export function Frame() {
             <img src={`${base}favicon.svg`} alt="" />
             microscope
           </Link>
-          <MenuBar
-            registry={COMMANDS}
-            availability={commands.availability}
-            run={(id) => {
-              const ran = commands.run(id);
-              if (ran.state === "blocked") {
-                flash(ran.why);
-              }
-            }}
-          />
+          <MenuBar registry={COMMANDS} availability={availability} run={runFromMenu} />
         </div>
         <RunToolbar />
       </header>
@@ -87,7 +89,7 @@ function useKeys() {
       }
       // Function keys are claimed even when they mean nothing here, so F5
       // never reloads the debugger away.
-      if (ran.state !== "absent" || /^F\d+$/.test(event.key)) {
+      if (ran.state !== "absent" || /^F\d+$/u.test(event.key)) {
         event.preventDefault();
       }
     };

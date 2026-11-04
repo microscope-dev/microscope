@@ -19,17 +19,17 @@ export function useFollowBottom<T extends HTMLElement>(
   const following = useRef(true);
 
   // Declared first, so it runs before the scroll when both change at once.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new start is what follows again
   useEffect(() => {
     following.current = true;
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new start is what follows again
   }, [start]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: new content is what moves it
   useEffect(() => {
     const element = ref.current;
     if (element && following.current) {
       element.scrollTop = element.scrollHeight;
     }
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- new content is what moves it
   }, [content]);
 
   return {

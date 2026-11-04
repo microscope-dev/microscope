@@ -44,7 +44,7 @@ export class Recall {
     if (!shown) {
       shown = new Map();
       this.#stops.set(stop, shown);
-      const oldest = [...this.#stops.keys()].sort((a, b) => a - b);
+      const oldest = [...this.#stops.keys()].toSorted((a, b) => a - b);
       while (oldest.length > STOPS) {
         this.#stops.delete(oldest.shift() as number);
       }

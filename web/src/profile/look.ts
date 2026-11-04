@@ -79,9 +79,9 @@ export interface ProfileLook {
 }
 
 const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "zones", "syscalls"];
-const SYSCALL_GROUPS: readonly string[] = ["class", "process", "thread", "path", "site"];
-const SYSCALL_TABS: readonly string[] = ["log", "files", "network", "processes"];
-const GRANULARITIES: readonly string[] = ["physical", "line", "address"];
+const SYSCALL_GROUPS: ReadonlySet<string> = new Set(["class", "process", "thread", "path", "site"]);
+const SYSCALL_TABS: ReadonlySet<string> = new Set(["log", "files", "network", "processes"]);
+const GRANULARITIES: ReadonlySet<string> = new Set(["physical", "line", "address"]);
 const OPS: readonly TransformOp[] = ["focus", "merge", "drop", "collapse"];
 /** The ops that take no name, written in the look as the op alone. */
 const NAMELESS: readonly TransformOp[] = ["collapseCycles"];
@@ -107,14 +107,14 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   if (range && parseRange(range)) {
     look.range = range;
   }
-  const th = list("th")?.filter((row) => /^\d+$/.test(row));
+  const th = list("th")?.filter((row) => /^\d+$/u.test(row));
   if (th && th.length > 0) {
     look.th = th;
   }
   if (text("src") === "waits") {
     look.src = "waits";
   }
-  const tk = list("tk")?.filter((row) => row === "none" || /^\d+$/.test(row));
+  const tk = list("tk")?.filter((row) => row === "none" || /^\d+$/u.test(row));
   if (tk && tk.length > 0) {
     look.tk = tk;
   }
@@ -148,7 +148,7 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
     look.py = "1";
   }
   const by = text("by");
-  if (by && GRANULARITIES.includes(by)) {
+  if (by && GRANULARITIES.has(by)) {
     look.by = by as ProfileLook["by"] & string;
   }
   const fn = text("fn");
@@ -181,22 +181,22 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
     }
   }
   const sg = text("sg");
-  if (sg && SYSCALL_GROUPS.includes(sg)) {
+  if (sg && SYSCALL_GROUPS.has(sg)) {
     look.sg = sg as ProfileLook["sg"] & string;
   }
   const st = text("st");
-  if (st && SYSCALL_TABS.includes(st)) {
+  if (st && SYSCALL_TABS.has(st)) {
     look.st = st as SyscallTab;
   }
   if (text("sr") === "syscall") {
     look.sr = "syscall";
   }
   const ev = text("ev");
-  if (ev && /^\d+$/.test(ev)) {
+  if (ev && /^\d+$/u.test(ev)) {
     look.ev = ev;
   }
   const sl = text("sl");
-  if (sl && /^\d{1,2}$/.test(sl)) {
+  if (sl && /^\d{1,2}$/u.test(sl)) {
     look.sl = sl;
   }
   return look;
@@ -217,7 +217,7 @@ export function syscallQueryOf(profile: string, look: ProfileLook, revision: num
 
 /** Parses `START-END`, a nonempty range of whole nanoseconds. */
 export function parseRange(text: string): [number, number] | null {
-  const match = /^(\d{1,16})-(\d{1,16})$/.exec(text);
+  const match = /^(\d{1,16})-(\d{1,16})$/u.exec(text);
   if (!match) {
     return null;
   }

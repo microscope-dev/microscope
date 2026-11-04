@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { assert } from "../assert";
 import { useRequest } from "../data";
@@ -21,6 +21,15 @@ export function Tasks() {
   // A stop's tasks are read while it lasts.
   const asked = useRequest("tasks", at && stale === null ? { stop: at.stop } : null);
   const list = asked.data;
+  // A task opens at the code the program wrote, as its place says.
+  const choose = useCallback(
+    (task: Task) => {
+      assert(at !== null, `task ${task.key.number} chosen with no stop`);
+      go({ stop: at.stop, thread: 0, task: task.key, frame: task.frame?.index ?? 0 });
+    },
+    [at, go],
+  );
+  const toggleGrouped = useCallback(() => setGrouped((was) => !was), []);
   if (at && asked.error) {
     return (
       <div className="pane-body">
@@ -32,19 +41,16 @@ export function Tasks() {
     return (
       <div className="pane-body">
         <div className="empty">
-          {!at
-            ? "Tasks appear when the program stops."
-            : list
+          {at
+            ? list
               ? "This program's runtimes have no tasks at this stop."
-              : "Reading the tasks…"}
+              : "Reading the tasks…"
+            : "Tasks appear when the program stops."}
         </div>
       </div>
     );
   }
   const noun = list.noun ?? "task";
-  // A task opens at the code the program wrote, as its place says.
-  const choose = (task: Task) =>
-    go({ stop: at.stop, thread: 0, task: task.key, frame: task.frame?.index ?? 0 });
 
   return (
     <div className="pane-body">
@@ -53,7 +59,7 @@ export function Tasks() {
           type="button"
           className="link-button"
           aria-pressed={grouped}
-          onClick={() => setGrouped(!grouped)}
+          onClick={toggleGrouped}
         >
           {grouped ? "ungroup" : "group"}
         </button>
@@ -154,6 +160,7 @@ function TaskButton({
   children: React.ReactNode;
 }) {
   const shown = at.task?.runtime === task.key.runtime && at.task?.number === task.key.number;
+  const onClick = useCallback(() => onChoose(task), [onChoose, task]);
   return (
     <button
       type="button"
@@ -161,7 +168,7 @@ function TaskButton({
       aria-current={shown ? "true" : undefined}
       aria-label={`task ${task.key.number}`}
       title={describe(task)}
-      onClick={() => onChoose(task)}
+      onClick={onClick}
     >
       {children}
     </button>
@@ -197,7 +204,7 @@ function groups(tasks: readonly Task[]): [string, Task[]][] {
       byPlace.set(task.place, [task]);
     }
   }
-  const sorted = [...byPlace].sort(([, a], [, b]) => b.length - a.length);
+  const sorted = [...byPlace].toSorted(([, a], [, b]) => b.length - a.length);
   assert(
     sorted.reduce((sum, [, group]) => sum + group.length, 0) === tasks.length,
     `${tasks.length} tasks grouped into ${sorted.length} places lost some`,

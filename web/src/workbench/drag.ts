@@ -66,7 +66,7 @@ let active: Drag | null = null;
 
 /** Whether a drag is under way, when Escape is its to cancel. */
 export function dragging(): boolean {
-  return active?.measured != null;
+  return active !== null && active.measured !== null;
 }
 
 /** Starts what may become a drag of a tab, from a press on it. */
@@ -264,7 +264,7 @@ function windowRect(drag: Drag): Rect {
   if (source.type !== "window") {
     throw new Error("a tab has no window");
   }
-  const moved = {
+  const shifted = {
     ...source.rect,
     x: source.rect.x + drag.point.x - drag.start.x,
     y: source.rect.y + drag.point.y - drag.start.y,
@@ -274,7 +274,7 @@ function windowRect(drag: Drag): Rect {
     .layout.floating.filter((window) => window.group.id !== source.group)
     .map((window) => window.rect);
   const viewport = { x: 0, y: 0, width: drag.bounds.width, height: drag.bounds.height };
-  return snapWindow(moved, others, viewport, drag.alt);
+  return snapWindow(shifted, others, viewport, drag.alt);
 }
 
 function land(drag: Drag): void {
@@ -334,24 +334,24 @@ function measure(drag: Drag): Measured {
   );
   return {
     dock: drag.bounds,
-    docked: tree.map(measureGroup),
-    floating: windows.map(measureGroup),
+    docked: tree.map((element) => measureGroup(element)),
+    floating: windows.map((element) => measureGroup(element)),
   };
 }
 
 function measureGroup(element: HTMLElement): MeasuredGroup {
   const whole = element.getBoundingClientRect();
   const head = element.querySelector('[role="tablist"]')?.getBoundingClientRect() ?? whole;
-  const tabs = [...element.querySelectorAll("[data-part=tab]")].map((tab) => rect(tab));
+  const tabs = [...element.querySelectorAll("[data-part=tab]")].map((tab) => toRect(tab));
   return {
     id: element.dataset.group as GroupId,
-    strip: rect(head),
+    strip: toRect(head),
     body: { x: whole.x, y: head.bottom, width: whole.width, height: whole.bottom - head.bottom },
     tabs,
   };
 }
 
-function rect(of: Element | DOMRect): Rect {
+function toRect(of: Element | DOMRect): Rect {
   const box = of instanceof Element ? of.getBoundingClientRect() : of;
   return { x: box.x, y: box.y, width: box.width, height: box.height };
 }

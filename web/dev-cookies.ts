@@ -13,7 +13,7 @@
  * the last `dev-` cookie of each name, the newest at `/`, goes on. */
 export function toServices(header: string): string {
   const kept = new Map<string, string>();
-  for (const pair of header.split(/;\s*/)) {
+  for (const pair of header.split(/;\s*/u)) {
     const name = pair.slice(0, pair.indexOf("="));
     if (name.startsWith("dev-")) {
       kept.set(name, `__Host-${pair.slice("dev-".length)}`);
@@ -27,7 +27,7 @@ export function toServices(header: string): string {
 /** A Set-Cookie header from services, as the browser should keep it. */
 export function fromServices(cookie: string): string {
   return cookie
-    .replace(/^__Host-/, "dev-")
-    .replace(/;\s*Secure/i, "")
-    .replace(/;\s*SameSite=None/i, "; SameSite=Lax");
+    .replace(/^__Host-/u, "dev-")
+    .replace(/;\s*Secure/iu, "")
+    .replace(/;\s*SameSite=None/iu, "; SameSite=Lax");
 }

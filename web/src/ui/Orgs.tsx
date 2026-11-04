@@ -4,7 +4,18 @@
 // shows only for someone services would let use it, and when services
 // refuses anyway, its reason shows where the control was.
 
-import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createStore, useStore } from "zustand";
 
 import { type Account, checkAccount, useAccount } from "../account";
@@ -23,6 +34,7 @@ import {
   directory as directoryStore,
   GRANTS,
   type Grant,
+  type Invitation,
   grantTeam,
   groupProjects,
   invite,
@@ -36,6 +48,7 @@ import {
   PERMISSIONS,
   type Permission,
   type Project,
+  type ProjectTeam,
   projectTeams,
   ROLE_LABEL,
   ROLES,
@@ -48,6 +61,7 @@ import {
   revokeTeam,
   setRole,
   type Team,
+  type TeamMember,
   teamMembers,
   updateOrg,
   useDirectory,
@@ -64,12 +78,12 @@ export const asked = createStore<{ form: "project" | "org" | null }>(() => ({ fo
 /** Opens a form when a command asks for it, now or once the pane mounts. */
 function useAsked(form: "project" | "org", open: () => void): void {
   const wanted = useStore(asked, (state) => state.form === form);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only the ask matters
   useEffect(() => {
     if (wanted) {
       asked.setState({ form: null });
       open();
     }
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- only the ask matters
   }, [wanted]);
 }
 
@@ -90,14 +104,15 @@ export const orgName = (pane: Pane): string => orgParams(pane).name;
 export function useAction() {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const run = (send: () => Promise<unknown>) => {
+  const run = useCallback((send: () => Promise<unknown>) => {
     setWorking(true);
     setError(null);
     send()
       .catch((failure: Error) => setError(failure.message))
       .finally(() => setWorking(false));
-  };
-  return { working, error, run, clear: () => setError(null) };
+  }, []);
+  const clear = useCallback(() => setError(null), []);
+  return { working, error, run, clear };
 }
 
 /** An answer a pane asks for itself, again whenever `key` changes or it
@@ -108,7 +123,6 @@ export function useLoaded<T>(load: () => Promise<T>, key: string) {
     error: null,
   });
   const [round, setRound] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` names what `load` asks
   useEffect(() => {
     let live = true;
     load().then(
@@ -118,9 +132,19 @@ export function useLoaded<T>(load: () => Promise<T>, key: string) {
     return () => {
       live = false;
     };
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- `key` names what `load` asks
   }, [key, round]);
-  return { ...state, again: () => setRound((round) => round + 1) };
+  const again = useCallback(() => setRound((before) => before + 1), []);
+  return { ...state, again };
 }
+
+function showAccount() {
+  showPane(KIND.account);
+}
+
+const NO_ORGS: readonly Org[] = [];
+const NO_PROJECTS: readonly Project[] = [];
+const NO_MEMBERS: readonly Member[] = [];
 
 /** Why a pane about the person's projects has nothing to show, or null. */
 function SignedOut({ now, what }: { now: Account; what: string }) {
@@ -139,7 +163,7 @@ function SignedOut({ now, what }: { now: Account; what: string }) {
         <>
           <p>Sign in to see {what.toLowerCase()}. Connecting to a microscope needs no account.</p>
           <div className="actions">
-            <button type="button" className="button" onClick={() => showPane(KIND.account)}>
+            <button type="button" className="button" onClick={showAccount}>
               Sign in
             </button>
           </div>
@@ -164,13 +188,30 @@ function NameForm(props: {
   const [name, setName] = useState(props.initial ?? "");
   const { working, error, run } = useAction();
   useEffect(() => input.current?.focus(), []);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    run(async () => {
-      await props.send(name.trim());
-      props.done();
-    });
-  };
+  const { send, done } = props;
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      run(async () => {
+        await send(name.trim());
+        done();
+      });
+    },
+    [run, send, name, done],
+  );
+  const type = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
+    [],
+  );
+  const escape = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        done();
+      }
+    },
+    [done],
+  );
   const unchanged = name.trim() === "" || name.trim() === props.initial;
   return (
     <form className="pane-form wide" onSubmit={submit}>
@@ -186,13 +227,8 @@ function NameForm(props: {
           autoComplete="off"
           data-autofocus
           aria-invalid={error !== null}
-          onChange={(event) => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              props.done();
-            }
-          }}
+          onChange={type}
+          onKeyDown={escape}
         />
         {props.note && <span className="note">{props.note}</span>}
       </div>
@@ -206,7 +242,7 @@ function NameForm(props: {
         <button type="submit" className="button primary" disabled={working || unchanged}>
           {props.verb}
         </button>
-        <button type="button" className="link-button" onClick={props.done}>
+        <button type="button" className="link-button" onClick={done}>
           Cancel
         </button>
       </div>
@@ -224,9 +260,13 @@ export function Confirm(props: {
 }) {
   const [asking, setAsking] = useState(false);
   const { working, error, run } = useAction();
+  const { act } = props;
+  const ask = useCallback(() => setAsking(true), []);
+  const confirm = useCallback(() => run(act), [run, act]);
+  const keep = useCallback(() => setAsking(false), []);
   if (!asking) {
     return (
-      <button type="button" className="button small" onClick={() => setAsking(true)}>
+      <button type="button" className="button small" onClick={ask}>
         {props.label}
       </button>
     );
@@ -234,15 +274,10 @@ export function Confirm(props: {
   return (
     <span className="confirm">
       <span>{props.question}</span>
-      <button
-        type="button"
-        className="button small danger"
-        disabled={working}
-        onClick={() => run(props.act)}
-      >
+      <button type="button" className="button small danger" disabled={working} onClick={confirm}>
         {props.label}
       </button>
-      <button type="button" className="link-button" onClick={() => setAsking(false)}>
+      <button type="button" className="link-button" onClick={keep}>
         {props.keep ?? "Cancel"}
       </button>
       {error && (
@@ -263,6 +298,14 @@ function Choice<T extends string>(props: {
   send: (value: T) => Promise<unknown>;
 }) {
   const { working, error, run } = useAction();
+  const { send } = props;
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const value = event.target.value as T;
+      run(() => send(value));
+    },
+    [run, send],
+  );
   return (
     <>
       <select
@@ -270,7 +313,7 @@ function Choice<T extends string>(props: {
         aria-label={props.label}
         value={props.value}
         disabled={working}
-        onChange={(event) => run(() => props.send(event.target.value as T))}
+        onChange={choose}
       >
         {props.options.map((option) => (
           <option key={option} value={option}>
@@ -316,19 +359,21 @@ export function ProjectsBody() {
   useEffect(() => {
     void checkAccount();
   }, []);
-  useAsked("project", () => setCreating(true));
+  const startCreating = useCallback(() => setCreating(true), []);
+  const stopCreating = useCallback(() => setCreating(false), []);
+  useAsked("project", startCreating);
+  const { orgs, projects } = directory;
+  const owned = useMemo(() => (orgs ?? []).filter((org) => org.role === "owner"), [orgs]);
   if (now.kind !== "in") {
     return <SignedOut now={now} what="Projects" />;
   }
-  const { orgs, projects } = directory;
-  const owned = (orgs ?? []).filter((org) => org.role === "owner");
   return (
     <div className="pane-body pane-text projects">
       {creating ? (
-        <NewProject owners={owned} done={() => setCreating(false)} />
+        <NewProject owners={owned} done={stopCreating} />
       ) : (
         <div className="actions">
-          <button type="button" className="button" onClick={() => setCreating(true)}>
+          <button type="button" className="button" onClick={startCreating}>
             New project
           </button>
         </div>
@@ -343,14 +388,13 @@ export function ProjectsBody() {
               <div className="group-head">
                 <h3>{group.org ? orgLabel(group.org, orgs) : "Yours"}</h3>
                 {group.org && (
-                  <button
-                    type="button"
+                  <ShowOrgButton
+                    org={group.org}
                     className="link-button"
-                    aria-label={`Open ${orgLabel(group.org, orgs)}`}
-                    onClick={() => group.org && showOrg(group.org.id, group.org.name)}
+                    label={`Open ${orgLabel(group.org, orgs)}`}
                   >
                     Open organization
-                  </button>
+                  </ShowOrgButton>
                 )}
               </div>
               {group.projects.length === 0 ? (
@@ -381,31 +425,48 @@ export function ProjectsBody() {
   );
 }
 
+function ShowOrgButton({
+  org,
+  className,
+  label,
+  children,
+}: {
+  org: { id: number; name: string };
+  className: string;
+  label?: string;
+  children: ReactNode;
+}) {
+  const onClick = useCallback(() => showOrg(org.id, org.name), [org.id, org.name]);
+  return (
+    <button type="button" className={className} aria-label={label} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
 /** Asks for a new project's name and, for an owner of any organization,
  * whose it is: the person's own by default. */
 function NewProject(props: { owners: readonly Org[]; fixed?: Org; done: () => void }) {
   const ownerId = useId();
   const orgs = useStore(directoryStore, (state) => state.orgs);
   const [owner, setOwner] = useState(props.fixed ? String(props.fixed.id) : "");
+  const send = useCallback(
+    async (name: string) => {
+      await createProject(name, owner === "" ? null : Number(owner));
+      await reload();
+    },
+    [owner],
+  );
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setOwner(event.target.value),
+    [],
+  );
   return (
-    <NameForm
-      label="Project name"
-      verb="Create project"
-      send={async (name) => {
-        await createProject(name, owner === "" ? null : Number(owner));
-        await reload();
-      }}
-      done={props.done}
-    >
+    <NameForm label="Project name" verb="Create project" send={send} done={props.done}>
       {!props.fixed && props.owners.length > 0 && (
         <div className="field">
           <label htmlFor={ownerId}>Owner</label>
-          <select
-            id={ownerId}
-            className="input"
-            value={owner}
-            onChange={(event) => setOwner(event.target.value)}
-          >
+          <select id={ownerId} className="input" value={owner} onChange={choose}>
             <option value="">You</option>
             {props.owners.map((org) => (
               <option key={org.id} value={org.id}>
@@ -425,6 +486,20 @@ function ProjectRow({ project, org }: { project: Project; org?: Org }) {
   const [renaming, setRenaming] = useState(false);
   const [teams, setTeams] = useState(false);
   const admin = project.permission === "admin";
+  const rename = useCallback(
+    async (name: string) => {
+      await renameProject(project.id, name);
+      await reload();
+    },
+    [project.id],
+  );
+  const remove = useCallback(async () => {
+    await deleteProject(project.id);
+    await reload();
+  }, [project.id]);
+  const startRenaming = useCallback(() => setRenaming(true), []);
+  const stopRenaming = useCallback(() => setRenaming(false), []);
+  const toggleTeams = useCallback(() => setTeams(!teams), [teams]);
   return (
     <li>
       {renaming ? (
@@ -432,11 +507,8 @@ function ProjectRow({ project, org }: { project: Project; org?: Org }) {
           label={`New name for ${project.name}`}
           initial={project.name}
           verb="Rename"
-          send={async (name) => {
-            await renameProject(project.id, name);
-            await reload();
-          }}
-          done={() => setRenaming(false)}
+          send={rename}
+          done={stopRenaming}
         />
       ) : (
         <>
@@ -450,23 +522,20 @@ function ProjectRow({ project, org }: { project: Project; org?: Org }) {
                 type="button"
                 className="button small"
                 aria-expanded={teams}
-                onClick={() => setTeams(!teams)}
+                onClick={toggleTeams}
               >
                 Team access
               </button>
             )}
             {admin && (
               <>
-                <button type="button" className="button small" onClick={() => setRenaming(true)}>
+                <button type="button" className="button small" onClick={startRenaming}>
                   Rename
                 </button>
                 <Confirm
                   label="Delete"
                   question={`Delete ${project.name}? This cannot be undone.`}
-                  act={async () => {
-                    await deleteProject(project.id);
-                    await reload();
-                  }}
+                  act={remove}
                 />
               </>
             )}
@@ -492,6 +561,30 @@ function ProjectTeams({ project, org }: { project: Project; org: Org }) {
   const [team, setTeam] = useState("");
   const [grant, setGrant] = useState<Grant>("read");
   const { working, error, run } = useAction();
+  const ungranted = (teams.data ?? []).filter(
+    (each) => !granted.data?.some((given) => given.team.id === each.id),
+  );
+  const chosen = ungranted.some((each) => String(each.id) === team) ? team : "";
+  const again = granted.again;
+  const give = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      run(async () => {
+        await grantTeam(project.id, Number(chosen), grant);
+        setTeam("");
+        again();
+      });
+    },
+    [run, project.id, chosen, grant, again],
+  );
+  const chooseTeam = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setTeam(event.target.value),
+    [],
+  );
+  const chooseGrant = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setGrant(event.target.value as Grant),
+    [],
+  );
   if (granted.data === null) {
     return (
       <div className="nested wide">
@@ -499,10 +592,6 @@ function ProjectTeams({ project, org }: { project: Project; org: Org }) {
       </div>
     );
   }
-  const ungranted = (teams.data ?? []).filter(
-    (each) => !granted.data?.some((given) => given.team.id === each.id),
-  );
-  const chosen = ungranted.some((each) => String(each.id) === team) ? team : "";
   return (
     <div className="nested wide">
       <Stale error={granted.error} what="team access" />
@@ -514,58 +603,21 @@ function ProjectTeams({ project, org }: { project: Project; org: Org }) {
       ) : (
         <ul className="roster" aria-label={`Teams with access to ${project.name}`}>
           {granted.data.map((given) => (
-            <li key={given.team.id}>
-              <span className="name">{given.team.name}</span>
-              <span className="end">
-                {admin ? (
-                  <>
-                    <Choice
-                      label={`Access for ${given.team.name}`}
-                      value={given.permission}
-                      options={GRANTS}
-                      names={PERMISSION_LABEL}
-                      send={async (permission) => {
-                        await grantTeam(project.id, given.team.id, permission);
-                        granted.again();
-                      }}
-                    />
-                    <Confirm
-                      label="Remove"
-                      question={`Take ${given.team.name}'s access away?`}
-                      act={async () => {
-                        await revokeTeam(project.id, given.team.id);
-                        granted.again();
-                      }}
-                    />
-                  </>
-                ) : (
-                  <span className="muted">{PERMISSION_LABEL[given.permission]}</span>
-                )}
-              </span>
-            </li>
+            <GrantRow
+              key={given.team.id}
+              project={project.id}
+              given={given}
+              admin={admin}
+              changed={again}
+            />
           ))}
         </ul>
       )}
       {admin && teams.error && <p className="error">Could not load teams: {teams.error}.</p>}
       {admin && ungranted.length > 0 && (
-        <form
-          className="inline-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            run(async () => {
-              await grantTeam(project.id, Number(chosen), grant);
-              setTeam("");
-              granted.again();
-            });
-          }}
-        >
+        <form className="inline-form" onSubmit={give}>
           <label htmlFor={teamId}>Give</label>
-          <select
-            id={teamId}
-            className="input compact"
-            value={chosen}
-            onChange={(event) => setTeam(event.target.value)}
-          >
+          <select id={teamId} className="input compact" value={chosen} onChange={chooseTeam}>
             <option value="">a team…</option>
             {ungranted.map((each) => (
               <option key={each.id} value={each.id}>
@@ -573,12 +625,7 @@ function ProjectTeams({ project, org }: { project: Project; org: Org }) {
               </option>
             ))}
           </select>
-          <select
-            id={grantId}
-            className="input compact"
-            value={grant}
-            onChange={(event) => setGrant(event.target.value as Grant)}
-          >
+          <select id={grantId} className="input compact" value={grant} onChange={chooseGrant}>
             {GRANTS.map((each) => (
               <option key={each} value={each}>
                 {PERMISSION_LABEL[each]}
@@ -600,13 +647,65 @@ function ProjectTeams({ project, org }: { project: Project; org: Org }) {
   );
 }
 
+function GrantRow({
+  project,
+  given,
+  admin,
+  changed,
+}: {
+  project: number;
+  given: ProjectTeam;
+  admin: boolean;
+  changed: () => void;
+}) {
+  const team = given.team.id;
+  const send = useCallback(
+    async (permission: Grant) => {
+      await grantTeam(project, team, permission);
+      changed();
+    },
+    [project, team, changed],
+  );
+  const revoke = useCallback(async () => {
+    await revokeTeam(project, team);
+    changed();
+  }, [project, team, changed]);
+  return (
+    <li>
+      <span className="name">{given.team.name}</span>
+      <span className="end">
+        {admin ? (
+          <>
+            <Choice
+              label={`Access for ${given.team.name}`}
+              value={given.permission}
+              options={GRANTS}
+              names={PERMISSION_LABEL}
+              send={send}
+            />
+            <Confirm
+              label="Remove"
+              question={`Take ${given.team.name}'s access away?`}
+              act={revoke}
+            />
+          </>
+        ) : (
+          <span className="muted">{PERMISSION_LABEL[given.permission]}</span>
+        )}
+      </span>
+    </li>
+  );
+}
+
 // The Account pane's organizations and invitations
 
 /** The person's invitations and organizations, under their account. */
 export function Organizations() {
   const directory = useDirectory();
   const [creating, setCreating] = useState(false);
-  useAsked("org", () => setCreating(true));
+  const startCreating = useCallback(() => setCreating(true), []);
+  const stopCreating = useCallback(() => setCreating(false), []);
+  useAsked("org", startCreating);
   const { orgs, invitations } = directory;
   return (
     <>
@@ -634,13 +733,9 @@ export function Organizations() {
         <ul className="roster" aria-label="Organizations">
           {orgs.map((org) => (
             <li key={org.id}>
-              <button
-                type="button"
-                className="link-button name"
-                onClick={() => showOrg(org.id, org.name)}
-              >
+              <ShowOrgButton org={org} className="link-button name">
                 {orgLabel(org, orgs)}
-              </button>
+              </ShowOrgButton>
               <span className="muted">{ROLE_LABEL[org.role]}</span>
             </li>
           ))}
@@ -651,22 +746,24 @@ export function Organizations() {
           label="Organization name"
           verb="Create organization"
           note="You will be its owner. Only people you invite can see it."
-          send={async (name) => {
-            const made = await createOrg(name);
-            await reload();
-            showOrg(made.id, made.name);
-          }}
-          done={() => setCreating(false)}
+          send={makeOrg}
+          done={stopCreating}
         />
       ) : (
         <div className="actions">
-          <button type="button" className="button" onClick={() => setCreating(true)}>
+          <button type="button" className="button" onClick={startCreating}>
             New organization
           </button>
         </div>
       )}
     </>
   );
+}
+
+async function makeOrg(name: string) {
+  const made = await createOrg(name);
+  await reload();
+  showOrg(made.id, made.name);
 }
 
 function InvitationRow({
@@ -677,6 +774,22 @@ function InvitationRow({
   const { working, error, run } = useAction();
   const { org } = invitation;
   const orgs = useStore(directoryStore, (state) => state.orgs);
+  const accept = useCallback(
+    () =>
+      run(async () => {
+        await acceptInvitation(org.id);
+        await reload();
+      }),
+    [run, org.id],
+  );
+  const decline = useCallback(
+    () =>
+      run(async () => {
+        await declineInvitation(org.id);
+        await reload();
+      }),
+    [run, org.id],
+  );
   return (
     <li>
       <span>
@@ -685,30 +798,10 @@ function InvitationRow({
         {invitation.invited_by && <span className="muted"> (from {invitation.invited_by})</span>}
       </span>
       <span className="end">
-        <button
-          type="button"
-          className="button small primary"
-          disabled={working}
-          onClick={() =>
-            run(async () => {
-              await acceptInvitation(org.id);
-              await reload();
-            })
-          }
-        >
+        <button type="button" className="button small primary" disabled={working} onClick={accept}>
           Accept
         </button>
-        <button
-          type="button"
-          className="button small"
-          disabled={working}
-          onClick={() =>
-            run(async () => {
-              await declineInvitation(org.id);
-              await reload();
-            })
-          }
-        >
+        <button type="button" className="button small" disabled={working} onClick={decline}>
           Decline
         </button>
       </span>
@@ -736,22 +829,32 @@ export function OrgBody({ id, pane }: PaneProps) {
   const orgId = Number(pane.key);
   const now = useAccount();
   const directory = useDirectory();
-  const params = orgParams(pane);
+  const params = useMemo(() => orgParams(pane), [pane]);
   // Kept in the layout too, so the pane opens where it was left.
   const [section, setSection] = useState(params.section);
-  const keep = (changes: Partial<typeof params>) =>
-    change((layout) => setParams(layout, id, { ...params, ...changes } as Json));
+  const keep = useCallback(
+    (changes: Partial<typeof params>) =>
+      change((layout) => setParams(layout, id, { ...params, ...changes } as Json)),
+    [id, params],
+  );
+  const pick = useCallback(
+    (each: Section) => {
+      setSection(each);
+      keep({ section: each });
+    },
+    [keep],
+  );
   const org = directory.orgs?.find((each) => each.id === orgId);
   useEffect(() => {
     void checkAccount();
   }, []);
   const label = org ? orgLabel(org, directory.orgs) : "";
   // The tab shows the name services last gave, told apart from a twin.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new name matters
   useEffect(() => {
     if (org && label !== params.name) {
       keep({ name: label });
     }
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- only a new name matters
   }, [label]);
   if (now.kind !== "in") {
     return <SignedOut now={now} what="Organizations" />;
@@ -781,17 +884,7 @@ export function OrgBody({ id, pane }: PaneProps) {
       <Stale error={directory.error} what="your organizations" />
       <fieldset className="segmented" aria-label="Sections">
         {SECTIONS.map((each) => (
-          <button
-            key={each}
-            type="button"
-            aria-pressed={section === each}
-            onClick={() => {
-              setSection(each);
-              keep({ section: each });
-            }}
-          >
-            {SECTION_LABEL[each]}
-          </button>
+          <SectionButton key={each} section={each} pressed={section === each} onPick={pick} />
         ))}
       </fieldset>
       {section === "members" ? (
@@ -799,7 +892,7 @@ export function OrgBody({ id, pane }: PaneProps) {
       ) : section === "projects" ? (
         <OrgProjects
           org={org}
-          projects={directory.projects ?? []}
+          projects={directory.projects ?? NO_PROJECTS}
           stale={directory.error !== null}
         />
       ) : section === "teams" ? (
@@ -808,6 +901,23 @@ export function OrgBody({ id, pane }: PaneProps) {
         <Settings org={org} pane={id} />
       )}
     </div>
+  );
+}
+
+function SectionButton({
+  section,
+  pressed,
+  onPick,
+}: {
+  section: Section;
+  pressed: boolean;
+  onPick(section: Section): void;
+}) {
+  const onClick = useCallback(() => onPick(section), [onPick, section]);
+  return (
+    <button type="button" aria-pressed={pressed} onClick={onClick}>
+      {SECTION_LABEL[section]}
+    </button>
   );
 }
 
@@ -824,6 +934,22 @@ function Members({ org, me, pane }: { org: Org; me: number; pane: PaneId }) {
     () => (owner ? listInvitations(org.id) : Promise.resolve([])),
     `${org.id}:${owner}`,
   );
+  const again = members.again;
+  const changed = useCallback(
+    async (member: Member, left: boolean) => {
+      if (left) {
+        await reload();
+        leave(pane);
+        return;
+      }
+      again();
+      // Someone's own role decides what they may do next.
+      if (member.id === me) {
+        await reload();
+      }
+    },
+    [again, pane, me],
+  );
   return (
     <>
       {owner && <InviteForm org={org} invited={invitations.again} />}
@@ -839,18 +965,7 @@ function Members({ org, me, pane }: { org: Org; me: number; pane: PaneId }) {
               org={org}
               member={member}
               me={member.id === me}
-              changed={async (left) => {
-                if (left) {
-                  await reload();
-                  leave(pane);
-                  return;
-                }
-                members.again();
-                // Someone's own role decides what they may do next.
-                if (member.id === me) {
-                  await reload();
-                }
-              }}
+              changed={changed}
             />
           ))}
         </ul>
@@ -860,20 +975,12 @@ function Members({ org, me, pane }: { org: Org; me: number; pane: PaneId }) {
           <h2>Invited</h2>
           <ul className="roster" aria-label="Invited">
             {invitations.data.map((each) => (
-              <li key={each.user_id}>
-                <span className="name">{each.username}</span>
-                <span className="muted">{ROLE_LABEL[each.role]}</span>
-                <span className="end">
-                  <Confirm
-                    label="Cancel invitation"
-                    question={`Cancel ${each.username}'s invitation?`}
-                    act={async () => {
-                      await cancelInvitation(org.id, each.user_id);
-                      invitations.again();
-                    }}
-                  />
-                </span>
-              </li>
+              <InvitedRow
+                key={each.user_id}
+                org={org.id}
+                invitation={each}
+                changed={invitations.again}
+              />
             ))}
           </ul>
         </>
@@ -885,6 +992,35 @@ function Members({ org, me, pane }: { org: Org; me: number; pane: PaneId }) {
   );
 }
 
+function InvitedRow({
+  org,
+  invitation,
+  changed,
+}: {
+  org: number;
+  invitation: Invitation;
+  changed: () => void;
+}) {
+  const user = invitation.user_id;
+  const cancel = useCallback(async () => {
+    await cancelInvitation(org, user);
+    changed();
+  }, [org, user, changed]);
+  return (
+    <li>
+      <span className="name">{invitation.username}</span>
+      <span className="muted">{ROLE_LABEL[invitation.role]}</span>
+      <span className="end">
+        <Confirm
+          label="Cancel invitation"
+          question={`Cancel ${invitation.username}'s invitation?`}
+          act={cancel}
+        />
+      </span>
+    </li>
+  );
+}
+
 function InviteForm({ org, invited }: { org: Org; invited: () => void }) {
   const nameId = useId();
   const roleId = useId();
@@ -892,21 +1028,30 @@ function InviteForm({ org, invited }: { org: Org; invited: () => void }) {
   const [role, setRoleChoice] = useState<Role>("member");
   const [sent, setSent] = useState<string | null>(null);
   const { working, error, run } = useAction();
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const name = username.trim();
+      setSent(null);
+      run(async () => {
+        await invite(org.id, name, role);
+        setUsername("");
+        setSent(name);
+        invited();
+      });
+    },
+    [username, run, org.id, role, invited],
+  );
+  const type = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setUsername(event.target.value),
+    [],
+  );
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setRoleChoice(event.target.value as Role),
+    [],
+  );
   return (
-    <form
-      className="pane-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const name = username.trim();
-        setSent(null);
-        run(async () => {
-          await invite(org.id, name, role);
-          setUsername("");
-          setSent(name);
-          invited();
-        });
-      }}
-    >
+    <form className="pane-form" onSubmit={submit}>
       <h2>Invite someone</h2>
       <div className="inline-form">
         <div className="field grow">
@@ -918,17 +1063,12 @@ function InviteForm({ org, invited }: { org: Org; invited: () => void }) {
             spellCheck={false}
             autoComplete="off"
             aria-invalid={error !== null}
-            onChange={(event) => setUsername(event.target.value)}
+            onChange={type}
           />
         </div>
         <div className="field">
           <label htmlFor={roleId}>Role</label>
-          <select
-            id={roleId}
-            className="input"
-            value={role}
-            onChange={(event) => setRoleChoice(event.target.value as Role)}
-          >
+          <select id={roleId} className="input" value={role} onChange={choose}>
             {ROLES.map((each) => (
               <option key={each} value={each}>
                 {ROLE_LABEL[each]}
@@ -942,6 +1082,7 @@ function InviteForm({ org, invited }: { org: Org; invited: () => void }) {
       </div>
       <span className="note muted">They accept from their Account pane.</span>
       {sent && (
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output
         <span role="status" className="muted">
           Invited {sent}.
         </span>
@@ -959,10 +1100,25 @@ function MemberRow(props: {
   org: Org;
   member: Member;
   me: boolean;
-  changed: (left: boolean) => Promise<void>;
+  changed: (member: Member, left: boolean) => Promise<void>;
 }) {
-  const { org, member, me } = props;
+  const { org, member, me, changed } = props;
   const owner = org.role === "owner";
+  const send = useCallback(
+    async (role: Role) => {
+      await setRole(org.id, member.id, role);
+      await changed(member, false);
+    },
+    [org.id, member, changed],
+  );
+  const leaveOrg = useCallback(async () => {
+    await removeMember(org.id, member.id);
+    await changed(member, true);
+  }, [org.id, member, changed]);
+  const remove = useCallback(async () => {
+    await removeMember(org.id, member.id);
+    await changed(member, false);
+  }, [org.id, member, changed]);
   return (
     <li>
       <span className="name">
@@ -976,10 +1132,7 @@ function MemberRow(props: {
             value={member.role}
             options={ROLES}
             names={ROLE_LABEL}
-            send={async (role) => {
-              await setRole(org.id, member.id, role);
-              await props.changed(false);
-            }}
+            send={send}
           />
         ) : (
           <span className="muted">{ROLE_LABEL[member.role]}</span>
@@ -988,20 +1141,14 @@ function MemberRow(props: {
           <Confirm
             label="Leave"
             question={`Leave ${org.name}? Only an owner can invite you back.`}
-            act={async () => {
-              await removeMember(org.id, member.id);
-              await props.changed(true);
-            }}
+            act={leaveOrg}
           />
         ) : (
           owner && (
             <Confirm
               label="Remove"
               question={`Remove ${member.username} from ${org.name}?`}
-              act={async () => {
-                await removeMember(org.id, member.id);
-                await props.changed(false);
-              }}
+              act={remove}
             />
           )
         )}
@@ -1015,14 +1162,16 @@ function OrgProjects(props: { org: Org; projects: readonly Project[]; stale: boo
   const [creating, setCreating] = useState(false);
   const owner = org.role === "owner";
   const mine = projects.filter((project) => project.org?.id === org.id);
+  const startCreating = useCallback(() => setCreating(true), []);
+  const stopCreating = useCallback(() => setCreating(false), []);
   return (
     <>
       {owner &&
         (creating ? (
-          <NewProject owners={[]} fixed={org} done={() => setCreating(false)} />
+          <NewProject owners={NO_ORGS} fixed={org} done={stopCreating} />
         ) : (
           <div className="actions">
-            <button type="button" className="button" onClick={() => setCreating(true)}>
+            <button type="button" className="button" onClick={startCreating}>
               New project
             </button>
           </div>
@@ -1054,22 +1203,24 @@ function Teams({ org }: { org: Org }) {
     `${org.id}:${owner}`,
   );
   const [creating, setCreating] = useState(false);
+  const again = teams.again;
+  const create = useCallback(
+    async (name: string) => {
+      await createTeam(org.id, name);
+      again();
+    },
+    [org.id, again],
+  );
+  const startCreating = useCallback(() => setCreating(true), []);
+  const stopCreating = useCallback(() => setCreating(false), []);
   return (
     <>
       {owner &&
         (creating ? (
-          <NameForm
-            label="Team name"
-            verb="Create team"
-            send={async (name) => {
-              await createTeam(org.id, name);
-              teams.again();
-            }}
-            done={() => setCreating(false)}
-          />
+          <NameForm label="Team name" verb="Create team" send={create} done={stopCreating} />
         ) : (
           <div className="actions">
-            <button type="button" className="button" onClick={() => setCreating(true)}>
+            <button type="button" className="button" onClick={startCreating}>
               New team
             </button>
           </div>
@@ -1096,7 +1247,7 @@ function Teams({ org }: { org: Org }) {
               key={team.id}
               org={org}
               team={team}
-              members={members.data ?? []}
+              members={members.data ?? NO_MEMBERS}
               changed={teams.again}
             />
           ))}
@@ -1107,10 +1258,24 @@ function Teams({ org }: { org: Org }) {
 }
 
 function TeamRow(props: { org: Org; team: Team; members: readonly Member[]; changed: () => void }) {
-  const { org, team } = props;
+  const { org, team, changed } = props;
   const owner = org.role === "owner";
   const [renaming, setRenaming] = useState(false);
   const [open, setOpen] = useState(false);
+  const rename = useCallback(
+    async (name: string) => {
+      await renameTeam(org.id, team.id, name);
+      changed();
+    },
+    [org.id, team.id, changed],
+  );
+  const remove = useCallback(async () => {
+    await deleteTeam(org.id, team.id);
+    changed();
+  }, [org.id, team.id, changed]);
+  const startRenaming = useCallback(() => setRenaming(true), []);
+  const stopRenaming = useCallback(() => setRenaming(false), []);
+  const toggle = useCallback(() => setOpen(!open), [open]);
   return (
     <li>
       {renaming ? (
@@ -1118,36 +1283,25 @@ function TeamRow(props: { org: Org; team: Team; members: readonly Member[]; chan
           label={`New name for ${team.name}`}
           initial={team.name}
           verb="Rename"
-          send={async (name) => {
-            await renameTeam(org.id, team.id, name);
-            props.changed();
-          }}
-          done={() => setRenaming(false)}
+          send={rename}
+          done={stopRenaming}
         />
       ) : (
         <>
           <span className="name">{team.name}</span>
           <span className="end">
-            <button
-              type="button"
-              className="button small"
-              aria-expanded={open}
-              onClick={() => setOpen(!open)}
-            >
+            <button type="button" className="button small" aria-expanded={open} onClick={toggle}>
               Members
             </button>
             {owner && (
               <>
-                <button type="button" className="button small" onClick={() => setRenaming(true)}>
+                <button type="button" className="button small" onClick={startRenaming}>
                   Rename
                 </button>
                 <Confirm
                   label="Delete"
                   question={`Delete ${team.name}? Its access to projects goes with it.`}
-                  act={async () => {
-                    await deleteTeam(org.id, team.id);
-                    props.changed();
-                  }}
+                  act={remove}
                 />
               </>
             )}
@@ -1166,6 +1320,26 @@ function TeamMembers(props: { org: Org; team: Team; members: readonly Member[] }
   const pickId = useId();
   const [pick, setPick] = useState("");
   const { working, error, run } = useAction();
+  const outside = props.members.filter(
+    (member) => !people.data?.some((each) => each.id === member.id),
+  );
+  const chosen = outside.some((member) => String(member.id) === pick) ? pick : "";
+  const again = people.again;
+  const add = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      run(async () => {
+        await addToTeam(org.id, team.id, Number(chosen));
+        setPick("");
+        again();
+      });
+    },
+    [run, org.id, team.id, chosen, again],
+  );
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setPick(event.target.value),
+    [],
+  );
   if (people.data === null) {
     return (
       <div className="nested wide">
@@ -1173,10 +1347,6 @@ function TeamMembers(props: { org: Org; team: Team; members: readonly Member[] }
       </div>
     );
   }
-  const outside = props.members.filter(
-    (member) => !people.data?.some((each) => each.id === member.id),
-  );
-  const chosen = outside.some((member) => String(member.id) === pick) ? pick : "";
   return (
     <div className="nested wide">
       <Stale error={people.error} what="the team's members" />
@@ -1185,43 +1355,21 @@ function TeamMembers(props: { org: Org; team: Team; members: readonly Member[] }
       ) : (
         <ul className="roster" aria-label={`Members of ${team.name}`}>
           {people.data.map((person) => (
-            <li key={person.id}>
-              <span className="name">{person.username}</span>
-              {owner && (
-                <span className="end">
-                  <Confirm
-                    label="Remove"
-                    question={`Take ${person.username} out of ${team.name}?`}
-                    act={async () => {
-                      await removeFromTeam(org.id, team.id, person.id);
-                      people.again();
-                    }}
-                  />
-                </span>
-              )}
-            </li>
+            <TeamMemberRow
+              key={person.id}
+              org={org.id}
+              team={team}
+              person={person}
+              owner={owner}
+              changed={again}
+            />
           ))}
         </ul>
       )}
       {owner && outside.length > 0 && (
-        <form
-          className="inline-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            run(async () => {
-              await addToTeam(org.id, team.id, Number(chosen));
-              setPick("");
-              people.again();
-            });
-          }}
-        >
+        <form className="inline-form" onSubmit={add}>
           <label htmlFor={pickId}>Add</label>
-          <select
-            id={pickId}
-            className="input compact"
-            value={chosen}
-            onChange={(event) => setPick(event.target.value)}
-          >
+          <select id={pickId} className="input compact" value={chosen} onChange={choose}>
             <option value="">a member…</option>
             {outside.map((member) => (
               <option key={member.id} value={member.id}>
@@ -1243,9 +1391,56 @@ function TeamMembers(props: { org: Org; team: Team; members: readonly Member[] }
   );
 }
 
+function TeamMemberRow({
+  org,
+  team,
+  person,
+  owner,
+  changed,
+}: {
+  org: number;
+  team: Team;
+  person: TeamMember;
+  owner: boolean;
+  changed: () => void;
+}) {
+  const remove = useCallback(async () => {
+    await removeFromTeam(org, team.id, person.id);
+    changed();
+  }, [org, team.id, person.id, changed]);
+  return (
+    <li>
+      <span className="name">{person.username}</span>
+      {owner && (
+        <span className="end">
+          <Confirm
+            label="Remove"
+            question={`Take ${person.username} out of ${team.name}?`}
+            act={remove}
+          />
+        </span>
+      )}
+    </li>
+  );
+}
+
 function Settings(props: { org: Org; pane: PaneId }) {
-  const { org } = props;
+  const { org, pane } = props;
   const [renaming, setRenaming] = useState(false);
+  const rename = useCallback(
+    async (name: string) => {
+      await updateOrg(org.id, { name });
+      await reload();
+    },
+    [org.id],
+  );
+  const remove = useCallback(async () => {
+    await deleteOrg(org.id);
+    await reload();
+    leave(pane);
+  }, [org.id, pane]);
+  const startRenaming = useCallback(() => setRenaming(true), []);
+  const stopRenaming = useCallback(() => setRenaming(false), []);
   if (org.role !== "owner") {
     return (
       <p>
@@ -1262,16 +1457,13 @@ function Settings(props: { org: Org; pane: PaneId }) {
           label="Organization name"
           initial={org.name}
           verb="Rename"
-          send={async (name) => {
-            await updateOrg(org.id, { name });
-            await reload();
-          }}
-          done={() => setRenaming(false)}
+          send={rename}
+          done={stopRenaming}
         />
       ) : (
         <div className="actions">
           <span className="name">{org.name}</span>
-          <button type="button" className="button small" onClick={() => setRenaming(true)}>
+          <button type="button" className="button small" onClick={startRenaming}>
             Rename
           </button>
         </div>
@@ -1285,15 +1477,7 @@ function Settings(props: { org: Org; pane: PaneId }) {
         cannot be undone.
       </p>
       <div className="actions">
-        <Confirm
-          label="Delete organization"
-          question={`Delete ${org.name}?`}
-          act={async () => {
-            await deleteOrg(org.id);
-            await reload();
-            leave(props.pane);
-          }}
-        />
+        <Confirm label="Delete organization" question={`Delete ${org.name}?`} act={remove} />
       </div>
     </>
   );
@@ -1303,26 +1487,26 @@ function BasePermission({ org }: { org: Org }) {
   const id = useId();
   const [chosen, setChosen] = useState<Permission>(org.base_permission);
   const { working, error, run } = useAction();
+  const save = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      run(async () => {
+        await updateOrg(org.id, { base_permission: chosen });
+        await reload();
+      });
+    },
+    [run, org.id, chosen],
+  );
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setChosen(event.target.value as Permission),
+    [],
+  );
   return (
-    <form
-      className="pane-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        run(async () => {
-          await updateOrg(org.id, { base_permission: chosen });
-          await reload();
-        });
-      }}
-    >
+    <form className="pane-form" onSubmit={save}>
       <div className="inline-form">
         <div className="field">
           <label htmlFor={id}>Every member gets</label>
-          <select
-            id={id}
-            className="input"
-            value={chosen}
-            onChange={(event) => setChosen(event.target.value as Permission)}
-          >
+          <select id={id} className="input" value={chosen} onChange={choose}>
             {PERMISSIONS.map((each) => (
               <option key={each} value={each}>
                 {PERMISSION_LABEL[each]}

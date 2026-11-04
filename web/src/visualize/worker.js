@@ -167,8 +167,8 @@
   /** The renderer's file and the line and column of an error in it. */
   function place(error, file) {
     const stack = typeof error?.stack === "string" ? error.stack : "";
-    const escaped = file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const found = new RegExp(`${escaped}:(\\d+):(\\d+)`).exec(stack);
+    const escaped = file.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const found = new RegExp(`${escaped}:(\\d+):(\\d+)`, "u").exec(stack);
     if (found) {
       return { file, line: Number(found[1]), column: Number(found[2]) };
     }
@@ -195,7 +195,9 @@
   let starter = null;
   let theme = freeze({});
 
-  const shape = (type) => (properties) => ({ ...properties, type });
+  function shape(type) {
+    return (properties) => ({ ...properties, type });
+  }
 
   /** Deep equality over input values: numbers, bigints, strings, arrays,
    * typed arrays, and plain objects. NaN equals NaN. */
@@ -232,11 +234,11 @@
 
   /** A color `#rgb` or `#rrggbb` as linear OKLab. */
   function oklab(color) {
-    const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color)?.[1];
-    if (hex === undefined) {
+    const digits = /^#([0-9a-f]{3}|[0-9a-f]{6})$/iu.exec(color)?.[1];
+    if (digits === undefined) {
       throw new TypeError(`microscope.color.scale takes #rgb or #rrggbb colors, not ${color}`);
     }
-    const full = hex.length === 3 ? [...hex].map((digit) => digit + digit).join("") : hex;
+    const full = digits.length === 3 ? [...digits].map((digit) => digit + digit).join("") : digits;
     const [r, g, b] = [0, 2, 4].map((at) => {
       const value = Number.parseInt(full.slice(at, at + 2), 16) / 255;
       return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
@@ -470,7 +472,6 @@
           return;
         }
         post({ type: "frame", bitmap }, [bitmap]);
-        return;
       }
     }
   }
@@ -540,6 +541,7 @@
       // renderer stuck in a loop, or awaiting what never settles, does not.
       queue = queue.then(() => post({ type: "pong" }));
     } else if (LIVE.has(message?.type) && loaded && starter !== null) {
+      // oxlint-disable-next-line promise/always-return -- the queue only orders the work; nothing reads its value
       queue = queue.then(async () => {
         handling = true;
         try {

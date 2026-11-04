@@ -470,8 +470,10 @@ export const COMMANDS = registry({
       if (!focused) {
         return ABSENT;
       }
-      const pane = workbench.getState().layout.panes[focused.id];
-      return pane && KINDS.get(pane.kind).closable(pane) ? READY : blocked("this tab stays open");
+      const shown = workbench.getState().layout.panes[focused.id];
+      return shown && KINDS.get(shown.kind).closable(shown)
+        ? READY
+        : blocked("this tab stays open");
     },
     run: () => {
       const focused = focusedPane();
@@ -592,7 +594,7 @@ export const COMMANDS = registry({
     menu: "View",
     keys: [{ key: "F10", alt: true }],
     available: always,
-    run: () => document.getElementById(MENU_BAR)?.focus(),
+    run: () => document.querySelector<HTMLElement>(`#${MENU_BAR}`)?.focus(),
   },
   reloadViews: {
     label: "Reload views",
@@ -647,8 +649,8 @@ export function useCommands(): Commands {
 /** The frame one up (toward callers) or down from `at`'s, if the stack of
  * `frames` has it. */
 export function movedFrame(at: At, frames: number, up: boolean): At | null {
-  const frame = at.frame + (up ? 1 : -1);
-  return frame >= 0 && frame < frames ? { ...at, frame } : null;
+  const next = at.frame + (up ? 1 : -1);
+  return next >= 0 && next < frames ? { ...at, frame: next } : null;
 }
 
 /** The cursor's line, when it is in the file shown. */

@@ -131,7 +131,6 @@ body,
 *,
 *::before,
 *::after {
-  /* biome-ignore lint/complexity/noImportantStyles: no rule may draw ligatures */
   font-variant-ligatures: none !important;
 }
 
@@ -1591,7 +1590,7 @@ textarea.input {
 
 .source-view .cm-selectionBackground,
 .source-view .cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
-  /* biome-ignore lint/complexity/noImportantStyles: CodeMirror's base theme sets it inline-specific */
+  /* CodeMirror's base theme sets this more specifically. */
   background: color-mix(in srgb, var(--accent) 22%, transparent) !important;
 }
 

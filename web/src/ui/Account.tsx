@@ -3,7 +3,16 @@
 // connected to it already. Signing in to the services backend is optional:
 // a join link works without an account.
 
-import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { useStore } from "zustand";
 
 import {
@@ -46,6 +55,11 @@ function refused(): string | null {
     : null;
 }
 
+function disconnect() {
+  setRemote(null);
+  window.location.assign("/");
+}
+
 export function ConnectBody() {
   const link = useModel((model) => model.link);
   if (!standalone && link === "unauthorized") {
@@ -79,14 +93,7 @@ export function ConnectBody() {
             Connected to <code>{connected.server}</code>.
           </p>
           <div className="actions">
-            <button
-              type="button"
-              className="button"
-              onClick={() => {
-                setRemote(null);
-                window.location.assign("/");
-              }}
-            >
+            <button type="button" className="button" onClick={disconnect}>
               Disconnect
             </button>
           </div>
@@ -104,17 +111,24 @@ function ConnectForm() {
   const id = useId();
   const [link, setLink] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const connect = (event: FormEvent) => {
-    event.preventDefault();
-    const joined = parseJoinLink(link);
-    if (!joined) {
-      setError("That is not a join link. One looks like http://127.0.0.1:7341/join#c-…");
-      return;
-    }
-    setRemote({ server: joined.server, token: joined.token });
-    // A fresh page, so nothing from another server lingers.
-    window.location.assign(isPagePath(joined.to) ? joined.to : "/");
-  };
+  const connect = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const joined = parseJoinLink(link);
+      if (!joined) {
+        setError("That is not a join link. One looks like http://127.0.0.1:7341/join#c-…");
+        return;
+      }
+      setRemote({ server: joined.server, token: joined.token });
+      // A fresh page, so nothing from another server lingers.
+      window.location.assign(isPagePath(joined.to) ? joined.to : "/");
+    },
+    [link],
+  );
+  const edit = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setLink(event.target.value);
+    setError(null);
+  }, []);
   return (
     <form className="pane-form" onSubmit={connect}>
       <div className="field">
@@ -125,10 +139,7 @@ function ConnectForm() {
           value={link}
           aria-invalid={error !== null}
           data-autofocus
-          onChange={(event) => {
-            setLink(event.target.value);
-            setError(null);
-          }}
+          onChange={edit}
           placeholder="http://127.0.0.1:7341/join#c-…"
           spellCheck={false}
         />
@@ -163,24 +174,40 @@ export function AccountBody() {
   const [everywhere, setEverywhere] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "sign-in" });
   // What an emailed link did stops mattering once the person moves on.
-  const go = (next: Step) => {
+  const go = useCallback((next: Step) => {
     account.setState({ notice: null });
     setStep(next);
-  };
+  }, []);
   useEffect(() => {
     void checkAccount();
   }, []);
   // Whoever signs in or out starts over next time.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only the kind matters
-  useEffect(() => setStep({ kind: "sign-in" }), [now.kind]);
+  const [kind, setKind] = useState(now.kind);
+  if (kind !== now.kind) {
+    setKind(now.kind);
+    setStep({ kind: "sign-in" });
+  }
   // Single sign-on came back for a code from the account's authenticator app.
   const challenge = useStore(account, (state) => state.challenge);
   useEffect(() => {
     if (challenge !== null && now.kind === "out") {
       account.setState({ challenge: null });
+      // oxlint-disable-next-line react/set-state-in-effect -- the challenge is taken from the account store once
       setStep({ kind: "totp", challenge });
     }
   }, [challenge, now.kind]);
+  const outEverywhere = useCallback(() => {
+    setError(null);
+    signOutEverywhere()
+      .catch((failure: Error) => setError(failure.message))
+      .finally(() => setEverywhere(false));
+  }, []);
+  const out = useCallback(() => {
+    setError(null);
+    signOut().catch((failure: Error) => setError(failure.message));
+  }, []);
+  const askEverywhere = useCallback(() => setEverywhere(true), []);
+  const cancelEverywhere = useCallback(() => setEverywhere(false), []);
   // A password reset link asks for the new password first, signed in or not.
   const reset = useStore(account, (state) => state.reset);
 
@@ -188,6 +215,7 @@ export function AccountBody() {
     <div className="pane-body pane-text">
       {notice &&
         (notice.ok ? (
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
           <p role="status">{notice.text}</p>
         ) : (
           <div className="banner error" role="alert">
@@ -195,77 +223,63 @@ export function AccountBody() {
           </div>
         ))}
       <OrgLink />
-      {reset !== null ? (
-        <NewPassword token={reset} />
-      ) : now.kind === "checking" ? (
-        <p className="muted">Checking whether you are signed in…</p>
-      ) : now.kind === "unavailable" ? (
-        <p className="muted">
-          Sign-in is unavailable ({now.why}). You can still connect without an account.
-        </p>
-      ) : now.kind === "in" ? (
-        <>
-          <p>
-            Signed in as <b>{now.user.username}</b> ({now.user.email}).
+      {reset === null ? (
+        now.kind === "checking" ? (
+          <p className="muted">Checking whether you are signed in…</p>
+        ) : now.kind === "unavailable" ? (
+          <p className="muted">
+            Sign-in is unavailable ({now.why}). You can still connect without an account.
           </p>
-          <p className="muted">Your programs, sessions, and profiles will show up here.</p>
-          {error && <span className="error">{error}</span>}
-          <div className="actions">
-            {everywhere ? (
-              <span className="confirm">
-                <span>Sign out on every device?</span>
-                <button
-                  type="button"
-                  className="button danger"
-                  onClick={() => {
-                    setError(null);
-                    signOutEverywhere()
-                      .catch((failure: Error) => setError(failure.message))
-                      .finally(() => setEverywhere(false));
-                  }}
-                >
-                  Sign out everywhere
-                </button>
-                <button type="button" className="link-button" onClick={() => setEverywhere(false)}>
-                  Cancel
-                </button>
-              </span>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => {
-                    setError(null);
-                    signOut().catch((failure: Error) => setError(failure.message));
-                  }}
-                >
-                  Sign out
-                </button>
-                <button type="button" className="button" onClick={() => setEverywhere(true)}>
-                  Sign out everywhere
-                </button>
-              </>
-            )}
-          </div>
-          <Organizations />
-          <SignInMethods />
-          <TwoFactor user={now.user} />
-        </>
-      ) : step.kind === "sign-up" ? (
-        <SignUp go={go} />
-      ) : step.kind === "sent" ? (
-        <Sent email={step.email} go={go} />
-      ) : step.kind === "code" ? (
-        <Code challenge={step.challenge} go={go} />
-      ) : step.kind === "totp" ? (
-        <Totp challenge={step.challenge} go={go} />
-      ) : step.kind === "recovery" ? (
-        <Recovery challenge={step.challenge} go={go} />
-      ) : step.kind === "forgot" ? (
-        <Forgot email={step.email} go={go} />
+        ) : now.kind === "in" ? (
+          <>
+            <p>
+              Signed in as <b>{now.user.username}</b> ({now.user.email}).
+            </p>
+            <p className="muted">Your programs, sessions, and profiles will show up here.</p>
+            {error && <span className="error">{error}</span>}
+            <div className="actions">
+              {everywhere ? (
+                <span className="confirm">
+                  <span>Sign out on every device?</span>
+                  <button type="button" className="button danger" onClick={outEverywhere}>
+                    Sign out everywhere
+                  </button>
+                  <button type="button" className="link-button" onClick={cancelEverywhere}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <button type="button" className="button" onClick={out}>
+                    Sign out
+                  </button>
+                  <button type="button" className="button" onClick={askEverywhere}>
+                    Sign out everywhere
+                  </button>
+                </>
+              )}
+            </div>
+            <Organizations />
+            <SignInMethods />
+            <TwoFactor user={now.user} />
+          </>
+        ) : step.kind === "sign-up" ? (
+          <SignUp go={go} />
+        ) : step.kind === "sent" ? (
+          <Sent email={step.email} go={go} />
+        ) : step.kind === "code" ? (
+          <Code challenge={step.challenge} go={go} />
+        ) : step.kind === "totp" ? (
+          <Totp challenge={step.challenge} go={go} />
+        ) : step.kind === "recovery" ? (
+          <Recovery challenge={step.challenge} go={go} />
+        ) : step.kind === "forgot" ? (
+          <Forgot email={step.email} go={go} />
+        ) : (
+          <SignIn go={go} />
+        )
       ) : (
-        <SignIn go={go} />
+        <NewPassword token={reset} />
       )}
     </div>
   );
@@ -296,11 +310,17 @@ function Field(props: {
   note?: string;
   type?: "email" | "password";
   autoComplete: string;
-  autoFocus?: boolean;
+  /** Focused when the form opens. */
+  first?: boolean;
   code?: boolean;
 }) {
   const id = useId();
   const noteId = useId();
+  const { set } = props;
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => set(event.target.value),
+    [set],
+  );
   return (
     <div className="field">
       <label htmlFor={id}>{props.label}</label>
@@ -310,11 +330,11 @@ function Field(props: {
         type={props.type}
         autoComplete={props.autoComplete}
         spellCheck={false}
-        data-autofocus={props.autoFocus || undefined}
+        data-autofocus={props.first || undefined}
         aria-describedby={props.note ? noteId : undefined}
         {...(props.code ? { inputMode: "numeric", maxLength: 6, pattern: "[0-9]{6}" } : {})}
         value={props.value}
-        onChange={(event) => props.set(event.target.value)}
+        onChange={edit}
       />
       {props.note && (
         <span id={noteId} className="note">
@@ -375,6 +395,11 @@ function SignIn({ go }: { go: Go }) {
   });
   // Services says so only once the password is right.
   const unconfirmed = error instanceof Refused && error.status === 403;
+  const forgot = useCallback(
+    () => go({ kind: "forgot", email: name.includes("@") ? name.trim() : "" }),
+    [go, name],
+  );
+  const toSignUp = useCallback(() => go({ kind: "sign-up" }), [go]);
   return (
     <>
       <form className="pane-form" onSubmit={submit}>
@@ -384,7 +409,7 @@ function SignIn({ go }: { go: Go }) {
           value={name}
           set={setName}
           autoComplete={passkeys ? "username webauthn" : "username"}
-          autoFocus
+          first
         />
         <Field
           label="Password"
@@ -403,17 +428,13 @@ function SignIn({ go }: { go: Go }) {
             Sign in
           </button>
           {offered?.email && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => go({ kind: "forgot", email: name.includes("@") ? name.trim() : "" })}
-            >
+            <button type="button" className="link-button" onClick={forgot}>
               Forgot password?
             </button>
           )}
           <span className="muted">
             No account?
-            <button type="button" className="link-button" onClick={() => go({ kind: "sign-up" })}>
+            <button type="button" className="link-button" onClick={toSignUp}>
               Create one
             </button>
           </span>
@@ -461,6 +482,7 @@ function SignUp({ go }: { go: Go }) {
       go({ kind: "sent", email });
     }
   });
+  const toSignIn = useCallback(() => go({ kind: "sign-in" }), [go]);
   return (
     <>
       <form className="pane-form" onSubmit={submit}>
@@ -471,7 +493,7 @@ function SignUp({ go }: { go: Go }) {
           set={setUsername}
           autoComplete="username"
           note="3 to 32 letters, digits, _ or -."
-          autoFocus
+          first
         />
         <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" />
         <Field
@@ -493,7 +515,7 @@ function SignUp({ go }: { go: Go }) {
           </button>
           <span className="muted">
             Have one?
-            <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
+            <button type="button" className="link-button" onClick={toSignIn}>
               Sign in
             </button>
           </span>
@@ -525,6 +547,8 @@ function Resend(props: { email: string; go: Go; fixed?: boolean; children: React
     await resendConfirmation(email);
     setSent(true);
   });
+  const { go } = props;
+  const toSignIn = useCallback(() => go({ kind: "sign-in" }), [go]);
   return (
     <form className="pane-form" onSubmit={submit}>
       {props.children}
@@ -532,6 +556,7 @@ function Resend(props: { email: string; go: Go; fixed?: boolean; children: React
         <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" />
       )}
       {sent && (
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
         <p role="status" className="muted">
           If {email} still needs confirming, a new link is on its way.
         </p>
@@ -542,11 +567,7 @@ function Resend(props: { email: string; go: Go; fixed?: boolean; children: React
           Send another link
         </button>
         {props.fixed && (
-          <button
-            type="button"
-            className="button primary"
-            onClick={() => props.go({ kind: "sign-in" })}
-          >
+          <button type="button" className="button primary" onClick={toSignIn}>
             Sign in
           </button>
         )}
@@ -564,19 +585,15 @@ function Forgot(props: { email: string; go: Go }) {
     await requestPasswordReset(email.trim());
     setSent(email.trim());
   });
+  const { go } = props;
+  const toSignIn = useCallback(() => go({ kind: "sign-in" }), [go]);
   return (
     <form className="pane-form" onSubmit={submit}>
       <h2>Reset your password</h2>
       <p className="muted">We will email you a link to choose a new one.</p>
-      <Field
-        label="Email"
-        type="email"
-        value={email}
-        set={setEmail}
-        autoComplete="email"
-        autoFocus
-      />
+      <Field label="Email" type="email" value={email} set={setEmail} autoComplete="email" first />
       {sent && (
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
         <p role="status" className="muted">
           If an account uses {sent}, a reset link is on its way.
         </p>
@@ -586,13 +603,15 @@ function Forgot(props: { email: string; go: Go }) {
         <button type="submit" className="button primary" disabled={working || !email.trim()}>
           {sent ? "Send another link" : "Send reset link"}
         </button>
-        <button type="button" className="link-button" onClick={() => props.go({ kind: "sign-in" })}>
+        <button type="button" className="link-button" onClick={toSignIn}>
           Back to sign in
         </button>
       </div>
     </form>
   );
 }
+
+const cancelReset = () => account.setState({ reset: null });
 
 /** After following a password reset link. */
 function NewPassword({ token }: { token: string }) {
@@ -609,14 +628,14 @@ function NewPassword({ token }: { token: string }) {
         set={setPassword}
         autoComplete="new-password"
         note="At least 8 characters."
-        autoFocus
+        first
       />
       {error && <span className="error">{error.message}</span>}
       <div className="actions">
         <button type="submit" className="button primary" disabled={working || !password}>
           Change password
         </button>
-        <button type="button" className="button" onClick={() => account.setState({ reset: null })}>
+        <button type="button" className="button" onClick={cancelReset}>
           Cancel
         </button>
       </div>
@@ -630,21 +649,22 @@ function Code({ challenge, go }: { challenge: string; go: Go }) {
   const { working, error, submit } = useSubmit(async () => {
     await enterCode(challenge, code.trim());
   });
+  const startOver = useCallback(() => go({ kind: "sign-in" }), [go]);
   return (
     <form className="pane-form" onSubmit={submit}>
       <h2>Enter the code from your email</h2>
       <p className="muted">The email also has a link, which signs in whichever device opens it.</p>
-      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" autoFocus code />
+      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" first code />
       {error && <span className="error">{error.message}</span>}
       <div className="actions">
         <button
           type="submit"
           className="button primary"
-          disabled={working || !/^\d{6}$/.test(code.trim())}
+          disabled={working || !/^\d{6}$/u.test(code.trim())}
         >
           Sign in
         </button>
-        <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
+        <button type="button" className="link-button" onClick={startOver}>
           Start over
         </button>
       </div>
@@ -658,19 +678,20 @@ function Totp({ challenge, go }: { challenge: string; go: Go }) {
   const { working, error, submit } = useSubmit(async () => {
     await enterTotp(challenge, code.trim());
   });
-  const recover = () => go({ kind: "recovery", challenge });
+  const recover = useCallback(() => go({ kind: "recovery", challenge }), [go, challenge]);
+  const startOver = useCallback(() => go({ kind: "sign-in" }), [go]);
   // Too many wrong codes today: only a recovery code gets in now.
   const locked = error instanceof Refused && error.status === 429;
   return (
     <form className="pane-form" onSubmit={submit}>
       <h2>Enter the code from your authenticator app</h2>
-      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" autoFocus code />
+      <Field label="Code" value={code} set={setCode} autoComplete="one-time-code" first code />
       {error && <span className="error">{error.message}</span>}
       <div className="actions">
         <button
           type="submit"
           className={locked ? "button" : "button primary"}
-          disabled={working || !/^\d{6}$/.test(code.trim())}
+          disabled={working || !/^\d{6}$/u.test(code.trim())}
         >
           Sign in
         </button>
@@ -679,7 +700,7 @@ function Totp({ challenge, go }: { challenge: string; go: Go }) {
             Use a recovery code
           </button>
         )}
-        <button type="button" className="link-button" onClick={() => go({ kind: "sign-in" })}>
+        <button type="button" className="link-button" onClick={startOver}>
           Start over
         </button>
       </div>
@@ -700,6 +721,7 @@ function Recovery({ challenge, go }: { challenge: string; go: Go }) {
   const { working, error, submit } = useSubmit(async () => {
     await enterRecoveryCode(challenge, code.trim());
   });
+  const toApp = useCallback(() => go({ kind: "totp", challenge }), [go, challenge]);
   return (
     <form className="pane-form" onSubmit={submit}>
       <h2>Enter a recovery code</h2>
@@ -709,18 +731,14 @@ function Recovery({ challenge, go }: { challenge: string; go: Go }) {
         set={setCode}
         autoComplete="off"
         note="Each code works once. We email you when one is used."
-        autoFocus
+        first
       />
       {error && <span className="error">{error.message}</span>}
       <div className="actions">
         <button type="submit" className="button primary" disabled={working || !code.trim()}>
           Sign in
         </button>
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => go({ kind: "totp", challenge })}
-        >
+        <button type="button" className="link-button" onClick={toApp}>
           Use the app instead
         </button>
       </div>
@@ -741,7 +759,17 @@ type Setup =
 function TwoFactor({ user }: { user: User }) {
   const offered = useFeatures();
   const [setup, setSetup] = useState<Setup>({ kind: "idle" });
-  const idle = () => setSetup({ kind: "idle" });
+  const idle = useCallback(() => setSetup({ kind: "idle" }), []);
+  const enabling = setup.kind === "codes" && setup.enabling;
+  const saved = useCallback(() => {
+    idle();
+    if (enabling) {
+      void totpConfirmed();
+    }
+  }, [idle, enabling]);
+  const newCodes = useCallback(() => setSetup({ kind: "reauth", action: "codes" }), []);
+  const turnOff = useCallback(() => setSetup({ kind: "reauth", action: "disable" }), []);
+  const start = useCallback(() => setSetup({ kind: "password" }), []);
   // A server without TOTP has nothing to offer here, unless the account
   // turned it on before, which it can still turn off with a recovery code.
   if (!offered || (!offered.totp && !user.totp_enabled)) {
@@ -755,33 +783,17 @@ function TwoFactor({ user }: { user: User }) {
       ) : setup.kind === "scan" ? (
         <Scan secret={setup.secret} uri={setup.uri} next={setSetup} cancel={idle} />
       ) : setup.kind === "codes" ? (
-        <RecoveryCodes
-          codes={setup.codes}
-          done={() => {
-            idle();
-            if (setup.enabling) {
-              void totpConfirmed();
-            }
-          }}
-        />
+        <RecoveryCodes codes={setup.codes} done={saved} />
       ) : setup.kind === "reauth" ? (
         <Reauthenticate action={setup.action} next={setSetup} cancel={idle} />
       ) : user.totp_enabled ? (
         <>
           <p className="muted">On. Signing in takes your password and a code from your app.</p>
           <div className="actions">
-            <button
-              type="button"
-              className="button"
-              onClick={() => setSetup({ kind: "reauth", action: "codes" })}
-            >
+            <button type="button" className="button" onClick={newCodes}>
               New recovery codes
             </button>
-            <button
-              type="button"
-              className="button"
-              onClick={() => setSetup({ kind: "reauth", action: "disable" })}
-            >
+            <button type="button" className="button" onClick={turnOff}>
               Turn off
             </button>
           </div>
@@ -793,7 +805,7 @@ function TwoFactor({ user }: { user: User }) {
             your password.
           </p>
           <div className="actions">
-            <button type="button" className="button" onClick={() => setSetup({ kind: "password" })}>
+            <button type="button" className="button" onClick={start}>
               Set up
             </button>
           </div>
@@ -820,7 +832,7 @@ function SetupPassword({ next, cancel }: { next: Next; cancel: () => void }) {
         set={setPassword}
         autoComplete="current-password"
         note="Enter your password to start."
-        autoFocus
+        first
       />
       {error && <span className="error">{error.message}</span>}
       <div className="actions">
@@ -849,8 +861,8 @@ function Scan(props: { secret: string; uri: string; next: Next; cancel: () => vo
           <span>
             Scan this with an authenticator app, such as 1Password or Google Authenticator.
           </span>
-          <span className="muted">Can't scan it? Enter this key:</span>
-          <code data-testid="totp-secret">{props.secret.match(/.{1,4}/g)?.join(" ")}</code>
+          <span className="muted">Can&apos;t scan it? Enter this key:</span>
+          <code data-testid="totp-secret">{props.secret.match(/.{1,4}/gu)?.join(" ")}</code>
           <div className="actions">
             <Copy text={props.secret} label="Copy key" />
           </div>
@@ -862,7 +874,7 @@ function Scan(props: { secret: string; uri: string; next: Next; cancel: () => vo
         set={setCode}
         autoComplete="one-time-code"
         note="Turning it on signs you out everywhere else."
-        autoFocus
+        first
         code
       />
       {error && <span className="error">{error.message}</span>}
@@ -870,7 +882,7 @@ function Scan(props: { secret: string; uri: string; next: Next; cancel: () => vo
         <button
           type="submit"
           className="button primary"
-          disabled={working || !/^\d{6}$/.test(code.trim())}
+          disabled={working || !/^\d{6}$/u.test(code.trim())}
         >
           Turn on
         </button>
@@ -901,6 +913,7 @@ function Qr({ text }: { text: string }) {
     <svg
       className="totp-qr"
       viewBox={`0 0 ${side} ${side}`}
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an inline drawing, not an image file
       role="img"
       aria-label="QR code for your authenticator app"
       shapeRendering="crispEdges"
@@ -915,17 +928,14 @@ function Qr({ text }: { text: string }) {
  * served over HTTPS or from localhost can write to the clipboard. */
 function Copy({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const copy = useCallback(() => {
+    void navigator.clipboard.writeText(text).then(() => setCopied(true));
+  }, [text]);
   if (!navigator.clipboard) {
     return null;
   }
   return (
-    <button
-      type="button"
-      className="button"
-      onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => setCopied(true));
-      }}
-    >
+    <button type="button" className="button" onClick={copy}>
       {copied ? "Copied" : label}
     </button>
   );
@@ -934,14 +944,18 @@ function Copy({ text, label }: { text: string; label: string }) {
 function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
   const [saved, setSaved] = useState(false);
   const text = `Microscope recovery codes. Each signs you in once.\n\n${codes.join("\n")}\n`;
-  const download = () => {
+  const download = useCallback(() => {
     const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = "microscope-recovery-codes.txt";
     link.click();
     URL.revokeObjectURL(url);
-  };
+  }, [text]);
+  const check = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setSaved(event.target.checked),
+    [],
+  );
   return (
     <div className="pane-form">
       <p>
@@ -960,11 +974,7 @@ function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
         </button>
       </div>
       <label className="check">
-        <input
-          type="checkbox"
-          checked={saved}
-          onChange={(event) => setSaved(event.target.checked)}
-        />
+        <input type="checkbox" checked={saved} onChange={check} />
         I saved these codes somewhere safe
       </label>
       <div className="actions">
@@ -1004,7 +1014,7 @@ function Reauthenticate(props: { action: "disable" | "codes"; next: Next; cancel
         value={password}
         set={setPassword}
         autoComplete="current-password"
-        autoFocus
+        first
       />
       <Field
         label="Code from your app, or a recovery code"

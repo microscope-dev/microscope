@@ -75,7 +75,7 @@ export function tracks(blocks: ZoneBlocks, order: number[]): Track[] {
   }
   const threads = [
     ...order.filter((thread) => deepest.has(thread)),
-    ...[...deepest.keys()].filter((thread) => !order.includes(thread)).sort((a, b) => a - b),
+    ...[...deepest.keys()].filter((thread) => !order.includes(thread)).toSorted((a, b) => a - b),
   ];
   let row = 0;
   return threads.map((thread) => {
@@ -108,10 +108,12 @@ export function blockAt(
     }
     const start = blocks.start[at] ?? 0;
     const end = blocks.end[at] ?? 0;
-    if (start - slack <= time && time <= end + slack) {
-      if (best === null || Math.abs(time - start) < Math.abs(time - (blocks.start[best] ?? 0))) {
-        best = at;
-      }
+    if (
+      start - slack <= time &&
+      time <= end + slack &&
+      (best === null || Math.abs(time - start) < Math.abs(time - (blocks.start[best] ?? 0)))
+    ) {
+      best = at;
     }
   }
   return best;

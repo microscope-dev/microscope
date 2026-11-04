@@ -20,7 +20,7 @@ export function unreached(state: State, stop: number): boolean {
  * Runtime-agent stops select the program's frame, not the agent's.
  */
 export function openingFrame(state: State, stop: number, thread: number): number {
-  const entry = state.stops.find((entry) => entry.stop === stop);
+  const entry = state.stops.find((each) => each.stop === stop);
   return entry?.thread === thread ? entry.frame : 0;
 }
 

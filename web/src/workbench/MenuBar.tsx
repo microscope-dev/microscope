@@ -98,6 +98,14 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
       move();
     }
   };
+  const onButtonClick = (menu: Menu) => () => (open === menu ? setOpen(null) : show(menu, null));
+  const onButtonEnter = (menu: Menu) => () => open && open !== menu && show(menu, null);
+  const onItemClick = (id: Id, now: Availability) => () => {
+    if (now.state === "ready") {
+      setOpen(null);
+      run(id);
+    }
+  };
   const onMenu = (menu: Menu) => (event: KeyboardEvent) => {
     const listed = items();
     const index = listed.indexOf(document.activeElement as HTMLElement);
@@ -134,13 +142,14 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
             aria-expanded={open === menu}
             data-menu={menu}
             tabIndex={index === 0 ? 0 : -1}
-            onClick={() => (open === menu ? setOpen(null) : show(menu, null))}
-            onPointerEnter={() => open && open !== menu && show(menu, null)}
+            onClick={onButtonClick(menu)}
+            onPointerEnter={onButtonEnter(menu)}
             onKeyDown={onBar(menu)}
           >
             {menu}
           </button>
           {open === menu && (
+            // oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- its items take the focus, as a menu's do
             <div className={css("menu")} role="menu" aria-label={menu} onKeyDown={onMenu(menu)}>
               {registry.ids
                 .filter((id) => registry.get(id).menu === menu)
@@ -159,12 +168,7 @@ export function MenuBar<Id extends string>({ registry, availability, run }: Prop
                       aria-label={command.label}
                       aria-keyshortcuts={registry.aria(id) ?? undefined}
                       title={now.state === "blocked" ? now.why : undefined}
-                      onClick={() => {
-                        if (now.state === "ready") {
-                          setOpen(null);
-                          run(id);
-                        }
-                      }}
+                      onClick={onItemClick(id, now)}
                     >
                       <span>{command.label}</span>
                       {key && <kbd>{key}</kbd>}

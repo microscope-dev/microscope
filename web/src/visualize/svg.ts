@@ -91,8 +91,8 @@ function element(shape: Shape, building: Building): SVGElement {
         shape.x !== undefined || shape.y !== undefined
           ? `translate(${shape.x ?? 0} ${shape.y ?? 0})`
           : "",
-        shape.rotate !== undefined ? `rotate(${shape.rotate})` : "",
-        shape.scale !== undefined ? `scale(${shape.scale})` : "",
+        shape.rotate === undefined ? "" : `rotate(${shape.rotate})`,
+        shape.scale === undefined ? "" : `scale(${shape.scale})`,
       ]
         .filter(Boolean)
         .join(" ");

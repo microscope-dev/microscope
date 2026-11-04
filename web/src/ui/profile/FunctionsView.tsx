@@ -1,13 +1,13 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 
 import { assert } from "../../assert";
-import { diffModeOf, withLook } from "../../profile/look";
+import { diffModeOf } from "../../profile/look";
 import { changeOf, formatCount, formatPercent, formatWeight } from "../../profile/paint";
-import type { ProfileQuery } from "../../protocol";
+import type { ProfileBaseWeight, ProfileCost, ProfileKey, ProfileQuery } from "../../protocol";
 import { Code, SourceLines } from "./Annotated";
 import { useAnswer, useProfile } from "./context";
-import { Unanswered } from "./parts";
+import { LookButton, Unanswered } from "./parts";
 import { useActiveRow } from "./rows";
 import { Change, ColumnHead, TreeRows, useTree } from "./TreeView";
 
@@ -18,7 +18,7 @@ type Order = "own" | "total";
 /** Every function's cost, and for the selected one a sandwich: its
  * callers above and its callees below, merged from every call. */
 export function FunctionsView() {
-  const { query, look, unit, setLook } = useProfile();
+  const { query, look, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
   const [order, setOrder] = useState<Order>("own");
   const body = useRef<HTMLDivElement>(null);
@@ -26,13 +26,14 @@ export function FunctionsView() {
   const rows = useMemo(() => {
     const all = answer.data?.rows ?? [];
     if (order === "total") {
-      return [...all].sort((a, b) => b.total - a.total || b.own - a.own);
+      return all.toSorted((a, b) => b.total - a.total || b.own - a.own);
     }
     // The server orders a diff by change in share.
     return answer.data?.base && mode === "time"
-      ? [...all].sort((a, b) => Math.abs(b.own - b.baseOwn) - Math.abs(a.own - a.baseOwn))
+      ? all.toSorted((a, b) => Math.abs(b.own - b.baseOwn) - Math.abs(a.own - a.baseOwn))
       : all;
   }, [answer.data, order, mode]);
+  // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => body.current,
@@ -41,16 +42,38 @@ export function FunctionsView() {
   });
   const keys = useActiveRow(rows.length, virtual);
   const weight = answer.data?.weight ?? 0;
-  const names = answer.data?.keys ?? [];
+  const names = answer.data?.keys;
   const base = answer.data?.base ?? null;
-  const select = (index: number) => {
-    const row = rows[index];
-    assert(row !== undefined, `row ${index} is outside ${rows.length} rows`);
-    const name = names[row.key]?.name;
-    if (name !== undefined) {
-      setLook((look) => ({ ...look, fn: name }));
-    }
-  };
+  const select = useCallback(
+    (index: number) => {
+      const row = rows[index];
+      assert(row !== undefined, `row ${index} is outside ${rows.length} rows`);
+      const name = names?.[row.key]?.name;
+      if (name !== undefined) {
+        setLook((prev) => ({ ...prev, fn: name }));
+      }
+    },
+    [rows, names, setLook],
+  );
+  const { choose } = keys;
+  const pick = useCallback(
+    (index: number) => {
+      choose(index);
+      select(index);
+    },
+    [choose, select],
+  );
+  // oxlint-disable-next-line react-perf/jsx-no-new-function-as-prop -- it reads the active row, which changes with every key
+  const keyDown = (event: KeyboardEvent) =>
+    keys.onKeyDown(event, (key) => {
+      if (key !== "Enter") {
+        return false;
+      }
+      select(keys.active);
+      return true;
+    });
+  const size = virtual.getTotalSize();
+  const sized = useMemo(() => ({ height: size }), [size]);
   return (
     <div className="profile-functions">
       <div className="pane grow">
@@ -58,19 +81,14 @@ export function FunctionsView() {
           Functions
           <span className="count">{formatCount(rows.length)}</span>
           <div className="segmented">
-            {(["own", "total"] as const).map((each) => (
-              <button
-                key={each}
-                type="button"
-                aria-pressed={order === each}
-                onClick={() => setOrder(each)}
-              >
+            {ORDERS.map((each) => (
+              <OrderButton key={each} order={each} pressed={order === each} setOrder={setOrder}>
                 by {each === "own" && base ? "change" : each}
-              </button>
+              </OrderButton>
             ))}
           </div>
         </div>
-        <ColumnHead columns={base ? ["own", "total", "change"] : ["own", "total"]} end="module" />
+        <ColumnHead columns={base ? DIFF_COLUMNS : COLUMNS} end="module" />
         {answer.error || !answer.data ? (
           <Unanswered error={answer.error} reading="Reading functions…" />
         ) : rows.length === 0 ? (
@@ -79,57 +97,34 @@ export function FunctionsView() {
           <div
             ref={body}
             className={`pane-body ${answer.current ? "" : "stale"}`}
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a virtual list a select cannot hold
             role="listbox"
             aria-label="Functions"
             tabIndex={0}
             aria-activedescendant={keys.rowId(keys.active)}
-            onKeyDown={(event) =>
-              keys.onKeyDown(event, (key) => {
-                if (key !== "Enter") {
-                  return false;
-                }
-                select(keys.active);
-                return true;
-              })
-            }
+            onKeyDown={keyDown}
           >
-            <div className="tree-rows" style={{ height: virtual.getTotalSize() }}>
+            <div className="tree-rows" style={sized}>
               {virtual.getVirtualItems().map((item) => {
                 const row = rows[item.index];
-                const key = row ? names[row.key] : undefined;
+                const key = row ? answer.data?.keys[row.key] : undefined;
                 if (!row || !key) {
                   return null;
                 }
-                const selected = look.fn === key.name;
-                const own = formatPercent(row.own, weight);
-                const total = formatPercent(row.total, weight);
-                const change = base
-                  ? changeOf(mode, [row.own, weight], [row.baseOwn, base.weight], unit)
-                  : null;
                 return (
-                  // biome-ignore lint/a11y/useFocusableInteractive: the list keeps focus and names its active row
-                  // biome-ignore lint/a11y/useKeyWithClickEvents: the list takes the keys for its rows
-                  <div
+                  <FunctionRow
                     // Functions of one name in two modules are two rows.
                     key={row.key}
                     id={keys.rowId(item.index)}
-                    role="option"
-                    aria-selected={selected}
-                    aria-label={`${key.name}${key.module ? ` in ${key.module}` : ""}, ${own} own, ${total} total${change ? `, ${change.text} change` : ""}`}
-                    className={`row tree-row ${selected ? "selected" : ""} ${item.index === keys.active ? "active" : ""}`}
-                    style={{ transform: `translateY(${item.start}px)` }}
-                    title={formatWeight(row.total, unit)}
-                    onClick={() => {
-                      keys.choose(item.index);
-                      select(item.index);
-                    }}
-                  >
-                    <span className="percent">{own}</span>
-                    <span className="percent dim">{total}</span>
-                    {change ? <Change change={change} /> : null}
-                    <span className="name">{key.name}</span>
-                    {key.module ? <span className="end">{key.module}</span> : null}
-                  </div>
+                    row={row}
+                    fn={key}
+                    index={item.index}
+                    start={item.start}
+                    active={item.index === keys.active}
+                    weight={weight}
+                    base={base}
+                    pick={pick}
+                  />
                 );
               })}
             </div>
@@ -137,6 +132,81 @@ export function FunctionsView() {
         )}
       </div>
       {look.fn ? <Selected name={look.fn} /> : null}
+    </div>
+  );
+}
+
+const ORDERS = ["own", "total"] as const;
+const COLUMNS = ["own", "total"];
+const DIFF_COLUMNS = ["own", "total", "change"];
+
+function OrderButton({
+  order,
+  pressed,
+  setOrder,
+  children,
+}: {
+  order: Order;
+  pressed: boolean;
+  setOrder: (order: Order) => void;
+  children: ReactNode;
+}) {
+  const click = useCallback(() => setOrder(order), [setOrder, order]);
+  return (
+    <button type="button" aria-pressed={pressed} onClick={click}>
+      {children}
+    </button>
+  );
+}
+
+function FunctionRow({
+  id,
+  row,
+  fn,
+  index,
+  start,
+  active,
+  weight,
+  base,
+  pick,
+}: {
+  id: string;
+  row: ProfileCost;
+  fn: ProfileKey;
+  index: number;
+  start: number;
+  active: boolean;
+  weight: number;
+  base: ProfileBaseWeight | null;
+  pick: (index: number) => void;
+}) {
+  const { look, unit } = useProfile();
+  const placed = useMemo(() => ({ transform: `translateY(${start}px)` }), [start]);
+  const click = useCallback(() => pick(index), [pick, index]);
+  const selected = look.fn === fn.name;
+  const own = formatPercent(row.own, weight);
+  const total = formatPercent(row.total, weight);
+  const change = base
+    ? changeOf(diffModeOf(look), [row.own, weight], [row.baseOwn, base.weight], unit)
+    : null;
+  return (
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus -- the list keeps focus, names its active row, and takes the keys for its rows
+    <div
+      id={id}
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a virtual list, not a select's option
+      role="option"
+      aria-selected={selected}
+      aria-label={`${fn.name}${fn.module ? ` in ${fn.module}` : ""}, ${own} own, ${total} total${change ? `, ${change.text} change` : ""}`}
+      className={`row tree-row ${selected ? "selected" : ""} ${active ? "active" : ""}`}
+      style={placed}
+      title={formatWeight(row.total, unit)}
+      onClick={click}
+    >
+      <span className="percent">{own}</span>
+      <span className="percent dim">{total}</span>
+      {change ? <Change change={change} /> : null}
+      <span className="name">{fn.name}</span>
+      {fn.module ? <span className="end">{fn.module}</span> : null}
     </div>
   );
 }
@@ -150,20 +220,15 @@ const PANELS = [
 /** The selected function: its callers and callees, or its samples on its
  * source lines or on its instructions. */
 function Selected({ name }: { name: string }) {
-  const { query, look, setLook } = useProfile();
+  const { query, look } = useProfile();
   return (
     <div className="profile-selected">
       <div className="pane-head">
         <div className="segmented">
           {PANELS.map(([ann, label]) => (
-            <button
-              key={label}
-              type="button"
-              aria-pressed={look.ann === ann}
-              onClick={() => setLook((look) => withLook(look, "ann", ann), true)}
-            >
+            <LookButton key={label} field="ann" value={ann} pressed={look.ann === ann}>
               {label}
-            </button>
+            </LookButton>
           ))}
         </div>
         {look.ann && query.transforms.length > 0 ? (

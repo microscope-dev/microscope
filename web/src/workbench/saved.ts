@@ -71,7 +71,7 @@ function readLayout(value: unknown): Layout {
     layout.maximized === null ? null : ident<GroupId>(layout.maximized, "g", "maximized");
   return {
     root: readNode(layout.root),
-    floating: list(layout.floating, "floating").map(readFloating),
+    floating: list(layout.floating, "floating").map((item) => readFloating(item)),
     maximized,
     hidden: list(layout.hidden, "hidden").map((id) =>
       typeof id === "string" && id.startsWith("s")
@@ -105,8 +105,8 @@ function readNode(value: unknown): Node {
     throw new Malformed(`a split's axis is ${String(node.axis)}`);
   }
   const axis: Axis = node.axis;
-  const children = list(node.children, "a split's children").map((value): Child => {
-    const child = record(value, "a split's child");
+  const children = list(node.children, "a split's children").map((item): Child => {
+    const child = record(item, "a split's child");
     if (typeof child.weight !== "number") {
       throw new Malformed("a child's weight is not a number");
     }
@@ -168,7 +168,7 @@ function ident<T extends PaneId | GroupId | SplitId>(
   letter: string,
   what: string,
 ): T {
-  if (typeof value !== "string" || !new RegExp(`^${letter}(0|[1-9][0-9]*)$`).test(value)) {
+  if (typeof value !== "string" || !new RegExp(`^${letter}(0|[1-9][0-9]*)$`, "u").test(value)) {
     throw new Malformed(`${what}'s id is ${JSON.stringify(value)}`);
   }
   return value as T;

@@ -79,7 +79,7 @@ export function documentsGroup(layout: Layout, files: readonly string[] = []): G
       return group.id;
     }
   }
-  const all = groups(layout).sort((a, b) => a.id.localeCompare(b.id));
+  const all = groups(layout).toSorted((a, b) => a.id.localeCompare(b.id));
   const holding = (wanted: (pane: Pane) => boolean) =>
     all.find((group) => group.tabs.some((tab) => wanted(layout.panes[tab] as Pane)));
   const found =

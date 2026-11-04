@@ -148,7 +148,7 @@ export function targetName(state: State | null): string | null {
 
 /** A stop's kind, which the protocol spells as one word, in words. */
 export function stopKind(kind: string): string {
-  return kind.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`);
+  return kind.replaceAll(/[A-Z]/gu, (letter) => ` ${letter.toLowerCase()}`);
 }
 
 /**

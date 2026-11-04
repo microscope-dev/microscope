@@ -46,7 +46,7 @@ export interface Drop {
  * edges (`bodies` false), so dropping it anywhere else just moves it. */
 export function resolveDrop(measured: Measured, point: Point, bodies = true): Drop | null {
   // Windows sit above the dock, the top one first.
-  for (const window of [...measured.floating].reverse()) {
+  for (const window of measured.floating.toReversed()) {
     if (inside(window.strip, point)) {
       return gap(window, point);
     }
@@ -182,7 +182,7 @@ export function neighbor(
     if (id === from) {
       continue;
     }
-    const gap = {
+    const apart = {
       left: origin.x - (rect.x + rect.width),
       right: rect.x - (origin.x + origin.width),
       up: origin.y - (rect.y + rect.height),
@@ -192,11 +192,15 @@ export function neighbor(
       ? Math.min(origin.y + origin.height, rect.y + rect.height) - Math.max(origin.y, rect.y)
       : Math.min(origin.x + origin.width, rect.x + rect.width) - Math.max(origin.x, rect.x);
     // A pixel either way, for borders that round apart.
-    if (gap < -1 || overlap <= 0) {
+    if (apart < -1 || overlap <= 0) {
       continue;
     }
-    if (!best || gap < best.gap - 1 || (Math.abs(gap - best.gap) <= 1 && overlap > best.overlap)) {
-      best = { id, gap, overlap };
+    if (
+      !best ||
+      apart < best.gap - 1 ||
+      (Math.abs(apart - best.gap) <= 1 && overlap > best.overlap)
+    ) {
+      best = { id, gap: apart, overlap };
     }
   }
   return best?.id ?? null;

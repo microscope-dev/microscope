@@ -3,7 +3,7 @@
 // program's: a passed stop's values are gone, and a running program's are
 // moving.
 
-import { useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useMemo, useState } from "react";
 
 import { assert } from "../assert";
 import { useRequest } from "../data";
@@ -23,15 +23,23 @@ export function Variables() {
   const scopes = useRequest("scopes", why === null ? (focus.at as At) : null);
   const statics = focus.look.x?.includes("statics") ?? false;
   const look = useLook();
+  const toggleStatics = useCallback(
+    () =>
+      look((current) => {
+        const x = (current.x ?? []).filter((key) => key !== "statics");
+        const next = statics ? x : [...x, "statics"];
+        const { x: _x, ...rest } = current;
+        return next.length > 0 ? { ...rest, x: next } : rest;
+      }),
+    [look, statics],
+  );
 
   let body: React.ReactNode;
   if (why) {
     body = <div className="empty">{why}</div>;
   } else if (scopes.error) {
     body = <div className="empty error">{scopes.error.message}</div>;
-  } else if (!scopes.data) {
-    body = <div className="empty">Reading variables…</div>;
-  } else {
+  } else if (scopes.data) {
     body = (
       <Earlier when={!scopes.current}>
         <ul className="value-list" aria-label="Variables" data-testid="variables">
@@ -47,14 +55,7 @@ export function Variables() {
                       className="twist"
                       aria-label={`${open ? "Close" : "Open"} ${scope.name}`}
                       aria-expanded={open}
-                      onClick={() =>
-                        look((current) => {
-                          const x = (current.x ?? []).filter((key) => key !== "statics");
-                          const next = open ? x : [...x, "statics"];
-                          const { x: _x, ...rest } = current;
-                          return next.length > 0 ? { ...rest, x: next } : rest;
-                        })
-                      }
+                      onClick={toggleStatics}
                     >
                       {open ? "▾" : "▸"}
                     </button>
@@ -78,6 +79,8 @@ export function Variables() {
         </ul>
       </Earlier>
     );
+  } else {
+    body = <div className="empty">Reading variables…</div>;
   }
   return (
     <div className="pane-body">
@@ -93,14 +96,33 @@ export function Watch() {
   const [text, setText] = useState("");
   const why = hidden(focus);
 
-  const remove = (index: number) => {
-    assert(index >= 0 && index < watches.length, `removing watch ${index} of ${watches.length}`);
-    look((current) => {
-      const w = (current.w ?? []).filter((_, at) => at !== index);
-      const { w: _w, ...rest } = current;
-      return w.length > 0 ? { ...rest, w } : rest;
-    });
-  };
+  const count = watches.length;
+  const remove = useCallback(
+    (index: number) => {
+      assert(index >= 0 && index < count, `removing watch ${index} of ${count}`);
+      look((current) => {
+        const w = (current.w ?? []).filter((_, at) => at !== index);
+        const { w: _w, ...rest } = current;
+        return w.length > 0 ? { ...rest, w } : rest;
+      });
+    },
+    [look, count],
+  );
+  const add = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const expression = text.trim();
+      if (expression) {
+        look((current) => watching(current, expression));
+        setText("");
+      }
+    },
+    [look, text],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+    [],
+  );
 
   return (
     <div className="pane-body">
@@ -115,30 +137,21 @@ export function Watch() {
                 key={`${expression}~${occurrence}`}
                 expression={expression}
                 occurrence={occurrence}
-                hidden={why}
-                onRemove={() => remove(index)}
+                index={index}
+                why={why}
+                onRemove={remove}
               />
             );
           })}
         </ul>
       </LinkedExpansion>
-      <form
-        className="watch-add"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const expression = text.trim();
-          if (expression) {
-            look((current) => watching(current, expression));
-            setText("");
-          }
-        }}
-      >
+      <form className="watch-add" onSubmit={add}>
         <input
           className="input quiet"
           aria-label="Add a watch"
           placeholder="+ expression"
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={edit}
         />
       </form>
     </div>
@@ -153,28 +166,34 @@ export function WatchBadge() {
 function WatchRow({
   expression,
   occurrence,
-  hidden,
+  index,
+  why,
   onRemove,
 }: {
   expression: string;
   occurrence: number;
-  hidden: string | null;
-  onRemove(): void;
+  index: number;
+  why: string | null;
+  onRemove(index: number): void;
 }) {
   const { at } = useFocus();
-  const value = useRequest("evaluate", hidden === null && at ? { ...at, expression } : null);
-  const remove = (
-    <button
-      type="button"
-      className="icon remove"
-      aria-label={`Remove the watch ${expression}`}
-      title="Remove"
-      onClick={onRemove}
-    >
-      ×
-    </button>
+  const value = useRequest("evaluate", why === null && at ? { ...at, expression } : null);
+  const onClick = useCallback(() => onRemove(index), [onRemove, index]);
+  const remove = useMemo(
+    () => (
+      <button
+        type="button"
+        className="icon remove"
+        aria-label={`Remove the watch ${expression}`}
+        title="Remove"
+        onClick={onClick}
+      >
+        ×
+      </button>
+    ),
+    [expression, onClick],
   );
-  if (hidden !== null) {
+  if (why !== null) {
     return (
       <ValueRow
         row={messageRow(expression, "not read")}

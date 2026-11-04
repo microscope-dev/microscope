@@ -1,12 +1,12 @@
 // Settings this browser keeps: the theme, the name others see in a session,
 // and saved layouts; and every key, from the command registry.
 
-import { type FormEvent, useId, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useId, useState } from "react";
 
 import { isString, read, write } from "../storage";
 import { useConnection, useModel } from "../store";
 import { flash } from "../tab";
-import { chooseTheme, THEMES, useChosenTheme } from "../theme";
+import { chooseTheme, type Theme, THEMES, useChosenTheme } from "../theme";
 import { deleteNamed, layoutNames, loadNamed, saveNamed } from "../workbench/persist";
 import { workbench } from "../workbench/store";
 import { COMMANDS } from "./commands";
@@ -19,16 +19,7 @@ export function SettingsBody() {
       <h2>Theme</h2>
       <div className="segmented" role="radiogroup" aria-label="Theme">
         {THEMES.map((each) => (
-          // biome-ignore lint/a11y/useSemanticElements: a segmented control of three choices
-          <button
-            key={each}
-            type="button"
-            role="radio"
-            aria-checked={theme === each}
-            onClick={() => chooseTheme(each)}
-          >
-            {{ system: "The system's", light: "Light", dark: "Dark" }[each]}
-          </button>
+          <ThemeButton key={each} theme={each} checked={theme === each} />
         ))}
       </div>
       <h2>Your name</h2>
@@ -36,6 +27,21 @@ export function SettingsBody() {
       <h2>Layouts</h2>
       <Layouts />
     </div>
+  );
+}
+
+function ThemeButton({ theme, checked }: { theme: Theme; checked: boolean }) {
+  const onClick = useCallback(() => chooseTheme(theme), [theme]);
+  return (
+    <button
+      type="button"
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a segmented control of three choices
+      role="radio"
+      aria-checked={checked}
+      onClick={onClick}
+    >
+      {{ system: "The system's", light: "Light", dark: "Dark" }[theme]}
+    </button>
   );
 }
 
@@ -48,18 +54,25 @@ function YourName() {
   );
   const [name, setName] = useState(() => read("microscope-name", "", isString));
   const [error, setError] = useState<string | null>(null);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const chosen = name.trim();
-    write("microscope-name", chosen);
-    setError(null);
-    if (open && chosen) {
-      connection
-        .request("setName", { name: chosen })
-        .then(() => flash(`Others see you as ${chosen}`))
-        .catch((failure: Error) => setError(failure.message));
-    }
-  };
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const chosen = name.trim();
+      write("microscope-name", chosen);
+      setError(null);
+      if (open && chosen) {
+        connection
+          .request("setName", { name: chosen })
+          .then(() => flash(`Others see you as ${chosen}`))
+          .catch((failure: Error) => setError(failure.message));
+      }
+    },
+    [name, open, connection],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
+    [],
+  );
   return (
     <form className="pane-form" onSubmit={submit}>
       <div className="field">
@@ -69,7 +82,7 @@ function YourName() {
           className="input"
           value={name}
           placeholder={me ?? "your name"}
-          onChange={(event) => setName(event.target.value)}
+          onChange={edit}
         />
       </div>
       {error && <span className="error">{error}</span>}
@@ -86,12 +99,20 @@ function Layouts() {
   const id = useId();
   const [names, setNames] = useState(layoutNames);
   const [name, setName] = useState("");
-  const save = (event: FormEvent) => {
-    event.preventDefault();
-    saveNamed(name.trim(), workbench.getState().layout);
-    setNames(layoutNames());
-    setName("");
-  };
+  const save = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      saveNamed(name.trim(), workbench.getState().layout);
+      setNames(layoutNames());
+      setName("");
+    },
+    [name],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setName(event.target.value),
+    [],
+  );
+  const deleted = useCallback(() => setNames(layoutNames()), []);
   return (
     <>
       {names.length === 0 ? (
@@ -99,45 +120,14 @@ function Layouts() {
       ) : (
         <ul className="rows">
           {names.map((saved) => (
-            <li key={saved} className="layout-row">
-              <span>{saved}</span>
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => {
-                  const loaded = loadNamed(saved, KINDS);
-                  if (loaded.ok) {
-                    applyLayout(loaded.layout);
-                  } else {
-                    flash(`The layout ${saved} can't be opened: ${loaded.why}`);
-                  }
-                }}
-              >
-                Open
-              </button>
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => {
-                  deleteNamed(saved);
-                  setNames(layoutNames());
-                }}
-              >
-                Delete
-              </button>
-            </li>
+            <LayoutRow key={saved} saved={saved} onDeleted={deleted} />
           ))}
         </ul>
       )}
       <form className="pane-form" onSubmit={save}>
         <div className="field">
           <label htmlFor={id}>Save this layout as</label>
-          <input
-            id={id}
-            className="input"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
+          <input id={id} className="input" value={name} onChange={edit} />
         </div>
         <div className="actions">
           <button type="submit" className="button" disabled={!name.trim()}>
@@ -146,6 +136,32 @@ function Layouts() {
         </div>
       </form>
     </>
+  );
+}
+
+function LayoutRow({ saved, onDeleted }: { saved: string; onDeleted: () => void }) {
+  const open = useCallback(() => {
+    const loaded = loadNamed(saved, KINDS);
+    if (loaded.ok) {
+      applyLayout(loaded.layout);
+    } else {
+      flash(`The layout ${saved} can't be opened: ${loaded.why}`);
+    }
+  }, [saved]);
+  const remove = useCallback(() => {
+    deleteNamed(saved);
+    onDeleted();
+  }, [saved, onDeleted]);
+  return (
+    <li className="layout-row">
+      <span>{saved}</span>
+      <button type="button" className="link-button" onClick={open}>
+        Open
+      </button>
+      <button type="button" className="link-button" onClick={remove}>
+        Delete
+      </button>
+    </li>
   );
 }
 

@@ -2,7 +2,16 @@
 // of the value it was opened from are marked, a selection reads as the
 // types its length could be, and controllers write bytes in place.
 
-import { type KeyboardEvent, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../assert";
 import { cache, useRequest } from "../data";
@@ -57,7 +66,7 @@ export function Memory() {
         <Dump key={look.mem} shown={shown} />
       ) : (
         <div className="empty center-message">
-          Type an address or an expression above, or open a value's memory from its row.
+          Type an address or an expression above, or open a value&apos;s memory from its row.
         </div>
       )}
     </div>
@@ -73,48 +82,56 @@ function GoTo() {
   const [error, setError] = useState<string | null>(null);
   // Only the latest go-to moves the tab, however its answers are ordered.
   const latest = useRef(0);
-  const go = (mem: string) => {
-    look((current) => ({ ...current, mem, view: "memory" }), { replace: false });
-    setText("");
-  };
+  const go = useCallback(
+    (mem: string) => {
+      look((current) => ({ ...current, mem, view: "memory" }), { replace: false });
+      setText("");
+    },
+    [look],
+  );
+  const submit = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      const wanted = text.trim();
+      const asked = ++latest.current;
+      setError(null);
+      const named = parseTarget(wanted);
+      if (named) {
+        go(targetText(named));
+        return;
+      }
+      if (!at || stale) {
+        setError("Expressions are read at the stop shown, while it is the program's");
+        return;
+      }
+      const settled = await cache.get(connection, "evaluate", { ...at, expression: wanted })
+        .promise;
+      const row = settled.ok ? (settled.value as Row) : null;
+      if (asked !== latest.current) {
+        return;
+      }
+      if (!settled.ok) {
+        setError(settled.error.message);
+      } else if (row?.memory) {
+        go(row.memoryBytes ? `${row.memory}:${row.memoryBytes}` : row.memory);
+      } else {
+        setError(`${wanted} names no memory`);
+      }
+    },
+    [text, at, stale, connection, go],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+    [],
+  );
   return (
-    <form
-      className="goto"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const wanted = text.trim();
-        const asked = ++latest.current;
-        setError(null);
-        const named = parseTarget(wanted);
-        if (named) {
-          go(targetText(named));
-          return;
-        }
-        if (!at || stale) {
-          setError("Expressions are read at the stop shown, while it is the program's");
-          return;
-        }
-        cache.get(connection, "evaluate", { ...at, expression: wanted }).promise.then((settled) => {
-          const row = settled.ok ? (settled.value as Row) : null;
-          if (asked !== latest.current) {
-            return;
-          }
-          if (!settled.ok) {
-            setError(settled.error.message);
-          } else if (!row?.memory) {
-            setError(`${wanted} names no memory`);
-          } else {
-            go(row.memoryBytes ? `${row.memory}:${row.memoryBytes}` : row.memory);
-          }
-        });
-      }}
-    >
+    <form className="goto" onSubmit={submit}>
       <input
         className="input quiet"
         aria-label="Go to memory"
         placeholder="0xaddress or an expression"
         value={text}
-        onChange={(event) => setText(event.target.value)}
+        onChange={edit}
       />
       {error && <span className="error">{error}</span>}
     </form>
@@ -154,75 +171,91 @@ function Dump({ shown }: { shown: Target }) {
     "readMemory",
     why === null && at ? { stop: at.stop, address: hex(start), count: ROWS * ROW } : null,
   );
+  const data = read.data;
+  const rows = useMemo(() => (data ? dumpRows(start, data.bytes, ROWS) : []), [start, data]);
+  const readable = useMemo(
+    (): bigint[] =>
+      rows.flatMap((row) =>
+        row.bytes.flatMap((byte, column) => (byte === null ? [] : [row.address + BigInt(column)])),
+      ),
+    [rows],
+  );
+  const choose = useCallback(
+    (address: bigint, extend: boolean) => {
+      assert(readable.includes(address), `chose unread byte ${hex(address)}`);
+      setCursor(address);
+      setSelection((current) =>
+        extend && current
+          ? {
+              from: address < current.from ? address : current.from,
+              to: address > current.to ? address : current.to,
+            }
+          : { from: address, to: address },
+      );
+    },
+    [readable],
+  );
+  // At once, not on the next frame: a held arrow key's repeats must each
+  // start from the byte the last one reached.
+  const focusByte = useCallback(
+    (address: bigint) =>
+      body.current?.querySelector<HTMLElement>(`[data-address="${address}"]`)?.focus(),
+    [],
+  );
+  const walk = useCallback(
+    (address: bigint, event: KeyboardEvent) => {
+      const step = STEPS[event.key];
+      if (step === undefined) {
+        return;
+      }
+      event.preventDefault();
+      const next = address + step;
+      if (readable.includes(next)) {
+        choose(next, event.shiftKey);
+        focusByte(next);
+      }
+    },
+    [readable, choose, focusByte],
+  );
+  const edit = useCallback((address: bigint) => setEditing(address), []);
+  const doneEditing = useCallback(
+    (address: bigint) => {
+      setEditing(null);
+      // The byte replaces the editor only once drawn.
+      requestAnimationFrame(() => focusByte(address));
+    },
+    [focusByte],
+  );
+  const earlier = useCallback(() => setMoved(moved - ROWS), [moved]);
+  const later = useCallback(() => setMoved(moved + ROWS), [moved]);
+
   if (why) {
     return <div className="empty center-message">{why}</div>;
   }
   if (read.error) {
     return <div className="empty center-message error">{read.error.message}</div>;
   }
-  if (!read.data) {
+  if (!data) {
     return <div className="empty center-message">Reading memory…</div>;
   }
-  const rows = dumpRows(start, read.data.bytes, ROWS);
   assert(rows.length === ROWS, `memory shows ${rows.length} rows, not ${ROWS}`);
   assert(rows[0]?.address === start, `memory rows do not start at ${hex(start)}`);
-  const readable: bigint[] = rows.flatMap((row) =>
-    row.bytes.flatMap((byte, column) => (byte === null ? [] : [row.address + BigInt(column)])),
-  );
   // Paging can leave the cursor off screen; the first byte shown takes over.
   const stop = readable.includes(cursor) ? cursor : readable[0];
   const within = (range: Selection | null, address: bigint) =>
     range !== null && address >= range.from && address <= range.to;
-  const choose = (address: bigint, extend: boolean) => {
-    assert(readable.includes(address), `chose unread byte ${hex(address)}`);
-    setCursor(address);
-    setSelection((current) =>
-      extend && current
-        ? {
-            from: address < current.from ? address : current.from,
-            to: address > current.to ? address : current.to,
-          }
-        : { from: address, to: address },
-    );
-  };
-  // At once, not on the next frame: a held arrow key's repeats must each
-  // start from the byte the last one reached.
-  const focusByte = (address: bigint) =>
-    body.current?.querySelector<HTMLElement>(`[data-address="${address}"]`)?.focus();
-  const walk = (address: bigint, event: KeyboardEvent) => {
-    const step = STEPS[event.key];
-    if (step === undefined) {
-      return;
-    }
-    event.preventDefault();
-    const next = address + step;
-    if (readable.includes(next)) {
-      choose(next, event.shiftKey);
-      focusByte(next);
-    }
-  };
 
   return (
     <>
       <div className="mem-pages">
-        <button
-          type="button"
-          className="button small"
-          disabled={start === 0n}
-          onClick={() => setMoved(moved - ROWS)}
-        >
+        <button type="button" className="button small" disabled={start === 0n} onClick={earlier}>
           ↑ Earlier
         </button>
-        <button
-          type="button"
-          className="button small"
-          disabled={start === last}
-          onClick={() => setMoved(moved + ROWS)}
-        >
+        <button type="button" className="button small" disabled={start === last} onClick={later}>
           Later ↓
         </button>
-        {read.data.unreadable && (
-          <span className="dim">Nothing can be read from {read.data.unreadable} on.</span>
+        {data.unreadable && (
+          <span className="dim">Nothing can be read from {data.unreadable} on.</span>
         )}
       </div>
       <div ref={body} className={`mem-body ${read.current ? "" : "stale"}`} data-testid="memory">
@@ -234,15 +267,7 @@ function Dump({ shown }: { shown: Target }) {
                 const address = row.address + BigInt(column);
                 if (editing === address) {
                   return (
-                    <ByteEditor
-                      key={String(address)}
-                      address={address}
-                      done={() => {
-                        setEditing(null);
-                        // The byte replaces the editor only once drawn.
-                        requestAnimationFrame(() => focusByte(address));
-                      }}
-                    />
+                    <ByteEditor key={String(address)} address={address} onDone={doneEditing} />
                   );
                 }
                 return (
@@ -252,9 +277,9 @@ function Dump({ shown }: { shown: Target }) {
                     byte={byte}
                     className={`${within(value, address) ? "in-value" : ""} ${within(selection, address) ? "selected" : ""}`}
                     tabbable={address === stop}
-                    onSelect={(extend) => choose(address, extend)}
-                    onEdit={() => setEditing(address)}
-                    onWalk={(event) => walk(address, event)}
+                    onSelect={choose}
+                    onEdit={edit}
+                    onWalk={walk}
                   />
                 );
               })}
@@ -282,17 +307,35 @@ function ByteCell({
   byte: number | null;
   className: string;
   tabbable: boolean;
-  onSelect(extend: boolean): void;
-  onEdit(): void;
-  onWalk(event: KeyboardEvent): void;
+  onSelect(address: bigint, extend: boolean): void;
+  onEdit(address: bigint): void;
+  onWalk(address: bigint, event: KeyboardEvent): void;
 }) {
   const { stale } = useFocus();
   const control = useModel(controls);
+  const select = useCallback(
+    (event: MouseEvent) => onSelect(address, event.shiftKey),
+    [onSelect, address],
+  );
+  const edit = useCallback(
+    () => control && !stale && onEdit(address),
+    [control, stale, onEdit, address],
+  );
+  const key = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === "F2") {
+        event.preventDefault();
+        edit();
+      } else {
+        onWalk(address, event);
+      }
+    },
+    [edit, onWalk, address],
+  );
   if (byte === null) {
     return <span className="byte unread">??</span>;
   }
   const text = byte.toString(16).padStart(2, "0");
-  const edit = () => control && !stale && onEdit();
   return (
     <button
       type="button"
@@ -300,16 +343,9 @@ function ByteCell({
       data-address={String(address)}
       aria-label={`${text} at ${hex(address)}`}
       tabIndex={tabbable ? 0 : -1}
-      onClick={(event) => onSelect(event.shiftKey)}
+      onClick={select}
       onDoubleClick={edit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === "F2") {
-          event.preventDefault();
-          edit();
-        } else {
-          onWalk(event);
-        }
-      }}
+      onKeyDown={key}
     >
       {text}
     </button>
@@ -317,44 +353,51 @@ function ByteCell({
 }
 
 /** Writes bytes from `address` on: one pair, or several. */
-function ByteEditor({ address, done }: { address: bigint; done(): void }) {
+function ByteEditor({ address, onDone }: { address: bigint; onDone(address: bigint): void }) {
   const { at } = useFocus();
   const connection = useConnection();
   const [error, setError] = useState<string | null>(null);
+  const finish = useCallback(() => onDone(address), [onDone, address]);
+  const submit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const bytes = String(new FormData(event.currentTarget).get("bytes") ?? "").replaceAll(
+        /\s/gu,
+        "",
+      );
+      if (!at || !/^([0-9a-f]{2})+$/iu.test(bytes)) {
+        setError("pairs of hexadecimal digits");
+        return;
+      }
+      connection
+        .request("writeMemory", { stop: at.stop, address: hex(address), bytes })
+        .then(finish)
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [at, connection, address, finish],
+  );
+  const escape = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        finish();
+      }
+    },
+    [finish],
+  );
+  const blur = useCallback(() => error === null && finish(), [error, finish]);
   return (
-    <form
-      className="byte-edit"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const bytes = String(new FormData(event.currentTarget).get("bytes") ?? "").replaceAll(
-          /\s/g,
-          "",
-        );
-        if (!at || !/^([0-9a-f]{2})+$/i.test(bytes)) {
-          setError("pairs of hexadecimal digits");
-          return;
-        }
-        connection
-          .request("writeMemory", { stop: at.stop, address: hex(address), bytes })
-          .then(done)
-          .catch((failure: Error) => setError(failure.message));
-      }}
-    >
+    <form className="byte-edit" onSubmit={submit}>
       <input
         className="input"
         name="bytes"
         aria-label={`New byte at ${hex(address)}`}
         title="hexadecimal pairs; several write the bytes after it too"
         aria-invalid={error !== null}
-        // biome-ignore lint/a11y/noAutofocus: the person asked to edit this byte
+        // oxlint-disable-next-line jsx-a11y/no-autofocus -- the person asked to edit this byte
         autoFocus
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.stopPropagation();
-            done();
-          }
-        }}
-        onBlur={() => error === null && done()}
+        onKeyDown={escape}
+        onBlur={blur}
       />
       {error && <span className="error">{error}</span>}
     </form>

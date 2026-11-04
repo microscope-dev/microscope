@@ -64,7 +64,8 @@ export class Cache {
         }),
       ),
     };
-    void entry.promise.then((settled) => {
+    void (async () => {
+      const settled = await entry.promise;
       entry.settled = settled;
       if (
         !settled.ok &&
@@ -73,7 +74,7 @@ export class Cache {
       ) {
         this.#entries.delete(key);
       }
-    });
+    })();
     this.#entries.set(key, entry);
     while (this.#entries.size > LIMIT) {
       const oldest = this.#entries.keys().next().value;
@@ -99,7 +100,7 @@ export class Cache {
   forget(prefix: string): void {
     assert(prefix.includes(" "), `forgetting by prefix "${prefix}", which names no whole method`);
     let forgot = false;
-    for (const key of [...this.#entries.keys()]) {
+    for (const key of this.#entries.keys()) {
       if (key.startsWith(prefix)) {
         this.#entries.delete(key);
         forgot = true;
@@ -150,32 +151,34 @@ export function useRequest<M extends Method>(
 
   // The key stands for the parameters, which are compared by it.
   const asked = useRef(params);
+  // oxlint-disable-next-line react/refs -- the effect reads the latest parameters but reruns only when the key changes
   asked.current = params;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new version means answers were forgotten, so ask again
   useEffect(() => {
-    const params = asked.current;
+    const wanted = asked.current;
     if (!visible) {
       return;
     }
-    if (key === null || params === null) {
+    if (key === null || wanted === null) {
       setShown({ key: null });
       return;
     }
     let live = true;
-    const entry = source.get(connection, method, params);
+    const entry = source.get(connection, method, wanted);
     if (entry.settled) {
       setShown({ key, settled: entry.settled });
     } else {
-      void entry.promise.then((settled) => {
+      void (async () => {
+        const settled = await entry.promise;
         if (live) {
           setShown({ key, settled });
         }
-      });
+      })();
     }
     return () => {
       live = false;
     };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new version means answers were forgotten, so ask again
   }, [key, connection, method, source, version, visible]);
 
   const current = shown.key === key && key !== null;

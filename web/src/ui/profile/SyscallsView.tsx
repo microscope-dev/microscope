@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, type FormEvent, useCallback, useMemo, useState } from "react";
 
 import { type SyscallTab, syscallQueryOf, withLook } from "../../profile/look";
 import { formatCount } from "../../profile/paint";
 import { bucketLabel } from "../../profile/syscalls";
 import { useAnswer, useProfile } from "./context";
-import { Chip } from "./parts";
+import { ClearChip, LookButton } from "./parts";
 import { Lanes } from "./SyscallLanes";
 import { Log } from "./SyscallLog";
 import { Summary } from "./SyscallSummary";
@@ -22,7 +22,7 @@ const TABS: { tab: SyscallTab | undefined; label: string }[] = [
  * they did. Every panel reads the same selection, in strace's `-e`
  * syntax, over the same time range as the rest of the profile. */
 export function SyscallsView() {
-  const { profile, look, query, setLook } = useProfile();
+  const { profile, look, query } = useProfile();
   const base = useMemo(
     () => syscallQueryOf(profile, look, query.revision ?? 0),
     [profile, look, query.revision],
@@ -34,22 +34,17 @@ export function SyscallsView() {
         <FilterBar error={summary.error?.message} />
         <div className="segmented">
           {TABS.map(({ tab, label }) => (
-            <button
-              key={label}
-              type="button"
-              aria-pressed={look.st === tab}
-              onClick={() => setLook((look) => withLook(look, "st", tab), true)}
-            >
+            <LookButton key={label} field="st" value={tab} pressed={look.st === tab}>
               {label}
-            </button>
+            </LookButton>
           ))}
         </div>
         {look.sl ? (
-          <Chip
+          <ClearChip
+            field="sl"
             label={bucketLabel(Number(look.sl))}
             title="Calls of this latency"
             removeLabel="Remove the latency band"
-            remove={() => setLook((look) => withLook(look, "sl", undefined))}
           />
         ) : null}
         {summary.data ? (
@@ -92,21 +87,31 @@ export function SyscallsView() {
 function FilterBar({ error }: { error: string | undefined }) {
   const { look, setLook } = useProfile();
   const [text, setText] = useState(look.sf ?? "");
-  useEffect(() => setText(look.sf ?? ""), [look.sf]);
+  // A selection applied elsewhere replaces what is typed.
+  const [applied, setApplied] = useState(look.sf);
+  if (applied !== look.sf) {
+    setApplied(look.sf);
+    setText(look.sf ?? "");
+  }
+  const apply = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      setLook((prev) => withLook(prev, "sf", text.trim() || undefined), true);
+    },
+    [setLook, text],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+    [],
+  );
   return (
-    <form
-      className="syscalls-filter"
-      onSubmit={(event) => {
-        event.preventDefault();
-        setLook((look) => withLook(look, "sf", text.trim() || undefined), true);
-      }}
-    >
+    <form className="syscalls-filter" onSubmit={apply}>
       <input
         className="input mono"
         aria-label="Selection"
         placeholder="trace=%file status=failed"
         value={text}
-        onChange={(event) => setText(event.target.value)}
+        onChange={edit}
         aria-invalid={error ? true : undefined}
       />
       {error ? (

@@ -1,3 +1,5 @@
+import { type ReactNode, useCallback } from "react";
+
 import { transformed, withLook } from "../../profile/look";
 import { formatPercent, formatWeight } from "../../profile/paint";
 import type { TransformOp } from "../../protocol";
@@ -23,6 +25,10 @@ export function Details({ name }: { name: string }) {
   });
   const located = costs.find(({ key }) => key.file)?.key;
   const weight = functions?.weight ?? 0;
+  const showCallers = useCallback(
+    () => setLook((look) => ({ ...withLook(look, "view", "functions"), fn: name }), true),
+    [setLook, name],
+  );
   return (
     <div className="profile-details" data-testid="details">
       <span className="mono name" title={name}>
@@ -35,41 +41,59 @@ export function Details({ name }: { name: string }) {
       ) : null}
       {answer.error ? (
         <span className="error">{answer.error.message}</span>
-      ) : !functions ? (
-        <span className="muted">Reading its cost…</span>
-      ) : costs.length === 0 ? (
-        <span className="muted">No selected sample runs it.</span>
+      ) : functions ? (
+        costs.length === 0 ? (
+          <span className="muted">No selected sample runs it.</span>
+        ) : (
+          costs.map(({ row, key }) => (
+            <span key={row.key} className="muted">
+              {costs.length > 1 ? `${key.module ?? "no module"}: ` : ""}
+              {formatWeight(row.total, unit)} · {formatPercent(row.total, weight)} total,{" "}
+              {formatPercent(row.own, weight)} own
+            </span>
+          ))
+        )
       ) : (
-        costs.map(({ row, key }) => (
-          <span key={row.key} className="muted">
-            {costs.length > 1 ? `${key.module ?? "no module"}: ` : ""}
-            {formatWeight(row.total, unit)} · {formatPercent(row.total, weight)} total,{" "}
-            {formatPercent(row.own, weight)} own
-          </span>
-        ))
+        <span className="muted">Reading its cost…</span>
       )}
       <span className="spacer" />
       {ACTIONS.map(({ op, label, title }) => (
-        <button
-          key={op}
-          type="button"
-          className="tb ghost"
-          title={title}
-          onClick={() => setLook((look) => transformed(look, { op, name }), true)}
-        >
+        <Action key={op} op={op} name={name} title={title}>
           {label}
-        </button>
+        </Action>
       ))}
       <button
         type="button"
         className="tb ghost"
         title="Its callers and callees"
-        onClick={() =>
-          setLook((look) => ({ ...withLook(look, "view", "functions"), fn: name }), true)
-        }
+        onClick={showCallers}
       >
         Callers and callees
       </button>
     </div>
+  );
+}
+
+/** A button that transforms the profile by the selected function. */
+function Action({
+  op,
+  name,
+  title,
+  children,
+}: {
+  op: TransformOp;
+  name: string;
+  title: string;
+  children: ReactNode;
+}) {
+  const { setLook } = useProfile();
+  const apply = useCallback(
+    () => setLook((look) => transformed(look, { op, name }), true),
+    [setLook, op, name],
+  );
+  return (
+    <button type="button" className="tb ghost" title={title} onClick={apply}>
+      {children}
+    </button>
   );
 }

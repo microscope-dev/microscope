@@ -28,7 +28,7 @@ export const PENDING = "pending until a module with its code loads";
 export function knownBreakpointPlaces(breakpoint: Breakpoint): readonly Place[] {
   const pending = breakpoint.pending?.places;
   return pending?.length
-    ? [...breakpoint.places, ...pending.map((pending) => pending.place)]
+    ? [...breakpoint.places, ...pending.map((each) => each.place)]
     : breakpoint.places;
 }
 
@@ -58,7 +58,7 @@ export function namesFile(named: string, path: string): boolean {
 
 /** The line a breakpoint was asked for in the file at `path`, if any. */
 export function askedAt(breakpoint: Breakpoint, path: string): number | undefined {
-  const asked = /^(.*):(\d+)$/.exec(breakpoint.location);
+  const asked = /^(.*):(\d+)$/u.exec(breakpoint.location);
   return asked?.[1] && namesFile(asked[1], path) ? Number(asked[2]) : undefined;
 }
 

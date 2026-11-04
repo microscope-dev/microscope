@@ -337,21 +337,24 @@ export function followSignIn(): void {
   // erase what the first time found.
   account.setState({
     now: { kind: "checking" },
-    ...(error !== null
-      ? { notice: { ok: false, text: error } }
-      : notice !== null
-        ? { notice: { ok: true, text: notice } }
-        : {}),
+    ...(error === null
+      ? notice === null
+        ? {}
+        : { notice: { ok: true, text: notice } }
+      : { notice: { ok: false, text: error } }),
     ...(challenge !== null && fragment.get("method") === "totp" ? { challenge } : {}),
   });
-  following = ask()
-    .then((now) => {
-      changes += 1;
-      account.setState({ now });
-    })
-    .finally(() => {
-      following = null;
-    });
+  following = (async () => {
+    const now = await ask();
+    changes += 1;
+    account.setState({ now });
+  })().finally(() => {
+    following = null;
+  });
+}
+
+function tell(notice: Notice): void {
+  account.setState({ notice });
 }
 
 /** Follows the link a confirmation, login, or password reset email sent:
@@ -362,24 +365,23 @@ export function followEmailLink(link: "confirm" | "login" | "reset"): void {
   if (token === null || !standalone) {
     return;
   }
-  const done = (notice: Notice) => account.setState({ notice });
   if (link === "reset") {
     account.setState({ reset: token, notice: null });
   } else if (link === "confirm") {
     post("/api/email-confirmations", { token })
-      .then(() => done({ ok: true, text: "Your email address is confirmed. You can sign in now." }))
-      .catch((error: Error) => done({ ok: false, text: `Could not confirm: ${error.message}.` }));
+      .then(() => tell({ ok: true, text: "Your email address is confirmed. You can sign in now." }))
+      .catch((error: Error) => tell({ ok: false, text: `Could not confirm: ${error.message}.` }));
   } else {
     // Until the link is answered, the pane shows neither the sign-in form
     // nor an older check's answer.
     changes += 1;
     account.setState({ now: { kind: "checking" } });
-    following = post("/api/login/link", { token })
-      .then(async (response) => {
-        signedIn((await response.json()) as User);
-      })
+    following = (async () => {
+      const response = await post("/api/login/link", { token });
+      signedIn((await response.json()) as User);
+    })()
       .catch(async (error: Error) => {
-        done({ ok: false, text: `Could not sign in: ${error.message}.` });
+        tell({ ok: false, text: `Could not sign in: ${error.message}.` });
         account.setState({ now: await ask() });
       })
       .finally(() => {

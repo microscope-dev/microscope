@@ -34,13 +34,13 @@ const floats = (layout: Layout, group: GroupId) =>
 
 /** Puts the keyboard in a pane: in the box it is for, if it has one. */
 export function focusPane(pane: PaneId): void {
-  const panel = document.getElementById(panelId(pane));
+  const panel = document.querySelector<HTMLElement>(`#${panelId(pane)}`);
   (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? panel)?.focus();
 }
 
 /** Puts the keyboard on a pane's tab. */
 export function focusTab(pane: PaneId): void {
-  document.getElementById(tabId(pane))?.focus();
+  document.querySelector<HTMLElement>(`#${tabId(pane)}`)?.focus();
 }
 
 /** The groups on screen, where they are. */
@@ -79,7 +79,7 @@ export function focusBeside(direction: Direction): void {
 
 export function sendWhy(direction: "left" | "right"): Why {
   const group = focusedGroup();
-  return !group?.active ? "no tab is shown" : besideWhy(direction);
+  return group?.active ? besideWhy(direction) : "no tab is shown";
 }
 
 /** Moves the shown tab to the end of the group beside it. */

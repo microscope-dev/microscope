@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import { formatCount } from "../../profile/paint";
 import type { RequestError, SyscallQuery } from "../../protocol";
@@ -42,10 +42,10 @@ function Rows({
       </thead>
       <tbody>
         {rows.map((cells, row) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: rows are answered in order
+          // oxlint-disable-next-line react/no-array-index-key -- rows are answered in order
           <tr key={row}>
             {cells.map((cell, index) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: columns are fixed
+              // oxlint-disable-next-line react/no-array-index-key -- columns are fixed
               <td key={index} className={index > 0 ? "num" : "mono"}>
                 {cell}
               </td>
@@ -62,12 +62,17 @@ function Failed({ count }: { count: number }) {
   return count > 0 ? <span className="error-text">{formatCount(count)}</span> : "0";
 }
 
+const FILES_HEAD = ["path", "opens", "failed", "read", "written", "fsync", "time"];
+const NETWORK_HEAD = ["endpoint", "connects", "failed", "connect time", "sent", "received"];
+const PROCESSES_HEAD = ["process", "threads", "calls", "errors", "lifetime", "end"];
+const IN_FLIGHT_HEAD = ["thread", "call", "for"];
+
 export function Files({ query }: { query: SyscallQuery }) {
   const files = useAnswer("syscallFiles", query);
   return (
     <div className="pane" data-testid="syscall-files">
       <Rows
-        head={["path", "opens", "failed", "read", "written", "fsync", "time"]}
+        head={FILES_HEAD}
         error={files.error}
         reading="Reading files…"
         empty="No file was opened or used."
@@ -90,7 +95,7 @@ export function Network({ query }: { query: SyscallQuery }) {
   return (
     <div className="pane" data-testid="syscall-network">
       <Rows
-        head={["endpoint", "connects", "failed", "connect time", "sent", "received"]}
+        head={NETWORK_HEAD}
         error={network.error}
         reading="Reading sockets…"
         empty="No socket was used."
@@ -120,24 +125,24 @@ export function Processes({ query }: { query: SyscallQuery }) {
   return (
     <div className="pane" data-testid="syscall-processes">
       <Rows
-        head={["process", "threads", "calls", "errors", "lifetime", "end"]}
+        head={PROCESSES_HEAD}
         error={processes.error}
         reading="Reading processes…"
         empty="No process was seen."
         rows={all?.map((process) => [
-          <span key="name" style={{ paddingLeft: `${(depth.get(process.pid) ?? 0) * 16}px` }}>
+          <Indented key="name" depth={depth.get(process.pid) ?? 0}>
             {process.pid}{" "}
             <span className="muted">
               {process.images.map((image) => image.slice(image.lastIndexOf("/") + 1)).join(" → ")}
             </span>
-          </span>,
+          </Indented>,
           formatCount(process.threads),
           formatCount(process.calls),
           <Failed key="errors" count={process.errors} />,
-          process.ended !== null ? (
-            <Duration key="lifetime" ns={process.ended - process.started} />
-          ) : (
+          process.ended === null ? (
             "running"
+          ) : (
+            <Duration key="lifetime" ns={process.ended - process.started} />
           ),
           process.end ?? "",
         ])}
@@ -145,6 +150,12 @@ export function Processes({ query }: { query: SyscallQuery }) {
       {live ? <InFlight query={query} /> : null}
     </div>
   );
+}
+
+/** A process under its parent, a step in for each ancestor. */
+function Indented({ depth, children }: { depth: number; children: ReactNode }) {
+  const style = useMemo(() => ({ paddingLeft: `${depth * 16}px` }), [depth]);
+  return <span style={style}>{children}</span>;
 }
 
 /** What each thread of a live trace is blocked in, as of its last
@@ -158,7 +169,7 @@ function InFlight({ query }: { query: SyscallQuery }) {
     <section className="in-flight" data-testid="syscall-in-flight">
       <h3>Blocked now</h3>
       <Rows
-        head={["thread", "call", "for"]}
+        head={IN_FLIGHT_HEAD}
         error={flight.error}
         reading="Reading blocked threads…"
         empty="No thread is blocked in a call."

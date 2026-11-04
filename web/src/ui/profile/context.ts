@@ -39,10 +39,12 @@ export function useAnswer<M extends Method>(
   const answer = useRequest(method, open ? params : null);
   const kept = useRef<Results[M] | undefined>(undefined);
   if (answer.data !== undefined) {
+    // oxlint-disable-next-line react/refs -- keeps the last answer without a second render
     kept.current = answer.data;
   }
   return answer.data === undefined && answer.error === undefined
-    ? { ...answer, data: kept.current }
+    ? // oxlint-disable-next-line react/refs -- keeps the last answer without a second render
+      { ...answer, data: kept.current }
     : answer;
 }
 

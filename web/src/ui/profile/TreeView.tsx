@@ -1,5 +1,13 @@
-import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState } from "react";
+import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
+import {
+  type KeyboardEvent,
+  type MouseEvent,
+  type RefObject,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../../assert";
 import { diffModeOf } from "../../profile/look";
@@ -9,7 +17,7 @@ import type { ProfileQuery, RequestError } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
 import { Details } from "./Details";
 import { Unanswered } from "./parts";
-import { useActiveRow } from "./rows";
+import { type ActiveRow, useActiveRow } from "./rows";
 
 const ROW = 20;
 
@@ -75,7 +83,6 @@ export function TreeRows({
   label: string;
   reading: string;
 }) {
-  const { look, setLook, unit } = useProfile();
   const tree = fetched.tree;
   const body = useRef<HTMLDivElement>(null);
   // Opened nodes belong to one tree; another answer opens its own.
@@ -83,7 +90,10 @@ export function TreeRows({
     tree: null,
     open: new Set(),
   });
-  const open = opened.tree === tree ? opened.open : tree ? opening(tree) : new Set<number>();
+  const open = useMemo(
+    () => (opened.tree === tree ? opened.open : tree ? opening(tree) : new Set<number>()),
+    [opened, tree],
+  );
   const rows = useMemo(() => {
     const shown: number[] = [];
     if (!tree) {
@@ -95,6 +105,7 @@ export function TreeRows({
     }
     return shown;
   }, [tree, open]);
+  // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => body.current,
@@ -108,17 +119,78 @@ export function TreeRows({
   if (tree.count === 0) {
     return <div className="empty">No samples are selected.</div>;
   }
-  const toggle = (node: number) => {
-    const next = new Set(open);
-    if (!next.delete(node)) {
-      next.add(node);
-    }
-    setOpened({ tree, open: next });
-  };
-  const select = (node: number) => {
-    const name = nameOf(tree, node);
-    setLook((look) => ({ ...look, fn: name }));
-  };
+  return (
+    <TreeBody
+      tree={tree}
+      rows={rows}
+      open={open}
+      setOpen={setOpened}
+      body={body}
+      virtual={virtual}
+      keys={keys}
+      label={label}
+      current={fetched.current}
+    />
+  );
+}
+
+const TREE_COLUMNS = ["total", "own"];
+const DIFF_TREE_COLUMNS = ["total", "own", "change"];
+
+function TreeBody({
+  tree,
+  rows,
+  open,
+  setOpen,
+  body,
+  virtual,
+  keys,
+  label,
+  current,
+}: {
+  tree: CallTree;
+  rows: number[];
+  open: Set<number>;
+  setOpen: (opened: { tree: CallTree; open: Set<number> }) => void;
+  body: RefObject<HTMLDivElement | null>;
+  virtual: Virtualizer<HTMLDivElement, Element>;
+  keys: ActiveRow;
+  label: string;
+  current: boolean;
+}) {
+  const { setLook } = useProfile();
+  const toggle = useCallback(
+    (node: number) => {
+      const next = new Set(open);
+      if (!next.delete(node)) {
+        next.add(node);
+      }
+      setOpen({ tree, open: next });
+    },
+    [tree, open, setOpen],
+  );
+  const select = useCallback(
+    (node: number) => {
+      const name = nameOf(tree, node);
+      setLook((prev) => ({ ...prev, fn: name }));
+    },
+    [tree, setLook],
+  );
+  const { choose } = keys;
+  const choosePick = useCallback(
+    (index: number, node: number) => {
+      choose(index);
+      select(node);
+    },
+    [choose, select],
+  );
+  const chooseToggle = useCallback(
+    (index: number, node: number) => {
+      choose(index);
+      toggle(node);
+    },
+    [choose, toggle],
+  );
   const parent = (node: number) => node + 1 < (tree.end[node] ?? 0);
   const onKey = (key: string) => {
     const node = rows[keys.active];
@@ -151,79 +223,127 @@ export function TreeRows({
     }
     return true;
   };
-  const diff = tree.baseTotal !== null;
+  // oxlint-disable-next-line react-perf/jsx-no-new-function-as-prop -- it reads the active row, which changes with every key
+  const keyDown = (event: KeyboardEvent) => keys.onKeyDown(event, onKey);
+  const size = virtual.getTotalSize();
+  const sized = useMemo(() => ({ height: size }), [size]);
   return (
     <>
-      <ColumnHead columns={diff ? ["total", "own", "change"] : ["total", "own"]} />
+      <ColumnHead columns={tree.baseTotal === null ? TREE_COLUMNS : DIFF_TREE_COLUMNS} />
       <div
         ref={body}
-        className={`pane-body ${fetched.current ? "" : "stale"}`}
+        className={`pane-body ${current ? "" : "stale"}`}
         role="tree"
         aria-label={label}
         tabIndex={0}
         aria-activedescendant={rows.length > 0 ? keys.rowId(keys.active) : undefined}
-        onKeyDown={(event) => keys.onKeyDown(event, onKey)}
+        onKeyDown={keyDown}
       >
-        <div className="tree-rows" style={{ height: virtual.getTotalSize() }}>
+        <div className="tree-rows" style={sized}>
           {virtual.getVirtualItems().map((item) => {
             const node = rows[item.index] ?? 0;
-            const name = nameOf(tree, node);
-            const total = formatPercent(tree.total[node] ?? 0, tree.weight);
-            const own = formatPercent(tree.own[node] ?? 0, tree.weight);
-            const change = tree.baseTotal
-              ? changeOf(
-                  diffModeOf(look),
-                  [tree.total[node] ?? 0, tree.weight],
-                  [tree.baseTotal[node] ?? 0, tree.baseWeight ?? 0],
-                  unit,
-                )
-              : null;
-            const active = item.index === keys.active;
             return (
-              // biome-ignore lint/a11y/useFocusableInteractive: the tree keeps focus and names its active row
-              // biome-ignore lint/a11y/useKeyWithClickEvents: the tree takes the keys for its rows
-              <div
+              <TreeRow
                 key={node}
                 id={keys.rowId(item.index)}
-                role="treeitem"
-                aria-level={(tree.depth[node] ?? 0) + 1}
-                aria-expanded={parent(node) ? open.has(node) : undefined}
-                aria-selected={look.fn === name}
-                aria-label={`${name}, ${total} total, ${own} own${change ? `, ${change.text} change` : ""}`}
-                className={`row tree-row ${look.fn === name ? "selected" : ""} ${active ? "active" : ""}`}
-                style={{ transform: `translateY(${item.start}px)` }}
-                onClick={() => {
-                  keys.choose(item.index);
-                  select(node);
-                }}
-              >
-                <span className="percent">{total}</span>
-                <span className="percent dim">{own}</span>
-                {change ? <Change change={change} /> : null}
-                <span style={{ width: (tree.depth[node] ?? 0) * 12, flex: "none" }} />
-                <button
-                  type="button"
-                  className="twist"
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  style={{ visibility: parent(node) ? "visible" : "hidden" }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    keys.choose(item.index);
-                    toggle(node);
-                  }}
-                >
-                  {open.has(node) ? "▾" : "▸"}
-                </button>
-                <span className="name" title={name}>
-                  {name}
-                </span>
-              </div>
+                tree={tree}
+                node={node}
+                index={item.index}
+                start={item.start}
+                parent={parent(node)}
+                open={open.has(node)}
+                active={item.index === keys.active}
+                pick={choosePick}
+                twist={chooseToggle}
+              />
             );
           })}
         </div>
       </div>
     </>
+  );
+}
+
+const SHOWN = { visibility: "visible" } as const;
+const HIDDEN = { visibility: "hidden" } as const;
+
+function TreeRow({
+  id,
+  tree,
+  node,
+  index,
+  start,
+  parent,
+  open,
+  active,
+  pick,
+  twist,
+}: {
+  id: string;
+  tree: CallTree;
+  node: number;
+  index: number;
+  start: number;
+  parent: boolean;
+  open: boolean;
+  active: boolean;
+  pick: (index: number, node: number) => void;
+  twist: (index: number, node: number) => void;
+}) {
+  const { look, unit } = useProfile();
+  const depth = tree.depth[node] ?? 0;
+  const placed = useMemo(() => ({ transform: `translateY(${start}px)` }), [start]);
+  const indent = useMemo(() => ({ width: depth * 12, flex: "none" }), [depth]);
+  const click = useCallback(() => pick(index, node), [pick, index, node]);
+  const clickTwist = useCallback(
+    (event: MouseEvent) => {
+      event.stopPropagation();
+      twist(index, node);
+    },
+    [twist, index, node],
+  );
+  const name = nameOf(tree, node);
+  const total = formatPercent(tree.total[node] ?? 0, tree.weight);
+  const own = formatPercent(tree.own[node] ?? 0, tree.weight);
+  const change = tree.baseTotal
+    ? changeOf(
+        diffModeOf(look),
+        [tree.total[node] ?? 0, tree.weight],
+        [tree.baseTotal[node] ?? 0, tree.baseWeight ?? 0],
+        unit,
+      )
+    : null;
+  return (
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/interactive-supports-focus -- the tree keeps focus, names its active row, and takes the keys for its rows
+    <div
+      id={id}
+      role="treeitem"
+      aria-level={depth + 1}
+      aria-expanded={parent ? open : undefined}
+      aria-selected={look.fn === name}
+      aria-label={`${name}, ${total} total, ${own} own${change ? `, ${change.text} change` : ""}`}
+      className={`row tree-row ${look.fn === name ? "selected" : ""} ${active ? "active" : ""}`}
+      style={placed}
+      onClick={click}
+    >
+      <span className="percent">{total}</span>
+      <span className="percent dim">{own}</span>
+      {change ? <Change change={change} /> : null}
+      <span style={indent} />
+      <button
+        type="button"
+        className="twist"
+        tabIndex={-1}
+        aria-hidden="true"
+        style={parent ? SHOWN : HIDDEN}
+        onClick={clickTwist}
+      >
+        {open ? "▾" : "▸"}
+      </button>
+      <span className="name" title={name}>
+        {name}
+      </span>
+    </div>
   );
 }
 

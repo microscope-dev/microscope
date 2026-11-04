@@ -23,7 +23,7 @@ type Run =
   | { path: string; empty: "[]" | "{}" }
   | { path: string; array: TypedArray };
 
-const NAME = /^[A-Za-z_$][\w$]*$/;
+const NAME = /^[A-Za-z_$][\w$]*$/u;
 
 export function inputRows(inputs: Record<string, Value>): InputRows {
   const runs: Run[] = [];
@@ -134,11 +134,16 @@ function collect(value: Value, path: string, runs: Run[]): void {
 export function csv(rows: InputRows): string {
   const lines = ["path,value"];
   for (let index = 0; index < rows.count; index++) {
-    lines.push(rows.cell(index).map(field).join(","));
+    lines.push(
+      rows
+        .cell(index)
+        .map((value) => field(value))
+        .join(","),
+    );
   }
   return `${lines.join("\n")}\n`;
 }
 
 function field(value: string): string {
-  return /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+  return /[",\n\r]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }

@@ -38,9 +38,7 @@ export function Registers() {
     body = <div className="empty">{why}</div>;
   } else if (registers.error) {
     body = <div className={errorClass(registers.error)}>{registers.error.message}</div>;
-  } else if (!registers.data) {
-    body = <div className="empty">Reading registers…</div>;
-  } else {
+  } else if (registers.data) {
     const at = focus.at;
     assert(at !== null, "registers listed with no stop");
     body = (
@@ -57,6 +55,8 @@ export function Registers() {
         ))}
       </ul>
     );
+  } else {
+    body = <div className="empty">Reading registers…</div>;
   }
   return (
     <div className="pane-body registers">

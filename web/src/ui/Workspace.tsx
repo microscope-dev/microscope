@@ -7,6 +7,7 @@ import {
   type ReactNode,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -106,13 +107,13 @@ export function Workspace() {
     }
     const inferior = state.inferior;
     const stale =
-      link !== "open"
-        ? "disconnected"
-        : at && inferior.state === "running"
+      link === "open"
+        ? at && inferior.state === "running"
           ? "running"
           : at && (inferior.state !== "stopped" || inferior.stop !== at.stop)
             ? "passed"
-            : null;
+            : null
+        : "disconnected";
     return { session, state, at, look, trace, stale };
   }, [session, state, at, look, trace, link]);
 
@@ -120,20 +121,20 @@ export function Workspace() {
 }
 
 /** The panes, as every address shows them: with a session's focus when the
- * address names one, and with `notice` above them when it says something
+ * address names one, and with `children` above them when it says something
  * the panes can't. */
 export function Workbench({
   focus,
   wants,
   start = wants === "session" ? debugLayout : welcomeLayout,
-  notice,
+  children,
 }: {
   focus: Focus | null;
   wants: Wants;
   /** The layout to start from when the one in use holds nothing for what
    * the address wants. */
   start?: () => Layout;
-  notice?: ReactNode;
+  children?: ReactNode;
 }) {
   useArranged(wants, start);
   useMirror(focus);
@@ -142,7 +143,7 @@ export function Workbench({
     <FocusContext value={focus}>
       {focus && <Documents />}
       <div className="workbench">
-        {notice}
+        {children}
         <Dock setup={DOCK} />
       </div>
       {focus && <Palette />}
@@ -157,7 +158,9 @@ function useArranged(wants: Wants, start: () => Layout) {
   // Read once, so StrictMode's second render agrees.
   const [refused] = useState(restoreLayout);
   const arranged = useRef<Wants | null>(null);
+  // oxlint-disable-next-line react/refs -- arranged during render, before the panes render
   if (arranged.current !== wants) {
+    // oxlint-disable-next-line react/refs -- as above
     arranged.current = wants;
     if (misplaced(workbench.getState().layout, wants)) {
       workbench.setState({ layout: start() });
@@ -190,7 +193,9 @@ function useFollowing(session: string, at: At | null, look: Look) {
   // The latest stop as of the previous state: what a following tab showed.
   const followed = useRef<number | undefined>(state ? latestStop(state) : undefined);
   const lookRef = useRef(look);
-  lookRef.current = look;
+  useLayoutEffect(() => {
+    lookRef.current = look;
+  });
   const stop = at?.stop;
   const thread = at?.thread;
   const frame = at?.frame;
@@ -259,7 +264,7 @@ function usePresence(at: At | null, trace: Backtrace | undefined) {
       return;
     }
     const timer = setTimeout(() => {
-      void connection.request("setFocus", { focus: { url, label } }).catch(() => undefined);
+      void connection.request("setFocus", { focus: { url, label } }).catch(() => {});
     }, 150);
     return () => clearTimeout(timer);
   }, [connection, open, url, label]);

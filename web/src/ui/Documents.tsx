@@ -4,7 +4,7 @@
 // function (D2). A frame with no source shows its instructions instead. The
 // address says which document is shown, and the documents group follows it.
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import { assert } from "../assert";
 import {
@@ -90,9 +90,9 @@ const documents: {
   close(path: string): void;
   view(view: View): void;
 } = {
-  show: () => undefined,
-  close: () => undefined,
-  view: () => undefined,
+  show: () => {},
+  close: () => {},
+  view: () => {},
 };
 
 export const showDocument = (path: string) => documents.show(path);
@@ -150,11 +150,11 @@ export function Documents() {
     documents.show = (chosen) => {
       const where = tab.getState().places[chosen];
       look(
-        (current) =>
+        (prev) =>
           chosen === own?.path
-            ? inView(followedLook(current), "source")
+            ? inView(followedLook(prev), "source")
             : showingSource(
-                current,
+                prev,
                 where ?? formatPlace({ path: paths.link(chosen), line: 1, end: 1 }),
               ),
         { replace: false, ask: true },
@@ -174,10 +174,10 @@ export function Documents() {
         documents.show(neighbor);
       } else if (current.src) {
         unasked.current = `${own?.path}:${own?.line ?? null}:${stop}:${asked}`;
-        look(({ src: _, ...rest }) => rest, { replace: false });
+        look(({ src: _src, ...rest }) => rest, { replace: false });
       }
     };
-    documents.view = (chosen) => look((look) => inView(look, chosen), { replace: false });
+    documents.view = (chosen) => look((prev) => inView(prev, chosen), { replace: false });
   });
   return null;
 }
@@ -187,23 +187,18 @@ export function SourceBody({ pane }: PaneProps) {
   const { at, stale } = useFocus();
   const shown = useShown();
   const path = pane.key;
+  const lastLine = tab.getState().shown?.line ?? null;
+  const fileShown = useMemo(
+    () => (shown?.path === path ? shown : { path, line: lastLine, selection: null }),
+    [shown, path, lastLine],
+  );
   return (
     <div className="document">
       <Banner />
       {stale === "running" && at && (
         <div className="view-note">Showing stop #{at.stop} · program running</div>
       )}
-      {path === "" ? (
-        <Nothing />
-      ) : (
-        <SourceFile
-          shown={
-            shown?.path === path
-              ? shown
-              : { path, line: tab.getState().shown?.line ?? null, selection: null }
-          }
-        />
-      )}
+      {path === "" ? <Nothing /> : <SourceFile shown={fileShown} />}
     </div>
   );
 }
@@ -219,11 +214,11 @@ function Nothing() {
         : at && frame && !frame.source
           ? `${frame.name} has no source${frame.address ? `: it is at ${frame.address}` : ""}${frame.module ? ` in ${frame.module}` : ""}.`
           : at && !trace
-            ? stale !== "passed"
-              ? "Reading the stack…"
-              : unreached(state, at.stop)
+            ? stale === "passed"
+              ? unreached(state, at.stop)
                 ? `This session has not reached stop #${at.stop}.`
                 : `Stop #${at.stop} has passed.`
+              : "Reading the stack…"
             : state.inferior.state === "notStarted"
               ? "Press F5 to run the program."
               : "No source to show."}
@@ -325,6 +320,45 @@ function SourceFile({ shown }: { shown: Shown }) {
     };
   }, [trace, frame, at, state, shown, source.data, inline]);
 
+  const toggle = useCallback(
+    (line: number) => {
+      if (!control) {
+        return;
+      }
+      const existing = breakpointAt(state.breakpoints, shown.path, line);
+      void toggleBreakpoint(connection, existing, `${shown.path}:${line}`);
+    },
+    [control, state.breakpoints, shown.path, connection],
+  );
+  const select = useCallback(
+    (line: number, extend: boolean) => {
+      const from = extend && shown.selection ? Math.min(shown.selection.line, line) : line;
+      const to = extend && shown.selection ? Math.max(shown.selection.end, line) : line;
+      look((current) =>
+        showingSource(current, formatPlace({ path: paths.link(shown.path), line: from, end: to })),
+      );
+    },
+    [shown.selection, shown.path, look, paths],
+  );
+  const moveCursor = useCallback(
+    (line: number) => tab.setState({ cursor: { path: shown.path, line } }),
+    [shown.path],
+  );
+  const hover = useMemo(
+    () =>
+      live
+        ? (expression: string) =>
+            cache
+              .get(connection, "evaluate", { ...live, expression })
+              .promise.then((settled) =>
+                settled.ok
+                  ? { text: (settled.value as Row).text, type: (settled.value as Row).type }
+                  : null,
+              )
+        : undefined,
+    [live, connection],
+  );
+
   if (source.error) {
     return (
       <div className="empty center-message">
@@ -336,14 +370,6 @@ function SourceFile({ shown }: { shown: Shown }) {
     return <div className="empty center-message">Reading {fileName(shown.path)}…</div>;
   }
 
-  const toggle = (line: number) => {
-    if (!control) {
-      return;
-    }
-    const existing = breakpointAt(state.breakpoints, shown.path, line);
-    void toggleBreakpoint(connection, existing, `${shown.path}:${line}`);
-  };
-
   return (
     <SourceView
       path={shown.path}
@@ -351,29 +377,9 @@ function SourceFile({ shown }: { shown: Shown }) {
       marks={marks}
       reveal={shown.line}
       onGutter={toggle}
-      onLineNumber={(line, extend) => {
-        const from = extend && shown.selection ? Math.min(shown.selection.line, line) : line;
-        const to = extend && shown.selection ? Math.max(shown.selection.end, line) : line;
-        look((current) =>
-          showingSource(
-            current,
-            formatPlace({ path: paths.link(shown.path), line: from, end: to }),
-          ),
-        );
-      }}
-      onCursor={(line) => tab.setState({ cursor: { path: shown.path, line } })}
-      onHover={
-        live
-          ? (expression) =>
-              cache
-                .get(connection, "evaluate", { ...live, expression })
-                .promise.then((settled) =>
-                  settled.ok
-                    ? { text: (settled.value as Row).text, type: (settled.value as Row).type }
-                    : null,
-                )
-          : undefined
-      }
+      onLineNumber={select}
+      onCursor={moveCursor}
+      onHover={hover}
     />
   );
 }

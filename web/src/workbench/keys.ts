@@ -20,7 +20,7 @@ export interface KeyLike {
 /** Whether a chord types text, and so acts only outside text boxes: a
  * letter or Escape with neither Ctrl nor Alt. */
 export function typing(chord: Chord): boolean {
-  return !chord.ctrl && !chord.alt && !/^F\d+$/.test(chord.key);
+  return !chord.ctrl && !chord.alt && !/^F\d+$/u.test(chord.key);
 }
 
 /** Whether a press is a chord. Letters name their case, so Shift is part of
@@ -88,11 +88,11 @@ function keyOf(event: KeyLike): string {
     return event.key;
   }
   if (event.altKey) {
-    const digit = /^Digit(\d)$/.exec(event.code);
+    const digit = /^Digit(\d)$/u.exec(event.code);
     if (digit) {
       return digit[1] as string;
     }
-    const letter = /^Key([A-Z])$/.exec(event.code);
+    const letter = /^Key([A-Z])$/u.exec(event.code);
     if (letter) {
       return (letter[1] as string).toLowerCase();
     }
@@ -128,5 +128,5 @@ export function isTextBox(element: Element | null): boolean {
 /** Whether a menu or dialog holding `element` closes on Escape itself, so
  * Escape must not also leave the view. Its other keys stay the debugger's. */
 export function keepsEscape(element: Element | null): boolean {
-  return element?.closest("[data-keys=escape]") != null;
+  return element !== null && element.closest("[data-keys=escape]") !== null;
 }

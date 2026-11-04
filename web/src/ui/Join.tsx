@@ -2,7 +2,7 @@
 // cookie, then opens the page the link names.
 
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { tradeOnce } from "../connection";
 import { isPagePath } from "../focus";
@@ -21,6 +21,9 @@ function join(): Promise<boolean> {
   return trade(token);
 }
 
+const CARD = { width: "min(560px, 100%)" };
+const NO_MARGIN = { margin: 0 };
+
 /** `/join#TOKEN`: trades the token for a cookie, then opens the link. */
 export function Join() {
   const connection = useConnection();
@@ -29,44 +32,40 @@ export function Join() {
   const [failed, setFailed] = useState<"refused" | "unreachable" | null>(null);
   const [tries, setTries] = useState(0);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each try trades again
   useEffect(() => {
-    join()
-      .then((accepted) => {
-        if (!accepted) {
-          setFailed("refused");
-          return;
-        }
-        connection.start();
-        // `href`, since the link holds a query of its own.
-        void navigate({ href: isPagePath(to) ? to : "/", replace: true });
-      })
-      .catch(() => setFailed("unreachable"));
+    const attempt = async () => {
+      if (!(await join())) {
+        setFailed("refused");
+        return;
+      }
+      connection.start();
+      // `href`, since the link holds a query of its own.
+      void navigate({ href: isPagePath(to) ? to : "/", replace: true });
+    };
+    attempt().catch(() => setFailed("unreachable"));
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- each try trades again
   }, [connection, navigate, to, tries]);
+  const retry = useCallback(() => {
+    setFailed(null);
+    setTries((count) => count + 1);
+  }, []);
 
   if (failed) {
     return (
       <div className="page">
-        <div className="card" style={{ width: "min(560px, 100%)" }}>
+        <div className="card" style={CARD}>
           <div className="card-head">
             <h1>{failed === "refused" ? "Open a join link" : "Could not join"}</h1>
           </div>
           <div className="card-body">
-            <p style={{ margin: 0 }}>
+            <p style={NO_MARGIN}>
               {failed === "refused"
                 ? "This link is not for this microscope, or it has expired. microscope web prints one when it starts, and Share makes more."
                 : "Could not reach microscope to use this link. Check that it is running, then try again."}
             </p>
             {failed === "unreachable" && (
               <div className="actions">
-                <button
-                  type="button"
-                  className="button primary"
-                  onClick={() => {
-                    setFailed(null);
-                    setTries((tries) => tries + 1);
-                  }}
-                >
+                <button type="button" className="button primary" onClick={retry}>
                   Try again
                 </button>
               </div>

@@ -28,15 +28,15 @@ export interface Passkey {
 export const supported = () => typeof window.PublicKeyCredential === "function";
 
 const fromB64 = (text: string): ArrayBuffer => {
-  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0)).buffer;
+  const binary = atob(text.replaceAll("-", "+").replaceAll("_", "/"));
+  return Uint8Array.from(binary, (char) => char.codePointAt(0) as number).buffer;
 };
 
 const toB64 = (bytes: ArrayBuffer): string =>
-  btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  btoa(String.fromCodePoint(...new Uint8Array(bytes)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
 
 interface Descriptor {
   type: "public-key";
@@ -77,13 +77,13 @@ const descriptor = (each: Descriptor): PublicKeyCredentialDescriptor => ({
 export function deviceName(): string {
   const agent = navigator.userAgent;
   for (const [pattern, name] of [
-    [/iPhone/, "iPhone"],
-    [/iPad/, "iPad"],
-    [/Android/, "Android"],
-    [/Macintosh|Mac OS X/, "Mac"],
-    [/Windows/, "Windows"],
-    [/CrOS/, "Chromebook"],
-    [/Linux/, "Linux"],
+    [/iPhone/u, "iPhone"],
+    [/iPad/u, "iPad"],
+    [/Android/u, "Android"],
+    [/Macintosh|Mac OS X/u, "Mac"],
+    [/Windows/u, "Windows"],
+    [/CrOS/u, "Chromebook"],
+    [/Linux/u, "Linux"],
   ] as const) {
     if (pattern.test(agent)) {
       return name;

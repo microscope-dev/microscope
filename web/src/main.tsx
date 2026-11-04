@@ -25,7 +25,7 @@ const session = createSession(
     if (event.type === "message" && event.message.type === "hello") {
       const name = read("microscope-name", "", isString);
       if (name) {
-        void session.connection.request("setName", { name }).catch(() => undefined);
+        void session.connection.request("setName", { name }).catch(() => {});
       }
     }
   },
@@ -38,7 +38,7 @@ if (withinBase(window.location.pathname) !== "/join") {
 }
 
 const router = createAppRouter();
-const root = document.getElementById("root");
+const root = document.querySelector("#root");
 if (root) {
   createRoot(root).render(
     <StrictMode>

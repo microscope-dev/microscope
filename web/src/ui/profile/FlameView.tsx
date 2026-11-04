@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../../assert";
 import { diffModeOf, withLook } from "../../profile/look";
@@ -34,26 +42,42 @@ export function FlameView() {
   const [search, setSearch] = useState("");
   const zoom = tree && look.z ? findPath(tree, look.z) : null;
   const matched = useMemo(() => (tree && search ? matching(tree, search) : null), [tree, search]);
+  const resetZoom = useCallback(
+    // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+    () => setLook((prev) => withLook(prev, "z", undefined), true),
+    [setLook],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setSearch(event.target.value),
+    [],
+  );
+  const zoomTo = useCallback(
+    (zoomed: CallTree, node: number) =>
+      setLook(
+        (prev) => ({
+          ...withLook(prev, "z", pathOf(zoomed, node)),
+          fn: nameOf(zoomed, node),
+        }),
+        true,
+      ),
+    [setLook],
+  );
 
   return (
     <div className="pane grow">
       <div className="pane-head">
         Flame graph
-        {zoom !== null ? (
-          <button
-            type="button"
-            className="link-button"
-            onClick={() => setLook((look) => withLook(look, "z", undefined), true)}
-          >
+        {zoom === null ? null : (
+          <button type="button" className="link-button" onClick={resetZoom}>
             Reset zoom
           </button>
-        ) : null}
+        )}
         <input
           className="input profile-search"
           placeholder="Search"
           aria-label="Search frames"
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={edit}
         />
         {matched && tree ? (
           <span className="count" data-testid="matched">
@@ -67,20 +91,7 @@ export function FlameView() {
         ) : tree.count === 0 ? (
           <div className="empty">No samples are selected.</div>
         ) : (
-          <FlameGraph
-            tree={tree}
-            zoom={zoom}
-            matched={matched?.nodes ?? null}
-            onZoom={(node) =>
-              setLook(
-                (look) => ({
-                  ...withLook(look, "z", pathOf(tree, node)),
-                  fn: nameOf(tree, node),
-                }),
-                true,
-              )
-            }
-          />
+          <FlameGraph tree={tree} zoom={zoom} matched={matched?.nodes ?? null} onZoom={zoomTo} />
         )}
       </div>
       {look.fn ? <Details name={look.fn} /> : null}
@@ -119,7 +130,7 @@ function FlameGraph({
   tree: CallTree;
   zoom: number | null;
   matched: Set<number> | null;
-  onZoom: (node: number) => void;
+  onZoom: (tree: CallTree, node: number) => void;
 }) {
   const { unit, look } = useProfile();
   const mode = diffModeOf(look);
@@ -186,39 +197,51 @@ function FlameGraph({
     context.globalAlpha = 1;
   }, [rects, tree, width, height, matched, scheme, mode]);
 
-  const at = (event: React.MouseEvent) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - bounds.left;
-    const y = event.clientY - bounds.top;
-    const rect = hit(rects, Math.floor(y / ROW), x / bounds.width);
-    return rect ? { tree, rect, left: x, top: y } : null;
-  };
+  const at = useCallback(
+    (event: MouseEvent) => {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const x = event.clientX - bounds.left;
+      const y = event.clientY - bounds.top;
+      const rect = hit(rects, Math.floor(y / ROW), x / bounds.width);
+      return rect ? { tree, rect, left: x, top: y } : null;
+    },
+    [rects, tree],
+  );
+  const move = useCallback((event: MouseEvent) => setHovered(at(event)), [at]);
+  const leave = useCallback(() => setHovered(null), []);
+  const click = useCallback(
+    (event: MouseEvent) => {
+      const found = at(event);
+      if (found) {
+        onZoom(tree, found.rect.node);
+      }
+    },
+    [at, onZoom, tree],
+  );
+  const boxStyle = useMemo(() => ({ height }), [height]);
+  const canvasStyle = useMemo(() => ({ width: "100%", height }), [height]);
+  const tipStyle = useMemo(
+    () =>
+      hovered
+        ? { left: Math.min(hovered.left + 12, Math.max(width - 320, 0)), top: hovered.top + 16 }
+        : undefined,
+    [hovered, width],
+  );
   const shown = hovered ? hovered.rect.node : null;
   return (
-    <div ref={box} className="flame" style={{ height }}>
+    <div ref={box} className="flame" style={boxStyle}>
       <canvas
         ref={canvas}
-        style={{ width: "100%", height }}
+        style={canvasStyle}
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
         role="img"
         aria-label="Flame graph"
-        onMouseMove={(event) => setHovered(at(event))}
-        onMouseLeave={() => setHovered(null)}
-        onClick={(event) => {
-          const found = at(event);
-          if (found) {
-            onZoom(found.rect.node);
-          }
-        }}
+        onMouseMove={move}
+        onMouseLeave={leave}
+        onClick={click}
       />
       {hovered && shown !== null ? (
-        <div
-          className="flame-tip"
-          data-testid="flame-tip"
-          style={{
-            left: Math.min(hovered.left + 12, Math.max(width - 320, 0)),
-            top: hovered.top + 16,
-          }}
-        >
+        <div className="flame-tip" data-testid="flame-tip" style={tipStyle}>
           <div className="mono">{nameOf(tree, shown)}</div>
           <div className="muted">
             {formatWeight(tree.total[shown] ?? 0, unit)} ·{" "}

@@ -15,7 +15,7 @@ export interface Target {
 
 /** Parses `0xADDRESS` or `0xADDRESS:BYTES`. */
 export function target(text: string): Target | null {
-  const match = /^(0x[0-9a-f]{1,16})(?::([1-9]\d{0,8}))?$/i.exec(text);
+  const match = /^(0x[0-9a-f]{1,16})(?::([1-9]\d{0,8}))?$/iu.exec(text);
   if (!match) {
     return null;
   }
@@ -24,8 +24,8 @@ export function target(text: string): Target | null {
 }
 
 /** A target as a link writes it. */
-export function targetText(target: Target): string {
-  return target.bytes ? `${hex(target.address)}:${target.bytes}` : hex(target.address);
+export function targetText(shown: Target): string {
+  return shown.bytes ? `${hex(shown.address)}:${shown.bytes}` : hex(shown.address);
 }
 
 export function hex(address: bigint): string {
@@ -71,7 +71,7 @@ export function printable(byte: number | null): string {
   if (byte === null) {
     return " ";
   }
-  return byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : ".";
+  return byte >= 0x20 && byte < 0x7f ? String.fromCodePoint(byte) : ".";
 }
 
 export interface Reading {
@@ -119,7 +119,7 @@ function quoted(bytes: readonly number[]): string {
     text +=
       escapes[byte] ??
       (byte >= 0x20 && byte < 0x7f && byte !== 0x5c
-        ? String.fromCharCode(byte)
+        ? String.fromCodePoint(byte)
         : byte === 0x5c
           ? "\\\\"
           : `\\x${byte.toString(16).padStart(2, "0")}`);

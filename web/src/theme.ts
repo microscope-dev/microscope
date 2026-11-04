@@ -48,8 +48,8 @@ export function chooseTheme(theme: Theme): void {
 
 export function apply(theme: Theme): void {
   if (theme === "system") {
-    document.documentElement.removeAttribute("data-theme");
+    delete document.documentElement.dataset.theme;
   } else {
-    document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.dataset.theme = theme;
   }
 }

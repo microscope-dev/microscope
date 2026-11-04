@@ -3,7 +3,16 @@
 // by keyboard. A drag moves only the two children's styles until it ends, so
 // it renders nothing until the layout takes the new weights.
 
-import { Fragment, type KeyboardEvent, memo, type PointerEvent, useRef } from "react";
+import {
+  Fragment,
+  type KeyboardEvent,
+  memo,
+  type PointerEvent,
+  type RefObject,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 
 import { assert } from "../assert";
 import { classOf } from "./classes";
@@ -71,19 +80,22 @@ const SplitView = memo(function SplitView({ id }: { id: SplitId }) {
                 box={box}
               />
             )}
-            <div
-              className={css("split-child")}
-              data-part="split-child"
-              style={{ flexGrow: child.weight * scale }}
-            >
-              <NodeView node={child.node} />
-            </div>
+            <SplitChild node={child.node} grow={child.weight * scale} />
           </Fragment>
         );
       })}
     </div>
   );
 });
+
+function SplitChild({ node, grow }: { node: Node; grow: number }) {
+  const style = useMemo(() => ({ flexGrow: grow }), [grow]);
+  return (
+    <div className={css("split-child")} data-part="split-child" style={style}>
+      <NodeView node={node} />
+    </div>
+  );
+}
 
 /** What a separator's drag measures once, as it starts. */
 interface Measure {
@@ -116,7 +128,7 @@ function Separator({
   at: number;
   /** What the split's weights are multiplied by to grow its children. */
   scale: number;
-  box: React.RefObject<HTMLDivElement | null>;
+  box: RefObject<HTMLDivElement | null>;
 }) {
   const { kinds } = useDock();
   const row = split.axis === "row";
@@ -132,148 +144,112 @@ function Separator({
     return pane ? kinds.get(pane.kind).title(pane) : "panes";
   };
 
-  const measure = (): Measure => {
-    const element = box.current;
-    assert(element, "a separator outside its split");
-    const children = [...element.children].filter(
-      (child) => (child as HTMLElement).dataset.part === "split-child",
-    ) as HTMLElement[];
-    const before = children[at - 1];
-    const after = children[at];
-    assert(before && after, `separator ${at} has no children beside it`);
-    const along = (rect: DOMRect) =>
-      row ? { start: rect.left, end: rect.right } : { start: rect.top, end: rect.bottom };
-    const whole = along(element.getBoundingClientRect());
-    const orientation = row ? "vertical" : "horizontal";
-    const neighbors = [
-      ...document.querySelectorAll<HTMLElement>(
-        `[role="separator"][aria-orientation="${orientation}"]`,
-      ),
-    ]
-      .filter((other) => other.parentElement !== element)
-      .map((other) => {
-        const rect = other.getBoundingClientRect();
-        return row ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
-      });
-    return {
-      start: whole.start,
-      length: whole.end - whole.start,
-      from: along(before.getBoundingClientRect()).start,
-      to: along(after.getBoundingClientRect()).end,
-      neighbors,
-      before,
-      after,
-    };
-  };
-
-  /** The two children's weights with the separator at `at`. */
-  const shares = (measured: Measure, at: number): [number, number] => {
-    const span = measured.to - measured.from;
-    const least = Math.min(LEAST, span / 2);
-    const clamped = Math.max(measured.from + least, Math.min(measured.to - least, at));
-    const part = (clamped - measured.from) / span;
-    return [shared * part, shared * (1 - part)];
-  };
-
-  const commit = ([a, b]: [number, number]) => {
-    const weights = split.children.map((child, index) =>
-      index === beforeIndex ? a : index === afterIndex ? b : child.weight,
-    );
-    change((layout) => resize(layout, split.id, weights));
-  };
-
-  const settle = (measured: Measure, at: number, free: boolean) => {
-    const span = measured.to - measured.from;
-    const least = Math.min(LEAST, span / 2);
-    return snapSplitter({
-      start: measured.start,
-      length: measured.length,
-      at,
-      least: measured.from + least,
-      most: measured.to - least,
-      neighbors: measured.neighbors,
-      free,
-    });
-  };
-
-  const down = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    // Focused, so Escape reaches it to cancel the drag.
-    event.currentTarget.focus();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = measure();
-  };
-  const moved = (event: PointerEvent<HTMLDivElement>) => {
-    const measured = drag.current;
-    if (!measured) {
-      return;
-    }
-    const [a, b] = shares(
-      measured,
-      settle(measured, row ? event.clientX : event.clientY, event.altKey),
-    );
-    measured.before.style.flexGrow = String(a * scale);
-    measured.after.style.flexGrow = String(b * scale);
-  };
-  const up = (event: PointerEvent<HTMLDivElement>) => {
-    const measured = drag.current;
-    drag.current = null;
-    if (!measured) {
-      return;
-    }
-    commit(shares(measured, settle(measured, row ? event.clientX : event.clientY, event.altKey)));
-  };
-  const cancel = () => {
+  const down = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      // Focused, so Escape reaches it to cancel the drag.
+      event.currentTarget.focus();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      drag.current = measure(box, at, row);
+    },
+    [box, at, row],
+  );
+  const moved = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const measured = drag.current;
+      if (!measured) {
+        return;
+      }
+      const [a, b] = shares(
+        measured,
+        shared,
+        settle(measured, row ? event.clientX : event.clientY, event.altKey),
+      );
+      measured.before.style.flexGrow = String(a * scale);
+      measured.after.style.flexGrow = String(b * scale);
+    },
+    [row, shared, scale],
+  );
+  const up = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const measured = drag.current;
+      drag.current = null;
+      if (!measured) {
+        return;
+      }
+      commit(
+        split,
+        beforeIndex,
+        afterIndex,
+        shares(
+          measured,
+          shared,
+          settle(measured, row ? event.clientX : event.clientY, event.altKey),
+        ),
+      );
+    },
+    [split, beforeIndex, afterIndex, row, shared],
+  );
+  const cancel = useCallback(() => {
     const measured = drag.current;
     drag.current = null;
     if (measured) {
       measured.before.style.flexGrow = String(first.weight * scale);
       measured.after.style.flexGrow = String(second.weight * scale);
     }
-  };
-
-  const key = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
-      return;
-    }
-    if (event.key === "Escape" && drag.current) {
+  }, [first, second, scale]);
+  const lost = useCallback(() => {
+    if (drag.current) {
       cancel();
-      return;
     }
-    if (event.key === "Enter") {
+  }, [cancel]);
+  const even = useCallback(() => evenOut(split), [split]);
+
+  const key = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      if (event.key === "Escape" && drag.current) {
+        cancel();
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        evenOut(split);
+        return;
+      }
+      const step = event.shiftKey ? STEP * 4 : STEP;
+      const moves: Record<string, (measured: Measure, position: number) => number> = row
+        ? {
+            ArrowLeft: (_, position) => position - step,
+            ArrowRight: (_, position) => position + step,
+          }
+        : {
+            ArrowUp: (_, position) => position - step,
+            ArrowDown: (_, position) => position + step,
+          };
+      moves.Home = (measured) => measured.from;
+      moves.End = (measured) => measured.to;
+      const by = moves[event.key];
+      if (!by) {
+        return;
+      }
       event.preventDefault();
-      change((layout) =>
-        resize(
-          layout,
-          split.id,
-          split.children.map(() => 1),
-        ),
-      );
-      return;
-    }
-    const step = event.shiftKey ? STEP * 4 : STEP;
-    const moves: Record<string, (measured: Measure, at: number) => number> = row
-      ? { ArrowLeft: (_, at) => at - step, ArrowRight: (_, at) => at + step }
-      : { ArrowUp: (_, at) => at - step, ArrowDown: (_, at) => at + step };
-    moves.Home = (measured) => measured.from;
-    moves.End = (measured) => measured.to;
-    const by = moves[event.key];
-    if (!by) {
-      return;
-    }
-    event.preventDefault();
-    const measured = measure();
-    const at = measured.from + (measured.to - measured.from) * (first.weight / shared);
-    commit(shares(measured, by(measured, at)));
-  };
+      const measured = measure(box, at, row);
+      const position = measured.from + (measured.to - measured.from) * (first.weight / shared);
+      commit(split, beforeIndex, afterIndex, shares(measured, shared, by(measured, position)));
+    },
+    [cancel, split, row, box, at, first, shared, beforeIndex, afterIndex],
+  );
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: a focusable separator that resizes is a widget, which <hr> is not
     <div
       className={css("separator-bar")}
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a focusable separator that resizes is a widget, which <hr> is not
       role="separator"
       aria-orientation={row ? "vertical" : "horizontal"}
       aria-label={`Resize ${name(first.node)} and ${name(second.node)}`}
@@ -286,18 +262,87 @@ function Separator({
       onPointerMove={moved}
       onPointerUp={up}
       onPointerCancel={cancel}
-      onLostPointerCapture={() => drag.current && cancel()}
-      onDoubleClick={() =>
-        change((layout) =>
-          resize(
-            layout,
-            split.id,
-            split.children.map(() => 1),
-          ),
-        )
-      }
+      onLostPointerCapture={lost}
+      onDoubleClick={even}
       onKeyDown={key}
     />
+  );
+}
+
+/** Where the separator `at` places among those shown, and what lies around it. */
+function measure(box: RefObject<HTMLDivElement | null>, at: number, row: boolean): Measure {
+  const element = box.current;
+  assert(element, "a separator outside its split");
+  const children = [...element.children].filter(
+    (child) => (child as HTMLElement).dataset.part === "split-child",
+  ) as HTMLElement[];
+  const before = children[at - 1];
+  const after = children[at];
+  assert(before && after, `separator ${at} has no children beside it`);
+  const along = (rect: DOMRect) =>
+    row ? { start: rect.left, end: rect.right } : { start: rect.top, end: rect.bottom };
+  const whole = along(element.getBoundingClientRect());
+  const orientation = row ? "vertical" : "horizontal";
+  const neighbors = [
+    ...document.querySelectorAll<HTMLElement>(
+      `[role="separator"][aria-orientation="${orientation}"]`,
+    ),
+  ]
+    .filter((other) => other.parentElement !== element)
+    .map((other) => {
+      const rect = other.getBoundingClientRect();
+      return row ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+    });
+  return {
+    start: whole.start,
+    length: whole.end - whole.start,
+    from: along(before.getBoundingClientRect()).start,
+    to: along(after.getBoundingClientRect()).end,
+    neighbors,
+    before,
+    after,
+  };
+}
+
+/** The two children's weights, which share `shared`, with the separator at
+ * `position`. */
+function shares(measured: Measure, shared: number, position: number): [number, number] {
+  const span = measured.to - measured.from;
+  const least = Math.min(LEAST, span / 2);
+  const clamped = Math.max(measured.from + least, Math.min(measured.to - least, position));
+  const part = (clamped - measured.from) / span;
+  return [shared * part, shared * (1 - part)];
+}
+
+function settle(measured: Measure, position: number, free: boolean): number {
+  const span = measured.to - measured.from;
+  const least = Math.min(LEAST, span / 2);
+  return snapSplitter({
+    start: measured.start,
+    length: measured.length,
+    at: position,
+    least: measured.from + least,
+    most: measured.to - least,
+    neighbors: measured.neighbors,
+    free,
+  });
+}
+
+function commit(split: Split, beforeIndex: number, afterIndex: number, [a, b]: [number, number]) {
+  const weights = split.children.map((child, index) =>
+    index === beforeIndex ? a : index === afterIndex ? b : child.weight,
+  );
+  change((layout) => resize(layout, split.id, weights));
+}
+
+/** Gives every child of the split the same share. */
+function evenOut(split: Split) {
+  change((layout) =>
+    resize(
+      layout,
+      split.id,
+      split.children.map(() => 1),
+    ),
   );
 }
 

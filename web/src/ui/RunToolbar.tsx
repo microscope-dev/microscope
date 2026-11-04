@@ -1,3 +1,5 @@
+import { useCallback } from "react";
+
 import { type ActionName, action, continueLabel } from "../actions";
 import { useModel } from "../store";
 import { useTab } from "../tab";
@@ -49,6 +51,7 @@ function ActionButton({ name, glyph, label }: { name: ActionName; glyph: string;
   const running = useModel((model) => model.state?.inferior.state === "running");
   const text = useModel((model) => label ?? continueLabel(model));
   const key = COMMANDS.describe(name);
+  const onClick = useCallback(() => run(name), [run, name]);
   const primary =
     (name === "continue" || name === "pause") && why === null && (name === "pause" || !running);
   return (
@@ -58,7 +61,7 @@ function ActionButton({ name, glyph, label }: { name: ActionName; glyph: string;
       disabled={why !== null}
       title={`${text}${key ? ` (${key})` : ""}${why === null ? "" : `: ${why}`}`}
       data-action={name}
-      onClick={() => run(name)}
+      onClick={onClick}
     >
       <span className="glyph">{glyph}</span>
       <span className={name === "continue" || name === "pause" ? "" : "label"}>{text}</span>

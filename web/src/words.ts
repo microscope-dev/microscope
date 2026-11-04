@@ -43,7 +43,7 @@ export function splitWords(line: string): Split {
     if (char === '"' || char === "'") {
       quote = char;
       inWord = true;
-    } else if (/\s/.test(char)) {
+    } else if (/\s/u.test(char)) {
       if (inWord) {
         words.push(word);
         word = "";
@@ -67,7 +67,7 @@ export function splitWords(line: string): Split {
 export function joinWords(words: readonly string[]): string {
   return words
     .map((word) =>
-      word !== "" && /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`,
+      word !== "" && /^[\w@%+=:,./-]+$/u.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`,
     )
     .join(" ");
 }

@@ -93,7 +93,7 @@ export function validateLook(search: Record<string, unknown>): Look {
     look.asm = asm;
   }
   const mem = text("mem");
-  if (mem && /^0x[0-9a-f]{1,16}(:[1-9]\d{0,8})?$/i.test(mem)) {
+  if (mem && /^0x[0-9a-f]{1,16}(:[1-9]\d{0,8})?$/iu.test(mem)) {
     look.mem = mem;
   }
   const view = text("view");
@@ -116,7 +116,7 @@ export function validateLook(search: Record<string, unknown>): Look {
 }
 
 function isAddress(text: string): boolean {
-  return /^0x[0-9a-f]{1,16}$/i.test(text);
+  return /^0x[0-9a-f]{1,16}$/iu.test(text);
 }
 
 /** A place in a source file: a line, or a range of them. */
@@ -128,7 +128,7 @@ export interface SourcePlace {
 
 /** Parses `PATH:LINE` or `PATH:FIRST-LAST`, where the path may hold colons. */
 export function parsePlace(text: string): SourcePlace | null {
-  const match = /^(.+):(\d+)(?:-(\d+))?$/.exec(text);
+  const match = /^(.+):(\d+)(?:-(\d+))?$/u.exec(text);
   if (!match) {
     return null;
   }
@@ -191,8 +191,13 @@ export function recordedPath(
  * host: browsers read `//host` and `/\\host` as one.
  */
 export function isPagePath(text: string | undefined): text is string {
-  const control = (char: string) => char < " " || char === "\u007f";
-  return text !== undefined && /^\/(?![/\\])/.test(text) && ![...text].some(control);
+  return (
+    text !== undefined && /^\/(?![/\\])/u.test(text) && ![...text].some((char) => isControl(char))
+  );
+}
+
+function isControl(char: string): boolean {
+  return char < " " || char === "\u007F";
 }
 
 /**
@@ -223,7 +228,12 @@ export function stopPath(session: string, at: At): string {
 /** Whether `text` is a 64-bit unsigned number's decimal digits, as the
  * server writes a task's number. */
 export function isU64(text: string): boolean {
-  return /^(0|[1-9]\d{0,19})$/.test(text) && BigInt(text) < 2n ** 64n;
+  return /^(0|[1-9]\d{0,19})$/u.test(text) && BigInt(text) < 2n ** 64n;
+}
+
+/** A path segment's number, or NaN when it is not one. */
+function pathNumber(text: string): number {
+  return /^\d+$/u.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : Number.NaN;
 }
 
 /** Parses a route's path parameters, or null when they are not numbers. */
@@ -233,22 +243,20 @@ export function parseAt(params: {
   task?: string | undefined;
   frame: string;
 }): At | null {
-  const number = (text: string) =>
-    /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : Number.NaN;
-  const [stop, frame] = [number(params.stop), number(params.frame)];
+  const [stop, frame] = [pathNumber(params.stop), pathNumber(params.frame)];
   if (Number.isNaN(stop) || Number.isNaN(frame)) {
     return null;
   }
   if (params.task !== undefined) {
     // A task's number uses all 64 bits, so it stays the digits it is.
     const parts = params.task.split(".");
-    const [runtime, task] = [number(parts[0] ?? ""), parts[1] ?? ""];
+    const [runtime, task] = [pathNumber(parts[0] ?? ""), parts[1] ?? ""];
     if (parts.length !== 2 || Number.isNaN(runtime) || !isU64(task)) {
       return null;
     }
     return { stop, thread: 0, task: { runtime, number: task }, frame };
   }
-  const thread = params.thread === undefined ? Number.NaN : number(params.thread);
+  const thread = params.thread === undefined ? Number.NaN : pathNumber(params.thread);
   if (Number.isNaN(thread)) {
     return null;
   }
@@ -277,7 +285,7 @@ export interface Pinned {
   renderer: string | null;
 }
 
-const RENDERER = /^[A-Za-z0-9_-]{1,64}$/;
+const RENDERER = /^[A-Za-z0-9_-]{1,64}$/u;
 
 /** Parses a `d` entry, `PATH`, `PATH~RENDERER`, or `PATH~`. A path may
  * hold `~`, C's complement, so only what follows the last one names a

@@ -1,6 +1,7 @@
 // Read-only CodeMirror view with breakpoint, frame, and selection markers.
 // Letter keys run debugger commands instead of moving the text cursor.
 
+// oxlint-disable-next-line max-classes-per-file -- CodeMirror markers and widgets are small classes
 import {
   Compartment,
   EditorState,
@@ -21,7 +22,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 
 import { assert } from "../../assert";
 import { PENDING } from "../../breakpoints";
@@ -279,10 +280,12 @@ export function SourceView({
   const revealedIn = useRef<string | null>(null);
   // Handlers change every render; the editor calls through these.
   const handlers = useRef({ onGutter, onLineNumber, onCursor, onHover });
-  handlers.current = { onGutter, onLineNumber, onCursor, onHover };
   // The path the text is of, which says how to read a hovered word.
   const shownPath = useRef(path);
-  shownPath.current = path;
+  useLayoutEffect(() => {
+    handlers.current = { onGutter, onLineNumber, onCursor, onHover };
+    shownPath.current = path;
+  });
 
   useEffect(() => {
     assert(parent.current !== null, "source view mounted without its element");
@@ -297,14 +300,14 @@ export function SourceView({
           gutter({
             class: "cm-breakpoints",
             markers: (current) => {
-              const marks = current.state.field(marksField);
+              const shown = current.state.field(marksField);
               const doc = current.state.doc;
-              const lines = [...new Set([...marks.breakpoints.keys(), ...marks.breakable])]
+              const lines = [...new Set([...shown.breakpoints.keys(), ...shown.breakable])]
                 .filter((line) => line >= 1 && line <= doc.lines)
-                .sort((left, right) => left - right);
+                .toSorted((left, right) => left - right);
               return RangeSet.of(
                 lines.map((line) => {
-                  const kind = marks.breakpoints.get(line);
+                  const kind = shown.breakpoints.get(line);
                   const marker = kind ? markers.get(kind) : breakable;
                   assert(marker !== undefined, "no gutter marker for a breakpoint kind");
                   return marker.range(doc.line(line).from);

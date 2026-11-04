@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../../assert";
 import { formatRange, rangeOf, withLook } from "../../profile/look";
@@ -56,7 +66,7 @@ export function ZoneTracks() {
   } | null>(null);
 
   const plot = Math.max(width - NAMES, 0);
-  const selected = rangeOf(look);
+  const selected = useMemo(() => rangeOf({ range: look.range }), [look.range]);
   const params = useMemo(
     () =>
       plot > 0
@@ -68,7 +78,7 @@ export function ZoneTracks() {
             width: Math.round(plot),
           }
         : null,
-    [profile, query.revision, query.threads, selected?.[0], selected?.[1], plot],
+    [profile, query.revision, query.threads, selected, plot],
   );
   const answer = useAnswer("profileZones", params);
   const blocks = useMemo(
@@ -76,47 +86,55 @@ export function ZoneTracks() {
     [answer.data],
   );
   const order = useMemo(
-    () => [...summary.threads].sort((a, b) => b.weight - a.weight).map((thread) => thread.row),
+    () => summary.threads.toSorted((a, b) => b.weight - a.weight).map((thread) => thread.row),
     [summary.threads],
   );
   const laid = useMemo(() => (blocks ? tracks(blocks, order) : []), [blocks, order]);
-  const marks = answer.data?.marks ?? [];
+  const marks = useMemo(() => answer.data?.marks ?? [], [answer.data]);
   // Drawn over the range asked for, so a zoom moves what is shown at once
   // and the answer only sharpens it.
   const total = Math.max(summary.duration, 1);
-  const range: [number, number] = selected ?? [0, total];
+  const range = useMemo<[number, number]>(() => selected ?? [0, total], [selected, total]);
   const span = Math.max(range[1] - range[0], 1);
   const height =
     laid.length === 0
       ? 0
       : trackTop(laid.at(-1) as Track, laid.length - 1) + ROW * (laid.at(-1)?.depths ?? 0);
   const origin = range[0];
-  const name = (thread: number) => threadName(summary.threads, thread);
+  const name = useCallback(
+    (thread: number) => threadName(summary.threads, thread),
+    [summary.threads],
+  );
   // One pixel's time, which is as finely as a time here needs telling.
   const pixel = span / Math.max(plot, 1);
 
   // Views asked for while zooming or panning, applied once a frame.
   const latest = useRef({ range, total, plot });
-  latest.current = { range, total, plot };
+  useLayoutEffect(() => {
+    latest.current = { range, total, plot };
+  });
   const wanted = useRef<[number, number] | null>(null);
   const frame = useRef(0);
-  const show = (view: [number, number]) => {
-    wanted.current = view;
-    if (frame.current !== 0) {
-      return;
-    }
-    frame.current = requestAnimationFrame(() => {
-      frame.current = 0;
-      const next = wanted.current;
-      // From here the address bar holds it, and the next zoom starts there.
-      wanted.current = null;
-      if (!next) {
+  const show = useCallback(
+    (view: [number, number]) => {
+      wanted.current = view;
+      if (frame.current !== 0) {
         return;
       }
-      const whole = next[0] <= 0 && next[1] >= latest.current.total;
-      setLook((look) => withLook(look, "range", whole ? undefined : formatRange(next)));
-    });
-  };
+      frame.current = requestAnimationFrame(() => {
+        frame.current = 0;
+        const next = wanted.current;
+        // From here the address bar holds it, and the next zoom starts there.
+        wanted.current = null;
+        if (!next) {
+          return;
+        }
+        const whole = next[0] <= 0 && next[1] >= latest.current.total;
+        setLook((prev) => withLook(prev, "range", whole ? undefined : formatRange(next)));
+      });
+    },
+    [setLook],
+  );
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   useEffect(() => {
@@ -125,20 +143,20 @@ export function ZoneTracks() {
       return;
     }
     const wheel = (event: WheelEvent) => {
-      const { range, total, plot } = latest.current;
+      const now = latest.current;
       const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
       if (!event.ctrlKey && !event.metaKey && !sideways) {
         return;
       }
       event.preventDefault();
-      const view = wanted.current ?? range;
-      const per = (view[1] - view[0]) / Math.max(plot, 1);
+      const view = wanted.current ?? now.range;
+      const per = (view[1] - view[0]) / Math.max(now.plot, 1);
       if (sideways) {
-        show(panned(view, event.deltaX * per, total));
+        show(panned(view, event.deltaX * per, now.total));
         return;
       }
       const at = view[0] + (event.clientX - element.getBoundingClientRect().left) * per;
-      show(zoomed(view, at, Math.exp(event.deltaY * 0.002), total));
+      show(zoomed(view, at, Math.exp(event.deltaY * 0.002), now.total));
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
@@ -213,31 +231,95 @@ export function ZoneTracks() {
     }
   }, [blocks, laid, marks, plot, height, look.zs, origin, span, scheme]);
 
-  const point = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const px = event.clientX - bounds.left;
-    const py = event.clientY - bounds.top;
-    const time = range[0] + (px * span) / Math.max(plot, 1);
-    const slack = (2 * span) / Math.max(plot, 1);
-    for (const [index, track] of laid.entries()) {
-      const first = trackTop(track, index);
-      if (py >= first - ROW && py < first) {
-        const near = nearest(marks, track.thread, time, slack * 2);
-        return { px, py, time, block: null, mark: near };
+  const point = useCallback(
+    (event: MouseEvent<HTMLCanvasElement>) => {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const px = event.clientX - bounds.left;
+      const py = event.clientY - bounds.top;
+      const time = range[0] + (px * span) / Math.max(plot, 1);
+      const slack = (2 * span) / Math.max(plot, 1);
+      for (const [index, track] of laid.entries()) {
+        const first = trackTop(track, index);
+        if (py >= first - ROW && py < first) {
+          const near = nearest(marks, track.thread, time, slack * 2);
+          return { px, py, time, block: null, mark: near };
+        }
+        if (py >= first && py < first + track.depths * ROW) {
+          const depth = Math.floor((py - first) / ROW);
+          return {
+            px,
+            py,
+            time,
+            block: blocks ? blockAt(blocks, track, depth, time, slack) : null,
+            mark: null,
+          };
+        }
       }
-      if (py >= first && py < first + track.depths * ROW) {
-        const depth = Math.floor((py - first) / ROW);
-        return {
-          px,
-          py,
-          time,
-          block: blocks ? blockAt(blocks, track, depth, time, slack) : null,
-          mark: null,
-        };
+      return { px, py, time, block: null, mark: null };
+    },
+    [range, span, plot, laid, marks, blocks],
+  );
+
+  const press = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      if (event.button !== 0) {
+        return;
       }
-    }
-    return { px, py, time, block: null, mark: null };
-  };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPressed({ x: event.clientX, view: range, moved: false });
+    },
+    [range],
+  );
+  const release = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      const was = pressed;
+      setPressed(null);
+      if (!was || was.moved) {
+        return;
+      }
+      const at = point(event);
+      if (at.block !== null && blocks) {
+        const start = blocks.start[at.block] ?? 0;
+        const end = blocks.end[at.block] ?? 0;
+        if (end > start) {
+          setLook((prev) => withLook(prev, "range", formatRange([start, end])), true);
+        }
+      }
+    },
+    [pressed, point, blocks, setLook],
+  );
+  const cancel = useCallback(() => setPressed(null), []);
+  const hover = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      if (pressed) {
+        const by = event.clientX - pressed.x;
+        if (pressed.moved || Math.abs(by) >= DRAG) {
+          if (!pressed.moved) {
+            setPressed({ ...pressed, moved: true });
+          }
+          setTip(null);
+          show(panned(pressed.view, -by * pixel, total));
+          return;
+        }
+      }
+      const at = point(event);
+      const lines =
+        at.block !== null && blocks
+          ? blockLines(blocks, at.block, name, pixel)
+          : at.mark
+            ? [
+                `${at.mark.kind} ${at.mark.name} at ${formatInstant(at.mark.time, pixel)}`,
+                ...(at.mark.text ? [at.mark.text] : []),
+              ]
+            : null;
+      setTip(lines ? { x: at.px + NAMES + 12, y: at.py + 30, lines } : null);
+    },
+    [pressed, show, pixel, total, point, blocks, name],
+  );
+  const leave = useCallback(() => setTip(null), []);
+  const namesStyle = useMemo(() => ({ width: NAMES, height }), [height]);
+  const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
+  const tipStyle = useMemo(() => (tip ? { left: tip.x, top: tip.y } : undefined), [tip]);
 
   return (
     <div className="pane grow zones-tracks">
@@ -256,78 +338,32 @@ export function ZoneTracks() {
           <Ruler origin={range[0]} span={span} width={plot} />
           {blocks ? null : <div className="empty">Reading zones…</div>}
           <div className="zone-lane">
-            <div className="zone-names" style={{ width: NAMES, height }}>
+            <div className="zone-names" style={namesStyle}>
               {laid.map((track, index) => (
-                <div
-                  key={track.thread}
-                  className="zone-name"
-                  style={{ top: trackTop(track, index) - ROW }}
-                >
+                <TrackName key={track.thread} top={trackTop(track, index) - ROW}>
                   {name(track.thread)}
-                </div>
+                </TrackName>
               ))}
             </div>
             <canvas
               ref={canvas}
-              style={{ width: plot, height }}
+              style={canvasStyle}
+              // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
               role="img"
               aria-label={`Zones over ${formatDuration(span)}`}
               className={pressed?.moved ? "panning" : undefined}
-              onPointerDown={(event) => {
-                if (event.button !== 0) {
-                  return;
-                }
-                event.currentTarget.setPointerCapture(event.pointerId);
-                setPressed({ x: event.clientX, view: range, moved: false });
-              }}
-              onPointerUp={(event) => {
-                const was = pressed;
-                setPressed(null);
-                if (!was || was.moved) {
-                  return;
-                }
-                const at = point(event);
-                if (at.block !== null && blocks) {
-                  const start = blocks.start[at.block] ?? 0;
-                  const end = blocks.end[at.block] ?? 0;
-                  if (end > start) {
-                    setLook((look) => withLook(look, "range", formatRange([start, end])), true);
-                  }
-                }
-              }}
-              onPointerCancel={() => setPressed(null)}
-              onPointerMove={(event) => {
-                if (pressed) {
-                  const by = event.clientX - pressed.x;
-                  if (pressed.moved || Math.abs(by) >= DRAG) {
-                    if (!pressed.moved) {
-                      setPressed({ ...pressed, moved: true });
-                    }
-                    setTip(null);
-                    show(panned(pressed.view, -by * pixel, total));
-                    return;
-                  }
-                }
-                const at = point(event);
-                const lines =
-                  at.block !== null && blocks
-                    ? blockLines(blocks, at.block, name, pixel)
-                    : at.mark
-                      ? [
-                          `${at.mark.kind} ${at.mark.name} at ${formatInstant(at.mark.time, pixel)}`,
-                          ...(at.mark.text ? [at.mark.text] : []),
-                        ]
-                      : null;
-                setTip(lines ? { x: at.px + NAMES + 12, y: at.py + 30, lines } : null);
-              }}
-              onPointerLeave={() => setTip(null)}
+              onPointerDown={press}
+              onPointerUp={release}
+              onPointerCancel={cancel}
+              onPointerMove={hover}
+              onPointerLeave={leave}
             />
           </div>
           {(answer.data?.plots ?? []).map((series) => (
             <PlotLane key={series.name} series={series} origin={origin} span={span} width={plot} />
           ))}
           {tip ? (
-            <div className="flame-tip" style={{ left: tip.x, top: tip.y }} data-testid="zone-tip">
+            <div className="flame-tip" style={tipStyle} data-testid="zone-tip">
               {tip.lines.map((line) => (
                 <div key={line}>{line}</div>
               ))}
@@ -342,12 +378,26 @@ export function ZoneTracks() {
   );
 }
 
+function TrackName({ top, children }: { top: number; children: ReactNode }) {
+  const style = useMemo(() => ({ top }), [top]);
+  return (
+    <div className="zone-name" style={style}>
+      {children}
+    </div>
+  );
+}
+
+const RULER_NAMES = { width: NAMES, height: RULER };
+const PLOT_NAMES = { width: NAMES, height: PLOT };
+const PLOT_EXTENT = { top: 16 };
+
 /** Round times across the view, above the tracks. */
 function Ruler({ origin, span, width }: { origin: number; span: number; width: number }) {
   const { step, times } = ticks([origin, origin + span], width);
   return (
     <div className="zone-lane zone-ruler">
-      <div className="zone-names" style={{ width: NAMES, height: RULER }} />
+      <div className="zone-names" style={RULER_NAMES} />
+      {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an inline drawing, not an image file */}
       <svg width={width} height={RULER} role="img" aria-label="Time">
         {times.map((time) => {
           const x = ((time - origin) * width) / span;
@@ -391,9 +441,9 @@ function PlotLane({
   const extent = Number.isFinite(low) ? `${formatValue(low)} – ${formatValue(high)}` : "";
   return (
     <div className="zone-lane zone-plot">
-      <div className="zone-names" style={{ width: NAMES, height: PLOT }}>
+      <div className="zone-names" style={PLOT_NAMES}>
         <div className="zone-name">{series.name}</div>
-        <div className="zone-name dim" style={{ top: 16 }}>
+        <div className="zone-name dim" style={PLOT_EXTENT}>
           {extent}
           {series.unshown > 0 ? ` · ${formatCount(series.unshown)} not finite` : ""}
         </div>
@@ -401,6 +451,7 @@ function PlotLane({
       <svg
         width={width}
         height={PLOT}
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an inline drawing, not an image file
         role="img"
         aria-label={`Plot ${series.name}, ${formatCount(series.values, "value")}${extent ? ` from ${extent}` : ""}`}
       >
@@ -458,10 +509,12 @@ function blockLines(
 function nearest(marks: ProfileMark[], thread: number, time: number, slack: number) {
   let best: ProfileMark | null = null;
   for (const mark of marks) {
-    if (mark.thread === thread && Math.abs(mark.time - time) <= slack) {
-      if (!best || Math.abs(mark.time - time) < Math.abs(best.time - time)) {
-        best = mark;
-      }
+    if (
+      mark.thread === thread &&
+      Math.abs(mark.time - time) <= slack &&
+      (!best || Math.abs(mark.time - time) < Math.abs(best.time - time))
+    ) {
+      best = mark;
     }
   }
   return best;

@@ -3,7 +3,16 @@
 // the new stop's rows. A value that changed since the stop before is marked,
 // with what it was.
 
-import { createContext, type ReactNode, useContext, useState } from "react";
+import {
+  createContext,
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+} from "react";
 
 import { assert } from "../assert";
 import { useRequest } from "../data";
@@ -33,11 +42,15 @@ const ExpansionContext = createContext<Expansion | null>(null);
 export function LinkedExpansion({ children }: { children: ReactNode }) {
   const { look } = useFocus();
   const change = useLook();
-  const expansion: Expansion = {
-    isOpen: (key) => look.x?.includes(key) ?? false,
-    toggle: (key) => change((current) => withOpen(current, toggled(current.x, key))),
-    remember: true,
-  };
+  const open = look.x;
+  const expansion = useMemo(
+    (): Expansion => ({
+      isOpen: (key) => open?.includes(key) ?? false,
+      toggle: (key) => change((current) => withOpen(current, toggled(current.x, key))),
+      remember: true,
+    }),
+    [open, change],
+  );
   return <ExpansionContext value={expansion}>{children}</ExpansionContext>;
 }
 
@@ -47,10 +60,11 @@ export function LinkedExpansion({ children }: { children: ReactNode }) {
  */
 export function Earlier({ children, when }: { children: ReactNode; when: boolean }) {
   const expansion = useExpansion();
+  const forgetting = useMemo(() => ({ ...expansion, remember: false }), [expansion]);
   if (!when) {
     return children;
   }
-  return <ExpansionContext value={{ ...expansion, remember: false }}>{children}</ExpansionContext>;
+  return <ExpansionContext value={forgetting}>{children}</ExpansionContext>;
 }
 
 function withOpen<T extends { x?: string[] }>(look: T, x: string[] | undefined): T {
@@ -61,11 +75,14 @@ function withOpen<T extends { x?: string[] }>(look: T, x: string[] | undefined):
 /** Rows opened here alone, such as the console's. */
 export function LocalExpansion({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<string[] | undefined>();
-  const expansion: Expansion = {
-    isOpen: (key) => open?.includes(key) ?? false,
-    toggle: (key) => setOpen((current) => toggled(current, key)),
-    remember: false,
-  };
+  const expansion = useMemo(
+    (): Expansion => ({
+      isOpen: (key) => open?.includes(key) ?? false,
+      toggle: (key) => setOpen((current) => toggled(current, key)),
+      remember: false,
+    }),
+    [open],
+  );
   return <ExpansionContext value={expansion}>{children}</ExpansionContext>;
 }
 
@@ -143,20 +160,19 @@ export function ValueRow({ row, parent, depth, actions, missing, occurrence = 1 
     recall.note(at.stop, key, row.text);
   }
   const changed = was !== undefined && was !== row.text;
+  const indent = useIndent(depth);
+  const toggle = useCallback(() => expansion.toggle(key), [expansion, key]);
 
   return (
     <li className="value">
-      <div
-        className={`value-row ${row.truncated ? "truncated" : ""}`}
-        style={{ paddingLeft: 6 + depth * 14 }}
-      >
+      <div className={`value-row ${row.truncated ? "truncated" : ""}`} style={indent}>
         {row.children ? (
           <button
             type="button"
             className="twist"
             aria-label={`${open ? "Close" : "Open"} ${row.name}`}
             aria-expanded={open}
-            onClick={() => expansion.toggle(key)}
+            onClick={toggle}
           >
             {open ? "▾" : "▸"}
           </button>
@@ -190,6 +206,22 @@ function RowActions({ row }: { row: Row }) {
   const connection = useConnection();
   const look = useLook();
   const path = row.path;
+  const pinDrawing = useCallback(() => {
+    assert(path !== null, "drawing a row with no path");
+    look(pin({ path, renderer: null }), { replace: false });
+  }, [look, path]);
+  const showMemory = useCallback(() => {
+    const memory = row.memoryBytes ? `${row.memory}:${row.memoryBytes}` : row.memory;
+    assert(memory !== null, "showing the memory of a row with none");
+    look((current) => ({ ...current, mem: memory, view: "memory" }), { replace: false });
+  }, [look, row.memory, row.memoryBytes]);
+  const watch = useCallback(() => {
+    assert(row.path !== null, "watching a row with no path");
+    void connection
+      .request("addWatchpoint", { ...at, target: row.path, access: "change" })
+      .then(() => flash(`Stopping when ${row.path} changes`))
+      .catch((failure: Error) => flash(failure.message));
+  }, [connection, at, row.path]);
   const draw = path !== null && at !== null && (
     <>
       {row.drawings.length > 0 && (
@@ -198,7 +230,7 @@ function RowActions({ row }: { row: Row }) {
           className="link-button"
           aria-label={`Draw ${row.name}`}
           title={`Draw with ${row.drawings.join(", ")}`}
-          onClick={() => look(pin({ path, renderer: null }), { replace: false })}
+          onClick={pinDrawing}
         >
           Draw
         </button>
@@ -209,7 +241,6 @@ function RowActions({ row }: { row: Row }) {
   if (!row.memory) {
     return draw ? <span className="row-actions">{draw}</span> : null;
   }
-  const memory = row.memoryBytes ? `${row.memory}:${row.memoryBytes}` : row.memory;
   const watchable = control && at && !stale && row.path !== null && row.memoryBytes !== null;
   return (
     <span className="row-actions">
@@ -219,9 +250,7 @@ function RowActions({ row }: { row: Row }) {
         className="icon"
         aria-label={`Memory of ${row.name}`}
         title={`Show the memory at ${row.memory}`}
-        onClick={() =>
-          look((current) => ({ ...current, mem: memory, view: "memory" }), { replace: false })
-        }
+        onClick={showMemory}
       >
         ▦
       </button>
@@ -231,13 +260,7 @@ function RowActions({ row }: { row: Row }) {
           className="icon"
           aria-label={`Watch ${row.name} for changes`}
           title="Stop when this value changes"
-          onClick={() => {
-            assert(row.path !== null, "watching a row with no path");
-            void connection
-              .request("addWatchpoint", { ...at, target: row.path, access: "change" })
-              .then(() => flash(`Stopping when ${row.path} changes`))
-              .catch((failure: Error) => flash(failure.message));
-          }}
+          onClick={watch}
         >
           ◉
         </button>
@@ -264,39 +287,50 @@ function ValueText({
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const editable = row.editable && row.path !== null && control && at !== null && !stale;
+  const path = row.path;
+  const submit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const value = new FormData(event.currentTarget).get("value");
+      if (typeof value !== "string" || value.trim() === "") {
+        return;
+      }
+      assert(at !== null && path !== null, "editing a value with no stop or path");
+      setError(null);
+      connection
+        .request("setValue", { ...at, path, value })
+        .then(() => setEditing(false))
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [at, path, connection],
+  );
+  const escape = useCallback((event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      setEditing(false);
+    }
+  }, []);
+  const blur = useCallback(() => !error && setEditing(false), [error]);
+  const edit = useCallback(() => setEditing(true), []);
+  const editByKey = useCallback((event: KeyboardEvent) => {
+    if (event.key === "Enter" || event.key === "F2") {
+      event.preventDefault();
+      setEditing(true);
+    }
+  }, []);
 
   if (editing && at && row.path) {
-    const path = row.path;
     return (
-      <form
-        className="value-edit"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const value = new FormData(event.currentTarget).get("value");
-          if (typeof value !== "string" || value.trim() === "") {
-            return;
-          }
-          setError(null);
-          connection
-            .request("setValue", { ...at, path, value })
-            .then(() => setEditing(false))
-            .catch((failure: Error) => setError(failure.message));
-        }}
-      >
+      <form className="value-edit" onSubmit={submit}>
         <input
           className="input"
           name="value"
           aria-label={`New value of ${row.name}`}
           defaultValue={row.text}
-          // biome-ignore lint/a11y/noAutofocus: the person asked to edit this value
+          // oxlint-disable-next-line jsx-a11y/no-autofocus -- the person asked to edit this value
           autoFocus
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              setEditing(false);
-            }
-          }}
-          onBlur={() => !error && setEditing(false)}
+          onKeyDown={escape}
+          onBlur={blur}
         />
         {error && <span className="error">{error}</span>}
       </form>
@@ -316,13 +350,8 @@ function ValueText({
       type="button"
       className={`${className} editable`}
       title={`${row.detail ? `${row.detail}\n\n` : ""}${changed ? `was ${was}; ` : ""}double-click to change`}
-      onDoubleClick={() => setEditing(true)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === "F2") {
-          event.preventDefault();
-          setEditing(true);
-        }
-      }}
+      onDoubleClick={edit}
+      onKeyDown={editByKey}
     >
       {row.text}
       {changed && <span className="was"> was {was}</span>}
@@ -337,6 +366,8 @@ function ChildRows({ of, parent, depth }: { of: Children; parent: string; depth:
   const total = (of.indexed ?? 0) + (of.named ?? 0);
   const shown = Math.min(pages * PAGE, known ? total : PAGE);
   const starts = Array.from({ length: Math.ceil(shown / PAGE) }, (_, index) => index * PAGE);
+  const more = useMemo(() => ({ marginLeft: 6 + depth * 14 }), [depth]);
+  const showMore = useCallback(() => setPages(pages + 1), [pages]);
   return (
     <>
       {starts.map((start) => (
@@ -344,12 +375,7 @@ function ChildRows({ of, parent, depth }: { of: Children; parent: string; depth:
       ))}
       {known && shown < total && (
         <li className="value">
-          <button
-            type="button"
-            className="more"
-            style={{ marginLeft: 6 + depth * 14 }}
-            onClick={() => setPages(pages + 1)}
-          >
+          <button type="button" className="more" style={more} onClick={showMore}>
             Show {Math.min(PAGE, total - shown)} more of {total.toLocaleString()}
           </button>
         </li>
@@ -370,10 +396,11 @@ function ChildPage({
   depth: number;
 }) {
   const { data, error, current } = useRequest("children", { handle, start, count: PAGE });
+  const indent = useIndent(depth);
   if (error) {
     return (
       <li className="value">
-        <div className="value-row" style={{ paddingLeft: 6 + depth * 14 }}>
+        <div className="value-row" style={indent}>
           <span className="value-text error">{error.message}</span>
         </div>
       </li>
@@ -382,7 +409,7 @@ function ChildPage({
   if (!data) {
     return (
       <li className="value">
-        <div className="value-row dim" style={{ paddingLeft: 6 + depth * 14 }}>
+        <div className="value-row dim" style={indent}>
           …
         </div>
       </li>
@@ -393,6 +420,10 @@ function ChildPage({
       <RowList rows={data.rows} parent={parent} depth={depth} />
     </Earlier>
   );
+}
+
+function useIndent(depth: number) {
+  return useMemo(() => ({ paddingLeft: 6 + depth * 14 }), [depth]);
 }
 
 /** A row that only says something, such as why a watch failed. */

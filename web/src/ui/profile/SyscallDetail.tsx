@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef } from "react";
 
 import { withLook } from "../../profile/look";
 import { formatCount, formatDuration, largest } from "../../profile/paint";
@@ -56,8 +56,8 @@ function Histograms({ data }: { data: SyscallDetail }) {
                   >
                     <span className="mono muted">{bucketLabel(bucket)}</span>
                     <span className="histogram-bar">
-                      <span className="whole" style={{ width: `${(100 * whole) / most}%` }} />
-                      <span className="chosen" style={{ width: `${(100 * chosen) / most}%` }} />
+                      <Fill className="whole" percent={(100 * whole) / most} />
+                      <Fill className="chosen" percent={(100 * chosen) / most} />
                     </span>
                     <span className="num">{formatCount(chosen)}</span>
                   </div>
@@ -73,11 +73,9 @@ function Histograms({ data }: { data: SyscallDetail }) {
             <div key={errno.name} className="histogram-row">
               <span className="mono error-text">{errno.name}</span>
               <span className="histogram-bar">
-                <span
+                <Fill
                   className="error"
-                  style={{
-                    width: `${(100 * errno.count) / Math.max(1, data.errnos[0]?.count ?? 1)}%`,
-                  }}
+                  percent={(100 * errno.count) / Math.max(1, data.errnos[0]?.count ?? 1)}
                 />
               </span>
               <span className="num">{formatCount(errno.count)}</span>
@@ -87,7 +85,7 @@ function Histograms({ data }: { data: SyscallDetail }) {
       ) : null}
       <section data-testid="syscall-callers">
         <h3>
-          Callers of slow{data.slowNs !== null ? ` (≥ ${formatDuration(data.slowNs)})` : ""} and
+          Callers of slow{data.slowNs === null ? "" : ` (≥ ${formatDuration(data.slowNs)})`} and
           failed calls
         </h3>
         {data.callers.length === 0 ? <p className="muted">No stacks were recorded.</p> : null}
@@ -109,6 +107,12 @@ function Histograms({ data }: { data: SyscallDetail }) {
       </section>
     </>
   );
+}
+
+/** A histogram bar `percent` wide. */
+function Fill({ className, percent }: { className: string; percent: number }) {
+  const style = useMemo(() => ({ width: `${percent}%` }), [percent]);
+  return <span className={className} style={style} />;
 }
 
 /** Calls by when they returned, across, and how long they took, up. */
@@ -141,7 +145,9 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
     if (!context || !data || last < first) {
       return;
     }
-    canvas.current?.setAttribute("data-scheme", scheme);
+    if (canvas.current) {
+      canvas.current.dataset.scheme = scheme;
+    }
     const shown = last - first + 1;
     const cell = height / shown;
     const slices = data.counts.length / data.rows;
@@ -164,6 +170,40 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
     context.globalAlpha = 1;
   }, [data, width, first, last, scheme]);
 
+  const style = useMemo(() => ({ width, height }), [width]);
+  const filter = `${look.sf ?? ""} trace=${call}`.trim();
+  const openCell = useCallback(
+    (event: MouseEvent) => {
+      if (!data || last < first) {
+        return;
+      }
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const slices = data.counts.length / data.rows;
+      const slice = Math.floor(((event.clientX - bounds.left) / bounds.width) * slices);
+      // Whole-pixel coordinates can fall just outside a fractional box.
+      const row = Math.min(
+        Math.max(
+          last - Math.floor(((event.clientY - bounds.top) / bounds.height) * (last - first + 1)),
+          first,
+        ),
+        last,
+      );
+      if (!data.counts[slice * data.rows + row]) {
+        return;
+      }
+      const start = data.start + slice * data.width;
+      setLook((prev) => {
+        let next = withLook(prev, "range", `${start}-${start + data.width}`);
+        next = withLook(next, "sl", String(row));
+        next = withLook(next, "sf", filter);
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        next = withLook(next, "ev", undefined);
+        return withLook(next, "st", "log");
+      }, true);
+    },
+    [data, first, last, filter, setLook],
+  );
+
   return (
     <section className="latency-map" data-testid="syscall-heatmap">
       <h3>
@@ -184,38 +224,12 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
           <canvas
             ref={canvas}
             className="clickable"
-            style={{ width, height }}
+            style={style}
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
             role="img"
             aria-label="Latency heat map"
             title="A cell's calls, in the log"
-            onClick={(event) => {
-              if (!data || last < first) {
-                return;
-              }
-              const box = event.currentTarget.getBoundingClientRect();
-              const slices = data.counts.length / data.rows;
-              const slice = Math.floor(((event.clientX - box.left) / box.width) * slices);
-              // Whole-pixel coordinates can fall just outside a fractional box.
-              const row = Math.min(
-                Math.max(
-                  last - Math.floor(((event.clientY - box.top) / box.height) * (last - first + 1)),
-                  first,
-                ),
-                last,
-              );
-              if (!data.counts[slice * data.rows + row]) {
-                return;
-              }
-              const start = data.start + slice * data.width;
-              const filter = `${look.sf ?? ""} trace=${call}`.trim();
-              setLook((look) => {
-                let next = withLook(look, "range", `${start}-${start + data.width}`);
-                next = withLook(next, "sl", String(row));
-                next = withLook(next, "sf", filter);
-                next = withLook(next, "ev", undefined);
-                return withLook(next, "st", "log");
-              }, true);
-            }}
+            onClick={openCell}
           />
         )}
       </div>

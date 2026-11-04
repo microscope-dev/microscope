@@ -4,10 +4,14 @@
 // list to choose any pane from, and nothing floats.
 
 import {
+  type ChangeEvent,
   type KeyboardEvent,
   memo,
   type PointerEvent,
+  type RefObject,
+  useCallback,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -72,8 +76,8 @@ export function Dock({ setup }: { setup: DockSetup }) {
             {size &&
               // In a fixed order, raised by z-index: moving a window's element
               // would drop the pointer it is being dragged by.
-              [...windows]
-                .sort()
+              windows
+                .toSorted()
                 .map((id) => (
                   <FloatingWindow key={id} id={id} bounds={size} layer={windows.indexOf(id) + 1} />
                 ))}
@@ -86,7 +90,7 @@ export function Dock({ setup }: { setup: DockSetup }) {
 
 /** The dock's size as it changes, measured before the first paint so
  * windows a kept layout floats show at once. */
-function useSize(element: React.RefObject<HTMLDivElement | null>) {
+function useSize(element: RefObject<HTMLDivElement | null>) {
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   useLayoutEffect(() => {
     const box = element.current;
@@ -114,8 +118,23 @@ const FloatingWindow = memo(function FloatingWindow({
   bounds: { width: number; height: number };
   layer: number;
 }) {
-  const { kinds } = useDock();
   const found = useLayout((layout) => layout.floating.find((window) => window.group.id === id));
+  return found ? <WindowFrame id={id} placed={found.rect} bounds={bounds} layer={layer} /> : null;
+});
+
+function WindowFrame({
+  id,
+  placed,
+  bounds,
+  layer,
+}: {
+  id: GroupId;
+  /** Where the layout puts the window, which may be off the dock now. */
+  placed: Rect;
+  bounds: { width: number; height: number };
+  layer: number;
+}) {
+  const { kinds } = useDock();
   const title = useLayout((layout) => {
     const group = groups(layout).find((candidate) => candidate.id === id);
     const pane = group?.active ? layout.panes[group.active] : undefined;
@@ -123,42 +142,46 @@ const FloatingWindow = memo(function FloatingWindow({
   });
   const element = useRef<HTMLDivElement>(null);
   const resizing = useRef<{ x: number; y: number; rect: Rect } | null>(null);
-  if (!found) {
-    return null;
-  }
-  const rect = keepOnScreen(found.rect, { x: 0, y: 0, ...bounds });
+  const rect = useMemo(() => keepOnScreen(placed, { x: 0, y: 0, ...bounds }), [placed, bounds]);
+  const style = useMemo(
+    () => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: layer }),
+    [rect, layer],
+  );
 
-  const cancel = () => {
+  const cancel = useCallback(() => {
     const from = resizing.current;
     resizing.current = null;
     if (from && element.current) {
       element.current.style.width = `${from.rect.width}px`;
       element.current.style.height = `${from.rect.height}px`;
     }
-  };
-  const resizeKey = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.altKey || event.ctrlKey || event.metaKey) {
-      return;
-    }
-    if (event.key === "Escape") {
-      cancel();
-      return;
-    }
-    const step = event.shiftKey ? 64 : 16;
-    const delta = {
-      ArrowLeft: [-step, 0],
-      ArrowRight: [step, 0],
-      ArrowUp: [0, -step],
-      ArrowDown: [0, step],
-    }[event.key];
-    if (delta) {
-      event.preventDefault();
-      change((layout) => reframe(layout, id, grown(rect, delta[0] ?? 0, delta[1] ?? 0, bounds)));
-    }
-  };
+  }, []);
+  const resizeKey = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      if (event.key === "Escape") {
+        cancel();
+        return;
+      }
+      const step = event.shiftKey ? 64 : 16;
+      const delta = {
+        ArrowLeft: [-step, 0],
+        ArrowRight: [step, 0],
+        ArrowUp: [0, -step],
+        ArrowDown: [0, step],
+      }[event.key];
+      if (delta) {
+        event.preventDefault();
+        change((layout) => reframe(layout, id, grown(rect, delta[0] ?? 0, delta[1] ?? 0, bounds)));
+      }
+    },
+    [cancel, id, rect, bounds],
+  );
 
-  const grip = {
-    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
+  const gripDown = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0) {
         return;
       }
@@ -167,7 +190,10 @@ const FloatingWindow = memo(function FloatingWindow({
       event.currentTarget.setPointerCapture(event.pointerId);
       resizing.current = { x: event.clientX, y: event.clientY, rect };
     },
-    onPointerMove: (event: PointerEvent<HTMLButtonElement>) => {
+    [rect],
+  );
+  const gripMove = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
       const from = resizing.current;
       if (from && element.current) {
         const sized = grown(from.rect, event.clientX - from.x, event.clientY - from.y, bounds);
@@ -175,7 +201,10 @@ const FloatingWindow = memo(function FloatingWindow({
         element.current.style.height = `${sized.height}px`;
       }
     },
-    onPointerUp: (event: PointerEvent<HTMLButtonElement>) => {
+    [bounds],
+  );
+  const gripUp = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
       const from = resizing.current;
       resizing.current = null;
       if (from) {
@@ -183,35 +212,45 @@ const FloatingWindow = memo(function FloatingWindow({
         change((layout) => reframe(layout, id, sized));
       }
     },
-    onPointerCancel: cancel,
-    onLostPointerCapture: cancel,
-  };
+    [id, bounds],
+  );
+
+  // Working in a window raises it.
+  const raise = useCallback(() => {
+    const { layout } = workbench.getState();
+    if (layout.floating.at(-1)?.group.id !== id) {
+      change((now) => reframe(now, id, placed));
+    }
+  }, [id, placed]);
+  const press = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const target = event.target as Element;
+      if (
+        !target.closest("button") &&
+        (target.closest("[data-part=window-bar]") ||
+          target.matches(`[data-group="${id}"] > [role="tablist"]`))
+      ) {
+        pressWindow(event, id, event.currentTarget, rect);
+      }
+    },
+    [id, rect],
+  );
+  const dockRight = useCallback(() => {
+    rememberSize(workbench.getState().layout, id);
+    change((layout) => dock(layout, id, { type: "edge", side: "right" }));
+  }, [id]);
 
   return (
     <div
       ref={element}
       className={css("dock-window")}
       data-part="window"
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a <dialog> is hidden until opened and brings its own focus handling; this window is always shown
       role="dialog"
       aria-label={title}
-      style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: layer }}
-      onPointerDownCapture={() => {
-        // Working in a window raises it.
-        const { layout } = workbench.getState();
-        if (layout.floating.at(-1)?.group.id !== id) {
-          change((now) => reframe(now, id, found.rect));
-        }
-      }}
-      onPointerDown={(event) => {
-        const target = event.target as Element;
-        if (
-          !target.closest("button") &&
-          (target.closest("[data-part=window-bar]") ||
-            target.matches(`[data-group="${id}"] > [role="tablist"]`))
-        ) {
-          pressWindow(event, id, event.currentTarget, rect);
-        }
-      }}
+      style={style}
+      onPointerDownCapture={raise}
+      onPointerDown={press}
     >
       <div className={css("window-bar")} data-part="window-bar">
         <span className={css("window-title")}>{title}</span>
@@ -221,10 +260,7 @@ const FloatingWindow = memo(function FloatingWindow({
           data-part="window-dock"
           title="Dock this window on the right"
           aria-label={`Dock ${title}`}
-          onClick={() => {
-            rememberSize(workbench.getState().layout, id);
-            change((layout) => dock(layout, id, { type: "edge", side: "right" }));
-          }}
+          onClick={dockRight}
         >
           Dock
         </button>
@@ -238,11 +274,15 @@ const FloatingWindow = memo(function FloatingWindow({
         aria-label={`Resize ${title}`}
         title="Resize with arrow keys; hold Shift for larger steps"
         onKeyDown={resizeKey}
-        {...grip}
+        onPointerDown={gripDown}
+        onPointerMove={gripMove}
+        onPointerUp={gripUp}
+        onPointerCancel={cancel}
+        onLostPointerCapture={cancel}
       />
     </div>
   );
-});
+}
 
 function grown(rect: Rect, dx: number, dy: number, bounds: { width: number; height: number }) {
   return {
@@ -267,20 +307,19 @@ function PanePicker() {
   const shown = useLayout(
     (layout) => groups(layout).find((group) => group.id === layout.focused)?.active ?? "",
   );
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const pane = event.target.value as PaneId;
+      change((layout) => activate(layout, pane));
+      const found = workbench.getState().layout.panes[pane];
+      if (found) {
+        kinds.get(found.kind).chosen?.(found);
+      }
+    },
+    [kinds],
+  );
   return (
-    <select
-      className={css("pane-picker")}
-      aria-label="Pane"
-      value={shown}
-      onChange={(event) => {
-        const pane = event.target.value as PaneId;
-        change((layout) => activate(layout, pane));
-        const found = workbench.getState().layout.panes[pane];
-        if (found) {
-          kinds.get(found.kind).chosen?.(found);
-        }
-      }}
-    >
+    <select className={css("pane-picker")} aria-label="Pane" value={shown} onChange={choose}>
       {options.split("\u0001").map((option) => {
         const [pane, title] = option.split("\u0000");
         return (

@@ -1,10 +1,17 @@
-import { useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useMemo,
+  useState,
+} from "react";
 
 import { assert } from "../assert";
 import { firstBreakpointPlace, knownBreakpointPlaces, PENDING } from "../breakpoints";
 import { useRequest } from "../data";
 import { controls } from "../model";
-import type { Breakpoint, WatchAccess, Watchpoint } from "../protocol";
+import type { Breakpoint, ExceptionFilter, WatchAccess, Watchpoint } from "../protocol";
 import { useConnection, useModel } from "../store";
 import { tab, useTab } from "../tab";
 import { useLook, useShowSource } from "./navigation";
@@ -16,7 +23,6 @@ export function Breakpoints() {
   const { state } = useFocus();
   const control = useModel(controls);
   const editing = useTab((current) => current.editing);
-  const setEditing = (id: number | null) => tab.setState({ editing: id });
   const breakpoints = state.breakpoints;
 
   return (
@@ -24,17 +30,13 @@ export function Breakpoints() {
       <ul className="rows" data-testid="breakpoints">
         {breakpoints.map((breakpoint) =>
           editing === breakpoint.id ? (
-            <BreakpointEditor
-              key={breakpoint.id}
-              breakpoint={breakpoint}
-              done={() => setEditing(null)}
-            />
+            <BreakpointEditor key={breakpoint.id} breakpoint={breakpoint} close={stopEditing} />
           ) : (
             <Row
               key={breakpoint.id}
               breakpoint={breakpoint}
               control={control}
-              edit={() => setEditing(breakpoint.id)}
+              edit={editBreakpoint}
             />
           ),
         )}
@@ -56,6 +58,9 @@ export function Breakpoints() {
   );
 }
 
+const editBreakpoint = (id: number | null) => tab.setState({ editing: id });
+const stopEditing = () => editBreakpoint(null);
+
 export function BreakpointsBadge() {
   const count = useModel(
     (model) => (model.state?.breakpoints.length ?? 0) + (model.state?.watchpoints.length ?? 0),
@@ -72,7 +77,7 @@ export function placeLabel(breakpoint: Breakpoint): string {
     const more = count > 1 ? ` +${count - 1}` : "";
     return `${fileName(place.path)}:${place.line}${more}`;
   }
-  const asked = /^(.*\/)?([^/]+:\d+)$/.exec(breakpoint.location);
+  const asked = /^(.*\/)?([^/]+:\d+)$/u.exec(breakpoint.location);
   return asked?.[2] ?? breakpoint.location;
 }
 
@@ -140,11 +145,20 @@ function Row({
 }: {
   breakpoint: Breakpoint;
   control: boolean;
-  edit(): void;
+  edit(id: number): void;
 }) {
   const connection = useConnection();
   const showBreakpoint = useShowBreakpoint();
   const [error, setError] = useState<string | null>(null);
+  const show = useCallback(() => showBreakpoint(breakpoint), [showBreakpoint, breakpoint]);
+  const editThis = useCallback(() => edit(breakpoint.id), [edit, breakpoint.id]);
+  const remove = useCallback(
+    () =>
+      connection
+        .request("removeBreakpoint", { id: breakpoint.id })
+        .catch((failure: Error) => setError(failure.message)),
+    [connection, breakpoint.id],
+  );
   const place = firstBreakpointPlace(breakpoint);
   const pending = breakpoint.places.length === 0;
   const kind = breakpoint.logMessage ? "log" : breakpoint.condition ? "conditional" : "plain";
@@ -159,7 +173,7 @@ function Row({
           className="link-row"
           title={breakpointTitle(breakpoint)}
           disabled={pending && !place?.path}
-          onClick={() => showBreakpoint(breakpoint)}
+          onClick={show}
         >
           {placeLabel(breakpoint)}
         </button>
@@ -174,7 +188,7 @@ function Row({
               className="icon"
               title="Edit its condition"
               aria-label={`Edit breakpoint ${breakpoint.id}`}
-              onClick={edit}
+              onClick={editThis}
             >
               ✎
             </button>
@@ -183,11 +197,7 @@ function Row({
               className="icon"
               title="Remove it"
               aria-label={`Remove breakpoint ${breakpoint.id}`}
-              onClick={() =>
-                connection
-                  .request("removeBreakpoint", { id: breakpoint.id })
-                  .catch((failure: Error) => setError(failure.message))
-              }
+              onClick={remove}
             >
               ×
             </button>
@@ -205,21 +215,24 @@ function Row({
   );
 }
 
-function BreakpointEditor({ breakpoint, done }: { breakpoint: Breakpoint; done(): void }) {
+function BreakpointEditor({ breakpoint, close }: { breakpoint: Breakpoint; close(): void }) {
   const connection = useConnection();
+  const save = useCallback(
+    (conditions: Conditions) =>
+      connection.request("editBreakpoint", {
+        id: breakpoint.id,
+        condition: conditions.condition,
+        hitCondition: conditions.hitCondition,
+        logMessage: conditions.logMessage ?? null,
+      }),
+    [connection, breakpoint.id],
+  );
   return (
     <ConditionEditor
       title={placeLabel(breakpoint)}
       initial={breakpoint}
-      done={done}
-      save={(conditions) =>
-        connection.request("editBreakpoint", {
-          id: breakpoint.id,
-          condition: conditions.condition,
-          hitCondition: conditions.hitCondition,
-          logMessage: conditions.logMessage ?? null,
-        })
-      }
+      close={close}
+      save={save}
     />
   );
 }
@@ -232,12 +245,12 @@ function ConditionEditor({
   title,
   initial,
   save,
-  done,
+  close,
 }: {
   title: string;
   initial: Conditions;
   save(conditions: Conditions): Promise<unknown>;
-  done(): void;
+  close(): void;
 }) {
   const logs = initial.logMessage !== undefined;
   const [condition, setCondition] = useState(initial.condition ?? "");
@@ -245,30 +258,48 @@ function ConditionEditor({
   const [message, setMessage] = useState(initial.logMessage ?? "");
   const [error, setError] = useState<string | null>(null);
 
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      setError(null);
+      const conditions: Conditions = {
+        condition: condition.trim() || null,
+        hitCondition: hits.trim() || null,
+      };
+      if (logs) {
+        conditions.logMessage = message.trim() || null;
+      }
+      save(conditions)
+        .then(close)
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [condition, hits, logs, message, save, close],
+  );
+  const escape = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        close();
+      }
+    },
+    [close],
+  );
+  const editCondition = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setCondition(event.target.value),
+    [],
+  );
+  const editHits = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setHits(event.target.value),
+    [],
+  );
+  const editMessage = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setMessage(event.target.value),
+    [],
+  );
+
   return (
     <li className="editor">
-      <form
-        className="editor-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setError(null);
-          const conditions: Conditions = {
-            condition: condition.trim() || null,
-            hitCondition: hits.trim() || null,
-          };
-          if (logs) {
-            conditions.logMessage = message.trim() || null;
-          }
-          save(conditions)
-            .then(done)
-            .catch((failure: Error) => setError(failure.message));
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            done();
-          }
-        }}
-      >
+      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape anywhere in the form closes it */}
+      <form className="editor-form" onSubmit={submit} onKeyDown={escape}>
         <div className="editor-title">{title}</div>
         <label>
           <span>Stop if</span>
@@ -276,9 +307,9 @@ function ConditionEditor({
             className="input"
             value={condition}
             placeholder="an expression, such as n > 3"
-            // biome-ignore lint/a11y/noAutofocus: the editor opens because the person asked to type
+            // oxlint-disable-next-line jsx-a11y/no-autofocus -- the editor opens because the person asked to type
             autoFocus
-            onChange={(event) => setCondition(event.target.value)}
+            onChange={editCondition}
           />
         </label>
         <label>
@@ -287,7 +318,7 @@ function ConditionEditor({
             className="input"
             value={hits}
             placeholder=">=5, ==3, or %10"
-            onChange={(event) => setHits(event.target.value)}
+            onChange={editHits}
           />
         </label>
         {logs && (
@@ -297,7 +328,7 @@ function ConditionEditor({
               className="input"
               value={message}
               placeholder="a message with {expressions}, instead of stopping"
-              onChange={(event) => setMessage(event.target.value)}
+              onChange={editMessage}
             />
           </label>
         )}
@@ -306,7 +337,7 @@ function ConditionEditor({
           <button type="submit" className="button primary small">
             Save
           </button>
-          <button type="button" className="button small" onClick={done}>
+          <button type="button" className="button small" onClick={close}>
             Cancel
           </button>
         </div>
@@ -320,28 +351,33 @@ function Adder() {
   const connection = useConnection();
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const add = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const location = text.trim();
+      if (!location) {
+        return;
+      }
+      setError(null);
+      connection
+        .request("addBreakpoint", { location })
+        .then(() => setText(""))
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [text, connection],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+    [],
+  );
   return (
-    <form
-      className="adder"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const location = text.trim();
-        if (!location) {
-          return;
-        }
-        setError(null);
-        connection
-          .request("addBreakpoint", { location })
-          .then(() => setText(""))
-          .catch((failure: Error) => setError(failure.message));
-      }}
-    >
+    <form className="adder" onSubmit={add}>
       <input
         className="input quiet"
         aria-label="Add a breakpoint"
         placeholder="+ breakpoint at function, file:line, or 0xaddress"
         value={text}
-        onChange={(event) => setText(event.target.value)}
+        onChange={edit}
       />
       {error && <div className="error">{error}</div>}
     </form>
@@ -363,19 +399,35 @@ function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: bo
   const [error, setError] = useState<string | null>(null);
   const label = watchpoint.expression ?? `${watchpoint.address}:${watchpoint.bytes}`;
   const detail = conditionText(watchpoint);
+  const initial = useMemo(
+    () => ({ condition: watchpoint.condition, hitCondition: watchpoint.hitCondition }),
+    [watchpoint.condition, watchpoint.hitCondition],
+  );
+  const open = useCallback(() => setEditing(true), []);
+  const close = useCallback(() => setEditing(false), []);
+  const save = useCallback(
+    (conditions: Conditions) =>
+      connection.request("editWatchpoint", {
+        id: watchpoint.id,
+        condition: conditions.condition,
+        hitCondition: conditions.hitCondition,
+      }),
+    [connection, watchpoint.id],
+  );
+  const remove = useCallback(
+    () =>
+      connection
+        .request("removeWatchpoint", { id: watchpoint.id })
+        .catch((failure: Error) => setError(failure.message)),
+    [connection, watchpoint.id],
+  );
   if (editing) {
     return (
       <ConditionEditor
         title={watchpoint.expression ?? watchpoint.address}
-        initial={{ condition: watchpoint.condition, hitCondition: watchpoint.hitCondition }}
-        done={() => setEditing(false)}
-        save={(conditions) =>
-          connection.request("editWatchpoint", {
-            id: watchpoint.id,
-            condition: conditions.condition,
-            hitCondition: conditions.hitCondition,
-          })
-        }
+        initial={initial}
+        close={close}
+        save={save}
       />
     );
   }
@@ -400,7 +452,7 @@ function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: bo
               className="icon"
               title="Edit its condition"
               aria-label={`Edit watchpoint ${watchpoint.id}`}
-              onClick={() => setEditing(true)}
+              onClick={open}
             >
               ✎
             </button>
@@ -409,11 +461,7 @@ function WatchRow({ watchpoint, control }: { watchpoint: Watchpoint; control: bo
               className="icon"
               title="Remove it"
               aria-label={`Remove watchpoint ${watchpoint.id}`}
-              onClick={() =>
-                connection
-                  .request("removeWatchpoint", { id: watchpoint.id })
-                  .catch((failure: Error) => setError(failure.message))
-              }
+              onClick={remove}
             >
               ×
             </button>
@@ -436,36 +484,40 @@ function WatchAdder() {
   const [text, setText] = useState("");
   const [access, setAccess] = useState<WatchAccess>("change");
   const [error, setError] = useState<string | null>(null);
+  const add = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const target = text.trim();
+      if (!target) {
+        return;
+      }
+      setError(null);
+      const frame = at && !stale ? at : {};
+      connection
+        .request("addWatchpoint", { ...frame, target, access })
+        .then(() => setText(""))
+        .catch((failure: Error) => setError(failure.message));
+    },
+    [text, at, stale, connection, access],
+  );
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setText(event.target.value),
+    [],
+  );
+  const choose = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setAccess(event.target.value as WatchAccess),
+    [],
+  );
   return (
-    <form
-      className="adder watch-adder"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const target = text.trim();
-        if (!target) {
-          return;
-        }
-        setError(null);
-        const frame = at && !stale ? at : {};
-        connection
-          .request("addWatchpoint", { ...frame, target, access })
-          .then(() => setText(""))
-          .catch((failure: Error) => setError(failure.message));
-      }}
-    >
+    <form className="adder watch-adder" onSubmit={add}>
       <input
         className="input quiet"
         aria-label="Add a watchpoint"
         placeholder="+ watch an expression, or 0xaddress:bytes"
         value={text}
-        onChange={(event) => setText(event.target.value)}
+        onChange={edit}
       />
-      <select
-        className="input quiet"
-        aria-label="Stop on"
-        value={access}
-        onChange={(event) => setAccess(event.target.value as WatchAccess)}
-      >
+      <select className="input quiet" aria-label="Stop on" value={access} onChange={choose}>
         {(Object.keys(ACCESS) as WatchAccess[]).map((key) => (
           <option key={key} value={key}>
             {ACCESS[key]}
@@ -484,7 +536,6 @@ function WatchAdder() {
 function Exceptions({ control }: { control: boolean }) {
   const session = useModel((model) => model.state?.session);
   const exceptions = useRequest("exceptions", session ? undefined : null);
-  const connection = useConnection();
   const [error, setError] = useState<string | null>(null);
   const filters = exceptions.data?.filters;
   if (exceptions.error) {
@@ -505,24 +556,38 @@ function Exceptions({ control }: { control: boolean }) {
       {error && <div className="error">{error}</div>}
       <ul className="rows">
         {filters.map((filter) => (
-          <li key={filter.id} className="row" title={filter.description}>
-            <label>
-              <input
-                type="checkbox"
-                checked={filter.on}
-                disabled={!control}
-                onChange={(event) => {
-                  setError(null);
-                  connection
-                    .request("setException", { id: filter.id, on: event.target.checked })
-                    .catch((failure: Error) => setError(failure.message));
-                }}
-              />{" "}
-              {filter.label}
-            </label>
-          </li>
+          <FilterRow key={filter.id} filter={filter} control={control} fail={setError} />
         ))}
       </ul>
     </details>
+  );
+}
+
+function FilterRow({
+  filter,
+  control,
+  fail,
+}: {
+  filter: ExceptionFilter;
+  control: boolean;
+  fail: (error: string | null) => void;
+}) {
+  const connection = useConnection();
+  const toggle = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      fail(null);
+      connection
+        .request("setException", { id: filter.id, on: event.target.checked })
+        .catch((failure: Error) => fail(failure.message));
+    },
+    [fail, connection, filter.id],
+  );
+  return (
+    <li className="row" title={filter.description}>
+      <label>
+        <input type="checkbox" checked={filter.on} disabled={!control} onChange={toggle} />{" "}
+        {filter.label}
+      </label>
+    </li>
   );
 }

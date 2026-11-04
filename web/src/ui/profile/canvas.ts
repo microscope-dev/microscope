@@ -10,6 +10,7 @@ import { token, useProfile } from "./context";
 
 /** The names column beside each chart's lanes, so their times line up. */
 export const NAMES = 180;
+export const NAMES_STYLE = { width: NAMES };
 
 /** A box's width in CSS pixels as it changes, and the ref that measures
  * it. A ref callback, so a box shown again after an error is measured. */
@@ -17,7 +18,7 @@ export function useWidth(): [(element: HTMLElement | null) => (() => void) | und
   const [width, setWidth] = useState(0);
   const measure = useCallback((element: HTMLElement | null) => {
     if (!element) {
-      return undefined;
+      return;
     }
     const observer = new ResizeObserver(() => setWidth(element.clientWidth));
     observer.observe(element);

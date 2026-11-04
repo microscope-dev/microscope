@@ -1,9 +1,13 @@
-// Small pieces the profile's views share: a removable chip, rounded
-// numbers that keep their exact value on hover, and what a view says
-// before its answer comes or when it failed.
+// Small pieces the profile's views share: a removable chip, buttons that
+// change the look, rounded numbers that keep their exact value on hover,
+// and what a view says before its answer comes or when it failed.
 
+import { type ReactNode, useCallback } from "react";
+
+import { type ProfileLook, withLook } from "../../profile/look";
 import { formatBytes, formatCount, formatDuration } from "../../profile/paint";
 import type { RequestError } from "../../protocol";
+import { useProfile } from "./context";
 
 export function Chip({
   label,
@@ -14,7 +18,7 @@ export function Chip({
   label: string;
   title: string;
   remove: () => void;
-  removeLabel?: string;
+  removeLabel?: string | undefined;
 }) {
   return (
     <span className="chip profile-chip" title={title}>
@@ -23,6 +27,59 @@ export function Chip({
         ×
       </button>
     </span>
+  );
+}
+
+/** A chip for one part of the look, which removing clears. */
+export function ClearChip({
+  field,
+  label,
+  title,
+  removeLabel,
+}: {
+  field: keyof ProfileLook;
+  label: string;
+  title: string;
+  removeLabel?: string;
+}) {
+  const { setLook } = useProfile();
+  const clear = useCallback(
+    () =>
+      setLook((prev) =>
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        withLook(prev, field, undefined),
+      ),
+    [setLook, field],
+  );
+  return <Chip label={label} title={title} removeLabel={removeLabel} remove={clear} />;
+}
+
+/** A button that sets one part of the look, pressed when it is set so. */
+export function LookButton<K extends keyof ProfileLook>({
+  field,
+  value,
+  title,
+  pressed,
+  replace = false,
+  children,
+}: {
+  field: K;
+  value: ProfileLook[K] | undefined;
+  title?: string;
+  pressed: boolean;
+  /** Replaces the address rather than pushing a new entry. */
+  replace?: boolean;
+  children: ReactNode;
+}) {
+  const { setLook } = useProfile();
+  const pick = useCallback(
+    () => setLook((prev) => withLook(prev, field, value), !replace),
+    [setLook, field, value, replace],
+  );
+  return (
+    <button type="button" title={title} aria-pressed={pressed} onClick={pick}>
+      {children}
+    </button>
   );
 }
 

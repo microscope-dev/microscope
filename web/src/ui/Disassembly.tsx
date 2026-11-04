@@ -4,7 +4,7 @@
 // and jumps link where they go.
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { assert } from "../assert";
 import { toggleBreakpoint } from "../breakpoints";
@@ -28,13 +28,11 @@ function useSyntax(): [Syntax, (syntax: Syntax) => void] {
       (value): value is Syntax => isString(value) && value === "att",
     ),
   );
-  return [
-    syntax,
-    (chosen) => {
-      setSyntax(chosen);
-      write("microscope-syntax", chosen);
-    },
-  ];
+  const choose = useCallback((chosen: Syntax) => {
+    setSyntax(chosen);
+    write("microscope-syntax", chosen);
+  }, []);
+  return [syntax, choose];
 }
 
 export function Disassembly() {
@@ -56,9 +54,7 @@ export function Disassembly() {
     content = (
       <div className={`${errorClass(answer.error)} center-message`}>{answer.error.message}</div>
     );
-  } else if (!disassembled) {
-    content = <div className="empty center-message">Disassembling…</div>;
-  } else {
+  } else if (disassembled) {
     content = (
       <Lines
         disassembled={disassembled}
@@ -67,6 +63,8 @@ export function Disassembly() {
         innermost={at?.frame === 0}
       />
     );
+  } else {
+    content = <div className="empty center-message">Disassembling…</div>;
   }
 
   return (
@@ -77,15 +75,13 @@ export function Disassembly() {
         </span>
         {look.asm && <span className="dim">{look.asm}</span>}
         <fieldset className="segmented small" aria-label="Syntax">
-          {(["intel", "att"] as const).map((choice) => (
-            <button
+          {SYNTAXES.map((choice) => (
+            <SyntaxButton
               key={choice}
-              type="button"
-              aria-pressed={syntax === choice}
-              onClick={() => setSyntax(choice)}
-            >
-              {choice === "intel" ? "Intel" : "AT&T"}
-            </button>
+              syntax={choice}
+              pressed={syntax === choice}
+              choose={setSyntax}
+            />
           ))}
         </fieldset>
       </div>
@@ -93,6 +89,25 @@ export function Disassembly() {
         {content}
       </div>
     </div>
+  );
+}
+
+const SYNTAXES = ["intel", "att"] as const;
+
+function SyntaxButton({
+  syntax,
+  pressed,
+  choose,
+}: {
+  syntax: Syntax;
+  pressed: boolean;
+  choose: (syntax: Syntax) => void;
+}) {
+  const click = useCallback(() => choose(syntax), [choose, syntax]);
+  return (
+    <button type="button" aria-pressed={pressed} onClick={click}>
+      {syntax === "intel" ? "Intel" : "AT&T"}
+    </button>
   );
 }
 
@@ -121,23 +136,24 @@ function Lines({
   innermost: boolean;
 }) {
   const lines = useMemo(() => {
-    const lines: Line[] = disassembled.notes.map((note, index) => ({
+    const built: Line[] = disassembled.notes.map((note, index) => ({
       kind: "note",
       key: `note:${index}`,
       note,
     }));
     for (const instruction of disassembled.instructions) {
       if (instruction.source) {
-        lines.push({
+        built.push({
           kind: "source",
           key: `source:${instruction.address}`,
           source: instruction.source,
         });
       }
-      lines.push({ kind: "instruction", key: instruction.address, instruction });
+      built.push({ kind: "instruction", key: instruction.address, instruction });
     }
-    return lines;
+    return built;
   }, [disassembled]);
+  // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
   const rows = useVirtualizer({
     count: lines.length,
     getScrollElement: () => body.current,
@@ -159,17 +175,15 @@ function Lines({
   }, [marked, current, lines, rows]);
 
   const start = disassembled.function ? disassembled.instructions[0]?.address : undefined;
+  const size = rows.getTotalSize();
+  const sized = useMemo(() => ({ height: size }), [size]);
   return (
-    <div className="asm-lines" style={{ height: rows.getTotalSize() }}>
+    <div className="asm-lines" style={sized}>
       {rows.getVirtualItems().map((item) => {
         const line = lines[item.index];
         assert(line !== undefined, "virtual row past the listing's lines");
         return (
-          <div
-            key={line.key}
-            className="asm-slot"
-            style={{ transform: `translateY(${item.start}px)` }}
-          >
+          <Slot key={line.key} start={item.start}>
             {line.kind === "note" ? (
               <div className="asm-note">{line.note}</div>
             ) : line.kind === "source" ? (
@@ -182,9 +196,19 @@ function Lines({
                 innermost={innermost}
               />
             )}
-          </div>
+          </Slot>
         );
       })}
+    </div>
+  );
+}
+
+/** A virtual row, placed `start` pixels down. */
+function Slot({ start, children }: { start: number; children: React.ReactNode }) {
+  const style = useMemo(() => ({ transform: `translateY(${start}px)` }), [start]);
+  return (
+    <div className="asm-slot" style={style}>
+      {children}
     </div>
   );
 }
@@ -221,7 +245,7 @@ function Row({
           <span className="error">{instruction.invalid}</span>
         ) : (
           instruction.tokens.map((token, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: tokens repeat, and never move
+            // oxlint-disable-next-line react/no-array-index-key -- tokens repeat, and never move
             <span key={index} className={`tk-${token.kind}`}>
               {token.text}
             </span>
@@ -240,12 +264,16 @@ function SourceHead({ source }: { source: SourceLine }) {
   const text = useRequest("source", { path: source.path }).data;
   const line = text?.path === source.path ? text.text.split("\n")[source.line - 1] : undefined;
   const place = `${fileName(source.path)}:${source.line}`;
+  const show = useCallback(
+    () => showSource(source.path, source.line),
+    [showSource, source.path, source.line],
+  );
   return (
     <button
       type="button"
       className="asm-source"
       aria-label={`Show the source at ${place}`}
-      onClick={() => showSource(source.path, source.line)}
+      onClick={show}
     >
       <span className="asm-place">{place}</span>
       <span className="asm-line">{line?.trim()}</span>
@@ -257,19 +285,26 @@ function SourceHead({ source }: { source: SourceLine }) {
 function Target({ address, name }: { address: string; name: string | null }) {
   const look = useLook();
   const { look: current } = useFocus();
-  const there = (current: Look): Look => ({ ...current, asm: address, view: "disassembly" });
+  const there = useCallback(
+    (from: Look): Look => ({ ...from, asm: address, view: "disassembly" }),
+    [address],
+  );
+  const follow = useCallback(
+    (event: React.MouseEvent) => {
+      if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        event.preventDefault();
+        look(there, { replace: false });
+      }
+    },
+    [look, there],
+  );
   return (
     <a
       className="asm-target"
       // The link opens elsewhere as itself; a plain click moves this tab.
       href={window.location.pathname + stringifySearch({ ...there(current) })}
       title={address}
-      onClick={(event) => {
-        if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-          event.preventDefault();
-          look(there, { replace: false });
-        }
-      }}
+      onClick={follow}
     >
       {name}
     </a>
@@ -284,6 +319,9 @@ function Gutter({ address }: { address: string }) {
   const existing = state.breakpoints.find((breakpoint: Breakpoint) =>
     breakpoint.places.some((place) => place.address === address),
   );
+  const toggle = useCallback(() => {
+    void toggleBreakpoint(connection, existing, address);
+  }, [connection, existing, address]);
   const dot = <span className={existing ? "dot plain" : "dot none"} aria-hidden="true" />;
   if (!control) {
     return <span className="asm-gutter">{dot}</span>;
@@ -293,9 +331,7 @@ function Gutter({ address }: { address: string }) {
       type="button"
       className="asm-gutter"
       aria-label={`${existing ? "Remove the breakpoint" : "Breakpoint"} at ${address}`}
-      onClick={() => {
-        void toggleBreakpoint(connection, existing, address);
-      }}
+      onClick={toggle}
     >
       {dot}
     </button>

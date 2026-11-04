@@ -2,8 +2,8 @@
 // session's focus, a profile, or nowhere in particular, which starts from
 // Welcome. Old addresses of pages that became panes open those panes.
 
-import { Link, Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
+import { Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 
 import { followEmailLink, followSignIn } from "../account";
 import { KIND } from "../documents";
@@ -15,6 +15,7 @@ import { profileLayout, showPane, showProfile, welcomeLayout } from "./panes";
 import { PICKED } from "./Picker";
 import { profileParams } from "./profile/ProfilePage";
 import { orgLink } from "./SingleSignOn";
+import { SessionLink } from "./Welcome";
 import { Workbench } from "./Workspace";
 
 /** `/`: the session when there is one; else what to start from, which is
@@ -28,20 +29,26 @@ export function Home() {
   const session = useModel((model) => model.state?.session ?? null);
   const busy = useModel((model) => model.state?.busy ?? null);
   const profile = useModel((model) => (busy ? undefined : model.profiles.at(-1)));
+  const start = useMemo(
+    () => (profile ? () => profileLayout(profile.id, profile.name, {}) : welcomeLayout),
+    [profile],
+  );
   if (session) {
-    return <Navigate to="/s/$session" params={{ session }} replace />;
+    return <ToSession session={session} />;
   }
   if (loading) {
     return <div className="page muted">Connecting to microscope…</div>;
   }
   return (
-    <Workbench
-      focus={null}
-      wants="start"
-      start={profile ? () => profileLayout(profile.id, profile.name, {}) : welcomeLayout}
-      notice={busy && <div className="workbench-notice muted">{busy}…</div>}
-    />
+    <Workbench focus={null} wants="start" start={start}>
+      {busy && <div className="workbench-notice muted">{busy}…</div>}
+    </Workbench>
   );
+}
+
+function ToSession({ session }: { session: string }) {
+  const params = useMemo(() => ({ session }), [session]);
+  return <Navigate to="/s/$session" params={params} replace />;
 }
 
 /** `/pick?tab=`, the address of the page that chose what to debug: opens
@@ -113,7 +120,8 @@ export function ProfileRoute() {
       return activate(setParams(layout, id, next), id);
     });
   }, [profile, name, look]);
-  return <Workbench focus={null} wants="start" start={() => profileLayout(profile, name, look)} />;
+  const start = useCallback(() => profileLayout(profile, name, look), [profile, name, look]);
+  return <Workbench focus={null} wants="start" start={start} />;
 }
 
 /** The latest notice that ended the session of `program`, as the server
@@ -133,21 +141,23 @@ export function SessionRoute() {
   const notices = useModel((model) => model.notices);
   const navigate = useNavigate();
   // A tab that saw this session live follows it to the next one; a tab
-  // opened on a link to an ended session says so instead.
-  const followed = useRef(false);
-  // The program this tab saw the session debug, which names it in notices.
-  const program = useRef<string | null>(null);
+  // opened on a link to an ended session says so instead. What it saw is
+  // the program the session debugged, which names it in notices.
+  const [seen, setSeen] = useState<{ program: string | null }>();
   const current = state?.session ?? null;
   if (current === session) {
-    followed.current = true;
-    program.current = targetName(state);
+    const program = targetName(state);
+    if (seen === undefined || seen.program !== program) {
+      setSeen({ program });
+    }
   }
+  const followed = seen !== undefined;
 
   useEffect(() => {
-    if (followed.current && current && current !== session) {
+    if (followed && current && current !== session) {
       void navigate({ to: "/s/$session", params: { session: current }, replace: true });
     }
-  }, [current, session, navigate]);
+  }, [followed, current, session, navigate]);
 
   if (!state || current === session) {
     // Nothing a pane holds outlives its session.
@@ -159,33 +169,26 @@ export function SessionRoute() {
   }
   if (state.busy) {
     return (
-      <Workbench
-        focus={null}
-        wants="session"
-        notice={<div className="workbench-notice muted">{state.busy}…</div>}
-      />
+      <Workbench focus={null} wants="session">
+        <div className="workbench-notice muted">{state.busy}…</div>
+      </Workbench>
     );
   }
-  const ended = endedNotice(notices, program.current);
+  const ended = endedNotice(notices, seen?.program ?? null);
   return (
-    <Workbench
-      focus={null}
-      wants="session"
-      notice={
-        <div className="workbench-notice" role="status" data-testid="session-ended">
-          {/* Only a tab that saw the session knows it ran here at all. */}
-          <b>{followed.current ? "This session ended." : "This session is not here."}</b>{" "}
-          {followed.current ? "" : "It ended, or the link is wrong. "}
-          {ended ? `${ended.name} ${ended.text}. ` : ""}
-          {current ? (
-            <Link to="/s/$session" params={{ session: current }}>
-              Go to {targetName(state)}
-            </Link>
-          ) : (
-            "Launch, attach, or open a core dump from the File menu."
-          )}
-        </div>
-      }
-    />
+    <Workbench focus={null} wants="session">
+      {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled notice, not a form output */}
+      <div className="workbench-notice" role="status" data-testid="session-ended">
+        {/* Only a tab that saw the session knows it ran here at all. */}
+        <b>{followed ? "This session ended." : "This session is not here."}</b>{" "}
+        {followed ? "" : "It ended, or the link is wrong. "}
+        {ended ? `${ended.name} ${ended.text}. ` : ""}
+        {current ? (
+          <SessionLink session={current}>Go to {targetName(state)}</SessionLink>
+        ) : (
+          "Launch, attach, or open a core dump from the File menu."
+        )}
+      </div>
+    </Workbench>
   );
 }

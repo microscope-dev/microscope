@@ -92,9 +92,9 @@ export type LiveFailure =
 
 /** Where a renderer failed and why, as the page shows it. */
 export function failureText(failure: RendererFailure): string {
-  const where = failure.file
-    ? `${failure.file}${failure.line !== null ? `:${failure.line}${failure.column !== null ? `:${failure.column}` : ""}` : ""}: `
-    : "";
+  const column = failure.column === null ? "" : `:${failure.column}`;
+  const line = failure.line === null ? "" : `:${failure.line}${column}`;
+  const where = failure.file ? `${failure.file}${line}: ` : "";
   return `${where}${failure.message}`;
 }
 
@@ -259,11 +259,15 @@ export class Sandbox {
     const id = this.next++;
     assert(!this.pending.has(id), `draw ${id} is already pending`);
     return new Promise<Outcome>((resolve) => {
-      const pending: Pending = { card, digest: renderer.digest, resolve, timer: null };
-      pending.timer = setTimeout(() => {
-        this.finish(id, { kind: "timeout" });
-        this.release(card);
-      }, DRAW_TIMEOUT);
+      const pending: Pending = {
+        card,
+        digest: renderer.digest,
+        resolve,
+        timer: setTimeout(() => {
+          this.finish(id, { kind: "timeout" });
+          this.release(card);
+        }, DRAW_TIMEOUT),
+      };
       this.pending.set(id, pending);
       port.postMessage({ type: "draw", card, id, renderer, input, context });
     });
@@ -419,13 +423,13 @@ export class Sandbox {
     for (const waiting of [...this.waiting.splice(0), ...this.liveWaiting.splice(0)]) {
       waiting(false);
     }
-    for (const live of [...this.lives.values()]) {
+    for (const live of this.lives.values()) {
       live.end({
         kind: "failed",
         failure: { message: "the page closed the sandbox", file: null, line: null, column: null },
       });
     }
-    for (const id of [...this.pending.keys()]) {
+    for (const id of this.pending.keys()) {
       this.finish(id, {
         kind: "failed",
         failure: { message: "the page closed the sandbox", file: null, line: null, column: null },
@@ -457,10 +461,10 @@ export class Sandbox {
         break;
       }
       case "error":
-        if (message.id !== null) {
-          this.finish(message.id, { kind: "failed", failure: message.error });
-        } else {
+        if (message.id === null) {
           this.fail(message.card, message.error);
+        } else {
+          this.finish(message.id, { kind: "failed", failure: message.error });
         }
         break;
       case "loaded":
@@ -560,14 +564,14 @@ export class Sandbox {
       this.liveRunning += 1;
       return Promise.resolve(true);
     }
-    return new Promise((resolve) =>
+    return new Promise((resolve) => {
       this.liveWaiting.push((go) => {
         if (go) {
           this.liveRunning += 1;
         }
         resolve(go);
-      }),
-    );
+      });
+    });
   }
 
   /** Waits until fewer than PARALLEL draws run, and says whether this
@@ -580,14 +584,14 @@ export class Sandbox {
       this.running += 1;
       return Promise.resolve(true);
     }
-    return new Promise((resolve) =>
+    return new Promise((resolve) => {
       this.waiting.push((go) => {
         if (go) {
           this.running += 1;
         }
         resolve(go);
-      }),
-    );
+      });
+    });
   }
 }
 
@@ -609,7 +613,7 @@ export function contextFor(
 
 /** The theme the page shows now. */
 export function currentTheme(): "light" | "dark" {
-  const chosen = document.documentElement.getAttribute("data-theme");
+  const chosen = document.documentElement.dataset.theme;
   if (chosen === "light" || chosen === "dark") {
     return chosen;
   }

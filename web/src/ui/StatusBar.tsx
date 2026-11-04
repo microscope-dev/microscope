@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { assert } from "../assert";
 import { stopPath } from "../focus";
@@ -25,7 +25,7 @@ export function StatusBar() {
   const state = useModel((model) => model.state);
   const flash = useTab((current) => current.flash);
   const now = useNow(flash ? flash.at + FLASH : null);
-  const latest = [...notices].reverse().find((notice) => notice.connection !== me);
+  const latest = notices.findLast((notice) => notice.connection !== me);
   const stops = state?.session ? state.stops.slice(-SHOWN) : [];
 
   return (
@@ -68,7 +68,7 @@ export function Stops() {
   return (
     <div className="pane-body">
       <ul className="rows" data-testid="stop-list">
-        {[...stops].reverse().map((entry) => (
+        {stops.toReversed().map((entry) => (
           <li key={entry.stop}>
             <StopButton entry={entry} className="row button-row" />
           </li>
@@ -87,18 +87,19 @@ function StopButton({ entry, className }: { entry: StopEntry; className: string 
   const at = useTab((state) => state.at);
   const navigate = useNavigate();
   const on = entry.stop === at?.stop;
+  const onClick = useCallback(() => {
+    assert(session, `stop ${entry.stop} listed with no session`);
+    void navigate({
+      href: stopPath(session, { stop: entry.stop, thread: entry.thread, frame: entry.frame }),
+    });
+  }, [session, navigate, entry]);
   return (
     <button
       type="button"
       className={`${className} ${on ? "on" : ""} ${entry.stop === current ? "current" : ""}`}
       aria-current={on ? "true" : undefined}
       title={describeStop(entry)}
-      onClick={() => {
-        assert(session, `stop ${entry.stop} listed with no session`);
-        void navigate({
-          href: stopPath(session, { stop: entry.stop, thread: entry.thread, frame: entry.frame }),
-        });
-      }}
+      onClick={onClick}
     >
       #{entry.stop} {stopKind(entry.reason.kind)} · {placeText(entry.place)}
       {entry.stop === current && " ◂ now"}
@@ -115,7 +116,6 @@ function describeStop(entry: StopEntry): string {
 function useNow(deadline: number | null): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    setNow(Date.now());
     if (deadline === null) {
       return;
     }

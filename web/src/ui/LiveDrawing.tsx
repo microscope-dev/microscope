@@ -3,7 +3,16 @@
 // one at a time, and only when the renderer wants one; it forwards the
 // pointer, and the keys while the canvas has focus, as numbers and flags.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../assert";
 import { Tip } from "../visualize/draw";
@@ -70,7 +79,7 @@ function liveProblem(failure: LiveFailure): string {
 
 /** Keys a renderer never gets: the debugger's function keys, and Escape,
  * which gives focus back to the page. */
-const KEPT = /^(?:F\d+|Escape|Tab)$/;
+const KEPT = /^(?:F\d+|Escape|Tab)$/u;
 
 export function LiveDrawing({
   card,
@@ -96,9 +105,11 @@ export function LiveDrawing({
   const [height, setHeight] = useState(SHORTEST);
   const session = useRef<LiveSession | null>(null);
   const latest = useRef(job);
-  latest.current = job;
   const select = useRef(onSelect);
-  select.current = onSelect;
+  useLayoutEffect(() => {
+    latest.current = job;
+    select.current = onSelect;
+  });
   // The job the session last had, so a new one is sent once.
   const sent = useRef<LiveJob | null>(null);
   const size = useRef<Size | null>(null);
@@ -120,7 +131,8 @@ export function LiveDrawing({
   const starts = useRef(0);
   const events = useRef(0);
 
-  const schedule = () => {
+  // These read only refs, so they never change.
+  const schedule = useCallback(() => {
     const state = loop.current;
     if (!state.started || state.inFlight || state.request !== null) {
       return;
@@ -141,16 +153,53 @@ export function LiveDrawing({
       state.asked = { stop: sent.current.stop, events: events.current };
       session.current.frame(time);
     });
-  };
-  const want = () => {
+  }, []);
+  const want = useCallback(() => {
     loop.current.wanted = true;
     schedule();
-  };
+  }, [schedule]);
+  const counted = useCallback((shown: HTMLCanvasElement) => {
+    events.current += 1;
+    shown.dataset.sent = String(events.current);
+  }, []);
+  const forward = useCallback(
+    (type: LivePointer["type"], event: PointerEvent | WheelEvent | MouseEvent) => {
+      const shown = canvas.current;
+      const live = session.current;
+      if (shown === null || live === null) {
+        return;
+      }
+      pointer.current = event;
+      counted(shown);
+      const measured = size.current;
+      assert(measured !== null, "live pointer forwarded before the size is measured");
+      const bounds = shown.getBoundingClientRect();
+      const scale = bounds.width > 0 ? measured.device.width / bounds.width : 1;
+      let wheel = 0;
+      if (event instanceof WheelEvent) {
+        // Lines and pages as pixels, as most mice give them.
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.height : 1;
+        wheel = event.deltaY * unit;
+      }
+      live.pointer({
+        type,
+        x: (event.clientX - bounds.left) * scale,
+        y: (event.clientY - bounds.top) * scale,
+        dx: event.movementX * scale,
+        dy: event.movementY * scale,
+        buttons: event.buttons,
+        wheel,
+        shift: event.shiftKey,
+        ctrl: event.ctrlKey,
+        alt: event.altKey,
+      });
+    },
+    [counted],
+  );
 
   // The canvas takes its size from the card's width as soon as it is laid
   // out, session or not, so the cards around it do not move later; a new
   // size reaches a running renderer.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: want reads only refs
   useLayoutEffect(() => {
     const element = holder.current;
     assert(element !== null, "live drawing mounted without its holder");
@@ -178,11 +227,10 @@ export function LiveDrawing({
     const observer = new ResizeObserver(resized);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [want]);
 
   // The session runs while the card is on screen and ends when it leaves;
   // coming back starts it afresh with the inputs of then.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the session reads its job and callbacks through refs; a new renderer is a new component
   useEffect(() => {
     const shown = canvas.current;
     assert(shown !== null, "live drawing mounted without its canvas");
@@ -268,6 +316,7 @@ export function LiveDrawing({
       tip.current?.hide();
       live.stop();
     };
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the session reads its job and callbacks through refs; a new renderer is a new component
   }, [active, failure, restarts]);
 
   // A new stop, or the same in a new theme, updates the renderer.
@@ -297,7 +346,6 @@ export function LiveDrawing({
   }, []);
 
   // The wheel zooms the drawing, not the page, so it cannot be passive.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: forward reads only refs
   useEffect(() => {
     const shown = canvas.current;
     assert(shown !== null, "live drawing mounted without its canvas");
@@ -310,57 +358,64 @@ export function LiveDrawing({
     };
     shown.addEventListener("wheel", wheel, { passive: false });
     return () => shown.removeEventListener("wheel", wheel);
+  }, [forward]);
+
+  const again = useCallback(() => {
+    setCaption(null);
+    setFailure(null);
+    setRestarts((count) => count + 1);
   }, []);
-
-  const counted = (shown: HTMLCanvasElement) => {
-    events.current += 1;
-    shown.dataset.sent = String(events.current);
-  };
-
-  const forward = (type: LivePointer["type"], event: PointerEvent | WheelEvent | MouseEvent) => {
-    const shown = canvas.current;
-    const live = session.current;
-    if (shown === null || live === null) {
-      return;
-    }
-    pointer.current = event;
-    counted(shown);
-    const measured = size.current;
-    assert(measured !== null, "live pointer forwarded before the size is measured");
-    const bounds = shown.getBoundingClientRect();
-    const scale = bounds.width > 0 ? measured.device.width / bounds.width : 1;
-    let wheel = 0;
-    if (event instanceof WheelEvent) {
-      // Lines and pages as pixels, as most mice give them.
-      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.height : 1;
-      wheel = event.deltaY * unit;
-    }
-    live.pointer({
-      type,
-      x: (event.clientX - bounds.left) * scale,
-      y: (event.clientY - bounds.top) * scale,
-      dx: event.movementX * scale,
-      dy: event.movementY * scale,
-      buttons: event.buttons,
-      wheel,
-      shift: event.shiftKey,
-      ctrl: event.ctrlKey,
-      alt: event.altKey,
-    });
-  };
-
   const restart = failure !== null && (
-    <button
-      type="button"
-      className="link-button"
-      onClick={() => {
-        setCaption(null);
-        setFailure(null);
-        setRestarts((count) => count + 1);
-      }}
-    >
+    <button type="button" className="link-button" onClick={again}>
       Restart
     </button>
+  );
+
+  const sized = useMemo(() => ({ height }), [height]);
+  const press = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      // Without scrolling: the press is where the pointer is now.
+      event.currentTarget.focus({ preventScroll: true });
+      event.currentTarget.setPointerCapture(event.pointerId);
+      forward("down", event.nativeEvent);
+    },
+    [forward],
+  );
+  const move = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => forward("move", event.nativeEvent),
+    [forward],
+  );
+  const release = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => forward("up", event.nativeEvent),
+    [forward],
+  );
+  const leave = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      tip.current?.hide();
+      forward("leave", event.nativeEvent);
+    },
+    [forward],
+  );
+  const key = useCallback(
+    (event: KeyboardEvent<HTMLCanvasElement>) => {
+      const live = session.current;
+      if (live === null || KEPT.test(event.key)) {
+        return;
+      }
+      counted(event.currentTarget);
+      live.key({
+        key: event.key,
+        shift: event.shiftKey,
+        ctrl: event.ctrlKey,
+        alt: event.altKey,
+      });
+      // A plain key is the renderer's; a combination is the page's too.
+      if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [counted],
   );
 
   return (
@@ -374,40 +429,15 @@ export function LiveDrawing({
         <canvas
           ref={canvas}
           className="live-canvas"
-          style={{ height }}
+          style={sized}
           tabIndex={0}
           data-keys="renderer"
           aria-label={`Live drawing by ${job.source.name}`}
-          onPointerDown={(event) => {
-            // Without scrolling: the press is where the pointer is now.
-            event.currentTarget.focus({ preventScroll: true });
-            event.currentTarget.setPointerCapture(event.pointerId);
-            forward("down", event.nativeEvent);
-          }}
-          onPointerMove={(event) => forward("move", event.nativeEvent)}
-          onPointerUp={(event) => forward("up", event.nativeEvent)}
-          onPointerLeave={(event) => {
-            tip.current?.hide();
-            forward("leave", event.nativeEvent);
-          }}
-          onKeyDown={(event) => {
-            const live = session.current;
-            if (live === null || KEPT.test(event.key)) {
-              return;
-            }
-            counted(event.currentTarget);
-            live.key({
-              key: event.key,
-              shift: event.shiftKey,
-              ctrl: event.ctrlKey,
-              alt: event.altKey,
-            });
-            // A plain key is the renderer's; a combination is the page's too.
-            if (!event.ctrlKey && !event.altKey && !event.metaKey) {
-              event.preventDefault();
-              event.stopPropagation();
-            }
-          }}
+          onPointerDown={press}
+          onPointerMove={move}
+          onPointerUp={release}
+          onPointerLeave={leave}
+          onKeyDown={key}
         />
       </div>
       {waiting && (

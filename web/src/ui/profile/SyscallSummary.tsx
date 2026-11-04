@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../../assert";
 import type { Requested } from "../../data";
@@ -7,9 +15,9 @@ import { formatCount, largest } from "../../profile/paint";
 import { seriesColor, stacked } from "../../profile/syscalls";
 import type { SyscallGroup, SyscallQuery, SyscallRow, SyscallSummary } from "../../protocol";
 import { useShownScheme } from "../../theme";
-import { NAMES, prepare, shade, useRangeDrag, useWidth } from "./canvas";
+import { NAMES, NAMES_STYLE, prepare, shade, useRangeDrag, useWidth } from "./canvas";
 import { token, useAnswer, useProfile } from "./context";
-import { Bytes, Duration } from "./parts";
+import { Bytes, Duration, LookButton } from "./parts";
 import { Detail } from "./SyscallDetail";
 
 const CHART = 120;
@@ -33,6 +41,20 @@ export function Summary({
 }) {
   const { look, setLook } = useProfile();
   const group = look.sg ?? "syscall";
+  const regroup = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const chosen = event.target.value as SyscallGroup;
+      setLook((prev) =>
+        withLook(
+          // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+          withLook(prev, "sc", undefined),
+          "sg",
+          chosen === "syscall" ? undefined : chosen,
+        ),
+      );
+    },
+    [setLook],
+  );
   return (
     <div className="syscalls-summary">
       <Rate query={query} />
@@ -43,19 +65,10 @@ export function Summary({
               className="input profile-by"
               aria-label="Group"
               value={group}
-              onChange={(event) => {
-                const group = event.target.value as SyscallGroup;
-                setLook((look) =>
-                  withLook(
-                    withLook(look, "sc", undefined),
-                    "sg",
-                    group === "syscall" ? undefined : group,
-                  ),
-                );
-              }}
+              onChange={regroup}
             >
-              {GROUPS.map(({ group, label }) => (
-                <option key={group} value={group}>
+              {GROUPS.map(({ group: each, label }) => (
+                <option key={each} value={each}>
                   {label}
                 </option>
               ))}
@@ -93,32 +106,27 @@ function Table({ rows, selectable }: { rows: SyscallRow[]; selectable: boolean }
             : sort === "p99"
               ? (row.p99Ns ?? 0)
               : row.totalNs;
-    return [...rows].sort((a, b) => {
+    return rows.toSorted((a, b) => {
       const [x, y] = [key(a), key(b)];
       return typeof x === "string" ? x.localeCompare(String(y)) : Number(y) - Number(x);
     });
   }, [rows, sort]);
-  const header = (column: Sort, label: string, numeric = true) => (
-    <th
-      className={numeric ? "num" : undefined}
-      aria-sort={sort === column ? (column === "name" ? "ascending" : "descending") : undefined}
-    >
-      <button type="button" className="sort" onClick={() => setSort(column)}>
-        {label}
-      </button>
-    </th>
+  const toggle = useCallback((key: string) => setOpen((was) => (was === key ? null : key)), []);
+  const select = useCallback(
+    (key: string) => setLook((prev) => withLook(prev, "sc", prev.sc === key ? undefined : key)),
+    [setLook],
   );
   return (
     <table className="syscalls-table" data-testid="syscall-table">
       <thead>
         <tr>
-          {header("name", "name", false)}
-          {header("calls", "calls")}
-          {header("errors", "errors")}
-          {header("total", "total")}
+          <SortHeader column="name" numeric={false} sort={sort} setSort={setSort} />
+          <SortHeader column="calls" sort={sort} setSort={setSort} />
+          <SortHeader column="errors" sort={sort} setSort={setSort} />
+          <SortHeader column="total" sort={sort} setSort={setSort} />
           <th className="num">p50</th>
           <th className="num">p90</th>
-          {header("p99", "p99")}
+          <SortHeader column="p99" sort={sort} setSort={setSort} />
           <th className="num">max</th>
           <th className="num">bytes</th>
         </tr>
@@ -130,21 +138,41 @@ function Table({ rows, selectable }: { rows: SyscallRow[]; selectable: boolean }
             row={row}
             selected={selectable && look.sc === row.key}
             open={open === row.key}
-            toggle={() => setOpen(open === row.key ? null : row.key)}
-            select={
-              selectable
-                ? () =>
-                    setLook((look) =>
-                      withLook(look, "sc", look.sc === row.key ? undefined : row.key),
-                    )
-                : undefined
-            }
+            toggle={toggle}
+            select={selectable ? select : undefined}
           />
         ))}
       </tbody>
     </table>
   );
 }
+
+/** A column's head, which sorts by it. */
+function SortHeader({
+  column,
+  numeric = true,
+  sort,
+  setSort,
+}: {
+  column: Sort;
+  numeric?: boolean;
+  sort: Sort;
+  setSort: (sort: Sort) => void;
+}) {
+  const click = useCallback(() => setSort(column), [setSort, column]);
+  return (
+    <th
+      className={numeric ? "num" : undefined}
+      aria-sort={sort === column ? (column === "name" ? "ascending" : "descending") : undefined}
+    >
+      <button type="button" className="sort" onClick={click}>
+        {column}
+      </button>
+    </th>
+  );
+}
+
+const time = (value: number | null) => (value === null ? "–" : <Duration ns={value} />);
 
 function SummaryRow({
   row,
@@ -156,13 +184,31 @@ function SummaryRow({
   row: SyscallRow;
   selected: boolean;
   open: boolean;
-  toggle(): void;
-  select: (() => void) | undefined;
+  toggle: (key: string) => void;
+  select: ((key: string) => void) | undefined;
 }) {
-  const time = (value: number | null) => (value === null ? "–" : <Duration ns={value} />);
+  const pick = useCallback(() => select?.(row.key), [select, row.key]);
+  const pickName = useCallback(
+    (event: MouseEvent) => {
+      event.stopPropagation();
+      select?.(row.key);
+    },
+    [select, row.key],
+  );
+  const disclose = useCallback(
+    (event: MouseEvent) => {
+      event.stopPropagation();
+      toggle(row.key);
+    },
+    [toggle, row.key],
+  );
   return (
     <>
-      <tr className={selected ? "selected" : undefined} onClick={select} data-row={row.key}>
+      <tr
+        className={selected ? "selected" : undefined}
+        onClick={select ? pick : undefined}
+        data-row={row.key}
+      >
         <td className="mono name" title={row.name}>
           {row.errnos.length > 0 ? (
             <button
@@ -170,10 +216,7 @@ function SummaryRow({
               className="disclose"
               aria-expanded={open}
               aria-label="Errors by errno"
-              onClick={(event) => {
-                event.stopPropagation();
-                toggle();
-              }}
+              onClick={disclose}
             >
               {open ? "▾" : "▸"}
             </button>
@@ -184,10 +227,7 @@ function SummaryRow({
               type="button"
               className="link-button"
               aria-pressed={selected}
-              onClick={(event) => {
-                event.stopPropagation();
-                select();
-              }}
+              onClick={pickName}
             >
               {row.name}
             </button>
@@ -211,6 +251,7 @@ function SummaryRow({
             <tr key={errno.name} className="errno-row">
               <td className="mono error-text">{errno.name}</td>
               <td className="num">{formatCount(errno.count)}</td>
+              {/* oxlint-disable-next-line jsx-a11y/control-has-associated-label -- an empty cell that fills the row */}
               <td colSpan={7} />
             </tr>
           ))
@@ -219,10 +260,17 @@ function SummaryRow({
   );
 }
 
+const RATES = ["class", "syscall"] as const;
+
+function Swatch({ color }: { color: string }) {
+  const style = useMemo(() => ({ background: color }), [color]);
+  return <span className="swatch" style={style} />;
+}
+
 /** Calls per second over the whole profile, stacked by class or by call,
  * with failures as a red line; dragging selects a range. */
 function Rate({ query }: { query: SyscallQuery }) {
-  const { summary, look, setLook } = useProfile();
+  const { summary, look } = useProfile();
   const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
   const plot = Math.max(width - NAMES, 0);
@@ -245,22 +293,24 @@ function Rate({ query }: { query: SyscallQuery }) {
     if (!context || !data) {
       return;
     }
-    canvas.current?.setAttribute("data-scheme", scheme);
-    const tops = stacked(data.series.map((series) => series.counts));
+    if (canvas.current) {
+      canvas.current.dataset.scheme = scheme;
+    }
+    const tops = stacked(data.series.map((each) => each.counts));
     const most = largest(tops.at(-1) ?? [], 1);
     const slice = (plot * data.width) / span;
     const x = (bucket: number) => (plot * (data.start + bucket * data.width)) / span;
     const y = (count: number) => CHART - 2 - ((CHART - 6) * count) / most;
     const dark = scheme === "dark";
-    for (const [index, series] of data.series.entries()) {
+    for (const [index, each] of data.series.entries()) {
       const column = tops[index];
       assert(column !== undefined, `series ${index} has no stacked tops`);
       assert(
-        column.length === series.counts.length,
-        `series ${index} has ${column.length} tops for ${series.counts.length} counts`,
+        column.length === each.counts.length,
+        `series ${index} has ${column.length} tops for ${each.counts.length} counts`,
       );
-      context.fillStyle = seriesColor(series.name, dark);
-      for (const [bucket, count] of series.counts.entries()) {
+      context.fillStyle = seriesColor(each.name, dark);
+      for (const [bucket, count] of each.counts.entries()) {
         if (count > 0) {
           const top = column[bucket] ?? 0;
           context.fillRect(x(bucket), y(top), Math.max(slice, 1), y(top - count) - y(top));
@@ -285,27 +335,28 @@ function Rate({ query }: { query: SyscallQuery }) {
   }, [answer.data, plot, span, range, shown, scheme]);
 
   const dark = scheme === "dark";
+  const plotStyle = useMemo(() => ({ width: plot }), [plot]);
+  const canvasStyle = useMemo(() => ({ width: plot, height: CHART }), [plot]);
   return (
     <div className="syscalls-rate" ref={box} data-testid="syscall-rate">
-      <div className="syscalls-legend" style={{ width: NAMES }}>
+      <div className="syscalls-legend" style={NAMES_STYLE}>
         <div className="segmented">
-          {(["class", "syscall"] as const).map((each) => (
-            <button
+          {RATES.map((each) => (
+            <LookButton
               key={each}
-              type="button"
-              aria-pressed={by === each}
-              onClick={() =>
-                setLook((look) => withLook(look, "sr", each === "class" ? undefined : "syscall"))
-              }
+              field="sr"
+              value={each === "class" ? undefined : "syscall"}
+              pressed={by === each}
+              replace
             >
               {each === "class" ? "Classes" : "Calls"}
-            </button>
+            </LookButton>
           ))}
         </div>
-        {series.map((series) => (
-          <span key={series.name} className="legend-item">
-            <span className="swatch" style={{ background: seriesColor(series.name, dark) }} />
-            {by === "class" && series.name !== "other" ? `%${series.name}` : series.name}
+        {series.map((each) => (
+          <span key={each.name} className="legend-item">
+            <Swatch color={seriesColor(each.name, dark)} />
+            {by === "class" && each.name !== "other" ? `%${each.name}` : each.name}
           </span>
         ))}
         {answer.data?.errors.some((count) => count > 0) ? (
@@ -313,13 +364,14 @@ function Rate({ query }: { query: SyscallQuery }) {
         ) : null}
       </div>
       {answer.error ? (
-        <div className="empty error" style={{ width: plot }}>
+        <div className="empty error" style={plotStyle}>
           {answer.error.message}
         </div>
       ) : (
         <canvas
           ref={canvas}
-          style={{ width: plot, height: CHART }}
+          style={canvasStyle}
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
           role="img"
           aria-label="Calls over time"
           {...handlers}

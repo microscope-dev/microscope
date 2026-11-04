@@ -58,7 +58,7 @@ export function best<T>(
       const found = score(text(item), query);
       return found ? [{ item, rank: found.rank, length: text(item).length }] : [];
     })
-    .sort((a, b) => a.rank - b.rank || a.length - b.length)
+    .toSorted((a, b) => a.rank - b.rank || a.length - b.length)
     .slice(0, limit)
     .map((scored) => scored.item);
 }

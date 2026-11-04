@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { assert } from "../assert";
 import { unreached } from "../follow";
@@ -25,28 +25,28 @@ export function Stack() {
     runs: new Set(),
   });
   const runs = opened.trace === trace ? opened.runs : NONE_OPEN;
-  const toggle = (first: number) => {
-    const next = new Set(runs);
-    if (!next.delete(first)) {
-      next.add(first);
-    }
-    setOpened({ trace, runs: next });
-  };
+  const toggle = useCallback(
+    (first: number) => {
+      const next = new Set(runs);
+      if (!next.delete(first)) {
+        next.add(first);
+      }
+      setOpened({ trace, runs: next });
+    },
+    [runs, trace],
+  );
+  const choose = useCallback(
+    (frame: number) => {
+      assert(at !== null, `frame ${frame} chosen with no stop`);
+      go({ ...at, frame });
+    },
+    [at, go],
+  );
 
   let body: React.ReactNode;
   if (!at) {
     body = <div className="empty">The stack appears when the program stops.</div>;
-  } else if (!trace) {
-    body = (
-      <div className="empty">
-        {stale !== "passed"
-          ? "Reading the stack…"
-          : unreached(state, at.stop)
-            ? `This session has not reached stop #${at.stop}.`
-            : `Stop #${at.stop} has passed; its stack is gone with it.`}
-      </div>
-    );
-  } else {
+  } else if (trace) {
     body = (
       <ul className="rows" data-testid="stack">
         {stackRows(trace, at.frame, runs).map((row) => {
@@ -54,20 +54,13 @@ export function Stack() {
             const { first, count } = row.run;
             assert(count > 0, `fold at frame ${first} holds ${count} frames`);
             return (
-              <li key={`fold ${first}`}>
-                <button
-                  type="button"
-                  className="row button-row fold"
-                  aria-expanded={row.open}
-                  title={`Frames ${first}–${first + count - 1}: the runtime's own`}
-                  onClick={() => toggle(first)}
-                >
-                  <span className="dim index">{row.open ? "▾" : "▸"}</span>
-                  <span className="dim">
-                    {count} frames of the runtime{row.open ? "" : " folded"}
-                  </span>
-                </button>
-              </li>
+              <FoldRow
+                key={`fold ${first}`}
+                first={first}
+                count={count}
+                open={row.open}
+                onToggle={toggle}
+              />
             );
           }
           const { frame } = row;
@@ -77,27 +70,12 @@ export function Stack() {
                 {frame.unfollowed}
               </li>
             ),
-            <li key={frame.index}>
-              <button
-                type="button"
-                className={`row button-row ${frame.index === at.frame ? "selected" : ""}`}
-                aria-current={frame.index === at.frame ? "true" : undefined}
-                title={frame.address ? `${frame.name} at ${frame.address}` : frame.name}
-                onClick={() => go({ ...at, frame: frame.index })}
-              >
-                <span className="dim index">{frame.index}</span>
-                <span className="mark" title={frame.language?.name}>
-                  {frame.language?.mark}
-                </span>
-                <span className={frame.source ? "fn" : "fn subtle"}>
-                  {frame.name}
-                  {frame.kind === "inline" && <span className="dim"> inlined</span>}
-                  {frame.kind === "tailCall" && <span className="dim"> tail call</span>}
-                  {frame.kind === "async" && <span className="dim"> async</span>}
-                </span>
-                <span className="end">{where(frame)}</span>
-              </button>
-            </li>,
+            <FrameRow
+              key={frame.index}
+              frame={frame}
+              selected={frame.index === at.frame}
+              onChoose={choose}
+            />,
           ];
         })}
         {trace.incomplete && (
@@ -107,8 +85,83 @@ export function Stack() {
         )}
       </ul>
     );
+  } else {
+    body = (
+      <div className="empty">
+        {stale === "passed"
+          ? unreached(state, at.stop)
+            ? `This session has not reached stop #${at.stop}.`
+            : `Stop #${at.stop} has passed; its stack is gone with it.`
+          : "Reading the stack…"}
+      </div>
+    );
   }
   return <div className={`pane-body ${stale && stale !== "passed" ? "stale" : ""}`}>{body}</div>;
+}
+
+function FoldRow({
+  first,
+  count,
+  open,
+  onToggle,
+}: {
+  first: number;
+  count: number;
+  open: boolean;
+  onToggle: (first: number) => void;
+}) {
+  const onClick = useCallback(() => onToggle(first), [onToggle, first]);
+  return (
+    <li>
+      <button
+        type="button"
+        className="row button-row fold"
+        aria-expanded={open}
+        title={`Frames ${first}–${first + count - 1}: the runtime's own`}
+        onClick={onClick}
+      >
+        <span className="dim index">{open ? "▾" : "▸"}</span>
+        <span className="dim">
+          {count} frames of the runtime{open ? "" : " folded"}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function FrameRow({
+  frame,
+  selected,
+  onChoose,
+}: {
+  frame: Frame;
+  selected: boolean;
+  onChoose: (frame: number) => void;
+}) {
+  const onClick = useCallback(() => onChoose(frame.index), [onChoose, frame.index]);
+  return (
+    <li>
+      <button
+        type="button"
+        className={`row button-row ${selected ? "selected" : ""}`}
+        aria-current={selected ? "true" : undefined}
+        title={frame.address ? `${frame.name} at ${frame.address}` : frame.name}
+        onClick={onClick}
+      >
+        <span className="dim index">{frame.index}</span>
+        <span className="mark" title={frame.language?.name}>
+          {frame.language?.mark}
+        </span>
+        <span className={frame.source ? "fn" : "fn subtle"}>
+          {frame.name}
+          {frame.kind === "inline" && <span className="dim"> inlined</span>}
+          {frame.kind === "tailCall" && <span className="dim"> tail call</span>}
+          {frame.kind === "async" && <span className="dim"> async</span>}
+        </span>
+        <span className="end">{where(frame)}</span>
+      </button>
+    </li>
+  );
 }
 
 /** Whose stack the tab shows: the task's, or the thread's. */

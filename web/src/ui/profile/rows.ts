@@ -5,6 +5,8 @@
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { useId, useState } from "react";
 
+export type ActiveRow = ReturnType<typeof useActiveRow>;
+
 export function useActiveRow(count: number, virtual: Virtualizer<HTMLDivElement, Element>) {
   const id = useId();
   const [chosen, setChosen] = useState(0);

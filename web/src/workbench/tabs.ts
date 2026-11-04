@@ -29,7 +29,7 @@ export function closeTab(kinds: Kinds<string>, pane: PaneId): void {
   if (kind.close) {
     kind.close(pane, found);
   } else {
-    change((layout) => close(layout, pane));
+    change((before) => close(before, pane));
   }
   requestAnimationFrame(() => {
     if (document.activeElement !== document.body) {
@@ -38,7 +38,7 @@ export function closeTab(kinds: Kinds<string>, pane: PaneId): void {
     const current = workbench.getState().layout;
     const next = groups(current).find((candidate) => candidate.id === current.focused)?.active;
     if (next) {
-      document.getElementById(tabId(next))?.focus();
+      document.querySelector<HTMLElement>(`#${tabId(next)}`)?.focus();
     }
   });
 }
@@ -60,8 +60,8 @@ export function reopenTab(kinds: Kinds<string>): boolean {
     const opened = open(before, entry.pane, into);
     // A tab index counts the moving tab where it is now.
     const at = groupOf(opened.layout, opened.pane)?.tabs.indexOf(opened.pane) ?? 0;
-    const index = at < entry.index ? entry.index + 1 : entry.index;
-    return move(opened.layout, opened.pane, { type: "tab", group: into, index });
+    const slot = at < entry.index ? entry.index + 1 : entry.index;
+    return move(opened.layout, opened.pane, { type: "tab", group: into, index: slot });
   });
   kinds.get(entry.pane.kind).chosen?.(entry.pane);
   return true;

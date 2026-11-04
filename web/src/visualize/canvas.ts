@@ -116,12 +116,12 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
 
   /** The topmost shape under a pointer event, and where on the canvas. */
   const find = (event: MouseEvent): { hit: Hit; x: number; y: number } | null => {
-    const bounds = canvas.getBoundingClientRect();
-    if (bounds.width === 0 || bounds.height === 0) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
       return null;
     }
-    const x = ((event.clientX - bounds.left) * canvas.width) / bounds.width;
-    const y = ((event.clientY - bounds.top) * canvas.height) / bounds.height;
+    const x = ((event.clientX - rect.left) * canvas.width) / rect.width;
+    const y = ((event.clientY - rect.top) * canvas.height) / rect.height;
     try {
       for (let index = hits.length - 1; index >= 0; index--) {
         const hit = hits[index] as Hit;
@@ -159,10 +159,10 @@ export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HT
       const column = pixelIndex(local.x - x, width, columns);
       const row = pixelIndex(local.y - y, height, rows);
       tip.show(pixelName(hit.title, column, row), event);
-    } else if (hit.title !== undefined) {
-      tip.show(hit.title, event);
-    } else {
+    } else if (hit.title === undefined) {
       tip.hide();
+    } else {
+      tip.show(hit.title, event);
     }
   });
   canvas.addEventListener("mouseleave", () => {
@@ -390,7 +390,7 @@ function paint(
       path,
       matrix,
       fill: fill !== null,
-      stroke: stroked !== null ? own.strokeWidth : 0,
+      stroke: stroked === null ? 0 : own.strokeWidth,
       box,
       title: own.title,
       select: own.select,

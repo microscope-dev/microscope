@@ -28,8 +28,8 @@ export function remote(): Remote | null {
   return standalone ? read<Remote | null>(KEY, null, isRemote) : null;
 }
 
-export function setRemote(remote: Remote | null): void {
-  write(KEY, remote);
+export function setRemote(chosen: Remote | null): void {
+  write(KEY, chosen);
 }
 
 /** Reads a link `microscope web` printed or Share made, such as

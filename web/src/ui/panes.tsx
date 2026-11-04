@@ -269,7 +269,6 @@ export function showOrg(id: number, name: string): void {
 
 /** Today's arrangement: nothing moves for someone who knows the page. */
 export function debugLayout(): Layout {
-  const one = (id: Parameters<typeof single>[0]): Pane => single(id);
   return build({
     axis: "row",
     children: [
@@ -278,9 +277,9 @@ export function debugLayout(): Layout {
         {
           axis: "column",
           children: [
-            [0.3, [one(KIND.threads), one(KIND.tasks), one(KIND.processes)]],
-            [0.4, [one(KIND.stack), one(KIND.stops)]],
-            [0.3, [one(KIND.breakpoints)]],
+            [0.3, [single(KIND.threads), single(KIND.tasks), single(KIND.processes)]],
+            [0.4, [single(KIND.stack), single(KIND.stops)]],
+            [0.3, [single(KIND.breakpoints)]],
           ],
         },
       ],
@@ -289,8 +288,24 @@ export function debugLayout(): Layout {
         {
           axis: "column",
           children: [
-            [0.72, [sourcePane(""), one(KIND.disassembly), one(KIND.memory), one(KIND.drawings)]],
-            [0.28, [one(KIND.output), one(KIND.console), one(KIND.signals), one(KIND.modules)]],
+            [
+              0.72,
+              [
+                sourcePane(""),
+                single(KIND.disassembly),
+                single(KIND.memory),
+                single(KIND.drawings),
+              ],
+            ],
+            [
+              0.28,
+              [
+                single(KIND.output),
+                single(KIND.console),
+                single(KIND.signals),
+                single(KIND.modules),
+              ],
+            ],
           ],
         },
       ],
@@ -299,9 +314,9 @@ export function debugLayout(): Layout {
         {
           axis: "column",
           children: [
-            [0.2, [one(KIND.watch)]],
-            [0.45, [one(KIND.variables)]],
-            [0.35, [one(KIND.registers)]],
+            [0.2, [single(KIND.watch)]],
+            [0.45, [single(KIND.variables)]],
+            [0.35, [single(KIND.registers)]],
           ],
         },
       ],
@@ -318,19 +333,18 @@ export function applyLayout(layout: Layout): void {
 /** Where a page with nothing open starts. A page served on its own starts by
  * connecting; one `microscope web` serves, by choosing what to debug. */
 export function welcomeLayout(): Layout {
-  const one = (id: KindId): Pane => single(id);
   return standalone
     ? build({
         axis: "row",
         children: [
-          [0.6, [one(KIND.welcome), one(KIND.keys)]],
+          [0.6, [single(KIND.welcome), single(KIND.keys)]],
           [
             0.4,
             {
               axis: "column",
               children: [
-                [0.5, [one(KIND.connect), one(KIND.explorer)]],
-                [0.5, [one(KIND.account), one(KIND.settings)]],
+                [0.5, [single(KIND.connect), single(KIND.explorer)]],
+                [0.5, [single(KIND.account), single(KIND.settings)]],
               ],
             },
           ],
@@ -342,14 +356,14 @@ export function welcomeLayout(): Layout {
           [
             0.68,
             [
-              one(KIND.welcome),
-              one(KIND.launch),
-              one(KIND.attach),
-              one(KIND.core),
-              one(KIND.record),
+              single(KIND.welcome),
+              single(KIND.launch),
+              single(KIND.attach),
+              single(KIND.core),
+              single(KIND.record),
             ],
           ],
-          [0.32, [one(KIND.explorer), one(KIND.keys), one(KIND.settings)]],
+          [0.32, [single(KIND.explorer), single(KIND.keys), single(KIND.settings)]],
         ],
       });
 }

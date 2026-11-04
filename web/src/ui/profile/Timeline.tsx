@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { rangeOf, withLook } from "../../profile/look";
 import { formatCount, formatDuration, largest } from "../../profile/paint";
 import type { ProfileLane, ProfileSummary, ProfileThread } from "../../protocol";
 import { useShownScheme } from "../../theme";
-import { NAMES, prepare, shade, useRangeDrag, useWidth } from "./canvas";
+import { NAMES, NAMES_STYLE, prepare, shade, useRangeDrag, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
 
 /** One lane, in CSS pixels. */
@@ -25,8 +25,8 @@ interface Row {
 function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
   const waits = look.src === "waits";
   if (!waits && look.lanes !== "tasks") {
-    return [...summary.threads]
-      .sort((a, b) => b.weight - a.weight)
+    return summary.threads
+      .toSorted((a, b) => b.weight - a.weight)
       .map((thread) => ({
         id: String(thread.row),
         lane: thread.row,
@@ -38,7 +38,7 @@ function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
   const weight = (task: ProfileSummary["tasks"][number]) => (waits ? task.waited : task.weight);
   const tasks: Row[] = summary.tasks
     .filter((task) => weight(task) > 0)
-    .sort((a, b) => weight(b) - weight(a))
+    .toSorted((a, b) => weight(b) - weight(a))
     .slice(0, MOST_TASK_LANES)
     .map((task) => ({
       id: String(task.row),
@@ -104,7 +104,7 @@ export function Timeline() {
     }
     const bar = token("--accent");
     const [start, end] = answer.data?.range ?? [0, span];
-    const width = (plot * (end - start)) / span / Math.max(1, buckets);
+    const step = (plot * (end - start)) / span / Math.max(1, buckets);
     const slice = Math.max(1, (end - start) / Math.max(1, buckets));
     const bands: [keyof Pick<ProfileLane, "blocked" | "preempted">, string][] = [
       ["blocked", token("--line-strong")],
@@ -118,8 +118,8 @@ export function Timeline() {
         for (const [bucket, off] of (lane?.[kind] ?? []).entries()) {
           if (off > 0) {
             context.globalAlpha = dim * Math.min(1, off / slice);
-            const x = (plot * start) / span + bucket * width;
-            context.fillRect(x, index * LANE + 1, Math.max(width, 1), LANE - 2);
+            const x = (plot * start) / span + bucket * step;
+            context.fillRect(x, index * LANE + 1, Math.max(step, 1), LANE - 2);
           }
         }
       }
@@ -129,8 +129,8 @@ export function Timeline() {
       for (const [bucket, weight] of weights.entries()) {
         if (weight > 0) {
           const h = Math.max(1, ((LANE - 3) * weight) / most);
-          const x = (plot * start) / span + bucket * width;
-          context.fillRect(x, index * LANE + LANE - 1 - h, Math.max(width, 1), h);
+          const x = (plot * start) / span + bucket * step;
+          context.fillRect(x, index * LANE + LANE - 1 - h, Math.max(step, 1), h);
         }
       }
     }
@@ -169,46 +169,72 @@ export function Timeline() {
     scheme,
   ]);
 
-  const toggle = (id: string) =>
-    setLook((look) => {
-      const key = byTask ? "tk" : "th";
-      const ids = new Set(look[key] ?? []);
-      if (!ids.delete(id)) {
-        ids.add(id);
-      }
-      return withLook(look, key, ids.size > 0 ? [...ids].sort() : undefined);
-    });
+  const toggle = useCallback(
+    (id: string) =>
+      setLook((prev) => {
+        const key = byTask ? "tk" : "th";
+        const ids = new Set(prev[key] ?? []);
+        if (!ids.delete(id)) {
+          ids.add(id);
+        }
+        return withLook(prev, key, ids.size > 0 ? [...ids].toSorted() : undefined);
+      }),
+    [setLook, byTask],
+  );
+  const plotStyle = useMemo(() => ({ width: plot }), [plot]);
+  const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
   return (
     <div className="profile-timeline" ref={box} data-testid="timeline">
-      <div className="lane-names" style={{ width: NAMES }}>
+      <div className="lane-names" style={NAMES_STYLE}>
         {lanes.map((row) => (
-          <button
+          <LaneName
             key={row.id}
-            type="button"
-            className={`lane-name ${selected?.has(row.id) ? "selected" : ""}`}
-            aria-pressed={selected?.has(row.id) ?? false}
-            title={row.title}
-            onClick={() => toggle(row.id)}
-          >
-            {row.label} {row.dim ? <span className="dim">{row.dim}</span> : null}
-          </button>
+            row={row}
+            selected={selected?.has(row.id) ?? false}
+            toggle={toggle}
+          />
         ))}
       </div>
       {answer.error ? (
-        <div className="empty error" style={{ width: plot }}>
+        <div className="empty error" style={plotStyle}>
           {answer.error.message}
         </div>
       ) : (
         <canvas
           ref={canvas}
           className="lanes"
-          style={{ width: plot, height }}
+          style={canvasStyle}
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
           role="img"
           aria-label={`Samples and time off CPU over ${formatDuration(span)}`}
           {...handlers}
         />
       )}
     </div>
+  );
+}
+
+/** A lane's name, which toggles its thread or task in the selection. */
+function LaneName({
+  row,
+  selected,
+  toggle,
+}: {
+  row: Row;
+  selected: boolean;
+  toggle: (id: string) => void;
+}) {
+  const click = useCallback(() => toggle(row.id), [toggle, row.id]);
+  return (
+    <button
+      type="button"
+      className={`lane-name ${selected ? "selected" : ""}`}
+      aria-pressed={selected}
+      title={row.title}
+      onClick={click}
+    >
+      {row.label} {row.dim ? <span className="dim">{row.dim}</span> : null}
+    </button>
   );
 }
 

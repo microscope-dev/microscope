@@ -28,9 +28,9 @@ export function diffFill(share: number, baseShare: number, dark: boolean): strin
   if (strength < 0.02) {
     return dark ? "hsl(0, 0%, 30%)" : "hsl(0, 0%, 84%)";
   }
-  const hue = change > 0 ? 0 : 215;
+  const angle = change > 0 ? 0 : 215;
   const lightness = dark ? 30 - 10 * strength : 86 - 36 * strength;
-  return `hsl(${hue}, ${Math.round(40 + 40 * strength)}%, ${lightness.toFixed(1)}%)`;
+  return `hsl(${angle}, ${Math.round(40 + 40 * strength)}%, ${lightness.toFixed(1)}%)`;
 }
 
 /** How a share of the samples changed from the base's, in percentage
@@ -179,7 +179,7 @@ export function formatInstant(
       [1e6, "ms"],
       [1e3, "µs"],
     ] as const
-  ).find(([size]) => Math.abs(scale) >= size) ?? [1, "ns"];
+  ).find(([limit]) => Math.abs(scale) >= limit) ?? [1, "ns"];
   const decimals = Math.min(
     Math.max(Math.ceil(Math.log10(size / Math.max(resolution, 1)) - 1e-9), 0),
     9,
@@ -224,8 +224,8 @@ export function largest(values: Iterable<number>, floor: number): number {
 /** What a frame's color follows: its module, or failing that the first
  * part of its name, such as a Rust crate or a Go package. */
 export function family(key: ProfileKey): string {
-  const name = key.name.replace(/^\[task\] /, "").replace(/^</, "");
-  const scope = /^([A-Za-z_][\w]*)(::|\.)/.exec(name);
+  const name = key.name.replace(/^\[task\] /u, "").replace(/^</u, "");
+  const scope = /^([A-Za-z_][\w]*)(::|\.)/u.exec(name);
   return scope?.[1] ?? key.module ?? name;
 }
 
@@ -234,6 +234,7 @@ export function hue(text: string): number {
   // FNV-1a, which spreads similar names apart.
   let hash = 0x811c9dc5;
   for (let at = 0; at < text.length; at += 1) {
+    // oxlint-disable-next-line unicorn/prefer-code-point -- the hash is over UTF-16 code units; code points would change every hue
     hash ^= text.charCodeAt(at);
     hash = Math.imul(hash, 0x01000193);
   }

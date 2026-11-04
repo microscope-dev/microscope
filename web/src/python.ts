@@ -26,17 +26,17 @@ export function pythonKeywordHolds(word: string, before: string, rest: string): 
     return false;
   }
   if (word === "type") {
-    return /^[ \t]+[A-Za-z_]\w*\s*(?:\[|=(?!=))/.test(rest);
+    return /^[ \t]+[A-Za-z_]\w*\s*(?:\[|=(?!=))/u.test(rest);
   }
-  if (/^\s*[=:.,)]/.test(rest)) {
+  if (/^\s*[=:.,)]/u.test(rest)) {
     return false;
   }
   // The statement's colon ends its line, before any comment.
-  const code = rest.match(/^(?:[^#'"]|'[^']*'|"[^"]*")*/)?.[0] ?? rest;
+  const code = rest.match(/^(?:[^#'"]|'[^']*'|"[^"]*")*/u)?.[0] ?? rest;
   return code.trimEnd().endsWith(":");
 }
 
 /** Whether `path` names Python source. */
 export function isPythonPath(path: string | undefined): boolean {
-  return /\.pyi?$/i.test(path ?? "");
+  return /\.pyi?$/iu.test(path ?? "");
 }

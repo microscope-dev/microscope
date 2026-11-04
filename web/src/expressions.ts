@@ -5,7 +5,7 @@
 import { assert } from "./assert";
 import { isPythonPath, PYTHON_KEYWORDS, pythonKeywordHolds } from "./python";
 
-const NAME = /[A-Za-z_][A-Za-z0-9_]*/y;
+const NAME = /[A-Za-z_][A-Za-z0-9_]*/uy;
 
 const KEYWORDS = new Set(
   (
@@ -29,7 +29,7 @@ export interface Found {
 }
 
 const isNameCharacter = (character: string | undefined) =>
-  character !== undefined && /[A-Za-z0-9_]/.test(character);
+  character !== undefined && /[A-Za-z0-9_]/u.test(character);
 
 /** Whether `word`, at `from` to `to` in `line` of the source at `path`, is
  * a keyword there. */
@@ -58,7 +58,7 @@ export function expressionAt(line: string, column: number, path?: string): Found
     to += 1;
   }
   const word = line.slice(from, to);
-  if (/^\d/.test(word) || isKeyword(word, line, from, to, path)) {
+  if (/^\d/u.test(word) || isKeyword(word, line, from, to, path)) {
     return null;
   }
   // The members before it: `a.b->` then the name.
@@ -100,7 +100,7 @@ function code(line: string, python: boolean): string {
     }
     if (character === '"' || character === "'") {
       if (python) {
-        result = result.replace(/(^|[^A-Za-z0-9_])(?:rb|br|fr|rf|tr|rt|[rubft])$/i, "$1");
+        result = result.replace(/(^|[^A-Za-z0-9_])(?:rb|br|fr|rf|tr|rt|[rubft])$/iu, "$1");
       }
       let end = index + 1;
       while (end < line.length && line[end] !== character) {
@@ -149,9 +149,9 @@ export function expressionsIn(line: string, path?: string): string[] {
       chain += link + member[0];
       end = NAME.lastIndex;
     }
-    const call = /^\s*\(/.test(text.slice(end));
+    const call = /^\s*\(/u.test(text.slice(end));
     const word = match[0];
-    const constant = word === chain && /^[A-Z][A-Z0-9_]*$/.test(word);
+    const constant = word === chain && /^[A-Z][A-Z0-9_]*$/u.test(word);
     if (
       !call &&
       !constant &&

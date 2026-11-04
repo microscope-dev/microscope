@@ -6,6 +6,8 @@
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
+  type UIEvent,
+  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -80,7 +82,9 @@ export function useCards(): Card[] {
   // draws the stop shown. Replacing them would forget what they drew.
   const last = useRef<Card[]>([]);
   return useMemo(() => {
+    // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
     if ((why !== null || scopes.data === undefined) && last.current.length > 0) {
+      // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
       return last.current;
     }
     const cards: Card[] = [];
@@ -124,6 +128,7 @@ export function useCards(): Card[] {
       });
     });
     assert(seen.size === cards.length, `${cards.length} cards for ${seen.size} keys`);
+    // oxlint-disable-next-line react/refs -- the cards keep what they drew while values are hidden
     last.current = cards;
     return cards;
   }, [scopes.data, pins, why]);
@@ -256,7 +261,9 @@ function shownFor(job: Job, outcome: Outcome): Shown {
 
 /** A value's path with a part of it, as `select` names one. */
 function partPath(path: string, select: string): string {
-  const whole = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/.test(path) ? path : `(${path})`;
+  const whole = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\d+\])*$/u.test(path)
+    ? path
+    : `(${path})`;
   return select.startsWith("[") ? `${whole}${select}` : `${whole}.${select}`;
 }
 
@@ -283,10 +290,13 @@ function DrawingCard({ card }: { card: Card }) {
   const offered = card.offered ?? evaluated.data?.drawings ?? null;
   const tabKey = `${focus.session}~${card.path}`;
   const [tab, setTabState] = useState<string | null>(() => tabs.get(tabKey) ?? null);
-  const setTab = (name: string) => {
-    tabs.set(tabKey, name);
-    setTabState(name);
-  };
+  const setTab = useCallback(
+    (name: string) => {
+      tabs.set(tabKey, name);
+      setTabState(name);
+    },
+    [tabKey],
+  );
   const renderer =
     card.chosen ?? (tab !== null && offered?.includes(tab) ? tab : (offered?.[0] ?? null));
 
@@ -330,7 +340,6 @@ function DrawingCard({ card }: { card: Card }) {
   } else if (drawingData && code.error) {
     problem = `Cannot load renderer ${drawingData.renderer.name}: ${code.error.message}`;
   }
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new theme draws again, in its colors
   useEffect(() => {
     if (stop === null) {
       return;
@@ -364,6 +373,7 @@ function DrawingCard({ card }: { card: Card }) {
       inputs,
       paths: inputPaths(drawingData.inputs),
     });
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- a new theme draws again, in its colors
   }, [stop, drawingData, source, problem, theme, card.path, focus.session, draw, fail]);
 
   // The page builds the picture's elements itself.
@@ -382,35 +392,38 @@ function DrawingCard({ card }: { card: Card }) {
 
   const dim = shown !== null && (stale !== null || shown.stop !== at?.stop);
   const origin = shown && "renderer" in shown ? shown.renderer.origin : null;
-  const remove =
-    card.pinned === null
-      ? null
-      : () =>
-          look((current) => {
-            const d = (current.d ?? []).filter((_, index) => index !== card.pinned);
-            const { d: _d, ...rest } = current;
-            return d.length > 0 ? { ...rest, d } : rest;
-          });
+  const remove = useMemo(
+    () =>
+      card.pinned === null
+        ? null
+        : () =>
+            look((current) => {
+              const d = (current.d ?? []).filter((_, index) => index !== card.pinned);
+              const { d: _d, ...rest } = current;
+              return d.length > 0 ? { ...rest, d } : rest;
+            }),
+    [card.pinned, look],
+  );
+  const toggleTable = useCallback(() => setTable(!table), [table]);
+  const copy = useCallback(() => {
+    if (rows) {
+      void copyCsv(rows);
+    }
+  }, [rows]);
+  const deselect = useCallback(() => setSelected(null), []);
 
   return (
     <section
       ref={holder}
       className={`drawing ${dim ? "stale" : ""}`}
-      aria-label={`Drawing of ${card.path}${card.chosen !== null ? ` as ${card.chosen}` : ""}`}
+      aria-label={`Drawing of ${card.path}${card.chosen === null ? "" : ` as ${card.chosen}`}`}
     >
       <header className="drawing-head">
         <span className="drawing-path">{card.path}</span>
         {offered && offered.length > 1 && card.chosen === null ? (
           <fieldset className="segmented small" aria-label={`Drawings of ${card.path}`}>
             {offered.map((name) => (
-              <button
-                key={name}
-                type="button"
-                aria-pressed={name === renderer}
-                onClick={() => setTab(name)}
-              >
-                {name}
-              </button>
+              <RendererTab key={name} name={name} pressed={name === renderer} choose={setTab} />
             ))}
           </fieldset>
         ) : (
@@ -425,11 +438,11 @@ function DrawingCard({ card }: { card: Card }) {
                 type="button"
                 className="link-button"
                 aria-pressed={table}
-                onClick={() => setTable(!table)}
+                onClick={toggleTable}
               >
                 Table
               </button>
-              <button type="button" className="link-button" onClick={() => void copyCsv(rows)}>
+              <button type="button" className="link-button" onClick={copy}>
                 Copy CSV
               </button>
             </>
@@ -472,13 +485,26 @@ function DrawingCard({ card }: { card: Card }) {
       {!shown && <div className="drawing-wait muted">{live ? "Drawing…" : hidden(focus)}</div>}
       {table && rows && <InputTable rows={rows} label={`Inputs of ${card.path}`} />}
       {selected !== null && live && (
-        <Selected
-          at={live}
-          path={partPath(card.path, selected)}
-          onClose={() => setSelected(null)}
-        />
+        <Selected at={live} path={partPath(card.path, selected)} onClose={deselect} />
       )}
     </section>
+  );
+}
+
+function RendererTab({
+  name,
+  pressed,
+  choose,
+}: {
+  name: string;
+  pressed: boolean;
+  choose: (name: string) => void;
+}) {
+  const click = useCallback(() => choose(name), [choose, name]);
+  return (
+    <button type="button" aria-pressed={pressed} onClick={click}>
+      {name}
+    </button>
   );
 }
 
@@ -495,7 +521,7 @@ function useDrawQueue(
   // What `shown` holds, whose images are freed once it is replaced.
   const current = useRef<Shown | null>(null);
   const wanted = useRef<Job | null>(null);
-  const drawing = useRef(false);
+  const busy = useRef(false);
   const frame = useRef<number | null>(null);
   const latest = useRef(-1);
   const mounted = useRef(true);
@@ -516,7 +542,7 @@ function useDrawQueue(
       }
     };
     const pump = () => {
-      if (drawing.current || frame.current !== null || wanted.current === null) {
+      if (busy.current || frame.current !== null || wanted.current === null) {
         return;
       }
       frame.current = requestAnimationFrame(() => {
@@ -526,8 +552,8 @@ function useDrawQueue(
         if (job === null || !mounted.current) {
           return;
         }
-        assert(!drawing.current, `card ${id} starts a draw with one running`);
-        drawing.current = true;
+        assert(!busy.current, `card ${id} starts a draw with one running`);
+        busy.current = true;
         started.current = job;
         startedWidth.current = offeredWidth(holder.current, body.current);
         const context = contextFor(
@@ -535,14 +561,14 @@ function useDrawQueue(
           job.paths,
           startedWidth.current,
         );
-        void sandbox()
-          .draw(id, job.source, job.inputs, context)
-          .then((outcome) => {
-            assert(drawing.current, `card ${id} finished a draw it did not start`);
-            drawing.current = false;
-            show(shownFor(job, outcome));
-            pump();
-          });
+        const finish = async () => {
+          const outcome = await sandbox().draw(id, job.source, job.inputs, context);
+          assert(busy.current, `card ${id} finished a draw it did not start`);
+          busy.current = false;
+          show(shownFor(job, outcome));
+          pump();
+        };
+        void finish();
       });
     };
     return {
@@ -556,6 +582,7 @@ function useDrawQueue(
         show({ stop, problem, inputs: null });
       },
     };
+    // oxlint-disable-next-line react/preserve-manual-memoization -- the elements are read when a draw starts, not when the queue is made
   }, [id, holder, body]);
 
   useEffect(() => {
@@ -630,6 +657,8 @@ const SHOWN_ROWS = 14;
  * browser lays out: beyond it, scrolling moves through the rows in
  * proportion. */
 const MOST_HEIGHT = 4_000_000;
+const TABLE_STYLE = { maxHeight: ROW * (SHOWN_ROWS + 1) };
+const ROW_STYLE = { height: ROW };
 
 /** Every input value, a path and its value per row, of which only the rows
  * scrolled to are in the page. */
@@ -653,12 +682,14 @@ function InputTable({ rows, label }: { rows: InputRows; label: string }) {
   }
   const before = rows.count * ROW <= MOST_HEIGHT ? first * ROW : top;
   const after = Math.max(0, height - before - shown.length * ROW);
+  const beforeStyle = useMemo(() => ({ height: before }), [before]);
+  const afterStyle = useMemo(() => ({ height: after }), [after]);
+  const scroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => setScrolled(event.currentTarget.scrollTop),
+    [],
+  );
   return (
-    <div
-      className="drawing-table"
-      style={{ maxHeight: ROW * (SHOWN_ROWS + 1) }}
-      onScroll={(event) => setScrolled(event.currentTarget.scrollTop)}
-    >
+    <div className="drawing-table" style={TABLE_STYLE} onScroll={scroll}>
       <table aria-label={label} aria-rowcount={rows.count + 1}>
         <thead>
           <tr>
@@ -667,17 +698,17 @@ function InputTable({ rows, label }: { rows: InputRows; label: string }) {
           </tr>
         </thead>
         <tbody>
-          {before > 0 && <tr style={{ height: before }} />}
+          {before > 0 && <tr style={beforeStyle} />}
           {shown.map((index) => {
             const [path, value] = rows.row(index);
             return (
-              <tr key={index} aria-rowindex={index + 2} style={{ height: ROW }}>
+              <tr key={index} aria-rowindex={index + 2} style={ROW_STYLE}>
                 <td>{path}</td>
                 <td>{value}</td>
               </tr>
             );
           })}
-          {after > 0 && <tr style={{ height: after }} />}
+          {after > 0 && <tr style={afterStyle} />}
         </tbody>
       </table>
     </div>
@@ -701,39 +732,42 @@ export function Selected({ at, path, onClose }: { at: At; path: string; onClose(
     opener.current = document.activeElement;
     dialog.current?.focus();
   }, []);
-  const close = () => {
+  const close = useCallback(() => {
     const back = opener.current;
     onClose();
     if ((back instanceof HTMLElement || back instanceof SVGElement) && back.isConnected) {
       back.focus();
     }
-  };
+  }, [onClose]);
+  const escape = useCallback(
+    (event: ReactKeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    },
+    [close],
+  );
+  const watch = useCallback(() => {
+    look((current) => ({ ...current, w: [...(current.w ?? []), path] }));
+    flash(`Watching ${path}`);
+  }, [look, path]);
   return (
+    // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape anywhere in the dialog closes it
     <div
       ref={dialog}
       className="drawing-selected"
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a non-modal panel in the card, which a dialog element would not be
       role="dialog"
       aria-label={`Part ${path}`}
       tabIndex={-1}
       // Escape closes it rather than leave the view.
       data-keys="escape"
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          close();
-        }
-      }}
+      onKeyDown={escape}
     >
       <div className="drawing-selected-head">
         <span className="drawing-path">{path}</span>
-        <button
-          type="button"
-          className="link-button"
-          onClick={() => {
-            look((current) => ({ ...current, w: [...(current.w ?? []), path] }));
-            flash(`Watching ${path}`);
-          }}
-        >
+        <button type="button" className="link-button" onClick={watch}>
           Watch
         </button>
         <button type="button" className="icon" aria-label="Close" onClick={close}>
@@ -764,22 +798,24 @@ export function DrawAs({ path }: { path: string }) {
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const loaded = renderers.data !== undefined;
-  const items = () => [...(menu.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
-  const close = () => {
+  const close = useCallback(() => {
     setOpen(false);
     button.current?.focus();
-  };
-  const choose = (pinned: Pinned) => {
-    close();
-    look(pin(pinned), { replace: false });
-  };
+  }, []);
+  const choose = useCallback(
+    (pinned: Pinned) => {
+      close();
+      look(pin(pinned), { replace: false });
+    },
+    [close, look],
+  );
 
   // Focus moves to the first renderer once the list arrives.
   useEffect(() => {
     if (open && loaded) {
       menu.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
     }
-  }, [open, loaded]);
+  }, [open, loaded, menu]);
 
   // A click elsewhere puts it away.
   useEffect(() => {
@@ -795,29 +831,42 @@ export function DrawAs({ path }: { path: string }) {
     return () => window.removeEventListener("pointerdown", pointer);
   }, [open]);
 
-  const move = (event: ReactKeyboardEvent) => {
-    const all = items();
-    const at = all.indexOf(document.activeElement as HTMLElement);
-    const to =
-      event.key === "ArrowDown"
-        ? (at + 1) % all.length
-        : event.key === "ArrowUp"
-          ? (at - 1 + all.length) % all.length
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? all.length - 1
-              : null;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      close();
-    } else if (event.key === "Tab") {
-      setOpen(false);
-    } else if (to !== null && all.length > 0) {
-      event.preventDefault();
-      all[to]?.focus();
-    }
-  };
+  const move = useCallback(
+    (event: ReactKeyboardEvent) => {
+      const all = [...(menu.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+      const at = all.indexOf(document.activeElement as HTMLElement);
+      const to =
+        event.key === "ArrowDown"
+          ? (at + 1) % all.length
+          : event.key === "ArrowUp"
+            ? (at - 1 + all.length) % all.length
+            : event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? all.length - 1
+                : null;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      } else if (event.key === "Tab") {
+        setOpen(false);
+      } else if (to !== null && all.length > 0) {
+        event.preventDefault();
+        all[to]?.focus();
+      }
+    },
+    [close],
+  );
+  const toggle = useCallback(() => setOpen(!open), [open]);
+  const escape = useCallback(
+    (event: ReactKeyboardEvent) => {
+      if (open && event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+      }
+    },
+    [open],
+  );
 
   return (
     <span className="anchor" ref={anchor}>
@@ -828,17 +877,13 @@ export function DrawAs({ path }: { path: string }) {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Draw ${path} as…`}
-        onClick={() => setOpen(!open)}
-        onKeyDown={(event) => {
-          if (open && event.key === "Escape") {
-            event.preventDefault();
-            setOpen(false);
-          }
-        }}
+        onClick={toggle}
+        onKeyDown={escape}
       >
         Draw as…
       </button>
       {open && (
+        // oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- focus stays on its items
         <div
           ref={menu}
           className="popover menu"
@@ -851,21 +896,37 @@ export function DrawAs({ path }: { path: string }) {
           {renderers.error && <div className="empty error">{renderers.error.message}</div>}
           {!renderers.data && !renderers.error && <div className="empty">Reading…</div>}
           {renderers.data?.renderers.map((renderer) => (
-            <button
+            <RendererItem
               key={renderer.name}
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              className="menu-item"
-              onClick={() => choose({ path, renderer: renderer.name })}
-            >
-              <span>{renderer.name}</span>
-              <span className="muted">{originLabel(renderer.origin)}</span>
-            </button>
+              path={path}
+              name={renderer.name}
+              origin={renderer.origin}
+              choose={choose}
+            />
           ))}
         </div>
       )}
     </span>
+  );
+}
+
+function RendererItem({
+  path,
+  name,
+  origin,
+  choose,
+}: {
+  path: string;
+  name: string;
+  origin: string;
+  choose: (pinned: Pinned) => void;
+}) {
+  const click = useCallback(() => choose({ path, renderer: name }), [choose, path, name]);
+  return (
+    <button type="button" role="menuitem" tabIndex={-1} className="menu-item" onClick={click}>
+      <span>{name}</span>
+      <span className="muted">{originLabel(origin)}</span>
+    </button>
   );
 }
 
@@ -876,6 +937,7 @@ function offeredWidth(card: HTMLElement | null, body: HTMLElement | null): numbe
     return 600;
   }
   const style = getComputedStyle(body);
+  // oxlint-disable-next-line unicorn/prefer-number-coercion -- the padding ends in px, which Number rejects
   const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
   return Math.floor(card.clientWidth - padding) || 600;
 }

@@ -165,7 +165,10 @@ function atStop(
         return unavailable("this tab shows no stop");
       }
       // The palette lists the line's calls; choosing one steps into it.
-      return ready(name, async () => tab.setState({ palette: "calls" }));
+      return ready(name, () => {
+        tab.setState({ palette: "calls" });
+        return Promise.resolve();
+      });
     default: {
       const kind = STEPS[name];
       const frame = kind === "out" ? (at?.frame ?? 0) : 0;

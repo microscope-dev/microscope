@@ -1,5 +1,5 @@
 import { useLocation } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Role } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -35,23 +35,22 @@ export function Share() {
     };
   }, [shown]);
 
+  const toggle = useCallback(() => tab.setState({ share: !shown }), [shown]);
+
   if (!open) {
     return null;
   }
   return (
     <div className="anchor" ref={anchor}>
-      <button
-        type="button"
-        className="tb ghost"
-        aria-expanded={shown}
-        onClick={() => tab.setState({ share: !shown })}
-      >
+      <button type="button" className="tb ghost" aria-expanded={shown} onClick={toggle}>
         Share
       </button>
       {shown && <Popover />}
     </div>
   );
 }
+
+const FLUSH = { marginLeft: 0 };
 
 /** The link for the access chosen, made when it opens and on each change. */
 function Popover() {
@@ -72,6 +71,7 @@ function Popover() {
   useEffect(() => {
     // Only the link for the access chosen last is shown.
     let live = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- the last link goes at once, before the new one is asked for
     setUrl(null);
     setCopied(false);
     setError(null);
@@ -84,7 +84,7 @@ function Popover() {
     };
   }, [access, to, connection]);
 
-  const copy = async () => {
+  const copy = useCallback(async () => {
     if (!url) {
       return;
     }
@@ -94,23 +94,26 @@ function Popover() {
     } catch {
       field.current?.select();
     }
-  };
+  }, [url]);
+  const canView = useCallback(() => setAccess("view"), []);
+  const canControl = useCallback(() => setAccess("control"), []);
 
   return (
+    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a popover, not a modal <dialog>
     <div className="popover" role="dialog" aria-label="Share this session" ref={dialog}>
       <div className="card-head">
         <h1>Share this session</h1>
       </div>
       <div className="card-body">
-        <div className="segmented" style={{ marginLeft: 0 }}>
-          <button type="button" aria-pressed={access === "view"} onClick={() => setAccess("view")}>
+        <div className="segmented" style={FLUSH}>
+          <button type="button" aria-pressed={access === "view"} onClick={canView}>
             Can view
           </button>
           <button
             type="button"
             aria-pressed={access === "control"}
             disabled={role !== "control"}
-            onClick={() => setAccess("control")}
+            onClick={canControl}
           >
             Can control
           </button>
@@ -127,6 +130,7 @@ function Popover() {
           </button>
         </div>
         {error === null && url === null && (
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output
           <span className="muted" role="status">
             Making a link…
           </span>

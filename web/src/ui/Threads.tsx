@@ -1,6 +1,8 @@
+import { useCallback } from "react";
+
 import { assert } from "../assert";
 import { openingFrame } from "../follow";
-import type { Inferior } from "../protocol";
+import type { Inferior, Thread } from "../protocol";
 import { threadLabel } from "./names";
 import { useGo } from "./navigation";
 import { useFocus } from "./Workspace";
@@ -15,6 +17,13 @@ export function Threads() {
   const shown = at?.task ? null : (at?.thread ?? stopping);
   // Threads can be chosen at the stop the tab shows, while it lasts.
   const choosable = at !== null && stale === null;
+  const choose = useCallback(
+    (thread: number) => {
+      assert(at !== null, `thread ${thread} chosen with no stop`);
+      go({ stop: at.stop, thread, frame: openingFrame(state, at.stop, thread) });
+    },
+    [at, go, state],
+  );
 
   return (
     <div className={`pane-body ${stale ? "stale" : ""}`}>
@@ -23,40 +32,55 @@ export function Threads() {
       ) : (
         <ul className="rows" data-testid="threads">
           {state.threads.map((thread) => (
-            <li key={thread.id}>
-              <button
-                type="button"
-                className={`row button-row ${thread.id === shown ? "selected" : ""}`}
-                disabled={!choosable}
-                aria-current={thread.id === shown ? "true" : undefined}
-                onClick={() => {
-                  assert(at !== null, `thread ${thread.id} chosen with no stop`);
-                  go({
-                    stop: at.stop,
-                    thread: thread.id,
-                    frame: openingFrame(state, at.stop, thread.id),
-                  });
-                }}
-              >
-                <span>{threadLabel(thread.id, thread.name)}</span>
-                {thread.labels.map((label) => (
-                  <span key={label} className="dim">
-                    {label}
-                  </span>
-                ))}
-                <span className="end">
-                  {thread.id === stopping
-                    ? "◂ stopped here"
-                    : thread.stopped
-                      ? "stopped"
-                      : "running"}
-                </span>
-              </button>
-            </li>
+            <ThreadRow
+              key={thread.id}
+              thread={thread}
+              shown={thread.id === shown}
+              stopping={thread.id === stopping}
+              choosable={choosable}
+              onChoose={choose}
+            />
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function ThreadRow({
+  thread,
+  shown,
+  stopping,
+  choosable,
+  onChoose,
+}: {
+  thread: Thread;
+  shown: boolean;
+  stopping: boolean;
+  choosable: boolean;
+  onChoose: (thread: number) => void;
+}) {
+  const onClick = useCallback(() => onChoose(thread.id), [onChoose, thread.id]);
+  return (
+    <li>
+      <button
+        type="button"
+        className={`row button-row ${shown ? "selected" : ""}`}
+        disabled={!choosable}
+        aria-current={shown ? "true" : undefined}
+        onClick={onClick}
+      >
+        <span>{threadLabel(thread.id, thread.name)}</span>
+        {thread.labels.map((label) => (
+          <span key={label} className="dim">
+            {label}
+          </span>
+        ))}
+        <span className="end">
+          {stopping ? "◂ stopped here" : thread.stopped ? "stopped" : "running"}
+        </span>
+      </button>
+    </li>
   );
 }
 

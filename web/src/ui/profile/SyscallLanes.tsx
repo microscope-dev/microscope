@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { rangeOf } from "../../profile/look";
 import type { SyscallQuery } from "../../protocol";
 import { useShownScheme } from "../../theme";
-import { NAMES, prepare, shade, useRangeDrag, useWidth } from "./canvas";
+import { NAMES, NAMES_STYLE, prepare, shade, useRangeDrag, useWidth } from "./canvas";
 import { token, useAnswer, useProfile } from "./context";
 
 const LANE = 18;
@@ -42,6 +42,8 @@ export function Lanes({ query }: { query: SyscallQuery }) {
   const height = Math.max(lanes.length, 1) * LANE;
   const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
   const { handlers, shown } = useRangeDrag(span);
+  const plotStyle = useMemo(() => ({ width: plot }), [plot]);
+  const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
 
   useEffect(() => {
     const context = prepare(canvas.current, plot, height);
@@ -49,7 +51,9 @@ export function Lanes({ query }: { query: SyscallQuery }) {
     if (!context || !data) {
       return;
     }
-    canvas.current?.setAttribute("data-scheme", scheme);
+    if (canvas.current) {
+      canvas.current.dataset.scheme = scheme;
+    }
     const slice = (plot * data.width) / span;
     const x = (bucket: number) => (plot * (data.start + bucket * data.width)) / span;
     const busy = token("--accent");
@@ -88,7 +92,7 @@ export function Lanes({ query }: { query: SyscallQuery }) {
 
   return (
     <div className="profile-timeline syscall-lanes" ref={box} data-testid="syscall-lanes">
-      <div className="lane-names" style={{ width: NAMES }}>
+      <div className="lane-names" style={NAMES_STYLE}>
         {lanes.map((lane) => (
           <span
             key={`${lane.pid}-${lane.tid}`}
@@ -100,14 +104,15 @@ export function Lanes({ query }: { query: SyscallQuery }) {
         ))}
       </div>
       {answer.error ? (
-        <div className="empty error" style={{ width: plot }}>
+        <div className="empty error" style={plotStyle}>
           {answer.error.message}
         </div>
       ) : (
         <canvas
           ref={canvas}
           className="lanes"
-          style={{ width: plot, height }}
+          style={canvasStyle}
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
           role="img"
           aria-label="Each thread's time in system calls"
           {...handlers}

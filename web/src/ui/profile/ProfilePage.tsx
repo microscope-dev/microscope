@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type ProfileLook,
@@ -36,7 +36,7 @@ import {
 } from "./context";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
-import { Chip } from "./parts";
+import { Chip, ClearChip, LookButton } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
 import { TreeView } from "./TreeView";
@@ -107,6 +107,9 @@ export function ProfileBody({ id, pane }: PaneProps) {
   return <Profile profile={profile} look={look} setLook={setLook} />;
 }
 
+const MISSING_CARD = { width: "min(560px, 100%)" };
+const NO_MARGIN = { margin: 0 };
+
 /** A profile as `look` looks at it. */
 export function Profile({
   profile,
@@ -144,14 +147,14 @@ export function Profile({
     const missing = !info && summary.error.kind === "invalid";
     return (
       <div className="page">
-        <div className="card" style={{ width: "min(560px, 100%)" }} data-testid="profile-missing">
+        <div className="card" style={MISSING_CARD} data-testid="profile-missing">
           <div className="card-head">
             <h1>{missing ? "No such profile" : "Could not read the profile"}</h1>
           </div>
           <div className="card-body">
-            <p style={{ margin: 0 }}>{summary.error.message}.</p>
+            <p style={NO_MARGIN}>{summary.error.message}.</p>
             {missing ? (
-              <p className="muted" style={{ margin: 0 }}>
+              <p className="muted" style={NO_MARGIN}>
                 Serve it with <code>microscope web PROFILE.usprof</code>.
               </p>
             ) : null}
@@ -168,6 +171,7 @@ export function Profile({
     <ProfileContext.Provider value={focus}>
       <div className="profile" data-testid="profile">
         {disconnected ? (
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
           <div className="profile-untimed profile-disconnected" role="status">
             Disconnected. The views keep what they last read until microscope answers again.
           </div>
@@ -248,6 +252,26 @@ function ProfileHead() {
       ? "no task known"
       : (summary.tasks.find((task) => String(task.row) === id)?.name ?? `task ${id}`);
   const program = summary.program?.slice(summary.program.lastIndexOf("/") + 1);
+
+  const collapseCycles = useCallback(
+    () => setLook((prev) => transformed(prev, { op: "collapseCycles", name: "" }), true),
+    [setLook],
+  );
+  const rootByLabel = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const key = event.target.value || undefined;
+      setLook((prev) => withLook(prev, "bl", key));
+    },
+    [setLook],
+  );
+  const framesBy = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const by = event.target.value as ProfileGranularity;
+      setLook((prev) => withLook(prev, "by", by === "function" ? undefined : by));
+    },
+    [setLook],
+  );
+
   return (
     <div className="profile-head">
       <div className="profile-title">
@@ -265,95 +289,59 @@ function ProfileHead() {
       </div>
       <div className="segmented">
         {VIEWS.filter(({ view }) => offers(summary, view)).map(({ view, label }) => (
-          <button
+          <LookButton
             key={view}
-            type="button"
-            aria-pressed={(look.view ?? defaultView(summary)) === view}
-            onClick={() =>
-              setLook(
-                (look) => withLook(look, "view", view === defaultView(summary) ? undefined : view),
-                true,
-              )
-            }
+            field="view"
+            value={view === defaultView(summary) ? undefined : view}
+            pressed={(look.view ?? defaultView(summary)) === view}
           >
             {label}
-          </button>
+          </LookButton>
         ))}
       </div>
       {snapshots ? (
         <div className="segmented">
-          {(
-            [
-              [undefined, "CPU", "Where the program ran"],
-              ["waits", "Waits", "Where task snapshots found tasks waiting"],
-            ] as const
-          ).map(([src, label, title]) => (
-            <button
+          {SOURCES.map(([src, label, title]) => (
+            <LookButton
               key={label}
-              type="button"
+              field="src"
+              value={src}
               title={title}
-              aria-pressed={look.src === src}
-              onClick={() => setLook((look) => withLook(look, "src", src), true)}
+              pressed={look.src === src}
             >
               {label}
-            </button>
+            </LookButton>
           ))}
         </div>
       ) : null}
       <div className="profile-query">
         {range ? (
-          <Chip
-            label={formatSpan(range)}
-            title="Samples in this time range"
-            remove={() => setLook((look) => withLook(look, "range", undefined))}
-          />
+          <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
         ) : null}
         {look.th ? (
-          <Chip
+          <ClearChip
+            field="th"
             label={formatCount(look.th.length, "thread")}
             title="Samples of these threads"
-            remove={() => setLook((look) => withLook(look, "th", undefined))}
           />
         ) : null}
         {look.tk ? (
-          <Chip
+          <ClearChip
+            field="tk"
             label={
               look.tk.length === 1
                 ? taskName(look.tk[0] ?? "")
                 : formatCount(look.tk.length, "task")
             }
             title={look.tk.map(taskName).join("\n")}
-            remove={() => setLook((look) => withLook(look, "tk", undefined))}
           />
         ) : null}
         {(look.lb ?? []).map((label) => (
-          <Chip
-            key={label}
-            label={label}
-            title="Samples that carry this label"
-            remove={() =>
-              setLook((look) => {
-                const kept = (look.lb ?? []).filter((each) => each !== label);
-                return withLook(look, "lb", kept.length > 0 ? kept : undefined);
-              })
-            }
-          />
+          <LabelChip key={label} label={label} />
         ))}
-        {(look.tf ?? []).map((entry, index) => {
-          const transform = parseTransform(entry);
-          return transform ? (
-            <Chip
-              key={entry}
-              label={
-                transform.op === "collapseCycles"
-                  ? "collapse recursion"
-                  : `${transform.op} ${transform.name}`
-              }
-              title="Remove this transform and those after it"
-              remove={() => setLook((look) => untransformed(look, index), true)}
-            />
-          ) : null;
-        })}
+        {(look.tf ?? []).map((entry, index) => (
+          <TransformChip key={entry} entry={entry} index={index} />
+        ))}
         {sampled ? (
           <>
             {(look.tf ?? []).includes("collapseCycles") ? null : (
@@ -361,79 +349,57 @@ function ProfileHead() {
                 type="button"
                 className="tb ghost"
                 title="Cut each path back to the first call of anything it calls again, directly or through others"
-                onClick={() =>
-                  setLook((look) => transformed(look, { op: "collapseCycles", name: "" }), true)
-                }
+                onClick={collapseCycles}
               >
                 Collapse recursion
               </button>
             )}
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={look.invert === "1"}
-                onChange={(event) =>
-                  setLook((look) =>
-                    withLook(look, "invert", event.target.checked ? "1" : undefined),
-                  )
-                }
-              />
+            <LookCheck field="invert" checked={look.invert === "1"} on="1" off={undefined}>
               Inverted
-            </label>
-            <label className="check" title="Show each async task's frames as a stack of its own">
-              <input
-                type="checkbox"
-                checked={look.native !== "1"}
-                onChange={(event) =>
-                  setLook((look) =>
-                    withLook(look, "native", event.target.checked ? undefined : "1"),
-                  )
-                }
-              />
+            </LookCheck>
+            <LookCheck
+              field="native"
+              title="Show each async task's frames as a stack of its own"
+              checked={look.native !== "1"}
+              on={undefined}
+              off="1"
+            >
               Async stacks
-            </label>
+            </LookCheck>
             {summary.interpreted ? (
-              <label
-                className="check"
+              <LookCheck
+                field="py"
                 title="Show each stack as its Python code sees it, without the interpreter's own frames"
+                checked={look.py === "1"}
+                on="1"
+                off={undefined}
               >
-                <input
-                  type="checkbox"
-                  checked={look.py === "1"}
-                  onChange={(event) =>
-                    setLook((look) => withLook(look, "py", event.target.checked ? "1" : undefined))
-                  }
-                />
                 Python stacks
-              </label>
+              </LookCheck>
             ) : null}
           </>
         ) : null}
         {snapshots ? (
           <>
-            <label className="check" title="Root each path at the task it ran or waited in">
-              <input
-                type="checkbox"
-                checked={look.bt === "1"}
-                onChange={(event) =>
-                  setLook((look) => withLook(look, "bt", event.target.checked ? "1" : undefined))
-                }
-              />
+            <LookCheck
+              field="bt"
+              title="Root each path at the task it ran or waited in"
+              checked={look.bt === "1"}
+              on="1"
+              off={undefined}
+            >
               By task
-            </label>
+            </LookCheck>
             {look.src === "waits" ? null : (
-              <label className="check" title="A timeline lane per task, not per thread">
-                <input
-                  type="checkbox"
-                  checked={look.lanes === "tasks"}
-                  onChange={(event) =>
-                    setLook((look) =>
-                      withLook(look, "lanes", event.target.checked ? "tasks" : undefined),
-                    )
-                  }
-                />
+              <LookCheck
+                field="lanes"
+                title="A timeline lane per task, not per thread"
+                checked={look.lanes === "tasks"}
+                on="tasks"
+                off={undefined}
+              >
                 Task lanes
-              </label>
+              </LookCheck>
             )}
           </>
         ) : null}
@@ -442,9 +408,7 @@ function ProfileHead() {
             className="input profile-by"
             aria-label="Root by label"
             value={look.bl ?? ""}
-            onChange={(event) =>
-              setLook((look) => withLook(look, "bl", event.target.value || undefined))
-            }
+            onChange={rootByLabel}
           >
             <option value="">no label roots</option>
             {summary.labelKeys.map((key) => (
@@ -460,10 +424,7 @@ function ProfileHead() {
               className="input profile-by"
               aria-label="Frames by"
               value={look.by ?? "function"}
-              onChange={(event) => {
-                const by = event.target.value as ProfileGranularity;
-                setLook((look) => withLook(look, "by", by === "function" ? undefined : by));
-              }}
+              onChange={framesBy}
             >
               {GRANULARITIES.map(({ by, label }) => (
                 <option key={by} value={by}>
@@ -479,6 +440,81 @@ function ProfileHead() {
   );
 }
 
+const SOURCES = [
+  [undefined, "CPU", "Where the program ran"],
+  ["waits", "Waits", "Where task snapshots found tasks waiting"],
+] as const;
+
+const DIFF_MEASURES = [
+  [undefined, "time", "Each function's cost, as report --base compares it"],
+  ["share", "share", "Each function's share of its own profile"],
+] as const;
+
+/** A checkbox that sets one part of the look to `on` or `off`. */
+function LookCheck<K extends keyof ProfileLook>({
+  field,
+  title,
+  checked,
+  on,
+  off,
+  children,
+}: {
+  field: K;
+  title?: string;
+  checked: boolean;
+  on: ProfileLook[K] | undefined;
+  off: ProfileLook[K] | undefined;
+  children: ReactNode;
+}) {
+  const { setLook } = useProfile();
+  const toggle = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const value = event.target.checked ? on : off;
+      setLook((prev) => withLook(prev, field, value));
+    },
+    [setLook, field, on, off],
+  );
+  return (
+    <label className="check" title={title}>
+      <input type="checkbox" checked={checked} onChange={toggle} />
+      {children}
+    </label>
+  );
+}
+
+function LabelChip({ label }: { label: string }) {
+  const { setLook } = useProfile();
+  const remove = useCallback(
+    () =>
+      setLook((prev) => {
+        const kept = (prev.lb ?? []).filter((each) => each !== label);
+        return withLook(prev, "lb", kept.length > 0 ? kept : undefined);
+      }),
+    [setLook, label],
+  );
+  return <Chip label={label} title="Samples that carry this label" remove={remove} />;
+}
+
+function TransformChip({ entry, index }: { entry: string; index: number }) {
+  const { setLook } = useProfile();
+  const remove = useCallback(
+    () => setLook((prev) => untransformed(prev, index), true),
+    [setLook, index],
+  );
+  const transform = parseTransform(entry);
+  return transform ? (
+    <Chip
+      label={
+        transform.op === "collapseCycles"
+          ? "collapse recursion"
+          : `${transform.op} ${transform.name}`
+      }
+      title="Remove this transform and those after it"
+      remove={remove}
+    />
+  ) : null;
+}
+
 /** What a diff compares with: another range of this profile, chosen from
  * the selection, or another profile served; a chip once chosen. */
 function Compare() {
@@ -486,6 +522,32 @@ function Compare() {
   const profiles = useModel((model) => model.profiles);
   const others = profiles.filter((each) => each.id !== profile);
   const baseRange = look.br ? parseRange(look.br) : null;
+
+  const removeBase = useCallback(
+    () =>
+      setLook(
+        (prev) =>
+          // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+          withLook(withLook(withLook(prev, "bp", undefined), "br", undefined), "dm", undefined),
+        true,
+      ),
+    [setLook],
+  );
+  const chooseBase = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const chosen = event.target.value;
+      setLook(
+        (prev) =>
+          chosen === "range"
+            ? // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+              withLook(withLook(prev, "br", prev.range), "range", undefined)
+            : withLook(prev, "bp", chosen || undefined),
+        true,
+      );
+    },
+    [setLook],
+  );
+
   if (look.bp || baseRange) {
     const of =
       look.bp && look.bp !== profile
@@ -497,34 +559,13 @@ function Compare() {
         <Chip
           label={`diff with ${of}${during}`}
           title="Red grew and blue shrank against this base"
-          remove={() =>
-            setLook(
-              (look) =>
-                withLook(
-                  withLook(withLook(look, "bp", undefined), "br", undefined),
-                  "dm",
-                  undefined,
-                ),
-              true,
-            )
-          }
+          remove={removeBase}
         />
         <div className="segmented" title="What the change column compares">
-          {(
-            [
-              [undefined, "time", "Each function's cost, as report --base compares it"],
-              ["share", "share", "Each function's share of its own profile"],
-            ] as const
-          ).map(([dm, label, title]) => (
-            <button
-              key={label}
-              type="button"
-              title={title}
-              aria-pressed={look.dm === dm}
-              onClick={() => setLook((look) => withLook(look, "dm", dm), true)}
-            >
+          {DIFF_MEASURES.map(([dm, label, title]) => (
+            <LookButton key={label} field="dm" value={dm} title={title} pressed={look.dm === dm}>
               {label}
-            </button>
+            </LookButton>
           ))}
         </div>
       </>
@@ -534,21 +575,7 @@ function Compare() {
     return null;
   }
   return (
-    <select
-      className="input profile-by"
-      aria-label="Compare with"
-      value=""
-      onChange={(event) => {
-        const chosen = event.target.value;
-        setLook(
-          (look) =>
-            chosen === "range"
-              ? withLook(withLook(look, "br", look.range), "range", undefined)
-              : withLook(look, "bp", chosen || undefined),
-          true,
-        );
-      }}
-    >
+    <select className="input profile-by" aria-label="Compare with" value="" onChange={chooseBase}>
       <option value="">no diff</option>
       {look.range ? <option value="range">diff with the selected range</option> : null}
       {others.map((each) => (
@@ -560,31 +587,39 @@ function Compare() {
   );
 }
 
+/** Downloads the profile as a file. */
+async function saveProfile(info: ProfileInfo) {
+  const response = await fetch(serverUrl(`api/profile/${info.id}`), {
+    method: "POST",
+    credentials: "same-origin",
+    body: presented(),
+  });
+  if (!response.ok) {
+    throw new Error(`the server answered ${response.status}`);
+  }
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
 /** A recording's progress, and saving the profile as a file. */
 function Recording({ info }: { info: ProfileInfo }) {
   const connection = useConnection();
   const control = useModel((model) => model.hello?.role === "control");
   const [failure, setFailure] = useState<string | null>(null);
-  const save = async () => {
+  const save = useCallback(() => {
     setFailure(null);
-    try {
-      const response = await fetch(serverUrl(`api/profile/${info.id}`), {
-        method: "POST",
-        credentials: "same-origin",
-        body: presented(),
-      });
-      if (!response.ok) {
-        throw new Error(`the server answered ${response.status}`);
-      }
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(await response.blob());
-      link.download = info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
-      link.click();
-      URL.revokeObjectURL(link.href);
-    } catch (error) {
+    saveProfile(info).catch((error: unknown) => {
       setFailure(error instanceof Error ? error.message : String(error));
-    }
-  };
+    });
+  }, [info]);
+  const stop = useCallback(() => {
+    void connection
+      .request("stopRecording", { profile: info.id })
+      .catch((error: Error) => setFailure(error.message));
+  }, [connection, info.id]);
   return (
     <div className="profile-recording" data-testid="recording">
       {info.recording ? (
@@ -595,21 +630,13 @@ function Recording({ info }: { info: ProfileInfo }) {
         </span>
       ) : null}
       {info.recording && control ? (
-        <button
-          type="button"
-          className="tb ghost"
-          onClick={() =>
-            void connection
-              .request("stopRecording", { profile: info.id })
-              .catch((error: Error) => setFailure(error.message))
-          }
-        >
+        <button type="button" className="tb ghost" onClick={stop}>
           Stop
         </button>
       ) : null}
       <span className="spacer" />
       {failure ? <span className="error">{failure}</span> : null}
-      <button type="button" className="tb ghost" onClick={() => void save()}>
+      <button type="button" className="tb ghost" onClick={save}>
         Save
       </button>
     </div>
@@ -685,7 +712,7 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
         <span
           className="warn"
           title={summary.budgetChanges
-            .map((change) => `${formatDuration(change.time)}: ${change.text}`)
+            .map((each) => `${formatDuration(each.time)}: ${each.text}`)
             .join("\n")}
         >
           paused {formatPercent(paused, span)} for the budget

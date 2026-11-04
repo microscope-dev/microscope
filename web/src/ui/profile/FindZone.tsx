@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
 import { formatRange, rangeOf, withLook } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant, largest } from "../../profile/paint";
@@ -11,6 +11,10 @@ import { Duration } from "./parts";
 export function FindZone() {
   const { summary, look, setLook } = useProfile();
   const chosen = summary.zoneSites.find((site) => site.name === look.zs);
+  const choose = useCallback(
+    (name: string) => setLook((prev) => withLook(prev, "zs", prev.zs === name ? undefined : name)),
+    [setLook],
+  );
   return (
     <div className="pane find-zone" data-testid="find-zone">
       <div className="pane-head">
@@ -32,11 +36,7 @@ export function FindZone() {
                 key={`${site.label}:${site.name}`}
                 site={site}
                 chosen={site.name === look.zs}
-                choose={() =>
-                  setLook((look) =>
-                    withLook(look, "zs", look.zs === site.name ? undefined : site.name),
-                  )
-                }
+                choose={choose}
               />
             ))}
           </tbody>
@@ -54,12 +54,13 @@ function SiteRow({
 }: {
   site: ProfileZoneSite;
   chosen: boolean;
-  choose: () => void;
+  choose: (name: string) => void;
 }) {
+  const click = useCallback(() => choose(site.name), [choose, site.name]);
   return (
     <tr className={chosen ? "selected" : undefined}>
       <td>
-        <button type="button" className="link-button" aria-pressed={chosen} onClick={choose}>
+        <button type="button" className="link-button" aria-pressed={chosen} onClick={click}>
           {site.name}
         </button>
         {site.label ? <span className="dim"> label</span> : null}
@@ -85,7 +86,7 @@ function SiteRow({
  * lengths, the longest, and for a label, its values, each a filter. */
 function ZoneStats({ site }: { site: ProfileZoneSite }) {
   const { profile, query, look, setLook, summary } = useProfile();
-  const selected = rangeOf(look);
+  const selected = useMemo(() => rangeOf({ range: look.range }), [look.range]);
   const params = useMemo(
     () => ({
       profile,
@@ -94,7 +95,12 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
       ...(selected ? { range: selected } : {}),
       ...(query.threads ? { threads: query.threads } : {}),
     }),
-    [profile, query.revision, site.name, selected?.[0], selected?.[1], query.threads],
+    [profile, query.revision, site.name, selected, query.threads],
+  );
+  const rootByValue = useCallback(
+    () =>
+      setLook((prev) => withLook(prev, "bl", prev.bl === site.name ? undefined : site.name), true),
+    [setLook, site.name],
   );
   const answer = useAnswer("profileZoneStats", params);
   const stats = answer.data;
@@ -129,14 +135,14 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
           </div>
         ))}
       </dl>
-      <div className="zone-histogram" role="img" aria-label={`Lengths of ${site.name}`}>
+      <div
+        className="zone-histogram"
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a chart of bars, not an image file
+        role="img"
+        aria-label={`Lengths of ${site.name}`}
+      >
         {stats.histogram.map(([low, count]) => (
-          <span
-            key={low}
-            className="bar"
-            style={{ height: `${(100 * count) / most}%` }}
-            title={`${formatCount(count)} from ${formatDuration(low)}`}
-          />
+          <Bar key={low} low={low} count={count} most={most} />
         ))}
       </div>
       <div className="zone-axis muted">
@@ -147,24 +153,7 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
       <ul className="zone-longest">
         {stats.longest.map((zone) => (
           <li key={`${zone.thread}:${zone.start}`}>
-            <button
-              type="button"
-              className="link-button"
-              title="Select this zone's span"
-              onClick={() =>
-                setLook(
-                  (look) =>
-                    withLook(
-                      look,
-                      "range",
-                      formatRange([zone.start, Math.max(zone.end, zone.start + 1)]),
-                    ),
-                  true,
-                )
-              }
-            >
-              {formatDuration(zone.end - zone.start)}
-            </button>{" "}
+            <ZoneSpan start={zone.start} end={zone.end} />{" "}
             {zone.value !== null && zone.value !== undefined ? `${site.name}=${zone.value} ` : ""}
             <span className="dim">
               {threadName(summary.threads, zone.thread)} at{" "}
@@ -182,12 +171,7 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
               className="tb ghost"
               aria-pressed={look.bl === site.name}
               title="Root each stack at its value of this label"
-              onClick={() =>
-                setLook(
-                  (look) => withLook(look, "bl", look.bl === site.name ? undefined : site.name),
-                  true,
-                )
-              }
+              onClick={rootByValue}
             >
               By {site.name}
             </button>
@@ -195,24 +179,9 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
           <ul className="zone-values">
             {stats.values.map((value) => {
               const label = `${site.name}=${value.value}`;
-              const on = (look.lb ?? []).includes(label);
               return (
                 <li key={value.value}>
-                  <button
-                    type="button"
-                    className="link-button"
-                    aria-pressed={on}
-                    title="Keep only samples that carry this label"
-                    onClick={() =>
-                      setLook((look) => {
-                        const kept = (look.lb ?? []).filter((each) => each !== label);
-                        const next = on ? kept : [...kept, label];
-                        return withLook(look, "lb", next.length > 0 ? next : undefined);
-                      }, true)
-                    }
-                  >
-                    {label}
-                  </button>{" "}
+                  <LabelValue label={label} on={(look.lb ?? []).includes(label)} />{" "}
                   <span className="dim">
                     {formatDuration(value.total)} in {formatCount(value.count)}
                   </span>
@@ -223,5 +192,59 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
         </>
       ) : null}
     </div>
+  );
+}
+
+function Bar({ low, count, most }: { low: number; count: number; most: number }) {
+  const style = useMemo(() => ({ height: `${(100 * count) / most}%` }), [count, most]);
+  return (
+    <span
+      className="bar"
+      style={style}
+      title={`${formatCount(count)} from ${formatDuration(low)}`}
+    />
+  );
+}
+
+/** A zone's length, which selects its span. */
+function ZoneSpan({ start, end }: { start: number; end: number }) {
+  const { setLook } = useProfile();
+  const select = useCallback(
+    () =>
+      setLook(
+        (prev) => withLook(prev, "range", formatRange([start, Math.max(end, start + 1)])),
+        true,
+      ),
+    [setLook, start, end],
+  );
+  return (
+    <button type="button" className="link-button" title="Select this zone's span" onClick={select}>
+      {formatDuration(end - start)}
+    </button>
+  );
+}
+
+/** A label's value, which keeps only the samples that carry it. */
+function LabelValue({ label, on }: { label: string; on: boolean }) {
+  const { setLook } = useProfile();
+  const toggle = useCallback(
+    () =>
+      setLook((prev) => {
+        const kept = (prev.lb ?? []).filter((each) => each !== label);
+        const next = on ? kept : [...kept, label];
+        return withLook(prev, "lb", next.length > 0 ? next : undefined);
+      }, true),
+    [setLook, label, on],
+  );
+  return (
+    <button
+      type="button"
+      className="link-button"
+      aria-pressed={on}
+      title="Keep only samples that carry this label"
+      onClick={toggle}
+    >
+      {label}
+    </button>
   );
 }

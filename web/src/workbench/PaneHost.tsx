@@ -22,16 +22,17 @@ interface Props {
 export const PaneHost = memo(function PaneHost({ id, pane, visible }: Props) {
   const { kinds, useMissing } = useDock();
   const kind = kinds.get(pane.kind);
+  // oxlint-disable-next-line react/hooks -- the dock hands down one hook for its whole life
   const missing = useMissing(kind.needs);
   const Body = kind.Body;
   return (
     <VisibleContext value={visible}>
-      {missing !== null ? (
-        <div className={`empty ${css("pane-missing")}`}>{missing}</div>
-      ) : (
+      {missing === null ? (
         <Boundary title={kind.title(pane)}>
           <Body id={id} pane={pane} />
         </Boundary>
+      ) : (
+        <div className={`empty ${css("pane-missing")}`}>{missing}</div>
       )}
     </VisibleContext>
   );
@@ -42,6 +43,8 @@ class Boundary extends Component<
   { failure: Error | null }
 > {
   override state: { failure: Error | null } = { failure: null };
+
+  readonly retry = () => this.setState({ failure: null });
 
   static getDerivedStateFromError(failure: unknown): { failure: Error } {
     return { failure: failure instanceof Error ? failure : new Error(String(failure)) };
@@ -56,11 +59,7 @@ class Boundary extends Component<
       <div className={css("pane-failed")} role="alert" data-part="pane-failed">
         <b>{this.props.title} stopped working.</b> {failure.message}
         <div>
-          <button
-            type="button"
-            className="button small"
-            onClick={() => this.setState({ failure: null })}
-          >
+          <button type="button" className="button small" onClick={this.retry}>
             Try again
           </button>
         </div>

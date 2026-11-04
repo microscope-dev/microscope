@@ -86,11 +86,11 @@ export function useGo(): Go {
 
 /** Changes how the tab looks at its focus, keeping the focus. */
 export function useLook(): (change: (look: Look) => Look, options?: Moving) => void {
-  const go = useGo();
+  const goTo = useGo();
   const { at, look } = useFocus();
   return useCallback(
-    (change, options) => go(at, change(look), { ...options, replace: options?.replace ?? true }),
-    [go, at, look],
+    (change, options) => goTo(at, change(look), { ...options, replace: options?.replace ?? true }),
+    [goTo, at, look],
   );
 }
 

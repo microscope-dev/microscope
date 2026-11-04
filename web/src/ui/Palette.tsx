@@ -2,7 +2,15 @@
 // breakpoints, and stops; Ctrl+P starts at files, and Ctrl+G at a line of
 // the file shown. Groups come in the order of their best match.
 
-import { useId, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  useCallback,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../assert";
 import { firstBreakpointPlace } from "../breakpoints";
@@ -60,6 +68,22 @@ function close() {
   tab.setState({ palette: null });
 }
 
+function run(item: Item | undefined) {
+  if (item) {
+    close();
+    item.run();
+  }
+}
+
+function openLayout(name: string) {
+  const loaded = loadNamed(name, KINDS);
+  if (loaded.ok) {
+    applyLayout(loaded.layout);
+  } else {
+    flash(`The layout ${name} can't be opened: ${loaded.why}`);
+  }
+}
+
 function Open({ mode }: { mode: Mode }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
@@ -74,17 +98,32 @@ function Open({ mode }: { mode: Mode }) {
   const chosen = Math.min(selected, Math.max(items.length - 1, 0));
   assert(chosen >= 0, `palette chose ${chosen} of ${items.length}`);
   assert(items.length === 0 || chosen < items.length, `palette chose ${chosen} of ${items.length}`);
-  const run = (item: Item | undefined) => {
-    if (item) {
-      close();
-      item.run();
-    }
-  };
+  const edit = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    setQuery(event.target.value);
+    setSelected(0);
+  }, []);
+  const key = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setSelected((chosen + step + items.length) % Math.max(items.length, 1));
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        run(items[chosen]);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    },
+    [chosen, items],
+  );
 
   return (
     <div className="overlay">
       <div
         className="palette"
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an overlay the page draws, not a <dialog>
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
@@ -111,55 +150,28 @@ function Open({ mode }: { mode: Mode }) {
                       : "a command, function, file, thread, breakpoint, or stop"
           }
           value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setSelected(0);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-              event.preventDefault();
-              const step = event.key === "ArrowDown" ? 1 : -1;
-              setSelected((chosen + step + items.length) % Math.max(items.length, 1));
-            } else if (event.key === "Enter") {
-              event.preventDefault();
-              run(items[chosen]);
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              close();
-            }
-          }}
+          onChange={edit}
+          onKeyDown={key}
           onBlur={close}
         />
+        {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a combobox's results, not a <select> */}
         <div className="palette-results" id={list} role="listbox" aria-label="Results">
           {items.length === 0 && (
             <div className="empty">{why ?? (query ? "Nothing matches." : null)}</div>
           )}
           {groups.map((group) => (
-            // biome-ignore lint/a11y/useSemanticElements: a listbox groups its options with role group
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a listbox groups its options with role group
             <div key={group.name} role="group" aria-label={group.name}>
               <div className="palette-group">{group.name}</div>
-              {group.items.map((item) => {
-                const on = items[chosen] === item;
-                return (
-                  <div
-                    key={item.id}
-                    id={`${list}-${item.id}`}
-                    role="option"
-                    aria-selected={on}
-                    tabIndex={-1}
-                    className={`palette-item ${on ? "on" : ""}`}
-                    // Before the input's blur closes the palette.
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      run(item);
-                    }}
-                  >
-                    <Marked text={item.label} query={query.trim()} />
-                    {item.detail && <span className="dim">{item.detail}</span>}
-                    {item.hint && <span className="palette-hint">{item.hint}</span>}
-                  </div>
-                );
-              })}
+              {group.items.map((item) => (
+                <Result
+                  key={item.id}
+                  id={`${list}-${item.id}`}
+                  item={item}
+                  on={items[chosen] === item}
+                  query={query.trim()}
+                />
+              ))}
             </div>
           ))}
         </div>
@@ -173,13 +185,39 @@ function Open({ mode }: { mode: Mode }) {
   );
 }
 
+function Result({ id, item, on, query }: { id: string; item: Item; on: boolean; query: string }) {
+  // Before the input's blur closes the palette.
+  const choose = useCallback(
+    (event: MouseEvent) => {
+      event.preventDefault();
+      run(item);
+    },
+    [item],
+  );
+  return (
+    <div
+      id={id}
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a combobox's result, not an <option>
+      role="option"
+      aria-selected={on}
+      tabIndex={-1}
+      className={`palette-item ${on ? "on" : ""}`}
+      onMouseDown={choose}
+    >
+      <Marked text={item.label} query={query} />
+      {item.detail && <span className="dim">{item.detail}</span>}
+      {item.hint && <span className="palette-hint">{item.hint}</span>}
+    </div>
+  );
+}
+
 /** The label, with the characters the query matched marked. */
 function Marked({ text, query }: { text: string; query: string }) {
   const chars = [...text];
   // Score marks code units of the lowercased text; each belongs to the
   // character it was lowercased from.
   const owners = chars.flatMap((char, index) =>
-    Array<number>(char.toLowerCase().length).fill(index),
+    Array.from({ length: char.toLowerCase().length }, () => index),
   );
   const marks = new Set(score(text, query)?.marks.map((mark) => owners[mark]) ?? []);
   if (marks.size === 0) {
@@ -188,7 +226,7 @@ function Marked({ text, query }: { text: string; query: string }) {
   return (
     <span className="palette-label">
       {chars.map((char, index) =>
-        // biome-ignore lint/suspicious/noArrayIndexKey: characters of one fixed label
+        // oxlint-disable-next-line react/no-array-index-key -- characters of one fixed label
         marks.has(index) ? <mark key={index}>{char}</mark> : <span key={index}>{char}</span>,
       )}
     </span>
@@ -224,6 +262,7 @@ function useGroups(mode: Mode, query: string): Found {
   const connection = useConnection();
   const { run: runCommand } = useCommands();
   const shown = useTab((current) => current.shown);
+  // oxlint-disable-next-line unicorn/no-useless-undefined -- useRequest takes undefined for no parameters
   const sources = useRequest("sources", undefined);
   const functions = useRequest(
     "functions",
@@ -264,16 +303,8 @@ function useGroups(mode: Mode, query: string): Found {
   }
 
   if (mode === "layouts") {
-    const open = (name: string) => {
-      const loaded = loadNamed(name, KINDS);
-      if (loaded.ok) {
-        applyLayout(loaded.layout);
-      } else {
-        flash(`The layout ${name} can't be opened: ${loaded.why}`);
-      }
-    };
     const saved: Item[] = layoutNames().flatMap((name) => [
-      { id: `layout:${name}`, label: name, run: () => open(name) },
+      { id: `layout:${name}`, label: name, run: () => openLayout(name) },
       {
         id: `delete:${name}`,
         label: `Delete ${name}`,
@@ -298,7 +329,7 @@ function useGroups(mode: Mode, query: string): Found {
   }
 
   if (mode === "line") {
-    const match = /^(?:(.+):)?(\d+)$/.exec(query);
+    const match = /^(?:(.+):)?(\d+)$/u.exec(query);
     const path = match?.[1] ? paths.recorded(match[1]) : shown?.path;
     const line = match ? Number(match[2]) : 0;
     if (query === "") {
@@ -412,8 +443,8 @@ function useGroups(mode: Mode, query: string): Found {
   }
 
   // Only the functions that match this query, not a slower earlier one's.
-  const found = (functions?.functions ?? []).filter((found) => score(found.name, query));
-  const functionItems: Item[] = found.map((found) => ({
+  const matches = (functions?.functions ?? []).filter((found) => score(found.name, query));
+  const functionItems: Item[] = matches.map((found) => ({
     id: `function:${found.name}:${found.path}:${found.line}`,
     label: found.name,
     detail: found.path && found.line ? `${fileName(found.path)}:${found.line}` : undefined,
@@ -426,7 +457,7 @@ function useGroups(mode: Mode, query: string): Found {
     },
   }));
   // Each function offers a breakpoint, as a command.
-  const breakAt: Item[] = found.slice(0, 3).map((found) => ({
+  const breakAt: Item[] = matches.slice(0, 3).map((found) => ({
     id: `break:${found.name}`,
     label: `Break at ${found.name}`,
     hint: COMMANDS.describe("toggleBreakpoint"),
@@ -436,7 +467,7 @@ function useGroups(mode: Mode, query: string): Found {
         .catch((failure: Error) => flash(failure.message)),
   }));
   let breakGroup: Group | null = null;
-  const first = found[0];
+  const first = matches[0];
   if (first) {
     const matched = score(first.name, query);
     assert(matched !== null, "a function the query does not match");
@@ -471,7 +502,7 @@ function useGroups(mode: Mode, query: string): Found {
       }
     },
   }));
-  const stops: Item[] = [...state.stops].reverse().map((entry) => ({
+  const stops: Item[] = state.stops.toReversed().map((entry) => ({
     id: `stop:${entry.stop}`,
     label: `#${entry.stop} ${stopKind(entry.reason.kind)} · ${placeText(entry.place)}`,
     detail: entry.stop === at?.stop ? "shown" : undefined,
@@ -493,5 +524,5 @@ function useGroups(mode: Mode, query: string): Found {
     ranked("Breakpoints", breakpoints, query),
     ranked("Stops", stops, query),
   ].filter((group): group is Group => group !== null);
-  return { groups: groups.sort((a, b) => a.rank - b.rank) };
+  return { groups: groups.toSorted((a, b) => a.rank - b.rank) };
 }

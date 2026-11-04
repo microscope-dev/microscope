@@ -2,10 +2,20 @@
 // buttons that sign in with Google or GitHub, the account's ways in, an
 // organization's sign-in link, and the identity provider its owners set up.
 
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import {
+  type ChangeEvent,
+  type FocusEvent,
+  type FormEvent,
+  type ReactNode,
+  useCallback,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { createStore, useStore } from "zustand";
 
 import { checkAccount, Refused, useAccount } from "../account";
+import { assert } from "../assert";
 import { useFeatures } from "../features";
 import type { Org } from "../orgs";
 import {
@@ -76,6 +86,10 @@ export function ContinueWith({ children }: { children?: ReactNode }) {
  * or put away. */
 export const orgLink = createStore<{ key: string | null }>(() => ({ key: null }));
 
+function closeOrgLink() {
+  orgLink.setState({ key: null });
+}
+
 /** `/sso#key=`: whose single sign-on it is, and the way through it. Signed
  * in, it connects the organization's identity provider to the account. */
 export function OrgLink() {
@@ -83,15 +97,18 @@ export function OrgLink() {
   const now = useAccount();
   const about = useLoaded(() => (key ? samlLink(key) : Promise.resolve(null)), key ?? "");
   const { working, error, run } = useAction();
+  const connectOrg = useCallback(() => {
+    assert(key !== null, "connecting an organization with no sign-in link");
+    run(() => proven("org-link", () => connectSaml(key)));
+  }, [run, key]);
   if (!key || now.kind === "checking" || now.kind === "unavailable") {
     return null;
   }
-  const close = () => orgLink.setState({ key: null });
   if (about.error) {
     return (
       <div className="banner error" role="alert">
         This single sign-on link does not work: {about.error}.{" "}
-        <button type="button" className="link-button" onClick={close}>
+        <button type="button" className="link-button" onClick={closeOrgLink}>
           Dismiss
         </button>
       </div>
@@ -105,18 +122,13 @@ export function OrgLink() {
     <section aria-label={`Sign in to ${org}`}>
       <h2>{org}</h2>
       {now.kind === "in" ? (
-        <p>Connect {org}'s single sign-on to your account to sign in with it from now on.</p>
+        <p>Connect {org}&apos;s single sign-on to your account to sign in with it from now on.</p>
       ) : (
         <p>{org} signs its members in with its own identity provider.</p>
       )}
       <div className="actions">
         {now.kind === "in" ? (
-          <button
-            type="button"
-            className="button primary"
-            disabled={working}
-            onClick={() => run(() => proven("org-link", () => connectSaml(key)))}
-          >
+          <button type="button" className="button primary" disabled={working} onClick={connectOrg}>
             Connect {org}
           </button>
         ) : (
@@ -124,7 +136,7 @@ export function OrgLink() {
             Sign in with {org}
           </a>
         )}
-        <button type="button" className="link-button" onClick={close}>
+        <button type="button" className="link-button" onClick={closeOrgLink}>
           Not now
         </button>
       </div>
@@ -178,26 +190,34 @@ export function SignInMethods() {
       !offered?.google &&
       !offered?.github &&
       !passkeys);
+  const again = methods.again;
+  const add = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      const name = naming?.trim() ?? "";
+      run(() =>
+        proven("methods", async () => {
+          await addPasskey(name);
+          setNaming(null);
+          again();
+        }),
+      );
+    },
+    [naming, run, again],
+  );
+  const rename = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setNaming(event.target.value),
+    [],
+  );
+  const stopNaming = useCallback(() => setNaming(null), []);
+  const startNaming = useCallback(() => setNaming(deviceName()), []);
   if (nothing) {
     return null;
   }
-  const add = (event: FormEvent) => {
-    event.preventDefault();
-    const name = naming?.trim() ?? "";
-    run(() =>
-      proven("methods", async () => {
-        await addPasskey(name);
-        setNaming(null);
-        methods.again();
-      }),
-    );
-  };
   return (
     <>
       <h2>Sign-in methods</h2>
-      {!known ? (
-        <Loading error={methods.error} what="your sign-in methods" />
-      ) : (
+      {known ? (
         <ul className="roster" aria-label="Sign-in methods">
           {known.has_password && (
             <li>
@@ -211,15 +231,12 @@ export function SignInMethods() {
               {/* The last way in cannot go, so it has no Disconnect. */}
               {ways > 1 && (
                 <span className="end">
-                  <Confirm
+                  <Forget
                     label="Disconnect"
                     question={`Stop signing in with ${describe(identity)}?`}
-                    act={() =>
-                      proven("methods", async () => {
-                        await disconnect(identity.id);
-                        methods.again();
-                      })
-                    }
+                    id={identity.id}
+                    forget={disconnect}
+                    again={again}
                   />
                 </span>
               )}
@@ -231,21 +248,20 @@ export function SignInMethods() {
               <span className="muted">{used(passkey)}</span>
               {ways > 1 && (
                 <span className="end">
-                  <Confirm
+                  <Forget
                     label="Remove"
                     question={`Stop signing in with ${passkey.name}?`}
-                    act={() =>
-                      proven("methods", async () => {
-                        await removePasskey(passkey.id);
-                        methods.again();
-                      })
-                    }
+                    id={passkey.id}
+                    forget={removePasskey}
+                    again={again}
                   />
                 </span>
               )}
             </li>
           ))}
         </ul>
+      ) : (
+        <Loading error={methods.error} what="your sign-in methods" />
       )}
       {naming !== null && (
         <form className="pane-form" aria-label="Add a passkey" onSubmit={add}>
@@ -257,14 +273,14 @@ export function SignInMethods() {
               maxLength={64}
               data-autofocus
               value={naming}
-              onChange={(event) => setNaming(event.target.value)}
+              onChange={rename}
             />
           </div>
           <div className="actions">
             <button type="submit" className="button primary" disabled={working || !naming.trim()}>
               Add passkey
             </button>
-            <button type="button" className="link-button" onClick={() => setNaming(null)}>
+            <button type="button" className="link-button" onClick={stopNaming}>
               Cancel
             </button>
           </div>
@@ -273,20 +289,12 @@ export function SignInMethods() {
       {(unconnected.length > 0 || (passkeys && naming === null)) && (
         <div className="actions">
           {passkeys && naming === null && (
-            <button type="button" className="button" onClick={() => setNaming(deviceName())}>
+            <button type="button" className="button" onClick={startNaming}>
               Add a passkey
             </button>
           )}
           {unconnected.map((provider) => (
-            <button
-              key={provider}
-              type="button"
-              className="button"
-              disabled={working}
-              onClick={() => run(() => proven("methods", () => connect(provider)))}
-            >
-              Connect {PROVIDER_LABEL[provider]}
-            </button>
+            <ConnectButton key={provider} provider={provider} working={working} run={run} />
           ))}
         </div>
       )}
@@ -300,11 +308,64 @@ export function SignInMethods() {
   );
 }
 
+/** A way in that can go, once the person confirms it. */
+function Forget({
+  label,
+  question,
+  id,
+  forget,
+  again,
+}: {
+  label: string;
+  question: string;
+  id: number;
+  forget: (id: number) => Promise<unknown>;
+  again: () => void;
+}) {
+  const act = useCallback(
+    () =>
+      proven("methods", async () => {
+        await forget(id);
+        again();
+      }),
+    [forget, id, again],
+  );
+  return <Confirm label={label} question={question} act={act} />;
+}
+
+function ConnectButton({
+  provider,
+  working,
+  run,
+}: {
+  provider: "google" | "github";
+  working: boolean;
+  run: (send: () => Promise<unknown>) => void;
+}) {
+  const onClick = useCallback(
+    () => run(() => proven("methods", () => connect(provider))),
+    [run, provider],
+  );
+  return (
+    <button type="button" className="button" disabled={working} onClick={onClick}>
+      Connect {PROVIDER_LABEL[provider]}
+    </button>
+  );
+}
+
 /** Asks the person to prove who they are before a change to how they sign
  * in, below the control that asked, and then makes the change. */
 function ProveItsYou({ asked }: { asked: "methods" | "org-link" }) {
   const retry = useStore(proving, (state) => (state.asked === asked ? state.retry : null));
   return retry && <Prove retry={retry} />;
+}
+
+function stopProving() {
+  proving.setState({ retry: null, asked: null });
+}
+
+function selectAll(event: FocusEvent<HTMLInputElement>) {
+  event.target.select();
 }
 
 function Prove({ retry }: { retry: () => Promise<void> }) {
@@ -313,47 +374,56 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
   const [password, setPassword] = useState("");
   const { working, error, run } = useAction();
   const id = useId();
-  const done = () => proving.setState({ retry: null, asked: null });
   const known = methods.data;
   const again = (["google", "github"] as const).filter((provider) =>
     known?.identities.some((each) => each.provider === provider),
   );
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    run(async () => {
-      // Too many wrong passwords sign the session out, which the pane shows.
-      await verify(password).catch((failure: Error) => {
-        if (failure instanceof Refused && failure.status === 401) {
-          void checkAccount();
-        }
-        throw failure;
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      run(async () => {
+        // Too many wrong passwords sign the session out, which the pane shows.
+        await verify(password).catch((failure: Error) => {
+          if (failure instanceof Refused && failure.status === 401) {
+            void checkAccount();
+          }
+          throw failure;
+        });
+        stopProving();
+        await retry();
       });
-      done();
-      await retry();
-    });
-  };
+    },
+    [run, password, retry],
+  );
   // Signing in again with a passkey makes this session a recent one. The
   // change waits unless it signed in to the same account.
-  const passkey = () =>
-    run(async () => {
-      const user = await signInWithPasskey();
-      if (user && now.kind === "in" && user.id === now.user.id) {
-        done();
-        await retry();
-      } else if (user) {
-        done();
-      }
-    });
+  const passkey = useCallback(
+    () =>
+      run(async () => {
+        const user = await signInWithPasskey();
+        if (user && now.kind === "in" && user.id === now.user.id) {
+          stopProving();
+          await retry();
+        } else if (user) {
+          stopProving();
+        }
+      }),
+    [run, now, retry],
+  );
+  const type = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setPassword(event.target.value),
+    [],
+  );
   const byPasskey = (known?.passkeys.length ?? 0) > 0 && supported();
   const cancel = (
-    <button type="button" className="link-button" onClick={done}>
+    <button type="button" className="link-button" onClick={stopProving}>
       Cancel
     </button>
   );
-  const heading = <h2>Confirm it's you</h2>;
+  const heading = <h2>Confirm it&apos;s you</h2>;
   return (
     <section aria-label="Confirm it's you">
-      {!known ? (
+      {known === null ? (
         <div className="pane-form">
           {heading}
           <Loading error={methods.error} what="your sign-in methods" />
@@ -371,7 +441,7 @@ function Prove({ retry }: { retry: () => Promise<void> }) {
               autoComplete="current-password"
               data-autofocus
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={type}
             />
           </div>
           {error && (
@@ -423,26 +493,28 @@ function Copyable({ label, value, note }: { label: string; value: string; note?:
   const id = useId();
   const noteId = useId();
   const [copied, setCopied] = useState(false);
+  const field = useRef<HTMLInputElement>(null);
+  const copy = useCallback(
+    () =>
+      navigator.clipboard.writeText(value).then(
+        () => setCopied(true),
+        () => field.current?.focus(),
+      ),
+    [value],
+  );
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
       <div className="link-field">
         <input
+          ref={field}
           id={id}
           readOnly
           value={value}
           aria-describedby={note ? noteId : undefined}
-          onFocus={(event) => event.target.select()}
+          onFocus={selectAll}
         />
-        <button
-          type="button"
-          onClick={() =>
-            navigator.clipboard.writeText(value).then(
-              () => setCopied(true),
-              () => document.getElementById(id)?.focus(),
-            )
-          }
-        >
+        <button type="button" onClick={copy}>
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
@@ -465,13 +537,22 @@ export function OrgSingleSignOn({ org }: { org: Org }) {
   );
   const [editing, setEditing] = useState(false);
   const { working, error, run } = useAction();
+  const again = loaded.again;
+  const setUp = useCallback(
+    () =>
+      run(async () => {
+        await createOrgSso(org.id);
+        again();
+      }),
+    [run, org.id, again],
+  );
   if (!offered?.saml) {
     return null;
   }
   return (
     <>
       <h2>Single sign-on</h2>
-      {!loaded.data ? (
+      {loaded.data === null ? (
         <Loading error={loaded.error} what="single sign-on" />
       ) : loaded.data.settings ? (
         <Connection
@@ -484,21 +565,11 @@ export function OrgSingleSignOn({ org }: { org: Org }) {
       ) : (
         <>
           <p className="muted">
-            Let {org.name}'s members sign in with your identity provider, such as Okta, Entra ID, or
-            Google Workspace. Anyone who signs in through it joins {org.name}.
+            Let {org.name}&apos;s members sign in with your identity provider, such as Okta, Entra
+            ID, or Google Workspace. Anyone who signs in through it joins {org.name}.
           </p>
           <div className="actions">
-            <button
-              type="button"
-              className="button"
-              disabled={working}
-              onClick={() =>
-                run(async () => {
-                  await createOrgSso(org.id);
-                  loaded.again();
-                })
-              }
-            >
+            <button type="button" className="button" disabled={working} onClick={setUp}>
               Set up single sign-on
             </button>
           </div>
@@ -520,7 +591,17 @@ function Connection(props: {
   edit: (editing: boolean) => void;
   changed: () => void;
 }) {
-  const { org, settings } = props;
+  const { org, settings, edit, changed } = props;
+  const saved = useCallback(() => {
+    edit(false);
+    changed();
+  }, [edit, changed]);
+  const stopEditing = useCallback(() => edit(false), [edit]);
+  const startEditing = useCallback(() => edit(true), [edit]);
+  const remove = useCallback(async () => {
+    await removeOrgSso(org.id);
+    changed();
+  }, [org.id, changed]);
   return (
     <>
       {settings.idp ? (
@@ -549,7 +630,7 @@ function Connection(props: {
             note="Send each person's email address as the Name ID. In Google Workspace, that is Primary email."
           />
           <p className="muted">
-            Optional: map each person's first and last name to attributes named{" "}
+            Optional: map each person&apos;s first and last name to attributes named{" "}
             <code>firstName</code> and <code>lastName</code>, and Microscope will use them.
           </p>
         </div>
@@ -558,19 +639,9 @@ function Connection(props: {
         <IdpForm
           org={org}
           settings={settings}
-          done={() => {
-            props.edit(false);
-            props.changed();
-          }}
-          cancel={settings.idp ? () => props.edit(false) : null}
-          abandon={
-            settings.idp
-              ? null
-              : async () => {
-                  await removeOrgSso(org.id);
-                  props.changed();
-                }
-          }
+          done={saved}
+          cancel={settings.idp ? stopEditing : null}
+          abandon={settings.idp ? null : remove}
         />
       ) : (
         settings.idp && (
@@ -583,7 +654,7 @@ function Connection(props: {
                   : `${settings.idp.certificates.length} certificates`}
               </span>
               <span className="end">
-                <button type="button" className="button small" onClick={() => props.edit(true)}>
+                <button type="button" className="button small" onClick={startEditing}>
                   Edit
                 </button>
               </span>
@@ -598,10 +669,7 @@ function Connection(props: {
           <Confirm
             label="Turn off single sign-on"
             question={`Stop signing members in through ${org.name}'s identity provider? They keep their accounts.`}
-            act={async () => {
-              await removeOrgSso(org.id);
-              props.changed();
-            }}
+            act={remove}
           />
         </div>
       )}
@@ -625,17 +693,38 @@ function IdpForm(props: {
   const [next, setNext] = useState(idp?.certificates[1] ?? "");
   const { working, error, run } = useAction();
   const ids = { entity: useId(), url: useId(), cert: useId(), next: useId(), nextNote: useId() };
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    run(async () => {
-      await configureOrgSso(props.org.id, {
-        idp_entity_id: entityId,
-        idp_sso_url: ssoUrl,
-        certificates: [certificate, next].filter((each) => each.trim()),
+  const orgId = props.org.id;
+  const done = props.done;
+  const submit = useCallback(
+    (event: FormEvent) => {
+      event.preventDefault();
+      run(async () => {
+        await configureOrgSso(orgId, {
+          idp_entity_id: entityId,
+          idp_sso_url: ssoUrl,
+          certificates: [certificate, next].filter((each) => each.trim()),
+        });
+        done();
       });
-      props.done();
-    });
-  };
+    },
+    [run, orgId, entityId, ssoUrl, certificate, next, done],
+  );
+  const typeUrl = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setSsoUrl(event.target.value),
+    [],
+  );
+  const typeEntity = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => setEntityId(event.target.value),
+    [],
+  );
+  const typeCertificate = useCallback(
+    (event: ChangeEvent<HTMLTextAreaElement>) => setCertificate(event.target.value),
+    [],
+  );
+  const typeNext = useCallback(
+    (event: ChangeEvent<HTMLTextAreaElement>) => setNext(event.target.value),
+    [],
+  );
   return (
     <form className="pane-form" onSubmit={submit} aria-label="Identity provider">
       <div className="field">
@@ -647,7 +736,7 @@ function IdpForm(props: {
           spellCheck={false}
           placeholder="https://"
           value={ssoUrl}
-          onChange={(event) => setSsoUrl(event.target.value)}
+          onChange={typeUrl}
         />
       </div>
       <div className="field">
@@ -657,7 +746,7 @@ function IdpForm(props: {
           className="input"
           spellCheck={false}
           value={entityId}
-          onChange={(event) => setEntityId(event.target.value)}
+          onChange={typeEntity}
         />
       </div>
       <div className="field">
@@ -669,7 +758,7 @@ function IdpForm(props: {
           spellCheck={false}
           placeholder="-----BEGIN CERTIFICATE-----"
           value={certificate}
-          onChange={(event) => setCertificate(event.target.value)}
+          onChange={typeCertificate}
         />
       </div>
       <div className="field">
@@ -681,7 +770,7 @@ function IdpForm(props: {
           spellCheck={false}
           aria-describedby={ids.nextNote}
           value={next}
-          onChange={(event) => setNext(event.target.value)}
+          onChange={typeNext}
         />
         <span id={ids.nextNote} className="note">
           Optional. While your identity provider rotates its certificate, either one signs in.

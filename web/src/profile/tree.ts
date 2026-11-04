@@ -103,7 +103,7 @@ export function pathOf(tree: CallTree, node: number): string[] {
     path.length === (tree.depth[node] ?? 0) + 1,
     `node ${node} at depth ${tree.depth[node]} has a path of ${path.length}`,
   );
-  return path.reverse();
+  return path.toReversed();
 }
 
 /** The node a path of names from a root reaches, or null. */
