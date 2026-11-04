@@ -526,6 +526,70 @@ async fn an_attached_groups_fork_children_join_and_are_released_with_it() {
     assert_eq!(parent.wait().code(), Some(7));
 }
 
+/// The group follows every event of its members, however far its tasks
+/// fall behind them, as a busy runtime leaves them. Here the runtime's only
+/// thread is held while the root launches and starts hundreds of threads,
+/// more events than a subscriber keeps: the group still knows the root's
+/// process, that it ran, and that it stopped.
+#[tokio::test(flavor = "current_thread")]
+async fn the_group_misses_no_member_event_however_far_it_falls_behind() {
+    use microscope::DebuggerEvent;
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    let mut group = Group::new("thread-burst", FollowPolicy::default());
+    group.break_at("burst_done").await;
+    let mut probe = group.inner.root().subscribe();
+
+    // Launched from a thread of its own, since this one runs no task until
+    // the root has stopped.
+    let root = group.inner.root();
+    let launcher = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(root.launch())
+            .expect("launch the root")
+    });
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let mut published = 0;
+    loop {
+        match probe.try_recv() {
+            Ok(DebuggerEvent::InferiorStopped { .. }) => break,
+            Ok(_) => published += 1,
+            Err(TryRecvError::Lagged(missed)) => published += missed,
+            Err(TryRecvError::Empty) => {
+                assert!(std::time::Instant::now() < deadline, "the root stops");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(TryRecvError::Closed) => panic!("the root's session ended"),
+        }
+    }
+    launcher.join().expect("the launcher");
+    assert!(published > 256, "{published} events fit in a subscriber's queue");
+
+    let (member, reason) = group.stop().await;
+    assert_eq!(member, 1);
+    assert!(function_breakpoint(&reason), "{reason:?}");
+    let InferiorState::Stopped { process_id, .. } = group
+        .inner
+        .root()
+        .snapshot()
+        .await
+        .expect("the root's state")
+        .inferior
+    else {
+        panic!("the root is stopped");
+    };
+    let root = group.inner.members().remove(0);
+    assert_eq!(root.process, Some(process_id), "{root:?}");
+    assert!(matches!(root.state, MemberState::Stopped(_)), "{root:?}");
+
+    group.inner.continue_all().await.expect("continue the root");
+    while group.next().await != GroupEvent::GroupExited {}
+    group.shutdown().await;
+}
+
 /// Reading the program to attach to, which takes seconds for a large one,
 /// runs off the runtime's threads, so other tasks, such as a web server's
 /// tabs, go on meanwhile. A FIFO that no one writes holds the read until

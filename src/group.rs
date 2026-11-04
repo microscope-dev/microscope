@@ -422,6 +422,14 @@ struct Live {
     /// the group, which the event must not report again.
     passed: Option<crate::StopId>,
 
+    /// The revision of the member's state a resync after a lag took in
+    /// whole; its events up to that revision came before it, and applying
+    /// them now would take the member back.
+    resynced: u64,
+
+    /// The last stop the group handled, which a resync may find again.
+    stopped_at: Option<crate::StopId>,
+
     /// The member's copy of each of the root's breakpoints, by the root's
     /// id, with the root's settings it was given.
     mirrored: BTreeMap<BreakpointId, (BreakpointId, Settings)>,
@@ -671,6 +679,10 @@ enum Internal {
     Event(MemberNumber, DebuggerEvent),
     PauseFailed(MemberNumber),
 
+    /// The member's events came faster than the group read them, and the
+    /// oldest were lost.
+    Lagged(MemberNumber),
+
     /// The member's session ended.
     Ended(MemberNumber),
 }
@@ -716,6 +728,8 @@ impl Driver {
                 process: None,
                 joined_at: None,
                 passed: None,
+                resynced: 0,
+                stopped_at: None,
                 mirrored: BTreeMap::new(),
                 running: false,
                 gone: false,
@@ -738,6 +752,7 @@ impl Driver {
                     match internal {
                         Internal::Event(member, event) => self.event(member, event).await,
                         Internal::PauseFailed(member) => self.paused(member, None),
+                        Internal::Lagged(member) => self.resync(member).await,
                         Internal::Ended(member) => self.ended(member),
                     }
                     self.after_internal().await;
@@ -807,9 +822,79 @@ impl Driver {
                             return;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if internal.send(Internal::Lagged(member)).is_err() {
+                            return;
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => return,
                 }
+            }
+        });
+    }
+
+    /// Catches up with member `number` after its oldest events were lost.
+    /// A lag loses the oldest events, never the newest, so the stop or
+    /// exit that ends a burst still comes; what is lost is how the member
+    /// got there: its process, that it ran, and breakpoint changes.
+    async fn resync(&mut self, number: MemberNumber) {
+        let Some(handle) = self.members.get(&number).map(|live| live.handle.clone()) else {
+            return;
+        };
+        let Ok(snapshot) = handle.snapshot().await else {
+            return;
+        };
+
+        // A member not running is left to its newest events, which a lag
+        // keeps, as its exit or detach is.
+        let applies = !matches!(snapshot.inferior, InferiorState::NotRunning);
+        if let Some(live) = self.members.get_mut(&number)
+            && applies
+        {
+            live.resynced = snapshot.revision;
+        }
+
+        match snapshot.inferior {
+            InferiorState::NotRunning => {}
+            InferiorState::Running { process_id, .. } => {
+                self.adopt_process(number, process_id);
+                self.set_running(number, true);
+                self.stops.continued();
+                self.shared
+                    .update(number, |member| member.state = MemberState::Running);
+            }
+            InferiorState::Stopped {
+                process_id,
+                stop_id,
+                reason,
+                ..
+            } => {
+                self.adopt_process(number, process_id);
+                self.stop_event(number, stop_id, reason).await;
+            }
+        }
+
+        if number == 1 {
+            self.mirror_all().await;
+        }
+    }
+
+    /// Notes member `number`'s process, whose start the group may have
+    /// missed, leaving whether it runs to the caller.
+    fn adopt_process(&mut self, number: MemberNumber, process: ProcessId) {
+        let Some(live) = self.members.get_mut(&number) else {
+            return;
+        };
+        if live.process == Some(process) {
+            return;
+        }
+        live.process = Some(process);
+        live.gone = false;
+        let command = command_line(process);
+        self.shared.update(number, |member| {
+            member.process = Some(process);
+            if !command.is_empty() {
+                member.command = command;
             }
         });
     }
@@ -919,6 +1004,8 @@ impl Driver {
             process: Some(process),
             joined_at: None,
             passed: None,
+            resynced: 0,
+            stopped_at: None,
             mirrored: BTreeMap::new(),
             running: false,
             gone: false,
@@ -1000,6 +1087,14 @@ impl Driver {
     }
 
     async fn event(&mut self, number: MemberNumber, event: DebuggerEvent) {
+        if self
+            .members
+            .get(&number)
+            .is_some_and(|live| event.revision() <= live.resynced)
+        {
+            return;
+        }
+
         match event {
             DebuggerEvent::InferiorLaunched { process_id, .. } => {
                 self.started(number, process_id);
@@ -1016,19 +1111,7 @@ impl Driver {
             }
             DebuggerEvent::InferiorStopped {
                 reason, stop_id, ..
-            } => {
-                if self.members.get(&number).is_some_and(|live| {
-                    live.joined_at == Some(stop_id) || live.passed == Some(stop_id)
-                }) {
-                    return;
-                }
-
-                self.set_running(number, false);
-                let state = MemberState::Stopped(reason.clone());
-                self.shared.update(number, |member| member.state = state);
-                self.end_temporaries(number, &reason).await;
-                self.stopped(number, reason);
-            }
+            } => self.stop_event(number, stop_id, reason).await,
             DebuggerEvent::InferiorExited { status, .. } => {
                 if let Some(live) = self.members.get_mut(&number) {
                     live.running = false;
@@ -1059,6 +1142,29 @@ impl Driver {
             DebuggerEvent::BreakpointsChanged { .. } if number == 1 => self.mirror_all().await,
             _ => {}
         }
+    }
+
+    /// Handles member `number`'s stop `stop_id`, from its event or from a
+    /// resync after a lag.
+    async fn stop_event(
+        &mut self,
+        number: MemberNumber,
+        stop_id: crate::StopId,
+        reason: StopReason,
+    ) {
+        let Some(live) = self.members.get_mut(&number) else {
+            return;
+        };
+        if [live.joined_at, live.passed, live.stopped_at].contains(&Some(stop_id)) {
+            return;
+        }
+        live.stopped_at = Some(stop_id);
+
+        self.set_running(number, false);
+        let state = MemberState::Stopped(reason.clone());
+        self.shared.update(number, |member| member.state = state);
+        self.end_temporaries(number, &reason).await;
+        self.stopped(number, reason);
     }
 
     fn started(&mut self, number: MemberNumber, process: ProcessId) {

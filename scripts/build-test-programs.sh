@@ -2191,6 +2191,8 @@ build_fixture gcc "$c_fixtures_dir/output-streams.c" "$output_dir/output-streams
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/stdin-digest.c" "$output_dir/stdin-digest" \
     -O0 -g3 -fPIE -pie
+build_fixture gcc "$c_fixtures_dir/thread-burst.c" "$output_dir/thread-burst" \
+    -O0 -g3 -fPIE -pie -pthread
 build_c_fixture_directory gcc "$c_fixtures_dir/life" "$output_dir/life" -O0 -g3 -fPIE -pie
 # Programs whose data the built-in renderers draw, each through a views
 # file beside it, or through Draw as… alone.
