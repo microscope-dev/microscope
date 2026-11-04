@@ -97,8 +97,11 @@ const marksField = StateField.define<Marks>({
 });
 
 class BreakpointMarker extends GutterMarker {
-  constructor(readonly kind: MarkKind) {
+  readonly kind: MarkKind;
+
+  constructor(kind: MarkKind) {
     super();
+    this.kind = kind;
   }
   override eq(other: GutterMarker): boolean {
     return other instanceof BreakpointMarker && other.kind === this.kind;
@@ -130,8 +133,11 @@ const markers = new Map<MarkKind, BreakpointMarker>(
 );
 
 class Values extends WidgetType {
-  constructor(readonly values: readonly InlineValue[]) {
+  readonly values: readonly InlineValue[];
+
+  constructor(values: readonly InlineValue[]) {
     super();
+    this.values = values;
   }
   override eq(other: WidgetType): boolean {
     return (
@@ -164,8 +170,11 @@ class Values extends WidgetType {
 
 /** Why the program stopped, as a line of its own under the one it stopped at. */
 class Note extends WidgetType {
-  constructor(readonly text: string) {
+  readonly text: string;
+
+  constructor(text: string) {
     super();
+    this.text = text;
   }
   override eq(other: WidgetType): boolean {
     return other instanceof Note && other.text === this.text;

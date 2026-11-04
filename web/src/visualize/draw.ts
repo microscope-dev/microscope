@@ -47,8 +47,10 @@ export function buildPicture(picture: Picture, onSelect?: OnSelect): HTMLElement
 /** Hover text the page shows itself, beside the pointer. */
 export class Tip {
   readonly element: HTMLDivElement;
+  private readonly holder: HTMLElement;
 
-  constructor(private readonly holder: HTMLElement) {
+  constructor(holder: HTMLElement) {
+    this.holder = holder;
     this.element = document.createElement("div");
     this.element.classList.add("drawing-tip");
     this.element.setAttribute("role", "tooltip");
