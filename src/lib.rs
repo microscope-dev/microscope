@@ -495,6 +495,30 @@ impl Program {
         Self::from_executable_source(executable)
     }
 
+    /// Reads the program process `process` runs, from `executable` when
+    /// given, finding its modules' separate debug files as `debug_files`
+    /// says. The read runs on a blocking thread: debug information takes
+    /// seconds to read for a large program, and a FIFO never ends, either
+    /// of which would hold up every other task on a runtime thread.
+    async fn of_process(
+        process: ProcessId,
+        executable: Option<&Path>,
+        debug_files: &DebugFileOptions,
+    ) -> Result<Self> {
+        let executable = executable.map(Path::to_owned);
+        let debug_files = debug_info::DebugFileSearch::new(debug_files);
+        tokio::task::spawn_blocking(move || {
+            let mut source = match executable {
+                Some(executable) => backend::executable_source(&executable)?,
+                None => backend::process_executable_source(process)?,
+            };
+            source.debug_files = debug_files;
+            Self::from_executable_source(source)
+        })
+        .await
+        .map_err(|_| Error::internal("reading the program to attach to panicked"))?
+    }
+
     fn from_executable_source(executable: backend::ExecutableSource) -> Result<Self> {
         let debug_info = debug_info::load_program(
             &executable.display_path,
@@ -626,21 +650,8 @@ impl Debugger {
         executable: Option<&Path>,
         debug_files: &DebugFileOptions,
     ) -> Result<Self> {
-        let mut executable = match executable {
-            Some(executable) => backend::executable_source(executable)?,
-            None => backend::process_executable_source(process)?,
-        };
-
-        executable.debug_files = debug_info::DebugFileSearch::new(debug_files);
-
-        Self::attach_from_source(process, executable).await
-    }
-
-    async fn attach_from_source(
-        process: ProcessId,
-        executable: backend::ExecutableSource,
-    ) -> Result<Self> {
-        let debugger = Self::for_program(Program::from_executable_source(executable)?)?;
+        let program = Program::of_process(process, executable, debug_files).await?;
+        let debugger = Self::for_program(program)?;
         let attached = debugger
             .handle
             .request(|reply| Request::Attach {

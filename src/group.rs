@@ -230,12 +230,8 @@ impl ProcessGroup {
         policy: FollowPolicy,
         debug_files: &crate::DebugFileOptions,
     ) -> Result<Self> {
-        let mut source = match executable {
-            Some(executable) => backend::executable_source(executable)?,
-            None => backend::process_executable_source(process)?,
-        };
-        source.debug_files = crate::debug_info::DebugFileSearch::new(debug_files);
-        let group = Self::new(Program::from_executable_source(source)?, policy)?;
+        let program = Program::of_process(process, executable, debug_files).await?;
+        let group = Self::new(program, policy)?;
         let mut events = group.subscribe();
         let attached = group
             .root

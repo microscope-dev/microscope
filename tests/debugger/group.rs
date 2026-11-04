@@ -526,6 +526,75 @@ async fn an_attached_groups_fork_children_join_and_are_released_with_it() {
     assert_eq!(parent.wait().code(), Some(7));
 }
 
+/// Reading the program to attach to, which takes seconds for a large one,
+/// runs off the runtime's threads, so other tasks, such as a web server's
+/// tabs, go on meanwhile. A FIFO that no one writes holds the read until
+/// the test opens it for writing.
+#[tokio::test(flavor = "current_thread")]
+async fn reading_the_program_to_attach_to_leaves_the_runtime_free() {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let scratch = support::ScratchDir::new("attach-fifo");
+    let fifo = scratch.path().join("program");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).expect("make the FIFO");
+
+    // A read that holds the runtime's only thread stops this test's task
+    // too, so a thread of its own ends the read at the deadline.
+    let (finished, watching) = std::sync::mpsc::channel::<()>();
+    let expired = Arc::new(AtomicBool::new(false));
+    let watchdog = std::thread::spawn({
+        let (fifo, expired) = (fifo.clone(), Arc::clone(&expired));
+        move || {
+            if watching.recv_timeout(DEADLINE).is_err() {
+                expired.store(true, Ordering::SeqCst);
+                drop(fs::OpenOptions::new().write(true).open(&fifo));
+            }
+        }
+    });
+
+    let attach = tokio::spawn({
+        let fifo = fifo.clone();
+        async move {
+            ProcessGroup::attach(
+                ProcessId::new(u64::from(std::process::id())),
+                Some(&fifo),
+                FollowPolicy::default(),
+                &microscope::DebugFileOptions::default(),
+            )
+            .await
+        }
+    });
+
+    // A writer opens without waiting only once the read has the FIFO open.
+    let writer = loop {
+        assert!(
+            !expired.load(Ordering::SeqCst),
+            "the runtime ran nothing else while the program was read"
+        );
+        match fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(&fifo)
+        {
+            Ok(writer) => break writer,
+            Err(error) if error.raw_os_error() == Some(nix::libc::ENXIO) => {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            Err(error) => panic!("open the FIFO for writing: {error}"),
+        }
+    };
+    drop(writer);
+
+    let attached = timeout(DEADLINE, attach)
+        .await
+        .expect("the attach ends")
+        .expect("the attach task");
+    assert!(attached.is_err(), "an empty file is no program");
+    let _ = finished.send(());
+    watchdog.join().expect("the watchdog");
+}
+
 /// The node on `PATH`, which the dev shell provides.
 fn node() -> std::path::PathBuf {
     std::env::var_os("PATH")
