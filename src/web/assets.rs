@@ -63,9 +63,12 @@ pub fn find(path: &str) -> Option<Asset> {
 /// The page as served under `base`: the build names its files relative to
 /// the page (`./assets/…`), which a deeper route such as `/s/k7q2/stop/1`
 /// would resolve wrongly, so they are rooted at `base`, and the script finds
-/// `base` in a `microscope-base` meta tag.
+/// `base` in a `microscope-base` meta tag. The page's own `<base>`, which
+/// roots them for a host that serves the build as it is, goes: the policy
+/// here refuses it, and the files no longer need it.
 pub fn rooted(page: &[u8], base: &str) -> Vec<u8> {
     let page = String::from_utf8_lossy(page)
+        .replace("<base href=\"/\" />", "")
         .replace("src=\"./", &format!("src=\"{base}"))
         .replace("href=\"./", &format!("href=\"{base}"));
 
@@ -119,6 +122,21 @@ mod tests {
         }
 
         assert!(find("/missing.js").is_none());
+    }
+
+    #[test]
+    fn the_built_page_is_rooted_at_the_base_without_its_own() {
+        let built = "<!doctype html><head><meta charset=\"utf-8\" />\
+                     <base href=\"/\" /><link rel=\"icon\" href=\"./favicon.svg\" />\
+                     <script type=\"module\" src=\"./assets/index-1.js\"></script></head>";
+        let page = String::from_utf8(rooted(built.as_bytes(), "/debug/7/")).expect("UTF-8");
+
+        assert!(!page.contains("<base"), "{page}");
+        assert!(page.contains("href=\"/debug/7/favicon.svg\""), "{page}");
+        assert!(
+            page.contains("src=\"/debug/7/assets/index-1.js\""),
+            "{page}"
+        );
     }
 
     #[test]
