@@ -31,6 +31,7 @@ export interface Results {
   step: null;
   stepTargets: P.StepTargets;
   jump: null;
+  advance: null;
   setFocus: null;
   backtrace: P.Backtrace;
   sources: P.SourceFiles;
@@ -58,6 +59,7 @@ export interface Results {
   setException: null;
   modules: P.Modules;
   functions: P.Functions;
+  resolve: P.Resolved;
   tasks: P.TaskList;
   /** With the bytes its inputs' numbers and bytes lie in, when any. */
   draw: P.Drawing & { payload?: Uint8Array };

@@ -127,3 +127,56 @@ test("the console evaluates, runs commands, and completes in the frame shown", a
   await line.press("ArrowUp");
   await expect(line).toHaveValue("frame");
 });
+
+test("the console steps, runs to a line, and continues as the toolbar does", async ({
+  page,
+  microscope,
+}) => {
+  await join(page, microscope.link);
+  await stopInHandleRequest(page);
+  await page.getByRole("tab", { name: "Console" }).click();
+  const line = page.getByRole("textbox", { name: "Console" });
+  const said = page.getByTestId("console").getByRole("listitem");
+  const pc = page.locator(".cm-pc-line");
+
+  await line.fill("n");
+  await line.press("Enter");
+  await expect(pc).toContainText("switch (req->op)");
+  await expect(said.last()).toContainText("kvstore.c:93");
+
+  await line.fill("until kvstore.c:112");
+  await line.press("Enter");
+  await expect(pc).toContainText("pthread_mutex_unlock(&s->lock);");
+  await expect(said.last()).toContainText("kvstore.c:112");
+
+  // The breakpoint still stands, so the next request stops there again.
+  await line.fill("c");
+  await line.press("Enter");
+  await expect(pc).toContainText("int status = 0;");
+  await expect(said.last()).toContainText("kvstore.c:92");
+
+  // An empty line repeats the continue.
+  await line.press("Enter");
+  await expect(said).toHaveCount(4);
+  await expect(said.last()).toContainText("kvstore.c:92");
+});
+
+test("disassemble in the console opens the Disassembly view", async ({ page, microscope }) => {
+  await join(page, microscope.link);
+  await stopInHandleRequest(page);
+  await page.getByRole("tab", { name: "Console" }).click();
+  const line = page.getByRole("textbox", { name: "Console" });
+  const said = page.getByTestId("console").getByRole("listitem");
+  const shown = page.getByTestId("disassembly-function");
+
+  await line.fill("disas table_find");
+  await line.press("Enter");
+  await expect(shown).toHaveText(/^table_find/u);
+  await expect(said.last()).toContainText("in Disassembly");
+  await expect(page.getByTestId("console").locator("pre")).toHaveCount(0);
+
+  await line.fill("disassemble");
+  await line.press("Enter");
+  await expect(shown).toHaveText(/^handle_request/u);
+  await expect(page.getByTestId("disassembly").locator(".asm-row.pc")).toBeVisible();
+});

@@ -103,6 +103,10 @@ pub enum Request {
     /// location in its function.
     Jump(Jump),
 
+    /// Runs until one thread of a stop reaches a location, or its frame
+    /// returns first.
+    Advance(Advance),
+
     /// Says where this tab is looking, for everyone's presence list.
     SetFocus(SetFocus),
 
@@ -181,6 +185,9 @@ pub enum Request {
 
     /// Functions whose names hold the query, best matches first.
     Functions(FunctionQuery),
+
+    /// Where a function or another symbol is in the running program.
+    Resolve(SymbolName),
 
     /// The tasks of the program's runtimes at a stop.
     Tasks(StopAt),
@@ -392,6 +399,26 @@ pub struct Jump {
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
     pub task: Option<TaskKey>,
+
+    /// `FILE:LINE`, or another location a breakpoint takes.
+    pub location: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Advance {
+    /// The stop run from, which must still be current.
+    pub stop: u64,
+    pub thread: u64,
+
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub task: Option<TaskKey>,
+
+    /// The frame whose return ends the advance first.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub frame: u32,
 
     /// `FILE:LINE`, or another location a breakpoint takes.
     pub location: String,
@@ -744,6 +771,12 @@ pub struct SignalPolicy {
     pub stop: bool,
     pub print: bool,
     pub pass: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SymbolName {
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2201,6 +2234,14 @@ pub struct SourceFiles {
     pub note: Option<String>,
 }
 
+/// The answer to `resolve`.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Resolved {
+    /// As hexadecimal, such as `0x401136`.
+    pub address: String,
+}
+
 /// The answer to `functions`.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -2813,6 +2854,7 @@ mod tests {
         Continue::decl,
         Step::decl,
         Jump::decl,
+        Advance::decl,
         StepKind::decl,
         SetFocus::decl,
         Focus::decl,
@@ -2862,6 +2904,8 @@ mod tests {
         SourceFiles::decl,
         FunctionQuery::decl,
         Functions::decl,
+        SymbolName::decl,
+        Resolved::decl,
         FunctionMatch::decl,
         SourceText::decl,
         Added::decl,

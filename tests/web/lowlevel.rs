@@ -98,6 +98,16 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
     assert_eq!(elsewhere["function"], "table_find");
     assert_eq!(elsewhere["marked"], Value::Null);
 
+    // A function's name finds its entry, which the call above goes to.
+    let resolved = tab.ok("resolve", json!({"name": "table_find"})).await;
+    assert_eq!(resolved["address"], address);
+    let (kind, message) = tab
+        .request("resolve", json!({"name": "no_such_function"}))
+        .await
+        .expect_err("an unknown name");
+    assert_eq!(kind, "failed");
+    assert!(message.contains("no_such_function"), "{message}");
+
     // AT&T syntax, for those who read it.
     let mut att = at.clone();
     att["syntax"] = "att".into();

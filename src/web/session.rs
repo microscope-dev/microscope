@@ -552,6 +552,7 @@ impl Session {
                 | Request::Exceptions
                 | Request::Modules
                 | Request::Functions(_)
+                | Request::Resolve(_)
                 | Request::Tasks(_)
                 | Request::Renderer(_)
                 | Request::Renderers
@@ -654,6 +655,12 @@ impl Session {
             Request::Functions(query) => {
                 let (_, images) = self.current_images().await?;
                 Ok(to_value(&inspect::functions(&images, &query).await?))
+            }
+            Request::Resolve(protocol::SymbolName { name }) => {
+                let address = self.current_handle().await?.runtime_address(&name).await?;
+                Ok(to_value(&protocol::Resolved {
+                    address: super::describe::hex(address.get()),
+                }))
             }
             Request::Source(protocol::SourcePath { path }) => {
                 let (handle, images) = self.current_images().await?;
@@ -795,6 +802,7 @@ impl Session {
             Request::Continue(protocol::Continue { stop }) => self.resume(connection, stop).await?,
             Request::Step(step) => self.step(connection, step).await?,
             Request::Jump(jump) => self.jump(connection, jump).await?,
+            Request::Advance(advance) => self.advance(connection, advance).await?,
             Request::Pause => {
                 self.pause(connection).await?;
                 "paused".to_owned()
@@ -1016,6 +1024,53 @@ impl Session {
 
         handle
             .start_jump(context.stop, context.execution, spec)
+            .await?;
+
+        Ok(action)
+    }
+
+    async fn advance(
+        &self,
+        connection: u32,
+        advance: protocol::Advance,
+    ) -> Result<String, Failure> {
+        let handle = self.current_handle().await?;
+        let InferiorState::Stopped { process_id, .. } = handle.snapshot().await?.inferior else {
+            return Err(Failure::new(
+                ErrorKind::NotStopped,
+                "the program is not stopped",
+            ));
+        };
+
+        let location = advance.location.trim();
+        let spec = crate::cli::commands::parse_breakpoint_location(location)
+            .map_err(|error| Failure::new(ErrorKind::Invalid, format!("{error:#}")))?
+            .filter(|_| !location.is_empty())
+            .ok_or_else(|| {
+                Failure::new(
+                    ErrorKind::Invalid,
+                    "a thread advances to FILE:LINE, FILE:FUNCTION, a function, or 0xADDRESS",
+                )
+            })?;
+        let context = inspect::context(
+            &handle,
+            advance.stop,
+            protocol::execution(advance.thread, advance.task),
+            advance.frame,
+        )
+        .await?;
+        let action = format!("advanced thread {} to {location}", advance.thread);
+        self.caused(connection, &action);
+
+        handle
+            .start_advance(
+                context.stop,
+                context.execution,
+                context.frame,
+                spec,
+                ResumeScope::Process(process_id),
+                ExceptionDisposition::Pass,
+            )
             .await?;
 
         Ok(action)

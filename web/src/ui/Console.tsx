@@ -1,7 +1,8 @@
 // The console: expressions and microscope's commands, in the frame the tab
-// shows. Tab completes from the frame's names, members, and registers, and
-// the arrow keys walk the lines run before, or the completions while they
-// are open.
+// shows, and run control, which the page runs itself (`console.ts`). Tab
+// completes from the frame's names, members, and registers, and the arrow
+// keys walk the lines run before, or the completions while they are open. An
+// empty line repeats the last step, and Ctrl+L clears.
 
 import {
   type ChangeEvent,
@@ -14,11 +15,27 @@ import {
   useState,
 } from "react";
 import { useStore } from "zustand";
+import type { StoreApi } from "zustand";
 
+import { action } from "../actions";
 import { assert } from "../assert";
-import { commonPrefix, consoleStore, finished, started } from "../console";
+import type { Connection } from "../connection";
+import {
+  asked,
+  clearConsole,
+  commonPrefix,
+  consoleStore,
+  finished,
+  outcome,
+  repeats,
+  RUN_HELP,
+  started,
+} from "../console";
+import type { At, Look } from "../focus";
+import type { Model } from "../model";
 import type { Completion } from "../protocol";
-import { useConnection } from "../store";
+import { useConnection, useStoreApi } from "../store";
+import { useLook } from "./navigation";
 import { useFollowBottom } from "./scroll";
 import { LocalExpansion, ValueRow } from "./ValueTree";
 import { useFocus } from "./Workspace";
@@ -34,8 +51,9 @@ export function Console() {
       <div className="pane-body console" ref={ref} onScroll={onScroll} data-testid="console">
         {entries.length === 0 ? (
           <div className="empty">
-            Expressions and microscope&apos;s commands run in the frame shown. Tab completes; ↑ and
-            ↓ recall.
+            Expressions and microscope&apos;s commands run in the frame shown, and next, step,
+            continue, and finish run the program. Tab completes; ↑ and ↓ recall; help lists the
+            commands.
           </div>
         ) : (
           <LocalExpansion>
@@ -46,6 +64,7 @@ export function Console() {
                     <span className="prompt">›</span> {entry.line}
                   </div>
                   {entry.error !== undefined && <pre className="error">{entry.error}</pre>}
+                  {entry.said !== undefined && <div className="console-said">{entry.said}</div>}
                   {typeof entry.result?.output === "string" && <pre>{entry.result.output}</pre>}
                   {entry.result?.row && (
                     <ul className="value-list">
@@ -73,6 +92,8 @@ interface Choices {
 function ConsoleInput() {
   const { at, stale } = useFocus();
   const connection = useConnection();
+  const store = useStoreApi();
+  const look = useLook();
   const history = useStore(consoleStore, (state) => state.history);
   const [text, setText] = useState("");
   const [recalled, setRecalled] = useState<number | null>(null);
@@ -83,19 +104,18 @@ function ConsoleInput() {
   const frame = at && !stale ? at : null;
 
   const run = useCallback(() => {
-    const line = text.trim();
+    const typed = text.trim();
+    // An empty line repeats the last step or continue, and nothing else.
+    const last = consoleStore.getState().entries.at(-1)?.line;
+    const line = typed || (last !== undefined && repeats(last) ? last : "");
     if (!line) {
       return;
     }
     setText("");
     setRecalled(null);
     setChoices(null);
-    const id = started(line, frame?.stop ?? null);
-    connection
-      .request("console", frame ? { line, ...frame } : { line })
-      .then((result) => finished(id, { result }))
-      .catch((failure: Error) => finished(id, { error: failure.message }));
-  }, [text, frame, connection]);
+    runLine(line, { store, connection, at, frame, look });
+  }, [text, at, frame, store, connection, look]);
 
   const insert = useCallback(
     (start: number, label: string, cursor: number) => {
@@ -201,7 +221,10 @@ function ConsoleInput() {
   const active = choices?.active ?? null;
   const key = useCallback(
     (event: KeyboardEvent) => {
-      if (event.key === "Tab" && !event.shiftKey) {
+      if (event.key === "l" && event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        clearConsole();
+      } else if (event.key === "Tab" && !event.shiftKey) {
         event.preventDefault();
         complete();
       } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -262,6 +285,168 @@ function ConsoleInput() {
         onKeyDown={key}
       />
     </form>
+  );
+}
+
+interface Context {
+  store: StoreApi<Model>;
+  connection: Connection;
+  /** Where the tab looks, even at a stop the program has left. */
+  at: At | null;
+  /** Where lines run: `at`, while its stop is the program's. */
+  frame: At | null;
+  look: ReturnType<typeof useLook>;
+}
+
+/** Runs one console line, recording it and its answer. */
+function runLine(line: string, { store, connection, at, frame, look }: Context): void {
+  const wanted = asked(line);
+  if (wanted.kind === "clear") {
+    clearConsole();
+    return;
+  }
+  const id = started(line, frame?.stop ?? null);
+  const fail = (failure: Error) => finished(id, { error: failure.message });
+  switch (wanted.kind) {
+    case "usage":
+      finished(id, { error: wanted.message });
+      return;
+    case "disassemble": {
+      // The view disassembles at the frame the tab shows, so it needs one.
+      if (!at) {
+        finished(id, { error: "the program is not stopped" });
+        return;
+      }
+      const show = (address: string | null, said: string) => {
+        look((current) => showingCode(current, address), { replace: false });
+        finished(id, { said });
+      };
+      const target = wanted.target;
+      if (target === null) {
+        show(null, "the frame's code, in Disassembly");
+      } else if ("address" in target) {
+        show(target.address, `${target.address}, in Disassembly`);
+      } else {
+        connection
+          .request("resolve", { name: target.name })
+          .then(({ address }) => {
+            show(address, `${target.name} at ${address}, in Disassembly`);
+            return null;
+          })
+          .catch(fail);
+      }
+      return;
+    }
+    case "server":
+      connection
+        .request("console", frame ? { line, ...frame } : { line })
+        .then((result) => {
+          // Plain help lists microscope's commands; the page adds its own.
+          const help = /^(?:help|h|\?)$/u.test(line) && typeof result.output === "string";
+          finished(id, { result: help ? { ...result, output: result.output + RUN_HELP } : result });
+          return null;
+        })
+        .catch(fail);
+      return;
+    case "action":
+    case "start": {
+      const model = store.getState();
+      const inferior = model.state?.inferior.state;
+      const name =
+        wanted.kind === "action"
+          ? wanted.action
+          : inferior === "notStarted" || inferior === "exited"
+            ? "continue"
+            : "restart";
+      const chosen = action(name, model, at);
+      if (!chosen.enabled) {
+        finished(id, { error: chosen.reason });
+        return;
+      }
+      follow(store, id, () => chosen.run(connection)).catch(fail);
+      return;
+    }
+    case "advance":
+    case "into": {
+      // Both move the stopped thread shown, as a step does.
+      const model = store.getState();
+      const step = action("over", model, at);
+      const inferior = model.state?.inferior;
+      if (!step.enabled || inferior?.state !== "stopped") {
+        finished(id, { error: step.enabled ? "the program is not stopped" : step.reason });
+        return;
+      }
+      const stop = inferior.stop;
+      const thread = at?.thread ?? inferior.thread;
+      const task = at?.task ?? null;
+      if (wanted.kind === "advance") {
+        const location = wanted.location;
+        const frameShown = at?.frame ?? 0;
+        follow(store, id, () =>
+          connection.request("advance", { stop, thread, task, frame: frameShown, location }),
+        ).catch(fail);
+        return;
+      }
+      const call = wanted.call;
+      connection
+        .request("stepTargets", { stop, thread, task })
+        .then(({ calls }) => {
+          const address = call.startsWith("*") ? call.slice(1).toLowerCase() : null;
+          const chosen = calls.find((candidate) =>
+            address === null
+              ? candidate.callee === call
+              : BigInt(candidate.call) === BigInt(address),
+          );
+          if (!chosen) {
+            const named = calls.map((candidate) => candidate.callee ?? candidate.call);
+            throw new Error(
+              named.length === 0
+                ? "this line calls nothing to step into"
+                : `this line calls no ${call}; it calls ${named.join(", ")}`,
+            );
+          }
+          return follow(store, id, () =>
+            connection.request("step", { stop, thread, task, kind: "into", call: chosen.call }),
+          );
+        })
+        .catch(fail);
+    }
+  }
+}
+
+/** The Disassembly view, at `address` or else the frame's own code. */
+function showingCode(current: Look, address: string | null): Look {
+  const { asm: _asm, ...kept } = current;
+  return { ...kept, ...(address === null ? {} : { asm: address }), view: "disassembly" };
+}
+
+/**
+ * Sends a run-control request and says in entry `id` where the program
+ * stops after it. It watches from before the request goes, since the new
+ * state can arrive before the answer.
+ */
+function follow(store: StoreApi<Model>, id: number, send: () => Promise<unknown>): Promise<null> {
+  const before = store.getState().state?.inferior;
+  let settled = false;
+  const unsubscribe = store.subscribe((model) => {
+    const said = outcome(before, model.state?.inferior);
+    if (said !== null) {
+      settled = true;
+      unsubscribe();
+      finished(id, { said });
+    }
+  });
+  return send().then(
+    () => {
+      if (!settled && store.getState().state?.inferior.state === "running") {
+        finished(id, { said: "running…" });
+      }
+      return null;
+    },
+    (failure: unknown) => {
+      unsubscribe();
+      throw failure;
+    },
   );
 }
 

@@ -70,6 +70,21 @@ tabs control the same session and receive the same stops.
 The URL records the selected stop, frame, source, panel, and memory location.
 Open it in another tab to restore that view while the state remains available.
 
+## Use the console
+
+The Console pane evaluates expressions and runs commands in the frame the tab
+shows. Run-control commands work like the toolbar buttons: `c`, `n`, `s`, `f`,
+`si`, `ni`, `pause`, `kill`, and `run` act on the selected thread and frame.
+After each one, the console says where the program stopped, for example `stop
+#4 · stopped after source next · kvstore.c:102`. `until LOCATION` (or
+`advance`) runs the thread to a line or function. `step FUNCTION` steps into
+that call on the current line. `disassemble` (or `disas`) opens the Disassembly
+view at the frame's code, a function, or a `0x` address; with an instruction
+count it prints the instructions in the console instead. Press Enter on an
+empty line to repeat the last step or continue. `clear` or Ctrl+L empties the
+console, and `help` lists every command. Program output stays in the Output
+pane.
+
 ## Draw values
 
 Views can attach visualizers to values. The Drawings panel can show a buffer as

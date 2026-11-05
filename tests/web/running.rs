@@ -461,6 +461,60 @@ async fn a_thread_jumps_to_a_line_and_registers_change_through_their_rows() {
     );
 }
 
+/// A tab runs one thread of a stop until it reaches a line, as the
+/// terminal's `advance` does, and an advance from an old stop or to no
+/// place is refused.
+#[tokio::test]
+async fn a_thread_advances_to_a_line() {
+    let web = Web::start("advance", &[&fixture("kvstore")]);
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    let breakpoint = tab
+        .ok("addBreakpoint", json!({"location": "kvstore.c:92"}))
+        .await;
+    tab.ok("continue", json!({})).await;
+    let stopped = tab.inferior("stopped").await;
+    let (stop, thread) = (
+        stopped["inferior"]["stop"].clone(),
+        stopped["inferior"]["thread"].clone(),
+    );
+    // Another worker reaching the breakpoint would end the advance first.
+    tab.ok("removeBreakpoint", json!({"id": breakpoint["id"]}))
+        .await;
+
+    let (kind, _) = tab
+        .request(
+            "advance",
+            json!({"stop": stop, "thread": thread, "location": ""}),
+        )
+        .await
+        .expect_err("an advance to nowhere");
+    assert_eq!(kind, "invalid");
+
+    tab.ok(
+        "advance",
+        json!({"stop": stop, "thread": thread, "location": "kvstore.c:112"}),
+    )
+    .await;
+    let advanced = tab
+        .state("the advance", |state| {
+            state["inferior"]["state"] == "stopped" && state["inferior"]["stop"] != stop
+        })
+        .await;
+    assert_eq!(advanced["inferior"]["thread"], thread, "{advanced}");
+    assert_eq!(advanced["inferior"]["place"]["line"], 112, "{advanced}");
+
+    let (kind, _) = tab
+        .request(
+            "advance",
+            json!({"stop": stop, "thread": thread, "location": "kvstore.c:112"}),
+        )
+        .await
+        .expect_err("an advance from an earlier stop");
+    assert_eq!(kind, "staleStop");
+}
+
 /// A step into one call of a line goes into that call, running the
 /// line's others to their returns.
 #[tokio::test]

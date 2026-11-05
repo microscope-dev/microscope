@@ -2070,6 +2070,11 @@ textarea.input {
   margin-left: -6px;
 }
 
+/* What a run-control line did, such as where the program stopped. */
+.console-said {
+  color: var(--ink-2);
+}
+
 .console-line {
   color: var(--ink-3);
 }

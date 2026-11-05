@@ -1398,19 +1398,45 @@ impl DebuggerHandle {
         let selection = self.stopped_selection().await?;
         let mut events = self.subscribe();
         let execution = self
-            .request(|reply| Request::Advance {
-                process_id: selection.process,
-                stop_id: selection.stop,
-                context: selection.execution,
-                frame: selection.frame,
+            .start_advance(
+                selection.stop,
+                selection.execution,
+                selection.frame,
                 spec,
-                scope: ResumeScope::Process(selection.process),
-                exception: ExceptionDisposition::Pass,
-                reply,
-            })
+                ResumeScope::Process(selection.process),
+                ExceptionDisposition::Pass,
+            )
             .await?;
 
         self.wait_for_execution(&mut events, execution).await
+    }
+
+    /// Starts an advance from one stop, as [`Self::advance`] does from the
+    /// selection: the thread of `context` runs until it reaches `spec`, or
+    /// `frame` returns first.
+    pub async fn start_advance(
+        &self,
+        stop_id: StopId,
+        context: impl Into<ExecutionContext>,
+        frame: StackFrameId,
+        spec: BreakpointSpec,
+        scope: ResumeScope,
+        exception: ExceptionDisposition,
+    ) -> Result<ExecutionId> {
+        let process_id = self.stopped_selection().await?.process;
+        let context = context.into();
+
+        self.request(|reply| Request::Advance {
+            process_id,
+            stop_id,
+            context,
+            frame,
+            spec,
+            scope,
+            exception,
+            reply,
+        })
+        .await
     }
 
     /// Moves one stopped thread, without running it, to resume at the one
