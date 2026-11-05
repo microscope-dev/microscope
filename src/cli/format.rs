@@ -3286,6 +3286,16 @@ pub fn group_event(
             renderer.paint(Role::Metadata, process),
             renderer.paint(Role::Metadata, program.display())
         ),
+        GroupEvent::BreakpointNotMirrored {
+            member: behind,
+            breakpoint,
+            reason,
+        } => format!(
+            "{}: breakpoint {} could not be updated in {}: {reason}",
+            renderer.paint(Role::Error, "error"),
+            renderer.paint(Role::Metadata, breakpoint),
+            member(*behind)
+        ),
         GroupEvent::MemberLost { member: lost } => format!(
             "{}: the session of {} failed, and released its process to run on its own",
             renderer.paint(Role::Error, "error"),

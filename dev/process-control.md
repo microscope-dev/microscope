@@ -398,7 +398,10 @@ joined. While the member is in its first stop, the driver copies every one
 of the root's breakpoints into it, then resumes it unless the group is
 stopped, so a member runs no instruction without them. The root's
 breakpoints are the group's. A change to them is mirrored into every
-member. `Shared::copies` maps each member's copy back to the root's
+member. A change a member fails to take, such as one to a copy a client
+removed from the member, is reported as `BreakpointNotMirrored` and is not
+recorded as mirrored, so each later change to the root's breakpoints tries
+it again. `Shared::copies` maps each member's copy back to the root's
 breakpoint, and `GroupHandle::group_breakpoint` translates a member's hit
 for clients. The first stop a temporary breakpoint causes in any member
 deletes the group's breakpoint.

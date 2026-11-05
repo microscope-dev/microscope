@@ -1033,6 +1033,18 @@ impl Session {
                     ))
                     .await
             }
+            GroupEvent::BreakpointNotMirrored {
+                member,
+                breakpoint,
+                reason,
+            } => {
+                self.client
+                    .important(format!(
+                        "breakpoint {breakpoint} could not be updated in process [{member}]: \
+                         {reason}"
+                    ))
+                    .await
+            }
             GroupEvent::MemberLost { member } => {
                 self.client
                     .important(format!(

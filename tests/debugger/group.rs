@@ -5,7 +5,8 @@ use super::*;
 use std::collections::BTreeSet;
 
 use microscope::{
-    FollowMode, FollowPolicy, GroupEvent, MemberNumber, MemberState, ProcessGroup, Program,
+    BreakpointId, FollowMode, FollowPolicy, GroupEvent, MemberNumber, MemberState, ProcessGroup,
+    Program,
 };
 use tokio::sync::broadcast;
 
@@ -1064,6 +1065,75 @@ async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
             "{process:?} is {state:?}"
         );
     }
+}
+
+/// Waits for the group to report that `member` did not take a change to
+/// the group's `breakpoint`.
+async fn not_mirrored(group: &mut Group, member: MemberNumber, breakpoint: BreakpointId) {
+    loop {
+        if let GroupEvent::BreakpointNotMirrored {
+            member: behind,
+            breakpoint: missed,
+            ..
+        } = group.next().await
+            && (behind, missed) == (member, breakpoint)
+        {
+            return;
+        }
+    }
+}
+
+/// A member that fails to take a change to the group's breakpoint must not
+/// look as if it had it: the group reports the failure, and does not record
+/// the change as mirrored, so the next change reports it again.
+#[tokio::test]
+async fn a_breakpoint_change_a_member_fails_to_take_is_reported_and_stays_due() {
+    let mut group = Group::new("process-tree", FollowPolicy::default());
+    let root = group.inner.root();
+    let original = root
+        .add_breakpoint(BreakpointSpec::Function("child_work".to_owned()))
+        .await
+        .expect("add the breakpoint");
+    group.launch(&["1", "direct"]).await;
+
+    let (member, reason) = group.stop().await;
+    assert!(function_breakpoint(&reason), "{reason:?}");
+    assert_eq!(member, 2);
+
+    // The member's copy goes, so no change to it can take.
+    let child = group.inner.member(member).expect("the member's handle");
+    let copy = child
+        .snapshot()
+        .await
+        .expect("the member's snapshot")
+        .breakpoints[0]
+        .id;
+    assert_eq!(
+        group.inner.group_breakpoint(member, copy),
+        Some(original.id)
+    );
+    child
+        .remove_breakpoint(copy)
+        .await
+        .expect("remove the copy");
+
+    root.set_breakpoint_condition(
+        original.id,
+        Some(microscope::Condition::parse("1 == 0").expect("the condition")),
+    )
+    .await
+    .expect("set the condition");
+    not_mirrored(&mut group, member, original.id).await;
+
+    // The change is still due, so the next one tries it again.
+    root.add_breakpoint(BreakpointSpec::Function("children_started".to_owned()))
+        .await
+        .expect("add another breakpoint");
+    not_mirrored(&mut group, member, original.id).await;
+
+    group.inner.continue_all().await.expect("continue");
+    group.run_to_exit().await;
+    group.shutdown().await;
 }
 
 #[tokio::test]

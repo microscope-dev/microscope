@@ -32,7 +32,8 @@ pub type MemberNumber = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupEvent {
     /// A process became a member, with the group's breakpoints planted
-    /// before it ran an instruction.
+    /// before it ran an instruction, except any that a
+    /// [`GroupEvent::BreakpointNotMirrored`] after this one names.
     MemberJoined {
         member: MemberNumber,
         process: ProcessId,
@@ -74,6 +75,15 @@ pub enum GroupEvent {
     ProcessUnfollowed {
         process: ProcessId,
         program: PathBuf,
+        reason: String,
+    },
+
+    /// Member `member` failed to take a change to the group's breakpoint
+    /// `breakpoint`, so its copy may differ from the root's or be missing.
+    /// Each later change to the root's breakpoints tries again.
+    BreakpointNotMirrored {
+        member: MemberNumber,
+        breakpoint: BreakpointId,
         reason: String,
     },
 
@@ -1015,6 +1025,7 @@ impl Driver {
             running: false,
             gone: false,
         };
+        let mut failures = Vec::new();
         match ready {
             Ok(()) => {
                 live.joined_at = handle
@@ -1023,7 +1034,7 @@ impl Driver {
                     .ok()
                     .and_then(|snapshot| snapshot.stop_id);
                 if let Ok(snapshot) = self.root.snapshot().await {
-                    mirror(&self.shared, number, &snapshot.breakpoints, &mut live).await;
+                    failures = mirror(&self.shared, number, &snapshot.breakpoints, &mut live).await;
                 }
             }
             #[cfg_attr(
@@ -1078,6 +1089,9 @@ impl Driver {
             parent,
             executed,
         });
+        for failure in failures {
+            self.emit(failure);
+        }
     }
 
     fn number_of(&self, process: ProcessId) -> Option<MemberNumber> {
@@ -1365,10 +1379,14 @@ impl Driver {
             return;
         };
 
+        let mut failures = Vec::new();
         for (&number, live) in self.members.iter_mut().filter(|(number, _)| **number != 1) {
             if !live.gone {
-                mirror(&self.shared, number, &snapshot.breakpoints, live).await;
+                failures.extend(mirror(&self.shared, number, &snapshot.breakpoints, live).await);
             }
+        }
+        for failure in failures {
+            self.emit(failure);
         }
     }
 
@@ -1461,12 +1479,27 @@ async fn continue_stopped(handle: &DebuggerHandle) -> Result<()> {
 /// Makes a member's breakpoints the root's `breakpoints`: each one the
 /// member lacks is added, kept pending where nothing it has loaded has it,
 /// each changed one is changed, and each the root removed is removed.
+/// Returns what the member failed to take, which stays due, so that the
+/// next mirror tries it again.
 async fn mirror(
     shared: &Shared,
     number: MemberNumber,
     breakpoints: &[Breakpoint],
     live: &mut Live,
-) {
+) -> Vec<GroupEvent> {
+    let mut failures = Vec::new();
+    let mut failed = |breakpoint: BreakpointId, error: &Error| {
+        let reason = match error {
+            Error::BreakpointNotFound(_) => "the member no longer has its copy".to_owned(),
+            error => error.to_string(),
+        };
+        failures.push(GroupEvent::BreakpointNotMirrored {
+            member: number,
+            breakpoint,
+            reason,
+        });
+    };
+
     let mut copies = BTreeMap::new();
     let handle = live.handle.clone();
     let current = breakpoints
@@ -1481,9 +1514,17 @@ async fn mirror(
         .copied()
         .collect::<Vec<_>>();
     for id in removed {
-        if let Some((copy, _)) = live.mirrored.remove(&id) {
-            let _ = handle.remove_breakpoint(copy).await;
-            copies.insert(copy, None);
+        let Some(&(copy, _)) = live.mirrored.get(&id) else {
+            continue;
+        };
+        match handle.remove_breakpoint(copy).await {
+            // A copy already gone, as a temporary one the member hit
+            // deletes itself, is as good as removed.
+            Ok(_) | Err(Error::BreakpointNotFound(_)) => {
+                live.mirrored.remove(&id);
+                copies.insert(copy, None);
+            }
+            Err(error) => failed(id, &error),
         }
     }
 
@@ -1499,27 +1540,40 @@ async fn mirror(
                     enabled: settings.enabled,
                     temporary: settings.temporary,
                 };
-                if let Ok(copy) = handle
+                match handle
                     .add_breakpoint_with(breakpoint.spec.clone(), options)
                     .await
                 {
-                    live.mirrored.insert(breakpoint.id, (copy.id, settings));
-                    copies.insert(copy.id, Some(breakpoint.id));
+                    Ok(copy) => {
+                        live.mirrored.insert(breakpoint.id, (copy.id, settings));
+                        copies.insert(copy.id, Some(breakpoint.id));
+                    }
+                    Err(error) => failed(breakpoint.id, &error),
                 }
             }
             Some((copy, old)) if *old != settings => {
                 let copy = *copy;
-                let _ = handle.set_breakpoint_enabled(copy, settings.enabled).await;
-                let _ = handle
-                    .set_breakpoint_condition(copy, settings.condition.clone())
-                    .await;
-                let _ = handle
-                    .set_breakpoint_hit_condition(copy, settings.hit_condition)
-                    .await;
-                let _ = handle
-                    .set_breakpoint_log_message(copy, settings.log_message.clone())
-                    .await;
-                live.mirrored.insert(breakpoint.id, (copy, settings));
+
+                // Each setting is tried even after one fails, so the copy
+                // gets as close to the root's as it can.
+                let results = [
+                    handle.set_breakpoint_enabled(copy, settings.enabled).await,
+                    handle
+                        .set_breakpoint_condition(copy, settings.condition.clone())
+                        .await,
+                    handle
+                        .set_breakpoint_hit_condition(copy, settings.hit_condition)
+                        .await,
+                    handle
+                        .set_breakpoint_log_message(copy, settings.log_message.clone())
+                        .await,
+                ];
+                match results.into_iter().find_map(Result::err) {
+                    None => {
+                        live.mirrored.insert(breakpoint.id, (copy, settings));
+                    }
+                    Some(error) => failed(breakpoint.id, &error),
+                }
             }
             Some(_) => {}
         }
@@ -1532,6 +1586,8 @@ async fn mirror(
             None => known.remove(&(number, copy)),
         };
     }
+
+    failures
 }
 
 /// A process's command line, its arguments joined by spaces.
