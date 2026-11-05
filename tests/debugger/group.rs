@@ -566,7 +566,10 @@ async fn the_group_misses_no_member_event_however_far_it_falls_behind() {
         }
     }
     launcher.join().expect("the launcher");
-    assert!(published > 256, "{published} events fit in a subscriber's queue");
+    assert!(
+        published > 256,
+        "{published} events fit in a subscriber's queue"
+    );
 
     let (member, reason) = group.stop().await;
     assert_eq!(member, 1);

@@ -72,15 +72,18 @@ async fn input_a_stopped_program_has_not_read_reaches_it_whole_and_in_order() {
     let large = "0123456789abcdef".repeat(16 * 1024);
     let typed = [large.as_str(), "the last line\n"];
     tab.ok("input", json!({"text": typed[0]})).await;
-    tab.ok("input", json!({"text": typed[1], "eof": true})).await;
+    tab.ok("input", json!({"text": typed[1], "eof": true}))
+        .await;
 
     tab.ok("continue", json!({"stop": stopped["inferior"]["stop"]}))
         .await;
     let stdout = tab.output_until("stdout", "\n").await;
     let bytes = typed.concat().into_bytes();
-    let digest = bytes.iter().fold(14_695_981_039_346_656_037_u64, |digest, byte| {
-        (digest ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
-    });
+    let digest = bytes
+        .iter()
+        .fold(14_695_981_039_346_656_037_u64, |digest, byte| {
+            (digest ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        });
     assert_eq!(
         stdout,
         format!("stdin: {} bytes, digest {digest:016x}\n", bytes.len())
