@@ -138,11 +138,17 @@ describe("a Start pane replacing a session", () => {
     expect(starts.map((model) => model.output)).toEqual(starts.map(() => []));
   });
 
-  it("ends with nothing debugged after a failed launch", () => {
+  it("keeps the session a failed launch, attach, or core would replace", () => {
+    const loaded = models.findIndex((model) => model.state?.target?.program.endsWith("/basic"));
+    expect(loaded).toBeGreaterThan(0);
+    const session = models[loaded]?.state?.session;
+    expect(models.slice(loaded).map((model) => model.state?.session)).toEqual(
+      models.slice(loaded).map(() => session),
+    );
+    // It still runs: the transcript continues it to its end.
     const final = models.at(-1) as Model;
-    expect(final.state?.session).toBeNull();
-    expect(shown(final).label).toBe("Nothing loaded");
-    expect(action("continue", final)).toMatchObject({ enabled: false });
+    expect(final.state?.busy).toBeNull();
+    expect(final.state?.inferior.state).toBe("exited");
   });
 });
 
