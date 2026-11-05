@@ -2944,10 +2944,6 @@ textarea.input {
   min-width: 0;
 }
 
-.profile-title .program {
-  font: 600 13px var(--mono);
-}
-
 .profile-query {
   display: flex;
   flex-wrap: wrap;

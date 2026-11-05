@@ -195,7 +195,7 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
 
   const saving = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Download" }).click();
   expect((await saving).suggestedFilename()).toBe("spin.usprof");
 });
 

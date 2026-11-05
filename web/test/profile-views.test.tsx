@@ -669,6 +669,35 @@ it("says a profile it does not serve is missing, and any other failure as it is"
   await expect.element(page.getByText("microscope web PROFILE.usprof")).not.toBeInTheDocument();
 });
 
+it("says how much the profile holds, offers its file, and a bar only for a recording", async () => {
+  const summary = summaryOf({ program: "/work/searcher" });
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  // Its tab names it, so the head names neither the file nor the program.
+  const held = page.getByText("10 samples", { exact: true });
+  await expect.element(held).toBeVisible();
+  await expect.element(held).toHaveAttribute("title", "/work/searcher");
+  const title = document.querySelector(".profile-title") as HTMLElement;
+  expect(title.textContent).not.toMatch(/test\.usprof|searcher/u);
+  const download = page.getByRole("button", { name: "Download" });
+  await expect.element(download).toBeVisible();
+  await expect.element(download).toHaveAttribute("title", expect.stringContaining(".usprof"));
+  expect(page.getByTestId("recording").elements()).toHaveLength(0);
+
+  // This test's page serves no profiles, so the download fails, and says why.
+  await userEvent.click(download);
+  await expect.element(page.getByText(/Could not download it: the server answered/u)).toBeVisible();
+
+  server.send({
+    type: "profiles",
+    profiles: [{ id: summary.id, name: summary.name, recording: true, revision: 0, ended: null }],
+  });
+  await expect
+    .element(page.getByTestId("recording").getByText(`Recording ${summary.name}`))
+    .toBeVisible();
+  await expect.element(download).toBeVisible();
+});
+
 it("keeps what it shows while disconnected, and says so", async () => {
   const summary = summaryOf();
   const server = await mountPage(summary, true);

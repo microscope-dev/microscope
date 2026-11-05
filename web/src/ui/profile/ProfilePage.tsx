@@ -176,8 +176,8 @@ export function Profile({
             Disconnected. The views keep what they last read until microscope answers again.
           </div>
         ) : null}
-        {info ? <Recording info={info} /> : null}
-        <ProfileHead />
+        {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
+        <ProfileHead info={info} />
         {focus.summary.timed ? (
           <Timeline />
         ) : (
@@ -241,7 +241,7 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
 
 /** The profile's name, the views, and everything the query holds, each
  * removable where it shows. */
-function ProfileHead() {
+function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
   const { summary, look, setLook } = useProfile();
   const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
@@ -251,7 +251,6 @@ function ProfileHead() {
     id === "none"
       ? "no task known"
       : (summary.tasks.find((task) => String(task.row) === id)?.name ?? `task ${id}`);
-  const program = summary.program?.slice(summary.program.lastIndexOf("/") + 1);
 
   const collapseCycles = useCallback(
     () => setLook((prev) => transformed(prev, { op: "collapseCycles", name: "" }), true),
@@ -275,17 +274,19 @@ function ProfileHead() {
   return (
     <div className="profile-head">
       <div className="profile-title">
-        <span className="program" title={summary.program ?? undefined}>
-          {program ?? summary.name}
+        {/* Its tab names the profile, so this says only how much it holds. */}
+        <span className="muted" title={summary.program ?? undefined}>
+          {[
+            summary.timed ? formatDuration(summary.duration) : null,
+            summary.samples > 0 || summary.syscalls === 0
+              ? formatCount(summary.samples, "sample")
+              : null,
+            summary.syscalls > 0 ? formatCount(summary.syscalls, "call") : null,
+          ]
+            .filter((fact) => fact !== null)
+            .join(" · ")}
         </span>
-        <span className="muted">
-          {summary.name} · {summary.timed ? `${formatDuration(summary.duration)} · ` : ""}
-          {summary.samples > 0 || summary.syscalls === 0
-            ? formatCount(summary.samples, "sample")
-            : ""}
-          {summary.samples > 0 && summary.syscalls > 0 ? " · " : ""}
-          {summary.syscalls > 0 ? formatCount(summary.syscalls, "call") : ""}
-        </span>
+        {info ? <Download info={info} /> : null}
       </div>
       <div className="segmented">
         {VIEWS.filter(({ view }) => offers(summary, view)).map(({ view, label }) => (
@@ -587,6 +588,10 @@ function Compare() {
   );
 }
 
+function fileName(info: ProfileInfo): string {
+  return info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
+}
+
 /** Downloads the profile as a file. */
 async function saveProfile(info: ProfileInfo) {
   const response = await fetch(serverUrl(`api/profile/${info.id}`), {
@@ -599,22 +604,40 @@ async function saveProfile(info: ProfileInfo) {
   }
   const link = document.createElement("a");
   link.href = URL.createObjectURL(await response.blob());
-  link.download = info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
+  link.download = fileName(info);
   link.click();
   URL.revokeObjectURL(link.href);
 }
 
-/** A recording's progress, and saving the profile as a file. */
-function Recording({ info }: { info: ProfileInfo }) {
-  const connection = useConnection();
-  const control = useModel((model) => model.hello?.role === "control");
+/** Downloads the profile as a file, which `microscope web` opens again. */
+function Download({ info }: { info: ProfileInfo }) {
   const [failure, setFailure] = useState<string | null>(null);
-  const save = useCallback(() => {
+  const download = useCallback(() => {
     setFailure(null);
     saveProfile(info).catch((error: unknown) => {
       setFailure(error instanceof Error ? error.message : String(error));
     });
   }, [info]);
+  return (
+    <>
+      <button
+        type="button"
+        className="tb ghost"
+        title={`Download ${fileName(info)} to open later with microscope web`}
+        onClick={download}
+      >
+        Download
+      </button>
+      {failure ? <span className="error">Could not download it: {failure}</span> : null}
+    </>
+  );
+}
+
+/** A recording's progress, or how it ended. */
+function Recording({ info }: { info: ProfileInfo }) {
+  const connection = useConnection();
+  const control = useModel((model) => model.hello?.role === "control");
+  const [failure, setFailure] = useState<string | null>(null);
   const stop = useCallback(() => {
     void connection
       .request("stopRecording", { profile: info.id })
@@ -624,21 +647,17 @@ function Recording({ info }: { info: ProfileInfo }) {
     <div className="profile-recording" data-testid="recording">
       {info.recording ? (
         <span className="pill running">Recording {info.name}</span>
-      ) : info.ended ? (
+      ) : (
         <span className="muted">
           {info.name} ended: {info.ended}
         </span>
-      ) : null}
+      )}
       {info.recording && control ? (
         <button type="button" className="tb ghost" onClick={stop}>
           Stop
         </button>
       ) : null}
-      <span className="spacer" />
       {failure ? <span className="error">{failure}</span> : null}
-      <button type="button" className="tb ghost" onClick={save}>
-        Save
-      </button>
     </div>
   );
 }
