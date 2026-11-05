@@ -229,7 +229,7 @@ extend c life {
     const board = card(page, "life");
     const canvas = board.locator("canvas.picture");
     await expect(canvas).toBeVisible();
-    await expect(board.locator("svg")).toHaveCount(0);
+    await expect(board.locator(".drawing-body svg")).toHaveCount(0);
     const box = await canvas.boundingBox();
     if (box === null) {
       throw new Error("the board is not on screen");

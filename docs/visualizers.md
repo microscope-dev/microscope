@@ -74,9 +74,10 @@ a `&mut Board` or `struct life *` draws the board itself. The number beside
 Drawings is the card count.
 
 - **Draw** on a value row pins the value with the drawings its view
-  offers. **Draw as…** on any value row, or on a card, pins it with any
+  offers. **Draw as…**, the pencil on any value row or card, pins it with any
   renderer; that renderer draws the value itself as its `values` input,
-  as `visualize "NAME" { values = self }` would.
+  as `visualize "NAME" { values = self }` would. On a row, its first
+  item, Memory, opens the bytes the value points to or is stored in.
 - Links preserve the view: `view=drawings` opens it, and `d=PATH` pins a
   value. `d=PATH~NAME` also selects a renderer.
 - Multiple drawings appear as tabs on one card. The selected tab persists

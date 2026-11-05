@@ -70,7 +70,10 @@ test("memory opens at a value, marks its bytes, and writes them", async ({ page,
   await join(page, microscope.link);
   await stopInHandleRequest(page);
   await page.getByRole("button", { name: "Open req" }).click();
-  await valueRow(page, "variables", "key").getByRole("button", { name: "Memory of key" }).click();
+  await valueRow(page, "variables", "key")
+    .getByRole("button", { name: /^Draw .*key as…$/u })
+    .click();
+  await page.getByRole("menuitem", { name: /^Memory/u }).click();
   await expect(page).toHaveURL(/[?&]mem=0x[0-9a-f]+:16/u);
   await expect(page).toHaveURL(/[?&]view=memory/u);
 

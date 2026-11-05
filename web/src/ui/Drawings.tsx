@@ -447,7 +447,7 @@ function DrawingCard({ card }: { card: Card }) {
               </button>
             </>
           )}
-          <DrawAs path={card.path} />
+          <DrawAs name={card.path} path={card.path} memory={null} />
           {remove && (
             <button
               type="button"
@@ -463,7 +463,7 @@ function DrawingCard({ card }: { card: Card }) {
       </header>
       {offered !== null && offered.length === 0 && card.chosen === null ? (
         <div className="drawing-problem">
-          No view draws {card.path}. Choose a renderer with Draw as…
+          No view draws {card.path}. Choose a renderer from Draw as…, the pencil.
         </div>
       ) : shown && "problem" in shown ? (
         <div className="drawing-problem" role="alert">
@@ -789,15 +789,25 @@ export function Selected({ at, path, onClose }: { at: At; path: string; onClose(
   );
 }
 
-/** Draws a value with any renderer, pinning it to the drawings. */
-export function DrawAs({ path }: { path: string }) {
+/** Draws a value with any renderer, pinning it to the drawings, or shows
+ * the memory it points to or is stored in. Renderers are offered only for a
+ * value with a path at a stop. */
+export function DrawAs({
+  name,
+  path,
+  memory,
+}: {
+  name: string;
+  path: string | null;
+  memory: (() => void) | null;
+}) {
   const [open, setOpen] = useState(false);
-  const renderers = useRequest("renderers", open ? undefined : null);
+  const renderers = useRequest("renderers", open && path !== null ? undefined : null);
   const look = useLook();
   const anchor = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
-  const loaded = renderers.data !== undefined;
+  const loaded = renderers.data !== undefined || memory !== null;
   const close = useCallback(() => {
     setOpen(false);
     button.current?.focus();
@@ -873,14 +883,23 @@ export function DrawAs({ path }: { path: string }) {
       <button
         ref={button}
         type="button"
-        className="link-button"
+        className="icon"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Draw ${path} as…`}
+        aria-label={`Draw ${path ?? name} as…`}
+        title="Draw as…"
         onClick={toggle}
         onKeyDown={escape}
       >
-        Draw as…
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path
+            d="M10.5 2.5l3 3L5.5 13.5H2.5v-3l8-8ZM9 4l3 3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinejoin="round"
+          />
+        </svg>
       </button>
       {open && (
         // oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- focus stays on its items
@@ -888,25 +907,44 @@ export function DrawAs({ path }: { path: string }) {
           ref={menu}
           className="popover menu"
           role="menu"
-          aria-label={`Draw ${path} as`}
+          aria-label={`Draw ${path ?? name} as`}
           // Escape closes it rather than leave the view.
           data-keys="escape"
           onKeyDown={move}
         >
-          {renderers.error && <div className="empty error">{renderers.error.message}</div>}
-          {!renderers.data && !renderers.error && <div className="empty">Reading…</div>}
-          {renderers.data?.renderers.map((renderer) => (
-            <RendererItem
-              key={renderer.name}
-              path={path}
-              name={renderer.name}
-              origin={renderer.origin}
-              choose={choose}
-            />
-          ))}
+          {memory && <MemoryItem show={memory} close={close} />}
+          {path !== null && renderers.error && (
+            <div className="empty error">{renderers.error.message}</div>
+          )}
+          {path !== null && !renderers.data && !renderers.error && (
+            <div className="empty">Reading…</div>
+          )}
+          {path !== null &&
+            renderers.data?.renderers.map((renderer) => (
+              <RendererItem
+                key={renderer.name}
+                path={path}
+                name={renderer.name}
+                origin={renderer.origin}
+                choose={choose}
+              />
+            ))}
         </div>
       )}
     </span>
+  );
+}
+
+function MemoryItem({ show, close }: { show: () => void; close: () => void }) {
+  const click = useCallback(() => {
+    close();
+    show();
+  }, [close, show]);
+  return (
+    <button type="button" role="menuitem" tabIndex={-1} className="menu-item" onClick={click}>
+      <span>Memory</span>
+      <span className="muted">hex</span>
+    </button>
   );
 }
 

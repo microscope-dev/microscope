@@ -222,9 +222,10 @@ function RowActions({ row }: { row: Row }) {
       .then(() => flash(`Stopping when ${row.path} changes`))
       .catch((failure: Error) => flash(failure.message));
   }, [connection, at, row.path]);
-  const draw = path !== null && at !== null && (
+  const drawable = path !== null && at !== null ? path : null;
+  const draw = (drawable !== null || row.memory !== null) && (
     <>
-      {row.drawings.length > 0 && (
+      {drawable !== null && row.drawings.length > 0 && (
         <button
           type="button"
           className="link-button"
@@ -235,7 +236,7 @@ function RowActions({ row }: { row: Row }) {
           Draw
         </button>
       )}
-      <DrawAs path={path} />
+      <DrawAs name={row.name} path={drawable} memory={row.memory ? showMemory : null} />
     </>
   );
   if (!row.memory) {
@@ -244,16 +245,6 @@ function RowActions({ row }: { row: Row }) {
   const watchable = control && at && !stale && row.path !== null && row.memoryBytes !== null;
   return (
     <span className="row-actions">
-      {draw}
-      <button
-        type="button"
-        className="icon"
-        aria-label={`Memory of ${row.name}`}
-        title={`Show the memory at ${row.memory}`}
-        onClick={showMemory}
-      >
-        ▦
-      </button>
       {watchable && (
         <button
           type="button"
@@ -262,9 +253,19 @@ function RowActions({ row }: { row: Row }) {
           title="Stop when this value changes"
           onClick={watch}
         >
-          ◉
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path
+              d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+            />
+            <circle cx="8" cy="8" r="2" fill="currentColor" />
+          </svg>
         </button>
       )}
+      {draw}
     </span>
   );
 }

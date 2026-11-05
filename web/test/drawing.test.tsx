@@ -303,7 +303,7 @@ describe("a card", () => {
     focus.current = { session: "s1", state: {}, at, look: {}, trace: undefined, stale: null };
     render(
       <SessionContext value={server.session}>
-        <DrawAs path="board" />
+        <DrawAs name="board" path="board" memory={null} />
       </SessionContext>,
     );
     const button = page.getByRole("button", { name: "Draw board as…" });
