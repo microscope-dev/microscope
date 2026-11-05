@@ -158,7 +158,8 @@ and the patterns used here.
   `shutdown`, which reports whether cleanup succeeded.
 - Blocking work, such as reading a program's debug information, runs under
   `spawn_blocking`. A runtime thread that blocks stalls every task on it,
-  and a read of a FIFO never ends.
+  and a read of a FIFO never ends. The runtime has at most four workers,
+  not one per CPU, since its tasks only move messages and serve clients.
 
 ## Requests, replies, and events
 

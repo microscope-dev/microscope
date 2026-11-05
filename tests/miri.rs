@@ -91,6 +91,60 @@ mod allocator {
         unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
     }
 
+    /// Serves any request, however large, with a dangling block that has no
+    /// memory behind it, so that a test can count more bytes than exist.
+    struct Pretending;
+
+    // SAFETY: not a real allocator. Its blocks are aligned and non-null but
+    // hold no memory, which is sound only because the one test that uses it
+    // never reads or writes them, and frees each once with its layout.
+    unsafe impl GlobalAlloc for Pretending {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            std::ptr::without_provenance_mut(layout.align())
+        }
+
+        unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
+    }
+
+    /// Counters that pass their range wrap instead of panicking, since a
+    /// panic in an allocator aborts the process. A thread's growth of the
+    /// heap overflows here, and comes back to where it was once the blocks
+    /// are freed.
+    #[test]
+    fn counts_past_their_range_wrap_instead_of_aborting() {
+        let allocator = Counting::new(Pretending);
+        let huge = Layout::from_size_align(isize::MAX.unsigned_abs(), 1).expect("a layout");
+
+        // A thread of its own, whose counts start from zero, so that only
+        // its growth passes the range.
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    // SAFETY: the layout is non-zero; the blocks are freed
+                    // below.
+                    let blocks = unsafe { [allocator.alloc(huge), allocator.alloc(huge)] };
+                    let (allocated, _) = own();
+                    assert_eq!(
+                        allocated,
+                        Allocated {
+                            blocks: 2,
+                            bytes: 2 * isize::MAX.unsigned_abs() as u64
+                        }
+                    );
+
+                    for block in blocks {
+                        // SAFETY: each block came from `allocator` with
+                        // `huge`, and is freed once.
+                        unsafe { allocator.dealloc(block, huge) };
+                    }
+
+                    assert_eq!(own(), (allocated, 0));
+                })
+                .join()
+                .expect("counting allocates without panicking");
+        });
+    }
+
     #[test]
     fn a_refused_allocation_counts_nothing() {
         let allocator = Counting::new(Refusing);

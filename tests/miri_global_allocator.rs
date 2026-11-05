@@ -12,7 +12,8 @@
 use std::alloc::System;
 
 use microscope::timings::alloc::{
-    Allocated, Counting, installed, start_totals, stop_totals, thread_allocated, totals,
+    Allocated, Counting, SLOTS, installed, start_totals, stop_totals, thread_allocated,
+    thread_counts, totals,
 };
 
 #[global_allocator]
@@ -78,4 +79,28 @@ fn concurrent_threads_are_counted_from_start_to_exit() {
             && counted.bytes >= (THREADS * (WHILE_RUNNING + ON_EXIT)) as u64,
         "the process's totals miss a thread's blocks: {counted:?}"
     );
+}
+
+/// Threads give their slots back as they exit: after more threads than
+/// there are slots have come and gone, a new thread still counts in a slot
+/// of its own, which holds only its own counts.
+#[test]
+fn exited_threads_give_their_slots_to_new_ones() {
+    for _ in 0..=SLOTS {
+        std::thread::spawn(|| drop(std::hint::black_box(vec![0_u8; 1])))
+            .join()
+            .expect("a counting thread");
+    }
+
+    let (counts, allocated) = std::thread::spawn(|| {
+        let block = std::hint::black_box(vec![0_u8; WHILE_RUNNING]);
+        let counts = (thread_counts(), thread_allocated());
+        drop(block);
+        counts
+    })
+    .join()
+    .expect("the new thread");
+
+    let (slot, _) = counts.expect("a slot of the new thread's own");
+    assert_eq!(slot, allocated, "the slot holds another thread's counts");
 }

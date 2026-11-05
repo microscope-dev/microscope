@@ -240,6 +240,15 @@ impl Report {
             *counters.entry((*name).to_owned()).or_default() += amount;
         }
 
+        // Threads that found every allocation-counting slot taken contend
+        // on one cache line for each allocation.
+        if raw.allocations.sharing_threads > 0 {
+            counters.insert(
+                "alloc_sharing_threads".to_owned(),
+                raw.allocations.sharing_threads,
+            );
+        }
+
         for thread in threads.keys() {
             trace_events.push(TraceEvent {
                 name: "thread_name".to_owned(),

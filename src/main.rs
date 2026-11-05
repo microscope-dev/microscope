@@ -73,7 +73,15 @@ fn main() -> ExitCode {
         cli::config::take_environment();
     }
 
-    match tokio::runtime::Runtime::new() {
+    // Tokio tasks only move messages and serve clients; heavy work runs on
+    // the controller, loader, and blocking threads. A worker per CPU would
+    // only add threads to a large host.
+    let workers = std::thread::available_parallelism().map_or(1, |cpus| cpus.get().min(4));
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime.block_on(async_main()),
         Err(error) => {
             eprintln!("error: cannot start the async runtime: {error}");

@@ -163,6 +163,13 @@ thread boundary.
 The development allocator counts allocations, frees, live bytes, and peak
 bytes. `bench-smoke` enforces the count and byte ceilings described above.
 
+Every build, the shipped one included, counts this way, so the counting must
+never abort: its counters wrap rather than overflow. Each running thread
+stores its counts in one of 256 slots and gives the slot back as it exits.
+While every slot is taken, a new thread adds to one shared slot, contending
+with the others there; the timing report counts such threads as
+`alloc_sharing_threads`.
+
 When the count moves:
 
 1. identify the changed phase in the timing report;
