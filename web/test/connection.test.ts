@@ -107,6 +107,38 @@ describe("a dropped connection", () => {
     connection.stop();
   });
 
+  it("calls a server it never reached unreachable, and one it reached lost", async () => {
+    let up = false;
+    const { connection, attempts, links } = harness(() =>
+      up ? Promise.resolve(true) : Promise.reject(new Error("connection refused")),
+    );
+    connection.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(links()).toEqual(["connecting", "unreachable"]);
+
+    // Up, but its socket closes before it says hello: still never reached.
+    up = true;
+    await vi.advanceTimersByTimeAsync(100);
+    attempts[0]?.close();
+    expect(links().at(-1)).toBe("unreachable");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    attempts[1]?.open();
+    attempts[1]?.message(hello());
+    attempts[1]?.close();
+    expect(links().at(-1)).toBe("reconnecting");
+    up = false;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(links().at(-1)).toBe("reconnecting");
+
+    // Started again, it has to reach the server anew.
+    connection.stop();
+    connection.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(links().slice(-2)).toEqual(["connecting", "unreachable"]);
+    connection.stop();
+  });
+
   it("stays down once stopped", async () => {
     const { connection, attempts } = harness();
     connection.start();

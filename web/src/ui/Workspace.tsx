@@ -23,14 +23,15 @@ import { frameAt } from "../stack";
 import { useConnection, useModel } from "../store";
 import { flash, tab, useTab } from "../tab";
 import { Dock } from "../workbench/Dock";
-import { type Layout, paneOf } from "../workbench/layout";
-import { keepSaving } from "../workbench/persist";
+import type { Layout } from "../workbench/layout";
+import { keepSaving, setAside, setAsideLayout } from "../workbench/persist";
 import { workbench } from "../workbench/store";
 import { Documents } from "./Documents";
 import { Palette } from "./Palette";
 import {
   DOCK,
   debugLayout,
+  KINDS,
   misplaced,
   restoreLayout,
   showPane,
@@ -162,8 +163,15 @@ function useArranged(wants: Wants, start: () => Layout) {
   if (arranged.current !== wants) {
     // oxlint-disable-next-line react/refs -- as above
     arranged.current = wants;
-    if (misplaced(workbench.getState().layout, wants)) {
-      workbench.setState({ layout: start() });
+    const current = workbench.getState().layout;
+    if (misplaced(current, wants)) {
+      // A session's arrangement waits for the next session, rather than
+      // being lost to the page that starts one.
+      if (wants === "start" && !misplaced(current, "session")) {
+        setAside(current);
+      }
+      const back = wants === "session" ? setAsideLayout(KINDS) : null;
+      workbench.setState({ layout: back ?? start() });
     }
   }
   useEffect(() => {
@@ -174,12 +182,15 @@ function useArranged(wants: Wants, start: () => Layout) {
   useEffect(keepSaving, []);
 }
 
-/** Shows Connect when microscope refuses the page's link, which is the
- * pane that can fix it. */
+/** Brings Connect forward when microscope refuses the page's link, or has
+ * not been reached since the page started, which is the pane that can fix
+ * it: opened if it is closed, and in front of its group's others. */
 function useConnectWhenRefused() {
-  const refused = useModel((model) => model.link === "unauthorized");
+  const refused = useModel(
+    (model) => model.link === "unauthorized" || model.link === "unreachable",
+  );
   useEffect(() => {
-    if (refused && !paneOf(workbench.getState().layout, KIND.connect, "")) {
+    if (refused) {
       showPane(KIND.connect);
     }
   }, [refused]);

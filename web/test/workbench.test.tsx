@@ -1,8 +1,8 @@
 // The whole page's workbench at a stop: the Debug layout fits common window
 // sizes, a pane in a tab not shown asks the server nothing, the menu bar
 // works by keyboard and says why a command cannot run, and the browser keeps
-// the layout across a reload, starting over only when it holds nothing for
-// the address.
+// the layout across a reload, starting over when it is wrong for the
+// address.
 
 import { afterEach, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
@@ -126,10 +126,17 @@ it("shows one group at a time in a narrow window, and any pane from its list", a
 
 const plus = (layout: Layout, kind: KindId) => open(layout, single(kind), layout.focused).layout;
 
-it("starts the layout over only when it holds nothing for the address", () => {
-  // A session's panes show nothing without one; Settings does.
+it("starts the layout over when it is wrong for the address", () => {
+  // A session's panes show nothing without one, however many others the
+  // layout holds.
   expect(misplaced(debugLayout(), "start")).toBe(true);
-  expect(misplaced(plus(debugLayout(), KIND.settings), "start")).toBe(false);
+  expect(misplaced(plus(debugLayout(), KIND.settings), "start")).toBe(true);
+  expect(misplaced(plus(debugLayout(), KIND.connect), "start")).toBe(true);
+  expect(misplaced(plus(startLayout(), KIND.settings), "start")).toBe(false);
+  // A browser that kept none starts from the address's own.
+  const empty = { ...startLayout(), panes: {} };
+  expect(misplaced(empty, "start")).toBe(true);
+  expect(misplaced(empty, "session")).toBe(true);
   expect(misplaced(debugLayout(), "session")).toBe(false);
   // Start has nothing for a session until one of its panes is open.
   expect(misplaced(startLayout(), "session")).toBe(true);

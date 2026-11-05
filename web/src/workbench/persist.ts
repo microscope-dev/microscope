@@ -1,5 +1,6 @@
 // Layouts this browser keeps: the one in use, saved as each change is made,
-// and any a person saved by name. Layouts are not part of a link; a link
+// the session layout a page with no session set aside, and any a person
+// saved by name. Layouts are not part of a link; a link
 // shares where to look, not how the page is arranged.
 
 import type { Kinds } from "./kinds";
@@ -8,6 +9,7 @@ import { type Loaded, loadLayout, saveLayout } from "./saved";
 import { workbench } from "./store";
 
 const CURRENT = "microscope-layout";
+const ASIDE = "microscope-layout-session";
 const NAMED = "microscope-layouts";
 
 /** The layout this browser used last, or why it can't be used. Null when it
@@ -25,6 +27,19 @@ export function keepSaving(): () => void {
       set(CURRENT, saveLayout(state.layout));
     }
   });
+}
+
+/** Keeps a session's layout, which a page with no session replaces, for
+ * the next session to come back to. */
+export function setAside(layout: Layout): void {
+  set(ASIDE, saveLayout(layout));
+}
+
+/** The session layout set aside last, if there is one this page can use. */
+export function setAsideLayout(kinds: Kinds<string>): Layout | null {
+  const text = get(ASIDE);
+  const loaded = text === null ? null : known(loadLayout(text), kinds);
+  return loaded?.ok ? loaded.layout : null;
 }
 
 /** The names of the layouts saved by name, in the order saved. */

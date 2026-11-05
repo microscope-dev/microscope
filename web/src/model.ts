@@ -10,6 +10,9 @@ export type Link =
   | "connecting"
   | "open"
   | "reconnecting"
+  /** The server has not answered since the page started connecting, which
+   * it keeps trying: it may have stopped, or never be back. */
+  | "unreachable"
   /** The browser has no token for this server: it needs a join link. */
   | "unauthorized"
   /** The server speaks another protocol version. */

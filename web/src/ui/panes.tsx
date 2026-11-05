@@ -187,7 +187,9 @@ export function useMissing(need: string | null): string | null {
           : "microscope refused this page's link. Open a new join link."
         : link === "incompatible"
           ? "This page is from another version of microscope. Reload to get this one's."
-          : "Connecting to microscope…";
+          : link === "unreachable"
+            ? "Can't reach microscope. It may have stopped; this page keeps trying."
+            : "Connecting to microscope…";
   switch (need) {
     case "session":
       if (focus) {
@@ -363,14 +365,14 @@ export function startLayout(): Layout {
  * something to start from. */
 export type Wants = "session" | "start";
 
-/** Whether the layout in use holds nothing for what an address wants: a
- * session wants a pane that shows one, and a page with no session a pane
- * that shows something without one. */
+/** Whether the layout in use is wrong for what an address wants: an empty
+ * one is wrong for any; a session wants a pane that shows one, and a page
+ * with no session wants none of them, since each would only say there is
+ * nothing to show. */
 export function misplaced(layout: Layout, wants: Wants): boolean {
-  const needs = Object.values(layout.panes).map((pane) => KINDS.get(pane.kind).needs);
-  return wants === "session"
-    ? !needs.includes("session")
-    : needs.every((need) => need === "session");
+  const panes = Object.values(layout.panes);
+  const session = panes.some((pane) => KINDS.get(pane.kind).needs === "session");
+  return panes.length === 0 || (wants === "session" ? !session : session);
 }
 
 /** Puts back the layout this browser used last when the workbench holds

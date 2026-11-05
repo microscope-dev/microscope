@@ -29,7 +29,9 @@ export function ExplorerBody() {
               ? `· connected${role ? `, can ${role}` : ""}`
               : link === "unauthorized"
                 ? "· refused this page's link"
-                : `· ${link}`}
+                : link === "unreachable"
+                  ? "· can't be reached, still trying"
+                  : `· ${link}`}
           </span>
         </p>
       ) : (

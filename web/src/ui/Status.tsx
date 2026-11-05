@@ -20,6 +20,9 @@ export function shown(model: Model): Shown {
       detail: model.state?.session ? "showing the last state" : null,
     };
   }
+  if (model.link === "unreachable") {
+    return { pill: "warn", label: "Can't reach microscope", detail: "still trying" };
+  }
   const state = model.state;
   if (state?.busy) {
     return { pill: "warn", label: "Working", detail: state.busy };

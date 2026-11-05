@@ -57,6 +57,9 @@ export class Connection {
    * socket is ignored. */
   #generation = 0;
   #attempt = 0;
+  /** Whether the server has said hello since `start`. Until it has, a
+   * failed attempt means it cannot be reached, not that it was lost. */
+  #reached = false;
   #nextId = 1;
   #pending = new Map<number, Pending>();
   /** Bytes sent ahead of the answers they belong to, by request. */
@@ -73,6 +76,7 @@ export class Connection {
       return;
     }
     this.#stopped = false;
+    this.#reached = false;
     this.#options.emit({ type: "link", link: "connecting" });
     void this.#attemptConnection();
   }
@@ -128,6 +132,7 @@ export class Connection {
       authorized = await this.#options.authorized();
     } catch {
       if (current()) {
+        this.#lost();
         this.#retry();
       }
       return;
@@ -185,6 +190,7 @@ export class Connection {
     }
     if (message.type === "hello") {
       this.#attempt = 0;
+      this.#reached = true;
       if (message.version !== PROTOCOL_VERSION) {
         this.#options.emit({ type: "link", link: "incompatible" });
         this.stop();
@@ -221,9 +227,14 @@ export class Connection {
     this.#transport = null;
     this.#failPending();
     if (!this.#stopped) {
-      this.#options.emit({ type: "link", link: "reconnecting" });
+      this.#lost();
       this.#retry();
     }
+  }
+
+  /** Says the server is away: lost after it answered, or never reached. */
+  #lost(): void {
+    this.#options.emit({ type: "link", link: this.#reached ? "reconnecting" : "unreachable" });
   }
 
   #retry(): void {
@@ -292,6 +303,11 @@ export const browserConnect: Connect = (handlers) => {
   };
 };
 
+/** How long the server has to answer whether the browser may connect. A
+ * host that drops packets, such as one that is off, would otherwise keep
+ * the page waiting for the browser's own timeout, minutes away. */
+const CHECK_TIMEOUT = 5000;
+
 /** Asks the server whether this browser's cookie or token is good. A page
  * served on its own that has no server yet has neither. */
 export const browserAuthorized: Authorized = async () => {
@@ -302,6 +318,7 @@ export const browserAuthorized: Authorized = async () => {
     method: "POST",
     credentials: "same-origin",
     body: presented(),
+    signal: AbortSignal.timeout(CHECK_TIMEOUT),
   });
   if (response.status === 204) {
     return true;

@@ -21,10 +21,9 @@ import { Workbench } from "./Workspace";
 /** `/`: the session when there is one; else what to start from, which is
  * the profile a server started on one serves. */
 export function Home() {
-  // Until the server says what it has, unless it won't.
+  // Until the server says what it has, unless it won't or can't.
   const loading = useModel(
-    (model) =>
-      model.state === null && model.link !== "unauthorized" && model.link !== "incompatible",
+    (model) => model.state === null && (model.link === "connecting" || model.link === "open"),
   );
   const session = useModel((model) => model.state?.session ?? null);
   const busy = useModel((model) => model.state?.busy ?? null);

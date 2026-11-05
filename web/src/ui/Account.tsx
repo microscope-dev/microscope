@@ -89,27 +89,47 @@ export function ConnectBody() {
     );
   }
   const connected = remote();
+  if (!connected || link === "unauthorized") {
+    return (
+      <div className="pane-body pane-text">
+        {connected && <p className="error">{refused()}</p>}
+        <ConnectForm />
+      </div>
+    );
+  }
   return (
     <div className="pane-body pane-text">
-      {connected && link === "open" ? (
-        <>
-          <p>
-            Connected to <code>{connected.server}</code>.
-          </p>
-          <div className="actions">
-            <button type="button" className="button" onClick={disconnect}>
-              Disconnect
-            </button>
-          </div>
-          <h2>Connect to another</h2>
-        </>
-      ) : (
-        link === "unauthorized" && connected && <p className="error">{refused()}</p>
-      )}
+      <p className={link === "unreachable" ? "error" : undefined}>
+        {link === "unreachable" ? (
+          <>
+            Can&apos;t reach the microscope at <code>{connected.server}</code>. It may have stopped;
+            this page keeps trying.
+          </>
+        ) : (
+          <>
+            {CONNECTION[link]} <code>{connected.server}</code>
+            {link === "connecting" || link === "reconnecting" ? "…" : "."}
+          </>
+        )}
+      </p>
+      <div className="actions">
+        <button type="button" className="button" onClick={disconnect}>
+          Disconnect
+        </button>
+      </div>
+      <h2>Connect to another</h2>
       <ConnectForm />
     </div>
   );
 }
+
+/** How the page is getting on with the microscope it was given. */
+const CONNECTION: Record<"open" | "connecting" | "reconnecting" | "incompatible", string> = {
+  open: "Connected to",
+  connecting: "Connecting to",
+  reconnecting: "Lost the connection; reconnecting to",
+  incompatible: "This page is from another version of microscope than the one at",
+};
 
 function ConnectForm() {
   const id = useId();
