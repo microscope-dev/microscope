@@ -358,7 +358,15 @@ URL.
 A drag changes the layout once, when it drops. Until then `workbench/drag.ts`
 moves the ghost, the highlight, and a dragged window by hand, at most once a
 frame, against rectangles measured as the drag began, so a drag renders
-nothing.
+nothing. If something else changes the layout mid-drag, the drop does
+nothing, since what it measured may be gone.
+
+Every press that follows the pointer, whether a tab or window drag, a
+separator, or a window's resize grip, goes through `trackPointer` in
+`workbench/gesture.ts`. It runs one gesture at a time, listens on the window
+so a gesture still ends when a re-render removes the element pressed, and
+cancels on Escape or when the browser takes the pointer away. A new gesture
+should use it rather than its own listeners.
 
 When adding durable view state, update parsing, serialization, back/forward
 behavior, sharing tests, and unknown-value fallback. Ephemeral state such as a

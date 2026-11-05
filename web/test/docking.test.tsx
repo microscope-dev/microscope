@@ -203,6 +203,50 @@ it("splits a group for a tab dropped on its side, and floats one dropped with Sh
   expect(readGroups().at(-1)).toEqual(["*Memory"]);
 });
 
+it("drags a tab pressed on its close button, without closing it", async () => {
+  await mount();
+  const button = tabOf("Threads").parentElement?.querySelector(
+    '[aria-label="Close Threads"]',
+  ) as HTMLElement;
+  drag(button, sidePoint("g7", "bottom"));
+  expect(readGroups()).toEqual([
+    ["*Tasks"],
+    ["*Stack"],
+    ["*Source", "Memory", "Registers"],
+    ["*Threads"],
+  ]);
+});
+
+const pointer = (type: string, point: { x: number; y: number }) =>
+  new PointerEvent(type, { bubbles: true, pointerId: 1, clientX: point.x, clientY: point.y });
+
+it("ends a drag whose tab closes under it, and drags again after", async () => {
+  await mount();
+  // Closed while pressed, and while dragging: the release lands on whatever
+  // is under the pointer now that the tab is gone.
+  for (const [title, moved] of [
+    ["Threads", false],
+    ["Tasks", true],
+  ] as const) {
+    const tab = tabOf(title);
+    const start = middle(tab);
+    act(() => {
+      tab.dispatchEvent(pointer("pointerdown", start));
+      if (moved) {
+        tab.dispatchEvent(pointer("pointermove", { x: start.x + 40, y: start.y + 40 }));
+      }
+    });
+    act(() => closeTab(KINDS, tab.id.slice("tab-".length) as PaneId));
+    act(() => document.body.dispatchEvent(pointer("pointerup", sidePoint("g7", "bottom"))));
+    expect(document.querySelector("[data-part=drag-ghost]")).toBeNull();
+    expect(document.querySelector("[data-part=drop-highlight]")).toBeNull();
+  }
+  expect(readGroups()).toEqual([["*Stack"], ["*Source", "Memory", "Registers"]]);
+
+  drag(tabOf("Memory"), sidePoint("g7", "bottom"));
+  expect(readGroups()).toEqual([["*Stack"], ["*Source", "Registers"], ["*Memory"]]);
+});
+
 it("gives up a drag on Escape, leaving every tab where it was", async () => {
   await mount();
   const before = readGroups();

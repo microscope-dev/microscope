@@ -20,6 +20,7 @@ import {
 import { classOf } from "./classes";
 import { DockContext, type DockSetup, useDock } from "./context";
 import { pressWindow, rememberSize } from "./drag";
+import { trackPointer } from "./gesture";
 import { GroupView } from "./Group";
 import { activate, dock, type GroupId, groups, type PaneId, type Rect, reframe } from "./layout";
 import { keepOnScreen } from "./snap";
@@ -141,28 +142,15 @@ function WindowFrame({
     return pane ? kinds.get(pane.kind).title(pane) : "";
   });
   const element = useRef<HTMLDivElement>(null);
-  const resizing = useRef<{ x: number; y: number; rect: Rect } | null>(null);
   const rect = useMemo(() => keepOnScreen(placed, { x: 0, y: 0, ...bounds }), [placed, bounds]);
   const style = useMemo(
     () => ({ left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: layer }),
     [rect, layer],
   );
 
-  const cancel = useCallback(() => {
-    const from = resizing.current;
-    resizing.current = null;
-    if (from && element.current) {
-      element.current.style.width = `${from.rect.width}px`;
-      element.current.style.height = `${from.rect.height}px`;
-    }
-  }, []);
   const resizeKey = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>) => {
       if (event.altKey || event.ctrlKey || event.metaKey) {
-        return;
-      }
-      if (event.key === "Escape") {
-        cancel();
         return;
       }
       const step = event.shiftKey ? 64 : 16;
@@ -177,42 +165,35 @@ function WindowFrame({
         change((layout) => reframe(layout, id, grown(rect, delta[0] ?? 0, delta[1] ?? 0, bounds)));
       }
     },
-    [cancel, id, rect, bounds],
+    [id, rect, bounds],
   );
 
+  // The window is resized by hand as the pointer moves, and in the layout
+  // once, when it lets go.
   const gripDown = useCallback(
     (event: PointerEvent<HTMLButtonElement>) => {
-      if (event.button !== 0) {
+      const box = element.current;
+      if (!box) {
         return;
       }
-      event.preventDefault();
-      event.currentTarget.focus();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      resizing.current = { x: event.clientX, y: event.clientY, rect };
-    },
-    [rect],
-  );
-  const gripMove = useCallback(
-    (event: PointerEvent<HTMLButtonElement>) => {
-      const from = resizing.current;
-      if (from && element.current) {
-        const sized = grown(from.rect, event.clientX - from.x, event.clientY - from.y, bounds);
-        element.current.style.width = `${sized.width}px`;
-        element.current.style.height = `${sized.height}px`;
+      const sized = (at: globalThis.PointerEvent) =>
+        grown(rect, at.clientX - event.clientX, at.clientY - event.clientY, bounds);
+      const resize = (to: Rect) => {
+        box.style.width = `${to.width}px`;
+        box.style.height = `${to.height}px`;
+      };
+      const tracked = trackPointer(event, {
+        move: (moved) => resize(sized(moved)),
+        up: (released) => change((layout) => reframe(layout, id, sized(released))),
+        cancel: () => resize(rect),
+      });
+      if (tracked) {
+        event.preventDefault();
+        // So the arrow keys go on resizing it.
+        event.currentTarget.focus();
       }
     },
-    [bounds],
-  );
-  const gripUp = useCallback(
-    (event: PointerEvent<HTMLButtonElement>) => {
-      const from = resizing.current;
-      resizing.current = null;
-      if (from) {
-        const sized = grown(from.rect, event.clientX - from.x, event.clientY - from.y, bounds);
-        change((layout) => reframe(layout, id, sized));
-      }
-    },
-    [id, bounds],
+    [id, rect, bounds],
   );
 
   // Working in a window raises it.
@@ -275,10 +256,6 @@ function WindowFrame({
         title="Resize with arrow keys; hold Shift for larger steps"
         onKeyDown={resizeKey}
         onPointerDown={gripDown}
-        onPointerMove={gripMove}
-        onPointerUp={gripUp}
-        onPointerCancel={cancel}
-        onLostPointerCapture={cancel}
       />
     </div>
   );

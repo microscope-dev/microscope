@@ -135,6 +135,15 @@ it("closes the last tab of a group, and the group with it", async () => {
   expect(page.getByRole("separator").elements()).toHaveLength(0);
 });
 
+it("closes a tab middle-clicked on its title or its close button", async () => {
+  await mount([pane("plain", "Console"), pane("plain", "Output"), pane("plain", "Threads")]);
+  await userEvent.click(tab("Console"), { button: "middle" });
+  await expect.element(tab("Console")).not.toBeInTheDocument();
+  await userEvent.click(page.getByRole("button", { name: "Close Output" }), { button: "middle" });
+  await expect.element(tab("Output")).not.toBeInTheDocument();
+  await expect.element(tab("Threads")).toBeInTheDocument();
+});
+
 it("says why a pane is empty, and keeps working when one throws", async () => {
   await mount({
     axis: "row",
@@ -155,7 +164,7 @@ const threads = () =>
   (document.querySelector('[data-group] [role="tablist"]') as HTMLElement).getBoundingClientRect()
     .width;
 
-it("resizes a split by keyboard, and evens it out with Enter", async () => {
+it("resizes a split by keyboard and pointer, and evens it out with Enter", async () => {
   await mount({
     axis: "row",
     children: [
@@ -175,4 +184,23 @@ it("resizes a split by keyboard, and evens it out with Enter", async () => {
   expect(threads()).toBeGreaterThanOrEqual(119);
   await userEvent.keyboard("{Enter}");
   await expect.element(separator).toHaveAttribute("aria-valuenow", "50");
+
+  // By pointer: Escape puts it back, and letting go keeps where it went.
+  const bar = separator.element() as HTMLElement;
+  const box = bar.getBoundingClientRect();
+  const at = (type: string, x: number) =>
+    new PointerEvent(type, { bubbles: true, pointerId: 1, clientX: x, clientY: box.y + 50 });
+  const half = threads();
+  bar.dispatchEvent(at("pointerdown", box.x));
+  bar.dispatchEvent(at("pointermove", box.x + 100));
+  expect(threads()).toBeCloseTo(half + 100, -1);
+  window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  expect(threads()).toBeCloseTo(half, 0);
+  await expect.element(separator).toHaveAttribute("aria-valuenow", "50");
+
+  bar.dispatchEvent(at("pointerdown", box.x));
+  bar.dispatchEvent(at("pointermove", box.x - 100));
+  bar.dispatchEvent(at("pointerup", box.x - 100));
+  await expect.element(separator).not.toHaveAttribute("aria-valuenow", "50");
+  expect(threads()).toBeCloseTo(half - 100, -1);
 });

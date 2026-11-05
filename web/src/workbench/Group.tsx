@@ -185,8 +185,17 @@ function Tab({
     [shut],
   );
 
+  // The tab and its close button are pressed as one: either drags the tab, and
+  // a middle click on either closes it, without the browser's autoscroll.
   return (
-    <div className={`${css("group-tab")} ${shown ? css("on") : ""}`} data-part="tab">
+    // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- pointer handling shared by the two buttons inside, which carry the roles and keys
+    <div
+      className={`${css("group-tab")} ${shown ? css("on") : ""}`}
+      data-part="tab"
+      onPointerDown={press}
+      onMouseDown={noAutoscroll}
+      onAuxClick={auxClick}
+    >
       <button
         type="button"
         role="tab"
@@ -196,10 +205,6 @@ function Tab({
         tabIndex={shown ? 0 : -1}
         title={found.key || title}
         onClick={choose}
-        onPointerDown={press}
-        // A middle click closes the tab, without the browser's autoscroll.
-        onMouseDown={noAutoscroll}
-        onAuxClick={auxClick}
       >
         <span className={css("tab-title")} data-part="tab-title">
           {title}

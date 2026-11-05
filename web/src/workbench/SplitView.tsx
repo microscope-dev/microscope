@@ -17,6 +17,7 @@ import {
 import { assert } from "../assert";
 import { classOf } from "./classes";
 import { useDock } from "./context";
+import { trackPointer } from "./gesture";
 import { GroupView } from "./Group";
 import {
   type Child,
@@ -136,7 +137,6 @@ function Separator({
   const second = split.children[afterIndex];
   assert(first && second, `separator ${beforeIndex}-${afterIndex} of ${split.children.length}`);
   const shared = first.weight + second.weight;
-  const drag = useRef<Measure | null>(null);
   const panes = useLayout((layout) => layout.panes);
   const name = (node: Node): string => {
     const group = node.type === "group" ? node : leftmost(node);
@@ -144,77 +144,39 @@ function Separator({
     return pane ? kinds.get(pane.kind).title(pane) : "panes";
   };
 
+  // The two children are resized by hand as the pointer moves, and in the
+  // layout once, when it lets go.
   const down = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) {
-        return;
-      }
-      event.preventDefault();
-      // Focused, so Escape reaches it to cancel the drag.
-      event.currentTarget.focus();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      drag.current = measure(box, at, row);
-    },
-    [box, at, row],
-  );
-  const moved = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const measured = drag.current;
-      if (!measured) {
-        return;
-      }
-      const [a, b] = shares(
-        measured,
-        shared,
-        settle(measured, row ? event.clientX : event.clientY, event.altKey),
-      );
-      measured.before.style.flexGrow = String(a * scale);
-      measured.after.style.flexGrow = String(b * scale);
-    },
-    [row, shared, scale],
-  );
-  const up = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const measured = drag.current;
-      drag.current = null;
-      if (!measured) {
-        return;
-      }
-      commit(
-        split,
-        beforeIndex,
-        afterIndex,
+      const measured = measure(box, at, row);
+      const place = (pointer: globalThis.PointerEvent) =>
         shares(
           measured,
           shared,
-          settle(measured, row ? event.clientX : event.clientY, event.altKey),
-        ),
-      );
+          settle(measured, row ? pointer.clientX : pointer.clientY, pointer.altKey),
+        );
+      const show = ([a, b]: readonly [number, number]) => {
+        measured.before.style.flexGrow = String(a * scale);
+        measured.after.style.flexGrow = String(b * scale);
+      };
+      const tracked = trackPointer(event, {
+        move: (moved) => show(place(moved)),
+        up: (released) => commit(split, beforeIndex, afterIndex, place(released)),
+        cancel: () => show([first.weight, second.weight]),
+      });
+      if (tracked) {
+        event.preventDefault();
+        // So the arrow keys go on resizing it.
+        event.currentTarget.focus();
+      }
     },
-    [split, beforeIndex, afterIndex, row, shared],
+    [box, at, row, shared, scale, split, beforeIndex, afterIndex, first, second],
   );
-  const cancel = useCallback(() => {
-    const measured = drag.current;
-    drag.current = null;
-    if (measured) {
-      measured.before.style.flexGrow = String(first.weight * scale);
-      measured.after.style.flexGrow = String(second.weight * scale);
-    }
-  }, [first, second, scale]);
-  const lost = useCallback(() => {
-    if (drag.current) {
-      cancel();
-    }
-  }, [cancel]);
   const even = useCallback(() => evenOut(split), [split]);
 
   const key = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
-        return;
-      }
-      if (event.key === "Escape" && drag.current) {
-        cancel();
         return;
       }
       if (event.key === "Enter") {
@@ -243,7 +205,7 @@ function Separator({
       const position = measured.from + (measured.to - measured.from) * (first.weight / shared);
       commit(split, beforeIndex, afterIndex, shares(measured, shared, by(measured, position)));
     },
-    [cancel, split, row, box, at, first, shared, beforeIndex, afterIndex],
+    [split, row, box, at, first, shared, beforeIndex, afterIndex],
   );
 
   return (
@@ -259,10 +221,6 @@ function Separator({
       tabIndex={0}
       data-keys="escape"
       onPointerDown={down}
-      onPointerMove={moved}
-      onPointerUp={up}
-      onPointerCancel={cancel}
-      onLostPointerCapture={lost}
       onDoubleClick={even}
       onKeyDown={key}
     />

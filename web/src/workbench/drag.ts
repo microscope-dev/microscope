@@ -1,12 +1,13 @@
 // Dragging a tab, or a floating window by its title bar. The page is measured
 // once as the drag begins, the ghost and the highlight are moved by hand at
 // most once a frame, and the layout changes once, at the drop, so a drag
-// renders nothing until it ends. Escape cancels it.
+// renders nothing until it ends.
 
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 import { classOf } from "./classes";
 import { type Drop, type Measured, type MeasuredGroup, type Point, resolveDrop } from "./drop";
+import { trackPointer } from "./gesture";
 import {
   dock,
   float,
@@ -48,25 +49,18 @@ interface Drag {
   readonly source: Source;
   readonly dock: HTMLElement;
   readonly start: Point;
-  readonly handle: HTMLElement;
-  readonly pointer: number;
   point: Point;
   shift: boolean;
   alt: boolean;
   /** Set once the pointer has gone past the threshold. */
   measured: Measured | null;
+  /** The layout measured, which a drop lands in only if it still holds. */
+  layout: Layout | null;
   bounds: Rect;
   drop: Drop | null;
   frame: number | null;
   ghost: HTMLElement | null;
   highlight: HTMLElement | null;
-}
-
-let active: Drag | null = null;
-
-/** Whether a drag is under way, when Escape is its to cancel. */
-export function dragging(): boolean {
-  return active !== null && active.measured !== null;
 }
 
 /** Starts what may become a drag of a tab, from a press on it. */
@@ -107,43 +101,45 @@ export function rememberSize(layout: Layout, window: GroupId): void {
 
 function press(event: ReactPointerEvent<HTMLElement>, source: Source): void {
   const dockElement = event.currentTarget.closest<HTMLElement>("[data-part=dock]");
-  if (event.button !== 0 || active || !dockElement) {
+  if (!dockElement) {
     return;
   }
-  const handle = event.currentTarget;
   const point = { x: event.clientX, y: event.clientY };
-  active = {
+  const drag: Drag = {
     source,
     dock: dockElement,
     start: point,
-    handle,
-    pointer: event.pointerId,
     point,
     shift: event.shiftKey,
     alt: event.altKey,
     measured: null,
+    layout: null,
     bounds: { x: 0, y: 0, width: 0, height: 0 },
     drop: null,
     frame: null,
     ghost: null,
     highlight: null,
   };
-  handle.setPointerCapture(event.pointerId);
-  handle.addEventListener("pointermove", moved);
-  handle.addEventListener("pointerup", released);
-  handle.addEventListener("pointercancel", cancel);
-  handle.addEventListener("lostpointercapture", cancel);
-  window.addEventListener("keydown", escaped, { capture: true });
+  trackPointer(event, {
+    move: (moved) => follow(drag, moved),
+    up: (released) => {
+      aim(drag, released);
+      if (drag.measured) {
+        land(drag);
+        // The click that ends a drag is not a click on the tab.
+        window.addEventListener("click", swallow, { capture: true, once: true });
+        setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
+      }
+      end(drag);
+    },
+    cancel: () => end(drag),
+  });
 }
 
-function moved(event: PointerEvent): void {
-  const drag = active;
-  if (!drag || event.pointerId !== drag.pointer) {
-    return;
-  }
-  drag.point = { x: event.clientX, y: event.clientY };
-  drag.shift = event.shiftKey;
-  drag.alt = event.altKey;
+/** Takes in where the pointer is, starting the drag once it has gone far
+ * enough, and shows the drop at most once a frame. */
+function follow(drag: Drag, event: PointerEvent): void {
+  aim(drag, event);
   if (!drag.measured) {
     const distance = Math.hypot(drag.point.x - drag.start.x, drag.point.y - drag.start.y);
     if (distance < THRESHOLD) {
@@ -153,42 +149,14 @@ function moved(event: PointerEvent): void {
   }
   drag.frame ??= requestAnimationFrame(() => {
     drag.frame = null;
-    if (active === drag) {
-      show(drag);
-    }
+    show(drag);
   });
 }
 
-function released(event: PointerEvent): void {
-  const drag = active;
-  if (!drag || event.pointerId !== drag.pointer) {
-    return;
-  }
+function aim(drag: Drag, event: PointerEvent): void {
   drag.point = { x: event.clientX, y: event.clientY };
   drag.shift = event.shiftKey;
   drag.alt = event.altKey;
-  const began = drag.measured !== null;
-  if (began) {
-    land(drag);
-    // The click that ends a drag is not a click on the tab.
-    window.addEventListener("click", swallow, { capture: true, once: true });
-    setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
-  }
-  end(drag);
-}
-
-function cancel(): void {
-  if (active) {
-    end(active);
-  }
-}
-
-function escaped(event: KeyboardEvent): void {
-  if (event.key === "Escape" && active) {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    end(active);
-  }
 }
 
 function swallow(event: Event): void {
@@ -200,6 +168,7 @@ function begin(drag: Drag): void {
   const dockRect = drag.dock.getBoundingClientRect();
   drag.bounds = { x: dockRect.x, y: dockRect.y, width: dockRect.width, height: dockRect.height };
   drag.measured = measure(drag);
+  drag.layout = workbench.getState().layout;
   drag.dock.classList.add(css("dragging"));
   const highlight = document.createElement("div");
   highlight.className = css("drop-highlight");
@@ -210,6 +179,7 @@ function begin(drag: Drag): void {
   if (drag.source.type === "tab") {
     const ghost = document.createElement("div");
     ghost.className = css("drag-ghost");
+    ghost.dataset.part = "drag-ghost";
     ghost.textContent = drag.source.title;
     drag.ghost = ghost;
     drag.dock.append(ghost);
@@ -278,6 +248,11 @@ function windowRect(drag: Drag): Rect {
 }
 
 function land(drag: Drag): void {
+  // Something else changed the layout mid-drag, such as closing the dragged
+  // tab, so the drop measured may name panes and groups that are gone.
+  if (workbench.getState().layout !== drag.layout) {
+    return;
+  }
   const source = drag.source;
   const drop = target(drag);
   if (source.type === "tab") {
@@ -306,16 +281,6 @@ function end(drag: Drag): void {
   drag.dock.classList.remove(css("dragging"));
   if (drag.source.type === "window") {
     drag.source.element.style.transform = "";
-  }
-  const { handle } = drag;
-  handle.removeEventListener("pointermove", moved);
-  handle.removeEventListener("pointerup", released);
-  handle.removeEventListener("pointercancel", cancel);
-  handle.removeEventListener("lostpointercapture", cancel);
-  window.removeEventListener("keydown", escaped, { capture: true });
-  active = null;
-  if (handle.hasPointerCapture(drag.pointer)) {
-    handle.releasePointerCapture(drag.pointer);
   }
 }
 

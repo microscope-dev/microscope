@@ -20,6 +20,9 @@
 }
 
 .group-tab {
+  --close-size: 18px;
+  --close-inset: 4px;
+  position: relative;
   display: flex;
   flex: none;
   align-items: center;
@@ -74,11 +77,20 @@
   text-overflow: ellipsis;
 }
 
+/* The close button sits over the end of the tab, so a press anywhere around
+   it still chooses or drags the tab. */
+.group-tab:has(.group-close) [role="tab"] {
+  padding-right: calc(10px + var(--close-size) + var(--close-inset));
+}
+
 .group-close {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  margin-right: 4px;
+  touch-action: none;
+  position: absolute;
+  top: 50%;
+  right: var(--close-inset);
+  width: var(--close-size);
+  height: var(--close-size);
+  translate: 0 -50%;
   padding: 0;
   border: 0;
   border-radius: 3px;
