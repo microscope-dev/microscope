@@ -29,6 +29,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::ValueEnum;
 use microscope::{AssemblySyntax, DebuggerHandle, Error, LaunchOptions, StopReason};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
+use tokio::signal::unix::SignalKind;
 
 use config::{Settings, Toggle};
 use session::Session;
@@ -575,8 +576,13 @@ impl Cli {
     }
 
     /// Runs the session's scripts and then its REPL, pausing the inferior on
-    /// Ctrl-C.
-    pub async fn run(&self, session: &Session) -> Result<()> {
+    /// Ctrl-C. Ends early once `terminated` completes, and returns the
+    /// signal it completed with.
+    pub async fn run(
+        &self,
+        session: &Session,
+        terminated: impl Future<Output = SignalKind>,
+    ) -> Result<Option<SignalKind>> {
         let session_batch = session.batch;
 
         // One listener for the session: a Ctrl-C while a pause is under way
@@ -585,7 +591,7 @@ impl Cli {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
                 .context("failed to listen for Ctrl-C")?;
         let session = self.run_inputs(session);
-        tokio::pin!(session);
+        tokio::pin!(session, terminated);
         loop {
             tokio::select! {
                 result = &mut session => {
@@ -622,9 +628,10 @@ impl Cli {
                         );
                     }
 
-                    return Ok(());
+                    return Ok(None);
                 }
                 Some(()) = interrupts.recv() => self.interrupt().await,
+                signal = &mut terminated => return Ok(Some(signal)),
             }
         }
     }

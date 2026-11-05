@@ -33,7 +33,7 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 
 use protocol::{Incoming, MessageError, Outgoing};
@@ -152,38 +152,24 @@ async fn relay(socket: &std::path::Path) -> Result<()> {
 /// Completes when the adapter is asked to stop: an editor closing the
 /// session may send SIGTERM, SIGINT, or SIGHUP instead of disconnecting.
 /// The signals are caught from this call on, before the future is polled.
-pub fn termination() -> impl Future<Output = ()> {
-    let signals = [
+pub fn termination() -> Result<impl Future<Output = ()>> {
+    let signal = crate::termination::first_of([
         SignalKind::terminate(),
         SignalKind::interrupt(),
         SignalKind::hangup(),
-    ]
-    .map(|kind| signal(kind).ok());
-    terminated(signals)
-}
+    ])
+    .context("failed to listen for SIGTERM, SIGINT, and SIGHUP")?;
 
-async fn terminated(signals: [Option<tokio::signal::unix::Signal>; 3]) {
-    let [mut terminate, mut interrupt, mut hangup] = signals;
-    let wait = |signal: Option<tokio::signal::unix::Signal>| async move {
-        match signal {
-            Some(mut signal) => {
-                signal.recv().await;
-            }
-            None => std::future::pending().await,
-        }
-    };
-
-    tokio::select! {
-        () = wait(terminate.take()) => {}
-        () = wait(interrupt.take()) => {}
-        () = wait(hangup.take()) => {}
-    }
+    Ok(async {
+        signal.await;
+    })
 }
 
 /// Serves one client over stdin and stdout. Anything else that writes to
 /// stdout or stderr, such as a panic message, is redirected to the client's
 /// console so it cannot corrupt the protocol stream.
 async fn serve_stdio(log: Log) -> Result<()> {
+    let stop = termination()?;
     let protocol_out = nix::unistd::dup(std::io::stdout()).context("failed to duplicate stdout")?;
     let (console_read, console_write) = output::pipe().context("failed to create a pipe")?;
     nix::unistd::dup2_stdout(&console_write).context("failed to redirect stdout")?;
@@ -191,7 +177,7 @@ async fn serve_stdio(log: Log) -> Result<()> {
     drop(console_write);
     let writer = tokio::fs::File::from_std(File::from(protocol_out));
     let reader = BufReader::new(tokio::io::stdin());
-    serve(reader, writer, Some(console_read), log, termination(), None).await;
+    serve(reader, writer, Some(console_read), log, stop, None).await;
     Ok(())
 }
 
@@ -200,7 +186,7 @@ async fn listen(address: SocketAddr, log: Log) -> Result<()> {
         .await
         .with_context(|| format!("failed to listen on {address}"))?;
     eprintln!("microscope dap listening on {}", listener.local_addr()?);
-    let stop = termination();
+    let stop = termination()?;
     tokio::pin!(stop);
 
     loop {

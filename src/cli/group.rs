@@ -234,6 +234,17 @@ impl Cli {
             Start::Continue => group.handle.continue_all().await?,
         }
 
+        // Development builds panic on request once the group runs, to test
+        // what a panic in the CLI leaves of the processes it debugs.
+        #[cfg(debug_assertions)]
+        {
+            const PANIC_WHILE_RUNNING: &str = "MICROSCOPE_TEST_CLI_PANIC";
+            assert!(
+                std::env::var_os(PANIC_WHILE_RUNNING).is_none(),
+                "a panic injected by {PANIC_WHILE_RUNNING}"
+            );
+        }
+
         let mut root_exit = None;
         let (member, reason) = loop {
             let received = tokio::select! {

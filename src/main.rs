@@ -18,11 +18,13 @@ mod args;
 mod cli;
 mod dap;
 mod present;
+mod termination;
 mod web;
 
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
+use tokio::signal::unix::SignalKind;
 
 // Each thread counts its allocations for `--timings`.
 #[global_allocator]
@@ -220,7 +222,11 @@ async fn async_main() -> ExitCode {
     }
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(None) => ExitCode::SUCCESS,
+        // A read of standard input the session left would keep the runtime
+        // from shutting down. A shell reports a process a signal ended as
+        // 128 plus its number.
+        Ok(Some(signal)) => std::process::exit(128 + signal.as_raw_value()),
         // A closed stdout pipe, such as `microscope ... | head`, is a normal
         // end.
         Err(error) if cli::is_broken_pipe(&error) => ExitCode::SUCCESS,
@@ -240,7 +246,17 @@ fn write_timings(recording: microscope::timings::Recording, path: &std::path::Pa
     Ok(())
 }
 
-async fn run(session: Session, renderers: Renderers) -> Result<()> {
+/// Runs a debugging session and shuts its debugger down, which detaches
+/// an attached process, however the session ends. Returns the signal that
+/// ended it, if one did.
+async fn run(session: Session, renderers: Renderers) -> Result<Option<SignalKind>> {
+    // SIGTERM, as `kill` and service managers send it, and SIGHUP, as a
+    // closed terminal or SSH connection sends it, end the session as `quit`
+    // does. Left to their default action, they would leave an attached
+    // process with its traps. One that comes while the target opens ends
+    // the session once it has, so nothing is left half attached.
+    let terminated = termination::first_of([SignalKind::terminate(), SignalKind::hangup()])
+        .context("failed to listen for SIGTERM and SIGHUP")?;
     let opened = open_target(&session).await?;
     let handle = opened
         .handle()
@@ -255,14 +271,19 @@ async fn run(session: Session, renderers: Renderers) -> Result<()> {
         cli = cli.with_group(group.handle(), session.source_paths.clone());
     }
 
-    let result = cli.run(&session).await;
+    // The session is a task of its own so that a panic in it comes back
+    // here as an error, and the debugger still shuts down.
+    let result = tokio::spawn(async move { cli.run(&session, terminated).await })
+        .await
+        .unwrap_or_else(|error| Err(anyhow!("internal error: {error}")));
     let shutdown = opened
         .shutdown()
         .await
         .context("failed to shut down debugger");
 
-    result?;
-    shutdown
+    let signal = result?;
+    shutdown?;
+    Ok(signal)
 }
 
 /// What a session debugs: one process, as a core dump is, or a group of the

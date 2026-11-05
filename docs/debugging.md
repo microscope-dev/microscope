@@ -62,7 +62,10 @@ microscope normally finds the executable through `/proc`. Supply it as the
 positional executable when that is not possible.
 
 Quitting an attached session detaches and leaves the process alive. Killing an
-attached process requires an explicit command.
+attached process requires an explicit command. SIGTERM and SIGHUP, as `kill`,
+a service manager, or a closed SSH connection send them, end the session as
+`quit` does, and microscope then exits with status 128 plus the signal's
+number. Ctrl-C only pauses the program.
 
 ## Debug the processes a program starts
 

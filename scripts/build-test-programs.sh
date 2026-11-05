@@ -1506,6 +1506,8 @@ for version_node in "12.4 22" "13.6 24" "14.6 26"; do
 done
 build_fixture gcc "$c_fixtures_dir/attach-threads.c" "$output_dir/attach-threads" \
     -O0 -g3 -fPIE -pie -pthread
+build_fixture gcc "$c_fixtures_dir/attach-sleepers.c" "$output_dir/attach-sleepers" \
+    -O0 -g3 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/attach-clones.c" "$output_dir/attach-clones" \
     -O0 -g3 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/attach-exited-leader.c" "$output_dir/attach-exited-leader" \

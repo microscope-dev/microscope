@@ -216,7 +216,7 @@ impl App {
 pub async fn run(args: &WebArgs) -> Result<()> {
     // Ctrl+C is caught from here on. One that comes while the program starts
     // ends the server once it has, so nothing is left half launched.
-    let terminated = crate::dap::termination();
+    let terminated = crate::dap::termination()?;
     let cwd = std::env::current_dir().context("the working directory")?;
 
     // The processes a program starts are debugged too, as the terminal's

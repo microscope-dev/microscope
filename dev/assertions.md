@@ -108,5 +108,12 @@ In development builds, `MICROSCOPE_TEST_PANIC_AFTER=<request>` makes the
 controller panic after serving a request whose description begins with
 `<request>`. `tests/cli.rs` uses it to check that an attached process survives.
 
+A panic in the CLI's own code ends the process, and the kernel would release
+the tracees as above while the controller is still detaching. So the CLI runs
+its session as a tokio task, gets the panic back as an error, and awaits the
+debugger's shutdown before it exits. SIGTERM and SIGHUP end the session the
+same way. `MICROSCOPE_TEST_CLI_PANIC` makes a development build's CLI panic
+once a `continue` or `run` is under way.
+
 The waiter thread asserts nothing. If it ends, the controller hears no more
 wait statuses and stalls.

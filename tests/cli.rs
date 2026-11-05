@@ -881,6 +881,85 @@ fn a_controller_panic_releases_an_attached_process_unharmed() {
     }
 }
 
+/// SIGTERM, as `kill` and systemd send it, and SIGHUP, as a dropped SSH
+/// session sends it, end the session as `quit` does, whether the signal
+/// finds the attached process stopped or running: no trap is left to kill
+/// it, and it runs on to its usual exit.
+#[test]
+fn termination_signals_release_an_attached_process_unharmed() {
+    for signal in [Signal::SIGTERM, Signal::SIGHUP] {
+        for running in [false, true] {
+            let case = format!(
+                "{signal} with the process {}",
+                if running { "running" } else { "stopped" }
+            );
+            let mut target =
+                support::ExternalProcess::spawn(&fixture("build/test-programs/attach"));
+            let process = target.process_id().get();
+            let mut microscope = Microscope::spawn(
+                microscope_command()
+                    .args(["--attach", &process.to_string()])
+                    .current_dir(env!("CARGO_MANIFEST_DIR")),
+            );
+            microscope.send("break attach_breakpoint\n");
+            microscope.line("the breakpoint", |line| {
+                line.starts_with("breakpoint 1 set at attach_breakpoint")
+            });
+
+            // The attach stopped the fixture; once continued, it sleeps in
+            // its read until released.
+            if running {
+                microscope.send("continue\n");
+                let pid = u32::try_from(process).expect("PID fits u32");
+                support::wait_until("the attached process runs", || {
+                    process_state(pid) == Some('S')
+                });
+            }
+
+            kill(
+                Pid::from_raw(i32::try_from(microscope.id()).expect("debugger PID fits i32")),
+                signal,
+            )
+            .expect("signal microscope");
+            let output = microscope.finish();
+            target.release();
+            assert_eq!(target.wait().code(), Some(23), "{case}: {output:?}");
+            assert_eq!(
+                output.status.code(),
+                Some(128 + signal as i32),
+                "{case}: {output:?}"
+            );
+        }
+    }
+}
+
+/// A panic in the CLI's own code ends the session as `quit` would, so an
+/// attached process is released with no trap left in it. Development
+/// builds panic on request once the process runs. Its many threads must
+/// each be stopped before a trap can be lifted, so a release cut short
+/// leaves the trap for one of them to hit.
+#[test]
+fn a_cli_panic_releases_an_attached_process_unharmed() {
+    let mut target =
+        support::ExternalProcess::spawn(&fixture("build/test-programs/attach-sleepers"));
+    let process = target.process_id().get().to_string();
+    let output = microscope_command()
+        .env("MICROSCOPE_TEST_CLI_PANIC", "1")
+        .args(["--batch", "--attach", &process])
+        .args(["--eval", "break attach_breakpoint"])
+        .args(["--eval", "continue"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("a panic injected"), "{stderr}");
+
+    target.release();
+    assert_eq!(target.wait().code(), Some(23), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+}
+
 /// `--attach NAME` attaches to the one process of that name, or that runs a
 /// script of that name, and refuses to choose among several, listing each
 /// with what matched.
