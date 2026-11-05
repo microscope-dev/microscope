@@ -1,8 +1,9 @@
 // The console: expressions and microscope's commands, in the frame the tab
 // shows, and run control, which the page runs itself (`console.ts`). Tab
-// completes from the frame's names, members, and registers, and the arrow
-// keys walk the lines run before, or the completions while they are open. An
-// empty line repeats the last step, and Ctrl+L clears.
+// completes from the frame's names, members, and registers; while the
+// completions are open, Tab and Shift+Tab cycle them and Enter takes one. The
+// arrow keys walk the lines run before, or the open completions. An empty
+// line repeats the last step, and Ctrl+L clears.
 
 import {
   type ChangeEvent,
@@ -10,6 +11,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   useCallback,
+  useEffect,
   useId,
   useRef,
   useState,
@@ -224,6 +226,10 @@ function ConsoleInput() {
       if (event.key === "l" && event.ctrlKey && !event.altKey && !event.metaKey) {
         event.preventDefault();
         clearConsole();
+      } else if (event.key === "Tab" && choices) {
+        // An open list cycles: Tab walks down it, Shift+Tab back up.
+        event.preventDefault();
+        walk(event.shiftKey ? -1 : 1);
       } else if (event.key === "Tab" && !event.shiftKey) {
         event.preventDefault();
         complete();
@@ -462,6 +468,12 @@ function Choice({
   active: boolean;
   take: (item: Completion) => void;
 }) {
+  const option = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (active) {
+      option.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [active]);
   // The field keeps focus, and the keys the field takes choose; a press
   // here chooses before the field could lose it.
   const press = useCallback(
@@ -473,6 +485,7 @@ function Choice({
   );
   return (
     <div
+      ref={option}
       id={id}
       // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an entry of the completions popup
       role="option"

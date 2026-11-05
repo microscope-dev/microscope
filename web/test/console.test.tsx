@@ -1,7 +1,7 @@
-// The console's completions can be chosen without a mouse: the arrow keys
-// walk the open list and Enter takes one. A click takes one too. Run-control
-// lines run the page's own actions and say where the program stopped;
-// everything else goes to microscope.
+// The console's completions can be chosen without a mouse: Tab and the
+// arrow keys walk the open list, and Enter takes one. A click takes one too.
+// Run-control lines run the page's own actions and say where the program
+// stopped; everything else goes to microscope.
 
 import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -18,6 +18,8 @@ afterEach(() => {
 });
 
 const field = () => page.getByRole("textbox", { name: "Console" });
+const option = (name: string) => page.getByRole("option", { name: new RegExp(`^${name}`, "u") });
+const entries = () => page.getByTestId("console").getByRole("listitem");
 
 async function completeVa() {
   const server = await mountPane(<Console />);
@@ -46,14 +48,44 @@ it("walks the completions with the arrow keys and takes one with Enter", async (
   await expect.element(page.getByRole("listbox")).not.toBeInTheDocument();
 });
 
+it("cycles the open completions with Tab and Shift+Tab, and Enter only fills the field", async () => {
+  const server = await mountPane(<Console />);
+  await userEvent.type(field(), "dis");
+  await userEvent.keyboard("{Tab}");
+  server.answer(await server.next("complete"), {
+    start: 0,
+    items: [
+      { label: "disable", kind: "keyword" },
+      { label: "display", kind: "keyword" },
+      { label: "disassemble", kind: "keyword" },
+    ],
+  });
+  await expect.element(page.getByRole("listbox", { name: "Completions" })).toBeVisible();
+  await expect.element(option("disable")).toHaveAttribute("aria-selected", "false");
+
+  await userEvent.keyboard("{Tab}{Tab}{Tab}");
+  await expect.element(option("disassemble")).toHaveAttribute("aria-selected", "true");
+  // Past the last, Tab comes round to the first, and Shift+Tab goes back.
+  await userEvent.keyboard("{Tab}");
+  await expect.element(option("disable")).toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
+  await expect.element(option("disassemble")).toHaveAttribute("aria-selected", "true");
+  await expect.element(field()).toHaveFocus();
+
+  await userEvent.keyboard("{Enter}");
+  await expect.element(field()).toHaveValue("disassemble");
+  await expect.element(page.getByRole("listbox")).not.toBeInTheDocument();
+  expect(server.requests.filter((request) => request.method === "complete")).toHaveLength(1);
+  expect(server.requests.map((request) => request.method)).not.toContain("console");
+  expect(entries().all()).toHaveLength(0);
+});
+
 it("takes a clicked completion and keeps typing in the field", async () => {
   await completeVa();
   await userEvent.click(page.getByRole("option", { name: /value/u }));
   await expect.element(field()).toHaveValue("value");
   await expect.element(field()).toHaveFocus();
 });
-
-const entries = () => page.getByTestId("console").getByRole("listitem");
 
 async function type(line: string) {
   await userEvent.type(field(), line ? `${line}{Enter}` : "{Enter}");
