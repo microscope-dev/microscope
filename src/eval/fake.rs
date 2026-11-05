@@ -963,6 +963,7 @@ impl World {
             match self.read_memory(at, 1) {
                 Ok(byte) if byte[0] == 0 => {
                     return TextSummary {
+                        extent: None,
                         bytes: bytes.into(),
                         completion: TextCompletion::Complete,
                     };
@@ -970,6 +971,7 @@ impl World {
                 Ok(byte) => bytes.push(byte[0]),
                 Err(_) => {
                     return TextSummary {
+                        extent: None,
                         bytes: bytes.into(),
                         completion: TextCompletion::Unreadable {
                             address: VirtualAddress::new(at),
@@ -980,6 +982,7 @@ impl World {
         }
 
         TextSummary {
+            extent: None,
             bytes: bytes.into(),
             completion: TextCompletion::Truncated { length: None },
         }
@@ -1572,6 +1575,7 @@ impl Machine for World {
                     .position(|&byte| byte == 0)
                     .unwrap_or(bytes.len());
                 Ok(Some(TextSummary {
+                    extent: None,
                     bytes: bytes[..end].to_vec().into(),
                     completion: TextCompletion::Complete,
                 }))
@@ -1806,6 +1810,7 @@ impl Machine for World {
         };
 
         let complete = |bytes: &[u8]| TextSummary {
+            extent: None,
             bytes: bytes.into(),
             completion: TextCompletion::Complete,
         };

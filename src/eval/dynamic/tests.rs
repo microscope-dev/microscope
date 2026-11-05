@@ -58,6 +58,7 @@ fn text(language: Rules, text: &str) -> Loaded {
     of(
         Some(language),
         LoadedValue::Text(TextSummary {
+            extent: None,
             bytes: text.as_bytes().into(),
             completion: TextCompletion::Complete,
         }),

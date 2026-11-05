@@ -1433,6 +1433,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 Some(TextSummary {
                     bytes,
                     completion: TextCompletion::Complete,
+                    ..
                 }) => bytes.len() as u64,
                 Some(TextSummary { completion, .. }) => {
                     return Err(Stop::missing(VariableState::Unavailable(

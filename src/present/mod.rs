@@ -96,9 +96,14 @@ pub struct Details {
     /// value is stored.
     pub memory: Option<u64>,
 
-    /// How many bytes the value occupies at `memory`, when it is stored
-    /// there and its size is known: a pointer's pointee has none.
+    /// How many bytes at `memory` belong to the value: its size when it
+    /// is stored there, or the C string a pointer leads to, NUL included,
+    /// when reading found its end. Other pointees have none.
     pub memory_bytes: Option<u64>,
+
+    /// Whether the value itself is stored at `memory`, `memory_bytes` long,
+    /// rather than pointing there.
+    pub stored: bool,
 
     /// Whether assigning to the row's path can change it: numbers,
     /// enumerations, and pointers in memory, or whole variables in the
@@ -270,6 +275,7 @@ impl Presenter<'_> {
                 value,
                 dereference,
                 children,
+                text,
                 presentation,
                 ..
             } => {
@@ -305,12 +311,16 @@ impl Presenter<'_> {
                     _ => None,
                 };
 
-                let memory_bytes = match (value, source) {
+                let stored_bytes = match (value, source) {
                     (VariableValue::Address(_), _) => None,
                     (_, VariableValueSource::Memory(_)) => {
                         item.type_info.and_then(|info| info.byte_size)
                     }
                     _ => None,
+                };
+                let memory_bytes = match value {
+                    VariableValue::Address(_) => text.as_deref().and_then(|text| text.extent),
+                    _ => stored_bytes,
                 };
 
                 let whole = item.path.as_ref().is_some_and(Expression::is_name);
@@ -320,6 +330,7 @@ impl Presenter<'_> {
                     code,
                     memory,
                     memory_bytes,
+                    stored: stored_bytes.is_some(),
                     editable: editable(source, value, context, whole, item.path.is_some()),
                     constant: matches!(source, VariableValueSource::Constant),
                     text_view: presented

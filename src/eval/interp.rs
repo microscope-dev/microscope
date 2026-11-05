@@ -262,6 +262,7 @@ impl<M: Machine> Interpreter<'_, M> {
             Value::Float(value) => LoadedValue::Float(value),
             Value::Bool(value) => LoadedValue::Bool(value),
             Value::Text(bytes) => LoadedValue::Text(crate::TextSummary {
+                extent: None,
                 bytes: bytes.into(),
                 completion: TextCompletion::Complete,
             }),
@@ -1511,6 +1512,7 @@ impl<M: Machine> Interpreter<'_, M> {
     /// A string the expression computed, as text.
     fn present_text(&self, ty: &Ty, bytes: Vec<u8>) -> InspectedValue {
         let text = crate::TextSummary {
+            extent: None,
             bytes: bytes.clone().into(),
             completion: TextCompletion::Complete,
         };

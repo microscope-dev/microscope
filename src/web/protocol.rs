@@ -2303,8 +2303,13 @@ pub struct Row {
     /// The address of its natural memory, as hexadecimal.
     pub memory: Option<String>,
 
-    /// How many bytes the value occupies there, when it is stored there.
+    /// How many bytes there belong to the value: its size when it is
+    /// stored there, or the C string it points to, NUL included.
     pub memory_bytes: Option<u64>,
+
+    /// Whether the value itself is stored at `memory`, so a watchpoint can
+    /// watch it, rather than pointing there.
+    pub stored: bool,
 
     /// A row that only says where reading stopped short.
     pub truncated: bool,

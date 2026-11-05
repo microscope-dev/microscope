@@ -130,6 +130,35 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
     tab.save_traffic("lowlevel");
 }
 
+/// A C string's memory is as long as its text and NUL, which reading the
+/// text found, though the array holding it is longer.
+#[tokio::test]
+async fn a_c_string_pointer_marks_its_text_in_memory() {
+    let web = Web::start("memory", &[&fixture("kvstore")]);
+    let mut tab = web.control("tab").await;
+    tab.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    tab.ok("addBreakpoint", json!({"location": "table_find"}))
+        .await;
+    tab.ok("continue", json!({})).await;
+    let stopped = tab.inferior("stopped").await;
+    let inferior = &stopped["inferior"];
+    let at = json!({"stop": inferior["stop"], "thread": inferior["thread"], "frame": 0});
+
+    let mut key = at.clone();
+    key["expression"] = "key".into();
+    let key = tab.ok("evaluate", key).await;
+    assert_eq!(key["type"], "const char *", "{key}");
+    assert_eq!(key["memoryBytes"], "user:1000".len() + 1, "{key}");
+    assert_eq!(key["stored"], false, "{key}");
+
+    let mut array = frame(&at, 1);
+    array["expression"] = "req->key".into();
+    let array = tab.ok("evaluate", array).await;
+    assert_eq!(key["memory"], array["memory"], "{key} {array}");
+    assert_eq!(array["memoryBytes"], 16, "{array}");
+}
+
 #[tokio::test]
 async fn memory_reads_and_writes_at_the_stop_it_names() {
     let web = Web::start("memory", &[&fixture("kvstore")]);
@@ -142,11 +171,14 @@ async fn memory_reads_and_writes_at_the_stop_it_names() {
 
     // The array is stored in the request, sixteen bytes of it.
     assert_eq!(key["memoryBytes"], 16, "{key}");
+    assert_eq!(key["stored"], true, "{key}");
 
     // A pointer's memory is its pointee, whose size it does not know.
     let mut req = at.clone();
     req["expression"] = "req".into();
-    assert_eq!(tab.ok("evaluate", req).await["memoryBytes"], Value::Null);
+    let req = tab.ok("evaluate", req).await;
+    assert_eq!(req["memoryBytes"], Value::Null, "{req}");
+    assert_eq!(req["stored"], false, "{req}");
 
     let read = tab
         .ok(

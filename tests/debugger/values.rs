@@ -2688,6 +2688,7 @@ async fn readable_invalid_boolean_bytes_are_not_reported_as_unavailable_or_malfo
 
 fn text(bytes: &[u8], completion: microscope::TextCompletion) -> microscope::TextSummary {
     microscope::TextSummary {
+        extent: None,
         bytes: bytes.into(),
         completion,
     }
@@ -2699,6 +2700,14 @@ fn truncated(byte: u8, length: Option<u64>) -> microscope::TextSummary {
         &[byte; microscope::TextSummary::MAX_BYTES],
         microscope::TextCompletion::Truncated { length },
     )
+}
+
+/// C string text whose terminator was found `extent` bytes from its start.
+fn ending(text: microscope::TextSummary, extent: u64) -> microscope::TextSummary {
+    microscope::TextSummary {
+        extent: Some(extent),
+        ..text
+    }
 }
 
 /// Stops a fixture at its "strings stop here" line, or in `function`, and
@@ -2751,10 +2760,18 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
         "c/strings.c",
         None,
         &[
-            ("greeting", Some(text(b"hello, world", Complete))),
+            // A pointer's text extends through its NUL in memory; the
+            // arrays' text does not need one.
+            (
+                "greeting",
+                Some(ending(text(b"hello, world", Complete), 13)),
+            ),
             (
                 "escaped",
-                Some(text(b"tab\there \"quoted\" \\ \xc3\xa9\x80", Complete)),
+                Some(ending(
+                    text(b"tab\there \"quoted\" \\ \xc3\xa9\x80", Complete),
+                    24,
+                )),
             ),
             ("long_text", Some(truncated(b'x', None))),
             ("buffer", Some(text(b"abc", Complete))),
@@ -2765,11 +2782,18 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
             ("bytes", Some(text(b"A\xff", Complete))),
             // Wide text is decoded from its units: UTF-32 for `wchar_t`
             // and `char32_t`, UTF-16 for `char16_t`.
-            ("wide", Some(text("wide é".as_bytes(), Complete))),
-            ("sixteen", Some(text("sixteen λ 🦀".as_bytes(), Complete))),
+            // Their extents count units, not the UTF-8 they become.
+            (
+                "wide",
+                Some(ending(text("wide é".as_bytes(), Complete), 7 * 4)),
+            ),
+            (
+                "sixteen",
+                Some(ending(text("sixteen λ 🦀".as_bytes(), Complete), 13 * 2)),
+            ),
             (
                 "thirty_two",
-                Some(text("thirty-two 🦀".as_bytes(), Complete)),
+                Some(ending(text("thirty-two 🦀".as_bytes(), Complete), 13 * 4)),
             ),
             ("wide_buffer", Some(text(b"buf", Complete))),
             ("lone", Some(text("a\u{fffd}".as_bytes(), Complete))),

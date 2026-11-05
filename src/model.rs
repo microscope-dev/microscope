@@ -2877,6 +2877,11 @@ pub struct TextSummary {
 
     /// Whether every byte of the text was read.
     pub completion: TextCompletion,
+
+    /// The bytes a C string occupies at the address it was read from, its
+    /// terminating NUL included, when reading found that NUL. Text with a
+    /// recorded length, or none in memory, has none.
+    pub extent: Option<u64>,
 }
 
 impl TextSummary {
@@ -2931,6 +2936,7 @@ impl TextSummary {
         }
 
         Self {
+            extent: None,
             bytes: Arc::from(text.into_bytes()),
             completion: match completion {
                 TextCompletion::Complete if cut => TextCompletion::Truncated { length: None },

@@ -356,7 +356,14 @@ async fn zig_identities_text_and_text_budgets_follow_zig_syntax() {
     for (name, text) in [
         ("text", Some(complete("hello"))),
         ("terminated", Some(complete("zero"))),
-        ("c_text", Some(complete("cstr"))),
+        // A C string's extent reaches through its NUL.
+        (
+            "c_text",
+            Some(microscope::TextSummary {
+                extent: Some(5),
+                ..complete("cstr")
+            }),
+        ),
         ("ints", None),
     ] {
         assert_eq!(text_of(&variables.variables, name), text, "{name}");
@@ -503,6 +510,7 @@ async fn expressions_name_types_by_their_identities() {
 
 fn complete(text: &str) -> microscope::TextSummary {
     microscope::TextSummary {
+        extent: None,
         bytes: text.as_bytes().into(),
         completion: microscope::TextCompletion::Complete,
     }

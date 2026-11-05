@@ -242,7 +242,7 @@ function RowActions({ row }: { row: Row }) {
   if (!row.memory) {
     return draw ? <span className="row-actions">{draw}</span> : null;
   }
-  const watchable = control && at && !stale && row.path !== null && row.memoryBytes !== null;
+  const watchable = control && at && !stale && row.path !== null && row.stored;
   return (
     <span className="row-actions">
       {watchable && (
@@ -439,6 +439,7 @@ export function messageRow(name: string, text: string): Row {
     editable: false,
     memory: null,
     memoryBytes: null,
+    stored: false,
     truncated: false,
     drawings: [],
   };

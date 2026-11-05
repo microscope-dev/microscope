@@ -120,13 +120,20 @@ impl TextReader<'_> {
     ) -> TextSummary {
         let (bytes, terminated, stopped) =
             self.read_text(address, TextSummary::MAX_BYTES * width, width, true);
+
+        // The text ends at the NUL found, so its bytes in memory are known
+        // whatever its characters become.
+        let extent = (terminated && stopped.is_none()).then(|| (bytes.len() + width) as u64);
         let completion = match stopped {
             Some(stopped) => stopped.completion(None),
             None if terminated => TextCompletion::Complete,
             None => TextCompletion::Truncated { length: None },
         };
 
-        text(bytes, width, byte_order, completion)
+        TextSummary {
+            extent,
+            ..text(bytes, width, byte_order, completion)
+        }
     }
 
     /// The `length` characters of `width` bytes at an address.
@@ -197,6 +204,7 @@ fn text(
 ) -> TextSummary {
     if width == 1 {
         TextSummary {
+            extent: None,
             bytes: bytes.into(),
             completion,
         }
@@ -216,6 +224,7 @@ impl Stopped {
     /// Text that stopped before its first byte.
     fn summary(self, length: Option<u64>) -> TextSummary {
         TextSummary {
+            extent: None,
             bytes: Arc::from([]),
             completion: self.completion(length),
         }
@@ -678,8 +687,9 @@ mod tests {
     use crate::debug_info::{VariableRegister, VariableRuntimeError};
     use crate::{ImageAddress, VariableUnavailableReason};
 
-    /// Memory that holds a nonzero byte everywhere.
-    struct Filled;
+    /// Memory that holds these bytes from address zero, and a nonzero byte
+    /// everywhere else.
+    struct Filled(&'static [u8]);
 
     impl VariableRuntime for Filled {
         fn register(
@@ -707,10 +717,19 @@ mod tests {
 
         fn read_memory(
             &mut self,
-            _: VirtualAddress,
+            address: VirtualAddress,
             size: usize,
         ) -> Result<Arc<[u8]>, VariableRuntimeError> {
-            Ok(vec![b'x'; size].into())
+            let start = usize::try_from(address.get()).unwrap_or(usize::MAX);
+            Ok((0..size)
+                .map(|offset| {
+                    start
+                        .checked_add(offset)
+                        .and_then(|at| self.0.get(at))
+                        .copied()
+                        .unwrap_or(b'x')
+                })
+                .collect())
         }
 
         fn entry_value(
@@ -728,7 +747,7 @@ mod tests {
     fn text_reaching_the_end_of_the_address_space_is_truncated() {
         let mut budget = InspectionBudget::default();
         let mut reader = TextReader {
-            runtime: &mut Filled,
+            runtime: &mut Filled(b""),
             budget: &mut budget,
         };
 
@@ -739,5 +758,27 @@ mod tests {
         );
         assert_eq!(&*text.bytes, b"xxx");
         assert_eq!(text.completion, TextCompletion::Truncated { length: None });
+        assert_eq!(text.extent, None);
+    }
+
+    /// A C string's extent is its bytes in memory and its NUL, in the units
+    /// it is written in rather than the UTF-8 it becomes.
+    #[test]
+    fn a_c_string_extends_through_its_terminator() {
+        let mut budget = InspectionBudget::default();
+        let mut reader = TextReader {
+            runtime: &mut Filled(b"h\0\xe9\0!\0\0\0tail"),
+            budget: &mut budget,
+        };
+
+        let wide = reader.c_string(VirtualAddress::new(0), 2, crate::ByteOrder::Little);
+        assert_eq!(&*wide.bytes, "hé!".as_bytes());
+        assert_eq!(wide.completion, TextCompletion::Complete);
+        assert_eq!(wide.extent, Some(8));
+
+        // Read a byte at a time, the same memory ends at the first zero.
+        let narrow = reader.c_string(VirtualAddress::new(0), 1, crate::ByteOrder::Little);
+        assert_eq!(&*narrow.bytes, b"h");
+        assert_eq!(narrow.extent, Some(2));
     }
 }

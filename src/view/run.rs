@@ -1944,6 +1944,7 @@ fn read_bytes<M: Machine>(
         {
             bytes.extend_from_slice(&chunk[..position]);
             return Ok(TextSummary {
+                extent: None,
                 bytes: bytes.into(),
                 completion: TextCompletion::Complete,
             });
@@ -1959,6 +1960,7 @@ fn read_bytes<M: Machine>(
     };
 
     Ok(TextSummary {
+        extent: None,
         bytes: bytes.into(),
         completion,
     })

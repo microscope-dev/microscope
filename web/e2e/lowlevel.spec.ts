@@ -66,6 +66,22 @@ test("disassembly marks the frame's instruction and follows its calls", async ({
   await expect(marked(page)).toHaveCount(1);
 });
 
+test("a C string's memory marks its text and NUL", async ({ page, microscope }) => {
+  await join(page, microscope.link);
+  await stopInHandleRequest(page);
+  await page.getByRole("button", { name: "Open req" }).click();
+  // req->value is a const char * that points to "alice".
+  await valueRow(page, "variables", "value")
+    .getByRole("button", { name: /^Draw .*value as…$/u })
+    .click();
+  await page.getByRole("menuitem", { name: /^Memory/u }).click();
+  await expect(page).toHaveURL(/[?&]mem=0x[0-9a-f]+:6/u);
+
+  const memory = page.getByTestId("memory");
+  await expect(memory.locator(".byte.in-value")).toHaveCount(6);
+  await expect(page.getByTestId("selection")).toContainText('"alice');
+});
+
 test("memory opens at a value, marks its bytes, and writes them", async ({ page, microscope }) => {
   await join(page, microscope.link);
   await stopInHandleRequest(page);

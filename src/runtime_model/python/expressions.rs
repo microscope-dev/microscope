@@ -903,6 +903,7 @@ impl Values<'_, '_> {
                 (
                     InterpretedKind::Text,
                     Some(TextSummary {
+                        extent: None,
                         bytes: text::utf8(&points).into(),
                         completion: if complete {
                             TextCompletion::Complete
@@ -921,6 +922,7 @@ impl Values<'_, '_> {
                 (
                     InterpretedKind::Bytes,
                     Some(TextSummary {
+                        extent: None,
                         bytes: bytes.into(),
                         completion: if shown == *length {
                             TextCompletion::Complete

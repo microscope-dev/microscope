@@ -117,6 +117,7 @@ pub fn write<M: Machine>(
                 .collect::<String>();
 
             Some(super::summary::quoted(&TextSummary {
+                extent: None,
                 bytes: Arc::from(text.into_bytes()),
                 completion: if ended || read == size {
                     TextCompletion::Complete
@@ -146,6 +147,7 @@ fn utf8_at<M: Machine>(address: u64, length: u64, machine: &mut M) -> Result<Opt
     };
 
     Ok(utf8_text(&TextSummary {
+        extent: None,
         bytes: Arc::from(bytes),
         completion,
     })
@@ -176,6 +178,7 @@ pub fn utf8_text(text: &TextSummary) -> Option<TextSummary> {
         .chars()
         .all(|character| !character.is_control() || matches!(character, '\t' | '\n' | '\r'));
     (!valid.is_empty() && printable).then(|| TextSummary {
+        extent: None,
         bytes: Arc::from(valid.as_bytes()),
         completion: text.completion,
     })
@@ -475,6 +478,7 @@ mod tests {
     fn only_printable_utf8_is_text() {
         let text = |bytes: &[u8], completion| {
             utf8_text(&TextSummary {
+                extent: None,
                 bytes: Arc::from(bytes),
                 completion,
             })
