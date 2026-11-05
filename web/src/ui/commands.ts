@@ -58,7 +58,7 @@ import { change, workbench } from "../workbench/store";
 import { chooseTab, closeTab, reopenTab } from "../workbench/tabs";
 import { go } from "./navigation";
 import { asked } from "./Orgs";
-import { applyLayout, debugLayout, KINDS, showPane, welcomeLayout } from "./panes";
+import { applyLayout, debugLayout, KINDS, showPane, startLayout } from "./panes";
 
 interface Context {
   model: Model;
@@ -378,7 +378,6 @@ export const COMMANDS = registry({
   files: palette("files", "Open file", "Go", "p"),
   line: palette("line", "Go to line", "Go", "g"),
   help: pane(KIND.keys, "Keyboard shortcuts", "Help", [{ key: "?", shift: true }]),
-  welcome: pane(KIND.welcome, "Welcome", "Help"),
   back: {
     label: "Back to source",
     menu: "Go",
@@ -573,7 +572,7 @@ export const COMMANDS = registry({
     menu: "Window",
     keys: [],
     available: always,
-    run: ({ current }) => applyLayout(current.session ? debugLayout() : welcomeLayout()),
+    run: ({ current }) => applyLayout(current.session ? debugLayout() : startLayout()),
   },
   saveLayout: {
     label: "Save layout as…",

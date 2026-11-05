@@ -35,7 +35,7 @@ import {
   restoreLayout,
   showPane,
   type Wants,
-  welcomeLayout,
+  startLayout,
 } from "./panes";
 
 export interface Focus {
@@ -126,7 +126,7 @@ export function Workspace() {
 export function Workbench({
   focus,
   wants,
-  start = wants === "session" ? debugLayout : welcomeLayout,
+  start = wants === "session" ? debugLayout : startLayout,
   children,
 }: {
   focus: Focus | null;

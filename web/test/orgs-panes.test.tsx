@@ -2,7 +2,7 @@
 // services: each shows only the controls its person may use, and says why
 // when services refuses.
 
-import { cleanup, render } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { type Locator, page, userEvent } from "vitest/browser";
 
@@ -13,6 +13,7 @@ import { proving } from "../src/sso";
 import { AccountBody } from "../src/ui/Account";
 import { OrgBody, ProjectsBody } from "../src/ui/Orgs";
 import type { PaneId } from "../src/workbench/layout";
+import { mountPane, unmountPane } from "./pane";
 
 const ME: User = { id: 1, username: "ana", email: "ana@example.com", totp_enabled: false };
 
@@ -51,7 +52,7 @@ function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) 
 }
 
 afterEach(() => {
-  cleanup();
+  unmountPane();
   vi.unstubAllGlobals();
   account.setState({ now: { kind: "checking" }, notice: null, reset: null });
   proving.setState({ retry: null, asked: null });
@@ -263,7 +264,7 @@ it("lets a person accept an invitation from their Account pane", async () => {
       return [200, acme("member")];
     },
   });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
   const invitations = page.getByRole("list", { name: "Invitations" });
   await expect.poll(() => text(invitations)).toContain("acme invites you as a member (from bo)");
   await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
@@ -276,7 +277,7 @@ it("lets a person accept an invitation from their Account pane", async () => {
 
 const methods = () => page.getByRole("list", { name: "Sign-in methods" });
 
-const showSignInMethods = (providers: unknown, identities: unknown[], passkeys = false) => {
+const showSignInMethods = async (providers: unknown, identities: unknown[], passkeys = false) => {
   const asked = services({
     "GET /api/orgs": [200, []],
     "GET /api/projects": [200, []],
@@ -284,7 +285,7 @@ const showSignInMethods = (providers: unknown, identities: unknown[], passkeys =
     "GET /api/features": [200, { email: false, totp: true, sso: providers, passkeys }],
     "GET /api/users/me/identities": [200, { has_password: true, identities, passkeys: [] }],
   });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
   return asked;
 };
 
@@ -293,7 +294,7 @@ it("lists sign-in methods only when there is one to connect or one connected", a
   const saml = { id: 3, provider: "saml", email: ME.email, org_id: 7, org_name: "acme" };
 
   // Nothing to connect, and nothing connected: no section at all.
-  const asked = showSignInMethods(off, []);
+  const asked = await showSignInMethods(off, []);
   await expect
     .poll(() => asked)
     .toEqual(expect.arrayContaining(["GET /api/features", "GET /api/users/me/identities"]));
@@ -302,24 +303,24 @@ it("lists sign-in methods only when there is one to connect or one connected", a
     setTimeout(settle, 50);
   });
   expect(page.getByRole("heading", { name: "Sign-in methods" }).elements()).toHaveLength(0);
-  cleanup();
+  unmountPane();
 
   // An organization's single sign-on, connected, still shows and can go.
-  showSignInMethods(off, [saml]);
+  await showSignInMethods(off, [saml]);
   await expect.poll(() => text(methods())).toMatch(/^Password\s*acme's single sign-on/u);
   await expect.element(methods().getByRole("button", { name: "Disconnect" })).toBeVisible();
-  cleanup();
+  unmountPane();
 
   // GitHub offered: something to connect.
-  showSignInMethods({ ...off, github: true }, []);
+  await showSignInMethods({ ...off, github: true }, []);
   await expect.poll(() => text(methods())).toBe("Password");
   await expect.element(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
   expect(page.getByRole("button", { name: "Connect Google" }).elements()).toHaveLength(0);
   expect(page.getByRole("button", { name: "Add a passkey" }).elements()).toHaveLength(0);
-  cleanup();
+  unmountPane();
 
   // Passkeys offered: something to add.
-  showSignInMethods(off, [], true);
+  await showSignInMethods(off, [], true);
   await expect.element(page.getByRole("button", { name: "Add a passkey" })).toBeVisible();
 });
 
@@ -328,7 +329,7 @@ const PASSKEY = { id: 9, name: "Mac", backed_up: true, created_at: 1_790_000_000
 const day = (unix: number) =>
   new Date(unix * 1000).toLocaleDateString(undefined, { dateStyle: "medium" });
 
-const showPasskeys = (has_password: boolean, passkeys: unknown[]) => {
+const showPasskeys = async (has_password: boolean, passkeys: unknown[]) => {
   services({
     "GET /api/orgs": [200, []],
     "GET /api/projects": [200, []],
@@ -344,11 +345,11 @@ const showPasskeys = (has_password: boolean, passkeys: unknown[]) => {
     ],
     "GET /api/users/me/identities": [200, { has_password, identities: [], passkeys }],
   });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
 };
 
 it("lists passkeys, and keeps the last way in", async () => {
-  showPasskeys(true, [
+  await showPasskeys(true, [
     { ...PASSKEY, last_used_at: null },
     { ...PASSKEY, id: 10, name: "YubiKey", last_used_at: 1_792_000_000 },
   ]);
@@ -358,10 +359,10 @@ it("lists passkeys, and keeps the last way in", async () => {
   await expect
     .element(key)
     .toHaveTextContent(`Passkey: YubiKeyLast used ${day(1_792_000_000)}Remove`);
-  cleanup();
+  unmountPane();
 
   // Its only way in has nothing to remove it with.
-  showPasskeys(false, [{ ...PASSKEY, last_used_at: null }]);
+  await showPasskeys(false, [{ ...PASSKEY, last_used_at: null }]);
   await expect.poll(() => text(methods())).toMatch(/^Passkey: Mac/u);
   expect(methods().getByRole("button").elements()).toHaveLength(0);
 });
@@ -421,7 +422,7 @@ it("adds a passkey once the person proves who they are, sending what the device 
       },
     } as unknown as Credential);
   });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
 
   await userEvent.click(page.getByRole("button", { name: "Add a passkey" }));
   await userEvent.fill(page.getByLabelText("Passkey name"), " Mac ");
@@ -451,7 +452,7 @@ it("adds a passkey once the person proves who they are, sending what the device 
 });
 
 const twoFactorHeading = () => page.getByRole("heading", { name: "Two-factor authentication" });
-const showTwoFactor = (totp: boolean, user: User) => {
+const showTwoFactor = async (totp: boolean, user: User) => {
   const asked = services({
     "GET /api/orgs": [200, []],
     "GET /api/projects": [200, []],
@@ -464,31 +465,31 @@ const showTwoFactor = (totp: boolean, user: User) => {
     "GET /api/users/me": [200, user],
   });
   account.setState({ now: { kind: "in", user } });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
   return asked;
 };
 
 it("offers two-factor authentication only when the server can keep its secrets", async () => {
-  const asked = showTwoFactor(false, ME);
+  const asked = await showTwoFactor(false, ME);
   await expect.poll(() => asked).toContain("GET /api/features");
   await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
   await new Promise((settle) => {
     setTimeout(settle, 50);
   });
   expect(twoFactorHeading().elements()).toHaveLength(0);
-  cleanup();
+  unmountPane();
 
   // An account that turned it on before can still see it, to turn it off.
-  showTwoFactor(false, { ...ME, totp_enabled: true });
+  await showTwoFactor(false, { ...ME, totp_enabled: true });
   await expect.element(twoFactorHeading()).toBeVisible();
-  cleanup();
+  unmountPane();
 
-  showTwoFactor(true, ME);
+  await showTwoFactor(true, ME);
   await expect.element(twoFactorHeading()).toBeVisible();
 });
 
 const forgot = () => page.getByRole("button", { name: "Forgot password?" });
-const showSignedOut = (email: boolean) => {
+const showSignedOut = async (email: boolean) => {
   const asked = services({
     "GET /api/users/me": [401, { error: "not logged in" }],
     "GET /api/features": [
@@ -497,21 +498,21 @@ const showSignedOut = (email: boolean) => {
     ],
   });
   account.setState({ now: { kind: "out" } });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
   return asked;
 };
 
 it("offers a password reset only when the server sends email", async () => {
-  const asked = showSignedOut(false);
+  const asked = await showSignedOut(false);
   await expect.poll(() => asked).toContain("GET /api/features");
   await expect.element(page.getByLabelText("Username or email")).toBeVisible();
   await new Promise((settle) => {
     setTimeout(settle, 50);
   });
   expect(forgot().elements()).toHaveLength(0);
-  cleanup();
+  unmountPane();
 
-  showSignedOut(true);
+  await showSignedOut(true);
   await userEvent.fill(page.getByLabelText("Username or email"), "ana@example.com ");
   await userEvent.click(forgot());
   await expect.element(page.getByLabelText("Email")).toHaveValue("ana@example.com");
@@ -530,7 +531,7 @@ it("a reset link for another account leaves this browser signed in as it was", a
     "POST /api/password-resets/complete": [204],
   });
   account.setState({ reset: "ab".repeat(32) });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
   await userEvent.fill(page.getByLabelText("New password"), "a whole new password");
   await userEvent.click(page.getByRole("button", { name: "Change password" }));
   await expect
@@ -560,7 +561,7 @@ it("an account without a password proves who it is by signing in again", async (
     ],
     "DELETE /api/users/me/identities/4": [403, { error: "confirm it is you first" }],
   });
-  render(<AccountBody />);
+  await mountPane(<AccountBody />);
   const row = page.getByRole("listitem").filter({ hasText: "GitHub" });
   await userEvent.click(row.getByRole("button", { name: "Disconnect" }));
   await userEvent.click(row.getByRole("button", { name: "Disconnect" }));

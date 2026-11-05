@@ -8,7 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { commands, page, userEvent } from "vitest/browser";
 
 import { KIND, single } from "../src/documents";
-import { debugLayout, misplaced, profileLayout, welcomeLayout } from "../src/ui/panes";
+import { debugLayout, misplaced, profileLayout, startLayout } from "../src/ui/panes";
 import { type KindId, type Layout, open } from "../src/workbench/layout";
 import { closePage, openPage } from "./driver/fast";
 import { readGroups } from "./driver/layout";
@@ -127,10 +127,10 @@ it("starts the layout over only when it holds nothing for the address", () => {
   expect(misplaced(debugLayout(), "start")).toBe(true);
   expect(misplaced(plus(debugLayout(), KIND.settings), "start")).toBe(false);
   expect(misplaced(debugLayout(), "session")).toBe(false);
-  // Welcome has nothing for a session until one of its panes is open.
-  expect(misplaced(welcomeLayout(), "session")).toBe(true);
-  expect(misplaced(plus(welcomeLayout(), KIND.variables), "session")).toBe(false);
-  expect(misplaced(welcomeLayout(), "start")).toBe(false);
+  // Start has nothing for a session until one of its panes is open.
+  expect(misplaced(startLayout(), "session")).toBe(true);
+  expect(misplaced(plus(startLayout(), KIND.variables), "session")).toBe(false);
+  expect(misplaced(startLayout(), "start")).toBe(false);
   // A profile needs a connection, not a session.
   expect(misplaced(profileLayout("ab", "spin.usprof", {}), "start")).toBe(false);
 });

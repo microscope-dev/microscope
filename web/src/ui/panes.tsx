@@ -1,7 +1,7 @@
 // Every view as a pane kind, what each needs before it can show anything,
 // and the presets that arrange them: Debug, as the page always has been
 // (threads and the stack on the left, the code and the console in the
-// middle, values on the right), Welcome, and Profile.
+// middle, values on the right), Start, and Profile.
 
 import { useContext } from "react";
 
@@ -39,6 +39,7 @@ import {
   showView,
 } from "./Documents";
 import { Drawings } from "./Drawings";
+import { ExplorerBody } from "./Explorer";
 import { Memory } from "./Memory";
 import { OrgBody, orgName, ProjectsBody } from "./Orgs";
 import { Output, OutputBadge } from "./Output";
@@ -54,7 +55,6 @@ import { Stops } from "./StatusBar";
 import { Tasks, TasksBadge } from "./Tasks";
 import { Threads } from "./Threads";
 import { Variables, Watch, WatchBadge } from "./Values";
-import { ExplorerBody, WelcomeBody } from "./Welcome";
 import { FocusContext } from "./Workspace";
 
 /** What a pane needs before it can show anything: a session the tab is
@@ -123,7 +123,6 @@ export const KINDS = kinds<Need>([
     chosen: () => showView("drawings"),
     close: closesView("drawings"),
   }),
-  view(KIND.welcome, "Welcome", WelcomeBody, { needs: null }),
   view(KIND.explorer, "Explorer", ExplorerBody, { needs: null }),
   view(KIND.connect, "Connect", ConnectBody, { needs: null }),
   view(KIND.account, "Account", AccountBody, { needs: null }),
@@ -330,24 +329,16 @@ export function applyLayout(layout: Layout): void {
   tab.setState((state) => ({ files: [...state.files] }));
 }
 
-/** Where a page with nothing open starts. A page served on its own starts by
- * connecting; one `microscope web` serves, by choosing what to debug. */
-export function welcomeLayout(): Layout {
+/** Where a page with nothing open starts: at Account, which offers what can
+ * be done from here. A page served on its own has Connect beside it; one
+ * `microscope web` serves, the forms that choose what to debug. */
+export function startLayout(): Layout {
   return standalone
     ? build({
         axis: "row",
         children: [
-          [0.6, [single(KIND.welcome), single(KIND.keys)]],
-          [
-            0.4,
-            {
-              axis: "column",
-              children: [
-                [0.5, [single(KIND.connect), single(KIND.explorer)]],
-                [0.5, [single(KIND.account), single(KIND.settings)]],
-              ],
-            },
-          ],
+          [0.6, [single(KIND.account)]],
+          [0.4, [single(KIND.connect), single(KIND.explorer)]],
         ],
       })
     : build({
@@ -356,14 +347,14 @@ export function welcomeLayout(): Layout {
           [
             0.68,
             [
-              single(KIND.welcome),
+              single(KIND.account),
               single(KIND.launch),
               single(KIND.attach),
               single(KIND.core),
               single(KIND.record),
             ],
           ],
-          [0.32, [single(KIND.explorer), single(KIND.keys), single(KIND.settings)]],
+          [0.32, [single(KIND.explorer)]],
         ],
       });
 }
@@ -401,7 +392,7 @@ export function profileLayout(id: string, name: string, look: ProfileLook): Layo
     axis: "row",
     children: [
       [0.78, [profilePane(id, name, look)]],
-      [0.22, [single(KIND.explorer), single(KIND.welcome)]],
+      [0.22, [single(KIND.explorer), single(KIND.account)]],
     ],
   });
 }

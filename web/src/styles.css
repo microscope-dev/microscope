@@ -550,7 +550,7 @@ kbd {
   overflow: auto;
 }
 
-/* A pane of prose and forms, such as Welcome or Settings. */
+/* A pane of prose and forms, such as Account or Settings. */
 .pane-text {
   display: grid;
   /* Rows as tall as their content, scrolling in a short pane instead of
@@ -578,14 +578,14 @@ kbd {
   text-transform: uppercase;
 }
 
-.welcome-actions {
+.start-actions {
   display: grid;
   gap: 8px;
   padding: 0;
   list-style: none;
 }
 
-.welcome-actions li {
+.start-actions li {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -593,7 +593,16 @@ kbd {
 
 .pane-form {
   display: grid;
-  gap: 8px;
+  gap: 12px;
+}
+
+.pane-form p {
+  margin: 0;
+}
+
+/* Other ways to sign in, set apart from the form above them. */
+.continue-with {
+  margin-top: 8px;
 }
 
 .start-pane {

@@ -6,7 +6,7 @@ like the CLI and DAP server.
 
 The page is a workbench, as in an IDE: a menu bar, a run toolbar, and panes in
 tabbed groups that split, float, and dock. Every view is a pane, including
-Welcome, Settings, Account, and the forms that launch or attach. Only the join
+Account, Settings, and the forms that launch or attach. Only the join
 form sits outside the workbench.
 
 ## Code map
@@ -65,7 +65,7 @@ debugger's kinds and `web/src/ui/commands.ts` its commands.
 
 Every address renders the same workbench and says what it wants from it
 (`web/src/ui/Routes.tsx`). `/s/SESSION/...` wants a session's panes, and gets
-the Debug layout when no open pane shows one. `/` gets Welcome when every open
+the Debug layout when no open pane shows one. `/` starts at Account when every open
 pane needs a session; a server started on a profile starts at that profile
 instead. `/profile/ID` opens that profile's pane, and the address follows the
 pane while it is the one shown. `/pick?tab=` opens the Start pane its tab
@@ -85,7 +85,7 @@ became. `/join` alone shows without the frame.
    test it in real Chrome and Firefox on each supported platform, including
    while typing. Synthetic key events cannot establish whether browser or
    operating-system shortcuts intercept a key.
-5. Decide whether a preset (`debugLayout`, `welcomeLayout`) should hold it. A
+5. Decide whether a preset (`debugLayout`, `startLayout`) should hold it. A
    saved layout without it still loads.
 6. Test what a person does with it through the driver, and add it to a journey
    if it changes one. The swarm finds its menu item on its own.

@@ -190,12 +190,12 @@ export function documents(page: Page) {
 }
 
 /** Opens a join link and waits for where it leads: the session, the
- * profile the server serves, or else Welcome. */
+ * profile the server serves, or else Account. */
 export async function join(page: Page, link: string): Promise<void> {
   await page.goto(link);
-  const welcome = page.getByRole("tab", { name: "Welcome", exact: true });
+  const start = page.getByRole("tab", { name: "Account", exact: true });
   await expect(async () => {
     const { pathname } = new URL(page.url());
-    expect(/^\/(s|profile)\/[0-9a-f]+/u.test(pathname) || (await welcome.isVisible())).toBe(true);
+    expect(/^\/(s|profile)\/[0-9a-f]+/u.test(pathname) || (await start.isVisible())).toBe(true);
   }).toPass();
 }

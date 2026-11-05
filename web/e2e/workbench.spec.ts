@@ -14,13 +14,12 @@ const tab = (page: Page, name: string) => page.getByRole("tab", { name, exact: t
 test.describe("with nothing to debug", () => {
   test.use({ program: [] });
 
-  test("microscope web starts at Welcome, needs no account, and File launches a program", async ({
+  test("microscope web starts at Account, needs no account, and File launches a program", async ({
     page,
     microscope,
   }) => {
     await join(page, microscope.link);
-    await expect(tab(page, "Welcome")).toHaveAttribute("aria-selected", "true");
-    await expect(tab(page, "Account")).toHaveCount(0);
+    await expect(tab(page, "Account")).toHaveAttribute("aria-selected", "true");
 
     await menu(page, "File", "Launch a program…");
     const launch = page.getByRole("tabpanel", { name: "Launch" });
@@ -102,7 +101,7 @@ test("a page served on its own signs in, then connects with a join link", async 
   expectErrors(/\/api\/users\/me: 401$/u);
   try {
     await page.goto(`${served.origin}/`);
-    await expect(tab(page, "Welcome")).toHaveAttribute("aria-selected", "true");
+    await expect(tab(page, "Account")).toHaveAttribute("aria-selected", "true");
     // Nothing to connect to yet, so Connect says how.
     await expect(tab(page, "Connect")).toHaveAttribute("aria-selected", "true");
 
@@ -111,7 +110,7 @@ test("a page served on its own signs in, then connects with a join link", async 
     await account.getByLabel("Password").fill("microscope");
     await account.getByRole("button", { name: "Sign in" }).click();
     await expect(account).toContainText("Signed in as dev (dev@microscope.dev)");
-    await expect(page.getByRole("tabpanel", { name: "Welcome" })).toContainText("Welcome, dev");
+    await expect(page.getByRole("tabpanel", { name: "Account" })).toContainText("Welcome, dev");
 
     const connect = page.getByRole("tabpanel", { name: "Connect" });
     await connect.getByLabel("Join link").fill(microscope.link);

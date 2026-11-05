@@ -1,7 +1,9 @@
 // Connecting and signing in. A page served on its own is told which
 // microscope to use by a join link; a page `microscope web` serves is
 // connected to it already. Signing in to the services backend is optional:
-// a join link works without an account.
+// a join link works without an account. The Account pane is also where a
+// page with nothing open starts, so it offers what can be done from here.
+// Each action is a command, offered and refused as it is in the menus.
 
 import {
   type ChangeEvent,
@@ -44,6 +46,8 @@ import { autofillAvailable, signInWithPasskey, supported } from "../passkeys";
 import { useModel } from "../store";
 import { parseJoinLink, remote, setRemote, standalone } from "../target";
 import { qrcodegen } from "../vendor/qrcodegen";
+import type { Availability } from "../workbench/commands";
+import { COMMANDS, type CommandId, useCommands } from "./commands";
 import { Organizations } from "./Orgs";
 import { ContinueWith, OrgLink, SignInMethods } from "./SingleSignOn";
 
@@ -222,6 +226,8 @@ export function AccountBody() {
             {notice.text}
           </div>
         ))}
+      <h1>{now.kind === "in" ? `Welcome, ${now.user.username}` : "Welcome to microscope"}</h1>
+      <Actions />
       <OrgLink />
       {reset === null ? (
         now.kind === "checking" ? (
@@ -286,6 +292,57 @@ export function AccountBody() {
 }
 
 type Go = (step: Step) => void;
+
+const ACTIONS: readonly CommandId[] = ["launch", "attach", "core", "record"];
+
+function Actions() {
+  const commands = useCommands();
+  // Read whenever anything the actions depend on changes.
+  useModel((model) => [model.hello?.role, model.link, model.state?.session].join());
+
+  const offered = ACTIONS.flatMap((id) => {
+    const availability = commands.availability(id);
+    return availability.state === "absent" ? [] : [{ id, availability }];
+  });
+  if (offered.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="start-actions">
+      {offered.map(({ id, availability }) => (
+        <Action key={id} id={id} availability={availability} onRun={commands.run} />
+      ))}
+    </ul>
+  );
+}
+
+function Action({
+  id,
+  availability,
+  onRun,
+}: {
+  id: CommandId;
+  availability: Availability;
+  onRun: (id: CommandId) => unknown;
+}) {
+  const onClick = useCallback(() => onRun(id), [onRun, id]);
+  const key = COMMANDS.describe(id) ?? COMMANDS.describe(id, true);
+  return (
+    <li>
+      <button
+        type="button"
+        className="button"
+        disabled={availability.state !== "ready"}
+        title={availability.state === "blocked" ? availability.why : undefined}
+        onClick={onClick}
+      >
+        {COMMANDS.get(id).label}
+      </button>
+      {key && <kbd>{key}</kbd>}
+      {availability.state === "blocked" && <span className="muted">{availability.why}</span>}
+    </li>
+  );
+}
 
 /** A form's fields and its one request: whether it is in flight, and what
  * went wrong with it. */

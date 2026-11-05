@@ -1,6 +1,6 @@
 // What each address opens in the one workbench. An address names a place: a
 // session's focus, a profile, or nowhere in particular, which starts from
-// Welcome. Old addresses of pages that became panes open those panes.
+// Account. Old addresses of pages that became panes open those panes.
 
 import { Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
@@ -11,11 +11,11 @@ import { type Note, targetName } from "../model";
 import { useModel } from "../store";
 import { activate, type Json, paneOf, setParams } from "../workbench/layout";
 import { change, workbench } from "../workbench/store";
-import { profileLayout, showPane, showProfile, welcomeLayout } from "./panes";
+import { SessionLink } from "./Explorer";
+import { profileLayout, showPane, showProfile, startLayout } from "./panes";
 import { PICKED } from "./Picker";
 import { profileParams } from "./profile/ProfilePage";
 import { orgLink } from "./SingleSignOn";
-import { SessionLink } from "./Welcome";
 import { Workbench } from "./Workspace";
 
 /** `/`: the session when there is one; else what to start from, which is
@@ -30,7 +30,7 @@ export function Home() {
   const busy = useModel((model) => model.state?.busy ?? null);
   const profile = useModel((model) => (busy ? undefined : model.profiles.at(-1)));
   const start = useMemo(
-    () => (profile ? () => profileLayout(profile.id, profile.name, {}) : welcomeLayout),
+    () => (profile ? () => profileLayout(profile.id, profile.name, {}) : startLayout),
     [profile],
   );
   if (session) {

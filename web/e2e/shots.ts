@@ -88,7 +88,7 @@ try {
   await status.getByText("Exited").waitFor();
   await shoot(page, "8-exited");
 
-  await shootWelcome(page);
+  await shootStart(page);
   await shootProfile(page);
   await shootDrawings(page);
   await shootMesh(page);
@@ -98,13 +98,13 @@ try {
 }
 
 /** Where `microscope web` with nothing to debug starts. */
-async function shootWelcome(page: Page): Promise<void> {
+async function shootStart(page: Page): Promise<void> {
   const empty = await startMicroscope([], "");
   try {
     await page.setViewportSize({ width: 1440, height: 800 });
     await page.goto(empty.link);
-    await page.getByRole("tab", { name: "Welcome", exact: true }).waitFor();
-    await shoot(page, "0-welcome");
+    await page.getByRole("tab", { name: "Account", exact: true }).waitFor();
+    await shoot(page, "0-start");
   } finally {
     await empty.stop();
   }

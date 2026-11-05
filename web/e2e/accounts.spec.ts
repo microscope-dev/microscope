@@ -93,7 +93,7 @@ test("signs up, confirms the email by its link, and signs in with the emailed co
   await field.fill(code);
   await account(page).getByRole("button", { name: "Sign in" }).click();
   await expect(account(page)).toContainText(`Signed in as ${who.username} (${who.email})`);
-  await expect(page.getByRole("tabpanel", { name: "Welcome" })).toContainText(
+  await expect(page.getByRole("tabpanel", { name: "Account" })).toContainText(
     `Welcome, ${who.username}`,
   );
 

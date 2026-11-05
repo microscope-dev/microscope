@@ -38,7 +38,6 @@ export const KIND = {
   disassembly: kind("disassembly"),
   memory: kind("memory"),
   drawings: kind("drawings"),
-  welcome: kind("welcome"),
   explorer: kind("explorer"),
   connect: kind("connect"),
   account: kind("account"),

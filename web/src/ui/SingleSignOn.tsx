@@ -66,7 +66,7 @@ export function ContinueWith({ children }: { children?: ReactNode }) {
     return null;
   }
   return (
-    <div className="actions">
+    <div className="actions continue-with">
       {children}
       {offered?.google && (
         <a className="button" href={startUrl("google")}>
