@@ -207,6 +207,19 @@ references, expression work, ranges, and table sizes. A malformed entry should
 carry enough unit and offset context to diagnose the producer without exposing
 raw DWARF concepts through every public API.
 
+A compressed section's header says how large it decompresses to, and that
+claim is input too. Every section read goes through `compressed.rs`, which
+checks the claims before decompressing anything. A section over 1 MiB may
+claim at most 64 times its compressed size; real zlib sections over 1 MiB
+reach about 14 times, and small Rust `.debug_ranges` about 66. The DWARF
+sections of one file may claim at most `LoadLimits::most_decompressed`
+together, 16 GiB by default, checked before any is decompressed in
+parallel; call-frame and view sections are each held to the same limit. zstd
+output stops at the claimed size, because `object` would read a stream to its
+end before comparing. A load past either limit leaves the module's DWARF
+unusable, with the reason. The load budget follows the decompressed bytes, so
+these limits bound it as well.
+
 Split DWARF (`dwarf/split.rs`) leaves a skeleton of each unit in the program,
 with the unit's line table, and the rest in a `.dwo` file the skeleton names.
 Each file is looked for under the skeleton's compile directory, then beside

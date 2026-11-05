@@ -23,6 +23,10 @@ pub struct LoadLimits {
     /// to: what is walked waits in memory until the units before it are
     /// added.
     pub walk_ahead: usize,
+
+    /// The most bytes one file's compressed sections may claim to
+    /// decompress to, checked before any is decompressed.
+    pub most_decompressed: u64,
 }
 
 impl Default for LoadLimits {
@@ -38,6 +42,7 @@ impl Default for LoadLimits {
             // 0.5 s longer than walking without bound, and its peak holds
             // 0.8 GB less.
             walk_ahead: 64,
+            most_decompressed: crate::debug_info::compressed::MOST_PER_FILE,
         }
     }
 }

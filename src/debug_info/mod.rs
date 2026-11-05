@@ -1,6 +1,8 @@
 #[cfg(not(target_os = "linux"))]
 compile_error!("microscope currently supports debug information only on Linux");
 
+#[cfg(target_os = "linux")]
+mod compressed;
 pub mod coroutines;
 #[cfg(target_os = "linux")]
 mod cpython;

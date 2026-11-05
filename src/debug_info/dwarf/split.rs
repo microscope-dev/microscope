@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use gimli::{DwarfSections, EndianSlice, RunTimeEndian, Section as _};
-use object::{Object as _, ObjectSection as _};
+use object::Object as _;
 use rayon::prelude::*;
 
 use super::{Reader, Sections, text};
@@ -127,16 +127,9 @@ pub(super) fn fingerprint(object: &object::File<'_>, program: &Path) -> Option<V
     } else {
         RunTimeEndian::Big
     };
-    let sections = DwarfSections::load(|id| {
-        // Parsing a unit reads its line program, addresses, and ranges too,
-        // so every section is loaded; uncompressed ones are only borrowed.
-        let data = match object.section_by_name(id.name()) {
-            Some(section) => section.uncompressed_data()?,
-            None => Cow::Borrowed(&[][..]),
-        };
-        Ok::<_, object::Error>(data)
-    })
-    .ok()?;
+    // Parsing a unit reads its line program, addresses, and ranges too,
+    // so every section is loaded; uncompressed ones are only borrowed.
+    let (sections, _) = super::load_sections(object, super::LoadLimits::default()).ok()?;
     let dwarf = sections.borrow(|section| EndianSlice::new(section, endian));
     let mut headers = dwarf.units();
     let first = headers.next().ok()??;
@@ -211,14 +204,24 @@ fn candidates(directory: &Path, compiled: Option<&Path>, name: &Path) -> Vec<Pat
 /// not an object with them.
 pub(super) fn sections(bytes: &[u8]) -> Option<Sections<'_>> {
     let object = object::File::parse(bytes).ok()?;
+    let mut wanted = Vec::new();
     DwarfSections::load(|id| {
-        let data = match id.dwo_name().and_then(|name| object.section_by_name(name)) {
-            Some(section) => section.uncompressed_data()?,
-            None => Cow::Borrowed(&[][..]),
-        };
-        Ok::<_, object::Error>(data)
+        wanted.push(id);
+        Ok::<_, ()>(())
     })
-    .ok()
+    .ok()?;
+
+    let found = wanted
+        .iter()
+        .map(|id| id.dwo_name().and_then(|name| object.section_by_name(name)))
+        .collect();
+    let most = super::LoadLimits::default().most_decompressed;
+    let mut data = crate::debug_info::compressed::read(found, most)
+        .ok()?
+        .into_iter();
+
+    // gimli asks for the sections in the same order both times.
+    DwarfSections::load(|_| Ok::<_, ()>(data.next().unwrap_or(Cow::Borrowed(&[])))).ok()
 }
 
 /// `main` with the DWARF of each `.dwo` file of `files`, and `units` with

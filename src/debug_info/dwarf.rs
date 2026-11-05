@@ -33,6 +33,9 @@ enum DwarfError {
     #[error("malformed ELF file: {0}")]
     Object(#[from] object::Error),
 
+    #[error(transparent)]
+    Section(#[from] super::compressed::SectionError),
+
     #[error("not an ELF file")]
     NotElf,
 
@@ -1239,10 +1242,12 @@ enum DwarfUse {
 
 type Sections<'data> = DwarfSections<Cow<'data, [u8]>>;
 
-/// An object's DWARF sections, those compressed decompressed in parallel.
-/// Also returns their uncompressed bytes, which the load's budget follows.
+/// An object's DWARF sections, those compressed decompressed in parallel
+/// within `limits`. Also returns their uncompressed bytes, which the load's
+/// budget follows.
 fn load_sections<'data>(
     object: &object::File<'data>,
+    limits: LoadLimits,
 ) -> std::result::Result<(Sections<'data>, u64), DwarfError> {
     // gimli names the sections it reads by asking for each in turn.
     let mut wanted = Vec::new();
@@ -1250,20 +1255,14 @@ fn load_sections<'data>(
         wanted.push(id);
         Ok::<_, DwarfError>(())
     })?;
-    let loaded = wanted
-        .into_par_iter()
-        .map(|id| {
-            let data = match object.section_by_name(id.name()) {
-                Some(section) => section.uncompressed_data()?,
-                None => Cow::Borrowed(&[][..]),
-            };
 
-            Ok((id, data))
-        })
-        .collect::<Vec<std::result::Result<_, DwarfError>>>();
-    let loaded = first_error(loaded)?;
-    let input = loaded.iter().map(|(_, data)| data.len() as u64).sum();
-    let mut loaded = loaded.into_iter().collect::<HashMap<_, _>>();
+    let found = wanted
+        .iter()
+        .map(|id| object.section_by_name(id.name()))
+        .collect();
+    let data = super::compressed::read(found, limits.most_decompressed)?;
+    let input = data.iter().map(|data| data.len() as u64).sum();
+    let mut loaded = wanted.into_iter().zip(data).collect::<HashMap<_, _>>();
     let sections = DwarfSections::load(|id| {
         Ok::<_, DwarfError>(loaded.remove(&id).unwrap_or(Cow::Borrowed(&[])))
     })?;
@@ -1321,7 +1320,7 @@ fn load_image(
 
     let phase = crate::span!("sections");
     let (sections, mut input) = match dwarf_use {
-        DwarfUse::Read => load_sections(dwarf_object)?,
+        DwarfUse::Read => load_sections(dwarf_object, limits)?,
         DwarfUse::Deferred | DwarfUse::Unusable(_) => (
             DwarfSections::load(|_| Ok::<_, DwarfError>(Cow::Borrowed(&[][..])))?,
             0,
@@ -1337,7 +1336,7 @@ fn load_image(
                 ));
             }
 
-            load_sections(supplementary)
+            load_sections(supplementary, limits)
         })
         .transpose()?
         .map(|(sections, bytes)| {
@@ -1571,7 +1570,14 @@ fn load_image(
                     frame_saves: super::gopclntab::frame_saves(table, code),
                 }
             });
-            let unwind = load_unwind_info(&object, debug_object.as_ref(), target, go_code, go)?;
+            let unwind = load_unwind_info(
+                &object,
+                debug_object.as_ref(),
+                target,
+                go_code,
+                go,
+                limits.most_decompressed,
+            )?;
             let symbols =
                 super::elf::load_symbols(&object, debug_object.as_ref(), &unwind.function_ranges());
 
@@ -1734,7 +1740,7 @@ fn load_image(
                     reason,
                 }),
             },
-            embedded_views: embedded_views(dwarf_object)?,
+            embedded_views: embedded_views(dwarf_object, limits.most_decompressed)?,
         },
     })
 }
@@ -1764,13 +1770,12 @@ pub(super) fn no_variables(image: &ModuleImage) -> Arc<dyn super::VariableInfo> 
 }
 
 /// The bytes of the views a module carries for its own types.
-fn embedded_views(object: &object::File<'_>) -> std::result::Result<Vec<u8>, DwarfError> {
-    Ok(object
-        .section_by_name(crate::view::embedded::SECTION)
-        .map(|section| section.uncompressed_data())
-        .transpose()?
-        .map(std::borrow::Cow::into_owned)
-        .unwrap_or_default())
+fn embedded_views(
+    object: &object::File<'_>,
+    most: u64,
+) -> std::result::Result<Vec<u8>, DwarfError> {
+    let section = object.section_by_name(crate::view::embedded::SECTION);
+    Ok(super::compressed::read_one(section, most)?.into_owned())
 }
 
 /// Which part of the unit `header` begins could not be read: its
@@ -2052,15 +2057,10 @@ fn load_unwind_info(
     target: TargetDescription,
     go_code: Vec<AddressRange<ImageAddress>>,
     go: Option<crate::image::unwind::GoTableData>,
+    most: u64,
 ) -> std::result::Result<crate::image::unwind::Unwind, DwarfError> {
     let data_in = |object: &object::File<'_>, name| -> std::result::Result<Arc<[u8]>, DwarfError> {
-        Ok(object
-            .section_by_name(name)
-            .as_ref()
-            .map(ObjectSection::uncompressed_data)
-            .transpose()?
-            .unwrap_or_default()
-            .into())
+        Ok(super::compressed::read_one(object.section_by_name(name), most)?.into())
     };
 
     let section_data = |name| data_in(object, name);
@@ -4973,30 +4973,36 @@ mod tests {
         sections
             .for_each(|id, data| {
                 if !data.slice().is_empty() {
-                    debug.push((id.name(), data.slice().to_vec()));
+                    debug.push((id.name(), data.slice().to_vec(), 0));
                 }
                 Ok::<_, gimli::Error>(())
             })
             .expect("the sections");
 
+        elf_with_sections(address, size, &debug)
+    }
+
+    /// A shared object whose `.text` at `address` holds `size` bytes, with
+    /// each of `debug`'s sections: its name, bytes, and `sh_flags`.
+    fn elf_with_sections(address: u64, size: usize, debug: &[(&str, Vec<u8>, u64)]) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut writer =
             object::write::elf::Writer::new(object::Endianness::Little, true, &mut bytes);
         let text = writer.add_section_name(b".text");
         let names: Vec<_> = debug
             .iter()
-            .map(|(name, _)| writer.add_section_name(name.as_bytes()))
+            .map(|(name, ..)| writer.add_section_name(name.as_bytes()))
             .collect();
         writer.reserve_file_header();
         writer.reserve_null_section_index();
         writer.reserve_section_index();
-        for _ in &debug {
+        for _ in debug {
             writer.reserve_section_index();
         }
         let code = writer.reserve(size, 16);
         let offsets: Vec<_> = debug
             .iter()
-            .map(|(_, data)| writer.reserve(data.len(), 1))
+            .map(|(_, data, _)| writer.reserve(data.len(), 1))
             .collect();
         writer.reserve_shstrtab_section_index();
         writer.reserve_shstrtab();
@@ -5014,7 +5020,7 @@ mod tests {
             .expect("a header");
         writer.write_align(16);
         writer.write(&vec![0xc3; size]);
-        for (_, data) in &debug {
+        for (_, data, _) in debug {
             writer.write(data);
         }
         writer.write_shstrtab();
@@ -5031,11 +5037,11 @@ mod tests {
             sh_addralign: 16,
             sh_entsize: 0,
         });
-        for ((name, (_, data)), offset) in names.into_iter().zip(&debug).zip(offsets) {
+        for ((name, (_, data, sh_flags)), offset) in names.into_iter().zip(debug).zip(offsets) {
             writer.write_section_header(&object::write::elf::SectionHeader {
                 name: Some(name),
                 sh_type: object::elf::SHT_PROGBITS,
-                sh_flags: 0,
+                sh_flags: *sh_flags,
                 sh_addr: 0,
                 sh_offset: offset as u64,
                 sh_size: data.len() as u64,
@@ -5047,6 +5053,103 @@ mod tests {
         }
         writer.write_shstrtab_section_header();
         bytes
+    }
+
+    /// A compressed section's header is input. One claiming far more than
+    /// its bytes could hold, or more than a file may, leaves the module's
+    /// DWARF unusable, saying why, before anything is decompressed; and a
+    /// zstd stream longer than its claim is read only as far as the claim.
+    /// None of them allocates more than a few MiB.
+    #[test]
+    fn a_compressed_section_is_read_only_within_its_claim_and_our_limits() {
+        use crate::test_memory::memory_cap::{start_totals, stop_totals, totals};
+
+        // An Elf64_Chdr, then the compressed bytes.
+        let compressed = |kind: u32, claim: u64, payload: &[u8]| {
+            let mut data = Vec::new();
+            data.extend_from_slice(&kind.to_le_bytes());
+            data.extend_from_slice(&0_u32.to_le_bytes());
+            data.extend_from_slice(&claim.to_le_bytes());
+            data.extend_from_slice(&1_u64.to_le_bytes());
+            data.extend_from_slice(payload);
+            let flags = u64::from(object::elf::SHF_COMPRESSED);
+            elf_with_sections(0x1000, 0x10, &[(".debug_info", data, flags)])
+        };
+
+        let zlib = |data: &[u8]| {
+            use std::io::Write as _;
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+            encoder.write_all(data).expect("compress");
+            encoder.finish().expect("compress")
+        };
+
+        // 64 MiB from 2 KiB of zstd RLE blocks, each 128 KiB of one byte.
+        let mut bomb = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
+        for index in 0..512 {
+            let header = u32::from(index == 511) | (1 << 1) | ((128 << 10) << 3);
+            bomb.extend_from_slice(&header.to_le_bytes()[..3]);
+            bomb.push(0xaa);
+        }
+
+        // Bytes zlib cannot compress, by a linear congruential generator.
+        let mut state = 1_u64;
+        let noise: Vec<u8> = (0..2 << 20)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                state.to_le_bytes()[7]
+            })
+            .collect();
+
+        let cases = [
+            (
+                "a zlib claim of 64 GiB",
+                compressed(object::elf::ELFCOMPRESS_ZLIB, 64 << 30, &zlib(&[0; 4096])),
+                LoadLimits::default(),
+                "its .debug_info section claims to decompress to 68719476736 bytes from ",
+            ),
+            (
+                "an honest claim past the file's limit",
+                compressed(object::elf::ELFCOMPRESS_ZLIB, 2 << 20, &zlib(&noise)),
+                LoadLimits {
+                    most_decompressed: 1 << 20,
+                    ..LoadLimits::default()
+                },
+                "its compressed sections claim to decompress to 2097152 bytes, more than the \
+                 1048576 one file may",
+            ),
+            (
+                "a zstd stream longer than its claim",
+                compressed(object::elf::ELFCOMPRESS_ZSTD, 1024, &bomb),
+                LoadLimits::default(),
+                "its .debug_info section is not the zstd data of 1024 bytes its header claims",
+            ),
+        ];
+
+        for (case, elf, limits, expected) in cases {
+            start_totals();
+            let before = totals();
+            let loaded = load_debug_info(
+                Path::new("bomb"),
+                &elf,
+                crate::ModuleImageId::new(0),
+                &super::super::DebugFileSearch::default(),
+                limits,
+                None,
+            );
+            let used = totals().since(&before).allocated.bytes;
+            stop_totals();
+
+            let (info, _) = loaded.expect(case);
+            let crate::DebugInformation::Unusable { reason } = info.image.debug_information()
+            else {
+                panic!("{case}: {:?}", info.image.debug_information());
+            };
+            assert!(reason.starts_with(expected), "{case}: {reason}");
+            assert!(used < 8 << 20, "{case}: {used} bytes");
+        }
     }
 
     /// Clang leaves some functions with code and no name of any kind, as
@@ -6119,7 +6222,15 @@ mod tests {
             let data = fs::read(&path).expect("run `just build-test-programs`");
             let object = object::File::parse(&*data).expect("ELF");
             let target = target_description(&object).expect("target");
-            let unwind = load_unwind_info(&object, None, target, Vec::new(), None).expect("CFI");
+            let unwind = load_unwind_info(
+                &object,
+                None,
+                target,
+                Vec::new(),
+                None,
+                LoadLimits::default().most_decompressed,
+            )
+            .expect("CFI");
             let sections = UnwindSections::of(&unwind);
             check_fde_index(
                 &sections.eh_frame(),

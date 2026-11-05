@@ -520,8 +520,7 @@ fn debug_sup(object: &object::File<'_>) -> Result<Option<DebugSup>, String> {
     };
 
     let malformed = |error: &dyn std::fmt::Display| format!("its .debug_sup is malformed: {error}");
-    let data = section
-        .uncompressed_data()
+    let data = super::compressed::read_one(Some(section), super::compressed::MOST_PER_FILE)
         .map_err(|error| malformed(&error))?;
     let endian = if object.is_little_endian() {
         gimli::RunTimeEndian::Little

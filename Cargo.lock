@@ -1044,6 +1044,7 @@ dependencies = [
  "rustc_apfloat",
  "rustix",
  "rustyline",
+ "ruzstd",
  "serde",
  "serde_json",
  "serde_path_to_error",
