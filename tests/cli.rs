@@ -3826,19 +3826,10 @@ fn a_trimpath_programs_sources_say_why_they_are_missing() {
         &["break main.greet", "run"],
     );
 
-    // The import path the build recorded depends on where the checkout
-    // that built it is, so it is read from the breakpoint's location.
+    // The fixture's go.mod names its module, so the build records its
+    // sources under that path wherever the checkout is.
     let greet = support::source_line(SERVER, "func greet(");
-    let recorded = stdout
-        .split_whitespace()
-        .find_map(|word| word.strip_suffix(&format!(":{greet}")))
-        .filter(|path| path.ends_with(SERVER))
-        .unwrap_or_else(|| panic!("no recorded path in {stdout}"));
-    let import = recorded
-        .strip_prefix("./")
-        .and_then(|path| path.strip_suffix(SERVER))
-        .and_then(|path| path.strip_suffix('/'))
-        .unwrap_or_else(|| panic!("{recorded} is no import path"));
+    let recorded = "./microscope.test/server/main.go";
     assert!(
         stdout.contains(&format!(
             "source unavailable: source file {recorded} does not exist; it was recorded \
@@ -3849,12 +3840,12 @@ fn a_trimpath_programs_sources_say_why_they_are_missing() {
         "{stdout}"
     );
 
-    let root = env!("CARGO_MANIFEST_DIR");
+    let local = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/go/server");
     let mapped = batch(
         &[
             "--source-map",
-            import,
-            root,
+            "microscope.test/server",
+            local,
             "build/test-programs/server-go-trimpath",
         ],
         &["break main.greet", "run"],

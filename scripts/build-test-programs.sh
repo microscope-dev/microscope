@@ -730,9 +730,15 @@ build_go_fixture() {
         printf 'error: Go fixture has no source files: %s\n' "$package_dir" >&2
         exit 1
     fi
+    local -a build=(build -buildvcs=false "$@" -o "$output" "${sources[@]}")
+    # A fixture with a go.mod is built as its module, so a -trimpath build
+    # records its sources under the module path wherever the checkout is.
+    if [[ -f "$package_dir/go.mod" ]]; then
+        build=(-C "$package_dir" build -buildvcs=false "$@" -o "$PWD/$output" .)
+    fi
     local -a command=(
         env "CGO_ENABLED=${GO_CGO:-0}" ${GO_CC:+"CC=$GO_CC"} ${GO_CFLAGS:+"CGO_CFLAGS=$GO_CFLAGS"}
-        go build -buildvcs=false "$@" -o "$output" "${sources[@]}"
+        go "${build[@]}"
     )
     read_go_version
     run_cached_build "$package_dir" "$output" \
