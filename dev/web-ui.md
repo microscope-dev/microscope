@@ -5,9 +5,11 @@ to one debugger session over WebSocket. The server is a `DebuggerHandle` client,
 like the CLI and DAP server.
 
 The page is a workbench, as in an IDE: a menu bar, a run toolbar, and panes in
-tabbed groups that split, float, and dock. Every view is a pane, including
-Account, Settings, and the forms that launch or attach. Only the join
-form sits outside the workbench.
+tabbed groups that split, float, and dock. The menu bar ends with who is here
+and Share. The run toolbar shows only while a program is loaded; without one,
+such as for a profile, the run state speaks only to warn, from the menu bar.
+Every view is a pane, including Account, Settings, and the forms that launch
+or attach. Only the join form sits outside the workbench.
 
 ## Code map
 

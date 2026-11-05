@@ -1,4 +1,5 @@
-// The page's frame: the menu bar and run toolbar above, the status bar
+// The page's frame: the menu bar above, with who is here and sharing at its
+// end, the run toolbar under it while a program is loaded, the status bar
 // below, and the keys, which work wherever the page is. Only joining shows
 // alone.
 
@@ -12,7 +13,10 @@ import { flash } from "../tab";
 import { isTextBox, keepsEscape } from "../workbench/keys";
 import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
+import { People } from "./People";
 import { RunToolbar } from "./RunToolbar";
+import { Share } from "./Share";
+import { shown, Status } from "./Status";
 import { StatusBar } from "./StatusBar";
 
 const JOINING = { gridTemplateRows: "1fr" };
@@ -20,6 +24,10 @@ const JOINING = { gridTemplateRows: "1fr" };
 export function Frame() {
   const name = useModel((model) => commandName(model.state));
   const inferior = useModel((model) => model.state?.inferior.state);
+  // A program to run. A profile, or nothing yet, has no use for run buttons.
+  const loaded = useModel((model) => Boolean(model.state?.target));
+  // Without one, the status speaks only to warn, such as of a lost link.
+  const quiet = useModel((model) => shown(model).pill === "idle");
   const location = useLocation();
   const { availability, run } = useCommands();
   useKeys();
@@ -55,8 +63,13 @@ export function Frame() {
             microscope
           </Link>
           <MenuBar registry={COMMANDS} availability={availability} run={runFromMenu} />
+          <div className="menu-row-end">
+            {!loaded && !quiet && <Status />}
+            <People />
+            <Share />
+          </div>
         </div>
-        <RunToolbar />
+        {loaded && <RunToolbar />}
       </header>
       <Outlet />
       <StatusBar />

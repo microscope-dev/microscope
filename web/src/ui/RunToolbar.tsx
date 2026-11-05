@@ -4,8 +4,6 @@ import { type ActionName, action, continueLabel } from "../actions";
 import { useModel } from "../store";
 import { useTab } from "../tab";
 import { COMMANDS, useCommands } from "./commands";
-import { People } from "./People";
-import { Share } from "./Share";
 import { Status } from "./Status";
 
 const BUTTONS: { name: ActionName; glyph: string; label?: string }[] = [
@@ -18,7 +16,7 @@ const BUTTONS: { name: ActionName; glyph: string; label?: string }[] = [
   { name: "kill", glyph: "■", label: "Kill" },
 ];
 
-/** The run buttons, where the program is, who else is here, and sharing. */
+/** The run buttons and where the program is. */
 export function RunToolbar() {
   const hello = useModel((model) => model.hello !== null);
   const control = useModel((model) => model.hello?.role === "control");
@@ -33,8 +31,6 @@ export function RunToolbar() {
       {control && BUTTONS.map((button) => <ActionButton key={button.name} {...button} />)}
       <span className="separator" />
       <Status />
-      <People />
-      <Share />
     </div>
   );
 }

@@ -198,7 +198,7 @@ kbd {
   background: var(--warn-bg);
 }
 
-/* The menu bar and the run toolbar under it. */
+/* The menu bar and the run toolbar under it, while a program is loaded. */
 .frame-head {
   min-width: 0;
 }
@@ -211,6 +211,38 @@ kbd {
   padding: 0 8px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
+}
+
+/* Who is here and sharing, at the menu bar's end. */
+.menu-row-end {
+  display: flex;
+  flex: 1;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.menu-row-end > * {
+  flex: none;
+}
+
+.menu-row-end .tb {
+  height: 24px;
+}
+
+/* Who is here gives way before the menus and Share: in a narrow window
+   the avatars alone say it, and many of them are cut off at the end. */
+.menu-row-end > .people {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+@media (width < 760px) {
+  .menu-row-end .people .tb {
+    display: none;
+  }
 }
 
 /* A pane's own controls, above its rows. */
