@@ -372,10 +372,15 @@ impl Cli {
     }
 
     /// Notes what a group event means for the session's outcome: a process
-    /// the policy wanted that could not be followed fails a batch run.
+    /// the policy wanted that could not be followed fails a batch run, as
+    /// does a member that did not take a change to the breakpoints.
     pub(super) fn note_group_event(&self, event: &GroupEvent) {
         if matches!(event, GroupEvent::ProcessUnfollowed { .. }) {
             self.unfollowed_process
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if matches!(event, GroupEvent::BreakpointNotMirrored { .. }) {
+            self.unmirrored_breakpoint
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }

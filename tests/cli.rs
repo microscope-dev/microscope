@@ -5883,6 +5883,56 @@ fn a_batch_run_fails_when_the_program_execs_one_it_does_not_follow() {
     );
 }
 
+/// A batch run in which a member did not take one of the group's
+/// breakpoints fails, as its stops there may be missing, rather than
+/// exiting 0 with an error line the script's caller never reads. A child
+/// that joins as it executes a program has not loaded libc yet, so an
+/// address breakpoint in its parent's libc cannot be planted in it.
+#[test]
+fn a_batch_run_fails_when_a_member_did_not_take_a_breakpoint() {
+    let arguments = [
+        "--follow",
+        "all",
+        "build/test-programs/process-tree",
+        "--",
+        "1",
+        "spawn",
+    ];
+
+    // Launches disable address randomization, so libc stays where it is
+    // from one run to the next.
+    let found = batch(&arguments, &["break main", "run", "break waitpid"]);
+    let address = found
+        .split_once("waitpid at ")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("waitpid's address in:\n{found}"))
+        .to_owned();
+
+    // The root never stops there, so the run ends after the child has
+    // joined and exited.
+    let output = batch_output(
+        &arguments,
+        &[
+            "break main",
+            "run",
+            "delete 1",
+            &format!("break {address}"),
+            "condition 2 0 == 1",
+            "continue",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("error: breakpoint 2 could not be updated in [2] "),
+        "the member's failure is reported: {stdout}"
+    );
+    assert_failure(
+        &output,
+        "error: a process the program started did not take every change to its breakpoints, \
+         so its stops may be missing\n",
+    );
+}
+
 /// Debug information that cannot be used is warned of as the session
 /// starts, for the program, and as a library loads, and `info modules`
 /// says why beneath each module; a program with none says so.
