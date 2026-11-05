@@ -1,6 +1,6 @@
-// Layouts this browser keeps: the one in use, saved shortly after each change
-// and as the page goes, and any a person saved by name. Layouts are not part
-// of a link; a link shares where to look, not how the page is arranged.
+// Layouts this browser keeps: the one in use, saved as each change is made,
+// and any a person saved by name. Layouts are not part of a link; a link
+// shares where to look, not how the page is arranged.
 
 import type { Kinds } from "./kinds";
 import type { Layout } from "./layout";
@@ -10,9 +10,6 @@ import { workbench } from "./store";
 const CURRENT = "microscope-layout";
 const NAMED = "microscope-layouts";
 
-/** How long the layout is left to settle before it is saved. */
-export const SAVE_AFTER = 300;
-
 /** The layout this browser used last, or why it can't be used. Null when it
  * has none. */
 export function lastLayout(kinds: Kinds<string>): Loaded | null {
@@ -20,33 +17,14 @@ export function lastLayout(kinds: Kinds<string>): Loaded | null {
   return text === null ? null : known(loadLayout(text), kinds);
 }
 
-/** Saves the layout a moment after each change, and as the page goes. */
+/** Saves the layout as each change is made. Not later, nor as the page goes:
+ * a reload can come first, and Firefox may lose a save made as a page goes. */
 export function keepSaving(): () => void {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const save = () => {
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
+  return workbench.subscribe((state, previous) => {
+    if (state.layout !== previous.layout) {
+      set(CURRENT, saveLayout(state.layout));
     }
-    set(CURRENT, saveLayout(workbench.getState().layout));
-  };
-  const unsubscribe = workbench.subscribe((state, previous) => {
-    if (state.layout === previous.layout) {
-      return;
-    }
-    if (timer !== null) {
-      clearTimeout(timer);
-    }
-    timer = setTimeout(save, SAVE_AFTER);
   });
-  window.addEventListener("pagehide", save);
-  return () => {
-    unsubscribe();
-    window.removeEventListener("pagehide", save);
-    if (timer !== null) {
-      save();
-    }
-  };
 }
 
 /** The names of the layouts saved by name, in the order saved. */

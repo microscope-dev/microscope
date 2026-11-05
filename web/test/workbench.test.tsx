@@ -94,9 +94,13 @@ it("keeps this browser's layout across a reload, and says once when it can't", a
   const first = await openPage(kvstore(source));
   await first.user.chooseTab("Registers");
   await first.user.press("Alt+Enter");
+  // What a reload would find now. Firefox may drop a save made as the page
+  // goes, so the change must already be kept.
+  const kept = localStorage.getItem("microscope-layout");
   // Maximized, the Registers group fills the dock alone.
   await first.user.expectGroups([["*Registers"]]);
   closePage();
+  localStorage.setItem("microscope-layout", kept ?? "");
 
   const second = await openPage(kvstore(source));
   await second.user.expectGroups([["*Registers"]]);
