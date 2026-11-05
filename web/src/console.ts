@@ -140,7 +140,7 @@ const REPEATED: ReadonlySet<ActionName> = new Set([
 ]);
 
 /** A function, `FILE:LINE`, `FILE:FUNCTION`, or `0xADDRESS`. */
-const LOCATION = /^[\w.$/-]+(?::[\w.$]+)?$/u;
+const LOCATION = /^(?=[^:]*\w)[\w.$/-]+(?::[\w.$]+)?$/u;
 /** A function's name, such as `main`, `ns::fn`, or `std::vec::Vec<T>::push`. */
 const SYMBOL = /^[a-z_][\w:.$<>~]*$/iu;
 /** An address the link can hold. */

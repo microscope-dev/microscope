@@ -78,6 +78,8 @@ describe("a console line", () => {
     "n*2",
     "step == 1",
     "until + 1",
+    "advance /",
+    "until -",
     "r[0]",
     // Arguments the page's commands do not take: microscope says so.
     "continue 3",
