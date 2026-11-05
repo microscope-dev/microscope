@@ -159,6 +159,7 @@ impl Reader<'_> {
         let mut memory = None;
         let mut memory_bytes = None;
         let mut stored = false;
+        let mut text_bytes = None;
         let mut drawings = Vec::new();
         let mut detail = None;
         if let Some(details) = row.details {
@@ -168,6 +169,7 @@ impl Reader<'_> {
             memory = details.memory.map(|address| format!("{address:#x}"));
             memory_bytes = details.memory_bytes;
             stored = details.stored;
+            text_bytes = details.text_bytes;
             let (node, counts) = match details.expand {
                 Some(Expand::Children {
                     reference, counts, ..
@@ -216,6 +218,7 @@ impl Reader<'_> {
             memory,
             memory_bytes,
             stored,
+            text_bytes,
             truncated: false,
             drawings,
         })
@@ -237,6 +240,7 @@ impl Reader<'_> {
                     memory: None,
                     memory_bytes: None,
                     stored: false,
+                    text_bytes: None,
                     truncated: true,
                     drawings: Vec::new(),
                 }),
@@ -506,6 +510,7 @@ impl Reader<'_> {
                     memory: None,
                     memory_bytes: None,
                     stored: false,
+                    text_bytes: None,
                     truncated: false,
                     drawings: Vec::new(),
                 })

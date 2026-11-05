@@ -2352,6 +2352,10 @@ pub struct Row {
     /// watch it, rather than pointing there.
     pub stored: bool,
 
+    /// How many of a character array's bytes hold its C string, NUL
+    /// included, when the string ends before the array does.
+    pub text_bytes: Option<u64>,
+
     /// A row that only says where reading stopped short.
     pub truncated: bool,
 

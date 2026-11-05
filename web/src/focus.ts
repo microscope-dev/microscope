@@ -4,6 +4,7 @@
 // Every function here is pure, so links round-trip exactly.
 
 import { assert } from "./assert";
+import { target } from "./memory";
 import type { TaskKey } from "./protocol";
 
 /** What a tab looks at, beyond the stop: everything in the query. */
@@ -93,7 +94,7 @@ export function validateLook(search: Record<string, unknown>): Look {
     look.asm = asm;
   }
   const mem = text("mem");
-  if (mem && /^0x[0-9a-f]{1,16}(:[1-9]\d{0,8})?$/iu.test(mem)) {
+  if (mem && target(mem)) {
     look.mem = mem;
   }
   const view = text("view");

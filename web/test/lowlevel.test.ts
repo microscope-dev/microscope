@@ -1,20 +1,44 @@
 import { describe, expect, it } from "vitest";
 
-import { dumpRows, readAs, target, targetText } from "../src/memory";
+import { dumpRows, readAs, rowTarget, target, targetText } from "../src/memory";
 
 describe("memory", () => {
   it("names an address and how many bytes the value there occupies", () => {
-    expect(target("0x7ffff7a3e020:16")).toEqual({ address: 0x7ffff7a3e020n, bytes: 16 });
-    expect(target("0xffffffffff600000")).toEqual({ address: 0xffffffffff600000n, bytes: null });
+    expect(target("0x7ffff7a3e020:16")).toEqual({
+      address: 0x7ffff7a3e020n,
+      bytes: 16,
+      text: null,
+    });
+    expect(target("0xffffffffff600000")).toEqual({
+      address: 0xffffffffff600000n,
+      bytes: null,
+      text: null,
+    });
     expect(target("0x10:0")).toBeNull();
     // A byte count past what a link may name is malformed.
-    expect(target("0x10:999999999")).toEqual({ address: 0x10n, bytes: 999999999 });
+    expect(target("0x10:999999999")).toEqual({ address: 0x10n, bytes: 999999999, text: null });
     expect(target("0x10:1000000000")).toBeNull();
     expect(target(`0x10:${"9".repeat(400)}`)).toBeNull();
     expect(target("main")).toBeNull();
     // As a link writes it.
-    expect(targetText({ address: 0x1fn, bytes: 4 })).toBe("0x1f:4");
-    expect(targetText({ address: 0x1fn, bytes: null })).toBe("0x1f");
+    expect(targetText({ address: 0x1fn, bytes: 4, text: null })).toBe("0x1f:4");
+    expect(targetText({ address: 0x1fn, bytes: null, text: null })).toBe("0x1f");
+  });
+
+  it("names the string a character array holds within its bytes", () => {
+    expect(target("0x10:128:7")).toEqual({ address: 0x10n, bytes: 128, text: 7 });
+    expect(targetText({ address: 0x10n, bytes: 128, text: 7 })).toBe("0x10:128:7");
+    // A string fills less than its array, or the array is all string.
+    expect(target("0x10:7:7")).toBeNull();
+    expect(target("0x10:7:8")).toBeNull();
+    expect(target("0x10:7:0")).toBeNull();
+    expect(target("0x10::7")).toBeNull();
+
+    const array = { memory: "0x7ffff6bfcde0", memoryBytes: 128, textBytes: 7 };
+    expect(rowTarget(array)).toBe("0x7ffff6bfcde0:128:7");
+    expect(rowTarget({ ...array, textBytes: null })).toBe("0x7ffff6bfcde0:128");
+    expect(rowTarget({ ...array, memoryBytes: null, textBytes: null })).toBe("0x7ffff6bfcde0");
+    expect(rowTarget({ ...array, memory: null })).toBeNull();
   });
 
   it("lays bytes out sixteen to a row, from the row holding the address", () => {

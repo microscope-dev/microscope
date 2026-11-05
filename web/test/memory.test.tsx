@@ -75,3 +75,30 @@ it("shows the last page of the address space without running past its end", asyn
   expect(document.body.textContent).not.toMatch(/10000000000000000/u);
   await expect.element(page.getByRole("button", { name: /Later/u })).toBeDisabled();
 });
+
+/** The byte at `offset` past 0x1000. */
+const byte = (offset: number) =>
+  page.getByRole("button", { name: new RegExp(`at 0x${(0x1000 + offset).toString(16)}$`, "u") });
+const classes = (offset: number) => (byte(offset).element() as HTMLElement).className.split(/\s+/u);
+
+it("selects a character array's string and marks the rest of the array", async () => {
+  const server = await mountPane(<Memory />, { look: { mem: "0x1000:16:7" } });
+  // "hello\n", its NUL, and what the array held before.
+  server.answer(await server.next("readMemory"), {
+    address: "0x1000",
+    bytes: `68656c6c6f0a00${"ab".repeat(9)}${"00".repeat(240)}`,
+    unreadable: null,
+  });
+  await expect.element(byte(0)).toBeVisible();
+
+  for (const offset of [0, 6]) {
+    expect(classes(offset)).toEqual(expect.arrayContaining(["in-value", "selected"]));
+  }
+  for (const offset of [7, 15]) {
+    expect(classes(offset)).toContain("in-value");
+    expect(classes(offset)).not.toContain("selected");
+  }
+  expect(classes(16)).not.toContain("in-value");
+  await expect.element(page.getByTestId("selection").getByText("7 bytes at 0x1000")).toBeVisible();
+  await expect.element(page.getByText(/16 bytes · 7 hold its string/u)).toBeVisible();
+});

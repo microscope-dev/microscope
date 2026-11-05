@@ -16,6 +16,7 @@ import {
 
 import { assert } from "../assert";
 import { useRequest } from "../data";
+import { rowTarget } from "../memory";
 import { controls } from "../model";
 import type { Children, Row } from "../protocol";
 import { useConnection, useModel } from "../store";
@@ -211,10 +212,10 @@ function RowActions({ row }: { row: Row }) {
     look(pin({ path, renderer: null }), { replace: false });
   }, [look, path]);
   const showMemory = useCallback(() => {
-    const memory = row.memoryBytes ? `${row.memory}:${row.memoryBytes}` : row.memory;
+    const memory = rowTarget(row);
     assert(memory !== null, "showing the memory of a row with none");
     look((current) => ({ ...current, mem: memory, view: "memory" }), { replace: false });
-  }, [look, row.memory, row.memoryBytes]);
+  }, [look, row]);
   // The watchpoint on exactly this value's bytes, which the eye removes
   // rather than adding another. Only the address and size decide it, not the
   // expression, so the same line reached on another thread watches anew.
@@ -457,6 +458,7 @@ export function messageRow(name: string, text: string): Row {
     editable: false,
     memory: null,
     memoryBytes: null,
+    textBytes: null,
     stored: false,
     truncated: false,
     drawings: [],

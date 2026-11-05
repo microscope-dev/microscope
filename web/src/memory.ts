@@ -11,21 +11,45 @@ export const ROW = 16;
 export interface Target {
   address: bigint;
   bytes: number | null;
+  /** How many of `bytes` hold a C string, NUL included, when fewer do. */
+  text: number | null;
 }
 
-/** Parses `0xADDRESS` or `0xADDRESS:BYTES`. */
+/** Parses `0xADDRESS`, `0xADDRESS:BYTES`, or `0xADDRESS:BYTES:TEXT`. */
 export function target(text: string): Target | null {
-  const match = /^(0x[0-9a-f]{1,16})(?::([1-9]\d{0,8}))?$/iu.exec(text);
+  const match = /^(0x[0-9a-f]{1,16})(?::([1-9]\d{0,8})(?::([1-9]\d{0,8}))?)?$/iu.exec(text);
   if (!match) {
     return null;
   }
   const bytes = match[2] === undefined ? null : Number(match[2]);
-  return { address: BigInt(match[1] as string), bytes };
+  const string = match[3] === undefined ? null : Number(match[3]);
+  if (bytes !== null && string !== null && string >= bytes) {
+    return null;
+  }
+  return { address: BigInt(match[1] as string), bytes, text: string };
 }
 
 /** A target as a link writes it. */
 export function targetText(shown: Target): string {
-  return shown.bytes ? `${hex(shown.address)}:${shown.bytes}` : hex(shown.address);
+  if (!shown.bytes) {
+    return hex(shown.address);
+  }
+  const text = shown.text ? `:${shown.text}` : "";
+  return `${hex(shown.address)}:${shown.bytes}${text}`;
+}
+
+/** The memory a value row opens, as a link writes it, or null for none. */
+export function rowTarget(row: {
+  memory: string | null;
+  memoryBytes: number | null;
+  textBytes: number | null;
+}): string | null {
+  if (row.memory === null) {
+    return null;
+  }
+  const shown = target(row.memory);
+  assert(shown !== null, `row memory ${row.memory} is not an address`);
+  return targetText({ ...shown, bytes: row.memoryBytes, text: row.textBytes });
 }
 
 export function hex(address: bigint): string {

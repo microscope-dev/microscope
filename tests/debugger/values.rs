@@ -2760,8 +2760,9 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
         "c/strings.c",
         None,
         &[
-            // A pointer's text extends through its NUL in memory; the
-            // arrays' text does not need one.
+            // Text extends through the NUL that ends it in memory, through
+            // a pointer or within an array; an array without one is all
+            // text, and has no extent past it.
             (
                 "greeting",
                 Some(ending(text(b"hello, world", Complete), 13)),
@@ -2774,12 +2775,11 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
                 )),
             ),
             ("long_text", Some(truncated(b'x', None))),
-            ("buffer", Some(text(b"abc", Complete))),
-            // An array without a terminator is all text.
+            ("buffer", Some(ending(text(b"abc", Complete), 4))),
             ("unterminated", Some(text(b"wxyz", Complete))),
             ("null_text", None),
             ("invalid", Some(text(b"", unreadable))),
-            ("bytes", Some(text(b"A\xff", Complete))),
+            ("bytes", Some(ending(text(b"A\xff", Complete), 3))),
             // Wide text is decoded from its units: UTF-32 for `wchar_t`
             // and `char32_t`, UTF-16 for `char16_t`.
             // Their extents count units, not the UTF-8 they become.
@@ -2795,8 +2795,11 @@ async fn c_strings_read_up_to_their_terminator_limit_or_unreadable_memory() {
                 "thirty_two",
                 Some(ending(text("thirty-two 🦀".as_bytes(), Complete), 13 * 4)),
             ),
-            ("wide_buffer", Some(text(b"buf", Complete))),
-            ("lone", Some(text("a\u{fffd}".as_bytes(), Complete))),
+            ("wide_buffer", Some(ending(text(b"buf", Complete), 4 * 4))),
+            (
+                "lone",
+                Some(ending(text("a\u{fffd}".as_bytes(), Complete), 3 * 2)),
+            ),
         ],
     )
     .await;

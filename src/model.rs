@@ -2879,8 +2879,9 @@ pub struct TextSummary {
     pub completion: TextCompletion,
 
     /// The bytes a C string occupies at the address it was read from, its
-    /// terminating NUL included, when reading found that NUL. Text with a
-    /// recorded length, or none in memory, has none.
+    /// terminating NUL included, when reading found that NUL: through a
+    /// pointer, or within a character array. Text with a recorded length,
+    /// or none in memory, has none.
     pub extent: Option<u64>,
 }
 

@@ -294,16 +294,22 @@ impl DwarfVariableInfo {
                     .position(|unit| unit.iter().all(|byte| *byte == 0));
                 let end = terminated.map_or(bytes.len(), |units| units * width);
 
-                Some(text(
-                    bytes[..end].to_vec(),
-                    width,
-                    self.target.byte_order,
-                    if terminated.is_none() && count > TextSummary::MAX_BYTES {
-                        TextCompletion::Truncated { length: None }
-                    } else {
-                        TextCompletion::Complete
-                    },
-                ))
+                // A NUL inside the array ends the C string it holds, which
+                // the array's bytes past it are not part of.
+                let extent = terminated.map(|units| ((units + 1) * width) as u64);
+                Some(TextSummary {
+                    extent,
+                    ..text(
+                        bytes[..end].to_vec(),
+                        width,
+                        self.target.byte_order,
+                        if terminated.is_none() && count > TextSummary::MAX_BYTES {
+                            TextCompletion::Truncated { length: None }
+                        } else {
+                            TextCompletion::Complete
+                        },
+                    )
+                })
             }
             (ValueShape::Slice { text: true, .. }, VariableValue::Slice { length, .. }) => {
                 self.counted_slice_text(&mut reader, storage, *length, shape)

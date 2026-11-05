@@ -141,9 +141,10 @@ async fn disassembly_shows_each_frames_function_and_where_it_is() {
 }
 
 /// A C string's memory is as long as its text and NUL, which reading the
-/// text found, though the array holding it is longer.
+/// text found. An array holding one is longer, and says how much of it the
+/// string fills.
 #[tokio::test]
-async fn a_c_string_pointer_marks_its_text_in_memory() {
+async fn a_c_string_marks_its_text_in_memory() {
     let web = Web::start("memory", &[&fixture("kvstore")]);
     let mut tab = web.control("tab").await;
     tab.state("the program loaded", |state| state["session"].is_string())
@@ -167,6 +168,16 @@ async fn a_c_string_pointer_marks_its_text_in_memory() {
     let array = tab.ok("evaluate", array).await;
     assert_eq!(key["memory"], array["memory"], "{key} {array}");
     assert_eq!(array["memoryBytes"], 16, "{array}");
+
+    // The array holds the string in its first bytes, which the page marks
+    // apart from the rest. The pointer's memory is the string already.
+    assert_eq!(array["textBytes"], "user:1000".len() + 1, "{array}");
+    assert_eq!(key["textBytes"], Value::Null, "{key}");
+
+    let mut table = frame(&at, 1);
+    table["expression"] = "s->table".into();
+    let table = tab.ok("evaluate", table).await;
+    assert_eq!(table["textBytes"], Value::Null, "{table}");
 }
 
 #[tokio::test]

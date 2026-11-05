@@ -105,6 +105,10 @@ pub struct Details {
     /// rather than pointing there.
     pub stored: bool,
 
+    /// How many of a stored character array's bytes hold its C string, NUL
+    /// included, when the string ends before the array does.
+    pub text_bytes: Option<u64>,
+
     /// Whether assigning to the row's path can change it: numbers,
     /// enumerations, and pointers in memory, or whole variables in the
     /// innermost frame's registers.
@@ -323,6 +327,12 @@ impl Presenter<'_> {
                     _ => stored_bytes,
                 };
 
+                let text_bytes = stored_bytes.and_then(|size| {
+                    text.as_deref()
+                        .and_then(|text| text.extent)
+                        .filter(|extent| *extent < size)
+                });
+
                 let whole = item.path.as_ref().is_some_and(Expression::is_name);
 
                 Some(Details {
@@ -331,6 +341,7 @@ impl Presenter<'_> {
                     memory,
                     memory_bytes,
                     stored: stored_bytes.is_some(),
+                    text_bytes,
                     editable: editable(source, value, context, whole, item.path.is_some()),
                     constant: matches!(source, VariableValueSource::Constant),
                     text_view: presented

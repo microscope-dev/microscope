@@ -22,6 +22,7 @@ function row(register: Register, innermost: boolean): Row {
     editable: innermost && register.value !== null,
     memory: null,
     memoryBytes: null,
+    textBytes: null,
     stored: false,
     truncated: false,
     drawings: [],

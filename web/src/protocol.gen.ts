@@ -593,6 +593,11 @@ memoryBytes: number | null,
  */
 stored: boolean, 
 /**
+ * How many of a character array's bytes hold its C string, NUL
+ * included, when the string ends before the array does.
+ */
+textBytes: number | null, 
+/**
  * A row that only says where reading stopped short.
  */
 truncated: boolean, 

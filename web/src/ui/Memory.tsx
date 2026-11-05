@@ -1,6 +1,8 @@
 // Memory at the address the link names, sixteen bytes to a row. The bytes
-// of the value it was opened from are marked, a selection reads as the
-// types its length could be, and controllers write bytes in place.
+// of the value it was opened from are marked, and selected, or only its C
+// string's bytes are when it is a character array with room to spare. A
+// selection reads as the types its length could be, and controllers write
+// bytes in place.
 
 import {
   type ChangeEvent,
@@ -23,6 +25,7 @@ import {
   ROW,
   readAs,
   rowStart,
+  rowTarget,
   type Target,
   targetText,
 } from "../memory";
@@ -58,6 +61,7 @@ export function Memory() {
           <span className="dim">
             {hex(shown.address)}
             {shown.bytes ? ` · ${shown.bytes} bytes` : ""}
+            {shown.text ? ` · ${shown.text} hold its string` : ""}
           </span>
         )}
       </div>
@@ -113,7 +117,7 @@ function GoTo() {
       if (!settled.ok) {
         setError(settled.error.message);
       } else if (row?.memory) {
-        go(row.memoryBytes ? `${row.memory}:${row.memoryBytes}` : row.memory);
+        go(rowTarget(row) ?? row.memory);
       } else {
         setError(`${wanted} names no memory`);
       }
@@ -155,7 +159,11 @@ function Dump({ shown }: { shown: Target }) {
     value === null || value.from <= value.to,
     `value at ${hex(shown.address)} ends before it starts`,
   );
-  const [selection, setSelection] = useState<Selection | null>(value);
+  // A character array opens with its string selected, so the selection
+  // reads as the text; the array's spare bytes stay marked around it.
+  const string =
+    value && shown.text ? { from: value.from, to: value.from + BigInt(shown.text - 1) } : null;
+  const [selection, setSelection] = useState<Selection | null>(string ?? value);
   const [editing, setEditing] = useState<bigint | null>(null);
   // The byte the keyboard is on, the bytes' one stop in the tab order.
   const [cursor, setCursor] = useState<bigint>(shown.address);

@@ -295,6 +295,7 @@ export function scalar(name: string, type: string, text: string): Row {
     editable: true,
     memory: null,
     memoryBytes: null,
+    textBytes: null,
     stored: false,
     truncated: false,
     drawings: [],

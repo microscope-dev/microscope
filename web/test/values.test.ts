@@ -111,6 +111,7 @@ const row = (text: string): Row => ({
   editable: false,
   memory: null,
   memoryBytes: null,
+  textBytes: null,
   stored: false,
   truncated: false,
   drawings: [],
