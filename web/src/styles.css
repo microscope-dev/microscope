@@ -1408,6 +1408,11 @@ textarea.input {
   color: var(--ink);
 }
 
+/* A toggle that is on, such as the eye on a watched value. */
+.icon[aria-pressed="true"] {
+  color: var(--accent);
+}
+
 /* Breakpoints */
 
 .dot {
@@ -2415,6 +2420,16 @@ textarea.input {
 .value-row:hover .row-actions,
 .value-row:focus-within .row-actions {
   opacity: 1;
+}
+
+/* A watched value keeps its lit eye in sight; the other actions wait for
+   the pointer or focus, holding their places so the eye does not move. */
+.row-actions:has(> [aria-pressed="true"]) {
+  opacity: 1;
+}
+
+.value-row:not(:hover, :focus-within) .row-actions > :not([aria-pressed="true"]) {
+  opacity: 0;
 }
 
 .registers .value-name {

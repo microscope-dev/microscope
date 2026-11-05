@@ -215,13 +215,30 @@ function RowActions({ row }: { row: Row }) {
     assert(memory !== null, "showing the memory of a row with none");
     look((current) => ({ ...current, mem: memory, view: "memory" }), { replace: false });
   }, [look, row.memory, row.memoryBytes]);
+  // The watchpoint on exactly this value's bytes, which the eye removes
+  // rather than adding another. Only the address and size decide it, not the
+  // expression, so the same line reached on another thread watches anew.
+  const watching = useModel(
+    (model) =>
+      model.state?.watchpoints.find(
+        (watchpoint) =>
+          row.memory !== null &&
+          BigInt(watchpoint.address) === BigInt(row.memory) &&
+          watchpoint.bytes === row.memoryBytes,
+      )?.id ?? null,
+  );
   const watch = useCallback(() => {
     assert(row.path !== null, "watching a row with no path");
-    void connection
-      .request("addWatchpoint", { ...at, target: row.path, access: "change" })
-      .then(() => flash(`Stopping when ${row.path} changes`))
-      .catch((failure: Error) => flash(failure.message));
-  }, [connection, at, row.path]);
+    const done =
+      watching === null
+        ? connection
+            .request("addWatchpoint", { ...at, target: row.path, access: "change" })
+            .then(() => flash(`Stopping when ${row.path} changes`))
+        : connection
+            .request("removeWatchpoint", { id: watching })
+            .then(() => flash(`No longer watching ${row.path}`));
+    done.catch((failure: Error) => flash(failure.message));
+  }, [connection, at, row.path, watching]);
   const drawable = path !== null && at !== null ? path : null;
   const draw = (drawable !== null || row.memory !== null) && (
     <>
@@ -250,7 +267,8 @@ function RowActions({ row }: { row: Row }) {
           type="button"
           className="icon"
           aria-label={`Watch ${row.name} for changes`}
-          title="Stop when this value changes"
+          aria-pressed={watching !== null}
+          title={watching === null ? "Stop when this value changes" : "Stop watching this value"}
           onClick={watch}
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">

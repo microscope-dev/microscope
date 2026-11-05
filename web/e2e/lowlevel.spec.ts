@@ -126,10 +126,20 @@ test("registers, watchpoints, signals, and modules", async ({ page, microscope }
   await input.press("Enter");
   await expect(valueRow(page, "registers", "r11")).toContainText("0x000000000000002a");
 
-  await valueRow(page, "variables", "status")
-    .getByRole("button", { name: "Watch status for changes" })
-    .click();
+  // The eye toggles the watchpoint on the value's bytes rather than adding
+  // another.
+  const eye = valueRow(page, "variables", "status").getByRole("button", {
+    name: "Watch status for changes",
+  });
   const watchpoints = page.getByTestId("watchpoints");
+  await eye.click();
+  await expect(eye).toHaveAttribute("aria-pressed", "true");
+  await expect(watchpoints.locator("li")).toHaveCount(1);
+  await eye.click();
+  await expect(eye).toHaveAttribute("aria-pressed", "false");
+  await expect(watchpoints).toHaveCount(0);
+  await eye.click();
+  await expect(watchpoints.locator("li")).toHaveCount(1);
   await expect(watchpoints).toContainText("status");
   await expect(watchpoints).toContainText("change");
   await watchpoints.getByRole("button", { name: /^Remove watchpoint/u }).click();
