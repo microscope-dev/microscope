@@ -30,6 +30,26 @@ pub fn unwind_module_for<'a>(
     unwind_module_at(modules, address).map(|(index, image_address)| (modules[index], image_address))
 }
 
+/// The modules a stack unwinds through, each known by its index.
+pub trait Modules {
+    /// The module numbered `index`, which [`Modules::module_at`] gave.
+    fn module(&self, index: usize) -> UnwindModule<'_>;
+
+    /// The module whose image describes `address`, and the image address
+    /// that is, as [`unwind_module_at`] finds it in a slice.
+    fn module_at(&self, address: VirtualAddress) -> Option<(usize, ImageAddress)>;
+}
+
+impl Modules for [UnwindModule<'_>] {
+    fn module(&self, index: usize) -> UnwindModule<'_> {
+        self[index]
+    }
+
+    fn module_at(&self, address: VirtualAddress) -> Option<(usize, ImageAddress)> {
+        unwind_module_at(self, address)
+    }
+}
+
 /// The index in `modules` of the module [`unwind_module_for`] finds.
 pub fn unwind_module_at(
     modules: &[UnwindModule<'_>],

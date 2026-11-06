@@ -621,7 +621,7 @@ fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
         (RBP, truth.frames[0].1),
     ];
     unwind_sample(
-        &modules,
+        &modules[..],
         &mut FrameRules::default(),
         SampledState {
             registers: &registers,

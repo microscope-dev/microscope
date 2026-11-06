@@ -1155,9 +1155,12 @@ impl Snapshots {
 
         // With sampling off, every sample from before the pause is in the
         // rings, and the snapshot claims each sample before it.
-        let mut records = Vec::new();
-        events.drain(&mut records);
-        processor.ingest(&records, Some(start));
+        processor.ingest_drained(
+            |records| {
+                events.drain(records);
+            },
+            Some(start),
+        );
         if sampling {
             events.sample(true);
         }

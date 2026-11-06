@@ -194,7 +194,7 @@ impl Unwinding {
                 })
             })
             .collect();
-        let (frames, mut end) = unwind_sample(&modules, rules, sample, MOST_FRAMES);
+        let (frames, mut end) = unwind_sample(modules.as_slice(), rules, sample, MOST_FRAMES);
         // Frame-pointer mode copies no bytes. A failed read there is
         // evidence about the chain, not an exhausted copy.
         if sample.stack.is_empty()
@@ -391,14 +391,14 @@ impl Stacks {
         });
         self.cover(process, instruction);
         let (mut frames, mut end) = unwind_memory(
-            &self.modules(process),
+            self.modules(process).as_slice(),
             registers,
             &mut Live(thread),
             MOST_FRAMES,
         );
         if self.uncover(process, &frames, end, &[]) {
             (frames, end) = unwind_memory(
-                &self.modules(process),
+                self.modules(process).as_slice(),
                 registers,
                 &mut Live(thread),
                 MOST_FRAMES,

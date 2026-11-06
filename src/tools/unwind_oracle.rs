@@ -424,8 +424,12 @@ pub fn run(options: &Options) -> Result<String> {
             }
         } else {
             let started = Instant::now();
-            let (frames, end) =
-                unwind_memory(&modules_now, &live_registers, &mut Live(&memory), LIMIT);
+            let (frames, end) = unwind_memory(
+                modules_now.as_slice(),
+                &live_registers,
+                &mut Live(&memory),
+                LIMIT,
+            );
             tallies[0].elapsed += started.elapsed();
             let mut results = vec![(frames, end)];
 
@@ -438,7 +442,7 @@ pub fn run(options: &Options) -> Result<String> {
             for (index, bytes) in options.copies.iter().enumerate() {
                 let started = Instant::now();
                 let result = unwind_sample(
-                    &modules_now,
+                    modules_now.as_slice(),
                     &mut rules[index],
                     SampledState {
                         registers: &live_registers,
@@ -454,7 +458,7 @@ pub fn run(options: &Options) -> Result<String> {
             for (index, bytes) in options.copies.iter().enumerate() {
                 let started = Instant::now();
                 let result = unwind_memory(
-                    &modules_now,
+                    modules_now.as_slice(),
                     &live_registers,
                     &mut CopiedStack(rsp, &stack[..copied.min(*bytes)]),
                     LIMIT,
@@ -663,7 +667,7 @@ pub fn run(options: &Options) -> Result<String> {
                     let started = Instant::now();
                     for sample in &kept {
                         let (unwound, _) = unwind_sample(
-                            &modules_now,
+                            modules_now.as_slice(),
                             rules,
                             SampledState {
                                 registers: &sample.registers,

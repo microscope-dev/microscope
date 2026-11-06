@@ -2,6 +2,9 @@
 //! process's mappings and threads, unwinds each sample through the modules
 //! mapped when it was taken, and symbolizes the frames once at the end.
 
+mod held;
+mod modules;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,12 +23,13 @@ use crate::capture::builder::LineInput;
 use crate::capture::records::{
     AccountKind, FrameKind, GapReason, Mapping, MarkerKind, NONE, Truncation, Zone, role_number,
 };
+use held::{Batches, RecordAt};
+use modules::{Mappings, ModuleIndex};
 
 use crate::capture::{Capture, CaptureBuilder};
 use crate::debug_info::{DebugFileSearch, DebugInfo, gdb_jit};
 use crate::model::{Pid, Tid};
-use crate::unwind::UnwindModule;
-use crate::unwind::sample::{FrameRules, SampledState, StackEnd, unwind_sample};
+use crate::unwind::sample::{FrameRules, SampledFrame, SampledState, StackEnd, unwind_sample_into};
 use crate::{
     CodeInstanceKind, CodeRole, ImageAddress, InlineFrameLookup, LoadBias, LoadedModule, ModuleId,
     ModuleImage, ModuleImageId,
@@ -102,10 +106,34 @@ fn code_at(
     })
 }
 
-/// A sample's native frames as a capture keeps them: each frame, with the
-/// name of the interpreter's code it runs, if it runs the interpreter's;
-/// and each frame's module and address, its key.
-type NativeFrames = (Vec<(u32, Option<Arc<str>>)>, Vec<(u32, u64)>);
+/// Records of interpreters' frames waiting for their sample: by thread and
+/// CPU, when, and where among a drain's records.
+type Unpaired = Vec<((Tid, u32), u64, usize)>;
+
+/// A native frame as the capture keeps it, with the name of the
+/// interpreter's code it runs, if it runs the interpreter's.
+type NamedFrame = (u32, Option<Arc<str>>);
+
+/// What processing a sample builds, kept from sample to sample so that
+/// processing one allocates nothing.
+#[derive(Debug, Default)]
+struct SampleScratch {
+    frames: Vec<SampledFrame>,
+
+    /// Each native frame as the capture keeps it, with the name of the
+    /// interpreter's code it runs, if it runs the interpreter's.
+    named: Vec<NamedFrame>,
+
+    /// Each native frame's module and address, its key.
+    keys: Vec<(u32, u64)>,
+
+    /// Each native frame, with whether it is an activation of an
+    /// interpreter's loop.
+    native: Vec<(u32, bool)>,
+
+    /// The addresses the frames and the kernel's chain landed in.
+    addresses: Vec<u64>,
+}
 
 /// How a program's call sites keep the frame-pointer chain.
 pub enum Sites {
@@ -205,7 +233,7 @@ fn uncover(mapped: &mut Vec<Mapped>, start: u64, end: u64) {
 
 #[derive(Debug, Default)]
 struct ProcessState {
-    mapped: Vec<Mapped>,
+    mapped: Mappings,
 
     /// How many mappings the process has made of a module, or over part
     /// of one, which tells its modules apart from what they were, as their
@@ -260,12 +288,17 @@ pub struct Processor {
     next_module: u32,
     limit: usize,
 
-    /// Records held back for the next batch, past its watermark.
-    carry: Vec<u8>,
+    /// The batches drained, kept while records in them are held back.
+    batches: Batches,
 
-    /// The last batch's buffer, emptied, which the next batch holds
-    /// back its records in, so that neither is allocated again.
-    spare: Vec<u8>,
+    /// Records held back for the next batch, past its watermark, in the
+    /// order they go before it.
+    held: Vec<RecordAt>,
+
+    /// Where each record of a batch lies, and in what order they are
+    /// processed, by their time and then their place.
+    records: Vec<RecordAt>,
+    order: Vec<(u64, usize)>,
 
     /// The latest watermark records were processed up to.
     processed_to: u64,
@@ -276,8 +309,11 @@ pub struct Processor {
     /// The latest time processed.
     latest: u64,
     first: Option<u64>,
-    order: Vec<(u64, usize, usize)>,
     registers: Vec<(crate::unwind::DwarfRegister, u64)>,
+    scratch: SampleScratch,
+
+    /// The name of each system call a kernel sample's leaf has named.
+    kernel_leaves: HashMap<Option<crate::syscalls::SyscallId>, String>,
 
     /// A breakpoint's instruction and the branch that makes its samples
     /// repeats, not calls.
@@ -362,6 +398,9 @@ pub struct Processor {
     /// them paired with the sample being processed.
     interpreted: Option<Interpreted>,
     paired: Option<(interpreted::RecordKey, Vec<u8>)>,
+
+    /// The buffer the record paired with the sample before was kept in.
+    paired_bytes: Vec<u8>,
 }
 
 /// A rolling window: how long it is, and its marks, each a moment and the
@@ -386,13 +425,16 @@ impl Processor {
             next_module: 0,
             // A stack keeps at least its innermost frame.
             limit: limit.max(1),
-            carry: Vec::new(),
-            spare: Vec::new(),
+            batches: Batches::default(),
+            held: Vec::new(),
+            records: Vec::new(),
             processed_to: 0,
             untrusted: 0,
             latest: 0,
             first: None,
             order: Vec::new(),
+            scratch: SampleScratch::default(),
+            kernel_leaves: HashMap::default(),
             registers: Vec::with_capacity(decode::DWARF_REGISTERS.len()),
             repeats: None,
             fixed_period: None,
@@ -427,6 +469,7 @@ impl Processor {
             debug_loading: DebugLoading::Full,
             interpreted: None,
             paired: None,
+            paired_bytes: Vec::new(),
         }
     }
 
@@ -652,9 +695,8 @@ impl Processor {
         if let Some(watermark) = watermark {
             self.processed_to = self.processed_to.max(watermark);
         }
-        let mut bytes = std::mem::replace(&mut self.carry, std::mem::take(&mut self.spare));
-        drain(&mut bytes);
-        self.order.clear();
+        let mut batches = std::mem::take(&mut self.batches);
+        let batch = batches.fill(drain);
         let outputs = self
             .interpreted
             .as_mut()
@@ -664,18 +706,40 @@ impl Processor {
             })
             .unwrap_or_default();
 
+        // Every record, by where it lies: those held back, in their order,
+        // then the batch's.
+        let mut records = std::mem::take(&mut self.records);
+        records.clear();
+        records.append(&mut self.held);
+        let held = records.len();
+        let mut order = std::mem::take(&mut self.order);
+        order.clear();
+
         // A record of Python frames goes with the next sample of its
         // thread and CPU in its ring (see `interpreted`).
-        let mut unpaired: Vec<((Tid, u32), u64, usize, usize)> = Vec::new();
-        let mut pairs: HashMap<usize, (interpreted::RecordKey, usize, usize)> = HashMap::default();
-        let mut offset = 0;
+        let mut unpaired: Unpaired = Vec::new();
+        let mut pairs: HashMap<usize, (interpreted::RecordKey, usize)> = HashMap::default();
+        let (mut next_held, mut offset) = (0, 0);
 
-        while let Some(next) =
-            decode::next_with_period(&bytes[offset..], &outputs, self.fixed_period)
-        {
+        loop {
+            let bytes = match records.get(next_held).filter(|_| next_held < held) {
+                Some(&at) => batches.record(at),
+                None => batches.bytes(batch).get(offset..).unwrap_or_default(),
+            };
+            let Some(next) = decode::next_with_period(bytes, &outputs, self.fixed_period) else {
+                break;
+            };
             let Ok((record, length)) = next else {
                 self.builder.count(AccountKind::Malformed as u32, 1);
                 break;
+            };
+            let index = if next_held < held {
+                next_held += 1;
+                next_held - 1
+            } else {
+                records.push(RecordAt::new(batch, offset, length));
+                offset += length;
+                records.len() - 1
             };
 
             let time = record.time().unwrap_or(self.latest);
@@ -687,85 +751,106 @@ impl Processor {
                     data,
                     ..
                 } => {
-                    let (processes, images) = (&self.processes, &self.images);
-                    let interpreted = self.interpreted.as_mut();
-                    if let Some(interpreted) = interpreted {
-                        if let Some(index) = unpaired.iter().position(|(of, ..)| *of == (tid, cpu))
-                        {
-                            let (_, superseded, ..) = unpaired.remove(index);
-                            interpreted.dropped((tid, cpu, superseded));
-                        }
-
-                        let code = |address| code_at(processes, images, pid, address);
-                        interpreted.drained(pid, (tid, cpu, time), data, &code);
-                    }
-
-                    unpaired.push(((tid, cpu), time, offset, length));
-                    offset += length;
+                    self.output_drained(&mut unpaired, pid, (tid, cpu, time), data);
+                    unpaired.push(((tid, cpu), time, index));
                     continue;
                 }
                 decode::Record::Sample(sample) => {
                     let key = (sample.tid, sample.cpu);
-                    if let Some(index) = unpaired.iter().position(|(of, ..)| *of == key) {
-                        let (_, time, at, length) = unpaired.swap_remove(index);
-                        pairs.insert(offset, ((key.0, key.1, time), at, length));
+                    if let Some(at) = unpaired.iter().position(|(of, ..)| *of == key) {
+                        let (_, time, pair) = unpaired.swap_remove(at);
+                        pairs.insert(index, ((key.0, key.1, time), pair));
                     }
                 }
                 decode::Record::Mmap(mmap) => self.mapped_early(&mmap),
                 _ => {}
             }
 
-            self.order.push((time, offset, length));
-            offset += length;
+            order.push((time, index));
         }
 
-        self.order.sort_by_key(|(time, offset, _)| (*time, *offset));
-        let order = std::mem::take(&mut self.order);
-
-        for &(time, offset, length) in &order {
-            let record = &bytes[offset..offset + length];
-            let pair = pairs
-                .get(&offset)
-                .map(|&(key, at, length)| (key, &bytes[at..at + length]));
+        order.sort_unstable();
+        for &(time, index) in &order {
+            let at = records[index];
+            let pair = pairs.get(&index).map(|&(key, pair)| (key, records[pair]));
             if watermark.is_some_and(|watermark| time > watermark) {
                 // A held-back sample keeps its frames before it.
-                self.carry
-                    .extend_from_slice(pair.map(|(_, pair)| pair).unwrap_or_default());
-                self.carry.extend_from_slice(record);
+                self.held.extend(pair.map(|(_, pair)| pair));
+                self.held.push(at);
                 continue;
             }
 
-            self.paired = pair.and_then(|(key, pair)| match decode::next_of(pair, &outputs) {
-                Some(Ok((decode::Record::Output { data, .. }, _))) => Some((key, data.to_vec())),
-                _ => None,
+            self.paired = pair.and_then(|(key, pair)| {
+                let data = self.output_data(batches.record(pair), &outputs)?;
+                Some((key, data))
             });
 
             if let Some(Ok((record, _))) =
-                decode::next_with_period(record, &outputs, self.fixed_period)
+                decode::next_with_period(batches.record(at), &outputs, self.fixed_period)
             {
                 self.process(record);
             }
         }
 
-        // A record whose sample may still come waits for it; one whose
-        // sample the ring dropped goes with it.
-        for ((tid, cpu), time, at, length) in unpaired {
+        self.hold_unpaired(unpaired, &records, watermark);
+        self.recycle_paired();
+        batches.release(&mut self.held);
+        self.batches = batches;
+        self.records = records;
+        self.order = order;
+        self.account_before(watermark.unwrap_or(u64::MAX));
+        self.processed = watermark.unwrap_or(self.latest).max(self.processed);
+        self.map_lost_before(watermark.unwrap_or(u64::MAX));
+    }
+
+    /// Gives the interpreter's frames of thread `tid` on CPU `cpu`, which
+    /// process `pid` put out at `time`, to the interpreter, which drops the
+    /// thread's frames still `unpaired` there: they never found a sample.
+    fn output_drained(
+        &mut self,
+        unpaired: &mut Unpaired,
+        pid: Pid,
+        (tid, cpu, time): (Tid, u32, u64),
+        data: &[u8],
+    ) {
+        let (processes, images) = (&self.processes, &self.images);
+        let Some(interpreted) = self.interpreted.as_mut() else {
+            return;
+        };
+        if let Some(index) = unpaired.iter().position(|(of, ..)| *of == (tid, cpu)) {
+            let (_, superseded, _) = unpaired.remove(index);
+            interpreted.dropped((tid, cpu, superseded));
+        }
+
+        let code = |address| code_at(processes, images, pid, address);
+        interpreted.drained(pid, (tid, cpu, time), data, &code);
+    }
+
+    /// The interpreter's frames the output record `bytes` carries, in the
+    /// buffer kept for them.
+    fn output_data(&mut self, bytes: &[u8], outputs: &[u64]) -> Option<Vec<u8>> {
+        let Some(Ok((decode::Record::Output { data, .. }, _))) = decode::next_of(bytes, outputs)
+        else {
+            return None;
+        };
+        let mut kept = std::mem::take(&mut self.paired_bytes);
+        kept.clear();
+        kept.extend_from_slice(data);
+        Some(kept)
+    }
+
+    /// Holds back each record of `unpaired` whose sample may still come;
+    /// one whose sample the ring dropped goes with it.
+    fn hold_unpaired(&mut self, unpaired: Unpaired, records: &[RecordAt], watermark: Option<u64>) {
+        for ((tid, cpu), time, index) in unpaired {
             if watermark.is_some_and(|watermark| {
                 time.saturating_add(interpreted::PAIRING_SLACK) > watermark
             }) {
-                self.carry.extend_from_slice(&bytes[at..at + length]);
+                self.held.push(records[index]);
             } else if let Some(interpreted) = &mut self.interpreted {
                 interpreted.dropped((tid, cpu, time));
             }
         }
-
-        self.paired = None;
-        self.order = order;
-        bytes.clear();
-        self.spare = bytes;
-        self.account_before(watermark.unwrap_or(u64::MAX));
-        self.processed = watermark.unwrap_or(self.latest).max(self.processed);
-        self.map_lost_before(watermark.unwrap_or(u64::MAX));
     }
 
     /// Keeps only a rolling window of `length` of what happens, from
@@ -838,7 +923,7 @@ impl Processor {
                     state.execs += 1;
                     self.thread_changes += 1;
                     state.command_read = false;
-                    state.mapped.clear();
+                    state.mapped.edit().clear();
                     state.before_v8.clear();
                     state.jit.exec();
                     if let Some(interpreted) = &mut self.interpreted {
@@ -1009,7 +1094,7 @@ impl Processor {
         });
 
         // A mapping replaces whatever it overlaps.
-        uncover(&mut state.mapped, mmap.start, end);
+        uncover(state.mapped.edit(), mmap.start, end);
         state.before_v8 = std::mem::take(&mut state.before_v8)
             .into_iter()
             .flat_map(|code| {
@@ -1068,7 +1153,7 @@ impl Processor {
 
         self.next_module += 1;
 
-        state.mapped.push(Mapped {
+        state.mapped.edit().push(Mapped {
             start: mmap.start,
             end,
             image,
@@ -1248,7 +1333,7 @@ impl Processor {
                 self.generated_module(pid, time, stale.range, code, &stale.functions);
                 // A module is found by its image's bounds, and those of the
                 // module it replaces may span more than its pieces.
-                let held = &mut self.processes.entry(pid).or_default().mapped;
+                let held = self.processes.entry(pid).or_default().mapped.edit();
                 if let Some(named) = held.pop() {
                     held.insert(0, named);
                 }
@@ -1393,7 +1478,7 @@ impl Processor {
         self.next_module += 1;
         let module = self.images[source.image].module;
         let process = self.builder.process(pid, time.cast_signed());
-        let held = &mut self.processes.entry(pid).or_default().mapped;
+        let held = self.processes.entry(pid).or_default().mapped.edit();
         uncover(held, code.start, end);
         // A module is found by its image's bounds, and those of the code V8
         // generated span its whole code range, which holds the copy: the
@@ -1498,7 +1583,7 @@ impl Processor {
         };
         self.next_module += 1;
         let process = self.builder.process(pid, time.cast_signed());
-        let held = &mut self.processes.entry(pid).or_default().mapped;
+        let held = self.processes.entry(pid).or_default().mapped.edit();
         uncover(held, code.start, code.end);
         held.push(Mapped {
             start: code.start,
@@ -1517,36 +1602,21 @@ impl Processor {
         });
     }
 
-    /// Unwinds a sample through the modules of its process, with the
-    /// mappings its frames' modules index.
+    /// Unwinds a sample through the modules of its process into `frames`,
+    /// with the modules its frames index.
     fn unwind(
         &mut self,
         sample: &decode::Sample<'_>,
-    ) -> (
-        Vec<crate::unwind::sample::SampledFrame>,
-        StackEnd,
-        Vec<Mapped>,
-    ) {
-        let mapped: &[Mapped] = self
+        frames: &mut Vec<SampledFrame>,
+    ) -> (StackEnd, Arc<ModuleIndex>) {
+        let modules = self
             .processes
-            .get(&sample.pid)
-            .map_or(&[], |process| &process.mapped);
-        let mut owners = Vec::with_capacity(mapped.len());
-        let modules: Vec<UnwindModule<'_>> = mapped
-            .iter()
-            .filter_map(|mapped| {
-                let info = self.images[mapped.image].info.as_ref()?;
-                owners.push(*mapped);
-                Some(UnwindModule {
-                    loaded: mapped.loaded,
-                    image: &info.image,
-                    unwind: info.unwind.as_ref(),
-                })
-            })
-            .collect();
-
-        let (frames, end) = unwind_sample(
-            &modules,
+            .entry(sample.pid)
+            .or_default()
+            .mapped
+            .index(&self.images);
+        let end = unwind_sample_into(
+            &*modules,
             &mut self.rules,
             SampledState {
                 registers: &self.registers,
@@ -1554,8 +1624,9 @@ impl Processor {
                 chain: &self.chain,
             },
             self.limit,
+            frames,
         );
-        (frames, end, owners)
+        (end, modules)
     }
 
     /// Makes again the modules of anonymous code a sample's frames or
@@ -1564,20 +1635,24 @@ impl Processor {
     fn refresh_perf_map(
         &mut self,
         sample: &decode::Sample<'_>,
-        frames: &[crate::unwind::sample::SampledFrame],
+        frames: &[SampledFrame],
+        addresses: &mut Vec<u64>,
     ) -> bool {
-        let addresses: Vec<u64> = frames
-            .iter()
-            .map(|frame| frame.address.get())
-            .chain(self.chain.first().copied())
-            .chain(
-                self.chain
-                    .iter()
-                    .skip(1)
-                    .map(|address| address.wrapping_sub(1)),
-            )
-            .collect();
-        let recovered = self.map_unseen_code(sample, &addresses);
+        addresses.clear();
+        addresses.extend(
+            frames
+                .iter()
+                .map(|frame| frame.address.get())
+                .chain(self.chain.first().copied())
+                .chain(
+                    self.chain
+                        .iter()
+                        .skip(1)
+                        .map(|address| address.wrapping_sub(1)),
+                ),
+        );
+        let addresses = addresses.as_slice();
+        let recovered = self.map_unseen_code(sample, addresses);
 
         let Some(process) = self.processes.get_mut(&sample.pid) else {
             return recovered;
@@ -1602,16 +1677,13 @@ impl Processor {
 
         // Code V8 generated is anonymous code too, which the map may name.
         let unnamed = addresses.iter().copied().filter(|&address| {
-            mapped
-                .iter()
-                .find(|mapped| (mapped.start..mapped.end).contains(&address))
-                .is_none_or(|mapped| {
-                    let image = &images[mapped.image];
-                    image.generated
-                        && !image.info.as_ref().is_some_and(|info| {
-                            info.image.symbolize(ImageAddress::new(address)).is_some()
-                        })
-                })
+            mapped.piece_at(address).is_none_or(|mapped| {
+                let image = &images[mapped.image];
+                image.generated
+                    && !image.info.as_ref().is_some_and(|info| {
+                        info.image.symbolize(ImageAddress::new(address)).is_some()
+                    })
+            })
         });
         let refreshed = process
             .jit
@@ -1766,11 +1838,7 @@ impl Processor {
             .iter()
             .copied()
             .filter(|&address| {
-                !process
-                    .mapped
-                    .iter()
-                    .any(|mapped| (mapped.start..mapped.end).contains(&address))
-                    && process.jit.unseen(address, time)
+                process.mapped.piece_at(address).is_none() && process.jit.unseen(address, time)
             })
             .collect();
         if unseen.is_empty() {
@@ -1817,15 +1885,18 @@ impl Processor {
 
     fn kernel_leaf(&mut self, sample: &decode::Sample<'_>) -> Option<u32> {
         sample.kernel.then(|| {
-            let function = self
+            let call = self
                 .paired
                 .as_ref()
-                .and_then(|(_, bytes)| crate::backend::bpf::sampler::kernel_syscall(bytes))
-                .map_or_else(
+                .and_then(|(_, bytes)| crate::backend::bpf::sampler::kernel_syscall(bytes));
+            let function = self.kernel_leaves.entry(call).or_insert_with(|| {
+                call.map_or_else(
                     || "[kernel: unknown]".to_owned(),
                     |call| format!("[kernel: {}]", call.display_name()),
-                );
-            let name = self.builder.string(&function);
+                )
+            });
+            let function = function.as_str();
+            let name = self.builder.string(function);
             let leaf = self
                 .builder
                 .frame(FrameKind::Kernel, NONE, u64::from(name), 0);
@@ -1834,7 +1905,7 @@ impl Processor {
                     leaf,
                     NONE,
                     &[LineInput {
-                        function: &function,
+                        function,
                         file: None,
                         line: 0,
                         column: 0,
@@ -1882,30 +1953,21 @@ impl Processor {
         self.builder
             .count(AccountKind::StackBytes as u32, sample.stack.len() as u64);
 
-        let (mut frames, mut end, mut owners) = self.unwind(sample);
-        if self.refresh_perf_map(sample, &frames) {
-            (frames, end, owners) = self.unwind(sample);
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let (mut end, mut modules) = self.unwind(sample, &mut scratch.frames);
+        if self.refresh_perf_map(sample, &scratch.frames, &mut scratch.addresses) {
+            (end, modules) = self.unwind(sample, &mut scratch.frames);
         }
+        let (frames, owners) = (&scratch.frames, modules.owners());
 
         if let Some(leaf) = frames.first() {
-            self.note_task(sample.pid, thread, time, leaf, &owners);
+            self.note_task(sample.pid, thread, time, leaf, owners);
         }
 
-        let (native, keys) = self.native_frames(&frames, &owners);
+        self.native_frames(frames, owners, (&mut scratch.named, &mut scratch.keys));
         let (interpreted, running) = self.sampled_interpreted(sample, thread);
-        let native: Vec<(u32, bool)> = (0..native.len())
-            .map(|index| {
-                let inner = index
-                    .checked_sub(1)
-                    .and_then(|inner| native[inner].1.as_deref());
-                let activation = native[index].1.as_deref().is_some_and(|name| {
-                    self.interpreted
-                        .as_ref()
-                        .is_some_and(|found| found.activation(sample.pid, name, inner))
-                });
-                (native[index].0, activation)
-            })
-            .collect();
+        self.activations(sample.pid, &scratch.named, &mut scratch.native);
+        let native = &scratch.native;
 
         // The asyncio task the thread ran is claimed as a task kept in a
         // register is.
@@ -1935,10 +1997,10 @@ impl Processor {
             });
         let cut = interpreted::v8_cut(&interpreted, runs_v8);
         let marker = if let Sampled::Placed { frames: placed, .. } = interpreted {
-            self.splice_placed(&native, (&frames, &keys), &placed);
+            self.splice_placed(native, (frames, &scratch.keys), &placed);
             cut
         } else {
-            self.splice_interpreted(&native, interpreted).or(cut)
+            self.splice_interpreted(native, interpreted).or(cut)
         };
 
         let truncation = match end {
@@ -1948,6 +2010,7 @@ impl Processor {
             )),
             StackEnd::Complete => marker.map(|marker| (marker, NONE)),
         };
+        self.scratch = scratch;
 
         if let Some((reason, module)) = truncation {
             let frame = self.builder.truncation(reason, module);
@@ -2005,27 +2068,54 @@ impl Processor {
 
         let (processes, images) = (&self.processes, &self.images);
         let code = |address| code_at(processes, images, sample.pid, address);
-        (
-            interpreted.paired(
-                sample.pid,
-                paired.as_ref().map(|(key, bytes)| (*key, bytes.as_slice())),
-                &code,
-            ),
-            stack.and_then(|stack| stack.running_task),
-        )
+        let sampled = interpreted.paired(
+            sample.pid,
+            paired.as_ref().map(|(key, bytes)| (*key, bytes.as_slice())),
+            &code,
+        );
+        let running = stack.and_then(|stack| stack.running_task);
+        self.paired = paired;
+        self.recycle_paired();
+        (sampled, running)
     }
 
-    /// Each of a sample's native `frames`, of the modules `owners`, as a
-    /// frame of the capture with the name of the interpreter's code it
-    /// runs, if it runs the interpreter's; and each frame's module and
-    /// address, its key.
+    /// Keeps the buffer of the record paired with the sample just
+    /// processed, for the next one's.
+    fn recycle_paired(&mut self) {
+        if let Some((_, bytes)) = self.paired.take() {
+            self.paired_bytes = bytes;
+        }
+    }
+
+    /// Puts in `native` each of process `pid`'s `named` frames, with
+    /// whether it is an activation of an interpreter's loop.
+    fn activations(&self, pid: Pid, named: &[NamedFrame], native: &mut Vec<(u32, bool)>) {
+        native.clear();
+        native.extend((0..named.len()).map(|index| {
+            let inner = index
+                .checked_sub(1)
+                .and_then(|inner| named[inner].1.as_deref());
+            let activation = named[index].1.as_deref().is_some_and(|name| {
+                self.interpreted
+                    .as_ref()
+                    .is_some_and(|found| found.activation(pid, name, inner))
+            });
+            (named[index].0, activation)
+        }));
+    }
+
+    /// Puts in `native` each of a sample's native `frames`, of the modules
+    /// `owners`, as a frame of the capture with the name of the
+    /// interpreter's code it runs, if it runs the interpreter's; and in
+    /// `keys` each frame's module and address, its key.
     fn native_frames(
         &mut self,
-        frames: &[crate::unwind::sample::SampledFrame],
+        frames: &[SampledFrame],
         owners: &[Mapped],
-    ) -> NativeFrames {
-        let mut native = Vec::with_capacity(frames.len());
-        let mut keys = Vec::with_capacity(frames.len());
+        (native, keys): (&mut Vec<NamedFrame>, &mut Vec<(u32, u64)>),
+    ) {
+        native.clear();
+        keys.clear();
         for frame in frames {
             let owner = frame
                 .module
@@ -2067,8 +2157,6 @@ impl Processor {
                 });
             native.push((id, name));
         }
-
-        (native, keys)
     }
 
     /// Puts the stack's frames in [`Self::frames`]: its `native` frames,
@@ -2657,9 +2745,7 @@ impl Processor {
             if self.processed_to.saturating_add(READ_SLACK) >= watermark {
                 break;
             }
-            let mut records = Vec::new();
-            drain(&mut records);
-            self.ingest(&records, Some(watermark));
+            self.ingest_drained(&mut drain, Some(watermark));
         }
         self.mapped_code(pid)
     }
@@ -2812,6 +2898,7 @@ impl Processor {
             .filter(|frame| frame.kind == FrameKind::Native as u8)
             .map(|frame| frame.module.get())
             .collect();
+        let mut forget_indexes = false;
         for image in &mut self.images {
             if !sampled.contains(&image.module) {
                 continue;
@@ -2834,11 +2921,17 @@ impl Processor {
                         );
                     }
                     image.info = Some(info);
+                    forget_indexes = true;
                 }
                 Err(why) => self.builder.setting(
                     &format!("debug information {path}"),
                     &format!("final metadata unavailable: {why}; keeping collection symbols"),
                 ),
+            }
+        }
+        if forget_indexes {
+            for process in self.processes.values_mut() {
+                process.mapped.forget_index();
             }
         }
         let used = self.own_cpu().saturating_sub(began);
@@ -3968,6 +4061,76 @@ mod tests {
             |_| drained += 1,
         );
         assert_eq!(drained, READ_DRAINS);
+    }
+
+    /// Once a recording has loaded a program's modules and seen its stacks,
+    /// processing a sample allocates nothing: not when it is held back past
+    /// a watermark, nor when it is unwound and added to the capture, whose
+    /// list of samples alone grows. Samples of a program whose main thread
+    /// spins below frames no frame pointer links, copying 16 KiB of stack,
+    /// are processed again and again.
+    #[test]
+    fn a_sample_allocates_nothing_once_its_stack_was_seen() {
+        const ROUNDS: usize = 4;
+        let options = perf::EventOptions {
+            source: perf::Source::Clock {
+                period: std::time::Duration::from_millis(1),
+            },
+            stack_bytes: 16 * 1024,
+            kernel: false,
+            ring_pages: 256,
+            switches: false,
+        };
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/profile-stacks-gcc-o2-nofp");
+        let mut command = std::process::Command::new(program);
+        command.arg("30000000");
+        let launched = perf::launch(command, &options, perf::LaunchOptions::default(), |_, _| {
+            Ok(())
+        })
+        .expect("launch the program");
+        let status = launched
+            .exit
+            .join()
+            .expect("the launch thread ends")
+            .expect("the program exits");
+        assert!(status.success(), "{status}");
+
+        let mut records = Vec::new();
+        launched.events.drain(&mut records);
+        let (mut samples, mut times) = (Vec::new(), Vec::new());
+        let mut rest = records.as_slice();
+        while let Some(Ok((record, length))) = decode::next(rest) {
+            if let decode::Record::Sample(sample) = record {
+                samples.extend_from_slice(&rest[..length]);
+                times.push(sample.time);
+            }
+            rest = &rest[length..];
+        }
+        assert!(times.len() > 50, "{} samples", times.len());
+
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.ingest(&records, None);
+        let middle = times[times.len() / 2];
+        let replay = |processor: &mut Processor| {
+            processor.ingest(&samples, Some(middle));
+            processor.ingest(&[], None);
+        };
+        replay(&mut processor);
+
+        let before = crate::timings::alloc::thread_allocated();
+        for _ in 0..ROUNDS {
+            replay(&mut processor);
+        }
+        let allocated = crate::timings::alloc::thread_allocated().since(&before);
+        let capture = processor.finish();
+        assert_eq!(capture.samples.len(), (ROUNDS + 2) * times.len());
+        // The capture's sample list doubles at most this often.
+        assert!(
+            allocated.blocks <= 4,
+            "{allocated:?} over {} samples",
+            ROUNDS * times.len()
+        );
     }
 
     /// The bytes of a perf sample record that event `identifier` wrote of

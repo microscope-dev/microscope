@@ -13,8 +13,8 @@
 use foldhash::HashMap;
 
 use super::{
-    DwarfRegister, FramePointerRule, MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile,
-    UnwindModule, interrupted_registers, unwind_module_at,
+    DwarfRegister, FramePointerRule, MemoryReader, Modules, RBP, RETURN_ADDRESS, RSP, RegisterFile,
+    UnwindModule, interrupted_registers,
 };
 
 use crate::capture::records::Truncation;
@@ -80,6 +80,12 @@ pub enum StackEnd {
 pub struct FrameRules {
     rules: HashMap<(ModuleImageId, u64), FramePointerRule>,
     roles: HashMap<(ModuleImageId, u64), CodeRole>,
+
+    /// The links of the walk over a sample's copy, and the frames
+    /// call-frame information found past a splice, kept from sample to
+    /// sample so that unwinding one allocates nothing.
+    links: Vec<u64>,
+    past_splice: Vec<SampledFrame>,
 }
 
 impl FrameRules {
@@ -117,40 +123,52 @@ impl MemoryReader for StackCopy<'_> {
     }
 }
 
-/// A frame call-frame information reached.
-struct Unwound {
-    frame: SampledFrame,
-}
-
 /// Unwinds one sample through `modules`, innermost frame first, collecting
 /// at most `limit` frames.
-pub fn unwind_sample(
-    modules: &[UnwindModule<'_>],
+pub fn unwind_sample<M: Modules + ?Sized>(
+    modules: &M,
     rules: &mut FrameRules,
     sample: SampledState<'_>,
     limit: usize,
 ) -> (Vec<SampledFrame>, StackEnd) {
-    let (frames, end) = sampled_frames(modules, rules, sample, limit);
+    let mut frames = Vec::new();
+    let end = unwind_sample_into(modules, rules, sample, limit, &mut frames);
+    (frames, end)
+}
+
+/// Unwinds one sample as [`unwind_sample`] does, into `frames`, which it
+/// empties first: a recorder that keeps them, and `rules`, from sample to
+/// sample unwinds each without allocating.
+pub fn unwind_sample_into<M: Modules + ?Sized>(
+    modules: &M,
+    rules: &mut FrameRules,
+    sample: SampledState<'_>,
+    limit: usize,
+    frames: &mut Vec<SampledFrame>,
+) -> StackEnd {
+    frames.clear();
+    let end = sampled_frames(modules, rules, sample, limit, frames);
     debug_assert!(
         frames.len() <= limit,
         "a sample unwound to {} frames, past its limit of {limit}",
         frames.len()
     );
-    (frames, end)
+    end
 }
 
-fn sampled_frames(
-    modules: &[UnwindModule<'_>],
+fn sampled_frames<M: Modules + ?Sized>(
+    modules: &M,
     rules: &mut FrameRules,
     sample: SampledState<'_>,
     limit: usize,
-) -> (Vec<SampledFrame>, StackEnd) {
+    frames: &mut Vec<SampledFrame>,
+) -> StackEnd {
     let registers = RegisterFile::new(sample.registers.iter().copied());
     let Some(instruction) = registers
         .get(RETURN_ADDRESS)
         .or_else(|| sample.chain.first().copied())
     else {
-        return (Vec::new(), StackEnd::Truncated(Truncation::NoStack, None));
+        return StackEnd::Truncated(Truncation::NoStack, None);
     };
 
     let mut memory = StackCopy {
@@ -158,26 +176,35 @@ fn sampled_frames(
         bytes: sample.stack,
     };
 
-    let walked = walk_cfi(modules, rules, instruction, registers, &mut memory, limit);
+    let walked = walk_cfi(
+        modules,
+        rules,
+        instruction,
+        registers,
+        &mut memory,
+        limit,
+        frames,
+    );
     if walked.certain {
-        return (frames(walked.unwound), walked.end);
+        return walked.end;
     }
 
-    let (unwound, cfi_end) = (walked.unwound, walked.end);
-
     // The kernel's chain from the deepest frame that keeps the chain.
-    let Some((kept, link, links)) = splice(modules, rules, &unwound, sample, &mut memory) else {
-        return (frames(unwound), cfi_end);
+    let Some((kept, link)) = splice(modules, rules, frames, sample, &mut memory) else {
+        return walked.end;
     };
 
-    let unwound = frames(unwound);
-    let mut frames = unwound[..=kept].to_vec();
-    let links = links.get(link..).unwrap_or_default();
+    // What call-frame information found past the splice is kept aside, in
+    // case the chain proves less.
+    let mut past = std::mem::take(&mut rules.past_splice);
+    past.clear();
+    past.extend(frames.drain(kept + 1..));
+    let links = std::mem::take(&mut rules.links);
     let end = match follow_chain(
         modules,
         rules,
-        &mut frames,
-        (&sample.chain[link..], links),
+        frames,
+        (&sample.chain[link..], links.get(link..).unwrap_or_default()),
         limit,
     ) {
         StackEnd::Truncated(Truncation::ChainEnded, module)
@@ -187,22 +214,28 @@ fn sampled_frames(
         }
         end => end,
     };
+    rules.links = links;
 
     // The chain can end sooner than call-frame information did, at a
     // frame past the splice that keeps no frame pointer: the frames both
     // found agree, and the longer stack is the better proof.
-    if frames.len() < unwound.len() {
-        return (unwound, cfi_end);
-    }
-    (frames, end)
+    let end = if frames.len() < kept + 1 + past.len() {
+        frames.truncate(kept + 1);
+        frames.extend_from_slice(&past);
+        walked.end
+    } else {
+        end
+    };
+    rules.past_splice = past;
+    end
 }
 
 /// Unwinds a stack by call-frame information alone from `registers`,
 /// reading it from `memory` as it goes: a parked task's, whose registers
 /// its runtime saved, read while the program runs. A word `memory` cannot
 /// read ends the stack as unreadable.
-pub fn unwind_memory(
-    modules: &[UnwindModule<'_>],
+pub fn unwind_memory<M: Modules + ?Sized>(
+    modules: &M,
     registers: &[(DwarfRegister, u64)],
     memory: &mut dyn MemoryReader,
     limit: usize,
@@ -213,7 +246,16 @@ pub fn unwind_memory(
     };
 
     let mut rules = FrameRules::default();
-    let walked = walk_cfi(modules, &mut rules, instruction, registers, memory, limit);
+    let mut frames = Vec::new();
+    let walked = walk_cfi(
+        modules,
+        &mut rules,
+        instruction,
+        registers,
+        memory,
+        limit,
+        &mut frames,
+    );
     let end = match walked.end {
         StackEnd::Truncated(Truncation::StackCopyExhausted, module) => {
             StackEnd::Truncated(Truncation::Unreadable, module)
@@ -222,67 +264,61 @@ pub fn unwind_memory(
     };
 
     debug_assert!(
-        walked.unwound.len() <= limit,
+        frames.len() <= limit,
         "a stack unwound to {} frames, past its limit of {limit}",
-        walked.unwound.len()
+        frames.len()
     );
-    (frames(walked.unwound), end)
+    (frames, end)
 }
 
-/// What call-frame information found of a stack: the frames it reached,
-/// and how it ended, which is `certain` unless the kernel's chain may
-/// still reach further.
+/// How call-frame information ended a stack, which is `certain` unless
+/// the kernel's chain may still reach further.
 struct Walked {
-    unwound: Vec<Unwound>,
     end: StackEnd,
     certain: bool,
 }
 
 impl Walked {
-    const fn certain(unwound: Vec<Unwound>, end: StackEnd) -> Self {
-        Self {
-            unwound,
-            end,
-            certain: true,
-        }
+    const fn certain(end: StackEnd) -> Self {
+        Self { end, certain: true }
     }
 }
 
 /// Unwinds by call-frame information from `instruction` with `registers`,
-/// reading the stack from `memory`, collecting at most `limit` frames.
-fn walk_cfi(
-    modules: &[UnwindModule<'_>],
+/// reading the stack from `memory`, into `frames`, which it finds empty,
+/// collecting at most `limit` frames.
+fn walk_cfi<M: Modules + ?Sized>(
+    modules: &M,
     rules: &mut FrameRules,
     instruction: u64,
     mut registers: RegisterFile,
     memory: &mut dyn MemoryReader,
     limit: usize,
+    frames: &mut Vec<SampledFrame>,
 ) -> Walked {
-    let mut unwound: Vec<Unwound> = Vec::new();
+    debug_assert!(frames.is_empty(), "a walk begins with no frames");
     let mut address = VirtualAddress::new(instruction);
     let mut previous_cfa = None;
     let end = loop {
-        let found = unwind_module_at(modules, address);
+        let found = modules.module_at(address);
         let index = found.map(|(index, _)| index);
         let role = found.map_or(CodeRole::Ordinary, |(index, image_address)| {
-            rules.role(&modules[index], image_address)
+            rules.role(&modules.module(index), image_address)
         });
-        unwound.push(Unwound {
-            frame: SampledFrame {
-                address,
-                module: index,
-                role,
-                frame_pointer: registers.get(RBP),
-                cfa: None,
-            },
+        frames.push(SampledFrame {
+            address,
+            module: index,
+            role,
+            frame_pointer: registers.get(RBP),
+            cfa: None,
         });
 
-        if unwound.len() >= limit {
-            return Walked::certain(unwound, StackEnd::Truncated(Truncation::DepthLimit, None));
+        if frames.len() >= limit {
+            return Walked::certain(StackEnd::Truncated(Truncation::DepthLimit, None));
         }
 
         if role == CodeRole::Outermost {
-            return Walked::certain(unwound, StackEnd::Complete);
+            return Walked::certain(StackEnd::Complete);
         }
 
         // A switch's frame lies on the stack it switched from, which its
@@ -312,14 +348,15 @@ fn walk_cfi(
             continue;
         }
 
-        let Some((module, image_address)) = found.map(|(index, at)| (modules[index], at)) else {
+        let Some((module, image_address)) = found.map(|(index, at)| (modules.module(index), at))
+        else {
             break StackEnd::Truncated(Truncation::UnmappedAddress, None);
         };
 
         let step = match module.unwind.unwind(image_address, &registers, memory) {
             Ok(step) => step,
             Err(UnwindTermination::Complete) => {
-                return Walked::certain(unwound, StackEnd::Complete);
+                return Walked::certain(StackEnd::Complete);
             }
             Err(UnwindTermination::NoUnwindInfo { .. }) => {
                 break StackEnd::Truncated(Truncation::NoUnwindInfo, index);
@@ -330,12 +367,12 @@ fn walk_cfi(
             Err(_) => break StackEnd::Truncated(Truncation::InvalidCaller, index),
         };
 
-        if let Some(last) = unwound.last_mut() {
-            last.frame.cfa = Some(step.cfa.get());
+        if let Some(last) = frames.last_mut() {
+            last.cfa = Some(step.cfa.get());
         }
 
         let caller = match step.registers.get(RETURN_ADDRESS) {
-            None | Some(0) => return Walked::certain(unwound, StackEnd::Complete),
+            None | Some(0) => return Walked::certain(StackEnd::Complete),
             Some(caller) => caller,
         };
 
@@ -350,9 +387,9 @@ fn walk_cfi(
         // interrupted: its frame, at its first instruction, and then the
         // interrupted instruction, with the registers the kernel saved.
         if let Some(trampoline) = signal_trampoline(modules, rules, caller, &step.registers) {
-            unwound.push(trampoline);
-            if unwound.len() >= limit {
-                return Walked::certain(unwound, StackEnd::Truncated(Truncation::DepthLimit, None));
+            frames.push(trampoline);
+            if frames.len() >= limit {
+                return Walked::certain(StackEnd::Truncated(Truncation::DepthLimit, None));
             }
 
             let interrupted = step
@@ -381,7 +418,6 @@ fn walk_cfi(
     };
 
     Walked {
-        unwound,
         end,
         certain: false,
     }
@@ -389,43 +425,41 @@ fn walk_cfi(
 
 /// The frame of the signal trampoline at `caller`, if a trampoline is
 /// there, with the registers of the handler it returns from.
-fn signal_trampoline(
-    modules: &[UnwindModule<'_>],
+fn signal_trampoline<M: Modules + ?Sized>(
+    modules: &M,
     rules: &mut FrameRules,
     caller: u64,
     registers: &RegisterFile,
-) -> Option<Unwound> {
-    let (index, image_address) = unwind_module_at(modules, VirtualAddress::new(caller))?;
-    (rules.role(&modules[index], image_address) == CodeRole::SignalTrampoline).then(|| Unwound {
-        frame: SampledFrame {
+) -> Option<SampledFrame> {
+    let (index, image_address) = modules.module_at(VirtualAddress::new(caller))?;
+    (rules.role(&modules.module(index), image_address) == CodeRole::SignalTrampoline).then(|| {
+        SampledFrame {
             address: VirtualAddress::new(caller),
             module: Some(index),
             role: CodeRole::SignalTrampoline,
             frame_pointer: registers.get(RBP),
             cfa: None,
-        },
+        }
     })
-}
-
-fn frames(unwound: Vec<Unwound>) -> Vec<SampledFrame> {
-    unwound.into_iter().map(|unwound| unwound.frame).collect()
 }
 
 /// The deepest frame call-frame information reached whose rbp is a link
 /// of the kernel's walk, with the index of the chain's entry for its
-/// caller, if the frame provably keeps the chain there.
+/// caller, if the frame provably keeps the chain there. The links of the
+/// walk over the copy are left in `rules.links`.
 ///
 /// The walk over the copy repeats the kernel's: from rbp, each link holds
 /// the next link, and the word above it a return address, which must be
 /// the chain's.
-fn splice(
-    modules: &[UnwindModule<'_>],
+fn splice<M: Modules + ?Sized>(
+    modules: &M,
     rules: &mut FrameRules,
-    unwound: &[Unwound],
+    unwound: &[SampledFrame],
     sample: SampledState<'_>,
     memory: &mut StackCopy<'_>,
-) -> Option<(usize, usize, Vec<u64>)> {
-    let mut links = Vec::new();
+) -> Option<(usize, usize)> {
+    let mut links = std::mem::take(&mut rules.links);
+    links.clear();
     let mut link = sample
         .registers
         .iter()
@@ -447,48 +481,40 @@ fn splice(
         link = memory.read_u64(VirtualAddress::new(current));
     }
 
-    for (index, frame) in unwound.iter().enumerate().rev() {
-        let Some(frame_pointer) = frame.frame.frame_pointer else {
-            continue;
-        };
-
-        let Some(position) = links.iter().position(|link| *link == frame_pointer) else {
-            continue;
-        };
-
+    let found = unwound.iter().enumerate().rev().find_map(|(index, frame)| {
+        let position = links
+            .iter()
+            .position(|link| Some(*link) == frame.frame_pointer)?;
         let caller = position + 1;
         if caller >= sample.chain.len() {
-            continue;
+            return None;
         }
 
-        let Some(module) = frame.frame.module.map(|module| &modules[module]) else {
-            continue;
-        };
-
-        if rules.rule(module, frame.frame.address) != FramePointerRule::Kept {
-            continue;
+        let module = modules.module(frame.module?);
+        if rules.rule(&module, frame.address) != FramePointerRule::Kept {
+            return None;
         }
 
         // Where call-frame information found the caller too, both must
         // name the same one.
         if let Some(next) = unwound.get(index + 1)
-            && next.frame.address.get().wrapping_add(1) != sample.chain[caller]
+            && next.address.get().wrapping_add(1) != sample.chain[caller]
         {
-            continue;
+            return None;
         }
 
-        return Some((index, caller, links));
-    }
-
-    None
+        Some((index, caller))
+    });
+    rules.links = links;
+    found
 }
 
 /// Appends the callers `chain` lists, beginning with the caller of the
 /// last of `frames`, while each frame provably keeps the chain; `links`
 /// holds the links of the walk over the copy that are each's rbp, as far
 /// as the copy reached.
-fn follow_chain(
-    modules: &[UnwindModule<'_>],
+fn follow_chain<M: Modules + ?Sized>(
+    modules: &M,
     rules: &mut FrameRules,
     frames: &mut Vec<SampledFrame>,
     (chain, links): (&[u64], &[u64]),
@@ -497,19 +523,20 @@ fn follow_chain(
     for (position, &return_address) in chain.iter().enumerate() {
         // A handler returns to a trampoline's entry, not past a call.
         let entry = VirtualAddress::new(return_address);
-        let address = match unwind_module_at(modules, entry) {
+        let address = match modules.module_at(entry) {
             Some((index, image_address))
-                if rules.role(&modules[index], image_address) == CodeRole::SignalTrampoline =>
+                if rules.role(&modules.module(index), image_address)
+                    == CodeRole::SignalTrampoline =>
             {
                 entry
             }
             _ => VirtualAddress::new(return_address.wrapping_sub(1)),
         };
-        let Some((index, image_address)) = unwind_module_at(modules, address) else {
+        let Some((index, image_address)) = modules.module_at(address) else {
             return StackEnd::Truncated(Truncation::UnmappedAddress, None);
         };
 
-        let module = modules[index];
+        let module = modules.module(index);
         let index = Some(index);
         let role = rules.role(&module, image_address);
         let kept = rules.rule(&module, address);
@@ -679,7 +706,7 @@ mod tests {
             }];
 
             let (frames, end) = unwind_sample(
-                &modules,
+                &modules[..],
                 &mut FrameRules::default(),
                 SampledState {
                     registers,

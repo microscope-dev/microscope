@@ -122,7 +122,7 @@ impl Sampler {
         }];
 
         let (frames, end) = unwind_sample(
-            &modules,
+            &modules[..],
             &mut self.rules,
             SampledState {
                 registers: &registers,
