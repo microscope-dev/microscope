@@ -612,17 +612,14 @@ pub fn thread_cpu() -> std::time::Duration {
     )
 }
 
-/// Whether `fd` is readable now, as a process descriptor is once its
-/// process has exited.
-pub fn readable(fd: &OwnedFd) -> bool {
+/// Whether `fd` is readable within `timeout`, as a process descriptor is
+/// once its process has exited.
+pub fn readable(fd: &OwnedFd, timeout: std::time::Duration) -> bool {
     use rustix::event::{PollFd, PollFlags, Timespec};
     let mut fds = [PollFd::new(fd, PollFlags::IN)];
-    let now = Timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
+    let timeout = Timespec::try_from(timeout).ok();
 
-    rustix::event::poll(&mut fds, Some(&now)).is_ok_and(|ready| ready > 0)
+    rustix::event::poll(&mut fds, timeout.as_ref()).is_ok_and(|ready| ready > 0)
         && fds[0].revents().contains(PollFlags::IN)
 }
 
@@ -654,16 +651,20 @@ pub struct Poller {
     wake: OwnedFd,
 }
 
+/// What the wake eventfd is registered as; each ring is its index.
+const WAKE: u64 = u64::MAX;
+
 impl Poller {
     pub fn new(rings: &[Ring]) -> std::io::Result<Self> {
         use rustix::event::{EventfdFlags, epoll, eventfd};
         let fd = epoll::create(epoll::CreateFlags::CLOEXEC)?;
         let wake = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
-        for ring in rings.iter().map(|ring| &ring.fd).chain([&wake]) {
+        let indexed = rings.iter().map(|ring| &ring.fd).zip(0..);
+        for (source, data) in indexed.chain([(&wake, WAKE)]) {
             epoll::add(
                 &fd,
-                ring,
-                epoll::EventData::new_u64(0),
+                source,
+                epoll::EventData::new_u64(data),
                 epoll::EventFlags::IN,
             )?;
         }
@@ -675,13 +676,30 @@ impl Poller {
         let _ = rustix::io::write(&self.wake, &1u64.to_ne_bytes());
     }
 
-    /// Waits until one of the rings has data past its watermark, the
-    /// poller is woken, or `timeout`.
-    pub fn wait(&self, timeout: std::time::Duration) {
+    /// Waits until one of `rings`, those the poller was made with, has
+    /// data past its watermark, the poller is woken, or `timeout`. A ring
+    /// whose event has ended, as when its thread exits, stays ready for
+    /// good, so it is waited on no longer; what it still gets, as from
+    /// other threads' events, is read when a wait times out.
+    pub fn wait(&self, rings: &[Ring], timeout: std::time::Duration) {
         use rustix::event::{Timespec, epoll};
         let mut ready = [std::mem::MaybeUninit::<epoll::Event>::uninit(); 8];
         let timeout = Timespec::try_from(timeout).ok();
-        let _ = epoll::wait(&self.epoll, &mut ready, timeout.as_ref());
+        let Ok((ready, _)) = epoll::wait(&self.epoll, &mut ready, timeout.as_ref()) else {
+            return;
+        };
+
+        let ended = epoll::EventFlags::HUP | epoll::EventFlags::ERR;
+        for &epoll::Event { flags, data } in ready.iter() {
+            let ring = usize::try_from(data.u64())
+                .ok()
+                .and_then(|index| rings.get(index));
+            if flags.intersects(ended)
+                && let Some(ring) = ring
+            {
+                let _ = epoll::delete(&self.epoll, &ring.fd);
+            }
+        }
     }
 }
 

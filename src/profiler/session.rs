@@ -203,7 +203,7 @@ pub fn record_watched(
             started,
             syscalls.as_ref(),
             walker.as_mut(),
-            || exit.is_finished(),
+            |timeout| killer.exited(timeout),
             || {
                 record!("record: stopping, killing {pid}");
                 killer.kill();
@@ -304,7 +304,7 @@ pub fn record_attached(
             Some(pid),
             None,
             walker.as_mut(),
-            || process.exited(),
+            |timeout| process.exited(timeout),
             || {
                 record!("record: stopping, detaching from {pid}");
                 stopped = true;
@@ -672,7 +672,8 @@ fn settings(
     }
 }
 
-/// Drains `events` into `processor` until `ended`, publishing and saving
+/// Drains `events` into `processor` until `ended`, which waits up to a
+/// timeout for the program to end and says whether it has, publishing and saving
 /// as `watch` asks, and holding to the budget, window, and snapshots of
 /// `options`, once the program `started` names has started. When `watch`
 /// stops the recording, `stop` ends it at once when it says so, or else
@@ -690,7 +691,7 @@ fn drive(
     started: Option<u32>,
     syscalls: Option<&SyscallTrace>,
     mut walker: Option<&mut Walker>,
-    mut ended: impl FnMut() -> bool,
+    mut ended: impl FnMut(Duration) -> bool,
     mut stop: impl FnMut() -> bool,
 ) {
     processor.set_up();
@@ -740,7 +741,7 @@ fn drive(
             now = stop();
         }
 
-        let finished = now || ended();
+        let finished = now || ended(Duration::ZERO);
         let disabled_at = finished.then(|| {
             events.enable(false);
             monotonic()
@@ -779,12 +780,13 @@ fn drive(
             // is taken when due, not at the next drain.
             let due = snapshots.iter().map(Snapshots::due_in).min();
             let wait = due.map_or(wait, |due| wait.min(due));
-            // Paused, the rings fill too slowly to need waking for, and a
-            // sleep costs a fraction of a poll of every ring.
+            // Paused, the rings fill too slowly to need waking for, and
+            // waiting on the program alone costs a fraction of a poll of
+            // every ring, and still ends the recording when it exits.
             if pacer.as_ref().is_none_or(Pacer::sampling) {
                 events.wait(wait);
             } else {
-                std::thread::sleep(wait);
+                ended(wait);
             }
         }
 
@@ -809,7 +811,7 @@ fn drive(
 
         if let Some(probes) = &mut probes {
             if finished {
-                probes.finish(processor, !ended());
+                probes.finish(processor, !ended(Duration::ZERO));
             } else {
                 probes.drain(processor);
             }

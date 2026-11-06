@@ -673,7 +673,7 @@ impl Events {
                         Ordering::Relaxed,
                     );
                     match &poller {
-                        Some(poller) => poller.wait(self.reader_wait),
+                        Some(poller) => poller.wait(&self.rings, self.reader_wait),
                         None => sys::poll(&self.rings, self.reader_wait),
                     }
                 }
@@ -1066,9 +1066,10 @@ pub struct Attached {
 pub struct ProcessWatch(OwnedFd);
 
 impl ProcessWatch {
-    /// Whether the process has exited.
-    pub fn exited(&self) -> bool {
-        sys::readable(&self.0)
+    /// Waits up to `timeout` for the process to exit, and says whether it
+    /// has.
+    pub fn exited(&self, timeout: Duration) -> bool {
+        sys::readable(&self.0, timeout)
     }
 }
 
@@ -1140,7 +1141,7 @@ pub struct Launched {
     pub executed: std::sync::mpsc::Receiver<()>,
 }
 
-/// Kills one launched program.
+/// Kills one launched program, and says when it has ended.
 #[derive(Debug)]
 pub struct Killer(OwnedFd);
 
@@ -1149,6 +1150,12 @@ impl Killer {
     pub fn kill(&self) {
         // A program that has ended already is no failure.
         let _ = super::native::pidfd_send_signal(&self.0, super::signals::Signal::SIGKILL);
+    }
+
+    /// Waits up to `timeout` for the program to exit, and says whether it
+    /// has.
+    pub fn exited(&self, timeout: Duration) -> bool {
+        sys::readable(&self.0, timeout)
     }
 }
 
@@ -1953,6 +1960,36 @@ mod tests {
             launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
                 .expect("launch the program");
         (events, exit)
+    }
+
+    /// The rings of a program that has exited stay ready for good: the
+    /// reader stops waiting on them, rather than spin until it is stopped.
+    #[test]
+    fn the_reader_does_not_spin_on_the_rings_of_an_exited_program() {
+        let options = EventOptions {
+            source: Source::Clock {
+                period: Duration::from_millis(20),
+            },
+            stack_bytes: 512,
+            kernel: false,
+            ring_pages: 16,
+            switches: false,
+        };
+        let Launched { events, exit, .. } = launch(
+            Command::new("true"),
+            &options,
+            LaunchOptions::default(),
+            |_, _| Ok(()),
+        )
+        .expect("launch the program");
+
+        events.read_while(|| {
+            let status = exit.join().expect("the launch thread ends").expect("wait");
+            assert!(status.success(), "{status}");
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        let cpu = events.reader_cpu();
+        assert!(cpu < Duration::from_millis(20), "the reader took {cpu:?}");
     }
 
     /// A budget pauses sampling alone: what the program starts meanwhile is

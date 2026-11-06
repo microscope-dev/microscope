@@ -838,6 +838,58 @@ fn budget_pauses(window: Option<Duration>) {
     }
 }
 
+/// A program that exits while the budget has sampling paused ends the
+/// recording as it exits, not at the next time the pause was due to be
+/// looked at, up to a tenth of a second later.
+#[test]
+fn a_program_that_exits_while_sampling_is_paused_ends_the_recording_at_once() {
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", "read line"])
+        .stdin(reader)
+        .stdout(Stdio::null());
+    // Past the first period, so little is allowed that each later one is
+    // sampled for a sixty-fourth of it.
+    let options = RecordOptions {
+        budget: Some(Budget {
+            cpu: 0.000_001,
+            period: Duration::from_secs(1),
+        }),
+        ..RecordOptions::preset(Preset::Production)
+    };
+
+    let stop = AtomicBool::new(false);
+    let mut released = None;
+    let recording = record_watched(
+        command,
+        &options,
+        &mut Watch {
+            every: Duration::from_millis(20),
+            publish: &mut |profile| {
+                if released.is_none() && !profile.budget_changes().is_empty() {
+                    let now = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+                        .expect("read the clock");
+                    writer.write_all(b"\n").expect("release the program");
+                    released = Some(now.num_nanoseconds());
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+
+    let released = released.expect("the budget paused sampling");
+    let (_, end) = recording.profile.span();
+    assert!(
+        end - released < 50_000_000,
+        "the recording ended {} ms after the program was released",
+        (end - released) / 1_000_000
+    );
+}
+
 /// Every function on any sample's stack.
 fn on_stacks(profile: &Profile) -> std::collections::BTreeSet<String> {
     profile
