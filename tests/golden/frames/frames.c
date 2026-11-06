@@ -37,7 +37,8 @@ __attribute__((noinline)) u64 descend(u64 depth) {
 static step_fn const steps[] = {leaf, relay, descend};
 
 // bare_call(fn, value) returns fn(value) from a frame without call-frame
-// information, where unwinding must stop.
+// information, where unwinding must stop: it realigns the stack, so its
+// instructions prove no frame either.
 //
 // scribbled_call(fn, value) returns fn(value), overwriting its own return
 // address while fn runs: unwinding past it reads a caller that is not one.
@@ -50,9 +51,12 @@ __asm__(".text\n"
         ".type bare_call, @function\n"
         "bare_call:\n"
         "    push %rbx\n"
+        "    mov %rsp, %rbx\n"
+        "    and $-16, %rsp\n"
         "    mov %rdi, %rax\n"
         "    mov %rsi, %rdi\n"
         "    call *%rax\n"
+        "    mov %rbx, %rsp\n"
         "    pop %rbx\n"
         "    ret\n"
         ".size bare_call, . - bare_call\n"

@@ -2183,9 +2183,38 @@ fn proved_frames(
         );
     }
 
-    if sparsely_described(object, unwind) {
-        undescribed_frames(object, unwind, &described, &starts, &mut frames);
+    // The process's entry point has no caller. glibc's call-frame
+    // information says so; musl's start has none.
+    let entry = object.entry();
+    if !described(entry)
+        && let Some(range) = object
+            .sections()
+            .filter(|section| section.kind() == object::SectionKind::Text)
+            .find_map(|section| {
+                let code = section.data().ok()?;
+                let offset = usize::try_from(entry.checked_sub(section.address())?).ok()?;
+                super::x86_64::frames::entry_frame(code.get(offset..)?, entry)
+            })
+        && let Some(value) = super::x86_64::frames::CodeFrame::Outermost.encode()
+    {
+        frames.push((range, value));
+        starts.insert(entry);
     }
+
+    // Hand-written code, as assembly kernels and the C runtime's `_init`,
+    // has no call-frame information even where everything compiled has.
+    // Unless most of the module is undescribed, only the functions that
+    // symbols and relocations name are proved: finding what every
+    // instruction calls costs as much as the rest of a load.
+    let scan = sparsely_described(object, unwind);
+    undescribed_frames(
+        (object, debug_object),
+        unwind,
+        &described,
+        &starts,
+        scan,
+        &mut frames,
+    );
     frames
 }
 
@@ -2259,14 +2288,16 @@ fn sparsely_described(object: &object::File<'_>, unwind: &crate::image::unwind::
 
 /// The frames of the functions of `object` that no call-frame information
 /// describes and that `starts` does not already hold, each found at an
-/// address its code calls or loads, a relocation holds, or a symbol
-/// names, and analyzed up to the next function's start.
+/// address a symbol of the module or its debug file names, a relocation
+/// holds, or, with `scan`, its code calls or loads, and analyzed up to the
+/// next function's start.
 #[cfg(target_arch = "x86_64")]
 fn undescribed_frames(
-    object: &object::File<'_>,
+    (object, debug_object): (&object::File<'_>, Option<&object::File<'_>>),
     unwind: &crate::image::unwind::Unwind,
     described: &(dyn Fn(u64) -> bool + Sync),
     starts: &std::collections::BTreeSet<u64>,
+    scan: bool,
     frames: &mut Vec<(AddressRange<ImageAddress>, u32)>,
 ) {
     let sections: Vec<(u64, &[u8])> = object
@@ -2280,16 +2311,36 @@ fn undescribed_frames(
             .any(|(start, code)| *start <= address && address - start < code.len() as u64)
     };
 
-    let mut entries: Vec<u64> = sections
-        .par_iter()
-        .flat_map_iter(|(address, code)| super::x86_64::frames::code_entries(code, *address))
-        .collect();
+    let mut entries: Vec<u64> = if scan {
+        sections
+            .par_iter()
+            .flat_map_iter(|(address, code)| super::x86_64::frames::code_entries(code, *address))
+            .collect()
+    } else {
+        Vec::new()
+    };
     entries.extend(
         object
             .symbols()
             .chain(object.dynamic_symbols())
             .filter(|symbol| symbol.kind() == object::SymbolKind::Text)
             .map(|symbol| symbol.address()),
+    );
+    if let Some(debug_object) = debug_object {
+        entries.extend(
+            debug_object
+                .symbols()
+                .filter(|symbol| symbol.kind() == object::SymbolKind::Text)
+                .map(|symbol| symbol.address()),
+        );
+    }
+    // The C runtime's `_init` and `_fini` begin the sections the dynamic
+    // loader calls them in, named or not.
+    entries.extend(
+        object
+            .sections()
+            .filter(|section| matches!(section.name(), Ok(".init" | ".fini")))
+            .map(|section| section.address()),
     );
     entries.extend(
         object
@@ -2340,7 +2391,7 @@ fn undescribed_frames(
             // Google's Chrome describes only the prologue of many functions,
             // in an entry of a few bytes; the rest of such a function is
             // proved, and unwinding prefers an entry wherever one exists.
-            if described(address) && described(end.saturating_sub(1)) {
+            if described(address) && (!scan || described(end.saturating_sub(1))) {
                 return None;
             }
             let offset = usize::try_from(address - start).ok()?;

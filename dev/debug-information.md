@@ -369,6 +369,19 @@ at CFA-16 proves that one register, until the code writes it or may branch.
 The proofs only decide what a failed slot read means; memory that holds the
 slot, as a live process's does, is still read.
 
+Hand-written code often has no CFI even in a module whose compiled code all
+has it: the C runtime's `_init` and `_fini`, musl's `memcpy`, `setjmp`, and
+`_start`, and the assembly kernels of codecs and BLAS libraries (OpenBLAS
+leaves 18% of its code undescribed, x264 21%). `ProvedFrames` also holds the
+frames `x86_64::frames::CodeFrames` proves for each undescribed function a
+`FUNC` symbol of the module or its debug file names, and for the `.init` and
+`.fini` sections. Only a module CFI mostly leaves undescribed is scanned for
+every address its code calls, which costs as much as the rest of its load.
+Assembler labels are `NOTYPE` and never taken for a function's start. A
+process's entry point that clears rbp and runs straight to a call, as the
+psABI asks of the outermost frame, is proved `Outermost` up to that call, so
+a stack through musl's `_start` ends complete.
+
 `just unwind-oracle PROGRAM` single-steps a program and checks the stack at
 every instruction against the calls it made (`src/tools/unwind_oracle.rs`).
 Use it on new producers, libraries, and unwinder changes; a step it calls

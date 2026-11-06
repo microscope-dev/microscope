@@ -40,6 +40,10 @@ pub(in crate::debug_info) enum CodeFrame {
     /// bytes below. `below` is what the code proves of how far the stack
     /// pointer is below rbp.
     Based { offset: u64, below: Below },
+
+    /// The process's entry point, which the kernel jumps to with no
+    /// return address: the frame has no caller.
+    Outermost,
 }
 
 /// How far the stack pointer is below rbp, in a frame found from rbp.
@@ -226,6 +230,7 @@ fn next(frame: CodeFrame, instruction: &Instruction, factory: &mut InstructionIn
             caller_frame_pointer,
         } => next_on_stack(pushed, caller_frame_pointer, instruction, factory),
         CodeFrame::Based { offset, below } => next_based(offset, below, instruction, factory),
+        CodeFrame::Outermost => Next::Unproved,
     }
 }
 
@@ -528,6 +533,7 @@ impl CodeFrame {
                 caller_frame_pointer: CallerFramePointer::Lost,
             } => (2, pushed, 0),
             Self::Based { offset, .. } => (3, offset, 0),
+            Self::Outermost => (0, 0, 1),
         };
         if first > MOST_ENCODED_BYTES || second > MOST_ENCODED_BYTES {
             return None;
@@ -545,6 +551,7 @@ impl CodeFrame {
         };
         match (value & 3, second) {
             (0, 0) => Some(stack(CallerFramePointer::Kept)),
+            (0, 1) if first == 0 => Some(Self::Outermost),
             (1, offset) => Some(stack(CallerFramePointer::Saved(offset))),
             (2, 0) => Some(stack(CallerFramePointer::Lost)),
             (3, 0) => Some(Self::Based {
@@ -556,14 +563,49 @@ impl CodeFrame {
     }
 }
 
-/// Adds the frames of one function of code that no call-frame
-/// information describes, whose code is `code`, at `address`, by encoded
-/// frame. Where its instructions prove the frame, that frame is kept.
-/// For a runtime's code (`convention`), the runtime's convention holds at
-/// each other call the code makes: it calls only from a frame it has
-/// entered, whose rbp holds the address of the word that saved the
-/// caller's, 16 bytes below the canonical frame address. Elsewhere nothing
-/// is known.
+/// The instructions of a process's entry point, `code` at `address`, up to
+/// and including its first call: the C runtime's `_start`, which the
+/// kernel jumps to with no return address. The x86-64 psABI marks that
+/// frame as the outermost by clearing rbp first, so only code that begins
+/// so, after an optional `endbr64`, and runs straight to a call is taken
+/// for one.
+pub(in crate::debug_info) fn entry_frame(
+    code: &[u8],
+    address: u64,
+) -> Option<AddressRange<ImageAddress>> {
+    const MOST_INSTRUCTIONS: usize = 16;
+    let mut decoder = Decoder::with_ip(64, code, address, DecoderOptions::NONE);
+    let mut first = decoder.decode();
+    if first.mnemonic() == Mnemonic::Endbr64 {
+        first = decoder.decode();
+    }
+    let clears_rbp = first.mnemonic() == Mnemonic::Xor
+        && first.op_count() == 2
+        && first.op0_kind() == OpKind::Register
+        && first.op1_kind() == OpKind::Register
+        && first.op0_register() == first.op1_register()
+        && full_register(first.op0_register()) == Register::RBP;
+    if !clears_rbp {
+        return None;
+    }
+
+    for _ in 0..MOST_INSTRUCTIONS {
+        let instruction = decoder.decode();
+        match instruction.flow_control() {
+            _ if instruction.is_invalid() => return None,
+            FlowControl::Next => {}
+            FlowControl::Call | FlowControl::IndirectCall => {
+                return Some(AddressRange {
+                    start: ImageAddress::new(address),
+                    end: ImageAddress::new(instruction.next_ip()),
+                });
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// `push rbp; mov rbp, rsp`, the prologue of a function that keeps the
 /// frame-pointer chain.
 pub(in crate::debug_info) const PROLOGUE: [u8; 4] = [0x55, 0x48, 0x89, 0xe5];
@@ -608,6 +650,14 @@ pub(in crate::debug_info) fn code_entries(code: &[u8], address: u64) -> Vec<u64>
     entries
 }
 
+/// Adds the frames of one function of code that no call-frame
+/// information describes, whose code is `code`, at `address`, by encoded
+/// frame. Where its instructions prove the frame, that frame is kept.
+/// For a runtime's code (`convention`), the runtime's convention holds at
+/// each other call the code makes: it calls only from a frame it has
+/// entered, whose rbp holds the address of the word that saved the
+/// caller's, 16 bytes below the canonical frame address. Elsewhere nothing
+/// is known.
 pub(in crate::debug_info) fn runtime_frames(
     code: &[u8],
     address: u64,
@@ -659,6 +709,7 @@ pub(in crate::debug_info) fn frame_cfa(
             .checked_add(pushed)
             .and_then(|top| top.checked_add(8)),
         CodeFrame::Based { offset, .. } => register(registers, RBP, "rbp")?.checked_add(offset),
+        CodeFrame::Outermost => register(registers, RSP, "rsp")?.checked_add(8),
     };
 
     cfa.map(VirtualAddress::new)
@@ -675,6 +726,10 @@ pub(in crate::debug_info) fn frame_caller(
     registers: &RegisterFile,
     memory: &mut dyn MemoryReader,
 ) -> Result<UnwindStep, UnwindTermination> {
+    if frame == CodeFrame::Outermost {
+        return Err(UnwindTermination::Complete);
+    }
+
     let cfa = frame_cfa(frame, registers)?;
     let return_address = read(memory, cfa, 8)?;
 
@@ -688,7 +743,8 @@ pub(in crate::debug_info) fn frame_caller(
             caller_frame_pointer: CallerFramePointer::Kept,
             ..
         } => registers.get(RBP),
-        CodeFrame::Stack {
+        CodeFrame::Outermost
+        | CodeFrame::Stack {
             caller_frame_pointer: CallerFramePointer::Lost,
             ..
         } => None,
@@ -778,6 +834,7 @@ mod tests {
                 offset: 16,
                 below: Below::Unknown,
             },
+            CodeFrame::Outermost,
         ] {
             let encoded = frame.encode().expect("it fits");
             assert_eq!(CodeFrame::decode(encoded), Some(frame), "{frame:?}");
@@ -795,10 +852,41 @@ mod tests {
             })
         );
         assert_eq!(stack(1 << 15, Kept).and_then(CodeFrame::encode), None);
-        // A Kept or Lost frame with a second count is no encoding.
-        assert_eq!(CodeFrame::decode(1 << 17), None);
+        // A Kept or Lost frame with a second count is no encoding, but for
+        // the outermost frame's.
+        assert_eq!(CodeFrame::decode(2 << 17), None);
+        assert_eq!(CodeFrame::decode(1 << 17 | 1 << 2), None);
         assert_eq!(CodeFrame::decode(2 | 1 << 17), None);
         assert_eq!(CodeFrame::decode(3 | 1 << 17), None);
+    }
+
+    /// musl's and glibc's `_start` clear rbp, as the psABI asks of the
+    /// outermost frame, and run straight to their first call; code that
+    /// sets up a frame, or branches first, is no process entry.
+    #[test]
+    fn a_process_entry_is_outermost_to_its_first_call() {
+        let range = |code: &[u8]| {
+            entry_frame(code, 0x1000).map(|range| (range.start.get(), range.end.get()))
+        };
+        // xor rbp, rbp; mov rdi, rsp; and rsp, -16; call _start_c; hlt
+        let musl = [
+            0x48, 0x31, 0xed, 0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0, 0, 0, 0, 0xf4,
+        ];
+        assert_eq!(range(&musl), Some((0x1000, 0x100f)));
+        // endbr64; xor ebp, ebp; mov r9, rdx; pop rsi;
+        // call [rip + __libc_start_main]; hlt
+        let glibc = [
+            0xf3, 0x0f, 0x1e, 0xfa, 0x31, 0xed, 0x49, 0x89, 0xd1, 0x5e, 0xff, 0x15, 0, 0, 0, 0,
+            0xf4,
+        ];
+        assert_eq!(range(&glibc), Some((0x1000, 0x1010)));
+
+        // push rbp; mov rbp, rsp; call f
+        assert_eq!(range(&[0x55, 0x48, 0x89, 0xe5, 0xe8, 0, 0, 0, 0]), None);
+        // xor ebp, ebp; jmp f
+        assert_eq!(range(&[0x31, 0xed, 0xe9, 0, 0, 0, 0]), None);
+        // xor ebp, ebp; and nothing after
+        assert_eq!(range(&[0x31, 0xed]), None);
     }
 
     #[test]
