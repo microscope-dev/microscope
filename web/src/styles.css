@@ -3211,6 +3211,7 @@ textarea.input {
 
 .profile {
   display: flex;
+  flex: 1;
   flex-direction: column;
   min-height: 0;
   background: var(--surface);
@@ -3232,15 +3233,27 @@ textarea.input {
 .profile-query {
   display: flex;
   flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 6px 12px;
 }
 
+/* A chip stays one line, cutting a long label short, such as a Rust
+   function's, rather than wrapping and pushing the graph down. */
 .profile-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  max-width: 420px;
   cursor: default;
+}
+
+.profile-chip .label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profile-chip button {
@@ -3288,12 +3301,14 @@ textarea.input {
   font-size: 13px;
 }
 
+/* Wide enough for most selected frames' names, yielding first to the
+   selection's actions. */
 .profile-search {
-  width: 220px;
-  margin-left: auto;
-  padding: 2px 7px;
-  text-transform: none;
-  letter-spacing: 0;
+  flex: 4 1 0;
+  min-width: 180px;
+  max-width: 460px;
+  padding: 3px 7px;
+  font-size: 12px;
 }
 
 .profile-timeline {
@@ -3520,8 +3535,10 @@ textarea.input {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 10px;
+  /* As tall empty as with its buttons, so selecting shifts nothing below. */
+  min-height: 37px;
   padding: 4px 10px;
-  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 

@@ -432,19 +432,41 @@ it("forgets the frame it hovered once another tree arrives", async () => {
   await expect.element(page.getByTestId("flame-tip")).not.toBeInTheDocument();
 });
 
-it("zooms to and selects a clicked frame, and Show full graph undoes both", async () => {
+it("puts a clicked frame in the search, and Show full graph or typing lets it go", async () => {
   const server = await mount(<FlameView />);
   server.answer(await server.next("profileTree"), ...TREE);
   const canvas = page.getByRole("img", { name: "Flame graph" });
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  await expect.element(search).toHaveAttribute("placeholder", "Click or search for a frame");
   await expect.element(canvas).toBeVisible();
   mouseAt(canvas.element(), "click", 10, 23);
-  await expect.element(page.getByTestId("details").getByText("work")).toBeVisible();
+  await expect.element(search).toHaveValue("work");
+  await expect.element(page.getByTestId("details").getByText("Focus")).toBeVisible();
   expect(lookShown().fn).toBe("work");
 
   await page.getByRole("button", { name: "Show full graph" }).click();
+  await expect.element(search).toHaveValue("");
   await expect.element(page.getByTestId("details")).not.toBeInTheDocument();
   expect(lookShown().z).toBeUndefined();
   expect(lookShown().fn).toBeUndefined();
+
+  // Typing over a selected frame searches instead, keeping the zoom.
+  mouseAt(canvas.element(), "click", 10, 23);
+  await expect.element(search).toHaveValue("work");
+  await userEvent.fill(search, "lea");
+  await expect.element(page.getByTestId("matched")).toHaveTextContent("matched 50.0% of samples");
+  expect(lookShown().fn).toBeUndefined();
+  expect(lookShown().z).toBeDefined();
+
+  // Emptying the search, as after selecting all and deleting, shows the full graph.
+  mouseAt(canvas.element(), "click", 10, 23);
+  await expect.element(search).toHaveValue("work");
+  await userEvent.clear(search);
+  await expect
+    .element(page.getByRole("button", { name: "Show full graph" }))
+    .not.toBeInTheDocument();
+  expect(lookShown().fn).toBeUndefined();
+  expect(lookShown().z).toBeUndefined();
 });
 
 it("draws a lane per thread for hundreds of threads", async () => {
@@ -1065,7 +1087,7 @@ it("keeps what it shows while disconnected, and says so", async () => {
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
   server.answer(await server.next("profileTree"), ...TREE);
-  const search = page.getByRole("textbox", { name: "Search frames" });
+  const search = page.getByRole("searchbox", { name: "Search frames" });
   await userEvent.fill(search, "lea");
   await expect.element(page.getByTestId("matched")).toBeVisible();
 

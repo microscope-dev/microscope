@@ -116,14 +116,24 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(page).toHaveURL(/range=\d+-\d+/u);
   await expect(page.getByRole("button", { name: /^Remove .* – /u })).toBeVisible();
 
-  // A frame named longer than the page is cut short in the selection bar,
-  // rather than widening the flame graph until the page scrolls sideways.
+  // A frame named longer than the page is cut short in the search and in
+  // its transform's chip, rather than widening the flame graph until the
+  // page scrolls sideways or wrapping the chip onto more lines.
   const long = `<${"alloc::boxed::Box<dyn core::ops::function::FnMut<(ignore::walk::DirEntry,)>> as ".repeat(8)}call_mut`;
   const address = new URL(page.url());
   address.searchParams.set("fn", long);
+  address.searchParams.append("tf", `merge:${long}`);
   await page.goto(address.href);
-  const details = page.getByTestId("details");
-  await expect(details.locator(".name")).toHaveAttribute("title", long);
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  await expect(search).toHaveValue(long);
+  await expect(search).toHaveAttribute("title", long);
+  const chip = page.locator(".profile-chip", { hasText: "merge <alloc::boxed" });
+  await expect(chip).toHaveAttribute(
+    "title",
+    `merge ${long}\nRemove this transform and those after it`,
+  );
+  const short = await page.locator(".profile-chip", { hasText: "merge middle" }).boundingBox();
+  expect((await chip.boundingBox())?.height).toBe(short?.height);
   const widths = await page.evaluate(() => ({
     page: document.documentElement.scrollWidth,
     window: document.documentElement.clientWidth,

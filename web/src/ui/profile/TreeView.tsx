@@ -28,12 +28,16 @@ export function TreeView() {
   return (
     <div className="pane grow">
       <div className="pane-head">{query.invert ? "Callers" : "Call tree"}</div>
+      {look.fn ? (
+        <Details name={look.fn} />
+      ) : (
+        <div className="profile-details muted">Click a row to select it.</div>
+      )}
       <TreeRows
         tree={tree}
         label="Call tree"
         reading={query.invert ? "Reading callers…" : "Reading the call tree…"}
       />
-      {look.fn ? <Details name={look.fn} /> : null}
     </div>
   );
 }

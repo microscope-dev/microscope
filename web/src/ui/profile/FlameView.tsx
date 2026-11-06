@@ -30,8 +30,9 @@ import { Unanswered } from "./parts";
 /** One row of the flame graph, in CSS pixels. */
 const ROW = 18;
 
-/** The flame graph, roots on top, with a search and the selected node's
- * details. Clicking a frame zooms to it. */
+/** The flame graph, roots on top, below one row that searches its frames
+ * and holds the selected one's details. Clicking a frame zooms to it and
+ * selects it, which puts its name in the search. */
 export function FlameView() {
   const { query, look, setLook } = useProfile();
   const answer = useAnswer("profileTree", query);
@@ -41,7 +42,15 @@ export function FlameView() {
   );
   const [search, setSearch] = useState("");
   const zoom = tree && look.z ? findPath(tree, look.z) : null;
-  const matched = useMemo(() => (tree && search ? matching(tree, search) : null), [tree, search]);
+  const matched = useMemo(() => {
+    const needle = search.toLowerCase();
+    return tree && needle ? matching(tree, (name) => name.toLowerCase().includes(needle)) : null;
+  }, [tree, search]);
+  const { fn } = look;
+  const selected = useMemo(
+    () => (tree && fn ? matching(tree, (name) => name === fn).nodes : null),
+    [tree, fn],
+  );
   // A click both zooms and selects, so showing the full graph undoes both.
   const showFullGraph = useCallback(
     () =>
@@ -52,69 +61,98 @@ export function FlameView() {
       ),
     [setLook],
   );
+  // Typing searches afresh, so the frame the search showed is no longer
+  // selected. Emptying the search shows the full graph, as its button does.
+  const hasZoom = look.z !== undefined;
   const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setSearch(event.target.value),
-    [],
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const text = event.target.value;
+      setSearch(text);
+      if (text === "" && (hasZoom || fn !== undefined)) {
+        showFullGraph();
+      } else if (fn !== undefined) {
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        setLook((prev) => withLook(prev, "fn", undefined));
+      }
+    },
+    [hasZoom, fn, setLook, showFullGraph],
   );
   const zoomTo = useCallback(
-    (zoomed: CallTree, node: number) =>
+    (zoomed: CallTree, node: number) => {
+      setSearch("");
       setLook(
         (prev) => ({
           ...withLook(prev, "z", pathOf(zoomed, node)),
           fn: nameOf(zoomed, node),
         }),
         true,
-      ),
+      );
+    },
     [setLook],
+  );
+
+  const find = (
+    <>
+      <input
+        type="search"
+        className="input profile-search"
+        placeholder="Click or search for a frame"
+        aria-label="Search frames"
+        title={look.fn}
+        value={look.fn ?? search}
+        onChange={edit}
+      />
+      {zoom === null ? null : (
+        <button type="button" className="tb ghost" onClick={showFullGraph}>
+          Show full graph
+        </button>
+      )}
+    </>
   );
 
   return (
     <div className="pane grow">
-      <div className="pane-head">
-        Flame graph
-        {zoom === null ? null : (
-          <button type="button" className="link-button" onClick={showFullGraph}>
-            Show full graph
-          </button>
-        )}
-        <input
-          className="input profile-search"
-          placeholder="Search"
-          aria-label="Search frames"
-          value={search}
-          onChange={edit}
-        />
-        {matched && tree ? (
-          <span className="count" data-testid="matched">
-            matched {formatPercent(matched.weight, tree.weight)} of samples
-          </span>
-        ) : null}
-      </div>
+      {look.fn ? (
+        <Details name={look.fn} lead={find} />
+      ) : (
+        <div className="profile-details">
+          {find}
+          {matched && tree ? (
+            <span className="muted" data-testid="matched">
+              matched {formatPercent(matched.weight, tree.weight)} of samples
+            </span>
+          ) : null}
+        </div>
+      )}
       <div className={`pane-body ${answer.current ? "" : "stale"}`}>
         {answer.error || !tree ? (
           <Unanswered error={answer.error} reading="Reading the flame graph…" />
         ) : tree.count === 0 ? (
           <div className="empty">No samples are selected.</div>
         ) : (
-          <FlameGraph tree={tree} zoom={zoom} matched={matched?.nodes ?? null} onZoom={zoomTo} />
+          <FlameGraph
+            tree={tree}
+            zoom={zoom}
+            matched={matched?.nodes ?? null}
+            selected={selected}
+            onZoom={zoomTo}
+          />
         )}
       </div>
-      {look.fn ? <Details name={look.fn} /> : null}
     </div>
   );
 }
 
-/** The nodes whose names hold `search`, and the weight under them,
+/** The nodes whose names `marks` accepts, and the weight under them,
  * counting nested matches once. */
-function matching(tree: CallTree, search: string) {
-  const needle = search.toLowerCase();
+function matching(tree: CallTree, marks: (name: string) => boolean) {
   const nodes = new Set<number>();
   let weight = 0;
   for (let node = 0; node < tree.count;) {
-    if (nameOf(tree, node).toLowerCase().includes(needle)) {
+    if (marks(nameOf(tree, node))) {
       weight += tree.total[node] ?? 0;
       for (let inner = node; inner < (tree.end[node] ?? node + 1); inner += 1) {
-        if (nameOf(tree, inner).toLowerCase().includes(needle)) {
+        if (marks(nameOf(tree, inner))) {
           nodes.add(inner);
         }
       }
@@ -130,11 +168,15 @@ function FlameGraph({
   tree,
   zoom,
   matched,
+  selected,
   onZoom,
 }: {
   tree: CallTree;
   zoom: number | null;
+  /** Frames a search found, which stay bright as the rest dim. */
   matched: Set<number> | null;
+  /** Frames of the selected function, which are outlined. */
+  selected: Set<number> | null;
   onZoom: (tree: CallTree, node: number) => void;
 }) {
   const { unit, look } = useProfile();
@@ -167,6 +209,7 @@ function FlameGraph({
     const dark = scheme === "dark";
     const ink = token("--ink");
     const surface = token("--surface");
+    const accent = token("--accent");
     assert(
       (tree.baseTotal === null) === (tree.baseWeight === null),
       "a diff tree's base totals and base weight disagree",
@@ -194,13 +237,18 @@ function FlameGraph({
           ? fill(key, dark)
           : surface;
       context.fillRect(x, y, Math.max(w - 1, 0.5), ROW - 1);
+      if (selected?.has(rect.node)) {
+        context.strokeStyle = accent;
+        context.lineWidth = 2;
+        context.strokeRect(x + 1, y + 1, Math.max(w - 3, 0.5), ROW - 3);
+      }
       if (w > 28) {
         context.fillStyle = ink;
         context.fillText(clip(context, nameOf(tree, rect.node), w - 8), x + 4, y + ROW / 2);
       }
     }
     context.globalAlpha = 1;
-  }, [rects, tree, width, height, matched, scheme, mode]);
+  }, [rects, tree, width, height, matched, selected, scheme, mode]);
 
   const at = useCallback(
     (event: MouseEvent) => {

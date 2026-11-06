@@ -176,7 +176,6 @@ export function Profile({
           </div>
         ) : null}
         {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
-        <ProfileHead info={info} />
         {focus.summary.timed ? (
           <Timeline />
         ) : (
@@ -185,6 +184,7 @@ export function Profile({
             profile has no timeline.
           </div>
         )}
+        <ProfileHead info={info} />
         <div className="profile-view">
           {view === "syscalls" ? (
             <SyscallsView />

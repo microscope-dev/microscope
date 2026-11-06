@@ -21,8 +21,9 @@ export function Chip({
   removeLabel?: string | undefined;
 }) {
   return (
-    <span className="chip profile-chip" title={title}>
-      <span>{label}</span>
+    // A long label is cut short, so the title also says it whole.
+    <span className="chip profile-chip" title={`${label}\n${title}`}>
+      <span className="label">{label}</span>
       <button type="button" aria-label={removeLabel} onClick={remove}>
         ×
       </button>

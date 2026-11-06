@@ -14,8 +14,9 @@ const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
 
 /** The selected function: what it costs under the query, as the server
  * counts each function, and what can be done with it. Functions of one
- * name in several modules each show their own cost. */
-export function Details({ name }: { name: string }) {
+ * name in several modules each show their own cost. `lead` takes the
+ * place of its name, for a view that shows the name its own way. */
+export function Details({ name, lead }: { name: string; lead?: ReactNode }) {
   const { query, unit, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
   const functions = answer.data;
@@ -31,9 +32,11 @@ export function Details({ name }: { name: string }) {
   );
   return (
     <div className="profile-details" data-testid="details">
-      <span className="mono name" title={name}>
-        {name}
-      </span>
+      {lead ?? (
+        <span className="mono name" title={name}>
+          {name}
+        </span>
+      )}
       {located?.file ? (
         <span className="muted mono">
           {located.file.slice(located.file.lastIndexOf("/") + 1)}:{located.line}
