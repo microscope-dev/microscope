@@ -7,7 +7,6 @@ import type { ProfileLane, ProfileSummary, ProfileThread } from "../../protocol"
 import { useShownScheme } from "../../theme";
 import { NAMES, NAMES_STYLE, prepare, shade, timeAt, useRangeDrag, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
-import { LaneChip } from "./parts";
 
 /** One lane, in CSS pixels. */
 const LANE = 18;
@@ -241,9 +240,7 @@ export function Timeline() {
   return (
     <div className="profile-timeline" ref={box} data-testid="timeline">
       <div className="timeline-ruler" data-testid="ruler">
-        <div className="ruler-gap" style={NAMES_STYLE}>
-          <LaneChip />
-        </div>
+        <div className="ruler-gap" style={NAMES_STYLE} />
         <div className="ruler-marks" style={plotStyle}>
           {marks.map(({ at, label }, index) =>
             covered(at * plot) ? null : (

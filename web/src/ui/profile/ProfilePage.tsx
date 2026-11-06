@@ -242,7 +242,7 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
         {range ? (
           <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
         ) : null}
-        {summary.timed ? null : <LaneChip />}
+        <LaneChip />
         {(look.lb ?? []).map((label) => (
           <LabelChip key={label} label={label} />
         ))}

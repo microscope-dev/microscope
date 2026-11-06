@@ -23,6 +23,7 @@ import { ProfileContext, type ProfileFocus } from "../src/ui/profile/context";
 import { FlameView } from "../src/ui/profile/FlameView";
 import { FunctionsView } from "../src/ui/profile/FunctionsView";
 import { Options } from "../src/ui/profile/Options";
+import { LaneChip } from "../src/ui/profile/parts";
 import { Profile } from "../src/ui/profile/ProfilePage";
 import { SyscallsView } from "../src/ui/profile/SyscallsView";
 import { Timeline } from "../src/ui/profile/Timeline";
@@ -633,22 +634,28 @@ it("marks round times, the pointer's time, and a range's ends and length", async
   ]);
 });
 
-it("names the lanes it cuts samples to over the lanes, and clears them there", async () => {
+it("names the lanes it cuts samples to with the other chips, not over the lanes", async () => {
   const thread = { pid: 1, samples: 1, weight: 1, blocked: 0, preempted: 0 };
   const threads: ProfileThread[] = [
     { ...thread, row: 0, tid: 10, name: "main" },
     { ...thread, row: 1, tid: 11, name: "worker" },
   ];
-  await mount(<Timeline />, { summary: summaryOf({ timed: true, threads }) });
-  const corner = page.getByTestId("ruler");
+  await mount(
+    <>
+      <Timeline />
+      <LaneChip />
+    </>,
+    { summary: summaryOf({ timed: true, threads }) },
+  );
 
   await page.getByRole("button", { name: "main 10" }).click();
   await page.getByRole("button", { name: "worker 11" }).click();
-  await expect.element(corner.getByText("2 threads")).toBeVisible();
+  await expect.element(page.getByText("2 threads")).toBeVisible();
+  expect(page.getByTestId("ruler").element().textContent).not.toContain("2 threads");
   expect(lookShown().th).toEqual(["0", "1"]);
 
-  await corner.getByRole("button", { name: "Remove 2 threads" }).click();
-  await expect.element(corner.getByText("2 threads")).not.toBeInTheDocument();
+  await page.getByRole("button", { name: "Remove 2 threads" }).click();
+  await expect.element(page.getByText("2 threads")).not.toBeInTheDocument();
   expect(lookShown().th).toBeUndefined();
 });
 
