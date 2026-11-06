@@ -738,7 +738,7 @@ impl Debugger {
     /// Ends the session and joins the backend controller. A launched inferior
     /// is killed and reaped; an attached one is detached and left running.
     pub async fn shutdown(mut self) -> Result<()> {
-        let (send, receive) = oneshot::channel();
+        let (send, mut receive) = oneshot::channel();
         self.shutdown_permit
             .take()
             .ok_or_else(|| Error::internal("the shutdown permit is present"))?
@@ -746,15 +746,21 @@ impl Debugger {
                 reply: send,
             }));
 
-        let replied = timeout(
-            SHUTDOWN_TIMEOUT,
-            shutdown_reply(&self.handle.requests, receive),
-        );
-        let result = match replied.await {
-            Ok(Some(result)) => result,
-            Ok(None) => Err(Error::RequestCancelled),
-            Err(_) => return Err(Error::ShutdownTimedOut),
-        };
+        // A controller that ends on its own closes its queue before it
+        // answers the shutdowns left in it. One that panicked dropped its
+        // queue, so a request sent after that is never read, and never
+        // dropped while this handle can still send. Either way, once the
+        // queue is closed, the answer is there when the controller has
+        // ended, or never comes.
+        let replied = timeout(SHUTDOWN_TIMEOUT, async {
+            tokio::select! {
+                biased;
+                replied = &mut receive => Some(replied.ok()),
+                () = self.handle.requests.closed() => None,
+            }
+        })
+        .await
+        .map_err(|_| Error::ShutdownTimedOut)?;
 
         if let Some(controller) = self.controller.take() {
             tokio::task::spawn_blocking(move || controller.join())
@@ -763,24 +769,9 @@ impl Debugger {
                 .map_err(|()| Error::BackendThreadPanicked)?;
         }
 
-        result
-    }
-}
-
-/// The answer to a shutdown, or `None` where the controller ended without
-/// one, as a panic ends it, with the request in its queue. A controller
-/// that ends on its own closes its queue before it answers the shutdowns
-/// left in it, so a closed queue is no sign that the answer is there yet:
-/// the answer, or the dropped request, comes once the controller lets go
-/// of what its queue held.
-async fn shutdown_reply(
-    requests: &mpsc::Sender<ControllerMessage>,
-    mut receive: oneshot::Receiver<Result<()>>,
-) -> Option<Result<()>> {
-    tokio::select! {
-        biased;
-        replied = &mut receive => replied.ok(),
-        () = requests.closed() => receive.await.ok(),
+        replied
+            .unwrap_or_else(|| receive.try_recv().ok())
+            .unwrap_or(Err(Error::RequestCancelled))
     }
 }
 
@@ -2670,36 +2661,80 @@ pub(crate) struct StoppedSelection {
 
 #[cfg(test)]
 mod shutdown_tests {
-    use tokio::sync::{mpsc, oneshot};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::thread::{self, JoinHandle};
 
-    use super::{ControllerMessage, shutdown_reply};
+    use tokio::sync::{mpsc, watch};
+
+    use super::{ControllerMessage, Debugger, Error, Request, backend};
+
+    /// A debugger whose controller is the thread `start` makes, given the
+    /// queue it serves.
+    fn debugger(
+        start: impl FnOnce(mpsc::Receiver<ControllerMessage>) -> JoinHandle<()>,
+    ) -> Debugger {
+        Debugger::start(Arc::new(PathBuf::from("/test")), |channels| {
+            let image = crate::ModuleImage::new(
+                PathBuf::from("/test"),
+                crate::TargetDescription {
+                    architecture: crate::Architecture::X86_64,
+                    byte_order: crate::ByteOrder::Little,
+                    pointer_width: crate::PointerWidth::Bits64,
+                },
+                crate::AddressRange {
+                    start: crate::ImageAddress::new(0),
+                    end: crate::ImageAddress::new(0x100),
+                },
+                crate::model::ModuleMetadata::default(),
+            );
+            let (_, program) = watch::channel(Arc::new(image));
+            let controller = backend::ControllerJoin::Thread(start(channels.receiver));
+            Ok((program, None, controller))
+        })
+        .expect("start the debugger")
+    }
 
     /// The controller closes its queue, then answers the shutdown it held:
     /// the caller, woken by the close, still gets the answer.
     #[tokio::test]
     async fn a_shutdown_answered_after_its_queue_closed_succeeds() {
-        let (requests, mut queue) = mpsc::channel::<ControllerMessage>(1);
-        let (send, receive) = oneshot::channel();
-        queue.close();
-        let answer = tokio::spawn(async move {
-            tokio::task::yield_now().await;
-            let _ = send.send(Ok(()));
+        let debugger = debugger(|mut queue| {
+            thread::spawn(move || {
+                queue.close();
+                while let Some(message) = queue.blocking_recv() {
+                    if let ControllerMessage::Request(Request::Shutdown { reply }) = message {
+                        let _ = reply.send(Ok(()));
+                    }
+                }
+            })
         });
-        assert!(matches!(
-            shutdown_reply(&requests, receive).await,
-            Some(Ok(()))
-        ));
-        answer.await.expect("the answer is sent");
+        assert!(matches!(debugger.shutdown().await, Ok(())));
     }
 
-    /// A controller that ended without answering drops the request: no
-    /// answer.
+    /// A controller that ended without answering drops the request: the
+    /// shutdown is cancelled.
     #[tokio::test]
-    async fn a_shutdown_dropped_unanswered_has_no_answer() {
-        let (requests, queue) = mpsc::channel::<ControllerMessage>(1);
-        let (send, receive) = oneshot::channel::<super::Result<()>>();
-        drop(queue);
-        drop(send);
-        assert!(shutdown_reply(&requests, receive).await.is_none());
+    async fn a_shutdown_dropped_unanswered_is_cancelled() {
+        let debugger = debugger(|mut queue| thread::spawn(move || drop(queue.blocking_recv())));
+        assert!(matches!(
+            debugger.shutdown().await,
+            Err(Error::RequestCancelled)
+        ));
+    }
+
+    /// A controller that panicked dropped its queue before the shutdown
+    /// came, so nothing ever reads the request: the shutdown says the
+    /// controller panicked, at once, rather than timing out.
+    #[tokio::test]
+    async fn a_shutdown_after_the_controller_panicked_says_so() {
+        let debugger = debugger(|queue| {
+            drop(queue);
+            thread::spawn(|| panic!("the controller panics"))
+        });
+        assert!(matches!(
+            debugger.shutdown().await,
+            Err(Error::BackendThreadPanicked)
+        ));
     }
 }
