@@ -10,7 +10,6 @@ import {
   recorderBreakdown,
   recordingSettings,
   shellQuote,
-  timeTicks,
 } from "../src/profile/inspect";
 import {
   type ProfileLook,
@@ -47,6 +46,7 @@ import {
   plotPath,
   threadName,
   ticks,
+  timeTicks,
   tracks,
   zoomed,
 } from "../src/profile/zones";
@@ -681,7 +681,7 @@ describe("inspect", () => {
 
   it("marks round times under a chart and its end, leaving out one too near the end", () => {
     // 539 ms: a 100 ms step, and 500 ms is past 90% of the way, so only the end shows there.
-    expect(timeTicks(539e6)).toEqual([
+    expect(timeTicks(539e6, 600)).toEqual([
       { at: 0, label: "0" },
       { at: 100 / 539, label: "100 ms" },
       { at: 200 / 539, label: "200 ms" },
@@ -690,7 +690,7 @@ describe("inspect", () => {
       { at: 1, label: "539 ms" },
     ]);
     // 2.6 s: a half-second step, and 2.5 s is too near the end.
-    expect(timeTicks(2.6e9).map(({ label }) => label)).toEqual([
+    expect(timeTicks(2.6e9, 600).map(({ label }) => label)).toEqual([
       "0",
       "0.5 s",
       "1.0 s",
@@ -698,6 +698,12 @@ describe("inspect", () => {
       "2.0 s",
       "2.60 s",
     ]);
-    expect(timeTicks(0)).toEqual([]);
+    expect(timeTicks(0, 600)).toEqual([]);
+    // Twice as wide, twice as many: a 50 ms step over the same 539 ms.
+    expect(timeTicks(539e6, 1200).map(({ label }) => label)).toEqual([
+      "0",
+      ...[50, 100, 150, 200, 250, 300, 350, 400, 450].map((ms) => `${ms} ms`),
+      "539 ms",
+    ]);
   });
 });

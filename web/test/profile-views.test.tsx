@@ -165,6 +165,8 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
 
 const HARNESS_WIDTH = { width: 900 };
 const WIDE = { width: 5000 };
+/** 180 pixels of lane names leave 1000 for the lanes. */
+const SECOND_WIDE = { width: 1180 };
 const NO_LOOK: ProfileLook = {};
 
 /** Changes the look from outside, as the address bar would. */
@@ -466,6 +468,106 @@ it("draws a lane per thread for hundreds of threads", async () => {
     const pixels = element.getContext("2d")?.getImageData(0, 0, 4, 18).data ?? [];
     expect([...pixels].some((value) => value > 0)).toBe(true);
   }, POLL);
+});
+
+/** The ruler's labels: round times, [pills], and a range's <length>. */
+const ruler = () =>
+  [...document.querySelectorAll("[data-testid=ruler] .ruler-marks > *")].map((mark) =>
+    mark.classList.contains("marker")
+      ? `[${mark.textContent}]`
+      : mark.classList.contains("ruler-measure")
+        ? `<${mark.textContent}>`
+        : mark.textContent,
+  );
+
+function pointerAt(target: Element, type: string, x: number): void {
+  const bounds = target.getBoundingClientRect();
+  act(() => {
+    target.dispatchEvent(
+      new PointerEvent(type, { bubbles: true, clientX: bounds.left + x, clientY: bounds.top + 4 }),
+    );
+  });
+}
+
+it("marks round times, the pointer's time, and a range's ends and length", async () => {
+  const server = await mount(
+    <div style={SECOND_WIDE}>
+      <Timeline />
+    </div>,
+    { summary: summaryOf({ timed: true }) },
+  );
+  await server.next("profileTimeline");
+  const all = [
+    "0",
+    "0.1 s",
+    "0.2 s",
+    "0.3 s",
+    "0.4 s",
+    "0.5 s",
+    "0.6 s",
+    "0.7 s",
+    "0.8 s",
+    "0.9 s",
+    "1.00 s",
+  ];
+  await vi.waitFor(() => expect(ruler()).toEqual(all), POLL);
+
+  // The pointer's time hides the round times either side of it.
+  const canvas = page.getByRole("img", { name: /Samples and time off CPU/u }).element();
+  pointerAt(canvas, "pointermove", 250);
+  expect(ruler()).toEqual([
+    ...all.filter((label) => !["0.2 s", "0.3 s"].includes(label)),
+    "[0.250 s]",
+  ]);
+  expect(document.querySelector(".timeline-cursor")).not.toBeNull();
+  pointerAt(canvas, "pointerout", 250);
+  expect(ruler()).toEqual(all);
+  expect(document.querySelector(".timeline-cursor")).toBeNull();
+
+  // A range's ends sit outside it, with its length measured between them,
+  // and no round times inside it.
+  changeLook((look) => ({ ...look, range: "200000000-700000000" }));
+  expect(ruler()).toEqual([
+    "0",
+    "0.1 s",
+    "0.8 s",
+    "0.9 s",
+    "1.00 s",
+    "<0.500 s>",
+    "[0.200 s]",
+    "[0.700 s]",
+  ]);
+
+  // The pointer's time stands in for the length it would cover.
+  pointerAt(canvas, "pointermove", 450);
+  expect(ruler()).toEqual([
+    "0",
+    "0.1 s",
+    "0.8 s",
+    "0.9 s",
+    "1.00 s",
+    "<>",
+    "[0.200 s]",
+    "[0.700 s]",
+    "[0.450 s]",
+  ]);
+  pointerAt(canvas, "pointerout", 450);
+
+  // A range too narrow to hold its length still names its ends.
+  changeLook((look) => ({ ...look, range: "200000000-250000000" }));
+  expect(ruler()).toEqual([
+    "0",
+    "0.1 s",
+    "0.4 s",
+    "0.5 s",
+    "0.6 s",
+    "0.7 s",
+    "0.8 s",
+    "0.9 s",
+    "1.00 s",
+    "[0.200 s]",
+    "[0.250 s]",
+  ]);
 });
 
 it("says why the timeline could not be read", async () => {

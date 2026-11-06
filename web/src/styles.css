@@ -3270,10 +3270,128 @@ textarea.input {
 
 .profile-timeline {
   display: flex;
-  max-height: 160px;
+  flex-direction: column;
+  max-height: 180px;
   overflow: auto;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
+}
+
+/* Round times over the lanes, kept in view as they scroll, with the
+ * pointer's time and a range's ends and length over them. */
+.timeline-ruler {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  flex: none;
+  height: 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.ruler-gap {
+  flex: none;
+  border-right: 1px solid var(--line);
+}
+
+.ruler-marks {
+  position: relative;
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ruler-marks > span {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.ruler-marks .first {
+  padding-left: 4px;
+  transform: none;
+}
+
+.ruler-marks .last {
+  padding-right: 4px;
+  transform: translateX(-100%);
+}
+
+.ruler-marks .marker {
+  z-index: 1;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--surface);
+}
+
+/* A range's ends sit outside it, leaving the inside for its length. */
+.ruler-marks .marker.from {
+  transform: translateX(calc(-100% - 2px));
+}
+
+.ruler-marks .marker.to {
+  transform: translateX(2px);
+}
+
+/* A range's length, as a line with arrows to its ends. */
+.ruler-measure {
+  position: absolute;
+  top: 10px;
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid var(--ink-3);
+}
+
+.ruler-measure::before,
+.ruler-measure::after {
+  position: absolute;
+  top: -4.5px;
+  border: 4px solid transparent;
+  content: "";
+}
+
+.ruler-measure::before {
+  left: 0;
+  border-right: 6px solid var(--ink-3);
+  border-left: 0;
+}
+
+.ruler-measure::after {
+  right: 0;
+  border-right: 0;
+  border-left: 6px solid var(--ink-3);
+}
+
+.ruler-measure span {
+  padding: 0 6px;
+  background: var(--surface-2);
+  color: var(--ink);
+  line-height: 16px;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.timeline-body {
+  display: flex;
+}
+
+.timeline-plot {
+  position: relative;
+  flex: none;
+}
+
+.timeline-cursor {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: var(--ink);
+  opacity: 0.7;
+  pointer-events: none;
 }
 
 .lane-names {

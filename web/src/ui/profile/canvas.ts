@@ -49,15 +49,18 @@ export function prepare(
 
 /** Dragging across a chart of the whole profile selects a range; a click
  * clears it. Returns the handlers and the range being dragged. */
+/** The time under the pointer on a chart spanning `span` nanoseconds. */
+export function timeAt(event: React.PointerEvent, span: number) {
+  const bounds = event.currentTarget.getBoundingClientRect();
+  const fraction = (event.clientX - bounds.left) / Math.max(bounds.width, 1);
+  return Math.min(Math.max(fraction, 0), 1) * span;
+}
+
 export function useRangeDrag(span: number) {
   assert(span > 0, `chart span ${span} is not positive`);
   const { setLook } = useProfile();
   const [dragging, setDragging] = useState<{ from: number; to: number } | null>(null);
-  const time = (event: React.PointerEvent) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const fraction = (event.clientX - bounds.left) / Math.max(bounds.width, 1);
-    return Math.min(Math.max(fraction, 0), 1) * span;
-  };
+  const time = (event: React.PointerEvent) => timeAt(event, span);
   const handlers = {
     onPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
       event.currentTarget.setPointerCapture(event.pointerId);

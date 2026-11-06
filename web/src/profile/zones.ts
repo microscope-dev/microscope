@@ -3,6 +3,7 @@
 
 import { assert } from "../assert";
 import type { ProfileThread, ProfileZones } from "../protocol";
+import { formatDuration, formatInstant } from "./paint";
 
 export interface ZoneBlocks {
   count: number;
@@ -236,4 +237,22 @@ export function ticks(
     times.push(time);
   }
   return { step, times };
+}
+
+/** Round times to mark along a chart of `duration` nanoseconds drawn
+ * `width` pixels wide, each with its share of the way across. The end is
+ * marked itself, so a round time too near it to be read beside it is left
+ * out. */
+export function timeTicks(duration: number, width: number): { at: number; label: string }[] {
+  if (duration <= 0 || width <= 0) {
+    return [];
+  }
+  const { step, times } = ticks([0, duration], width);
+  const marks = times
+    .filter((time) => time / duration <= 0.9)
+    .map((time) => ({
+      at: time / duration,
+      label: time === 0 ? "0" : formatInstant(time, step, duration),
+    }));
+  return [...marks, { at: 1, label: formatDuration(duration) }];
 }

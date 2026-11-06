@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { rangeOf, withLook } from "../../profile/look";
-import { formatCount, formatDuration, largest } from "../../profile/paint";
+import { formatCount, formatDuration, formatInstant, largest } from "../../profile/paint";
+import { timeTicks } from "../../profile/zones";
 import type { ProfileLane, ProfileSummary, ProfileThread } from "../../protocol";
 import { useShownScheme } from "../../theme";
-import { NAMES, NAMES_STYLE, prepare, shade, useRangeDrag, useWidth } from "./canvas";
+import { NAMES, NAMES_STYLE, prepare, shade, timeAt, useRangeDrag, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
 
 /** One lane, in CSS pixels. */
@@ -86,6 +87,9 @@ export function Timeline() {
   const span = Math.max(summary.duration, 1);
   const height = lanes.length * LANE;
   const { handlers, shown } = useRangeDrag(span);
+  const marks = useMemo(() => timeTicks(span, plot), [span, plot]);
+  // Where the pointer is over the lanes, in nanoseconds from the start.
+  const [pointer, setPointer] = useState<number | null>(null);
 
   useEffect(() => {
     const element = canvas.current;
@@ -110,6 +114,13 @@ export function Timeline() {
       ["blocked", token("--line-strong")],
       ["preempted", token("--warn-line")],
     ];
+    // A faint line down from each of the ruler's round times.
+    context.fillStyle = token("--line");
+    for (const { at } of marks) {
+      if (at > 0 && at < 1) {
+        context.fillRect(Math.round(at * plot), 0, 1, height);
+      }
+    }
     for (const [index, row] of lanes.entries()) {
       const lane = answered.get(row.lane);
       const dim = selected && !selected.has(row.id) ? 0.3 : 1;
@@ -167,6 +178,7 @@ export function Timeline() {
     summary.gaps,
     summary.behind,
     scheme,
+    marks,
   ]);
 
   const toggle = useCallback(
@@ -181,37 +193,165 @@ export function Timeline() {
       }),
     [setLook, byTask],
   );
+  const hover = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      handlers.onPointerMove(event);
+      setPointer(timeAt(event, span));
+    },
+    [handlers, span],
+  );
+  const leave = useCallback(() => setPointer(null), []);
+
+  // A range's ends sit outside it, with its length measured between them,
+  // and the pointer's time over it. Round times step out of their way.
+  const resolution = span / Math.max(plot, 1);
+  const pixel = (at: number) => (at * plot) / span;
+  const instant = (at: number) => formatInstant(at, resolution, span);
+  const pills: Pill[] = [];
+  const taken: [number, number][] = [];
+  const marked = shown ?? range;
+  let measure: Measure | null = null;
+  if (marked) {
+    const [left, right] = [pixel(marked[0]), pixel(marked[1])];
+    const [from, to] = [Math.max(left, PILL), Math.min(right, plot - PILL)];
+    pills.push(
+      { id: "from", x: from, label: instant(marked[0]) },
+      { id: "to", x: to, label: instant(marked[1]) },
+    );
+    taken.push([from - PILL, to + PILL]);
+    if (right - left >= MEASURED) {
+      measure = { x: left, width: right - left, label: instant(marked[1] - marked[0]) };
+    }
+  }
+  if (pointer !== null && !shown) {
+    const x = Math.min(Math.max(pixel(pointer), PILL / 2), plot - PILL / 2);
+    pills.push({ id: "at", x, label: instant(pointer) });
+    taken.push([x - PILL / 2, x + PILL / 2]);
+    // The pointer's time stands in for the length it would cover.
+    if (measure && Math.abs(x - (measure.x + measure.width / 2)) < (PILL + LABEL) / 2) {
+      measure = { ...measure, label: null };
+    }
+  }
+  const covered = (x: number) =>
+    taken.some(([from, to]) => x > from - LABEL / 2 && x < to + LABEL / 2);
+
   const plotStyle = useMemo(() => ({ width: plot }), [plot]);
   const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
   return (
     <div className="profile-timeline" ref={box} data-testid="timeline">
-      <div className="lane-names" style={NAMES_STYLE}>
-        {lanes.map((row) => (
-          <LaneName
-            key={row.id}
-            row={row}
-            selected={selected?.has(row.id) ?? false}
-            toggle={toggle}
-          />
-        ))}
-      </div>
-      {answer.error ? (
-        <div className="empty error" style={plotStyle}>
-          {answer.error.message}
+      <div className="timeline-ruler" data-testid="ruler">
+        <div className="ruler-gap" style={NAMES_STYLE} />
+        <div className="ruler-marks" style={plotStyle}>
+          {marks.map(({ at, label }, index) =>
+            covered(at * plot) ? null : (
+              <RulerMark
+                key={label}
+                x={at * plot}
+                label={label}
+                className={index === 0 ? "first" : index === marks.length - 1 ? "last" : undefined}
+              />
+            ),
+          )}
+          {measure ? <Measured {...measure} /> : null}
+          {pills.map((pill) => (
+            <RulerMark
+              key={pill.id}
+              x={pill.x}
+              label={pill.label}
+              className={`marker ${pill.id}`}
+            />
+          ))}
         </div>
-      ) : (
-        <canvas
-          ref={canvas}
-          className="lanes"
-          style={canvasStyle}
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
-          role="img"
-          aria-label={`Samples and time off CPU over ${formatDuration(span)}`}
-          {...handlers}
-        />
-      )}
+      </div>
+      <div className="timeline-body">
+        <div className="lane-names" style={NAMES_STYLE}>
+          {lanes.map((row) => (
+            <LaneName
+              key={row.id}
+              row={row}
+              selected={selected?.has(row.id) ?? false}
+              toggle={toggle}
+            />
+          ))}
+        </div>
+        {answer.error ? (
+          <div className="empty error" style={plotStyle}>
+            {answer.error.message}
+          </div>
+        ) : (
+          <div className="timeline-plot" style={plotStyle}>
+            <canvas
+              ref={canvas}
+              className="lanes"
+              style={canvasStyle}
+              // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
+              role="img"
+              aria-label={`Samples and time off CPU over ${formatDuration(span)}`}
+              {...handlers}
+              onPointerMove={hover}
+              onPointerLeave={leave}
+            />
+            {pointer !== null && !shown ? (
+              <Cursor x={(pointer * plot) / span} height={height} />
+            ) : null}
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+/** About how wide, in pixels, a pill and a round time's label are. */
+const PILL = 64;
+const LABEL = 56;
+/** The narrowest range, in pixels, with room to show its length. */
+const MEASURED = 72;
+
+/** A time the ruler names, `x` pixels in: a range's ends, or the pointer's. */
+interface Pill {
+  id: "from" | "to" | "at";
+  x: number;
+  label: string;
+}
+
+/** A range's length, drawn as a measure across its `width` pixels. */
+interface Measure {
+  x: number;
+  width: number;
+  label: string | null;
+}
+
+function Measured({ x, width, label }: Measure) {
+  const style = useMemo(() => ({ left: x, width }), [x, width]);
+  return (
+    <div className="ruler-measure" style={style} data-testid="range-length">
+      {label === null ? null : <span>{label}</span>}
+    </div>
+  );
+}
+
+/** A label on the ruler, `x` pixels in. */
+function RulerMark({
+  x,
+  label,
+  className,
+}: {
+  x: number;
+  label: string;
+  className?: string | undefined;
+}) {
+  const style = useMemo(() => ({ left: x }), [x]);
+  return (
+    <span className={className} style={style}>
+      {label}
+    </span>
+  );
+}
+
+/** The line under the pointer, down through every lane. */
+function Cursor({ x, height }: { x: number; height: number }) {
+  const style = useMemo(() => ({ left: Math.round(x), height }), [x, height]);
+  return <div className="timeline-cursor" style={style} />;
 }
 
 /** A lane's name, which toggles its thread or task in the selection. */

@@ -17,7 +17,6 @@ import {
   recorderBreakdown,
   recordingSettings,
   shellQuote,
-  timeTicks,
 } from "../../profile/inspect";
 import {
   formatBytes,
@@ -28,6 +27,7 @@ import {
   formatWeight,
   largest,
 } from "../../profile/paint";
+import { timeTicks } from "../../profile/zones";
 import type {
   ProfileCommand,
   ProfileInfo,
@@ -39,6 +39,9 @@ import { useDialogFocus } from "../dialog";
 import { useAnswer, useProfile } from "./context";
 
 type Tab = "metadata" | "samples";
+
+/** About how wide the dialog draws its charts, which spaces their ticks. */
+const CHART_WIDTH = 600;
 
 const NAMES: Record<Tab, string> = { metadata: "Metadata", samples: "Samples" };
 const BOTH: Tab[] = ["metadata", "samples"];
@@ -434,7 +437,7 @@ function Samples({
             filled
           >
             <div className="details-ticks">
-              {timeTicks(summary.duration).map(({ at, label }) => (
+              {timeTicks(summary.duration, CHART_WIDTH).map(({ at, label }) => (
                 <Tick key={label} at={at} label={label} />
               ))}
             </div>
