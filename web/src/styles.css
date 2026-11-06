@@ -3315,9 +3315,12 @@ textarea.input {
   touch-action: none;
 }
 
+/* One column as wide as the pane: an implicit column would grow to fit a
+ * long frame name the selection bar holds on one line. */
 .profile-view {
   display: grid;
   flex: 1;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
 }
 

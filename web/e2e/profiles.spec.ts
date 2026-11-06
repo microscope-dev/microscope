@@ -103,6 +103,20 @@ test("a profile is explored, and its address opens the same view", async ({
   await page.mouse.up();
   await expect(page).toHaveURL(/range=\d+-\d+/u);
   await expect(page.getByRole("button", { name: /^Remove .* – /u })).toBeVisible();
+
+  // A frame named longer than the page is cut short in the selection bar,
+  // rather than widening the flame graph until the page scrolls sideways.
+  const long = `<${"alloc::boxed::Box<dyn core::ops::function::FnMut<(ignore::walk::DirEntry,)>> as ".repeat(8)}call_mut`;
+  const address = new URL(page.url());
+  address.searchParams.set("fn", long);
+  await page.goto(address.href);
+  const details = page.getByTestId("details");
+  await expect(details.locator(".name")).toHaveAttribute("title", long);
+  const widths = await page.evaluate(() => ({
+    page: document.documentElement.scrollWidth,
+    window: document.documentElement.clientWidth,
+  }));
+  expect(widths.page).toBe(widths.window);
 });
 
 test("each thread's lane says how long it was off its CPU, and the footer what recording cost", async ({
