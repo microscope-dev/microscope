@@ -3015,20 +3015,27 @@ impl Cli {
 
     /// Says which temporary breakpoints a stop deleted: a stop deletes the
     /// temporary breakpoints it hit before it is published, so the hits
-    /// missing from `snapshot` were temporaries.
+    /// missing from `snapshot` were temporaries. In a group the hits carry
+    /// the group's ids and the snapshot the member's own, so the member's
+    /// are translated before they are compared.
     pub(super) fn deleted_temporaries(
         &self,
         hits: &[microscope::BreakpointHit],
         snapshot: &microscope::StateSnapshot,
     ) -> Option<String> {
+        let member = self.selected_member();
+        let kept = snapshot
+            .breakpoints
+            .iter()
+            .map(|breakpoint| {
+                self.group.as_ref().map_or(Some(breakpoint.id), |group| {
+                    group.handle.group_breakpoint(member, breakpoint.id)
+                })
+            })
+            .collect::<Vec<_>>();
         let deleted = hits
             .iter()
-            .filter(|hit| {
-                !snapshot
-                    .breakpoints
-                    .iter()
-                    .any(|breakpoint| breakpoint.id == hit.breakpoint)
-            })
+            .filter(|hit| !kept.contains(&Some(hit.breakpoint)))
             .map(|hit| CountedId::Breakpoint(hit.breakpoint))
             .collect::<Vec<_>>();
 

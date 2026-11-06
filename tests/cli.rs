@@ -7392,6 +7392,43 @@ fn follow_none_leaves_fork_children_to_run_on_their_own() {
     assert!(stdout.contains("inferior exited with status 0"), "{stdout}");
 }
 
+/// A member's copy of a breakpoint may have another id than the group's,
+/// as when the group deleted a breakpoint before the member joined. A stop
+/// at a copy says the copy's temporary breakpoint was deleted only when it
+/// was.
+#[test]
+fn a_members_stop_says_a_temporary_was_deleted_only_when_it_was() {
+    let arguments = ["build/test-programs/process-tree", "--", "1", "direct"];
+
+    let kept = batch(
+        &arguments,
+        &[
+            "break main",
+            "break child_work",
+            "delete 1",
+            "run",
+            "info breakpoints",
+        ],
+    );
+    assert!(
+        kept.contains("stopped at breakpoint 2 (hit 1) in child_work"),
+        "{kept}"
+    );
+    assert!(!kept.contains("deleted temporary"), "{kept}");
+
+    let deleted = batch(
+        &arguments,
+        &["break main", "tbreak child_work", "delete 1", "run"],
+    );
+    assert_in_order(
+        &deleted,
+        &[
+            "stopped at breakpoint 2 (hit 1) in child_work",
+            "deleted temporary breakpoint 2\n",
+        ],
+    );
+}
+
 /// `detach process N` lets a stopped member run on alone, without the
 /// group's breakpoints, while the rest of the group stays debugged.
 #[test]
