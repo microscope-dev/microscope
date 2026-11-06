@@ -1307,10 +1307,7 @@ fn processes(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> 
             Some(CommandIdentity::Comm(name)) => format!("[comm: {name}; argv not read]"),
             None => "[command line not read]".to_owned(),
         };
-        let command = match command.char_indices().nth(WIDEST_COMMAND) {
-            Some((end, _)) => format!("{}…", &command[..end]),
-            None => command,
-        };
+        let command = shortened(command, WIDEST_COMMAND);
         writeln!(
             out,
             "{pid:>8} {:>7} {:>6.2}%  {command}",
@@ -1329,6 +1326,25 @@ fn processes(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> 
         )?;
     }
     Ok(())
+}
+
+/// A command line cut to `widest` characters. The arguments are what tell
+/// processes apart, so a long one loses its program's directory first, as
+/// a Nix store path's, and only then its end.
+fn shortened(command: String, widest: usize) -> String {
+    if command.chars().count() <= widest {
+        return command;
+    }
+
+    let program = command.split(' ').next().unwrap_or_default();
+    let command = match program.rfind('/') {
+        Some(slash) if slash > 0 => format!("…{}", &command[slash..]),
+        _ => command,
+    };
+    match command.char_indices().nth(widest) {
+        Some((end, _)) => format!("{}…", &command[..end]),
+        None => command,
+    }
 }
 
 /// Resolves the optional base and adapts CLI selections to the report query.

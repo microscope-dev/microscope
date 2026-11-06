@@ -159,8 +159,11 @@ under it. `--invert` needs `--tree` and does not work with `--base`.
 A multi-process profile lists processes by cost, highest first, with each
 process's PID, threads, share, and command line. The recorder reads the command
 line at lifecycle events and refreshes it at the first sample, including
-changes such as Chromium's `--type=renderer`. If the process exits before
-argv can be read, the report labels its recorded kernel name as
+changes such as Chromium's `--type=renderer`. A command line longer than 100
+characters shows its program's file name without the directory, as
+`…/node server.js`, and is cut at its end only if still too long. If the
+process exits before argv can be read, the report labels its recorded
+kernel name as
 `[comm: NAME; argv not read]`. Comm may be truncated or renamed; it is not
 an executable path or argument list. With neither available, the report says
 `[command line not read]`. Use `--pid PID` or `--tid TID` to select processes

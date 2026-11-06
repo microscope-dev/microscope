@@ -7024,7 +7024,14 @@ fn report_says_off_cpu_time_is_summed_over_threads() {
 fn report_lists_processes_and_selects_them() {
     let scratch = support::ScratchDir::new("cli-processes");
     let profile = scratch.path().join("two.usprof");
-    let program = fixture("build/test-programs/profile-vdso");
+
+    // A directory long enough that each command line is too long for the
+    // process table, as a Nix store path makes it: the table must still
+    // tell the processes apart by their arguments.
+    let directory = scratch.path().join("d".repeat(100));
+    fs::create_dir(&directory).expect("make the long directory");
+    let program = directory.join("profile-vdso");
+    fs::copy(fixture("build/test-programs/profile-vdso"), &program).expect("copy the program");
     let program = program.to_string_lossy();
     // Each reads the clock for some 0.6 s. A command line is read when its
     // process's first sample is processed, and a recorder that stalls
@@ -7065,7 +7072,7 @@ fn report_lists_processes_and_selects_them() {
         .collect();
     let pid_of = |argument: &str| {
         rows.iter()
-            .find(|(_, row)| row.ends_with(&format!("test-programs/profile-vdso {argument}")))
+            .find(|(_, row)| row.ends_with(&format!("  …/profile-vdso {argument}")))
             .map_or_else(
                 || panic!("no process {argument} in\n{report}"),
                 |(pid, _)| *pid,
@@ -7094,7 +7101,7 @@ fn report_lists_processes_and_selects_them() {
     // One process is part of the whole, and its main thread is all of it.
     let by_pid = selected("--pid", &first.to_string());
     let one = seconds(&by_pid);
-    let both = seconds(&selected("--command", "test-programs/profile-vdso"));
+    let both = seconds(&selected("--command", "/profile-vdso 3000000"));
     assert!(0.0 < one && one < both, "{one} of {both}");
     assert_eq!(selected("--tid", &first.to_string()), by_pid);
     let other = seconds(&selected("--command", "profile-vdso 30000001"));
