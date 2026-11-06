@@ -87,16 +87,23 @@ pub struct Save<'a> {
     pub to: &'a mut dyn FnMut(Profile),
 }
 
-/// Recording every site, names the recorder in `command`'s environment, so
-/// that the program records from its first site, before the recorder finds
-/// it (`abi::RECORDER`).
-fn name_recorder(command: &mut Command, options: &RecordOptions) {
+/// Readies `command` to be recorded. Recording every site, it names the
+/// recorder in the environment, so that the program records from its first
+/// site, before the recorder finds it (`abi::RECORDER`). Its arguments are
+/// kept from `command` itself, as the program may exit before /proc shows
+/// them.
+fn ready(command: &mut Command, options: &RecordOptions, processor: &mut record::Processor) {
     if options.probes == ProbeSelection::All {
         command.env(
             microscope_probes::abi::RECORDER,
             std::process::id().to_string(),
         );
     }
+
+    let arguments = std::iter::once(command.get_program()).chain(command.get_args());
+    processor
+        .builder()
+        .setting(super::ARGUMENTS, &super::encode_arguments(arguments));
 }
 
 /// Records `command` as [`record`] does, publishing the profile so far as
@@ -114,8 +121,8 @@ pub fn record_watched(
     let (source, breakpoint) =
         perf_source(&program, &options.source, None, options.function_period)?;
 
-    name_recorder(&mut command, options);
     let mut processor = processor(options, breakpoint, watch.every == Duration::MAX);
+    ready(&mut command, options, &mut processor);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
         source,

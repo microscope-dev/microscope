@@ -131,6 +131,54 @@ test("each thread's lane says how long it was off its CPU, and the footer what r
   await expect(page.getByTestId("accounting")).toContainText(/microscope [\d.]+% of a CPU/u);
 });
 
+test("Inspect shows the whole command recorded, the samples' shape, and closes", async ({
+  page,
+  microscope,
+}, info) => {
+  const file = info.outputPath("argv.usprof");
+  const program = fixture("profile-stacks-gcc-o0");
+  execFileSync(
+    path.join(root, "target", "debug", "microscope"),
+    // About 150 ms of work, so it holds a hundred samples or so.
+    ["record", "-o", file, "--", program, "20000000", "two words", "it's"],
+    { stdio: "ignore" },
+  );
+  const served = await microscope.start([file]);
+  await join(page, served.link);
+  await page.getByRole("button", { name: "Inspect", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "argv.usprof" });
+  await expect(page.getByRole("tab", { name: "Metadata" })).toBeFocused();
+
+  // Each argument whole on its own line, quoted as a shell reads it back.
+  const lines = dialog.getByTestId("command").locator(":scope > div");
+  await expect(lines).toHaveText([
+    `${program} \\`,
+    "20000000 \\",
+    "'two words' \\",
+    String.raw`'it'\''s'`,
+  ]);
+  await expect(dialog.getByText("Command, 3 arguments")).toBeVisible();
+  await expect(dialog.getByRole("row", { name: /profile-stacks-gcc-o0 .* \d+$/u })).toBeVisible();
+
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Samples" })).toHaveAttribute("aria-selected", "true");
+  const bars = dialog.getByRole("button", { name: /frames?: \d+ samples?$/u });
+  await expect(bars.first()).toBeVisible();
+  await bars.last().hover();
+  await expect(dialog.getByTestId("depth")).toHaveText(/^[\d,]+ frames?: [\d,]+ samples?, /u);
+
+  // A click on the page around it closes it; so does Escape, which gives
+  // focus back to the button that opened it.
+  const inspect = page.getByRole("button", { name: "Inspect", exact: true });
+  await page.mouse.click(4, 4);
+  await expect(dialog).toBeHidden();
+  await inspect.click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(inspect).toBeFocused();
+});
+
 const level = (rows: number[][]) => rows.map((_, index) => [index * 18, 18]);
 
 test("with many threads, each lane's name is as tall as its lane and level with it", async ({

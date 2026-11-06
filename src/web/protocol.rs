@@ -208,6 +208,10 @@ pub enum Request {
     /// What a profile holds: its threads, span, and accounts.
     Profile(ProfileRef),
 
+    /// Everything a person looking a profile over may want: its command,
+    /// processes, modules, the shape of its samples, and its file.
+    ProfileInspect(ProfileRef),
+
     /// A profile's call tree under a query; its columns go in the binary
     /// frame before the answer.
     ProfileTree(ProfileQuery),
@@ -1554,6 +1558,94 @@ pub struct ProfileMarker {
     /// Nanoseconds from the start.
     pub time: i64,
     pub text: String,
+}
+
+/// What a profile holds, for its Inspect dialog.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileInspection {
+    /// The command recorded: its first process's, or a trace's program.
+    pub command: Option<ProfileCommand>,
+    pub processes: Vec<ProfileProcess>,
+    pub modules: Vec<ProfileModule>,
+
+    /// Samples by their stacks' depth in frames, the index being the depth.
+    pub depths: Vec<u64>,
+
+    /// Samples in each of equal slices of the span; empty when the samples
+    /// keep no times.
+    pub over_time: Vec<u64>,
+    pub distinct_stacks: u64,
+    pub frames: u64,
+    pub frames_with_lines: u64,
+
+    /// What the events counted, sampled or not, in the weight's unit.
+    pub counted: u64,
+
+    /// Bytes of stack the kernel copied, in all.
+    pub stack_bytes: u64,
+
+    /// Samples whose stack copy was cut short while microscope caught up.
+    pub shortened: u64,
+
+    /// Nanoseconds of microscope's CPU time before recording, and reading
+    /// debug information once collection ended.
+    pub recorder_setup: u64,
+    pub recorder_finishing: u64,
+
+    /// Bytes each table holds, as Download writes them.
+    pub tables: Vec<ProfileTable>,
+
+    /// The file it was read from, if any.
+    pub file: Option<ProfileFile>,
+}
+
+/// A command line. `arguments` keeps them apart; an older recording kept
+/// only `text`, the arguments joined with spaces.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileCommand {
+    pub arguments: Option<Vec<String>>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileProcess {
+    pub pid: u32,
+    pub name: String,
+    pub command: Option<ProfileCommand>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileModule {
+    pub path: String,
+    pub size: u64,
+    pub build_id: Option<String>,
+
+    /// Distinct frames of its code the samples hold.
+    pub frames: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileTable {
+    pub name: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileFile {
+    /// Its size on disk, when it is one file.
+    pub bytes: Option<u64>,
+    pub chunks: u64,
+
+    /// Whether it was cut short, so only its complete chunks were read.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2977,6 +3069,12 @@ mod tests {
         ProfileLook::decl,
         ProfileTimelineQuery::decl,
         ProfileSummary::decl,
+        ProfileInspection::decl,
+        ProfileCommand::decl,
+        ProfileProcess::decl,
+        ProfileModule::decl,
+        ProfileTable::decl,
+        ProfileFile::decl,
         ProfileThread::decl,
         ProfileCount::decl,
         ProfileSetting::decl,

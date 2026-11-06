@@ -2926,3 +2926,29 @@ fn symbols_left_for_later_come_from_a_debug_file_with_the_build_id() {
 
     assert!(!profile.symbols_later());
 }
+
+#[test]
+fn the_recorded_command_keeps_each_argument_whole() {
+    let mut fixture = command("gcc-o0", 1);
+    fixture.args(["two words", "", "--last"]);
+    let recording = record(fixture, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success());
+
+    let profile = Profile::from_bytes(&recording.profile.to_bytes().unwrap())
+        .unwrap()
+        .profile;
+    let command = profile.inspect().command.expect("the command");
+    let program = Scenario::fixture("profile-stacks-gcc-o0");
+    let program = program.to_str().unwrap();
+    assert_eq!(
+        command.arguments,
+        Some(vec![
+            program.to_owned(),
+            "1".to_owned(),
+            "two words".to_owned(),
+            String::new(),
+            "--last".to_owned(),
+        ])
+    );
+    assert_eq!(command.text, format!("{program} 1 two words  --last"));
+}

@@ -194,6 +194,13 @@ function's time, as `report --base` does. Switch it to "share" to compare each
 side's share of its own profile instead, which suits two recordings of
 different lengths.
 
+Inspect, beside the view buttons, shows what the file holds. Metadata has the
+command that was recorded, one argument per line, with its settings, modules,
+and the bytes each table takes. Samples has their totals, how their stacks
+ended, how deep they were, and each thread's time on and off its CPU.
+Recordings made before microscope kept each argument apart show the command
+as one line.
+
 ## Record blocked time
 
 Blocked-time recording tracks intervals when a thread is off its CPU. It is on

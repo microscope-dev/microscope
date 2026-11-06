@@ -69,12 +69,16 @@ impl Publisher<'_> {
 pub fn record(
     mut publisher: Publisher<'_>,
     command: Command,
-    program: &str,
+    arguments: &[String],
     options: &TraceOptions,
     stop: &AtomicBool,
 ) {
     let mut capture = SyscallCapture::new(options.stacks.clone());
-    capture.setting("program", program);
+    capture.setting("program", &arguments.join(" "));
+    capture.setting(
+        microscope::profiler::ARGUMENTS,
+        &microscope::profiler::encode_arguments(arguments),
+    );
     capture.setting("syscalls", "ptrace");
     let mut live = Live {
         publisher: &mut publisher,
@@ -97,7 +101,7 @@ pub fn record(
             let info = publisher.info(revision, Some(ended));
             publisher
                 .profiles
-                .publish(info, capture.finish(), (Vec::new(), 0));
+                .publish(info, capture.finish(), (Vec::new(), 0), None);
 
             // Published before the page hears it began, so it can be read.
             if let Some(started) = publisher.started.take() {
@@ -111,7 +115,7 @@ pub fn record(
                 let info = publisher.info(revision, Some(format!("failed: {error}")));
                 publisher
                     .profiles
-                    .publish(info, capture.finish(), (Vec::new(), 0));
+                    .publish(info, capture.finish(), (Vec::new(), 0), None);
             }
         }
     }
@@ -148,6 +152,7 @@ impl Live<'_, '_> {
             info,
             self.capture.snapshot(),
             (self.in_flight.clone(), self.seen_at),
+            None,
         );
         self.revision += 1;
 

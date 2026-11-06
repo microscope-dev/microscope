@@ -864,12 +864,9 @@ fn trace(args: &SyscallsArgs) -> Result<i32> {
 
     if let Some((_, capture)) = &mut printer.capture {
         *capture = SyscallCapture::new(options.stacks.clone());
-        let program: Vec<_> = args
-            .command
-            .iter()
-            .map(|arg| arg.to_string_lossy())
-            .collect();
-        capture.setting("program", &program.join(" "));
+        for (key, value) in program_settings(&args.command) {
+            capture.setting(key, &value);
+        }
         let engine = match args.engine {
             EngineArg::Bpf => "bpf",
             EngineArg::Ptrace => "ptrace",
@@ -996,12 +993,11 @@ fn continuous(
         }
         .to_owned(),
     )];
-    let program: Vec<_> = args
-        .command
-        .iter()
-        .map(|arg| arg.to_string_lossy())
-        .collect();
-    settings.push(("program".to_owned(), program.join(" ")));
+    settings.extend(
+        program_settings(&args.command)
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value)),
+    );
     let options = ContinuousOptions {
         directory: directory.to_owned(),
         keep: super::profile::duration(&args.keep).context("--keep")?,
@@ -1382,6 +1378,19 @@ fn json_field(out: &mut Vec<u8>, key: &[u8], value: &str) {
     out.extend_from_slice(key);
     json_string(out, value);
     out.push(b',');
+}
+
+/// What a trace ran: its command as one line, and its arguments kept
+/// apart, which the line cannot tell.
+fn program_settings(command: &[std::ffi::OsString]) -> [(&'static str, String); 2] {
+    let program: Vec<_> = command.iter().map(|arg| arg.to_string_lossy()).collect();
+    [
+        ("program", program.join(" ")),
+        (
+            microscope::profiler::ARGUMENTS,
+            microscope::profiler::encode_arguments(command),
+        ),
+    ]
 }
 
 /// Writes a JSON string as `serde_json` does.

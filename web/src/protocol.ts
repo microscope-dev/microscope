@@ -67,6 +67,7 @@ export interface Results {
   renderers: P.RendererList;
   reloadViews: null;
   profile: P.ProfileSummary;
+  profileInspect: P.ProfileInspection;
   /** With the call tree's columns. */
   profileTree: P.ProfileTree & { payload?: Uint8Array };
   profileFunctions: P.ProfileFunctions;

@@ -30,6 +30,8 @@ use super::protocol::{
 
 use super::session::Failure;
 
+mod inspect;
+
 /// The most slices a timeline is cut into.
 const MOST_BUCKETS: u32 = 4096;
 
@@ -53,6 +55,12 @@ struct Entry {
 
     /// Its system call trace, read once it is asked for.
     syscalls: std::sync::OnceLock<Arc<super::syscalls::Trace>>,
+
+    /// What Inspect shows, read once it is asked for.
+    inspection: std::sync::OnceLock<Value>,
+
+    /// The file it was read from, if any.
+    file: Option<protocol::ProfileFile>,
 
     /// The calls a live trace's threads were blocked in, and when it saw
     /// them, on its clock.
@@ -84,7 +92,7 @@ impl Profiles {
     /// Serves the profile in `bytes`, read from `path`, returning its id.
     pub fn add(&self, path: &Path, bytes: &[u8]) -> anyhow::Result<String> {
         let id = format!("{:016x}", twox_hash::XxHash3_64::oneshot(bytes));
-        Ok(self.add_read(path, Profile::import(bytes)?, id))
+        Ok(self.add_read(path, Profile::import(bytes)?, id, Some(bytes.len() as u64)))
     }
 
     /// Serves the segments of a continuous recording in `directory` as one
@@ -95,7 +103,7 @@ impl Profiles {
             "{:016x}",
             twox_hash::XxHash3_64::oneshot(directory.as_os_str().as_encoded_bytes())
         );
-        Ok(self.add_read(directory, read, id))
+        Ok(self.add_read(directory, read, id, None))
     }
 
     fn add_read(
@@ -103,6 +111,7 @@ impl Profiles {
         path: &Path,
         mut read: microscope::profiler::ReadProfile,
         id: String,
+        bytes: Option<u64>,
     ) -> String {
         if read.truncated {
             eprintln!(
@@ -137,6 +146,11 @@ impl Profiles {
             },
             read.profile,
             (Vec::new(), 0),
+            Some(protocol::ProfileFile {
+                bytes,
+                chunks: read.chunks as u64,
+                truncated: read.truncated,
+            }),
         );
         id
     }
@@ -151,6 +165,7 @@ impl Profiles {
         info: ProfileInfo,
         profile: Profile,
         in_flight: (Vec<InFlight>, u64),
+        file: Option<protocol::ProfileFile>,
     ) {
         let mut entries = self.entries.write().unwrap_or_else(PoisonError::into_inner);
         let id = info.id.clone();
@@ -160,6 +175,8 @@ impl Profiles {
                 info,
                 profile: Arc::new(profile),
                 syscalls: std::sync::OnceLock::new(),
+                inspection: std::sync::OnceLock::new(),
+                file,
                 in_flight,
             }),
         );
@@ -294,11 +311,10 @@ impl Profiles {
         let stop = Arc::new(AtomicBool::new(false));
         let (started, starting) = oneshot::channel::<Result<(), String>>();
         let profiles = Arc::clone(self);
-        let program = std::iter::once(&spec.program)
+        let arguments: Vec<String> = std::iter::once(&spec.program)
             .chain(&spec.arguments)
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join(" ");
+            .cloned()
+            .collect();
         let run = {
             let (id, stop) = (id.clone(), Arc::clone(&stop));
             move || match traced {
@@ -310,7 +326,7 @@ impl Profiles {
                         started: Some(started),
                     };
 
-                    super::live::record(publisher, command, &program, &traced, &stop);
+                    super::live::record(publisher, command, &arguments, &traced, &stop);
                 }
                 None => profiles.run_recording(&id, &name, command, &options, &stop, started),
             }
@@ -363,7 +379,7 @@ impl Profiles {
             &mut Watch {
                 every: LIVE_EVERY,
                 publish: &mut |profile| {
-                    self.publish(info(revision, None), profile, (Vec::new(), 0));
+                    self.publish(info(revision, None), profile, (Vec::new(), 0), None);
                     revision += 1;
                     if let Some(started) = started.take() {
                         let _ = started.send(Ok(()));
@@ -381,6 +397,7 @@ impl Profiles {
                     info(revision, Some(recording.status.to_string())),
                     recording.profile,
                     (Vec::new(), 0),
+                    None,
                 );
             }
             Err(error) => {
@@ -392,6 +409,7 @@ impl Profiles {
                         info(revision, Some(format!("failed: {error}"))),
                         profile,
                         (Vec::new(), 0),
+                        None,
                     );
                 }
             }
@@ -618,6 +636,18 @@ impl Profiles {
             Request::Profile(protocol::ProfileRef { profile, .. }) => {
                 Ok(json(&summary(&*self.entry(&profile)?)))
             }
+            Request::ProfileInspect(protocol::ProfileRef { profile, .. }) => {
+                let entry = self.entry(&profile)?;
+                Ok((
+                    entry
+                        .inspection
+                        .get_or_init(|| {
+                            to_value(&inspect::inspection(&entry.profile, entry.file.clone()))
+                        })
+                        .clone(),
+                    Vec::new(),
+                ))
+            }
             Request::ProfileTree(query) => self.tree(&query),
             Request::ProfileFunctions(query) => self.functions(&query).map(|answer| json(&answer)),
             Request::ProfileTimeline(timeline) => {
@@ -703,6 +733,7 @@ pub const fn is_profile_request(request: &Request) -> bool {
     matches!(
         request,
         Request::Profile(_)
+            | Request::ProfileInspect(_)
             | Request::ProfileTree(_)
             | Request::ProfileFunctions(_)
             | Request::ProfileTimeline(_)

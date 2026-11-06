@@ -14,8 +14,10 @@ mod probes;
 mod record;
 pub(crate) use record::{OwnedLine, hex, symbolize as symbolize_lines};
 
+mod inspect;
 mod segments;
 mod session;
+pub use inspect::{InspectedCommand, InspectedModule, InspectedProcess, Inspection, TIME_BINS};
 mod symbols;
 mod syscalls;
 pub use syscalls::{RecordedEvent, RecordedSyscalls, SyscallPlace};
@@ -1190,6 +1192,46 @@ impl Profile {
 #[must_use]
 pub fn command_setting(process: u32) -> String {
     format!("command {process}")
+}
+
+/// The key of the arguments the recording ran its program with, as a JSON
+/// array of strings. The `program` setting is only a path or a joined line.
+pub const ARGUMENTS: &str = "arguments";
+
+/// The key of process row `process`'s arguments, each kept whole, which
+/// its command setting joins with spaces.
+#[must_use]
+pub fn arguments_setting(process: u32) -> String {
+    format!("arguments {process}")
+}
+
+/// Arguments as the JSON array of strings the arguments settings hold.
+#[must_use]
+pub fn encode_arguments<A: AsRef<std::ffi::OsStr>>(
+    arguments: impl IntoIterator<Item = A>,
+) -> String {
+    let arguments: Vec<_> = arguments
+        .into_iter()
+        .map(|argument| argument.as_ref().to_string_lossy().into_owned())
+        .collect();
+    serde_json::to_string(&arguments).unwrap_or_default()
+}
+
+/// A `/proc/PID/cmdline`'s arguments, encoded. The NULs that end it, and
+/// pad an argv a program rewrote, are not arguments; an empty argument
+/// between others is.
+#[must_use]
+pub fn encode_cmdline(cmdline: &[u8]) -> String {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let Some(last) = cmdline.iter().rposition(|byte| *byte != 0) else {
+        return "[]".to_owned();
+    };
+    encode_arguments(
+        cmdline[..=last]
+            .split(|byte| *byte == 0)
+            .map(std::ffi::OsStr::from_bytes),
+    )
 }
 
 /// Why a profile file could not be read.

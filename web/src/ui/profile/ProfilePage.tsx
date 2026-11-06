@@ -36,6 +36,7 @@ import {
 } from "./context";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
+import { Inspect } from "./Inspect";
 import { Chip, ClearChip, LookButton } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
@@ -243,6 +244,9 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
  * removable where it shows. */
 function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
   const { summary, look, setLook } = useProfile();
+  const [inspecting, setInspecting] = useState(false);
+  const startInspecting = useCallback(() => setInspecting(true), []);
+  const stopInspecting = useCallback(() => setInspecting(false), []);
   const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to invert, fold, or compare.
@@ -273,21 +277,7 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
 
   return (
     <div className="profile-head">
-      <div className="profile-title">
-        {/* Its tab names the profile, so this says only how much it holds. */}
-        <span className="muted" title={summary.program ?? undefined}>
-          {[
-            summary.timed ? formatDuration(summary.duration) : null,
-            summary.samples > 0 || summary.syscalls === 0
-              ? formatCount(summary.samples, "sample")
-              : null,
-            summary.syscalls > 0 ? formatCount(summary.syscalls, "call") : null,
-          ]
-            .filter((fact) => fact !== null)
-            .join(" · ")}
-        </span>
-        {info ? <Download info={info} /> : null}
-      </div>
+      {info ? <Download info={info} /> : null}
       <div className="segmented">
         {VIEWS.filter(({ view }) => offers(summary, view)).map(({ view, label }) => (
           <LookButton
@@ -300,6 +290,10 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
           </LookButton>
         ))}
       </div>
+      <button type="button" className="tb ghost" aria-haspopup="dialog" onClick={startInspecting}>
+        Inspect
+      </button>
+      {inspecting ? <Inspect revision={info?.revision ?? 0} close={stopInspecting} /> : null}
       {snapshots ? (
         <div className="segmented">
           {SOURCES.map(([src, label, title]) => (

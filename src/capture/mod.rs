@@ -169,62 +169,71 @@ impl Capture {
         (time("start"), time("end"))
     }
 
-    /// Seals the capture into one chunk.
-    pub fn seal(&self) -> Result<AlignedBytes, ImageError> {
-        let mut tables = Tables::<CaptureFormat>::new();
-        tables.add(
-            CaptureTable::Strings,
-            1,
-            self.strings.len(),
-            TableBytes::Borrowed(&self.strings),
-        );
-
-        macro_rules! put {
+    /// Every table's kind, row stride, row count, and bytes, in the order
+    /// a chunk holds them.
+    fn tables(&self) -> [(CaptureTable, usize, usize, &[u8]); CaptureTable::COUNT] {
+        macro_rules! rows {
             ($field:ident, $table:ident) => {
-                tables.add(
+                (
                     CaptureTable::$table,
                     records::stride(CaptureTable::$table),
                     self.$field.len(),
-                    TableBytes::Borrowed(self.$field.as_bytes()),
+                    self.$field.as_bytes(),
                 )
             };
         }
 
-        put!(settings, Settings);
-        put!(modules, Modules);
-        put!(processes, Processes);
-        put!(threads, Threads);
-        put!(mappings, Mappings);
-        put!(frames, Frames);
-        put!(stacks, Stacks);
-        put!(samples, Samples);
-        put!(sample_ranges, SampleRanges);
-        put!(frame_symbols, FrameSymbols);
-        put!(lines, Lines);
-        put!(functions, Functions);
-        put!(accounting, Accounting);
-        put!(off_cpu, OffCpu);
-        put!(off_cpu_ranges, OffCpuRanges);
-        put!(sites, Sites);
-        put!(zones, Zones);
-        put!(zone_ranges, ZoneRanges);
-        put!(plots, Plots);
-        put!(markers, Markers);
-        put!(tasks, Tasks);
-        put!(task_waits, TaskWaits);
-        put!(gaps, Gaps);
-        put!(syscalls, Syscalls);
+        [
+            (CaptureTable::Strings, 1, self.strings.len(), &self.strings),
+            rows!(settings, Settings),
+            rows!(modules, Modules),
+            rows!(processes, Processes),
+            rows!(threads, Threads),
+            rows!(mappings, Mappings),
+            rows!(frames, Frames),
+            rows!(stacks, Stacks),
+            rows!(samples, Samples),
+            rows!(sample_ranges, SampleRanges),
+            rows!(frame_symbols, FrameSymbols),
+            rows!(lines, Lines),
+            rows!(functions, Functions),
+            rows!(accounting, Accounting),
+            rows!(off_cpu, OffCpu),
+            rows!(off_cpu_ranges, OffCpuRanges),
+            rows!(sites, Sites),
+            rows!(zones, Zones),
+            rows!(zone_ranges, ZoneRanges),
+            rows!(plots, Plots),
+            rows!(markers, Markers),
+            rows!(tasks, Tasks),
+            rows!(task_waits, TaskWaits),
+            rows!(gaps, Gaps),
+            rows!(syscalls, Syscalls),
+            (
+                CaptureTable::SyscallBlobs,
+                1,
+                self.syscall_blobs.len(),
+                &self.syscall_blobs,
+            ),
+            rows!(syscall_notes, SyscallNotes),
+            rows!(syscall_stats, SyscallStats),
+            rows!(syscall_errnos, SyscallErrnos),
+        ]
+    }
 
-        tables.add(
-            CaptureTable::SyscallBlobs,
-            1,
-            self.syscall_blobs.len(),
-            TableBytes::Borrowed(&self.syscall_blobs),
-        );
+    /// How many bytes of rows each table holds, as a chunk stores them.
+    pub fn table_sizes(&self) -> impl Iterator<Item = (CaptureTable, u64)> + '_ {
+        self.tables()
+            .into_iter()
+            .map(|(kind, _, _, bytes)| (kind, bytes.len() as u64))
+    }
 
-        put!(syscall_notes, SyscallNotes);
-        put!(syscall_stats, SyscallStats);
-        put!(syscall_errnos, SyscallErrnos);
+    /// Seals the capture into one chunk.
+    pub fn seal(&self) -> Result<AlignedBytes, ImageError> {
+        let mut tables = Tables::<CaptureFormat>::new();
+        for (kind, stride, count, bytes) in self.tables() {
+            tables.add(kind, stride, count, TableBytes::Borrowed(bytes));
+        }
 
         tables.seal(TargetDescription::X86_64)
     }

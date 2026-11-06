@@ -5,6 +5,13 @@ import { describe, expect, it } from "vitest";
 
 import { parseSearch, stringifySearch } from "../src/focus";
 import {
+  commandLine,
+  medianDepth,
+  recorderBreakdown,
+  recordingSettings,
+  shellQuote,
+} from "../src/profile/inspect";
+import {
   type ProfileLook,
   parseRange,
   parseTransform,
@@ -611,5 +618,63 @@ describe("a zone's thread", () => {
     expect(threadName(threads, 2)).toBe("WorkerThread 48");
     expect(threadName(threads, 3)).toBe("thread 52");
     expect(threadName(threads, 5)).toBe("thread 5");
+  });
+});
+
+/** The nanoseconds of a breakdown's parts, together. */
+function partsSum(parts: [string, number][]): number {
+  return parts.reduce((total, [, each]) => total + each, 0);
+}
+
+describe("inspect", () => {
+  it("quotes only the arguments a shell would split or expand", () => {
+    expect(shellQuote("-uu")).toBe("-uu");
+    expect(shellQuote("/a/b.c=d:e@f%g+h,i")).toBe("/a/b.c=d:e@f%g+h,i");
+    expect(shellQuote("two words")).toBe("'two words'");
+    expect(shellQuote("")).toBe("''");
+    expect(shellQuote(String.raw`\b\w+_\w+\s*\(`)).toBe(String.raw`'\b\w+_\w+\s*\('`);
+    expect(shellQuote("it's")).toBe(String.raw`'it'\''s'`);
+    expect(shellQuote("$HOME")).toBe("'$HOME'");
+  });
+
+  it("joins kept arguments as a shell reads them, and keeps a joined line as it is", () => {
+    expect(commandLine({ arguments: ["rg", "-e", "a b", ""], text: "rg -e a b " })).toBe(
+      "rg -e 'a b' ''",
+    );
+    expect(commandLine({ arguments: null, text: "rg -e a b" })).toBe("rg -e a b");
+  });
+
+  it("finds the depth half the samples reach", () => {
+    expect(medianDepth([])).toBeNull();
+    expect(medianDepth([0, 0])).toBeNull();
+    expect(medianDepth([0, 3, 0, 0, 1])).toBe(1);
+    expect(medianDepth([0, 1, 0, 0, 3])).toBe(4);
+    expect(medianDepth([0, 1, 1, 1, 1])).toBe(2);
+  });
+
+  it("splits microscope's CPU into parts that add up to it", () => {
+    const split = recorderBreakdown(100, 60, 10, 50);
+    expect(split).toEqual([
+      ["Setup", 10],
+      ["While recording", 30],
+      ["Debug info after exit", 50],
+      ["Other debug info", 10],
+    ]);
+    expect(partsSum(split)).toBe(100);
+
+    // Reading after exit is part of reading at all, never more than it.
+    const over = recorderBreakdown(100, 20, 10, 50);
+    expect(over[2]).toEqual(["Debug info after exit", 20]);
+    expect(over[3]).toEqual(["Other debug info", 0]);
+    expect(partsSum(over)).toBe(100);
+  });
+
+  it("lists the settings that say how it was recorded, not what Inspect shows elsewhere", () => {
+    const names = recordingSettings(
+      ["source", "program", "arguments", "command 0", "arguments 12", "start", "off-CPU"].map(
+        (name) => ({ name, value: "x" }),
+      ),
+    ).map(({ name }) => name);
+    expect(names).toEqual(["source", "off-CPU"]);
   });
 });

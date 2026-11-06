@@ -376,6 +376,8 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
         .sum();
     assert_eq!(weights, 6);
 
+    inspected(&mut tab, &id, &path).await;
+
     // A transform names something the profile has, or fails.
     let (kind, message) = tab
         .with_bytes(
@@ -387,6 +389,31 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     assert_eq!(kind, "invalid");
     assert!(message.contains("nothing"), "{message}");
     tab.save_traffic("profile");
+}
+
+/// Inspect names the recorded command, its file, and every sample once.
+async fn inspected(tab: &mut Client, id: &str, path: &std::path::Path) {
+    let inspection = tab.ok("profileInspect", json!({"profile": id})).await;
+    let arguments = &inspection["command"]["arguments"];
+    assert_eq!(arguments[1], "1", "{inspection}");
+    assert!(
+        arguments[0]
+            .as_str()
+            .is_some_and(|program| program.ends_with("profile-stacks-gcc-o0")),
+        "{inspection}"
+    );
+    let depths = inspection["depths"].as_array().expect("depths");
+    let by_depth: u64 = depths.iter().filter_map(Value::as_u64).sum();
+    assert_eq!(by_depth, 6, "{inspection}");
+    let on_disk = std::fs::metadata(path).expect("the file").len();
+    assert_eq!(inspection["file"]["bytes"], on_disk);
+    let tables: u64 = inspection["tables"]
+        .as_array()
+        .expect("tables")
+        .iter()
+        .filter_map(|table| table["bytes"].as_u64())
+        .sum();
+    assert!(tables > 0 && tables < on_disk, "{tables} of {on_disk}");
 }
 
 /// The recursion fixture, a sample at its calls of work, collapsed to the

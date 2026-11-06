@@ -12,6 +12,7 @@ import { type ProfileLook, queryOf } from "../src/profile/look";
 import {
   type ErrorKind,
   PROTOCOL_VERSION,
+  type ProfileInspection,
   type ProfileKey,
   type ProfileSummary,
   type ProfileThread,
@@ -669,18 +670,15 @@ it("says a profile it does not serve is missing, and any other failure as it is"
   await expect.element(page.getByText("microscope web PROFILE.usprof")).not.toBeInTheDocument();
 });
 
-it("says how much the profile holds, offers its file, and a bar only for a recording", async () => {
+it("offers its file, and a bar only for a recording", async () => {
   const summary = summaryOf({ program: "/work/searcher" });
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
-  // Its tab names it, so the head names neither the file nor the program.
-  const held = page.getByText("10 samples", { exact: true });
-  await expect.element(held).toBeVisible();
-  await expect.element(held).toHaveAttribute("title", "/work/searcher");
-  const title = document.querySelector(".profile-title") as HTMLElement;
-  expect(title.textContent).not.toMatch(/test\.usprof|searcher/u);
+  // Its tab names it, and Inspect says what it holds, so the head says neither.
   const download = page.getByRole("button", { name: "Download" });
   await expect.element(download).toBeVisible();
+  const head = document.querySelector(".profile-head") as HTMLElement;
+  expect(head.textContent).not.toMatch(/test\.usprof|searcher|10 samples/u);
   await expect.element(download).toHaveAttribute("title", expect.stringContaining(".usprof"));
   expect(page.getByTestId("recording").elements()).toHaveLength(0);
 
@@ -696,6 +694,155 @@ it("says how much the profile holds, offers its file, and a bar only for a recor
     .element(page.getByTestId("recording").getByText(`Recording ${summary.name}`))
     .toBeVisible();
   await expect.element(download).toBeVisible();
+});
+
+/** What Inspect reads of a recording of a program with an argument a
+ * shell would split. */
+function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspection {
+  return {
+    command: { arguments: ["/bin/rg", "-c", "a b", "it's"], text: "/bin/rg -c a b it's" },
+    processes: [{ pid: 7, name: "rg", command: null }],
+    modules: [
+      { path: "/bin/rg", size: 2048, buildId: null, frames: 9 },
+      { path: "/lib/libc.so.6", size: 1024, buildId: "5a70", frames: 2 },
+    ],
+    // Ten samples: 2 at depth 1, 5 at depth 3, 3 at depth 4.
+    depths: [0, 2, 0, 5, 3],
+    overTime: [4, 0, 6],
+    distinctStacks: 4,
+    frames: 11,
+    framesWithLines: 8,
+    counted: 20,
+    stackBytes: 4096,
+    shortened: 0,
+    recorderSetup: 1e6,
+    recorderFinishing: 5e6,
+    tables: [
+      { name: "samples", bytes: 300 },
+      { name: "strings", bytes: 100 },
+    ],
+    file: { bytes: 5000, chunks: 1, truncated: false },
+    ...change,
+  };
+}
+
+it("inspects the profile in a dialog: its whole command, then its samples", async () => {
+  const summary = summaryOf({
+    timed: true,
+    truncations: [{ what: "Stack copy ran out", count: 3 }],
+    recorderCpu: 20e6,
+    recorderLoading: 8e6,
+    settings: [
+      { name: "source", value: "CPU time at 999 Hz" },
+      { name: "program", value: "/bin/rg" },
+      { name: "command 0", value: "/bin/rg -c a b it's" },
+    ],
+  });
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  const inspect = page.getByRole("button", { name: "Inspect" });
+  await userEvent.click(inspect);
+  const dialog = page.getByRole("dialog", { name: "test.usprof" });
+  await expect.element(dialog).toBeVisible();
+  const asked = await server.next("profileInspect");
+  expect(asked.params).toEqual({ profile: summary.id, revision: 0 });
+  await expect.element(dialog.getByText("Reading the profile…")).toBeVisible();
+  server.answer(asked, inspectionOf());
+
+  // Metadata comes first: every argument whole, on its own line, quoted
+  // as a shell needs, and Copy copies the line a shell runs.
+  await expect
+    .element(page.getByRole("tab", { name: "Metadata" }))
+    .toHaveAttribute("aria-selected", "true");
+  await expect.element(page.getByTestId("command")).toBeVisible();
+  const lines = [...page.getByTestId("command").element().children].map((line) => line.textContent);
+  expect(lines).toEqual(["/bin/rg \\", "-c \\", "'a b' \\", String.raw`'it'\''s'`]);
+  await expect.element(dialog.getByText("Command, 3 arguments")).toBeVisible();
+  const written = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+  await userEvent.click(dialog.getByRole("button", { name: "Copy" }));
+  expect(written).toHaveBeenCalledWith(String.raw`/bin/rg -c 'a b' 'it'\''s'`);
+  await expect.element(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
+  written.mockRestore();
+
+  // Settings shown elsewhere are left out of Recording.
+  await expect
+    .element(dialog.getByRole("row", { name: "Source CPU time at 999 Hz" }))
+    .toBeVisible();
+  expect(dialog.getByRole("row", { name: /^Program/u }).elements()).toHaveLength(0);
+  await expect
+    .element(dialog.getByRole("row", { name: /^\/lib\/libc\.so\.6 1\.00 KiB 5a70 2$/u }))
+    .toBeVisible();
+  await expect
+    .element(dialog.getByRole("row", { name: "Debug info after exit 5.00 ms" }))
+    .toBeVisible();
+  await expect.element(dialog.getByRole("row", { name: "samples 300 B 75.0%" })).toBeVisible();
+
+  // The arrow keys move to Samples.
+  await userEvent.click(page.getByRole("tab", { name: "Metadata" }));
+  await userEvent.keyboard("{ArrowRight}");
+  const samples = page.getByRole("tab", { name: "Samples" });
+  await expect.element(samples).toHaveAttribute("aria-selected", "true");
+  await expect.element(samples).toHaveFocus();
+  await expect
+    .element(dialog.getByRole("row", { name: "Stacks cut short 3, 30.0%" }))
+    .toBeVisible();
+  await expect
+    .element(dialog.getByRole("row", { name: "Reached the outermost frame 7 70.0%" }))
+    .toBeVisible();
+
+  // Depth starts at one frame, as no sample has none; the median is 3.
+  const bars = dialog.getByRole("button", { name: /frames?: /u });
+  expect(bars.elements().map((bar) => bar.getAttribute("aria-label"))).toEqual([
+    "1 frame: 2 samples",
+    "2 frames: 0 samples",
+    "3 frames: 5 samples",
+    "4 frames: 3 samples",
+  ]);
+  expect(bars.elements()[2]?.classList.contains("marked")).toBe(true);
+  await expect.element(dialog.getByText("median 3")).toBeVisible();
+  await userEvent.hover(bars.nth(3));
+  await expect.element(page.getByTestId("depth")).toHaveTextContent("4 frames: 3 samples, 30.0%");
+
+  // Escape closes it and gives focus back to Inspect.
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(inspect).toHaveFocus();
+});
+
+it("closes Inspect on a click outside, and says when a recording kept only the joined command", async () => {
+  const summary = summaryOf({ samples: 0, syscalls: 4 });
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  await userEvent.click(page.getByRole("button", { name: "Inspect" }));
+  server.answer(
+    await server.next("profileInspect"),
+    inspectionOf({ command: { arguments: null, text: "/bin/sh -c 'a b'" }, file: null }),
+  );
+  const dialog = page.getByRole("dialog");
+  // A trace with no samples has nothing for a Samples tab.
+  await expect.element(dialog.getByText(/kept the command as one line/u)).toBeVisible();
+  expect(dialog.getByRole("tab").elements()).toHaveLength(0);
+  expect(page.getByTestId("command").element().textContent).toBe("/bin/sh -c 'a b'");
+  await expect.element(dialog.getByRole("row", { name: "Source a live recording" })).toBeVisible();
+
+  // A click in the dialog keeps it; one on the scrim around it closes it.
+  await userEvent.click(dialog.getByText(/kept the command/u));
+  await expect.element(dialog).toBeVisible();
+  const scrim = document.querySelector(".inspect-overlay") as HTMLElement;
+  // This harness has no styles, so the scrim has no margin to click.
+  act(() => {
+    scrim.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  });
+  await expect.element(dialog).not.toBeInTheDocument();
+});
+
+it("says why Inspect failed", async () => {
+  const summary = summaryOf();
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  await userEvent.click(page.getByRole("button", { name: "Inspect" }));
+  server.fail(await server.next("profileInspect"), "the file went away", "failed");
+  await expect.element(page.getByText("Could not inspect it: the file went away")).toBeVisible();
 });
 
 it("keeps what it shows while disconnected, and says so", async () => {

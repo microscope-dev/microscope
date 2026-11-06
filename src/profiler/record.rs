@@ -854,6 +854,8 @@ impl Processor {
                     let process = self.builder.process(pid, at);
                     self.builder.process_name(process, &name);
                     self.builder.setting(&super::command_setting(process), "");
+                    self.builder
+                        .setting(&super::arguments_setting(process), "[]");
                 } else if tid == pid.leader() {
                     let process = self.builder.process(pid, at);
                     self.builder.process_name(process, &name);
@@ -947,6 +949,10 @@ impl Processor {
             let process = self.builder.process(pid, time);
             self.builder
                 .setting(&super::command_setting(process), &command);
+            self.builder.setting(
+                &super::arguments_setting(process),
+                &super::encode_cmdline(&bytes),
+            );
         }
     }
 
@@ -3182,6 +3188,10 @@ mod tests {
         processor
             .builder
             .setting(&super::super::command_setting(process), "old program --old");
+        processor.builder.setting(
+            &super::super::arguments_setting(process),
+            r#"["old program","--old"]"#,
+        );
         processor.process(decode::Record::Comm {
             pid,
             tid: pid.leader(),
@@ -3193,6 +3203,7 @@ mod tests {
             capture: processor.finish(),
         };
         assert_eq!(profile.command(process), None);
+        assert_eq!(profile.inspect().processes[process as usize].command, None);
         let read = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
             .unwrap()
             .profile;

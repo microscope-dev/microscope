@@ -2667,6 +2667,242 @@ textarea.input {
   position: relative;
 }
 
+/* Inspect */
+
+.inspect-overlay {
+  padding: 6vh 16px;
+}
+
+.inspect {
+  display: flex;
+  flex-direction: column;
+  width: min(960px, 100%);
+  max-height: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  outline: none;
+}
+
+.inspect-head {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 8px 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.inspect-head h1 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.inspect-head .segmented {
+  margin-left: 0;
+}
+
+.inspect-head .segmented button[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.inspect-body {
+  display: grid;
+  gap: 18px;
+  min-height: 0;
+  padding: 14px 16px 18px;
+  overflow: auto;
+}
+
+.inspect-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+  gap: 18px 28px;
+  align-items: start;
+}
+
+.inspect-stack,
+.inspect-section {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  align-content: start;
+}
+
+.inspect-stack {
+  gap: 18px;
+}
+
+.inspect-section h2 {
+  margin: 0;
+  color: var(--ink-3);
+  font: 600 10px / 1.6 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.inspect-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.inspect-table th,
+.inspect-table td {
+  padding: 3px 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.inspect-table th + th,
+.inspect-table th + td,
+.inspect-table td + td,
+.inspect-table td + th {
+  padding-left: 12px;
+}
+
+.inspect-table thead th {
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+.inspect-table tbody tr + tr > * {
+  border-top: 1px solid var(--line);
+}
+
+.inspect-table tbody th {
+  width: 1%;
+  color: var(--ink-2);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.inspect-table .n {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.inspect-table .mono {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.inspect-table .wrap {
+  overflow-wrap: anywhere;
+}
+
+.inspect-table .warn {
+  color: var(--changed);
+}
+
+.inspect-bar {
+  width: 32%;
+}
+
+.inspect-bar div {
+  display: flex;
+  height: 8px;
+  margin-top: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.inspect-bar i {
+  flex: none;
+}
+
+.inspect-bar .main,
+.inspect-histogram .marked i {
+  background: var(--accent);
+}
+
+.inspect-bar .context,
+.inspect-histogram i {
+  background: var(--line-strong);
+}
+
+.inspect-bar .warn {
+  background: var(--warn-line);
+}
+
+.inspect-command {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 6px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.inspect-lines {
+  flex: 1;
+  min-width: 0;
+  font: 12px / 1.6 var(--mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* A long line wraps deeper than the arguments start, so where one
+ * argument ends stays plain. */
+.inspect-lines > div {
+  padding-left: 4ch;
+  text-indent: -4ch;
+}
+
+.inspect-lines > .argument {
+  text-indent: -2ch;
+}
+
+.inspect-histogram {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  height: 48px;
+}
+
+.inspect-histogram > * {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.inspect-histogram i {
+  width: 100%;
+  min-height: 1px;
+}
+
+/* Bins of time are the samples themselves, so they take the main color. */
+.inspect-histogram > span i {
+  background: var(--accent);
+}
+
+.inspect-histogram > button:hover i,
+.inspect-histogram > button:focus-visible i {
+  background: var(--ink);
+}
+
+.inspect-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
 /* Drawings */
 
 .drawings {
@@ -2935,13 +3171,6 @@ textarea.input {
 
 .profile-head .segmented {
   margin-left: 0;
-}
-
-.profile-title {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
 }
 
 .profile-query {
