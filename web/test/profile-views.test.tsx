@@ -432,6 +432,21 @@ it("forgets the frame it hovered once another tree arrives", async () => {
   await expect.element(page.getByTestId("flame-tip")).not.toBeInTheDocument();
 });
 
+it("zooms to and selects a clicked frame, and Show full graph undoes both", async () => {
+  const server = await mount(<FlameView />);
+  server.answer(await server.next("profileTree"), ...TREE);
+  const canvas = page.getByRole("img", { name: "Flame graph" });
+  await expect.element(canvas).toBeVisible();
+  mouseAt(canvas.element(), "click", 10, 23);
+  await expect.element(page.getByTestId("details").getByText("work")).toBeVisible();
+  expect(lookShown().fn).toBe("work");
+
+  await page.getByRole("button", { name: "Show full graph" }).click();
+  await expect.element(page.getByTestId("details")).not.toBeInTheDocument();
+  expect(lookShown().z).toBeUndefined();
+  expect(lookShown().fn).toBeUndefined();
+});
+
 it("draws a lane per thread for hundreds of threads", async () => {
   const threads: ProfileThread[] = Array.from({ length: 300 }, (_, row) => ({
     row,

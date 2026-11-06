@@ -101,7 +101,7 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(page.getByTestId("flame-tip")).toContainText("total");
   await page.mouse.click(box.x + 4, box.y + 4);
   await expect(page).toHaveURL(/z=/u);
-  await expect(page.getByRole("button", { name: "Reset zoom" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show full graph" })).toBeVisible();
 
   // Dragging across the timeline selects a range, which a chip names.
   const lanes = page.getByTestId("timeline").getByRole("img");

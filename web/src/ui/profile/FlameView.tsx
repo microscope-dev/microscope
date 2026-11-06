@@ -42,9 +42,14 @@ export function FlameView() {
   const [search, setSearch] = useState("");
   const zoom = tree && look.z ? findPath(tree, look.z) : null;
   const matched = useMemo(() => (tree && search ? matching(tree, search) : null), [tree, search]);
-  const resetZoom = useCallback(
-    // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-    () => setLook((prev) => withLook(prev, "z", undefined), true),
+  // A click both zooms and selects, so showing the full graph undoes both.
+  const showFullGraph = useCallback(
+    () =>
+      setLook(
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        (prev) => withLook(withLook(prev, "z", undefined), "fn", undefined),
+        true,
+      ),
     [setLook],
   );
   const edit = useCallback(
@@ -68,8 +73,8 @@ export function FlameView() {
       <div className="pane-head">
         Flame graph
         {zoom === null ? null : (
-          <button type="button" className="link-button" onClick={resetZoom}>
-            Reset zoom
+          <button type="button" className="link-button" onClick={showFullGraph}>
+            Show full graph
           </button>
         )}
         <input
