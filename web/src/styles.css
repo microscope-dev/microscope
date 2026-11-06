@@ -3256,10 +3256,12 @@ textarea.input {
 }
 
 .profile-query .profile-by {
-  /* As wide as the choice shown, not the longest one. */
+  /* As wide as the choice shown, not the longest one, and as tall as the
+   * toolbar's buttons. */
   field-sizing: content;
   width: auto;
-  padding: 3px 6px;
+  height: 28px;
+  padding: 0 6px;
 }
 
 /* How the frames are drawn, opened from the toolbar's Options button. */
