@@ -35,12 +35,17 @@ pub fn unwind_module_at(
     modules: &[UnwindModule<'_>],
     address: VirtualAddress,
 ) -> Option<(usize, ImageAddress)> {
+    // Every frame of every sample asks this of each module before its
+    // own, so it builds no error for the modules that do not hold it.
     modules.iter().enumerate().find_map(|(index, module)| {
         module
             .loaded
-            .image_address(address)
-            .ok()
-            .filter(|image_address| module.image.contains_address(*image_address))
+            .load_bias
+            .unload(address)
+            .filter(|image_address| {
+                module.loaded.windows(*image_address)
+                    && module.image.contains_address(*image_address)
+            })
             .map(|image_address| (index, image_address))
     })
 }

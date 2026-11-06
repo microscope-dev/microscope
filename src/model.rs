@@ -5225,7 +5225,7 @@ impl LoadedModule {
     }
 
     /// Whether the mapping holds the image's `address`.
-    fn windows(self, address: ImageAddress) -> bool {
+    pub(crate) fn windows(self, address: ImageAddress) -> bool {
         self.window.is_none_or(|window| window.contains(address))
     }
 }

@@ -2936,7 +2936,22 @@ where
     // preserve across calls, so the caller's value survives only where the
     // row says where it was saved. Keeping the callee's value would present
     // it as the caller's.
+    //
+    // Each frame asks this of every register it knows, so the registers
+    // numbered below 64, which are all a System V or Go callee may
+    // overwrite, are tested as bits.
+    let clobbered_bits = low_register_bits(clobbered.iter().copied());
+    let described_bits = low_register_bits(
+        row.rules
+            .iter()
+            .map(|(register, _)| DwarfRegister::from(*register)),
+    );
     caller.retain(|register| {
+        if register.number() < 64 {
+            let bit = 1 << register.number();
+            return clobbered_bits & bit == 0 || described_bits & bit != 0;
+        }
+
         !clobbered.contains(&register)
             || row
                 .rules
@@ -2985,6 +3000,13 @@ where
         cfa,
         signal_frame: row.signal_frame,
     })
+}
+
+/// The registers of `registers` numbered below 64, as bits.
+fn low_register_bits(registers: impl Iterator<Item = DwarfRegister>) -> u64 {
+    registers
+        .filter(|register| register.number() < 64)
+        .fold(0, |bits, register| bits | 1 << register.number())
 }
 
 /// The canonical frame address of a PLT stub that has pushed `pushed`

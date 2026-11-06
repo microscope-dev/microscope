@@ -12,11 +12,11 @@
 //! jump ends a path. An instruction that paths reach with different frames
 //! is not proved, nor is anything reached only through it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use iced_x86::{
-    Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess,
-    OpKind, Register,
+    Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory,
+    InstructionInfoOptions, Mnemonic, OpAccess, OpKind, Register,
 };
 
 use super::{full_register, is_immediate, is_push_register, is_register_move};
@@ -136,13 +136,20 @@ impl CodeFrames {
     }
 }
 
+/// Instructions by offset: the offset past each and its frame.
+type Found = Vec<(u64, (u64, CodeFrame))>;
+
 /// Each instruction of `code` the paths from its entry reach, not past
 /// `barriers`, by offset: the offset past it and its frame. With the
 /// offsets that paths reached with different frames.
-fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (BTreeMap<u64, (u64, CodeFrame)>, BTreeSet<u64>) {
-    let mut found: BTreeMap<u64, (u64, CodeFrame)> = BTreeMap::new();
+fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (Found, BTreeSet<u64>) {
+    // Each instruction found, in the order found, and where in it each
+    // offset's is: one slot per byte of code, which costs less than a map.
+    let mut instructions: Found = Vec::new();
+    let mut slots = vec![u32::MAX; code.len()];
     let mut conflicts = BTreeSet::new();
     let mut factory = InstructionInfoFactory::new();
+    let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
     let entry = CodeFrame::Stack {
         pushed: 0,
         caller_frame_pointer: CallerFramePointer::Kept,
@@ -158,35 +165,52 @@ fn walk(code: &[u8], barriers: &BTreeSet<u64>) -> (BTreeMap<u64, (u64, CodeFrame
         if barriers.contains(&offset) {
             continue;
         }
-        if let Some((_, known)) = found.get(&offset) {
+        let Some(slot) = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| slots.get_mut(offset))
+        else {
+            continue;
+        };
+        if let Some((_, (_, known))) = instructions.get(*slot as usize) {
             if *known != frame {
                 conflicts.insert(offset);
             }
             continue;
         }
-        let Some(bytes) = usize::try_from(offset).ok().and_then(|at| code.get(at..)) else {
+        let Some(position) = usize::try_from(offset).ok() else {
             continue;
         };
-        let mut decoder = Decoder::with_ip(64, bytes, offset, DecoderOptions::NONE);
+        if decoder.set_position(position).is_err() {
+            continue;
+        }
+        decoder.set_ip(offset);
         let instruction = decoder.decode();
         if instruction.is_invalid() {
             continue;
         }
 
-        found.insert(offset, (instruction.next_ip(), frame));
+        let Ok(index) = u32::try_from(instructions.len()) else {
+            break;
+        };
+        *slot = index;
+        instructions.push((offset, (instruction.next_ip(), frame)));
         if instruction.flow_control() == FlowControl::UnconditionalBranch {
             work.extend(target(&instruction).map(|target| (target, frame)));
             continue;
         }
         if let Next::Frame(after) = next(frame, &instruction, &mut factory) {
-            work.push((instruction.next_ip(), after));
+            // The instruction after is taken first, so that instructions
+            // are found mostly in order.
             if instruction.flow_control() == FlowControl::ConditionalBranch {
                 work.extend(target(&instruction).map(|target| (target, after)));
             }
+            work.push((instruction.next_ip(), after));
         }
     }
 
-    (found, conflicts)
+    // Paths mostly fall through, so the instructions are nearly in order.
+    instructions.sort_unstable_by_key(|(offset, _)| *offset);
+    (instructions, conflicts)
 }
 
 fn next(frame: CodeFrame, instruction: &Instruction, factory: &mut InstructionInfoFactory) -> Next {
@@ -275,11 +299,11 @@ fn next_on_stack(
     }
 
     let written = written(instruction, factory);
-    if written.contains(&Register::RSP) {
+    if written.rsp {
         return Next::Unproved;
     }
 
-    let caller_frame_pointer = if written.contains(&Register::RBP) && caller_frame_pointer == Kept {
+    let caller_frame_pointer = if written.rbp && caller_frame_pointer == Kept {
         Lost
     } else {
         caller_frame_pointer
@@ -331,7 +355,7 @@ fn next_based(
     }
 
     let written = written(instruction, factory);
-    if written.contains(&Register::RBP) {
+    if written.rbp {
         return Next::Unproved;
     }
 
@@ -354,7 +378,7 @@ fn next_based(
         });
     }
 
-    if written.contains(&Register::RSP) {
+    if written.rsp {
         return based(Below::Unknown);
     }
 
@@ -383,23 +407,47 @@ fn is_realignment(instruction: &Instruction) -> bool {
         && instruction.immediate(1).cast_signed() < 0
 }
 
-/// The full registers `instruction` writes, implicitly or not.
-fn written(instruction: &Instruction, factory: &mut InstructionInfoFactory) -> Vec<Register> {
-    factory
-        .info(instruction)
-        .used_registers()
-        .iter()
-        .filter(|used| {
-            matches!(
-                used.access(),
-                OpAccess::Write
-                    | OpAccess::CondWrite
-                    | OpAccess::ReadWrite
-                    | OpAccess::ReadCondWrite
+/// Which of rsp and rbp `instruction` writes, implicitly or not.
+#[derive(Debug, Clone, Copy)]
+struct Writes {
+    rsp: bool,
+    rbp: bool,
+}
+
+fn written(instruction: &Instruction, factory: &mut InstructionInfoFactory) -> Writes {
+    let mut writes = Writes {
+        rsp: false,
+        rbp: false,
+    };
+
+    // Only a stack instruction writes either without naming it, so an
+    // instruction that names neither writes neither, and most need no
+    // full account of what they use.
+    let names = (0..instruction.op_count()).any(|operand| {
+        instruction.op_kind(operand) == OpKind::Register
+            && matches!(
+                full_register(instruction.op_register(operand)),
+                Register::RSP | Register::RBP
             )
-        })
-        .map(|used| full_register(used.register()))
-        .collect()
+    });
+    if !names && !instruction.is_stack_instruction() {
+        return writes;
+    }
+
+    let info = factory.info_options(instruction, InstructionInfoOptions::NO_MEMORY_USAGE);
+    for used in info.used_registers() {
+        if matches!(
+            used.access(),
+            OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite
+        ) {
+            match full_register(used.register()) {
+                Register::RSP => writes.rsp = true,
+                Register::RBP => writes.rbp = true,
+                _ => {}
+            }
+        }
+    }
+    writes
 }
 
 /// A push of eight bytes.
