@@ -12,11 +12,23 @@ const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
   { op: "collapse", label: "Collapse recursion", title: "Merge its calls of itself" },
 ];
 
-/** The selected function: what it costs under the query, as the server
- * counts each function, and what can be done with it. Functions of one
- * name in several modules each show their own cost. `lead` takes the
- * place of its name, for a view that shows the name its own way. */
-export function Details({ name, lead }: { name: string; lead?: ReactNode }) {
+/** The selected function in a bar of its own: its name, then what
+ * `Selected` shows. */
+export function Details({ name }: { name: string }) {
+  return (
+    <div className="profile-details" data-testid="details">
+      <span className="mono name" title={name}>
+        {name}
+      </span>
+      <Selected name={name} />
+    </div>
+  );
+}
+
+/** What the selected function costs under the query, as the server counts
+ * each function, and what can be done with it, for a bar that names it.
+ * Functions of one name in several modules each show their own cost. */
+export function Selected({ name }: { name: string }) {
   const { query, unit, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
   const functions = answer.data;
@@ -31,35 +43,32 @@ export function Details({ name, lead }: { name: string; lead?: ReactNode }) {
     [setLook, name],
   );
   return (
-    <div className="profile-details" data-testid="details">
-      {lead ?? (
-        <span className="mono name" title={name}>
-          {name}
-        </span>
-      )}
-      {located?.file ? (
-        <span className="muted mono">
-          {located.file.slice(located.file.lastIndexOf("/") + 1)}:{located.line}
-        </span>
-      ) : null}
-      {answer.error ? (
-        <span className="error">{answer.error.message}</span>
-      ) : functions ? (
-        costs.length === 0 ? (
-          <span className="muted">No selected sample runs it.</span>
+    <>
+      {/* Takes the room the actions leave, cut short before they wrap. */}
+      <span className="cost">
+        {located?.file ? (
+          <span className="muted mono">
+            {located.file.slice(located.file.lastIndexOf("/") + 1)}:{located.line}
+          </span>
+        ) : null}
+        {answer.error ? (
+          <span className="error">{answer.error.message}</span>
+        ) : functions ? (
+          costs.length === 0 ? (
+            <span className="muted">No selected sample runs it.</span>
+          ) : (
+            costs.map(({ row, key }) => (
+              <span key={row.key} className="muted">
+                {costs.length > 1 ? `${key.module ?? "no module"}: ` : ""}
+                {formatWeight(row.total, unit)} · {formatPercent(row.total, weight)} total,{" "}
+                {formatPercent(row.own, weight)} own
+              </span>
+            ))
+          )
         ) : (
-          costs.map(({ row, key }) => (
-            <span key={row.key} className="muted">
-              {costs.length > 1 ? `${key.module ?? "no module"}: ` : ""}
-              {formatWeight(row.total, unit)} · {formatPercent(row.total, weight)} total,{" "}
-              {formatPercent(row.own, weight)} own
-            </span>
-          ))
-        )
-      ) : (
-        <span className="muted">Reading its cost…</span>
-      )}
-      <span className="spacer" />
+          <span className="muted">Reading its cost…</span>
+        )}
+      </span>
       {ACTIONS.map(({ op, label, title }) => (
         <Action key={op} op={op} name={name} title={title}>
           {label}
@@ -73,7 +82,7 @@ export function Details({ name, lead }: { name: string; lead?: ReactNode }) {
       >
         Callers and callees
       </button>
-    </div>
+    </>
   );
 }
 
@@ -91,7 +100,15 @@ function Action({
 }) {
   const { setLook } = useProfile();
   const apply = useCallback(
-    () => setLook((look) => transformed(look, { op, name }), true),
+    () =>
+      setLook((look) => {
+        const next = transformed(look, { op, name });
+        // Focused, the function is the root at 100%; merged or dropped, it
+        // is gone. Either way its selection says nothing more, so it goes.
+        // Collapsing recursion leaves it where it was.
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        return op === "collapse" ? next : withLook(next, "fn", undefined);
+      }, true),
     [setLook, op, name],
   );
   return (

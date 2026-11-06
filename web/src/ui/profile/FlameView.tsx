@@ -24,7 +24,7 @@ import {
 import { useShownScheme } from "../../theme";
 import { prepare, useWidth } from "./canvas";
 import { token, useAnswer, useProfile } from "./context";
-import { Details } from "./Details";
+import { Selected } from "./Details";
 import { Unanswered } from "./parts";
 
 /** One row of the flame graph, in CSS pixels. */
@@ -51,31 +51,36 @@ export function FlameView() {
     () => (tree && fn ? matching(tree, (name) => name === fn).nodes : null),
     [tree, fn],
   );
-  // A click both zooms and selects, so showing the full graph undoes both.
-  const showFullGraph = useCallback(
-    () =>
-      setLook(
-        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-        (prev) => withLook(withLook(prev, "z", undefined), "fn", undefined),
-        true,
-      ),
-    [setLook],
-  );
+  // A click both zooms and selects, so clearing undoes both, and any search.
+  const searchBox = useRef<HTMLInputElement>(null);
+  const clear = useCallback(() => {
+    setSearch("");
+    setLook(
+      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+      (prev) => withLook(withLook(prev, "z", undefined), "fn", undefined),
+      true,
+    );
+  }, [setLook]);
+  // The button goes once it has cleared, so the search keeps the focus.
+  const clearAndFocus = useCallback(() => {
+    clear();
+    searchBox.current?.focus();
+  }, [clear]);
   // Typing searches afresh, so the frame the search showed is no longer
-  // selected. Emptying the search shows the full graph, as its button does.
+  // selected. Emptying the search clears, as its button does.
   const hasZoom = look.z !== undefined;
   const edit = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const text = event.target.value;
       setSearch(text);
       if (text === "" && (hasZoom || fn !== undefined)) {
-        showFullGraph();
+        clear();
       } else if (fn !== undefined) {
         // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
         setLook((prev) => withLook(prev, "fn", undefined));
       }
     },
-    [hasZoom, fn, setLook, showFullGraph],
+    [hasZoom, fn, setLook, clear],
   );
   const zoomTo = useCallback(
     (zoomed: CallTree, node: number) => {
@@ -91,39 +96,36 @@ export function FlameView() {
     [setLook],
   );
 
-  const find = (
-    <>
-      <input
-        type="search"
-        className="input profile-search"
-        placeholder="Click or search for a frame"
-        aria-label="Search frames"
-        title={look.fn}
-        value={look.fn ?? search}
-        onChange={edit}
-      />
-      {zoom === null ? null : (
-        <button type="button" className="tb ghost" onClick={showFullGraph}>
-          Show full graph
-        </button>
-      )}
-    </>
-  );
-
   return (
     <div className="pane grow">
-      {look.fn ? (
-        <Details name={look.fn} lead={find} />
-      ) : (
-        <div className="profile-details">
-          {find}
-          {matched && tree ? (
+      {/* One row whether or not a frame is selected, so the search stays
+          put and keeps its focus as a click selects or typing lets go. */}
+      <div className="profile-details" data-testid={fn === undefined ? undefined : "details"}>
+        <input
+          ref={searchBox}
+          type="search"
+          className="input profile-search"
+          placeholder="Click or search for a frame"
+          aria-label="Search frames"
+          title={fn}
+          value={fn ?? search}
+          onChange={edit}
+        />
+        {search !== "" || fn !== undefined || hasZoom ? (
+          <button type="button" className="tb ghost" onClick={clearAndFocus}>
+            Clear
+          </button>
+        ) : null}
+        {fn === undefined ? (
+          matched && tree ? (
             <span className="muted" data-testid="matched">
               matched {formatPercent(matched.weight, tree.weight)} of samples
             </span>
-          ) : null}
-        </div>
-      )}
+          ) : null
+        ) : (
+          <Selected name={fn} />
+        )}
+      </div>
       <div className={`pane-body ${answer.current ? "" : "stale"}`}>
         {answer.error || !tree ? (
           <Unanswered error={answer.error} reading="Reading the flame graph…" />

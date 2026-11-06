@@ -432,7 +432,7 @@ it("forgets the frame it hovered once another tree arrives", async () => {
   await expect.element(page.getByTestId("flame-tip")).not.toBeInTheDocument();
 });
 
-it("puts a clicked frame in the search, and Show full graph or typing lets it go", async () => {
+it("puts a clicked frame in the search, and Clear or typing lets it go", async () => {
   const server = await mount(<FlameView />);
   server.answer(await server.next("profileTree"), ...TREE);
   const canvas = page.getByRole("img", { name: "Flame graph" });
@@ -444,8 +444,9 @@ it("puts a clicked frame in the search, and Show full graph or typing lets it go
   await expect.element(page.getByTestId("details").getByText("Focus")).toBeVisible();
   expect(lookShown().fn).toBe("work");
 
-  await page.getByRole("button", { name: "Show full graph" }).click();
+  await page.getByRole("button", { name: "Clear" }).click();
   await expect.element(search).toHaveValue("");
+  await expect.element(search).toHaveFocus();
   await expect.element(page.getByTestId("details")).not.toBeInTheDocument();
   expect(lookShown().z).toBeUndefined();
   expect(lookShown().fn).toBeUndefined();
@@ -455,18 +456,42 @@ it("puts a clicked frame in the search, and Show full graph or typing lets it go
   await expect.element(search).toHaveValue("work");
   await userEvent.fill(search, "lea");
   await expect.element(page.getByTestId("matched")).toHaveTextContent("matched 50.0% of samples");
+  await expect.element(search).toHaveFocus();
   expect(lookShown().fn).toBeUndefined();
   expect(lookShown().z).toBeDefined();
 
-  // Emptying the search, as after selecting all and deleting, shows the full graph.
+  // Emptying the search, as after selecting all and deleting, clears.
   mouseAt(canvas.element(), "click", 10, 23);
   await expect.element(search).toHaveValue("work");
   await userEvent.clear(search);
-  await expect
-    .element(page.getByRole("button", { name: "Show full graph" }))
-    .not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Clear" })).not.toBeInTheDocument();
   expect(lookShown().fn).toBeUndefined();
   expect(lookShown().z).toBeUndefined();
+
+  // A search typed with nothing zoomed or selected has a Clear of its own.
+  await userEvent.fill(search, "lea");
+  await page.getByRole("button", { name: "Clear" }).click();
+  await expect.element(search).toHaveValue("");
+  await expect.element(page.getByTestId("matched")).not.toBeInTheDocument();
+});
+
+it("lets go of the selection once Focus, Merge, or Drop reshapes the graph, but not Collapse recursion", async () => {
+  for (const [action, kept] of [
+    ["Focus", false],
+    ["Merge", false],
+    ["Drop", false],
+    ["Collapse recursion", true],
+  ] as const) {
+    const server = await mount(<FlameView />, { look: { fn: "work" } });
+    server.answer(await server.next("profileTree"), ...TREE);
+    const search = page.getByRole("searchbox", { name: "Search frames" });
+    await expect.element(search).toHaveValue("work");
+    await page.getByTestId("details").getByRole("button", { name: action }).click();
+    expect(lookShown().tf).toHaveLength(1);
+    expect(lookShown().fn).toBe(kept ? "work" : undefined);
+    await expect.element(search).toHaveValue(kept ? "work" : "");
+    cleanup();
+  }
 });
 
 it("draws a lane per thread for hundreds of threads", async () => {

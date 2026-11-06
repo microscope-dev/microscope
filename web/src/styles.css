@@ -3303,12 +3303,18 @@ textarea.input {
 
 /* Wide enough for most selected frames' names, yielding first to the
    selection's actions. */
+/* As wide whether or not a frame is selected: its width follows the
+   pane's, never what else the row holds. */
 .profile-search {
-  flex: 4 1 0;
-  min-width: 180px;
-  max-width: 460px;
+  flex: none;
+  width: clamp(180px, 28%, 460px);
   padding: 3px 7px;
   font-size: 12px;
+}
+
+/* The Clear button beside it does this, in every browser. */
+.profile-search::-webkit-search-cancel-button {
+  display: none;
 }
 
 .profile-timeline {
@@ -3540,6 +3546,22 @@ textarea.input {
   padding: 4px 10px;
   border-bottom: 1px solid var(--line);
   font-size: 12px;
+}
+
+/* A basis of nothing, so the row never wraps for it; it grows into the
+   room the actions leave and cuts itself short in less. */
+.profile-details .cost {
+  display: flex;
+  flex: 1 1 0;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.profile-details .cost > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .profile-details .name {

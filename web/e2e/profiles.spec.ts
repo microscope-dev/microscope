@@ -90,18 +90,23 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(page.getByRole("combobox", { name: "View" })).toHaveValue("tree");
   await page.keyboard.press("Escape");
 
-  // A frame of the flame graph zooms, and says what it costs.
+  // A frame of the flame graph zooms, and says what it costs, beside a
+  // search as wide as before.
   await showView(page, "Flame graph");
   const flame = page.getByRole("img", { name: "Flame graph" });
   const box = await flame.boundingBox();
   if (!box) {
     throw new Error("the flame graph has no box");
   }
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  const searchWidth = (await search.boundingBox())?.width;
   await page.mouse.move(box.x + 4, box.y + 4);
   await expect(page.getByTestId("flame-tip")).toContainText("total");
   await page.mouse.click(box.x + 4, box.y + 4);
   await expect(page).toHaveURL(/z=/u);
-  await expect(page.getByRole("button", { name: "Show full graph" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Clear" })).toBeVisible();
+  await expect(page.getByTestId("details").getByText(/total/u)).toBeVisible();
+  expect((await search.boundingBox())?.width).toBe(searchWidth);
 
   // Dragging across the timeline selects a range, which a chip names.
   const lanes = page.getByTestId("timeline").getByRole("img");
@@ -124,7 +129,6 @@ test("a profile is explored, and its address opens the same view", async ({
   address.searchParams.set("fn", long);
   address.searchParams.append("tf", `merge:${long}`);
   await page.goto(address.href);
-  const search = page.getByRole("searchbox", { name: "Search frames" });
   await expect(search).toHaveValue(long);
   await expect(search).toHaveAttribute("title", long);
   const chip = page.locator(".profile-chip", { hasText: "merge <alloc::boxed" });
