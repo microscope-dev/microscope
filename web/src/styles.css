@@ -3262,6 +3262,30 @@ textarea.input {
   padding: 3px 6px;
 }
 
+/* How the frames are drawn, opened from the toolbar's Options button. */
+.popover.profile-options {
+  right: auto;
+  left: 0;
+  display: grid;
+  width: 280px;
+  gap: 10px;
+  padding: 12px;
+}
+
+.options-field {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.options-field .input {
+  width: 100%;
+  padding: 3px 6px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
 .profile-search {
   width: 220px;
   margin-left: auto;

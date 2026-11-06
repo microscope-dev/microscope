@@ -1,14 +1,12 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type ProfileLook,
-  type ProfileView,
   parseRange,
   parseTransform,
   queryOf,
   rangeOf,
-  transformed,
   untransformed,
   validateProfileLook,
   withLook,
@@ -21,7 +19,7 @@ import {
   formatWeight,
 } from "../../profile/paint";
 import { tracedBy, traceNotes } from "../../profile/syscalls";
-import type { ProfileGranularity, ProfileInfo, ProfileSummary } from "../../protocol";
+import type { ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import type { PaneProps } from "../../workbench/kinds";
 import { groups, type Json, type Pane, setParams } from "../../workbench/layout";
@@ -36,6 +34,7 @@ import {
 import { FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
+import { defaultView, Options } from "./Options";
 import { Chip, ClearChip, LaneChip, LookButton } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
@@ -205,70 +204,17 @@ export function Profile({
   );
 }
 
-const VIEWS: { view: ProfileView; label: string }[] = [
-  { view: "flame", label: "Flame graph" },
-  { view: "tree", label: "Call tree" },
-  { view: "functions", label: "Functions" },
-  { view: "zones", label: "Zones" },
-  { view: "syscalls", label: "Syscalls" },
-];
-
-/** A trace with no samples opens on its calls; anything else on its
- * flame graph. */
-function defaultView(summary: ProfileSummary): ProfileView {
-  return summary.samples === 0 && summary.syscalls > 0 ? "syscalls" : "flame";
-}
-
-/** Whether the head offers a view: sample views when there are samples or
- * nothing else, zones when there are some, calls when traced. */
-function offers(summary: ProfileSummary, view: ProfileView): boolean {
-  switch (view) {
-    case "zones":
-      return summary.zoneSites.length > 0 || summary.probes.plotted > 0;
-    case "syscalls":
-      return summary.syscalls > 0;
-    default:
-      return summary.samples > 0 || summary.syscalls === 0;
-  }
-}
-
-const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
-  { by: "function", label: "functions" },
-  { by: "physical", label: "functions, inlines folded" },
-  { by: "line", label: "lines" },
-  { by: "address", label: "instructions" },
-];
-
 /** The profile's name, the views, and everything the query holds, each
  * removable where it shows. */
 function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
-  const { summary, look, setLook } = useProfile();
+  const { summary, look } = useProfile();
   const [detailing, setDetailing] = useState(false);
   const showDetails = useCallback(() => setDetailing(true), []);
   const hideDetails = useCallback(() => setDetailing(false), []);
   const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
-  // A trace of system calls alone has no frames to invert, fold, or compare.
+  // A trace of system calls alone has no frames to compare.
   const sampled = summary.samples > 0 || summary.syscalls === 0;
-
-  const collapseCycles = useCallback(
-    () => setLook((prev) => transformed(prev, { op: "collapseCycles", name: "" }), true),
-    [setLook],
-  );
-  const rootByLabel = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const key = event.target.value || undefined;
-      setLook((prev) => withLook(prev, "bl", key));
-    },
-    [setLook],
-  );
-  const framesBy = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const by = event.target.value as ProfileGranularity;
-      setLook((prev) => withLook(prev, "by", by === "function" ? undefined : by));
-    },
-    [setLook],
-  );
 
   return (
     <div className="profile-head">
@@ -276,18 +222,6 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
         File details
       </button>
       {detailing ? <FileDetails info={info} close={hideDetails} /> : null}
-      <div className="segmented">
-        {VIEWS.filter(({ view }) => offers(summary, view)).map(({ view, label }) => (
-          <LookButton
-            key={view}
-            field="view"
-            value={view === defaultView(summary) ? undefined : view}
-            pressed={(look.view ?? defaultView(summary)) === view}
-          >
-            {label}
-          </LookButton>
-        ))}
-      </div>
       {snapshots ? (
         <div className="segmented">
           {SOURCES.map(([src, label, title]) => (
@@ -303,6 +237,7 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
           ))}
         </div>
       ) : null}
+      <Options />
       <div className="profile-query">
         {range ? (
           <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
@@ -314,99 +249,7 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
         {(look.tf ?? []).map((entry, index) => (
           <TransformChip key={entry} entry={entry} index={index} />
         ))}
-        {sampled ? (
-          <>
-            {(look.tf ?? []).includes("collapseCycles") ? null : (
-              <button
-                type="button"
-                className="tb ghost"
-                title="Cut each path back to the first call of anything it calls again, directly or through others"
-                onClick={collapseCycles}
-              >
-                Collapse recursion
-              </button>
-            )}
-            <LookCheck field="invert" checked={look.invert === "1"} on="1" off={undefined}>
-              Inverted
-            </LookCheck>
-            <LookCheck
-              field="native"
-              title="Show each async task's frames as a stack of its own"
-              checked={look.native !== "1"}
-              on={undefined}
-              off="1"
-            >
-              Async stacks
-            </LookCheck>
-            {summary.interpreted ? (
-              <LookCheck
-                field="py"
-                title="Show each stack as its Python code sees it, without the interpreter's own frames"
-                checked={look.py === "1"}
-                on="1"
-                off={undefined}
-              >
-                Python stacks
-              </LookCheck>
-            ) : null}
-          </>
-        ) : null}
-        {snapshots ? (
-          <>
-            <LookCheck
-              field="bt"
-              title="Root each path at the task it ran or waited in"
-              checked={look.bt === "1"}
-              on="1"
-              off={undefined}
-            >
-              By task
-            </LookCheck>
-            {look.src === "waits" ? null : (
-              <LookCheck
-                field="lanes"
-                title="A timeline lane per task, not per thread"
-                checked={look.lanes === "tasks"}
-                on="tasks"
-                off={undefined}
-              >
-                Task lanes
-              </LookCheck>
-            )}
-          </>
-        ) : null}
-        {summary.labelKeys.length > 0 ? (
-          <select
-            className="input profile-by"
-            aria-label="Root by label"
-            value={look.bl ?? ""}
-            onChange={rootByLabel}
-          >
-            <option value="">no label roots</option>
-            {summary.labelKeys.map((key) => (
-              <option key={key} value={key}>
-                rooted by {key}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        {sampled ? (
-          <>
-            <select
-              className="input profile-by"
-              aria-label="Frames by"
-              value={look.by ?? "function"}
-              onChange={framesBy}
-            >
-              {GRANULARITIES.map(({ by, label }) => (
-                <option key={by} value={by}>
-                  by {label}
-                </option>
-              ))}
-            </select>
-            <Compare />
-          </>
-        ) : null}
+        {sampled ? <Compare /> : null}
       </div>
     </div>
   );
@@ -421,38 +264,6 @@ const DIFF_MEASURES = [
   [undefined, "time", "Each function's cost, as report --base compares it"],
   ["share", "share", "Each function's share of its own profile"],
 ] as const;
-
-/** A checkbox that sets one part of the look to `on` or `off`. */
-function LookCheck<K extends keyof ProfileLook>({
-  field,
-  title,
-  checked,
-  on,
-  off,
-  children,
-}: {
-  field: K;
-  title?: string;
-  checked: boolean;
-  on: ProfileLook[K] | undefined;
-  off: ProfileLook[K] | undefined;
-  children: ReactNode;
-}) {
-  const { setLook } = useProfile();
-  const toggle = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const value = event.target.checked ? on : off;
-      setLook((prev) => withLook(prev, field, value));
-    },
-    [setLook, field, on, off],
-  );
-  return (
-    <label className="check" title={title}>
-      <input type="checkbox" checked={checked} onChange={toggle} />
-      {children}
-    </label>
-  );
-}
 
 function LabelChip({ label }: { label: string }) {
   const { setLook } = useProfile();
@@ -474,13 +285,10 @@ function TransformChip({ entry, index }: { entry: string; index: number }) {
     [setLook, index],
   );
   const transform = parseTransform(entry);
-  return transform ? (
+  // Collapsing recursion is set from Options, not shown as a chip.
+  return transform && transform.op !== "collapseCycles" ? (
     <Chip
-      label={
-        transform.op === "collapseCycles"
-          ? "collapse recursion"
-          : `${transform.op} ${transform.name}`
-      }
+      label={`${transform.op} ${transform.name}`}
       title="Remove this transform and those after it"
       remove={remove}
     />

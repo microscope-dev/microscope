@@ -31,7 +31,7 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
   await expect(page.getByTestId("syscall-counts")).toContainText("ptrace");
   await expect(page.getByTestId("accounting")).toContainText("calls traced by ptrace");
   await expect(page.getByTestId("accounting")).toContainText("calls lost 0");
-  await expect(page.getByText("Inverted")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Options/u })).toHaveCount(0);
   await expect(view.getByRole("img", { name: "Each thread's time in system calls" })).toBeVisible();
 
   // Narrowed to failed opens, the one call left is placed at its line.

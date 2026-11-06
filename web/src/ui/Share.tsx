@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Role } from "../protocol";
 import { useConnection, useModel } from "../store";
 import { tab, useTab } from "../tab";
-import { useDialogFocus } from "./dialog";
+import { useDialogFocus, useDismiss } from "./dialog";
 
 export function Share() {
   const open = useModel((model) => model.link === "open");
@@ -13,27 +13,8 @@ export function Share() {
   const anchor = useRef<HTMLDivElement>(null);
 
   // Escape or a click elsewhere puts it away.
-  useEffect(() => {
-    if (!shown) {
-      return;
-    }
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        tab.setState({ share: false });
-      }
-    };
-    const pointer = (event: PointerEvent) => {
-      if (!anchor.current?.contains(event.target as Node)) {
-        tab.setState({ share: false });
-      }
-    };
-    window.addEventListener("keydown", key);
-    window.addEventListener("pointerdown", pointer);
-    return () => {
-      window.removeEventListener("keydown", key);
-      window.removeEventListener("pointerdown", pointer);
-    };
-  }, [shown]);
+  const away = useCallback(() => tab.setState({ share: false }), []);
+  useDismiss(anchor, shown, away);
 
   const toggle = useCallback(() => tab.setState({ share: !shown }), [shown]);
 

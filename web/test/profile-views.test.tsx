@@ -22,6 +22,7 @@ import { createSession, type Session, SessionContext } from "../src/store";
 import { ProfileContext, type ProfileFocus } from "../src/ui/profile/context";
 import { FlameView } from "../src/ui/profile/FlameView";
 import { FunctionsView } from "../src/ui/profile/FunctionsView";
+import { Options } from "../src/ui/profile/Options";
 import { Profile } from "../src/ui/profile/ProfilePage";
 import { SyscallsView } from "../src/ui/profile/SyscallsView";
 import { Timeline } from "../src/ui/profile/Timeline";
@@ -587,6 +588,54 @@ it("names the lanes it cuts samples to over the lanes, and clears them there", a
   await corner.getByRole("button", { name: "Remove 2 threads" }).click();
   await expect.element(corner.getByText("2 threads")).not.toBeInTheDocument();
   expect(lookShown().th).toBeUndefined();
+});
+
+it("sets how frames are drawn from Options, and puts it away on Escape or a press outside", async () => {
+  await mount(<Options />, { look: { tf: ["focus:main"] } });
+  const button = page.getByRole("button", { name: "Options", exact: true });
+  await button.click();
+  const options = page.getByRole("dialog", { name: "Options" });
+  await expect.element(options).toBeVisible();
+
+  // The default view leaves the address alone.
+  const view = options.getByRole("combobox", { name: "View" });
+  await view.selectOptions("Call tree");
+  expect(lookShown().view).toBe("tree");
+  await view.selectOptions("Flame graph");
+  expect(lookShown().view).toBeUndefined();
+
+  await options.getByRole("combobox", { name: "Frames" }).selectOptions("lines");
+  await options.getByRole("checkbox", { name: "Async stacks" }).click();
+  expect(lookShown()).toMatchObject({ by: "line", native: "1" });
+
+  // Collapsing recursion is a checkbox. Unchecking it takes out only that
+  // transform, keeping one added after it.
+  const collapse = options.getByRole("checkbox", { name: "Collapse recursion" });
+  await collapse.click();
+  expect(lookShown().tf).toEqual(["focus:main", "collapseCycles"]);
+  changeLook((look) => ({ ...look, tf: [...(look.tf ?? []), "drop:noise"] }));
+  await expect.element(collapse).toBeChecked();
+  await collapse.click();
+  expect(lookShown().tf).toEqual(["focus:main", "drop:noise"]);
+
+  // Escape puts it away and gives focus back to its button.
+  await userEvent.keyboard("{Escape}");
+  await expect.element(options).not.toBeInTheDocument();
+  expect(document.activeElement).toBe(button.element());
+
+  // So does a press anywhere else.
+  await button.click();
+  await expect.element(options).toBeVisible();
+  act(() => {
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  });
+  await expect.element(options).not.toBeInTheDocument();
+});
+
+it("offers no Options for a trace of system calls alone", async () => {
+  await mount(<Options />, { summary: summaryOf({ samples: 0, syscalls: 10 }) });
+  await expect.element(page.getByText("Reading…")).not.toBeInTheDocument();
+  expect(document.body.textContent).not.toContain("Options");
 });
 
 it("says why the timeline could not be read", async () => {

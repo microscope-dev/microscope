@@ -5,7 +5,20 @@
 import { execFileSync, spawn } from "node:child_process";
 import * as path from "node:path";
 
+import type { Page } from "@playwright/test";
+
 import { expect, fixture, join, menu, root, test } from "./server";
+
+/** Shows a view from Options, opening it if it is closed, and puts it away. */
+async function showView(page: Page, label: string): Promise<void> {
+  const options = page.getByRole("dialog", { name: "Options" });
+  if (!(await options.isVisible())) {
+    await page.getByRole("button", { name: "Options" }).click();
+  }
+  await options.getByRole("combobox", { name: "View" }).selectOption({ label });
+  await page.keyboard.press("Escape");
+  await expect(options).toBeHidden();
+}
 
 // The test serves a profile it records, not a program.
 test.use({ program: [] });
@@ -44,7 +57,7 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(accounting).toContainText("each call of leaf");
 
   // leaf owns every sample, and its callers are middle, then outer.
-  await page.getByRole("button", { name: "Functions" }).click();
+  await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   await expect(functions.getByRole("option").first()).toContainText("100.0%");
   await expect(functions.getByRole("option").first()).toContainText("leaf");
@@ -56,7 +69,7 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(callers.nth(2)).toContainText("outer");
 
   // Merged away, middle gives its place to outer, in every view.
-  await page.getByRole("button", { name: "Call tree" }).click();
+  await showView(page, "Call tree");
   await page
     .getByRole("tree", { name: "Call tree" })
     .getByRole("treeitem")
@@ -73,13 +86,12 @@ test("a profile is explored, and its address opens the same view", async ({
   // The address opens the same view.
   await page.reload();
   await expect(page.getByText("merge middle")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Call tree" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await page.getByRole("button", { name: "Options" }).click();
+  await expect(page.getByRole("combobox", { name: "View" })).toHaveValue("tree");
+  await page.keyboard.press("Escape");
 
   // A frame of the flame graph zooms, and says what it costs.
-  await page.getByRole("button", { name: "Flame graph" }).click();
+  await showView(page, "Flame graph");
   const flame = page.getByRole("img", { name: "Flame graph" });
   const box = await flame.boundingBox();
   if (!box) {
@@ -247,7 +259,7 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   await expect(page.getByTestId("recording")).toContainText("Recording spin");
 
   // Its samples arrive while it runs.
-  await page.getByRole("button", { name: "Functions" }).click();
+  await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   const main = functions
     .getByRole("option")
@@ -294,18 +306,22 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   // The waits' functions are the receivers', and by task each is its own.
   await page.getByRole("button", { name: "Waits", exact: true }).click();
   await expect(page).toHaveURL(/src=waits/u);
-  await page.getByRole("button", { name: "Functions" }).click();
+  await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   await expect(functions.getByRole("option").filter({ hasText: "main.receive" })).toHaveCount(1);
-  await page.getByRole("checkbox", { name: "By task" }).check();
-  await page.getByRole("button", { name: "Call tree" }).click();
+  const options = page.getByRole("dialog", { name: "Options" });
+  await page.getByRole("button", { name: "Options" }).click();
+  await options.getByRole("checkbox", { name: "By task" }).check();
+  await showView(page, "Call tree");
   const tree = page.getByRole("tree", { name: "Call tree" }).getByRole("treeitem");
   await expect(tree.first()).toContainText("goroutine");
 
   // The CPU's lanes by task: the spinner's, which selects its samples.
   await page.getByRole("button", { name: "CPU" }).click();
-  await page.getByRole("checkbox", { name: "By task" }).uncheck();
-  await page.getByRole("checkbox", { name: "Task lanes" }).check();
+  await page.getByRole("button", { name: "Options" }).click();
+  await options.getByRole("checkbox", { name: "By task" }).uncheck();
+  await options.getByRole("checkbox", { name: "Task lanes" }).check();
+  await page.keyboard.press("Escape");
   const spinner = page.getByTestId("timeline").getByRole("button", { name: /phase=spin/u });
   await spinner.click();
   await expect(page).toHaveURL(/tk=\d+/u);
@@ -328,7 +344,7 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   const served = await microscope.start([file]);
   await join(page, served.link);
   await expect(page.getByTestId("accounting")).toContainText("probe events, lost 0");
-  await page.getByRole("button", { name: "Zones", exact: true }).click();
+  await showView(page, "Zones");
   await expect(page).toHaveURL(/view=zones/u);
   await expect(page.getByRole("img", { name: /^Zones over/u })).toBeVisible();
   await expect(page.getByRole("img", { name: "Plot round, 3 values from 0 – 2" })).toBeVisible();
@@ -389,6 +405,7 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   await expect(page.getByRole("button", { name: `Remove ${round}` })).toBeVisible();
   await stats.getByRole("button", { name: "By round" }).click();
   await expect(page).toHaveURL(/bl=round/u);
+  await page.getByRole("button", { name: "Options" }).click();
   await expect(page.getByRole("combobox", { name: "Root by label" })).toHaveValue("round");
 });
 
@@ -403,7 +420,7 @@ test("a Go program's own pprof profile opens in its unit, without a timeline", a
   const served = await microscope.start([allocs]);
   await join(page, served.link);
   await expect(page.getByTestId("untimed")).toContainText("pprof's alloc_space (bytes)");
-  await page.getByRole("button", { name: "Functions" }).click();
+  await showView(page, "Functions");
   const allocate = page
     .getByRole("listbox", { name: "Functions" })
     .getByRole("option")
@@ -458,7 +475,7 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await compare.selectOption("range");
   await expect(page).toHaveURL(/br=\d+-\d+/u);
   await expect(page).not.toHaveURL(/[?&]range=/u);
-  await page.getByRole("button", { name: "Functions" }).click();
+  await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   const row = (name: string) =>
     functions.getByRole("option").filter({ has: page.getByText(name, { exact: true }) });
@@ -509,7 +526,7 @@ test("a function's samples show on its source lines and its instructions", async
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await page.getByRole("button", { name: "Functions" }).click();
+  await showView(page, "Functions");
   await page
     .getByRole("listbox", { name: "Functions" })
     .getByRole("option")
