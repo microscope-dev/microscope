@@ -16,6 +16,7 @@ use super::memory::holding_word;
 use super::native::LinuxTraceOps;
 use super::{
     BREAKPOINT_OPCODE, Controller, ControllerMessage, Inferior, InferiorOrigin, Signal, WaitEvent,
+    Waiter,
 };
 
 use crate::VirtualAddress;
@@ -165,6 +166,22 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
+        // A waiter blocked on a full queue ends once its status is taken.
+        let take_queued = |seen: &mut Seen| {
+            while let Ok(message) = self.messages.borrow_mut().try_recv() {
+                if let ControllerMessage::Wait(status) = message {
+                    seen.note(&status);
+                }
+            }
+        };
+
+        // A waiter that panicked takes no more statuses, so the threads'
+        // stops are this thread's to take, after those it took before.
+        let waiter_failed = inferior.waiter.as_ref().is_some_and(Waiter::failed);
+        if waiter_failed && let Some(waiter) = inferior.waiter.take() {
+            let _ = waiter.stop_and_join(|| take_queued(&mut seen));
+        }
+
         // Only a thread in a ptrace-stop answers a register read.
         let mut awaited = BTreeSet::new();
         for &pid in threads.iter().chain(children) {
@@ -192,6 +209,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             .any(|pid| !seen.stopped.contains(pid) && !seen.gone.contains(pid))
             && Instant::now() < deadline
         {
+            if waiter_failed {
+                for &pid in &awaited {
+                    while let Some(status) = self.ptrace.poll_status(pid) {
+                        seen.note(&status);
+                    }
+                }
+            }
+
             match self.messages.borrow_mut().try_recv() {
                 Ok(ControllerMessage::Wait(status)) => seen.note(&status),
                 // A request dropped unanswered is cancelled for its client.
@@ -204,15 +229,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Err(TryRecvError::Disconnected) => break,
             }
         }
-
-        // A waiter blocked on a full queue ends once its status is taken.
-        let take_queued = |seen: &mut Seen| {
-            while let Ok(message) = self.messages.borrow_mut().try_recv() {
-                if let ControllerMessage::Wait(status) = message {
-                    seen.note(&status);
-                }
-            }
-        };
 
         if let Some(waiter) = inferior.waiter.take() {
             let _ = waiter.stop_and_join(|| take_queued(&mut seen));

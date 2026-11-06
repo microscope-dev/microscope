@@ -1352,6 +1352,12 @@ impl Waiter {
         }
     }
 
+    /// Whether the waiter panicked, so that the controller must take its
+    /// threads' statuses itself.
+    fn failed(&self) -> bool {
+        self.hub.as_ref().is_some_and(wait_hub::HubEdge::failed)
+    }
+
     /// Stops the waiter, calling `serve` until it ends: one blocked
     /// sending a status to a full queue waits for the controller to make
     /// room, which `serve` does.
@@ -1645,6 +1651,11 @@ struct Controller<P: InspectionOps> {
     /// controller panic, from [`PANIC_AFTER`], to test what a panic leaves.
     #[cfg(debug_assertions)]
     panic_after: Option<String>,
+
+    /// The description a served request begins with that makes the waiter
+    /// panic at the next status it routes, from [`WAITER_PANIC_AFTER`].
+    #[cfg(debug_assertions)]
+    waiter_panic_after: Option<String>,
 }
 
 /// Fork children still on their way to their first stop when their parent's
@@ -1713,6 +1724,11 @@ enum Start {
 /// the controller panics, by the start of its description.
 #[cfg(debug_assertions)]
 const PANIC_AFTER: &str = "MICROSCOPE_TEST_PANIC_AFTER";
+
+/// In development builds, the variable that names a request after which
+/// the waiter panics, by the start of its description.
+#[cfg(debug_assertions)]
+const WAITER_PANIC_AFTER: &str = "MICROSCOPE_TEST_WAITER_PANIC_AFTER";
 
 pub fn spawn_controller(
     executable: Executable,
@@ -1962,6 +1978,9 @@ impl<P: InspectionOps> Controller<P> {
 
             #[cfg(debug_assertions)]
             panic_after: std::env::var(PANIC_AFTER).ok(),
+
+            #[cfg(debug_assertions)]
+            waiter_panic_after: std::env::var(WAITER_PANIC_AFTER).ok(),
         }
     }
 }
@@ -2135,7 +2154,17 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .panic_after
                     .as_ref()
                     .is_some_and(|prefix| request.describe().starts_with(prefix.as_str()));
+                #[cfg(debug_assertions)]
+                let waiter_injected = self
+                    .waiter_panic_after
+                    .as_ref()
+                    .is_some_and(|prefix| request.describe().starts_with(prefix.as_str()));
                 let keeps_running = self.handle_request(request);
+
+                #[cfg(debug_assertions)]
+                if waiter_injected {
+                    wait_hub::inject_panic();
+                }
 
                 #[cfg(debug_assertions)]
                 assert!(!injected, "a panic injected by {PANIC_AFTER}");

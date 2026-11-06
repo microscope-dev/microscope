@@ -881,6 +881,53 @@ fn a_controller_panic_releases_an_attached_process_unharmed() {
     }
 }
 
+/// A panic that ends the waiter releases an attached process as a detach
+/// would, though no controller hears of a stop again. Development builds
+/// panic the waiter on request as it routes the next status: here, a
+/// thread's stop at the breakpoint, which the kernel won't report again,
+/// so the release must still rewind that thread over the trap. Its many
+/// threads all hit the trap at once, so a release that misses any stop
+/// leaves a thread to die of the trap or run past it mid-instruction.
+#[test]
+fn a_waiter_panic_releases_an_attached_process_unharmed() {
+    let mut target =
+        support::ExternalProcess::spawn(&fixture("build/test-programs/attach-sleepers"));
+    let process = target.process_id().get();
+    let mut microscope = Microscope::spawn(
+        microscope_command()
+            .env("MICROSCOPE_TEST_WAITER_PANIC_AFTER", "continue")
+            .args(["--batch", "--attach", &process.to_string()])
+            .args(["--eval", "break attach_breakpoint"])
+            .args(["--eval", "continue"])
+            .current_dir(env!("CARGO_MANIFEST_DIR")),
+    );
+    microscope.close_stdin();
+    microscope.line("the breakpoint", |line| {
+        line.starts_with("breakpoint 1 set at attach_breakpoint")
+    });
+
+    // The attach stopped the fixture; once continued, it sleeps in its
+    // read until released.
+    let pid = u32::try_from(process).expect("PID fits u32");
+    support::wait_until("the attached process runs", || {
+        process_state(pid) == Some('S')
+    });
+    target.release();
+
+    let output = microscope.finish();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("a panic injected by MICROSCOPE_TEST_WAITER_PANIC_AFTER"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("the session of [1] failed, and released its process"),
+        "{stderr}"
+    );
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert_eq!(target.wait().code(), Some(23), "{stderr}");
+}
+
 /// SIGTERM, as `kill` and systemd send it, and SIGHUP, as a dropped SSH
 /// session sends it, end the session as `quit` does, whether the signal
 /// finds the attached process stopped or running: no trap is left to kill

@@ -216,6 +216,27 @@ fn serve(_lease: &SessionLease, commands: &std_mpsc::Receiver<Command>, group: O
     let mut group = group.map(|setup| Group::new(setup, &HostContext { hub: &hub }));
 
     loop {
+        // No controller hears of a stop once the waiter panicked, so each
+        // releases its process as after its own panic, and the thread ends:
+        // the kernel then releases what is left, as it would at a crash.
+        // Processes already handed over are adopted first, so that a fork
+        // child loses the traps it inherited.
+        if hub.failed() {
+            if let Some(group) = &mut group {
+                let (joined, _) = group.serve(&HostContext { hub: &hub });
+                members.extend(joined.into_iter().map(|(hosted, ended)| Member {
+                    hosted,
+                    ended: Some(ended),
+                }));
+            }
+
+            for member in &mut members {
+                release(member, Box::new("the waiter panicked"));
+            }
+
+            break;
+        }
+
         loop {
             match commands.try_recv() {
                 Ok(Command::Host { build, ended }) => {
@@ -317,14 +338,20 @@ fn serve_one(member: &mut Member, message: ControllerMessage) -> bool {
             false
         }
         Err(panic) => {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                member.hosted.release_after_panic();
-            }));
-            if let Some(ended) = member.ended.take() {
-                let _ = ended.send(Err(panic));
-            }
+            release(member, panic);
             false
         }
+    }
+}
+
+/// Lets `member`'s process go after `panic`, and tells its owner that the
+/// controller ended with it.
+fn release(member: &mut Member, panic: Box<dyn std::any::Any + Send>) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        member.hosted.release_after_panic();
+    }));
+    if let Some(ended) = member.ended.take() {
+        let _ = ended.send(Err(panic));
     }
 }
 

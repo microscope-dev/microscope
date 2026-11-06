@@ -11,6 +11,7 @@ state that the type system can't express.
 | `src/backend/linux.rs` | `Controller::handle_message`, which every request and wait status passes through, and `Controller::run`, which catches a panic |
 | `src/backend/linux/invariants.rs` | The controller's invariants, checked after its messages |
 | `src/backend/linux/panic_release.rs` | Releasing an attached process after a panic |
+| `src/backend/linux/wait_hub.rs`, `src/backend/linux/tracer.rs` | The waiter, which catches its own panic, and the tracer thread, which then releases every process |
 | `src/backend/linux/lifecycle.rs` | `detach_inferior`, the correct way to release an attached process |
 
 ## Rules
@@ -117,5 +118,13 @@ debugger's shutdown before it exits. SIGTERM and SIGHUP end the session the
 same way. `MICROSCOPE_TEST_CLI_PANIC` makes a development build's CLI panic
 once a `continue` or `run` is under way.
 
-The waiter thread asserts nothing. If it ends, the controller hears no more
-wait statuses and stalls.
+The waiter thread asserts nothing, but any panic can end it, and then no
+controller hears of a stop again. With all-stop, an attached process would
+stay stopped, or die at a trap once microscope exits. So the waiter catches
+the unwind and flags its hub, and the tracer thread releases every
+controller's process as after the controller's own panic, then ends. The
+status the waiter was routing may be a stop the kernel won't report again,
+such as a thread's at a trap, so every controller is given it. With the waiter
+gone, the release takes its threads' statuses with `waitpid` itself.
+`MICROSCOPE_TEST_WAITER_PANIC_AFTER=<request>` makes a development build's
+waiter panic as it routes the first status after that request.

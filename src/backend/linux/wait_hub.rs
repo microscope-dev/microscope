@@ -9,8 +9,13 @@
 //! settles fork children. Each routed thread is remembered until its exit
 //! status, the last it reports, so a status read after `/proc` forgot the
 //! thread still reaches its owner.
+//!
+//! A panic ends the waiter for good, as it ends a controller. The tracer
+//! thread then releases every member's process, as after a controller's
+//! panic, and the controllers take the statuses they need themselves.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle, Thread};
@@ -31,6 +36,17 @@ const MIN_POLL: Duration = Duration::from_micros(20);
 /// The longest poll interval while every process runs without reporting.
 const MAX_POLL: Duration = Duration::from_millis(5);
 
+/// In development builds, whether the next status a waiter routes makes it
+/// panic, to test what a waiter's panic leaves.
+#[cfg(debug_assertions)]
+static PANIC_INJECTED: AtomicBool = AtomicBool::new(false);
+
+/// Makes the next status a waiter routes panic it.
+#[cfg(debug_assertions)]
+pub(super) fn inject_panic() {
+    PANIC_INJECTED.store(true, Ordering::Release);
+}
+
 /// Identifies one controller the hub routes statuses to.
 pub(super) type MemberKey = u64;
 
@@ -49,6 +65,12 @@ struct Shared {
     /// tell that a status taken before it stopped has been delivered.
     epoch: AtomicU64,
     waiter: Mutex<Option<Thread>>,
+
+    /// Whether the waiter panicked, and takes no statuses any more.
+    failed: AtomicBool,
+
+    /// The thread that serves the members, woken when the waiter fails.
+    host: Thread,
 }
 
 #[derive(Default)]
@@ -76,12 +98,15 @@ struct Member {
 }
 
 impl WaitHub {
+    /// Starts the waiter for the controllers the calling thread serves.
     pub(super) fn new() -> Result<Self> {
         let shared = Arc::new(Shared {
             routes: Mutex::default(),
             stop: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             waiter: Mutex::new(None),
+            failed: AtomicBool::new(false),
+            host: thread::current(),
         });
         let thread_shared = Arc::clone(&shared);
         let thread = thread::Builder::new()
@@ -112,6 +137,12 @@ impl WaitHub {
             },
         );
         key
+    }
+
+    /// Whether the waiter panicked, so that no member hears of its
+    /// process's stops any more.
+    pub(super) fn failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Acquire)
     }
 
     /// The handle a controller's edge uses to wait for its process.
@@ -183,10 +214,17 @@ impl HubEdge {
         self.shared.wake();
     }
 
+    /// Whether the waiter panicked, so that the member must take its
+    /// statuses itself.
+    pub(super) fn failed(&self) -> bool {
+        self.shared.failed.load(Ordering::Acquire)
+    }
+
     /// Stops waiting for the member's process, calling `serve` until every
     /// status the waiter took before is in the member's queue. While other
     /// members wait, the waiter goes on, and may still route a late status
-    /// of this member's threads to its queue.
+    /// of this member's threads to its queue. A waiter that panicked
+    /// delivers nothing more, so its backlog is delivered here.
     pub(super) fn stop_and_join(&self, mut serve: impl FnMut()) {
         if let Some(member) = self.shared.lock().members.get_mut(&self.key) {
             member.active = false;
@@ -194,6 +232,11 @@ impl HubEdge {
         let started = self.shared.epoch.load(Ordering::Acquire);
 
         loop {
+            let failed = self.failed();
+            if failed {
+                self.shared.lock().flush_backlogs();
+            }
+
             serve();
             self.shared.wake();
             let delivered = self
@@ -202,7 +245,7 @@ impl HubEdge {
                 .members
                 .get(&self.key)
                 .is_none_or(|member| member.backlog.is_empty());
-            if delivered && self.shared.epoch.load(Ordering::Acquire) >= started + 2 {
+            if delivered && (failed || self.shared.epoch.load(Ordering::Acquire) >= started + 2) {
                 return;
             }
 
@@ -254,6 +297,33 @@ impl Shared {
     }
 
     fn run(&self) {
+        let mut taken = None;
+        let waited = std::panic::catch_unwind(AssertUnwindSafe(|| self.wait(&mut taken)));
+        if waited.is_err() {
+            self.fail(taken);
+        }
+
+        record!("exited");
+    }
+
+    /// Ends the hub after the waiter panicked. The status it was routing,
+    /// if any, is one the kernel will not report again, such as a thread's
+    /// stop at a trap, so each member gets it, as any could own it.
+    fn fail(&self, taken: Option<WaitEvent>) {
+        record!("panicked routing {taken:?}");
+        if let Some(status) = taken {
+            for member in self.lock().members.values_mut() {
+                member.backlog.push_back(status);
+            }
+        }
+
+        self.failed.store(true, Ordering::Release);
+        self.host.unpark();
+    }
+
+    /// Takes statuses until the hub stops, noting in `taken` the one being
+    /// routed.
+    fn wait(&self, taken: &mut Option<WaitEvent>) {
         let mut interval = MIN_POLL;
 
         while !self.stop.load(Ordering::Acquire) {
@@ -272,7 +342,19 @@ impl Shared {
             match super::native::wait_for(Pid::from_raw(-1), libc::__WALL | libc::WNOHANG) {
                 Ok(Some(status)) => {
                     interval = MIN_POLL;
+                    *taken = Some(status);
+
+                    #[cfg(debug_assertions)]
+                    {
+                        let injected = PANIC_INJECTED.swap(false, Ordering::AcqRel);
+                        assert!(
+                            !injected,
+                            "a panic injected by MICROSCOPE_TEST_WAITER_PANIC_AFTER"
+                        );
+                    }
+
                     self.lock().route(status);
+                    *taken = None;
                 }
                 Ok(None) | Err(Errno::ECHILD) => {
                     let parked = Instant::now();
@@ -290,8 +372,6 @@ impl Shared {
 
             self.epoch.fetch_add(1, Ordering::AcqRel);
         }
-
-        record!("exited");
     }
 }
 
@@ -414,6 +494,8 @@ mod tests {
                 stop: AtomicBool::new(false),
                 epoch: AtomicU64::new(0),
                 waiter: Mutex::new(None),
+                failed: AtomicBool::new(false),
+                host: thread::current(),
             }),
         };
         let wait = edge.intercept(pid).unwrap();
