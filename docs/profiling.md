@@ -112,8 +112,9 @@ settings to raise.
 
 Stacks are exact until the available unwind information or copied memory runs
 out. Each truncated stack records its reason. `dev` copies 32 KiB per sampled
-stack; `max` copies 16 KiB because larger copies at its rate cause kernel
-sample loss. Without frame pointers, a stack that needs more bytes ends with
+stack, and so does `prod` unless the program keeps frame pointers, when 512
+bytes are enough; `max` copies 16 KiB because larger copies at its rate cause
+kernel sample loss. Without frame pointers, a stack that needs more bytes ends with
 `[stack copy exhausted]`, and the report suggests a larger `--stack-bytes`.
 perf copies at most 65528 bytes per sample. Beyond that copy, the kernel's
 frame-pointer chain supplies at most 127 addresses. Deeper stacks, such as

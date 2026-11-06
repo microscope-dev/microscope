@@ -108,8 +108,8 @@ impl Preset {
     pub const fn stack_copy(self) -> StackCopy {
         match self {
             Self::Production => StackCopy::Auto,
-            Self::Development => StackCopy::Bytes(FULL_STACK_COPY),
-            Self::Maximum => StackCopy::Bytes(DEEP_STACK_COPY),
+            Self::Development => StackCopy::Bytes(DEEP_STACK_COPY),
+            Self::Maximum => StackCopy::Bytes(MAX_RATE_STACK_COPY),
         }
     }
 }
@@ -119,15 +119,16 @@ impl Preset {
 pub const SMALL_STACK_COPY: u32 = 512;
 
 /// Bytes of stack a sample copies where call-frame information alone
-/// unwinds: deep enough for most stacks.
-pub const DEEP_STACK_COPY: u32 = 16 * 1024;
-
-/// Bytes of stack each sample copies at `--preset dev`.
+/// unwinds, as `--preset dev` always does: deep enough for most stacks.
 ///
-/// Release Rust programs overrun [`DEEP_STACK_COPY`] just short of `main`.
-/// `--preset max` keeps that copy: at its rate, twice the bytes fill perf's
-/// rings before they are drained, and the kernel drops samples.
-pub const FULL_STACK_COPY: u32 = 32 * 1024;
+/// Half as much ends three in four of rustc's samples short of `main`, and
+/// nearly every sample of a tokio service holding 7 KiB in its futures.
+pub const DEEP_STACK_COPY: u32 = 32 * 1024;
+
+/// Bytes of stack each sample copies at `--preset max`: at its rate, a copy
+/// of [`DEEP_STACK_COPY`] fills perf's rings before they are drained, and
+/// the kernel drops samples.
+pub const MAX_RATE_STACK_COPY: u32 = 16 * 1024;
 
 /// The most stack perf copies per sample: it rejects 65536 and up, and
 /// anything not a multiple of eight.
