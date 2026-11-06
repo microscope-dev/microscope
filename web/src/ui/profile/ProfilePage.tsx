@@ -36,7 +36,7 @@ import {
 import { FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
-import { Chip, ClearChip, LookButton } from "./parts";
+import { Chip, ClearChip, LaneChip, LookButton } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
 import { TreeView } from "./TreeView";
@@ -250,10 +250,6 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to invert, fold, or compare.
   const sampled = summary.samples > 0 || summary.syscalls === 0;
-  const taskName = (id: string) =>
-    id === "none"
-      ? "no task known"
-      : (summary.tasks.find((task) => String(task.row) === id)?.name ?? `task ${id}`);
 
   const collapseCycles = useCallback(
     () => setLook((prev) => transformed(prev, { op: "collapseCycles", name: "" }), true),
@@ -311,24 +307,7 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
         {range ? (
           <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
         ) : null}
-        {look.th ? (
-          <ClearChip
-            field="th"
-            label={formatCount(look.th.length, "thread")}
-            title="Samples of these threads"
-          />
-        ) : null}
-        {look.tk ? (
-          <ClearChip
-            field="tk"
-            label={
-              look.tk.length === 1
-                ? taskName(look.tk[0] ?? "")
-                : formatCount(look.tk.length, "task")
-            }
-            title={look.tk.map(taskName).join("\n")}
-          />
-        ) : null}
+        {summary.timed ? null : <LaneChip />}
         {(look.lb ?? []).map((label) => (
           <LabelChip key={label} label={label} />
         ))}

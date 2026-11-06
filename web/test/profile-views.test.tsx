@@ -570,6 +570,25 @@ it("marks round times, the pointer's time, and a range's ends and length", async
   ]);
 });
 
+it("names the lanes it cuts samples to over the lanes, and clears them there", async () => {
+  const thread = { pid: 1, samples: 1, weight: 1, blocked: 0, preempted: 0 };
+  const threads: ProfileThread[] = [
+    { ...thread, row: 0, tid: 10, name: "main" },
+    { ...thread, row: 1, tid: 11, name: "worker" },
+  ];
+  await mount(<Timeline />, { summary: summaryOf({ timed: true, threads }) });
+  const corner = page.getByTestId("ruler");
+
+  await page.getByRole("button", { name: "main 10" }).click();
+  await page.getByRole("button", { name: "worker 11" }).click();
+  await expect.element(corner.getByText("2 threads")).toBeVisible();
+  expect(lookShown().th).toEqual(["0", "1"]);
+
+  await corner.getByRole("button", { name: "Remove 2 threads" }).click();
+  await expect.element(corner.getByText("2 threads")).not.toBeInTheDocument();
+  expect(lookShown().th).toBeUndefined();
+});
+
 it("says why the timeline could not be read", async () => {
   const server = await mount(<Timeline />, { summary: summaryOf({ timed: true }) });
   server.fail(await server.next("profileTimeline"), "the timeline is cut short");

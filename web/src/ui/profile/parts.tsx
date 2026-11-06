@@ -22,7 +22,7 @@ export function Chip({
 }) {
   return (
     <span className="chip profile-chip" title={title}>
-      {label}
+      <span>{label}</span>
       <button type="button" aria-label={removeLabel} onClick={remove}>
         ×
       </button>
@@ -52,6 +52,36 @@ export function ClearChip({
     [setLook, field],
   );
   return <Chip label={label} title={title} removeLabel={removeLabel} remove={clear} />;
+}
+
+/** A chip for the threads, or tasks, the samples are cut to. */
+export function LaneChip() {
+  const { summary, look } = useProfile();
+  const taskName = (id: string) =>
+    id === "none"
+      ? "no task known"
+      : (summary.tasks.find((task) => String(task.row) === id)?.name ?? `task ${id}`);
+  if (look.th) {
+    return (
+      <ClearChip
+        field="th"
+        label={formatCount(look.th.length, "thread")}
+        title="Samples of these threads"
+      />
+    );
+  }
+  if (look.tk) {
+    return (
+      <ClearChip
+        field="tk"
+        label={
+          look.tk.length === 1 ? taskName(look.tk[0] ?? "") : formatCount(look.tk.length, "task")
+        }
+        title={look.tk.map(taskName).join("\n")}
+      />
+    );
+  }
+  return null;
 }
 
 /** A button that sets one part of the look, pressed when it is set so. */
