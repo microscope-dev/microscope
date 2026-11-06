@@ -27,9 +27,13 @@ export function StatusBar() {
   const now = useNow(flash ? flash.at + FLASH : null);
   const latest = notices.findLast((notice) => notice.connection !== me);
   const stops = state?.session ? state.stops.slice(-SHOWN) : [];
+  const flashing = flash !== null && now - flash.at < FLASH;
+  // With nothing to say, as for a profile, it takes no room, but stays in
+  // the page so what it says next is still read out.
+  const idle = stops.length === 0 && !flashing && !latest;
 
   return (
-    <footer className="strip status-bar">
+    <footer className={`strip status-bar${idle ? " idle" : ""}`}>
       {stops.length > 0 && (
         <nav className="stops" aria-label="Stops" data-testid="stops">
           <span className="muted">Stops</span>
@@ -40,7 +44,7 @@ export function StatusBar() {
       )}
       {/* Only what was just said is read out, not the stops on every stop. */}
       <span className="end" aria-live="polite">
-        {flash && now - flash.at < FLASH ? (
+        {flashing ? (
           <span className="notice" data-testid="flash">
             {flash.text}
           </span>
