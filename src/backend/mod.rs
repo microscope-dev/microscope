@@ -25,6 +25,8 @@ pub use linux::resume_address;
 #[cfg(any(test, feature = "sim"))]
 pub use linux::sim_edge;
 pub use linux::syscalls as syscall_engines;
+#[cfg(feature = "tools")]
+pub use linux::trace_on_exec;
 pub use linux::{Asleep, ThreadFiles};
 pub use linux::{Capacity, GroupBackend, GroupNotice, Joined, Started, spawn_group};
 

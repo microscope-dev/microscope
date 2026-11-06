@@ -369,6 +369,16 @@ at CFA-16 proves that one register, until the code writes it or may branch.
 The proofs only decide what a failed slot read means; memory that holds the
 slot, as a live process's does, is still read.
 
+`just unwind-oracle PROGRAM` single-steps a program and checks the stack at
+every instruction against the calls it made (`src/tools/unwind_oracle.rs`).
+Use it on new producers, libraries, and unwinder changes; a step it calls
+wrong is a bug unless the CFI deliberately describes another frame, as
+glibc's `__longjmp` does once it has restored the stack pointer. One
+window is known wrong: libgcc's `uw_install_context_1` copies the landing
+frame's registers, its return address among them, into the slots of the
+`_Unwind_RaiseException` or `_Unwind_Resume` frame, whose CFI then names
+half-rewritten values until its `__builtin_eh_return` epilogue jumps.
+
 Each step yields a caller or a typed termination. Terminations include normal
 stack ends as well as missing memory, missing registers, unsupported rules,
 cycles, and bounds. Keep the frames already established when the next one

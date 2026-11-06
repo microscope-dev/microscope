@@ -142,6 +142,21 @@ mod watchpoints;
 mod writes;
 
 pub use follow::{Capacity, GroupNotice, Joined, Started};
+
+/// Makes `command`'s child ask its parent to trace it before it execs, and
+/// die with the thread that launched it: a developer tool that steps a
+/// program itself.
+#[cfg(feature = "tools")]
+pub fn trace_on_exec(command: &mut std::process::Command) {
+    sys::before_exec(
+        command,
+        sys::BeforeExec {
+            dies_with_parent: true,
+            traced: true,
+            ..sys::BeforeExec::default()
+        },
+    );
+}
 pub use post_mortem::{PostMortemSession, open_core};
 
 pub use process_names::processes_named;

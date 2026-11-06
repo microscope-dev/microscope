@@ -125,6 +125,36 @@ enum Tool {
     /// report what tracing cost each call.
     SyscallOverhead(SyscallOverheadArgs),
 
+    /// Single-step PROGRAM to its end and check the stack unwound at each
+    /// instruction against the calls it made.
+    UnwindOracle {
+        program: PathBuf,
+
+        /// The program's arguments.
+        args: Vec<String>,
+
+        /// The bytes of stack each profiler path copies.
+        #[arg(long, value_delimiter = ',', default_value = "512,16384")]
+        copies: Vec<usize>,
+
+        /// Keep every Nth step's sample and time unwinding them again; none
+        /// when 0.
+        #[arg(long, default_value_t = 0)]
+        keep_every: u64,
+
+        /// How many times the kept samples are unwound.
+        #[arg(long, default_value_t = 20)]
+        rounds: usize,
+
+        /// Examples to print of each kind of stack that is not exact.
+        #[arg(long, default_value_t = 2)]
+        examples: usize,
+
+        /// Only keep samples and time them, without checking each step.
+        #[arg(long)]
+        replay_only: bool,
+    },
+
     /// Group the blocks a DHAT profile records by the first microscope function
     /// that allocated them.
     Heap {
@@ -365,6 +395,31 @@ fn run(args: Args) -> Result<bool> {
         Tool::BenchSmoke(args) => smoke::run(&args),
         Tool::Overhead(overhead) => run_overhead(&overhead),
         Tool::SyscallOverhead(args) => run_syscall_overhead(&args),
+        Tool::UnwindOracle {
+            program,
+            args,
+            copies,
+            keep_every,
+            rounds,
+            examples,
+            replay_only,
+        } => {
+            print!(
+                "{}",
+                microscope::tools::unwind_oracle::run(
+                    &microscope::tools::unwind_oracle::Options {
+                        program,
+                        args,
+                        copies,
+                        keep_every,
+                        rounds,
+                        examples,
+                        replay_only,
+                    }
+                )?
+            );
+            Ok(true)
+        }
         Tool::Heap { profile, rows } => {
             print!("{}", heap_text(&profile, rows)?);
             Ok(true)

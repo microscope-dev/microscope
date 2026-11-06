@@ -381,6 +381,14 @@ sim-shrink SEED *ARGS: golden
 timings *ARGS:
     cargo run --quiet --profile test --features tools --bin microscope-tools -- timings "$@"
 
+# Single-steps PROGRAM to its end and checks the stack unwound at every
+# instruction against the calls it really made, as the debugger and the
+# profiler unwind it. Pass --copies to choose the stack copies checked,
+# and --keep-every N to replay every Nth sample as a benchmark.
+unwind-oracle PROGRAM *ARGS:
+    cargo build --quiet --release --features tools --bin microscope-tools
+    ./target/release/microscope-tools unwind-oracle "$@"
+
 # Prints every answer PROGRAM's debug information gives, in a canonical form
 # that compares with `diff`. Pass --sections to dump only some.
 dump PROGRAM *ARGS:

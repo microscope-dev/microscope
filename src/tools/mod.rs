@@ -5,6 +5,7 @@
 pub mod dump;
 pub mod overhead;
 pub mod syscall_overhead;
+pub mod unwind_oracle;
 
 use std::path::{Path, PathBuf};
 
