@@ -169,6 +169,7 @@ export function Profile({
   return (
     <ProfileContext.Provider value={focus}>
       <div className="profile" data-testid="profile">
+        <Accounting summary={focus.summary} />
         {disconnected ? (
           // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
           <div className="profile-untimed profile-disconnected" role="status">
@@ -198,7 +199,6 @@ export function Profile({
             <FlameView />
           )}
         </div>
-        <ProfileFoot summary={focus.summary} />
       </div>
     </ProfileContext.Provider>
   );
@@ -397,7 +397,7 @@ function Recording({ info }: { info: ProfileInfo }) {
 }
 
 /** What the profile cannot show, always in view. */
-function ProfileFoot({ summary }: { summary: ProfileSummary }) {
+function Accounting({ summary }: { summary: ProfileSummary }) {
   const truncated = summary.truncations.reduce((sum, each) => sum + each.count, 0);
   const setting = (name: string) => summary.settings.find((each) => each.name === name)?.value;
   const source = setting("source");
@@ -426,7 +426,7 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
     ) : null;
   if (summary.samples === 0 && summary.syscalls > 0) {
     return (
-      <div className="profile-foot" data-testid="accounting">
+      <div className="profile-accounting" data-testid="accounting">
         {traced}
       </div>
     );
@@ -437,7 +437,7 @@ function ProfileFoot({ summary }: { summary: ProfileSummary }) {
     summary.probes.interrupted +
     summary.probes.malformed;
   return (
-    <div className="profile-foot" data-testid="accounting">
+    <div className="profile-accounting" data-testid="accounting">
       <span>{formatWeight(summary.weight, summary.unit)} sampled</span>
       {traced}
       {source ? <span>{source}</span> : null}

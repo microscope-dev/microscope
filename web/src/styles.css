@@ -3622,18 +3622,18 @@ textarea.input {
   border-right: 1px solid var(--line);
 }
 
-.profile-foot {
+.profile-accounting {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
   padding: 4px 12px;
-  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   background: var(--surface-2);
   color: var(--ink-2);
   font: 11px var(--mono);
 }
 
-.profile-foot .warn {
+.profile-accounting .warn {
   color: var(--changed);
 }
 
