@@ -575,9 +575,9 @@ function Histogram({
       </div>
       {children}
       {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a readout, not a form's result */}
-      <span className="muted" role="status">
+      <span className="muted details-readout" role="status">
         {shown === null
-          ? "Point at a bar for its count."
+          ? null
           : `${labels[shown] ?? ""}: ${formatCount(count, "sample")}, ${formatPercent(count, samples)}`}
       </span>
     </>

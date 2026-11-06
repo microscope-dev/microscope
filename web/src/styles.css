@@ -2946,6 +2946,12 @@ textarea.input {
   left: auto;
 }
 
+/* Empty until a bar is pointed at, and a line tall throughout, so the
+ * page does not move when it fills. */
+.details-readout {
+  min-height: 1lh;
+}
+
 .details-axis {
   display: flex;
   justify-content: space-between;
