@@ -685,18 +685,31 @@ impl Processor {
     /// enough behind the drain that every record before it has arrived,
     /// and one that still comes later is counted.
     pub fn ingest(&mut self, batch: &[u8], watermark: Option<u64>) {
-        self.ingest_drained(|bytes| bytes.extend_from_slice(batch), watermark);
+        let mut batches = std::mem::take(&mut self.batches);
+        let blocks = batches.copy(batch);
+        self.ingest_blocks(batches, blocks, watermark);
     }
 
-    /// Ingests what `drain` appends to the records held back, as
-    /// [`Processor::ingest`] does a batch. A busy recording drains tens of
-    /// megabytes at a time, which this does not copy again.
-    pub fn ingest_drained(&mut self, drain: impl FnOnce(&mut Vec<u8>), watermark: Option<u64>) {
-        if let Some(watermark) = watermark {
-            self.processed_to = self.processed_to.max(watermark);
-        }
+    /// Ingests the blocks `drain` hands on, as [`Processor::ingest`] does a
+    /// batch, giving it back the blocks emptied since. A busy recording
+    /// drains tens of megabytes at a time, which this does not copy.
+    pub fn ingest_drained(
+        &mut self,
+        drain: impl FnOnce(&mut perf::Blocks),
+        watermark: Option<u64>,
+    ) {
         let mut batches = std::mem::take(&mut self.batches);
-        let batch = batches.fill(drain);
+        let blocks = batches.fill(drain);
+        self.ingest_blocks(batches, blocks, watermark);
+    }
+
+    fn ingest_blocks(
+        &mut self,
+        mut batches: Batches,
+        blocks: std::ops::Range<u64>,
+        watermark: Option<u64>,
+    ) {
+        self.processed_to = self.processed_to.max(watermark.unwrap_or(0));
         let outputs = self
             .interpreted
             .as_mut()
@@ -707,7 +720,7 @@ impl Processor {
             .unwrap_or_default();
 
         // Every record, by where it lies: those held back, in their order,
-        // then the batch's.
+        // then the blocks', in theirs.
         let mut records = std::mem::take(&mut self.records);
         records.clear();
         records.append(&mut self.held);
@@ -719,25 +732,35 @@ impl Processor {
         // thread and CPU in its ring (see `interpreted`).
         let mut unpaired: Unpaired = Vec::new();
         let mut pairs: HashMap<usize, (interpreted::RecordKey, usize)> = HashMap::default();
-        let (mut next_held, mut offset) = (0, 0);
+        let (mut next_held, mut block, mut offset) = (0, blocks.start, 0);
 
         loop {
             let bytes = match records.get(next_held).filter(|_| next_held < held) {
                 Some(&at) => batches.record(at),
-                None => batches.bytes(batch).get(offset..).unwrap_or_default(),
+                None if block < blocks.end => {
+                    batches.bytes(block).get(offset..).unwrap_or_default()
+                }
+                None => break,
             };
-            let Some(next) = decode::next_with_period(bytes, &outputs, self.fixed_period) else {
-                break;
-            };
-            let Ok((record, length)) = next else {
-                self.builder.count(AccountKind::Malformed as u32, 1);
-                break;
+            let next = decode::next_with_period(bytes, &outputs, self.fixed_period);
+            let Some(Ok((record, length))) = next else {
+                // A block that ends, or whose rest cannot be read, gives way
+                // to the next, which another ring's drain began.
+                if next.is_some() {
+                    self.builder.count(AccountKind::Malformed as u32, 1);
+                }
+                if next_held < held {
+                    next_held += 1;
+                } else {
+                    (block, offset) = (block + 1, 0);
+                }
+                continue;
             };
             let index = if next_held < held {
                 next_held += 1;
                 next_held - 1
             } else {
-                records.push(RecordAt::new(batch, offset, length));
+                records.push(RecordAt::new(block, offset, length));
                 offset += length;
                 records.len() - 1
             };
@@ -2735,7 +2758,7 @@ impl Processor {
         &mut self,
         pid: Pid,
         watermark: impl Fn() -> u64,
-        mut drain: impl FnMut(&mut Vec<u8>),
+        mut drain: impl FnMut(&mut perf::Blocks),
     ) -> Vec<super::tasks::MappedCode> {
         for _ in 0..READ_DRAINS {
             // Taken before the drain, as the recording loop takes its own:
@@ -4043,8 +4066,8 @@ mod tests {
         let code = processor.code_for_read(
             pid,
             || 1_100 * MS,
-            |records| {
-                records.append(&mut rings);
+            |blocks| {
+                blocks.filled.push(std::mem::take(&mut rings));
             },
         );
         assert!(covers(&code, second), "drained: {code:?}");

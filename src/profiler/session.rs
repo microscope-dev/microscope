@@ -791,7 +791,7 @@ fn drive(
         let mut drained = 0;
         drained_at = std::time::Instant::now();
         processor.ingest_drained(
-            |records| drained = events.drain(records),
+            |blocks| drained = events.drain_blocks(blocks),
             (!finished).then_some(watermark),
         );
         record!("record: drained {drained} bytes, finished {finished}");
@@ -1108,8 +1108,8 @@ impl Snapshots {
             let code = processor.code_for_read(
                 Pid::new(self.pid),
                 || monotonic().saturating_sub(WATERMARK_DELAY),
-                |records| {
-                    events.drain(records);
+                |blocks| {
+                    events.drain_blocks(blocks);
                 },
             );
             let start = monotonic();
@@ -1162,8 +1162,8 @@ impl Snapshots {
         // With sampling off, every sample from before the pause is in the
         // rings, and the snapshot claims each sample before it.
         processor.ingest_drained(
-            |records| {
-                events.drain(records);
+            |blocks| {
+                events.drain_blocks(blocks);
             },
             Some(start),
         );

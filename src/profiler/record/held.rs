@@ -1,118 +1,141 @@
-//! The batches a recording drains, kept while records in them are held
-//! back past a watermark: a held record stays where its drain put it,
+//! The blocks a recording drains, kept while records in them are held
+//! back past a watermark: a held record stays where the reader put it,
 //! rather than being copied after each drain it waits through.
 
 use std::collections::VecDeque;
 
-/// Batches kept with records held back in them, past which the records
-/// left are copied into one, so that a record the watermark never passes
-/// cannot keep every later batch.
-const MOST_BATCHES: usize = 8;
+use crate::backend::perf::Blocks;
 
-/// Emptied batches kept to be filled again: as many as a drain every 10 ms
-/// holds back for a watermark 20 ms behind, and one more.
-const SPARE_BATCHES: usize = 4;
+/// Blocks kept, emptied ones among them, past which the records held in
+/// the older half are copied into one, so that a record the watermark
+/// never passes cannot keep a block, and a place for every later one.
+const MOST_KEPT: usize = 64;
 
-/// Where a record lies: the batch its drain filled, and its bytes there.
+/// Where a record lies: the block it was drained into, and its bytes there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RecordAt {
-    batch: u64,
+    block: u64,
     start: usize,
     length: usize,
 }
 
 impl RecordAt {
-    pub(super) const fn new(batch: u64, start: usize, length: usize) -> Self {
+    pub(super) const fn new(block: u64, start: usize, length: usize) -> Self {
         Self {
-            batch,
+            block,
             start,
             length,
         }
     }
 }
 
-/// The drained batches records are held back in, oldest first.
+/// The drained blocks records are held back in, oldest first, each by its
+/// number. A block no held record lies in is emptied for the reader to
+/// fill again.
 #[derive(Debug, Default)]
 pub(super) struct Batches {
-    kept: VecDeque<Vec<u8>>,
+    kept: VecDeque<Option<Vec<u8>>>,
 
     /// The number of the oldest kept.
     first: u64,
-    spare: Vec<Vec<u8>>,
+
+    /// The blocks a drain hands on and takes back, kept between drains.
+    blocks: Blocks,
+
+    /// Which kept blocks a held record lies in.
+    pinned: Vec<bool>,
 }
 
 impl Batches {
-    /// Fills a new batch with what `drain` appends to an empty buffer, and
-    /// returns its number.
-    pub(super) fn fill(&mut self, drain: impl FnOnce(&mut Vec<u8>)) -> u64 {
-        let mut bytes = self.take_spare();
-        debug_assert!(bytes.is_empty(), "a spare batch holds records");
-        drain(&mut bytes);
-        self.kept.push_back(bytes);
-        self.first + self.kept.len() as u64 - 1
+    /// Keeps the blocks `drain` fills, giving it the blocks emptied since
+    /// the last, and returns their numbers.
+    pub(super) fn fill(&mut self, drain: impl FnOnce(&mut Blocks)) -> std::ops::Range<u64> {
+        drain(&mut self.blocks);
+        let from = self.end();
+        self.kept.extend(self.blocks.filled.drain(..).map(Some));
+        from..self.end()
     }
 
-    /// The roomiest spare batch, so that one an empty drain left small is
-    /// not grown again by the next busy one.
-    fn take_spare(&mut self) -> Vec<u8> {
-        let roomiest = (0..self.spare.len()).max_by_key(|&at| self.spare[at].capacity());
-        roomiest.map_or_else(Vec::new, |at| self.spare.swap_remove(at))
+    /// Keeps a block of a copy of `bytes`, and returns its number.
+    pub(super) fn copy(&mut self, bytes: &[u8]) -> std::ops::Range<u64> {
+        if bytes.is_empty() {
+            return self.end()..self.end();
+        }
+
+        // The roomiest emptied block, so that one a small copy left small is
+        // not grown again by the next large one.
+        let emptied = &mut self.blocks.emptied;
+        let roomiest = (0..emptied.len()).max_by_key(|&at| emptied[at].capacity());
+        let mut block = roomiest.map_or_else(Vec::new, |at| emptied.swap_remove(at));
+        block.clear();
+        block.extend_from_slice(bytes);
+        let from = self.end();
+        self.kept.push_back(Some(block));
+        from..self.end()
     }
 
-    /// The bytes of batch `batch`, which must be kept.
-    pub(super) fn bytes(&self, batch: u64) -> &[u8] {
-        debug_assert!(batch >= self.first, "batch {batch} was emptied");
-        let at = batch
+    /// The number the next block kept takes.
+    fn end(&self) -> u64 {
+        self.first + self.kept.len() as u64
+    }
+
+    /// The bytes of block `block`, which must be kept.
+    pub(super) fn bytes(&self, block: u64) -> &[u8] {
+        let bytes = block
             .checked_sub(self.first)
             .and_then(|at| usize::try_from(at).ok())
-            .unwrap_or(usize::MAX);
-        self.kept.get(at).map_or(&[], Vec::as_slice)
+            .and_then(|at| self.kept.get(at))
+            .and_then(Option::as_deref);
+        debug_assert!(bytes.is_some(), "block {block} was emptied");
+        bytes.unwrap_or_default()
     }
 
     /// The bytes of the record at `at`.
     pub(super) fn record(&self, at: RecordAt) -> &[u8] {
-        let bytes = self.bytes(at.batch).get(at.start..at.start + at.length);
-        debug_assert!(bytes.is_some(), "{at:?} lies past its batch");
+        let bytes = self.bytes(at.block).get(at.start..at.start + at.length);
+        debug_assert!(bytes.is_some(), "{at:?} lies past its block");
         bytes.unwrap_or_default()
     }
 
-    /// Keeps only the batches the records `held` lie in, emptying the rest
-    /// to be filled again. Past [`MOST_BATCHES`], the records are copied
-    /// into one batch, and `held` says where they are now.
+    /// Keeps only the blocks the records `held` lie in, emptying the rest
+    /// to be filled again. Past [`MOST_KEPT`], the records held in the
+    /// older half are copied into a new block, and `held` says where they
+    /// are now.
     pub(super) fn release(&mut self, held: &mut [RecordAt]) {
-        if self.kept.len() > MOST_BATCHES {
-            let mut together = self.take_spare();
-            for at in held.iter_mut() {
+        if self.kept.len() > MOST_KEPT {
+            let older = self.first + (self.kept.len() / 2) as u64;
+            let mut together = self.blocks.emptied.pop().unwrap_or_default();
+            together.clear();
+            let number = self.end();
+            for at in held.iter_mut().filter(|at| at.block < older) {
                 let start = together.len();
                 together.extend_from_slice(self.record(*at));
-                *at = RecordAt::new(self.first + self.kept.len() as u64, start, at.length);
+                *at = RecordAt::new(number, start, at.length);
             }
-
-            let kept = self.kept.len();
-            self.drop_oldest(kept);
-            self.kept.push_back(together);
-            return;
+            self.kept.push_back(Some(together));
         }
 
-        let oldest = held
-            .iter()
-            .map(|at| at.batch)
-            .min()
-            .unwrap_or(self.first + self.kept.len() as u64);
-        self.drop_oldest(usize::try_from(oldest - self.first).unwrap_or(usize::MAX));
-    }
-
-    /// Empties the oldest `count` batches kept, to be filled again.
-    fn drop_oldest(&mut self, count: usize) {
-        for _ in 0..count {
-            let Some(mut emptied) = self.kept.pop_front() else {
-                break;
-            };
-            self.first += 1;
-            if self.spare.len() < SPARE_BATCHES {
-                emptied.clear();
-                self.spare.push(emptied);
+        self.pinned.clear();
+        self.pinned.resize(self.kept.len(), false);
+        for at in held.iter() {
+            if let Some(pinned) = at
+                .block
+                .checked_sub(self.first)
+                .and_then(|at| usize::try_from(at).ok())
+                .and_then(|at| self.pinned.get_mut(at))
+            {
+                *pinned = true;
             }
+        }
+
+        for (kept, &pinned) in self.kept.iter_mut().zip(&self.pinned) {
+            if !pinned && let Some(block) = kept.take() {
+                self.blocks.emptied.push(block);
+            }
+        }
+        while self.kept.front().is_some_and(Option::is_none) {
+            self.kept.pop_front();
+            self.first += 1;
         }
     }
 }
@@ -121,41 +144,63 @@ impl Batches {
 mod tests {
     use super::*;
 
-    /// A record held back stays where its drain put it until no record is
-    /// held in its batch or any before, and the batch's buffer is then filled
-    /// again by a later drain; one the watermark never passes is copied out
-    /// once too many batches are kept.
+    fn fill(batches: &mut Batches, records: &[&[u8]]) -> std::ops::Range<u64> {
+        batches.fill(|blocks| {
+            for bytes in records {
+                let mut block = blocks.emptied.pop().unwrap_or_default();
+                block.extend_from_slice(bytes);
+                blocks.filled.push(block);
+            }
+        })
+    }
+
+    /// A held record stays where the reader put it until it is no longer
+    /// held, and its block is then given back to be filled again; the
+    /// blocks around it are given back at once.
     #[test]
-    fn a_held_record_keeps_its_batch_until_the_batch_is_copied_out() {
+    fn a_held_record_keeps_only_its_own_block() {
         let mut batches = Batches::default();
-        let first = batches.fill(|bytes| bytes.extend_from_slice(b"abcdef"));
-        let buffer = batches.bytes(first).as_ptr();
-        let mut held = vec![RecordAt::new(first, 2, 3)];
-        batches.release(&mut held);
-        assert_eq!(batches.record(held[0]), b"cde");
-
-        // The first batch's record is processed, and a record of the next
-        // held: the first batch is emptied, and the third fills it again.
-        let second = batches.fill(|bytes| bytes.extend_from_slice(b"ghij"));
-        held = vec![RecordAt::new(second, 1, 2)];
+        let blocks = fill(&mut batches, &[b"abcdef", b"ghij", b"kl"]);
+        let middle = blocks.start + 1;
+        let buffer = batches.bytes(middle).as_ptr();
+        let mut held = vec![RecordAt::new(middle, 1, 2)];
         batches.release(&mut held);
         assert_eq!(batches.record(held[0]), b"hi");
-        let third = batches.fill(|bytes| bytes.extend_from_slice(b"kl"));
-        assert_eq!(batches.bytes(third).as_ptr(), buffer);
-        assert_eq!(batches.bytes(third), b"kl");
+        assert_eq!(batches.blocks.emptied.len(), 2, "the blocks around it");
 
-        // A record held through more batches than are kept is copied into
-        // one, and the rest emptied.
-        for _ in 0..MOST_BATCHES {
-            batches.fill(|bytes| bytes.extend_from_slice(b"mn"));
-        }
+        // Later drains are given the emptied blocks, and the held record
+        // stays put.
+        fill(&mut batches, &[b"mn"]);
         batches.release(&mut held);
-        assert_eq!(batches.kept.len(), 1);
         assert_eq!(batches.record(held[0]), b"hi");
+        assert_eq!(batches.bytes(middle).as_ptr(), buffer);
 
-        // Once nothing is held, nothing is kept.
+        // The later drain filled an emptied block, not a new one.
         batches.release(&mut []);
         assert!(batches.kept.is_empty());
-        assert!(batches.spare.len() <= SPARE_BATCHES);
+        assert_eq!(batches.blocks.emptied.len(), 3);
+    }
+
+    /// A record held while more than [`MOST_KEPT`] blocks go by is copied
+    /// out once, and its block is given back.
+    #[test]
+    fn a_record_held_too_long_is_copied_out_of_its_block() {
+        let mut batches = Batches::default();
+        let first = fill(&mut batches, &[b"abc"]).start;
+        let mut held = vec![RecordAt::new(first, 0, 3)];
+        for _ in 0..MOST_KEPT {
+            fill(&mut batches, &[b"xyz"]);
+            batches.release(&mut held);
+            assert_eq!(batches.record(held[0]), b"abc");
+        }
+
+        assert_ne!(held[0], RecordAt::new(first, 0, 3), "copied out");
+        assert!(
+            batches.kept.len() <= MOST_KEPT / 2 + 2,
+            "{}",
+            batches.kept.len()
+        );
+        batches.release(&mut []);
+        assert!(batches.kept.is_empty());
     }
 }

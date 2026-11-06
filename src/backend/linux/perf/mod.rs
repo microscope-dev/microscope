@@ -101,7 +101,7 @@ pub struct Events {
 
     /// Collection of sampled records stays separate from symbol loading
     /// and unwinding.
-    buffered: Option<Mutex<Vec<u8>>>,
+    buffered: Option<Mutex<Queue>>,
 
     /// Clock sampling can pause at the queue limit. Breakpoint counters
     /// must stay on, even when their sample records cannot all be kept.
@@ -129,9 +129,6 @@ pub struct Events {
     /// of its CPU; none where the events sample nothing.
     sideband: Vec<OwnedFd>,
 
-    /// What the queue is swapped for when processing takes it.
-    spare: Mutex<Vec<u8>>,
-
     /// Whether the sampling events are on.
     gate: Mutex<Gate>,
 }
@@ -145,10 +142,92 @@ const QUEUE_BYTES: usize = 64 * 1024 * 1024;
 /// frame-pointer chain carries a stack on.
 const SHORT_STACK_BYTES: usize = 512;
 
-/// The room each of the reader's buffers has: the queue, what the rings
-/// held when sampling went off, and the sideband's records until
-/// processing takes it.
-const QUEUE_ROOM: usize = 2 * QUEUE_BYTES;
+/// The bytes of each block the reader fills, unless rings are so large
+/// that a block holds fewer than four of their drains.
+const BLOCK_BYTES: usize = 4 * 1024 * 1024;
+
+/// Emptied blocks the reader keeps to fill again: as many as a full queue.
+const FREE_BLOCKS: usize = QUEUE_BYTES / BLOCK_BYTES;
+
+/// Records drained from the rings, in blocks filled one after another,
+/// and emptied blocks to fill again. A drain hands its filled blocks on
+/// rather than copying them, and takes back those emptied since.
+#[derive(Debug, Default)]
+pub struct Blocks {
+    pub filled: Vec<Vec<u8>>,
+    pub emptied: Vec<Vec<u8>>,
+}
+
+/// What the reader holds for processing.
+#[derive(Debug, Default)]
+struct Queue {
+    /// Blocks of records in the order the reader filled them: each holds
+    /// whole records, and the last is still filling.
+    blocks: Vec<Vec<u8>>,
+
+    /// The bytes they hold.
+    bytes: usize,
+
+    /// Emptied blocks to fill again.
+    free: Vec<Vec<u8>>,
+}
+
+impl Queue {
+    /// The block to append up to `room` bytes to without its growing, so
+    /// that no record spans two blocks and none is copied twice: the last,
+    /// if it has the room, else a fresh one of `block` bytes.
+    fn room(&mut self, room: usize, block: usize) -> &mut Vec<u8> {
+        debug_assert!(room <= block, "{room} bytes do not fit a block of {block}");
+        if self
+            .blocks
+            .last()
+            .is_none_or(|last| last.capacity() - last.len() < room)
+        {
+            let mut next = self.free.pop().unwrap_or_default();
+            next.clear();
+            next.reserve(block);
+            self.blocks.push(next);
+        }
+
+        let last = self.blocks.len() - 1;
+        &mut self.blocks[last]
+    }
+
+    /// Appends `ring`'s new records, at most `room` bytes, to the blocks.
+    fn drain_ring(&mut self, ring: &sys::Ring, room: usize, block: usize) {
+        let into = self.room(room, block);
+        let (at, capacity) = (into.as_ptr(), into.capacity());
+        let drained = ring.drain(into);
+        debug_assert!(
+            into.as_ptr() == at && into.capacity() == capacity,
+            "a block grew, so its records were copied again"
+        );
+        self.bytes += drained;
+    }
+
+    /// Takes back `emptied` blocks to fill again, as many as are kept.
+    fn take_back(&mut self, emptied: &mut Vec<Vec<u8>>) {
+        for mut block in emptied.drain(..) {
+            if self.free.len() < FREE_BLOCKS {
+                block.clear();
+                self.free.push(block);
+            }
+        }
+    }
+
+    /// Hands every block of records on to `filled`, keeping the empty ones
+    /// to fill again, and returns the bytes handed on.
+    fn hand_on(&mut self, filled: &mut Vec<Vec<u8>>) -> usize {
+        for block in self.blocks.drain(..) {
+            if block.is_empty() {
+                self.free.push(block);
+            } else {
+                filled.push(block);
+            }
+        }
+        std::mem::take(&mut self.bytes)
+    }
+}
 
 /// The sampling events are on while the recording wants them and the
 /// reader is not behind. The sideband stays on while sampling is off for
@@ -251,7 +330,6 @@ impl Events {
             cpus,
             followers: Vec::new(),
             sideband,
-            spare: Mutex::default(),
             gate: Mutex::default(),
         })
     }
@@ -347,7 +425,6 @@ impl Events {
                                 cpus: cpus.to_vec(),
                                 followers: Vec::new(),
                                 sideband,
-                                spare: Mutex::default(),
                                 gate: Mutex::default(),
                             });
                         }
@@ -455,43 +532,64 @@ impl Events {
     }
 
     /// Appends every ring's new records to `out`, a ring's whole records
-    /// at a time, and returns how many bytes.
+    /// at a time, and returns how many bytes: a copy of what
+    /// [`Self::drain_blocks`] hands on.
     pub fn drain(&self, out: &mut Vec<u8>) -> usize {
-        let before = out.len();
-        let Some(buffer) = &self.buffered else {
+        if self.buffered.is_none() {
+            let before = out.len();
             for ring in &self.rings {
                 ring.drain(out);
             }
             return out.len() - before;
+        }
+
+        let mut blocks = Blocks::default();
+        let drained = self.drain_blocks(&mut blocks);
+        for block in &blocks.filled {
+            out.extend_from_slice(block);
+        }
+        blocks.emptied.append(&mut blocks.filled);
+        if let Some(queue) = &self.buffered {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_back(&mut blocks.emptied);
+        }
+        drained
+    }
+
+    /// Hands every ring's new records on in `blocks.filled`, after what the
+    /// reader holds, each block whole records, and returns how many bytes.
+    /// The blocks of `blocks.emptied` are taken back to fill again.
+    pub fn drain_blocks(&self, blocks: &mut Blocks) -> usize {
+        let (block, ring_bytes) = (self.block_bytes(), self.pages * sys::page_size());
+        let Some(queue) = &self.buffered else {
+            let mut queue = Queue::default();
+            queue.take_back(&mut blocks.emptied);
+            for ring in &self.rings {
+                queue.drain_ring(ring, ring_bytes, block);
+            }
+            let drained = queue.hand_on(&mut blocks.filled);
+            blocks.emptied.append(&mut queue.free);
+            return drained;
         };
 
-        // The queue is swapped for an empty one with room for all it will
-        // hold, and copied out after, so that the reader never waits on a
-        // copy or a reallocation while the rings fill.
-        let mut queue = std::mem::take(
-            &mut *self
-                .spare
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        queue.reserve(QUEUE_ROOM);
-        let mut buffer = buffer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::mem::swap(&mut queue, &mut buffer);
         // Keep the queue locked through this drain so a worker cannot put
         // older records behind the records collected here, including at exit.
-        for ring in &self.rings {
-            ring.drain(&mut queue);
-        }
-        drop(buffer);
-        out.extend_from_slice(&queue);
-        queue.clear();
-        *self
-            .spare
+        let mut queue = queue
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = queue;
-        out.len() - before
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        queue.take_back(&mut blocks.emptied);
+        for ring in &self.rings {
+            queue.drain_ring(ring, ring_bytes, block);
+        }
+        queue.hand_on(&mut blocks.filled)
+    }
+
+    /// The bytes of each block the reader fills: room for four of the
+    /// largest drains of a ring, and at least [`BLOCK_BYTES`].
+    fn block_bytes(&self) -> usize {
+        (4 * self.pages * sys::page_size()).max(BLOCK_BYTES)
     }
 
     /// Drains sampled records while `work` processes previous records.
@@ -506,9 +604,10 @@ impl Events {
     /// Breakpoints keep counting instead: collection waits for room in the
     /// queue, and the kernel counts any samples the rings cannot hold.
     pub fn read_while<R>(&self, work: impl FnOnce() -> R) -> R {
-        let Some(buffer) = &self.buffered else {
+        let Some(queue) = &self.buffered else {
             return work();
         };
+        let (block, ring_bytes) = (self.block_bytes(), self.pages * sys::page_size());
         let stop = AtomicBool::new(false);
         let poller = sys::Poller::new(&self.rings).ok();
         std::thread::scope(|scope| {
@@ -530,23 +629,23 @@ impl Events {
                 };
                 let mut drained = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
-                    let mut buffer = buffer
+                    let mut queue = queue
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if !self.pause_on_full && buffer.len() >= self.queue_bytes {
-                        drop(buffer);
+                    if !self.pause_on_full && queue.bytes >= self.queue_bytes {
+                        drop(queue);
                         // A full ring is readable at once, so polling it
                         // here would spin until processing takes the queue.
                         std::thread::sleep(self.reader_wait);
                         continue;
                     }
-                    if (buffer.len() >= self.queue_bytes) != behind {
+                    if (queue.bytes >= self.queue_bytes) != behind {
                         behind = !behind;
                         self.fall_behind(behind);
                     }
-                    if sampling.is_empty() || buffer.len() < self.queue_bytes / 4 * 3 {
+                    if sampling.is_empty() || queue.bytes < self.queue_bytes / 4 * 3 {
                         for ring in &self.rings {
-                            ring.drain(&mut buffer);
+                            queue.drain_ring(ring, ring_bytes, block);
                         }
                     } else {
                         // Processing is behind, so a sample keeps only the
@@ -554,16 +653,20 @@ impl Events {
                         for ring in &self.rings {
                             drained.clear();
                             ring.drain(&mut drained);
+                            // Shortening never lengthens a record.
+                            let into = queue.room(drained.len(), block);
+                            let before = into.len();
                             let shortened = decode::shorten_stacks(
                                 &drained,
                                 &sampling,
                                 SHORT_STACK_BYTES,
-                                &mut buffer,
+                                into,
                             );
+                            queue.bytes += into.len() - before;
                             self.shortened.fetch_add(shortened, Ordering::Relaxed);
                         }
                     }
-                    drop(buffer);
+                    drop(queue);
                     let elapsed = sys::thread_cpu().saturating_sub(began);
                     self.reader_cpu.store(
                         u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
@@ -726,9 +829,8 @@ impl Drop for StopReader<'_> {
 /// Samples are read apart from processing at every rate: a low
 /// rate fills a ring slowly, but processing that loads a program's debug
 /// information or its code can be busy for longer than a ring lasts.
-fn collection_buffer(options: &EventOptions) -> Option<Mutex<Vec<u8>>> {
-    (!matches!(options.source, Source::Mappings))
-        .then(|| Mutex::new(Vec::with_capacity(QUEUE_ROOM)))
+fn collection_buffer(options: &EventOptions) -> Option<Mutex<Queue>> {
+    (!matches!(options.source, Source::Mappings)).then(Mutex::default)
 }
 
 /// How long the reader sleeps unless a ring a quarter full wakes it first,
@@ -1766,26 +1868,33 @@ mod tests {
         assert_eq!(events.behind(Some(sys::monotonic())), []);
         assert!(counts.shortened > 1000, "{counts:?}");
 
-        let mut records = Vec::new();
-        events.drain(&mut records);
+        // The queue is handed on in blocks, each of whole records, whether
+        // the reader kept them whole or shortened them.
+        let mut blocks = Blocks::default();
+        events.drain_blocks(&mut blocks);
+        assert!(blocks.filled.len() > 1, "{} blocks", blocks.filled.len());
         let (mut long, mut short) = (0, 0);
-        let mut rest = records.as_slice();
-        while let Some(Ok((record, length))) = decode::next(rest) {
-            rest = &rest[length..];
-            if let decode::Record::Sample(sample) = record {
-                // The kernel copies less than asked where the record would
-                // outgrow its size field, but never as little as is kept.
-                if sample.stack_asked > SHORT_STACK_BYTES as u64 {
-                    long += 1;
-                } else {
-                    assert_eq!(sample.stack_asked, SHORT_STACK_BYTES as u64);
-                    assert!(
-                        sample.user_chain().next().is_some(),
-                        "a sample lost its chain"
-                    );
-                    short += 1;
+        for block in &blocks.filled {
+            let mut rest = block.as_slice();
+            while let Some(Ok((record, length))) = decode::next(rest) {
+                rest = &rest[length..];
+                if let decode::Record::Sample(sample) = record {
+                    // The kernel copies less than asked where the record
+                    // would outgrow its size field, but never as little as
+                    // is kept.
+                    if sample.stack_asked > SHORT_STACK_BYTES as u64 {
+                        long += 1;
+                    } else {
+                        assert_eq!(sample.stack_asked, SHORT_STACK_BYTES as u64);
+                        assert!(
+                            sample.user_chain().next().is_some(),
+                            "a sample lost its chain"
+                        );
+                        short += 1;
+                    }
                 }
             }
+            assert!(rest.is_empty(), "a record spans blocks");
         }
         assert_eq!(short, counts.shortened);
         assert!(
