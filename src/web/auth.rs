@@ -188,6 +188,10 @@ pub fn cookie(header: &str, port: u16) -> Option<&str> {
 pub struct Origins {
     hosts: Vec<String>,
 
+    /// The port of a server listening on every address, where any IP
+    /// address names it too.
+    every_address: Option<u16>,
+
     /// The proxy the pages are served through, whose host and origin are
     /// this server's as well.
     public: Option<PublicUrl>,
@@ -195,27 +199,50 @@ pub struct Origins {
 
 impl Origins {
     /// The server listening at `address`. A loopback server is also
-    /// `localhost`.
-    pub fn new(address: SocketAddr, public: Option<PublicUrl>) -> Self {
+    /// `localhost`. A server listening on every address is also any IP
+    /// address on its port, which a rebound name cannot pass for, and
+    /// `hostname`, which links then use.
+    pub fn new(address: SocketAddr, hostname: Option<&str>, public: Option<PublicUrl>) -> Self {
         let port = address.port();
-        let mut hosts = vec![match address {
+        let literal = match address {
             SocketAddr::V4(v4) => format!("{}:{port}", v4.ip()),
             SocketAddr::V6(v6) => format!("[{}]:{port}", v6.ip()),
-        }];
+        };
+
+        let every_address = address.ip().is_unspecified().then_some(port);
+        let mut hosts = Vec::new();
+        if let Some(hostname) = hostname.filter(|_| every_address.is_some()) {
+            hosts.push(format!("{}:{port}", hostname.to_ascii_lowercase()));
+        }
+
+        hosts.push(literal);
         if address.ip().is_loopback() {
             hosts.push(format!("localhost:{port}"));
         }
 
-        Self { hosts, public }
+        Self {
+            hosts,
+            every_address,
+            public,
+        }
     }
 
     /// Whether `host` names this server, directly or through its proxy.
     pub fn knows(&self, host: &str) -> bool {
-        self.hosts.iter().any(|known| known == host)
+        self.names_directly(host)
             || self
                 .public
                 .as_ref()
                 .is_some_and(|public| public.host == host)
+    }
+
+    /// Whether `host` names this server itself rather than its proxy.
+    fn names_directly(&self, host: &str) -> bool {
+        self.hosts.iter().any(|known| known == host)
+            || self.every_address.is_some_and(|port| {
+                host.parse::<SocketAddr>()
+                    .is_ok_and(|address| address.port() == port)
+            })
     }
 
     /// Whether a request with these headers came from this server's own
@@ -238,7 +265,7 @@ impl Origins {
         proxied
             || origin
                 .strip_prefix("http://")
-                .is_some_and(|rest| rest == host && self.hosts.iter().any(|known| known == rest))
+                .is_some_and(|rest| rest == host && self.names_directly(rest))
     }
 
     /// The address links use.
@@ -276,7 +303,7 @@ mod tests {
 
     #[test]
     fn only_this_servers_own_pages_are_allowed() {
-        let origins = Origins::new("127.0.0.1:7341".parse().expect("address"), None);
+        let origins = Origins::new("127.0.0.1:7341".parse().expect("address"), None, None);
         let allows = |host, origin| origins.allows(host, origin);
         assert!(allows(
             Some("127.0.0.1:7341"),
@@ -309,8 +336,47 @@ mod tests {
         assert!(!allows(None, Some("http://127.0.0.1:7341")));
         assert_eq!(origins.primary(), "127.0.0.1:7341");
 
-        let public = Origins::new("0.0.0.0:80".parse().expect("address"), None);
+        let public = Origins::new("0.0.0.0:80".parse().expect("address"), None, None);
         assert!(!public.allows(Some("localhost:80"), Some("http://localhost:80")));
+    }
+
+    #[test]
+    fn every_address_is_any_ip_on_its_port_and_the_hostname() {
+        for listen in ["0.0.0.0:7341", "[::]:7341"] {
+            let origins = Origins::new(listen.parse().expect("address"), Some("Box1"), None);
+            let allows = |host| origins.allows(Some(host), Some(&format!("http://{host}")));
+            assert_eq!(origins.primary(), "box1:7341");
+            for host in [
+                "box1:7341",
+                "100.74.16.70:7341",
+                "[fd7a::1]:7341",
+                "127.0.0.1:7341",
+            ] {
+                assert!(origins.knows(host), "{listen} {host}");
+                assert!(allows(host), "{listen} {host}");
+            }
+
+            // Another port, a rebound name, or the hostname without its port.
+            for host in [
+                "100.74.16.70:7342",
+                "evil.example:7341",
+                "box1",
+                "box1.evil.example:7341",
+            ] {
+                assert!(!origins.knows(host), "{listen} {host}");
+            }
+
+            assert!(!origins.allows(Some("10.0.0.1:7341"), Some("http://10.0.0.2:7341")));
+        }
+
+        let one = Origins::new(
+            "100.74.16.70:7341".parse().expect("address"),
+            Some("box1"),
+            None,
+        );
+        assert_eq!(one.primary(), "100.74.16.70:7341");
+        assert!(!one.knows("box1:7341"));
+        assert!(!one.knows("10.0.0.1:7341"));
     }
 
     #[test]
@@ -321,6 +387,7 @@ mod tests {
         assert_eq!(public.url(), "https://proxy.example/debug/7/");
         let origins = Origins::new(
             "127.0.0.1:7341".parse().expect("address"),
+            None,
             Some(public.clone()),
         );
         let allows = |host, origin| origins.allows(Some(host), Some(origin));

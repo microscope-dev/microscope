@@ -232,7 +232,12 @@ pub async fn run(args: &WebArgs) -> Result<()> {
     let (start, profile) = what_to_serve(args, &profiles)?;
     let listener = bind(args).await?;
     let address = listener.local_addr().context("the listening address")?;
-    let origins = Origins::new(address, args.public_url.clone());
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname").ok();
+    let hostname = hostname
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let origins = Origins::new(address, hostname, args.public_url.clone());
     let link_base = args.public_url.as_ref().map_or_else(
         || format!("http://{}/", origins.primary()),
         auth::PublicUrl::url,

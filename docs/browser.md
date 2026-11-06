@@ -127,5 +127,10 @@ SSH tunnel to reach it remotely.
 address and has a session link can control the debugger, so do not expose it to
 an untrusted network.
 
+Listening on every address, as `--listen 0.0.0.0:7341` does, the page answers
+at any of the machine's IP addresses and at its hostname, which the printed
+link names. Other names are refused, so that another site cannot rebind its own
+name to the machine.
+
 For a reverse proxy, `--public-url URL` gives microscope the external origin and
 path. The proxy is responsible for authentication and access control.
