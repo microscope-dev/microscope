@@ -921,7 +921,7 @@ fn a_waiter_panic_releases_an_attached_process_unharmed() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("the session of [1] failed, and released its process"),
+        stderr.contains("the session of [1] failed, and released or killed its process"),
         "{stderr}"
     );
     assert_eq!(output.status.code(), Some(1), "{stderr}");

@@ -1,8 +1,8 @@
-//! Releasing an attached process when a panic ends the controller, as
-//! `dev/assertions.md` requires. The controller's state may contradict
-//! itself, so the release trusts only what the kernel says: which threads
-//! answer as stopped, which bytes still hold a trap. A launched process
-//! needs none of this: `PTRACE_O_EXITKILL` kills it with its tracer.
+//! Ending a process when a panic ends its controller, as
+//! `dev/assertions.md` requires: a launched one is killed, as a shutdown
+//! would, and an attached one released. The controller's state may
+//! contradict itself, so the release trusts only what the kernel says:
+//! which threads answer as stopped, which bytes still hold a trap.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -15,7 +15,8 @@ use super::debug_registers::CONTROL_REGISTER;
 use super::memory::holding_word;
 use super::native::LinuxTraceOps;
 use super::{
-    BREAKPOINT_OPCODE, Controller, ControllerMessage, InferiorOrigin, Signal, WaitEvent, Waiter,
+    BREAKPOINT_OPCODE, Controller, ControllerMessage, Ending, Inferior, InferiorOrigin, Signal,
+    WaitEvent, Waiter,
 };
 
 use crate::VirtualAddress;
@@ -37,6 +38,13 @@ struct Seen {
 
     /// Threads that stopped for a trap: an `int3`, a step, or a watchpoint.
     trapped: BTreeSet<Pid>,
+
+    /// Threads due a SIGSTOP the debugger sent, which the release takes
+    /// rather than hands on to the released process.
+    debugger_stops: BTreeSet<Pid>,
+
+    /// Threads resumed with the signal they were to take, which they took.
+    delivered: BTreeSet<Pid>,
 }
 
 impl Seen {
@@ -64,7 +72,8 @@ impl Seen {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    /// Releases an attached process after a panic, as a detach would: every
+    /// Kills a launched process after a panic, unless the session releases
+    /// it on shutdown, and otherwise releases it as a detach would: every
     /// thread stopped, each byte that still holds the debugger's trap given
     /// back its instruction, a thread that executed such a trap rewound
     /// over it, debug registers cleared, and every thread detached with the
@@ -85,11 +94,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             inferior.tgid
         );
 
-        if inferior.origin != InferiorOrigin::Attached {
+        if inferior.origin == InferiorOrigin::PostMortem {
             return;
         }
-
-        record!("releasing {} after a panic", inferior.tgid);
 
         // A stop no event announced yet is a new thread's or a fork child's.
         // Only a child is scrubbed, and killed if it cannot be: SIGKILL sent
@@ -107,17 +114,92 @@ impl<P: LinuxTraceOps> Controller<P> {
         let children: Vec<Pid> = (inferior.fork_children.keys().copied())
             .chain(unannounced_children)
             .collect();
-        let seen = self.stop_for_release(inferior.waiter.take(), &threads, &children, |pid| {
-            inferior
-                .threads
-                .get(&pid)
-                .is_some_and(|thread| inferior.exited_leader(pid, thread))
-        });
-        let live = |pid: &Pid| seen.stopped.contains(pid) && !seen.gone.contains(pid);
-        let stopped: Vec<Pid> = threads.iter().copied().filter(live).collect();
         let sites = inferior.inherited_sites();
+
+        // As a shutdown would, a launched process is killed unless the
+        // session releases it, and its fork children are released. The
+        // kernel's PTRACE_O_EXITKILL comes only when the tracer thread ends,
+        // which a group's outlives this controller by, leaving the process
+        // stopped with no one to serve it.
+        if inferior.origin.owned() && self.ending == Ending::Kill {
+            record!("killing {} after a panic", tgid);
+            let _ = self.ptrace.kill(tgid, Signal::SIGKILL);
+            let seen = self.stop_for_release(
+                inferior.waiter.take(),
+                &[],
+                &children,
+                None,
+                BTreeSet::new(),
+                |_| false,
+            );
+            self.settle_children_after_panic(&inferior, children, &seen, &sites);
+            return;
+        }
+
+        record!("releasing {} after a panic", tgid);
+        let seen = self.release_threads_after_panic(&mut inferior, &threads, &children, &sites);
+        self.settle_children_after_panic(&inferior, children, &seen, &sites);
+    }
+
+    /// Stops, scrubs, and detaches the threads of `inferior`, and stops its
+    /// `children`. Returns what the statuses said of each.
+    fn release_threads_after_panic(
+        &self,
+        inferior: &mut Inferior,
+        threads: &[Pid],
+        children: &[Pid],
+        sites: &[(VirtualAddress, u8)],
+    ) -> Seen {
+        let tgid = inferior.tgid;
+
+        // A launched process's threads stop for a SIGSTOP the debugger
+        // sends, which another stop may have overtaken, leaving it queued.
+        let seized = inferior.origin.seized();
+        let debugger_stops: BTreeSet<Pid> = (inferior.threads.iter())
+            .filter(|(_, thread)| !seized && thread.debugger_stop_pending)
+            .map(|(&pid, _)| pid)
+            .collect();
+        let mut seen = self.stop_for_release(
+            inferior.waiter.take(),
+            threads,
+            children,
+            (!seized).then_some(tgid),
+            debugger_stops,
+            |pid| {
+                inferior
+                    .threads
+                    .get(&pid)
+                    .is_some_and(|thread| inferior.exited_leader(pid, thread))
+            },
+        );
+
+        // The signal each thread is released with, as a detach would pass
+        // it on, short of a SIGSTOP of the debugger's.
+        let signal_for = |pid: Pid, seen: &Seen| {
+            let thread = inferior.threads.get(&pid);
+            seen.signals
+                .get(&pid)
+                .copied()
+                .filter(|&signal| signal != Signal::SIGSTOP || !seen.debugger_stops.contains(&pid))
+                .or_else(|| {
+                    thread
+                        .filter(|_| !seen.delivered.contains(&pid))
+                        .and_then(|thread| thread.pending_signal.or(thread.held_signal))
+                        .map(|pending| pending.signal)
+                })
+                .filter(|&signal| self.signals.get(signal).pass)
+        };
+
+        self.drain_queued_traps_for_release(threads, &mut seen);
+
+        let live = |pid: &Pid, seen: &Seen| seen.stopped.contains(pid) && !seen.gone.contains(pid);
+        let stopped: Vec<Pid> = threads
+            .iter()
+            .copied()
+            .filter(|pid| live(pid, &seen))
+            .collect();
         if let Some(&memory) = stopped.first() {
-            self.restore_every_trap(memory, &sites);
+            self.restore_every_trap(memory, sites);
         }
 
         let traps: BTreeSet<VirtualAddress> = sites
@@ -131,60 +213,68 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             let _ = self.ptrace.write_debug_register(pid, CONTROL_REGISTER, 0);
-            let thread = inferior.threads.get(&pid);
-            let signal = seen
-                .signals
-                .get(&pid)
-                .copied()
-                .filter(|&signal| {
-                    signal != Signal::SIGSTOP
-                        || !thread.is_some_and(|thread| thread.debugger_stop_pending)
-                })
-                .or_else(|| {
-                    thread
-                        .and_then(|thread| thread.pending_signal.or(thread.held_signal))
-                        .map(|pending| pending.signal)
-                })
-                .filter(|&signal| self.signals.get(signal).pass);
-
-            let _ = self.ptrace.detach(pid, signal);
         }
 
-        // A child keeps the traps its parent held when it forked.
-        for child in children.into_iter().filter(live) {
-            let child_sites = inferior.fork_children.get(&child).unwrap_or(&sites);
-            let vfork = inferior.vfork_children.contains(&child);
-            self.scrub_and_settle(tgid, child, child_sites, vfork);
+        // Once each thread is rewound, a resume to take a SIGSTOP may
+        // deliver a signal, whose handler returns where the thread stopped.
+        self.drain_debugger_stops_for_release(&stopped, &mut seen, signal_for);
+
+        let released: Vec<Pid> = stopped.into_iter().filter(|pid| live(pid, &seen)).collect();
+        for &pid in &released {
+            let _ = self.ptrace.detach(pid, signal_for(pid, &seen));
         }
 
         record!(
             "released {} after a panic: {} of {} threads stopped",
-            inferior.tgid,
-            stopped.len(),
+            tgid,
+            released.len(),
             threads.len()
         );
+        seen
     }
 
-    /// Releases the fork children an attached process left on their way to
-    /// their first stop, scrubbed of the traps they inherited, as that stop
-    /// would have. A launched process's children die with this thread, by
-    /// `PTRACE_O_EXITKILL`, as the process would have. Children already
-    /// killed for traps they kept need nothing more.
+    /// Scrubs and releases the fork children of `inferior` that stopped.
+    /// A child keeps the traps its parent held when it forked.
+    fn settle_children_after_panic(
+        &mut self,
+        inferior: &Inferior,
+        children: Vec<Pid>,
+        seen: &Seen,
+        sites: &[(VirtualAddress, u8)],
+    ) {
+        let live = |pid: &Pid| seen.stopped.contains(pid) && !seen.gone.contains(pid);
+        for child in children.into_iter().filter(live) {
+            let child_sites = inferior
+                .fork_children
+                .get(&child)
+                .map_or(sites, Vec::as_slice);
+            let vfork = inferior.vfork_children.contains(&child);
+            self.scrub_and_settle(inferior.tgid, child, child_sites, vfork);
+        }
+    }
+
+    /// Releases the fork children a process left on their way to their
+    /// first stop, scrubbed of the traps they inherited, as that stop and a
+    /// shutdown would have, whether the process was attached or launched.
+    /// Children already killed for traps they kept need nothing more.
     fn release_orphans_after_panic(&mut self) {
         let Some(mut orphans) = self.orphans.take() else {
             return;
         };
-
-        if !orphans.attached {
-            return;
-        }
 
         record!(
             "releasing the fork children of {} after a panic",
             orphans.parent
         );
         let children: Vec<Pid> = orphans.children.keys().copied().collect();
-        let seen = self.stop_for_release(orphans.waiter.take(), &[], &children, |_| false);
+        let seen = self.stop_for_release(
+            orphans.waiter.take(),
+            &[],
+            &children,
+            None,
+            BTreeSet::new(),
+            |_| false,
+        );
         for child in children {
             if seen.stopped.contains(&child)
                 && !seen.gone.contains(&child)
@@ -196,15 +286,22 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// Stops every thread and child it can, and learns from their statuses
-    /// which stopped, which exited, and what each stopped to take.
+    /// which stopped, which exited, and what each stopped to take. The
+    /// threads of `signaled`, a process that was not seized, stop only for a
+    /// SIGSTOP, as do those already in `debugger_stops`.
     fn stop_for_release(
         &self,
         mut waiter: Option<Waiter>,
         threads: &[Pid],
         children: &[Pid],
+        signaled: Option<Pid>,
+        debugger_stops: BTreeSet<Pid>,
         zombie: impl Fn(Pid) -> bool,
     ) -> Seen {
-        let mut seen = Seen::default();
+        let mut seen = Seen {
+            debugger_stops,
+            ..Seen::default()
+        };
 
         // Statuses already taken from the waiter and not yet handled come
         // first: their threads are stopped, and some carry a signal.
@@ -242,7 +339,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             if self.ptrace.registers(pid).is_ok() {
                 seen.stopped.insert(pid);
             } else if !seen.gone.contains(&pid) {
-                let _ = self.ptrace.interrupt(pid);
+                // A fork child stops on its own on the way to its first stop.
+                match signaled {
+                    Some(process) if threads.contains(&pid) => {
+                        let _ = self.ptrace.request_stop(process, pid);
+                        seen.debugger_stops.insert(pid);
+                    }
+                    _ => {
+                        let _ = self.ptrace.interrupt(pid);
+                    }
+                }
                 awaited.insert(pid);
             }
         }
@@ -288,7 +394,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        self.drain_queued_traps_for_release(threads, &mut seen, take_queued);
         seen
     }
 
@@ -298,14 +403,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// queued, and the detach would deliver it to the released process.
     /// Resumed without a signal, the thread dequeues it into a stop for the
     /// trap before it runs an instruction, and is then rewound over it. A
-    /// thread that stopped to take a signal is left alone: resuming it
-    /// without that signal would drop it.
-    fn drain_queued_traps_for_release(
-        &self,
-        threads: &[Pid],
-        seen: &mut Seen,
-        take_queued: impl Fn(&mut Seen),
-    ) {
+    /// signal it stopped to take is not lost: the detach passes it on from
+    /// the trap's stop, as it would have from its own.
+    fn drain_queued_traps_for_release(&self, threads: &[Pid], seen: &mut Seen) {
         let queued: Vec<Pid> = threads
             .iter()
             .copied()
@@ -313,7 +413,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 seen.stopped.contains(pid)
                     && !seen.gone.contains(pid)
                     && !seen.trapped.contains(pid)
-                    && !seen.signals.contains_key(pid)
             })
             .filter(|&pid| {
                 self.ptrace
@@ -322,20 +421,66 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .collect();
 
+        let resumed: Vec<Pid> = queued
+            .into_iter()
+            .filter(|&pid| self.ptrace.continue_execution(pid, None).is_ok())
+            .collect();
+        self.await_stops(&resumed, seen);
+    }
+
+    /// Takes the SIGSTOPs the debugger sent that another stop overtook, as
+    /// `drain_requested_stops` does for a detach: the detach would deliver
+    /// one and stop the released process for good. Resumed with the signal
+    /// it was to take, the thread takes that signal, then dequeues the
+    /// SIGSTOP into a stop before it runs an instruction.
+    fn drain_debugger_stops_for_release(
+        &self,
+        threads: &[Pid],
+        seen: &mut Seen,
+        signal_for: impl Fn(Pid, &Seen) -> Option<Signal>,
+    ) {
+        let queued: Vec<Pid> = threads
+            .iter()
+            .copied()
+            .filter(|pid| seen.debugger_stops.contains(pid) && !seen.gone.contains(pid))
+            .filter(|&pid| {
+                self.ptrace
+                    .queued_signal(pid, Signal::SIGSTOP)
+                    .unwrap_or(false)
+            })
+            .collect();
+
         let mut resumed = Vec::new();
         for pid in queued {
-            if self.ptrace.continue_execution(pid, None).is_ok() {
-                seen.stopped.remove(&pid);
+            let signal = signal_for(pid, seen);
+            if self.ptrace.continue_execution(pid, signal).is_ok() {
+                if signal.is_some() {
+                    seen.signals.remove(&pid);
+                    seen.delivered.insert(pid);
+                }
                 resumed.push(pid);
             }
         }
 
+        self.await_stops(&resumed, seen);
+    }
+
+    /// Waits for the threads in `resumed` to stop again, or exit. A waiter
+    /// still running for other members may take a stop and route it to this
+    /// controller's queue.
+    fn await_stops(&self, resumed: &[Pid], seen: &mut Seen) {
+        for pid in resumed {
+            seen.stopped.remove(pid);
+        }
+
         let deadline = Instant::now() + STOP_WAIT;
         loop {
-            // A waiter still running for other members may take the stop
-            // and route it to this controller's queue.
-            take_queued(seen);
-            for &pid in &resumed {
+            while let Ok(message) = self.messages.borrow_mut().try_recv() {
+                if let ControllerMessage::Wait(status) = message {
+                    seen.note(&status);
+                }
+            }
+            for &pid in resumed {
                 while let Some(status) = self.ptrace.poll_status(pid) {
                     seen.note(&status);
                 }

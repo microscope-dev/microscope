@@ -8,10 +8,11 @@ state that the type system can't express.
 | Path | What lives there |
 | --- | --- |
 | `Cargo.toml` | Profiles: where debug assertions and overflow checks are on |
-| `src/backend/linux.rs` | `Controller::handle_message`, which every request and wait status passes through, and `Controller::run`, which catches a panic |
+| `src/backend/linux.rs` | `Controller::handle_message`, which every request and wait status passes through |
+| `src/backend/linux/tracer.rs` | `serve_one`, which catches a controller's panic, and the loop that ends every controller once the waiter panicked |
 | `src/backend/linux/invariants.rs` | The controller's invariants, checked after its messages |
-| `src/backend/linux/panic_release.rs` | Releasing an attached process after a panic |
-| `src/backend/linux/wait_hub.rs`, `src/backend/linux/tracer.rs` | The waiter, which catches its own panic, and the tracer thread, which then releases every process |
+| `src/backend/linux/panic_release.rs` | Killing or releasing the process after a panic |
+| `src/backend/linux/wait_hub.rs` | The waiter, which catches its own panic |
 | `src/backend/linux/lifecycle.rs` | `detach_inferior`, the correct way to release an attached process |
 
 ## Rules
@@ -89,25 +90,35 @@ failed edit leaves them in step.
 
 ## When an assertion fires
 
-The controller thread dies. Pending requests fail with `RequestCancelled`, and
+The controller ends. Pending requests fail with `RequestCancelled`, and
 `shutdown` returns `BackendThreadPanicked`. Clients show both as an internal
-error. The kernel then releases the tracees:
+error. Left alone, its process would stay traced by the tracer thread with no
+controller to serve it, and once that thread ended the kernel would release
+it:
 
-- A launched process is killed by `PTRACE_O_EXITKILL`. That's fine.
-- An attached process is detached with its traps and debug registers still
-  set, so it dies with SIGTRAP at the next trap. That's not acceptable.
+- A launched process would be killed by `PTRACE_O_EXITKILL`, but only when the
+  tracer thread ends, which a group's does only once the whole group has.
+- An attached process would be detached with its traps and debug registers
+  still set, so it dies with SIGTRAP at the next trap.
 
-So `Controller::run` catches the unwind and releases an attached process as
-`detach_inferior` does. The cleanup lives at the thread boundary, not in an
+So `serve_one` in `tracer.rs` catches the unwind and ends the process as a
+shutdown would. A launched process is killed, unless the session releases it
+on shutdown. An attached one is released as `detach_inferior` does. The
+cleanup lives at the thread boundary, not in an
 assertion macro, because any panic can end the controller. It trusts the kernel
 over the controller's state: a thread is stopped if it answers a register
 read, and a byte is restored only if memory still holds microscope's trap and
 the original byte is known. A thread the release interrupted right after it
 executed a trap still holds the trap's SIGTRAP, which the detach would deliver,
-so the release resumes it to take the trap first, as a detach does. Once the
+so the release resumes it to take the trap first, as a detach does. A launched
+thread can also hold a SIGSTOP the debugger sent it, which would stop the
+released process for good, so the release takes that too, after the rewind,
+passing on any signal the thread stopped for. A launched process was not
+seized, so a thread of it that runs is stopped with a SIGSTOP, not
+`PTRACE_INTERRUPT`, and the release takes that SIGSTOP. Once the
 process has ended, its fork children still due their first stop hold the traps
 they inherited, so the release scrubs and detaches them as that stop would
-have. A launched process's children die with it by `PTRACE_O_EXITKILL`. Aborts
+have, whether the process was attached or launched, as a shutdown does. Aborts
 skip it: stack overflow, running out of memory, and a panic during cleanup.
 
 In development builds, `MICROSCOPE_TEST_PANIC_AFTER=<request>` makes the

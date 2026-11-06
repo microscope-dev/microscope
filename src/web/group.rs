@@ -493,7 +493,7 @@ fn describe_member(
         ),
         MemberState::Lost => (
             protocol::MemberState::Lost,
-            "lost: its session failed, and let its process run on its own".to_owned(),
+            "lost: its session failed, and released or killed its process".to_owned(),
         ),
     };
     let joined = match (member.number, &member.executed) {

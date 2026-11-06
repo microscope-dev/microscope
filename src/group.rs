@@ -97,8 +97,9 @@ pub enum GroupEvent {
     MemberDetached { member: MemberNumber },
 
     /// A member's session ended while its process was still debugged, as a
-    /// failure in microscope ends one. Its process was released to run on
-    /// its own.
+    /// failure in microscope ends one. Its process was killed if the session
+    /// launched it and would have killed it on shutdown, and released to run
+    /// on its own otherwise.
     MemberLost { member: MemberNumber },
 
     /// Every member has exited or left; watched processes may still run.
@@ -120,7 +121,7 @@ pub enum MemberState {
     /// Its process was detached, and runs on its own.
     Detached,
 
-    /// Its session failed, and released its process to run on its own.
+    /// Its session failed, and released or killed its process.
     Lost,
 }
 
@@ -915,7 +916,7 @@ impl Driver {
     }
 
     /// Notes that member `number`'s session ended. One that still debugged
-    /// its process failed, and released it.
+    /// its process failed, and released or killed it.
     fn ended(&mut self, number: MemberNumber) {
         let Some(live) = self.members.get_mut(&number) else {
             return;

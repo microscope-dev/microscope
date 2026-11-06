@@ -2238,7 +2238,7 @@ impl DebuggerHandle {
     /// sent, and those still held are searched for its end, which fails
     /// only where it was lost.
     /// Waits for the controller to end, as it does once shut down, or once
-    /// it panicked and released its process.
+    /// it panicked and released or killed its process.
     pub(crate) async fn ended(&self) {
         self.requests.closed().await;
     }

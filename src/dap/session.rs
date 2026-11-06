@@ -1048,8 +1048,7 @@ impl Session {
             GroupEvent::MemberLost { member } => {
                 self.client
                     .important(format!(
-                        "the session of process [{member}] failed, and released it to run on \
-                         its own"
+                        "the session of process [{member}] failed, and released or killed it"
                     ))
                     .await
             }

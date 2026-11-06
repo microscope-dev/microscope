@@ -3297,7 +3297,7 @@ pub fn group_event(
             member(*behind)
         ),
         GroupEvent::MemberLost { member: lost } => format!(
-            "{}: the session of {} failed, and released its process to run on its own",
+            "{}: the session of {} failed, and released or killed its process",
             renderer.paint(Role::Error, "error"),
             member(*lost)
         ),

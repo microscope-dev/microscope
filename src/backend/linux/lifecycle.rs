@@ -1615,7 +1615,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                     children: pending,
                     killed,
                     waiter,
-                    attached: inferior.origin == InferiorOrigin::Attached,
                 });
             }
 
@@ -2134,7 +2133,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 children: pending,
                 killed,
                 waiter,
-                attached: inferior.origin == InferiorOrigin::Attached,
             });
             Ok(())
         };

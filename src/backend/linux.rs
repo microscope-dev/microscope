@@ -1672,10 +1672,6 @@ struct Orphans {
     /// Children that could not be scrubbed, killed and awaiting their exit.
     killed: BTreeSet<Pid>,
     waiter: Option<Waiter>,
-
-    /// Whether the parent was attached, so that a panic releases the
-    /// children rather than leaving them to `PTRACE_O_EXITKILL`.
-    attached: bool,
 }
 
 /// What a shutdown does with a launched process.

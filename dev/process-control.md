@@ -428,7 +428,8 @@ Ending the group ends every member, killing launched processes and
 releasing attached ones, then the watched processes, and then joins the
 tracer thread. `GroupHandle::detach` releases one stopped member; the root
 cannot be detached alone. A member whose session ends while it still debugs
-its process releases it and reports `MemberLost`. An attached group adopts
+its process, as a panic ends one, kills it if it was launched and would be
+killed on shutdown, releases it otherwise, and reports `MemberLost`. An attached group adopts
 only the processes started after the attach.
 
 A process must end hosted by one controller, watched, running untraced, or

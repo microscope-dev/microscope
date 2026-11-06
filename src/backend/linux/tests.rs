@@ -1400,6 +1400,12 @@ impl LinuxTraceOps for FakeTrace {
             self.unreaped
                 .borrow_mut()
                 .insert(pid, WaitEvent::Stopped(pid, Signal::SIGTRAP));
+        } else if self.queued_stops.borrow_mut().remove(&pid) {
+            // The new stop replaces the thread's signal information.
+            self.set_siginfo(pid, libc::SI_TKILL, None);
+            self.unreaped
+                .borrow_mut()
+                .insert(pid, WaitEvent::Stopped(pid, Signal::SIGSTOP));
         }
 
         Ok(())
@@ -3839,41 +3845,51 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
 /// a trap still holds the trap's SIGTRAP, which a detach would deliver to
 /// the released process, killing it. The release resumes the thread to
 /// take the trap first, then rewinds it over the trap as it would a thread
-/// stopped there.
+/// stopped there. A signal the thread stopped for instead is still passed
+/// on when it is released.
 #[test]
 fn a_panic_takes_a_trap_queued_behind_an_interrupt_before_releasing() {
-    let mut harness = watch_harness(1);
-    harness.attached();
-    let thread = harness.threads[0];
-    let site = VirtualAddress::new(0x40);
-    harness.inferior().breakpoints.insert(
-        site,
-        BreakpointSite {
-            original_byte: 0x55,
-            installed: true,
-            owners: BTreeSet::from([BreakpointOwner::Runtime]),
-        },
-    );
-    harness.trace().put_byte(site, BREAKPOINT_OPCODE);
-    harness.trace().set_pc(thread, 0x41);
-    harness.trace().set_siginfo(thread, libc::SI_KERNEL, None);
-    harness.trace().queued_traps.borrow_mut().insert(thread);
-    harness.trace().take_actions();
+    for signal in [None, Some(Signal::SIGUSR1)] {
+        let mut harness = watch_harness(1);
+        harness.attached();
+        let thread = harness.threads[0];
+        let site = VirtualAddress::new(0x40);
+        harness.inferior().breakpoints.insert(
+            site,
+            BreakpointSite {
+                original_byte: 0x55,
+                installed: true,
+                owners: BTreeSet::from([BreakpointOwner::Runtime]),
+            },
+        );
+        harness.trace().put_byte(site, BREAKPOINT_OPCODE);
+        harness.trace().set_pc(thread, 0x41);
+        harness.trace().set_siginfo(thread, libc::SI_KERNEL, None);
+        harness.trace().queued_traps.borrow_mut().insert(thread);
+        if let Some(signal) = signal {
+            harness
+                .controller
+                .pending
+                .borrow_mut()
+                .push_back(ControllerMessage::Wait(WaitEvent::Stopped(thread, signal)));
+        }
+        harness.trace().take_actions();
 
-    harness.controller.release_after_panic();
+        harness.controller.release_after_panic();
 
-    let actions = harness.trace().take_actions();
-    let at = |expected: String| {
-        actions
-            .iter()
-            .position(|action| *action == expected)
-            .unwrap_or_else(|| panic!("{expected} in {actions:#?}"))
-    };
-    let resumed = at(format!("continue {thread} None"));
-    let rewound = at(format!("set_registers {thread} rip=0x40"));
-    let detached = at(format!("detach {thread} None"));
-    assert!(resumed < rewound && rewound < detached, "{actions:#?}");
-    assert!(harness.trace().queued_traps.borrow().is_empty());
+        let actions = harness.trace().take_actions();
+        let at = |expected: String| {
+            actions
+                .iter()
+                .position(|action| *action == expected)
+                .unwrap_or_else(|| panic!("{expected} in {actions:#?}"))
+        };
+        let resumed = at(format!("continue {thread} None"));
+        let rewound = at(format!("set_registers {thread} rip=0x40"));
+        let detached = at(format!("detach {thread} {signal:?}"));
+        assert!(resumed < rewound && rewound < detached, "{actions:#?}");
+        assert!(harness.trace().queued_traps.borrow().is_empty());
+    }
 }
 
 /// After a panic, a trap in the last bytes of a mapping is given back its
@@ -4040,12 +4056,13 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
 }
 
 /// After a panic, a fork child still on its way to its first stop when its
-/// attached parent's process ended is scrubbed of the traps it inherited
-/// and released, as that stop would have done. Left alone, it would be
-/// released with them when the tracer thread ends. A launched parent's
-/// child is left to `PTRACE_O_EXITKILL`, as the launched process itself is.
+/// parent's process ended is scrubbed of the traps it inherited and
+/// released, as that stop and a shutdown would have, whether the parent was
+/// attached or launched. Left alone, it would stay traced with no one to
+/// serve it, and then be released with the traps when the tracer thread
+/// ends.
 #[test]
-fn a_panic_releases_an_attached_process_s_orphaned_fork_child() {
+fn a_panic_releases_orphaned_fork_children() {
     for attached in [true, false] {
         let mut harness = hit_harness(1, ">=1");
         if attached {
@@ -4071,21 +4088,189 @@ fn a_panic_releases_an_attached_process_s_orphaned_fork_child() {
 
         harness.controller.release_after_panic();
 
-        let expected: &[String] = if attached {
-            &[
-                format!("write_word {child} {HIT_SITE:#x} 0x90"),
-                format!("detach {child} None"),
-            ]
-        } else {
-            &[]
-        };
         assert_eq!(
             harness.trace().take_actions(),
-            expected,
+            [
+                format!("write_word {child} {HIT_SITE:#x} 0x90"),
+                format!("detach {child} None"),
+            ],
             "attached {attached}"
         );
         assert!(harness.controller.orphans.is_none(), "attached {attached}");
     }
+}
+
+/// After a panic, a launched process is killed, as a shutdown would kill
+/// it, rather than left to `PTRACE_O_EXITKILL`, which comes only when the
+/// tracer thread ends: a group's outlives the controller, and the process
+/// would stay stopped with no one to serve it. A launched process the
+/// session releases on shutdown is released as an attached one is.
+#[test]
+fn a_panic_kills_a_launched_process_unless_the_session_releases_it() {
+    for ending in [super::Ending::Kill, super::Ending::Release] {
+        let mut harness = hit_harness(1, ">=1");
+        let thread = harness.threads[0];
+        harness.controller.ending = ending;
+        harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
+        harness.trace().take_actions();
+
+        harness.controller.release_after_panic();
+
+        let actions = harness.trace().take_actions();
+        let killed = actions.contains(&format!("kill {thread} SIGKILL"));
+        let released = actions.contains(&format!("write_word {thread} {HIT_SITE:#x} 0x90"))
+            && actions.contains(&format!("detach {thread} None"));
+        match ending {
+            super::Ending::Kill => assert!(killed && !released, "{actions:#?}"),
+            super::Ending::Release => assert!(released && !killed, "{actions:#?}"),
+        }
+        assert!(harness.controller.inferior.is_none());
+    }
+}
+
+/// A launched process killed after a panic does not take its fork children
+/// with it: a child still due its first stop is scrubbed and released, as
+/// a shutdown would release it.
+#[test]
+fn a_panic_releases_the_fork_children_of_a_launched_process_it_kills() {
+    let mut harness = hit_harness(1, ">=1");
+    let (parent, child) = (harness.threads[0], Pid::from_raw(6000));
+    harness.trace().clone.replace(Some((child, child)));
+    assert!(harness.controller.handle_wait(WaitEvent::PtraceEvent(
+        parent,
+        Signal::SIGTRAP,
+        libc::PTRACE_EVENT_FORK,
+    )));
+    assert!(harness.inferior().fork_children.contains_key(&child));
+    harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
+    harness.trace().take_actions();
+
+    harness.controller.release_after_panic();
+
+    let actions = harness.trace().take_actions();
+    for expected in [
+        format!("kill {parent} SIGKILL"),
+        format!("write_word {child} {HIT_SITE:#x} 0x90"),
+        format!("detach {child} None"),
+    ] {
+        assert!(actions.contains(&expected), "{expected} in {actions:#?}");
+    }
+}
+
+/// A launched thread the session releases after a panic may still hold
+/// the SIGSTOP the debugger sent it, overtaken by a trap. The detach would
+/// deliver it and stop the released process for good, so the release
+/// takes it first, once it has rewound the thread over the `int3`: the new
+/// stop's signal information no longer says it was one.
+#[test]
+fn a_panic_takes_an_outstanding_debugger_stop_before_releasing() {
+    let mut harness = watch_harness(1);
+    let thread = harness.threads[0];
+    harness.controller.ending = super::Ending::Release;
+    let site = VirtualAddress::new(0x40);
+    harness.inferior().breakpoints.insert(
+        site,
+        BreakpointSite {
+            original_byte: 0x55,
+            installed: true,
+            owners: BTreeSet::from([BreakpointOwner::Runtime]),
+        },
+    );
+    harness.trace().put_byte(site, BREAKPOINT_OPCODE);
+    harness.trace().set_pc(thread, 0x41);
+    harness.trace().set_siginfo(thread, libc::SI_KERNEL, None);
+    harness
+        .trace()
+        .unreaped
+        .borrow_mut()
+        .insert(thread, WaitEvent::Stopped(thread, Signal::SIGTRAP));
+    harness.thread(thread).debugger_stop_pending = true;
+    harness.trace().queued_stops.borrow_mut().insert(thread);
+    harness.trace().take_actions();
+
+    harness.controller.release_after_panic();
+
+    let actions = harness.trace().take_actions();
+    let at = |expected: String| {
+        actions
+            .iter()
+            .position(|action| *action == expected)
+            .unwrap_or_else(|| panic!("{expected} in {actions:#?}"))
+    };
+    let rewound = at(format!("set_registers {thread} rip=0x40"));
+    let resumed = at(format!("continue {thread} None"));
+    let detached = at(format!("detach {thread} None"));
+    assert!(rewound < resumed && resumed < detached, "{actions:#?}");
+    assert!(harness.trace().queued_stops.borrow().is_empty());
+}
+
+/// A launched thread that stopped for a signal may hold a debugger SIGSTOP
+/// queued behind it. The release resumes it with that signal, which it
+/// takes, then takes the SIGSTOP, so it is released running.
+#[test]
+fn a_panic_takes_a_debugger_stop_queued_behind_a_signal() {
+    let mut harness = watch_harness(1);
+    let thread = harness.threads[0];
+    harness.controller.ending = super::Ending::Release;
+    harness.thread(thread).debugger_stop_pending = true;
+    harness.trace().queued_stops.borrow_mut().insert(thread);
+    harness
+        .controller
+        .pending
+        .borrow_mut()
+        .push_back(ControllerMessage::Wait(WaitEvent::Stopped(
+            thread,
+            Signal::SIGUSR1,
+        )));
+    harness.trace().take_actions();
+
+    harness.controller.release_after_panic();
+
+    let actions = harness.trace().take_actions();
+    let at = |expected: String| {
+        actions
+            .iter()
+            .position(|action| *action == expected)
+            .unwrap_or_else(|| panic!("{expected} in {actions:#?}"))
+    };
+    let resumed = at(format!("continue {thread} Some(SIGUSR1)"));
+    let detached = at(format!("detach {thread} None"));
+    assert!(resumed < detached, "{actions:#?}");
+}
+
+/// A launched process was not seized, so `PTRACE_INTERRUPT` cannot stop a
+/// thread that runs when a panic releases it. The release sends it a
+/// SIGSTOP instead, and takes that SIGSTOP rather than hands it on.
+#[test]
+fn a_panic_stops_a_running_launched_thread_with_a_signal_it_does_not_deliver() {
+    let mut harness = watch_harness(1);
+    let thread = harness.threads[0];
+    harness.controller.ending = super::Ending::Release;
+    harness
+        .trace()
+        .fail_point
+        .replace(Some(("registers", 0, Errno::ESRCH)));
+    harness
+        .controller
+        .message_sender
+        .try_send(ControllerMessage::Wait(WaitEvent::Stopped(
+            thread,
+            Signal::SIGSTOP,
+        )))
+        .expect("room for the stop");
+    harness.trace().take_actions();
+
+    harness.controller.release_after_panic();
+
+    let actions = harness.trace().take_actions();
+    assert!(
+        actions.contains(&format!("request_stop {thread}")),
+        "{actions:#?}"
+    );
+    assert!(
+        actions.contains(&format!("detach {thread} None")),
+        "{actions:#?}"
+    );
 }
 
 /// A launch while the controller still releases children the last program
