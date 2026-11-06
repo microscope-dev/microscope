@@ -2667,13 +2667,13 @@ textarea.input {
   position: relative;
 }
 
-/* Inspect */
+/* File details */
 
-.inspect-overlay {
+.details-overlay {
   padding: 6vh 16px;
 }
 
-.inspect {
+.details {
   display: flex;
   flex-direction: column;
   width: min(960px, 100%);
@@ -2686,7 +2686,7 @@ textarea.input {
   outline: none;
 }
 
-.inspect-head {
+.details-head {
   display: flex;
   flex: none;
   flex-wrap: wrap;
@@ -2696,7 +2696,7 @@ textarea.input {
   border-bottom: 1px solid var(--line);
 }
 
-.inspect-head h1 {
+.details-head h1 {
   flex: 1;
   min-width: 0;
   margin: 0;
@@ -2705,16 +2705,22 @@ textarea.input {
   overflow-wrap: anywhere;
 }
 
-.inspect-head .segmented {
+/* A download's failure takes a row of its own below the head's controls. */
+.details-head .error {
+  order: 1;
+  flex-basis: 100%;
+}
+
+.details-head .segmented {
   margin-left: 0;
 }
 
-.inspect-head .segmented button[aria-selected="true"] {
+.details-head .segmented button[aria-selected="true"] {
   background: var(--accent-soft);
   color: var(--ink);
 }
 
-.inspect-body {
+.details-body {
   display: grid;
   gap: 18px;
   min-height: 0;
@@ -2722,26 +2728,26 @@ textarea.input {
   overflow: auto;
 }
 
-.inspect-columns {
+.details-columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
   gap: 18px 28px;
   align-items: start;
 }
 
-.inspect-stack,
-.inspect-section {
+.details-stack,
+.details-section {
   display: grid;
   gap: 6px;
   min-width: 0;
   align-content: start;
 }
 
-.inspect-stack {
+.details-stack {
   gap: 18px;
 }
 
-.inspect-section h2 {
+.details-section h2 {
   margin: 0;
   color: var(--ink-3);
   font: 600 10px / 1.6 var(--sans);
@@ -2749,67 +2755,67 @@ textarea.input {
   text-transform: uppercase;
 }
 
-.inspect-table {
+.details-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.inspect-table th,
-.inspect-table td {
+.details-table th,
+.details-table td {
   padding: 3px 0;
   text-align: left;
   vertical-align: top;
 }
 
-.inspect-table th + th,
-.inspect-table th + td,
-.inspect-table td + td,
-.inspect-table td + th {
+.details-table th + th,
+.details-table th + td,
+.details-table td + td,
+.details-table td + th {
   padding-left: 12px;
 }
 
-.inspect-table thead th {
+.details-table thead th {
   border-bottom: 1px solid var(--line);
   color: var(--ink-3);
   font-weight: 400;
 }
 
-.inspect-table tbody tr + tr > * {
+.details-table tbody tr + tr > * {
   border-top: 1px solid var(--line);
 }
 
-.inspect-table tbody th {
+.details-table tbody th {
   width: 1%;
   color: var(--ink-2);
   font-weight: 400;
   white-space: nowrap;
 }
 
-.inspect-table .n {
+.details-table .n {
   text-align: right;
   white-space: nowrap;
 }
 
-.inspect-table .mono {
+.details-table .mono {
   font-family: var(--mono);
   font-size: 11.5px;
 }
 
-.inspect-table .wrap {
+.details-table .wrap {
   overflow-wrap: anywhere;
 }
 
-.inspect-table .warn {
+.details-table .warn {
   color: var(--changed);
 }
 
-.inspect-bar {
+.details-bar {
   width: 32%;
 }
 
-.inspect-bar div {
+.details-bar div {
   display: flex;
   height: 8px;
   margin-top: 4px;
@@ -2817,25 +2823,25 @@ textarea.input {
   overflow: hidden;
 }
 
-.inspect-bar i {
+.details-bar i {
   flex: none;
 }
 
-.inspect-bar .main,
-.inspect-histogram .marked i {
+.details-bar .main,
+.details-histogram .marked i {
   background: var(--accent);
 }
 
-.inspect-bar .context,
-.inspect-histogram i {
+.details-bar .context,
+.details-histogram i {
   background: var(--line-strong);
 }
 
-.inspect-bar .warn {
+.details-bar .warn {
   background: var(--warn-line);
 }
 
-.inspect-command {
+.details-command {
   display: flex;
   gap: 8px;
   align-items: flex-start;
@@ -2845,7 +2851,7 @@ textarea.input {
   background: var(--paper);
 }
 
-.inspect-lines {
+.details-lines {
   flex: 1;
   min-width: 0;
   font: 12px / 1.6 var(--mono);
@@ -2855,23 +2861,23 @@ textarea.input {
 
 /* A long line wraps deeper than the arguments start, so where one
  * argument ends stays plain. */
-.inspect-lines > div {
+.details-lines > div {
   padding-left: 4ch;
   text-indent: -4ch;
 }
 
-.inspect-lines > .argument {
+.details-lines > .argument {
   text-indent: -2ch;
 }
 
-.inspect-histogram {
+.details-histogram {
   display: flex;
   align-items: stretch;
   gap: 1px;
   height: 48px;
 }
 
-.inspect-histogram > * {
+.details-histogram > * {
   display: flex;
   flex: 1;
   align-items: flex-end;
@@ -2881,22 +2887,22 @@ textarea.input {
   background: none;
 }
 
-.inspect-histogram i {
+.details-histogram i {
   width: 100%;
   min-height: 1px;
 }
 
 /* Bins of time are the samples themselves, so they take the main color. */
-.inspect-histogram > span i {
+.details-histogram > span i {
   background: var(--accent);
 }
 
-.inspect-histogram > button:hover i,
-.inspect-histogram > button:focus-visible i {
+.details-histogram > button:hover i,
+.details-histogram > button:focus-visible i {
   background: var(--ink);
 }
 
-.inspect-axis {
+.details-axis {
   display: flex;
   justify-content: space-between;
   color: var(--ink-3);

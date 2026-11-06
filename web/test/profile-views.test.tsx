@@ -670,21 +670,17 @@ it("says a profile it does not serve is missing, and any other failure as it is"
   await expect.element(page.getByText("microscope web PROFILE.usprof")).not.toBeInTheDocument();
 });
 
-it("offers its file, and a bar only for a recording", async () => {
+it("says nothing the tab says, and shows a bar only for a recording", async () => {
   const summary = summaryOf({ program: "/work/searcher" });
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
-  // Its tab names it, and Inspect says what it holds, so the head says neither.
-  const download = page.getByRole("button", { name: "Download" });
-  await expect.element(download).toBeVisible();
+  // Its tab names it, and File details says what it holds, so the head says neither.
+  const details = page.getByRole("button", { name: "File details" });
+  await expect.element(details).toBeVisible();
   const head = document.querySelector(".profile-head") as HTMLElement;
-  expect(head.textContent).not.toMatch(/test\.usprof|searcher|10 samples/u);
-  await expect.element(download).toHaveAttribute("title", expect.stringContaining(".usprof"));
+  expect(head.firstElementChild).toBe(details.element());
+  expect(head.textContent).not.toMatch(/test\.usprof|searcher|10 samples|Download/u);
   expect(page.getByTestId("recording").elements()).toHaveLength(0);
-
-  // This test's page serves no profiles, so the download fails, and says why.
-  await userEvent.click(download);
-  await expect.element(page.getByText(/Could not download it: the server answered/u)).toBeVisible();
 
   server.send({
     type: "profiles",
@@ -693,10 +689,9 @@ it("offers its file, and a bar only for a recording", async () => {
   await expect
     .element(page.getByTestId("recording").getByText(`Recording ${summary.name}`))
     .toBeVisible();
-  await expect.element(download).toBeVisible();
 });
 
-/** What Inspect reads of a recording of a program with an argument a
+/** What File details reads of a recording of a program with an argument a
  * shell would split. */
 function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspection {
   return {
@@ -726,7 +721,7 @@ function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspectio
   };
 }
 
-it("inspects the profile in a dialog: its whole command, then its samples", async () => {
+it("shows the file's details in a dialog: its whole command, then its samples", async () => {
   const summary = summaryOf({
     timed: true,
     truncations: [{ what: "Stack copy ran out", count: 3 }],
@@ -740,7 +735,7 @@ it("inspects the profile in a dialog: its whole command, then its samples", asyn
   });
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
-  const inspect = page.getByRole("button", { name: "Inspect" });
+  const inspect = page.getByRole("button", { name: "File details" });
   await userEvent.click(inspect);
   const dialog = page.getByRole("dialog", { name: "test.usprof" });
   await expect.element(dialog).toBeVisible();
@@ -757,7 +752,7 @@ it("inspects the profile in a dialog: its whole command, then its samples", asyn
   await expect.element(page.getByTestId("command")).toBeVisible();
   const lines = [...page.getByTestId("command").element().children].map((line) => line.textContent);
   expect(lines).toEqual(["/bin/rg \\", "-c \\", "'a b' \\", String.raw`'it'\''s'`]);
-  await expect.element(dialog.getByText("Command, 3 arguments")).toBeVisible();
+  await expect.element(dialog.getByRole("heading", { name: "Command", exact: true })).toBeVisible();
   const written = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
   await userEvent.click(dialog.getByRole("button", { name: "Copy" }));
   expect(written).toHaveBeenCalledWith(String.raw`/bin/rg -c 'a b' 'it'\''s'`);
@@ -803,17 +798,17 @@ it("inspects the profile in a dialog: its whole command, then its samples", asyn
   await userEvent.hover(bars.nth(3));
   await expect.element(page.getByTestId("depth")).toHaveTextContent("4 frames: 3 samples, 30.0%");
 
-  // Escape closes it and gives focus back to Inspect.
+  // Escape closes it and gives focus back to File details.
   await userEvent.keyboard("{Escape}");
   await expect.element(dialog).not.toBeInTheDocument();
   await expect.element(inspect).toHaveFocus();
 });
 
-it("closes Inspect on a click outside, and says when a recording kept only the joined command", async () => {
+it("closes File details on a click outside, and says when a recording kept only the joined command", async () => {
   const summary = summaryOf({ samples: 0, syscalls: 4 });
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
-  await userEvent.click(page.getByRole("button", { name: "Inspect" }));
+  await userEvent.click(page.getByRole("button", { name: "File details" }));
   server.answer(
     await server.next("profileInspect"),
     inspectionOf({ command: { arguments: null, text: "/bin/sh -c 'a b'" }, file: null }),
@@ -828,7 +823,7 @@ it("closes Inspect on a click outside, and says when a recording kept only the j
   // A click in the dialog keeps it; one on the scrim around it closes it.
   await userEvent.click(dialog.getByText(/kept the command/u));
   await expect.element(dialog).toBeVisible();
-  const scrim = document.querySelector(".inspect-overlay") as HTMLElement;
+  const scrim = document.querySelector(".details-overlay") as HTMLElement;
   // This harness has no styles, so the scrim has no margin to click.
   act(() => {
     scrim.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
@@ -836,13 +831,27 @@ it("closes Inspect on a click outside, and says when a recording kept only the j
   await expect.element(dialog).not.toBeInTheDocument();
 });
 
-it("says why Inspect failed", async () => {
+it("says why File details failed", async () => {
   const summary = summaryOf();
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
-  await userEvent.click(page.getByRole("button", { name: "Inspect" }));
+  await userEvent.click(page.getByRole("button", { name: "File details" }));
   server.fail(await server.next("profileInspect"), "the file went away", "failed");
-  await expect.element(page.getByText("Could not inspect it: the file went away")).toBeVisible();
+  await expect
+    .element(page.getByText("Could not read its details: the file went away"))
+    .toBeVisible();
+
+  // Download sits between the tabs and Close. This test's page serves no
+  // profiles, so the download fails, and says why.
+  const dialog = page.getByRole("dialog");
+  const buttons = [...dialog.element().querySelectorAll(".details-head > button")];
+  expect(buttons.map((button) => button.textContent)).toEqual(["Download", "Close"]);
+  const download = dialog.getByRole("button", { name: "Download" });
+  await expect.element(download).toHaveAttribute("title", expect.stringContaining(".usprof"));
+  await userEvent.click(download);
+  await expect
+    .element(dialog.getByText(/Could not download it: the server answered/u))
+    .toBeVisible();
 });
 
 it("keeps what it shows while disconnected, and says so", async () => {

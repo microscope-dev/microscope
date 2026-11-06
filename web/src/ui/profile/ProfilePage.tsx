@@ -23,7 +23,6 @@ import {
 import { tracedBy, traceNotes } from "../../profile/syscalls";
 import type { ProfileGranularity, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
-import { presented, serverUrl } from "../../target";
 import type { PaneProps } from "../../workbench/kinds";
 import { groups, type Json, type Pane, setParams } from "../../workbench/layout";
 import { change, useLayout, workbench } from "../../workbench/store";
@@ -34,9 +33,9 @@ import {
   useDisconnected,
   useProfile,
 } from "./context";
+import { FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
-import { Inspect } from "./Inspect";
 import { Chip, ClearChip, LookButton } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
@@ -244,9 +243,9 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
  * removable where it shows. */
 function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
   const { summary, look, setLook } = useProfile();
-  const [inspecting, setInspecting] = useState(false);
-  const startInspecting = useCallback(() => setInspecting(true), []);
-  const stopInspecting = useCallback(() => setInspecting(false), []);
+  const [detailing, setDetailing] = useState(false);
+  const showDetails = useCallback(() => setDetailing(true), []);
+  const hideDetails = useCallback(() => setDetailing(false), []);
   const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to invert, fold, or compare.
@@ -277,7 +276,10 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
 
   return (
     <div className="profile-head">
-      {info ? <Download info={info} /> : null}
+      <button type="button" className="tb ghost" aria-haspopup="dialog" onClick={showDetails}>
+        File details
+      </button>
+      {detailing ? <FileDetails info={info} close={hideDetails} /> : null}
       <div className="segmented">
         {VIEWS.filter(({ view }) => offers(summary, view)).map(({ view, label }) => (
           <LookButton
@@ -290,10 +292,6 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
           </LookButton>
         ))}
       </div>
-      <button type="button" className="tb ghost" aria-haspopup="dialog" onClick={startInspecting}>
-        Inspect
-      </button>
-      {inspecting ? <Inspect revision={info?.revision ?? 0} close={stopInspecting} /> : null}
       {snapshots ? (
         <div className="segmented">
           {SOURCES.map(([src, label, title]) => (
@@ -579,51 +577,6 @@ function Compare() {
         </option>
       ))}
     </select>
-  );
-}
-
-function fileName(info: ProfileInfo): string {
-  return info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
-}
-
-/** Downloads the profile as a file. */
-async function saveProfile(info: ProfileInfo) {
-  const response = await fetch(serverUrl(`api/profile/${info.id}`), {
-    method: "POST",
-    credentials: "same-origin",
-    body: presented(),
-  });
-  if (!response.ok) {
-    throw new Error(`the server answered ${response.status}`);
-  }
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(await response.blob());
-  link.download = fileName(info);
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
-/** Downloads the profile as a file, which `microscope web` opens again. */
-function Download({ info }: { info: ProfileInfo }) {
-  const [failure, setFailure] = useState<string | null>(null);
-  const download = useCallback(() => {
-    setFailure(null);
-    saveProfile(info).catch((error: unknown) => {
-      setFailure(error instanceof Error ? error.message : String(error));
-    });
-  }, [info]);
-  return (
-    <>
-      <button
-        type="button"
-        className="tb ghost"
-        title={`Download ${fileName(info)} to open later with microscope web`}
-        onClick={download}
-      >
-        Download
-      </button>
-      {failure ? <span className="error">Could not download it: {failure}</span> : null}
-    </>
   );
 }
 

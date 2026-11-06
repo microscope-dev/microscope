@@ -25,7 +25,13 @@ import {
   formatWeight,
   largest,
 } from "../../profile/paint";
-import type { ProfileCommand, ProfileInspection, ProfileSummary } from "../../protocol";
+import type {
+  ProfileCommand,
+  ProfileInfo,
+  ProfileInspection,
+  ProfileSummary,
+} from "../../protocol";
+import { presented, serverUrl } from "../../target";
 import { useDialogFocus } from "../dialog";
 import { useAnswer, useProfile } from "./context";
 
@@ -35,11 +41,12 @@ const NAMES: Record<Tab, string> = { metadata: "Metadata", samples: "Samples" };
 const BOTH: Tab[] = ["metadata", "samples"];
 const METADATA_ONLY: Tab[] = ["metadata"];
 
-/** What the profile holds and how it was recorded, over the page until
- * Escape, Close, or a click outside closes it. */
-export function Inspect({ revision, close }: { revision: number; close(): void }) {
+/** What the profile holds and how it was recorded, and its file to
+ * download, over the page until Escape, Close, or a click outside closes
+ * it. */
+export function FileDetails({ info, close }: { info: ProfileInfo | undefined; close(): void }) {
   const { profile, summary } = useProfile();
-  const answer = useAnswer("profileInspect", { profile, revision });
+  const answer = useAnswer("profileInspect", { profile, revision: info?.revision ?? 0 });
   // A trace of system calls alone has no samples to describe.
   const tabs = summary.samples > 0 ? BOTH : METADATA_ONLY;
   const [tab, setTab] = useState<Tab>("metadata");
@@ -85,29 +92,29 @@ export function Inspect({ revision, close }: { revision: number; close(): void }
 
   const inspection = answer.data;
   return (
-    <div className="overlay inspect-overlay" onPointerDown={outside}>
+    <div className="overlay details-overlay" onPointerDown={outside}>
       <div
-        className="inspect"
+        className="details"
         // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an overlay the page draws, not a <dialog>
         role="dialog"
         aria-modal="true"
-        aria-labelledby="inspect-title"
+        aria-labelledby="details-title"
         tabIndex={-1}
         ref={dialog}
       >
-        <div className="inspect-head">
-          <h1 id="inspect-title">{summary.name}</h1>
+        <div className="details-head">
+          <h1 id="details-title">{summary.name}</h1>
           {tabs.length > 1 ? (
-            <div className="segmented" role="tablist" aria-label="Inspect">
+            <div className="segmented" role="tablist" aria-label="File details">
               {tabs.map((each) => (
                 <button
                   key={each}
                   type="button"
                   role="tab"
-                  id={`inspect-${each}`}
+                  id={`details-${each}`}
                   data-tab={each}
                   aria-selected={tab === each}
-                  aria-controls="inspect-panel"
+                  aria-controls="details-panel"
                   tabIndex={tab === each ? 0 : -1}
                   ref={tab === each ? chosen : undefined}
                   onClick={choose}
@@ -118,18 +125,19 @@ export function Inspect({ revision, close }: { revision: number; close(): void }
               ))}
             </div>
           ) : null}
+          {info ? <Download info={info} /> : null}
           <button type="button" className="tb ghost" onClick={close}>
             Close
           </button>
         </div>
         <div
-          className="inspect-body"
-          id="inspect-panel"
+          className="details-body"
+          id="details-panel"
           role={tabs.length > 1 ? "tabpanel" : undefined}
-          aria-labelledby={tabs.length > 1 ? `inspect-${tab}` : undefined}
+          aria-labelledby={tabs.length > 1 ? `details-${tab}` : undefined}
         >
           {answer.error ? (
-            <span className="error">Could not inspect it: {answer.error.message}</span>
+            <span className="error">Could not read its details: {answer.error.message}</span>
           ) : inspection === undefined ? (
             // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output
             <span className="muted" role="status">
@@ -171,7 +179,7 @@ function Metadata({
       {inspection.command ? <Command command={inspection.command} /> : null}
       {inspection.processes.length > 1 ? (
         <Section title={`Processes, ${inspection.processes.length}`}>
-          <table className="inspect-table">
+          <table className="details-table">
             <thead>
               <tr>
                 <th className="n">PID</th>
@@ -194,7 +202,7 @@ function Metadata({
           </table>
         </Section>
       ) : null}
-      <div className="inspect-columns">
+      <div className="details-columns">
         <Section title="Recording">
           <Facts>
             {summary.timed ? (
@@ -209,7 +217,7 @@ function Metadata({
             ))}
           </Facts>
         </Section>
-        <div className="inspect-stack">
+        <div className="details-stack">
           <Section title="File">
             <Facts>
               {file === null ? <Fact name="Source" value="a live recording" /> : null}
@@ -225,7 +233,7 @@ function Metadata({
           </Section>
           {summary.recorderCpu > 0 ? (
             <Section title="microscope's CPU">
-              <table className="inspect-table">
+              <table className="details-table">
                 <tbody>
                   {cpu.map(([what, nanoseconds]) => (
                     <tr key={what}>
@@ -246,7 +254,7 @@ function Metadata({
       </div>
       {inspection.modules.length > 0 ? (
         <Section title={`Modules, ${inspection.modules.length}`}>
-          <table className="inspect-table">
+          <table className="details-table">
             <thead>
               <tr>
                 <th>Path</th>
@@ -273,7 +281,7 @@ function Metadata({
       ) : null}
       {inspection.tables.length > 0 ? (
         <Section title="Bytes by table">
-          <table className="inspect-table">
+          <table className="details-table">
             <tbody>
               {inspection.tables.map((table) => (
                 <tr key={table.name}>
@@ -309,13 +317,10 @@ function Command({ command }: { command: ProfileCommand }) {
   }, [command]);
 
   const lines = command.arguments?.map(shellQuote) ?? [command.text];
-  const title = command.arguments
-    ? `Command, ${formatCount(command.arguments.length - 1, "argument")}`
-    : "Command";
   return (
-    <Section title={title}>
-      <div className="inspect-command">
-        <div className="inspect-lines" ref={block} data-testid="command">
+    <Section title="Command">
+      <div className="details-command">
+        <div className="details-lines" ref={block} data-testid="command">
           {lines.map((line, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- a command's arguments may repeat
             <div key={index} className={index > 0 ? "argument" : undefined}>
@@ -354,7 +359,7 @@ function Samples({
   const busiestBin = largest(inspection.overTime, 1);
   return (
     <>
-      <div className="inspect-columns">
+      <div className="details-columns">
         <Section title="Totals">
           <Facts>
             <Fact name="Samples" value={formatCount(summary.samples)} />
@@ -390,7 +395,7 @@ function Samples({
         </Section>
         {inspection.overTime.length > 0 ? (
           <Section title={`Samples over time, ${formatDuration(bin)} bins`}>
-            <div className="inspect-histogram">
+            <div className="details-histogram">
               {inspection.overTime.map((count, index) => (
                 <Column
                   // oxlint-disable-next-line react/no-array-index-key -- a bin's place is its identity
@@ -401,14 +406,14 @@ function Samples({
                 />
               ))}
             </div>
-            <div className="inspect-axis">
+            <div className="details-axis">
               <span>0</span>
               <span>{formatDuration(summary.duration)}</span>
             </div>
           </Section>
         ) : null}
         <Section title="How stacks ended">
-          <table className="inspect-table">
+          <table className="details-table">
             <tbody>
               <Ending
                 what="Reached the outermost frame"
@@ -432,7 +437,7 @@ function Samples({
       </div>
       {summary.threads.length > 0 ? (
         <Section title={`Threads, ${summary.threads.length}`}>
-          <table className="inspect-table">
+          <table className="details-table">
             <thead>
               <tr>
                 <th className="n">TID</th>
@@ -507,7 +512,7 @@ function Depths({ depths, samples }: { depths: number[]; samples: number }) {
   const count = shown === null ? 0 : (depths[shown] ?? 0);
   return (
     <Section title="Samples by stack depth, in frames">
-      <div className="inspect-histogram" onPointerLeave={hide}>
+      <div className="details-histogram" onPointerLeave={hide}>
         {depths.slice(first).map((each, index) => (
           <Column
             // oxlint-disable-next-line react/no-array-index-key -- a depth is its bar's identity
@@ -522,7 +527,7 @@ function Depths({ depths, samples }: { depths: number[]; samples: number }) {
           />
         ))}
       </div>
-      <div className="inspect-axis">
+      <div className="details-axis">
         <span>{first}</span>
         <span>median {median}</span>
         <span>{depths.length - 1}</span>
@@ -589,7 +594,7 @@ function Fact({ name, value, warn = false }: { name: string; value: string; warn
 
 function Facts({ children }: { children: ReactNode }) {
   return (
-    <table className="inspect-table">
+    <table className="details-table">
       <tbody>{children}</tbody>
     </table>
   );
@@ -612,7 +617,7 @@ function Bar({
   const first = useMemo(() => ({ width: share(value, of) }), [value, of]);
   const second = useMemo(() => ({ width: share(rest, of) }), [rest, of]);
   return (
-    <td className="inspect-bar" aria-hidden="true">
+    <td className="details-bar" aria-hidden="true">
       <div>
         <i className={kind} style={first} />
         {rest > 0 ? <i className="context" style={second} /> : null}
@@ -627,9 +632,54 @@ function share(part: number, of: number): string {
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="inspect-section">
+    <section className="details-section">
       <h2>{title}</h2>
       {children}
     </section>
+  );
+}
+
+function fileName(info: ProfileInfo): string {
+  return info.name.endsWith(".usprof") ? info.name : `${info.name}.usprof`;
+}
+
+/** Downloads the profile as a file. */
+async function saveProfile(info: ProfileInfo) {
+  const response = await fetch(serverUrl(`api/profile/${info.id}`), {
+    method: "POST",
+    credentials: "same-origin",
+    body: presented(),
+  });
+  if (!response.ok) {
+    throw new Error(`the server answered ${response.status}`);
+  }
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = fileName(info);
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+/** Downloads the profile as a file, which `microscope web` opens again. */
+function Download({ info }: { info: ProfileInfo }) {
+  const [failure, setFailure] = useState<string | null>(null);
+  const download = useCallback(() => {
+    setFailure(null);
+    saveProfile(info).catch((error: unknown) => {
+      setFailure(error instanceof Error ? error.message : String(error));
+    });
+  }, [info]);
+  return (
+    <>
+      <button
+        type="button"
+        className="tb ghost"
+        title={`Download ${fileName(info)} to open later with microscope web`}
+        onClick={download}
+      >
+        Download
+      </button>
+      {failure ? <span className="error">Could not download it: {failure}</span> : null}
+    </>
   );
 }
