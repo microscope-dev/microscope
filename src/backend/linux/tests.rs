@@ -1394,6 +1394,14 @@ impl LinuxTraceOps for FakeTrace {
             return Err(backend_error(LinuxError::System(Errno::ESRCH)));
         }
 
+        // A resumed thread dequeues a queued trap before it runs an
+        // instruction, and stops for it.
+        if self.queued_traps.borrow_mut().remove(&pid) {
+            self.unreaped
+                .borrow_mut()
+                .insert(pid, WaitEvent::Stopped(pid, Signal::SIGTRAP));
+        }
+
         Ok(())
     }
 
@@ -3825,6 +3833,47 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
     }
 
     assert!(harness.controller.inferior.is_none());
+}
+
+/// After a panic, a thread that an interrupt stopped just after it executed
+/// a trap still holds the trap's SIGTRAP, which a detach would deliver to
+/// the released process, killing it. The release resumes the thread to
+/// take the trap first, then rewinds it over the trap as it would a thread
+/// stopped there.
+#[test]
+fn a_panic_takes_a_trap_queued_behind_an_interrupt_before_releasing() {
+    let mut harness = watch_harness(1);
+    harness.attached();
+    let thread = harness.threads[0];
+    let site = VirtualAddress::new(0x40);
+    harness.inferior().breakpoints.insert(
+        site,
+        BreakpointSite {
+            original_byte: 0x55,
+            installed: true,
+            owners: BTreeSet::from([BreakpointOwner::Runtime]),
+        },
+    );
+    harness.trace().put_byte(site, BREAKPOINT_OPCODE);
+    harness.trace().set_pc(thread, 0x41);
+    harness.trace().set_siginfo(thread, libc::SI_KERNEL, None);
+    harness.trace().queued_traps.borrow_mut().insert(thread);
+    harness.trace().take_actions();
+
+    harness.controller.release_after_panic();
+
+    let actions = harness.trace().take_actions();
+    let at = |expected: String| {
+        actions
+            .iter()
+            .position(|action| *action == expected)
+            .unwrap_or_else(|| panic!("{expected} in {actions:#?}"))
+    };
+    let resumed = at(format!("continue {thread} None"));
+    let rewound = at(format!("set_registers {thread} rip=0x40"));
+    let detached = at(format!("detach {thread} None"));
+    assert!(resumed < rewound && rewound < detached, "{actions:#?}");
+    assert!(harness.trace().queued_traps.borrow().is_empty());
 }
 
 /// After a panic, a trap in the last bytes of a mapping is given back its

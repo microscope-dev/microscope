@@ -228,7 +228,68 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
+        self.drain_queued_traps_for_release(threads, &mut seen, take_queued);
         seen
+    }
+
+    /// Takes the traps threads raised just before an interrupt stopped
+    /// them, as `drain_queued_traps` does for a detach. `PTRACE_INTERRUPT`
+    /// stops a thread before it dequeues signals, so its trap is still
+    /// queued, and the detach would deliver it to the released process.
+    /// Resumed without a signal, the thread dequeues it into a stop for the
+    /// trap before it runs an instruction, and is then rewound over it. A
+    /// thread that stopped to take a signal is left alone: resuming it
+    /// without that signal would drop it.
+    fn drain_queued_traps_for_release(
+        &self,
+        threads: &[Pid],
+        seen: &mut Seen,
+        take_queued: impl Fn(&mut Seen),
+    ) {
+        let queued: Vec<Pid> = threads
+            .iter()
+            .copied()
+            .filter(|pid| {
+                seen.stopped.contains(pid)
+                    && !seen.gone.contains(pid)
+                    && !seen.trapped.contains(pid)
+                    && !seen.signals.contains_key(pid)
+            })
+            .filter(|&pid| {
+                self.ptrace
+                    .queued_signal(pid, Signal::SIGTRAP)
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        let mut resumed = Vec::new();
+        for pid in queued {
+            if self.ptrace.continue_execution(pid, None).is_ok() {
+                seen.stopped.remove(&pid);
+                resumed.push(pid);
+            }
+        }
+
+        let deadline = Instant::now() + STOP_WAIT;
+        loop {
+            // A waiter still running for other members may take the stop
+            // and route it to this controller's queue.
+            take_queued(seen);
+            for &pid in &resumed {
+                while let Some(status) = self.ptrace.poll_status(pid) {
+                    seen.note(&status);
+                }
+            }
+
+            let waiting = resumed
+                .iter()
+                .any(|pid| !seen.stopped.contains(pid) && !seen.gone.contains(pid));
+            if !waiting || Instant::now() >= deadline {
+                return;
+            }
+
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Gives each byte of `sites` that still holds a trap its original back,

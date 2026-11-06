@@ -101,8 +101,10 @@ So `Controller::run` catches the unwind and releases an attached process as
 assertion macro, because any panic can end the controller. It trusts the kernel
 over the controller's state: a thread is stopped if it answers a register
 read, and a byte is restored only if memory still holds microscope's trap and
-the original byte is known. Aborts skip it: stack overflow, running out of
-memory, and a panic during cleanup.
+the original byte is known. A thread the release interrupted right after it
+executed a trap still holds the trap's SIGTRAP, which the detach would deliver,
+so the release resumes it to take the trap first, as a detach does. Aborts
+skip it: stack overflow, running out of memory, and a panic during cleanup.
 
 In development builds, `MICROSCOPE_TEST_PANIC_AFTER=<request>` makes the
 controller panic after serving a request whose description begins with
