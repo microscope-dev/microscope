@@ -16,7 +16,7 @@ use super::{CHAIN_LIMIT, FrameRules, SampledFrame, SampledState, StackEnd, unwin
 use crate::debug_info::UnwindInfo;
 use crate::unwind::{
     DwarfRegister, MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile, SIGCONTEXT_REGISTERS,
-    UCONTEXT_MCONTEXT, UnwindModule, UnwindStep, interrupted_registers,
+    UCONTEXT_MCONTEXT, UnwindModule, UnwindStep,
 };
 use crate::{
     AddressRange, CodeRole, ImageAddress, LoadedModule, ModuleId, ModuleImage, ModuleImageId,
@@ -320,14 +320,11 @@ impl UnwindInfo for Rules<'_> {
                     signal_frame: false,
                 });
             }
+            // musl's trampoline, unlike glibc's, has no call-frame
+            // information: it is known by its role alone.
             Rule::Signal => {
-                let context = register(RSP)?;
-                let interrupted =
-                    interrupted_registers(context, memory).ok_or_else(|| unreadable(context))?;
-                return Ok(UnwindStep {
-                    registers: interrupted,
-                    cfa: VirtualAddress::new(context + SIGNAL_FRAME),
-                    signal_frame: true,
+                return Err(UnwindTermination::NoUnwindInfo {
+                    address: VirtualAddress::new(address.get()),
                 });
             }
             Rule::FramePointer if within == 0 => (register(RSP)? + 8, None),
@@ -500,10 +497,11 @@ fn stack() -> impl Strategy<Value = Stack> {
                     frames[at].function = ordinary + 1;
                 }
 
-                // A signal interrupts a frame other than the innermost,
-                // whose handler then runs above the trampoline.
+                // A signal interrupts a frame, whose handler then runs
+                // above the trampoline, or has returned to it, which is then
+                // the innermost.
                 if let Some(signal) = signal.filter(|_| frames.len() > 1) {
-                    let at = 1 + signal.index(frames.len() - 1);
+                    let at = signal.index(frames.len());
                     frames.insert(
                         at,
                         Frame {
@@ -593,6 +591,12 @@ fn check(stack: &Stack, frames: &[SampledFrame], end: StackEnd) -> Result<(), Te
 /// Unwinds a sample of the stack and checks it against the truth.
 fn unwinds_to_a_prefix(stack: &Stack) -> Result<(), TestCaseError> {
     let truth = stack.truth();
+    let (frames, end) = sample(stack, &truth);
+    check(stack, &frames, end)
+}
+
+/// Unwinds the sample a profiler takes of the stack.
+fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
     let rules = Rules { stack };
     let image = image(stack);
     let modules = [UnwindModule {
@@ -609,14 +613,14 @@ fn unwinds_to_a_prefix(stack: &Stack) -> Result<(), TestCaseError> {
     let words = stack
         .copied_words
         .min(usize::try_from((truth.stack_end - truth.stack_pointer) / 8).unwrap());
-    let bytes = copy(&truth, words);
-    let chain = kernel_chain(&truth);
+    let bytes = copy(truth, words);
+    let chain = kernel_chain(truth);
     let registers = [
         (RETURN_ADDRESS, truth.frames[0].0),
         (RSP, truth.stack_pointer),
         (RBP, truth.frames[0].1),
     ];
-    let (frames, end) = unwind_sample(
+    unwind_sample(
         &modules,
         &mut FrameRules::default(),
         SampledState {
@@ -625,8 +629,7 @@ fn unwinds_to_a_prefix(stack: &Stack) -> Result<(), TestCaseError> {
             chain: &chain,
         },
         stack.limit,
-    );
-    check(stack, &frames, end)
+    )
 }
 
 proptest! {
@@ -661,4 +664,42 @@ fn the_chain_names_a_signal_trampoline_at_its_entry() {
         limit: 2,
     };
     unwinds_to_a_prefix(&stack).unwrap();
+}
+
+/// A sample in the trampoline, after the handler returned to it: its stack
+/// pointer is at the `ucontext`, which names the interrupted frame and its
+/// callers, though no call-frame information describes the trampoline.
+#[test]
+fn a_sample_in_a_signal_trampoline_continues_to_what_it_interrupted() {
+    let function = |rule, role| Function { rule, role };
+    let frame = |function, offset| Frame {
+        function,
+        offset,
+        locals: 1,
+        garbage: 0,
+    };
+    let stack = Stack {
+        functions: vec![
+            function(Rule::FramePointer, CodeRole::Ordinary),
+            function(Rule::Outermost, CodeRole::Outermost),
+            function(Rule::FramePointer, CodeRole::StackSwitch),
+            function(Rule::Signal, CodeRole::SignalTrampoline),
+        ],
+        frames: vec![frame(3, 0), frame(0, 0x10), frame(0, 0x20), frame(1, 0x10)],
+        place: Place::Body,
+        copied_words: 48,
+        limit: 12,
+    };
+    unwinds_to_a_prefix(&stack).unwrap();
+
+    let truth = stack.truth();
+    let (frames, end) = sample(&stack, &truth);
+    assert_eq!(end, StackEnd::Complete);
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.address.get())
+            .collect::<Vec<_>>(),
+        truth.frames.iter().map(|frame| frame.0).collect::<Vec<_>>()
+    );
 }

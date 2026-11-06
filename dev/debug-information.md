@@ -382,6 +382,10 @@ process's entry point that clears rbp and runs straight to a call, as the
 psABI asks of the outermost frame, is proved `Outermost` up to that call, so
 a stack through musl's `_start` ends complete.
 
+A sample taken in a signal trampoline after its handler returned unwinds by
+the trampoline's role, from the `ucontext` at its stack pointer, as a
+handler's caller does: musl's `__restore_rt` has no CFI.
+
 `just unwind-oracle PROGRAM` single-steps a program and checks the stack at
 every instruction against the calls it made (`src/tools/unwind_oracle.rs`).
 Use it on new producers, libraries, and unwinder changes; a step it calls

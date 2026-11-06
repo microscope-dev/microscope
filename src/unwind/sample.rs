@@ -163,15 +163,15 @@ fn sampled_frames(
         return (frames(walked.unwound), walked.end);
     }
 
-    let (mut unwound, cfi_end) = (walked.unwound, walked.end);
+    let (unwound, cfi_end) = (walked.unwound, walked.end);
 
     // The kernel's chain from the deepest frame that keeps the chain.
     let Some((kept, link, links)) = splice(modules, rules, &unwound, sample, &mut memory) else {
         return (frames(unwound), cfi_end);
     };
 
-    unwound.truncate(kept + 1);
-    let mut frames = frames(unwound);
+    let unwound = frames(unwound);
+    let mut frames = unwound[..=kept].to_vec();
     let links = links.get(link..).unwrap_or_default();
     let end = match follow_chain(
         modules,
@@ -187,6 +187,13 @@ fn sampled_frames(
         }
         end => end,
     };
+
+    // The chain can end sooner than call-frame information did, at a
+    // frame past the splice that keeps no frame pointer: the frames both
+    // found agree, and the longer stack is the better proof.
+    if frames.len() < unwound.len() {
+        return (unwound, cfi_end);
+    }
     (frames, end)
 }
 
@@ -283,6 +290,26 @@ fn walk_cfi(
         // the frame pointer the switch kept, reaches its caller.
         if role == CodeRole::StackSwitch {
             break StackEnd::Truncated(Truncation::StackSwitch, index);
+        }
+
+        // A sample in the trampoline itself, after the handler returned:
+        // its stack pointer is at the `ucontext` of what the signal
+        // interrupted, as the frame of a trampoline a handler returns to is.
+        if role == CodeRole::SignalTrampoline {
+            let Some((interrupted, instruction)) = registers
+                .get(RSP)
+                .and_then(|context| interrupted_registers(context, memory))
+                .and_then(|interrupted| {
+                    let instruction = interrupted.get(RETURN_ADDRESS)?;
+                    Some((interrupted, instruction))
+                })
+            else {
+                break StackEnd::Truncated(Truncation::StackCopyExhausted, None);
+            };
+
+            address = VirtualAddress::new(instruction);
+            registers = interrupted;
+            continue;
         }
 
         let Some((module, image_address)) = found.map(|(index, at)| (modules[index], at)) else {
