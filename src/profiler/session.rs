@@ -730,6 +730,7 @@ fn drive(
 
     let mut published = std::time::Instant::now();
     let begun = std::time::Instant::now();
+    let mut drained_at = begun;
     let mut wait = watch.every.min(Duration::from_millis(250));
     let mut stopping = false;
     let mut now = false;
@@ -755,11 +756,15 @@ fn drive(
         // the next drain begins, but for a stalled CPU.
         let watermark = monotonic().saturating_sub(WATERMARK_DELAY);
         if !finished {
+            // Drains begin a period apart, or back to back while processing
+            // takes longer: a drain that waited its whole period after a
+            // slow one would leave the reader's queue that much fuller.
             let mut wait = if walker.is_some() && begun.elapsed() < EARLY_DRAINS {
                 Duration::from_millis(1)
             } else {
                 Duration::from_millis(10)
-            };
+            }
+            .saturating_sub(drained_at.elapsed());
             if let Some(pacer) = &mut pacer {
                 let edge = pacer.pace(monotonic(), events, processor);
                 // While the budget pauses sampling only the sideband's
@@ -784,6 +789,7 @@ fn drive(
         }
 
         let mut drained = 0;
+        drained_at = std::time::Instant::now();
         processor.ingest_drained(
             |records| drained = events.drain(records),
             (!finished).then_some(watermark),
