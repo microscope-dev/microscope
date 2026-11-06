@@ -4039,6 +4039,55 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
     assert!(harness.controller.orphans.is_none());
 }
 
+/// After a panic, a fork child still on its way to its first stop when its
+/// attached parent's process ended is scrubbed of the traps it inherited
+/// and released, as that stop would have done. Left alone, it would be
+/// released with them when the tracer thread ends. A launched parent's
+/// child is left to `PTRACE_O_EXITKILL`, as the launched process itself is.
+#[test]
+fn a_panic_releases_an_attached_process_s_orphaned_fork_child() {
+    for attached in [true, false] {
+        let mut harness = hit_harness(1, ">=1");
+        if attached {
+            harness.attached();
+        }
+        let parent = harness.threads[0];
+        let child = Pid::from_raw(6000);
+        harness.start_continue();
+        harness.trace().clone.replace(Some((child, child)));
+
+        for status in [
+            WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
+            WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
+            WaitEvent::Exited(parent, 0),
+        ] {
+            assert!(harness.controller.handle_wait(status));
+        }
+
+        assert!(harness.controller.inferior.is_none());
+        assert!(harness.controller.orphans.is_some());
+        harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
+        harness.trace().take_actions();
+
+        harness.controller.release_after_panic();
+
+        let expected: &[String] = if attached {
+            &[
+                format!("write_word {child} {HIT_SITE:#x} 0x90"),
+                format!("detach {child} None"),
+            ]
+        } else {
+            &[]
+        };
+        assert_eq!(
+            harness.trace().take_actions(),
+            expected,
+            "attached {attached}"
+        );
+        assert!(harness.controller.orphans.is_none(), "attached {attached}");
+    }
+}
+
 /// A launch while the controller still releases children the last program
 /// forked waits for them, rather than failing as if a program still ran.
 #[test]

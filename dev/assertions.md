@@ -104,7 +104,10 @@ over the controller's state: a thread is stopped if it answers a register
 read, and a byte is restored only if memory still holds microscope's trap and
 the original byte is known. A thread the release interrupted right after it
 executed a trap still holds the trap's SIGTRAP, which the detach would deliver,
-so the release resumes it to take the trap first, as a detach does. Aborts
+so the release resumes it to take the trap first, as a detach does. Once the
+process has ended, its fork children still due their first stop hold the traps
+they inherited, so the release scrubs and detaches them as that stop would
+have. A launched process's children die with it by `PTRACE_O_EXITKILL`. Aborts
 skip it: stack overflow, running out of memory, and a panic during cleanup.
 
 In development builds, `MICROSCOPE_TEST_PANIC_AFTER=<request>` makes the

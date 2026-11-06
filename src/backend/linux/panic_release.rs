@@ -15,8 +15,7 @@ use super::debug_registers::CONTROL_REGISTER;
 use super::memory::holding_word;
 use super::native::LinuxTraceOps;
 use super::{
-    BREAKPOINT_OPCODE, Controller, ControllerMessage, Inferior, InferiorOrigin, Signal, WaitEvent,
-    Waiter,
+    BREAKPOINT_OPCODE, Controller, ControllerMessage, InferiorOrigin, Signal, WaitEvent, Waiter,
 };
 
 use crate::VirtualAddress;
@@ -70,13 +69,21 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// back its instruction, a thread that executed such a trap rewound
     /// over it, debug registers cleared, and every thread detached with the
     /// signal it was to take. A thread that does not stop in time is left
-    /// for the kernel to release when this thread exits.
+    /// for the kernel to release when this thread exits. Once the process
+    /// has ended, the fork children still due their first stop are
+    /// released instead.
     pub(super) fn release_after_panic(&mut self) {
         // A fork child is released, never held for another session.
         self.shutting_down = true;
         let Some(mut inferior) = self.inferior.take() else {
+            self.release_orphans_after_panic();
             return;
         };
+        debug_assert!(
+            self.orphans.is_none(),
+            "{} has orphans while it runs",
+            inferior.tgid
+        );
 
         if inferior.origin != InferiorOrigin::Attached {
             return;
@@ -100,7 +107,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         let children: Vec<Pid> = (inferior.fork_children.keys().copied())
             .chain(unannounced_children)
             .collect();
-        let seen = self.stop_for_release(&mut inferior, &threads, &children);
+        let seen = self.stop_for_release(inferior.waiter.take(), &threads, &children, |pid| {
+            inferior
+                .threads
+                .get(&pid)
+                .is_some_and(|thread| inferior.exited_leader(pid, thread))
+        });
         let live = |pid: &Pid| seen.stopped.contains(pid) && !seen.gone.contains(pid);
         let stopped: Vec<Pid> = threads.iter().copied().filter(live).collect();
         let sites = inferior.inherited_sites();
@@ -153,9 +165,45 @@ impl<P: LinuxTraceOps> Controller<P> {
         );
     }
 
+    /// Releases the fork children an attached process left on their way to
+    /// their first stop, scrubbed of the traps they inherited, as that stop
+    /// would have. A launched process's children die with this thread, by
+    /// `PTRACE_O_EXITKILL`, as the process would have. Children already
+    /// killed for traps they kept need nothing more.
+    fn release_orphans_after_panic(&mut self) {
+        let Some(mut orphans) = self.orphans.take() else {
+            return;
+        };
+
+        if !orphans.attached {
+            return;
+        }
+
+        record!(
+            "releasing the fork children of {} after a panic",
+            orphans.parent
+        );
+        let children: Vec<Pid> = orphans.children.keys().copied().collect();
+        let seen = self.stop_for_release(orphans.waiter.take(), &[], &children, |_| false);
+        for child in children {
+            if seen.stopped.contains(&child)
+                && !seen.gone.contains(&child)
+                && let Some(sites) = orphans.children.get(&child)
+            {
+                self.scrub_and_settle(orphans.parent, child, sites, false);
+            }
+        }
+    }
+
     /// Stops every thread and child it can, and learns from their statuses
     /// which stopped, which exited, and what each stopped to take.
-    fn stop_for_release(&self, inferior: &mut Inferior, threads: &[Pid], children: &[Pid]) -> Seen {
+    fn stop_for_release(
+        &self,
+        mut waiter: Option<Waiter>,
+        threads: &[Pid],
+        children: &[Pid],
+        zombie: impl Fn(Pid) -> bool,
+    ) -> Seen {
         let mut seen = Seen::default();
 
         // Statuses already taken from the waiter and not yet handled come
@@ -177,8 +225,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A waiter that panicked takes no more statuses, so the threads'
         // stops are this thread's to take, after those it took before.
-        let waiter_failed = inferior.waiter.as_ref().is_some_and(Waiter::failed);
-        if waiter_failed && let Some(waiter) = inferior.waiter.take() {
+        let waiter_failed = waiter.as_ref().is_some_and(Waiter::failed);
+        if waiter_failed && let Some(waiter) = waiter.take() {
             let _ = waiter.stop_and_join(|| take_queued(&mut seen));
         }
 
@@ -187,11 +235,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         for &pid in threads.iter().chain(children) {
             // A leader that exited before its process stays a zombie, which
             // no request reaches, until its last sibling ends.
-            if inferior
-                .threads
-                .get(&pid)
-                .is_some_and(|thread| inferior.exited_leader(pid, thread))
-            {
+            if zombie(pid) {
                 continue;
             }
 
@@ -230,7 +274,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        if let Some(waiter) = inferior.waiter.take() {
+        if let Some(waiter) = waiter.take() {
             let _ = waiter.stop_and_join(|| take_queued(&mut seen));
         }
 
