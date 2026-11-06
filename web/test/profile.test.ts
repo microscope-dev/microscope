@@ -10,6 +10,7 @@ import {
   recorderBreakdown,
   recordingSettings,
   shellQuote,
+  timeTicks,
 } from "../src/profile/inspect";
 import {
   type ProfileLook,
@@ -676,5 +677,27 @@ describe("inspect", () => {
       ),
     ).map(({ name }) => name);
     expect(names).toEqual(["source", "off-CPU"]);
+  });
+
+  it("marks round times under a chart and its end, leaving out one too near the end", () => {
+    // 539 ms: a 100 ms step, and 500 ms is past 90% of the way, so only the end shows there.
+    expect(timeTicks(539e6)).toEqual([
+      { at: 0, label: "0" },
+      { at: 100 / 539, label: "100 ms" },
+      { at: 200 / 539, label: "200 ms" },
+      { at: 300 / 539, label: "300 ms" },
+      { at: 400 / 539, label: "400 ms" },
+      { at: 1, label: "539 ms" },
+    ]);
+    // 2.6 s: a half-second step, and 2.5 s is too near the end.
+    expect(timeTicks(2.6e9).map(({ label }) => label)).toEqual([
+      "0",
+      "0.5 s",
+      "1.0 s",
+      "1.5 s",
+      "2.0 s",
+      "2.60 s",
+    ]);
+    expect(timeTicks(0)).toEqual([]);
   });
 });

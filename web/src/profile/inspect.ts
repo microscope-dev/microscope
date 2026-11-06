@@ -1,6 +1,8 @@
 // What the Inspect dialog derives from a profile's answers.
 
 import type { ProfileCommand, ProfileSetting } from "../protocol";
+import { formatDuration, formatInstant } from "./paint";
+import { ticks } from "./zones";
 
 /** An argument as a POSIX shell reads it back: bare when it is plainly
  * one word, otherwise in single quotes. */
@@ -65,4 +67,21 @@ export function recordingSettings(settings: readonly ProfileSetting[]): ProfileS
   return settings.filter(
     ({ name }) => !SHOWN_ELSEWHERE.has(name) && !/^(?:command|arguments) \d+$/u.test(name),
   );
+}
+
+/** Round times to mark under a chart of `duration` nanoseconds, each with
+ * its share of the way across, about six in all. The end is marked
+ * itself, so a round time too near it to be read beside it is left out. */
+export function timeTicks(duration: number): { at: number; label: string }[] {
+  if (duration <= 0) {
+    return [];
+  }
+  const { step, times } = ticks([0, duration], 600);
+  const marks = times
+    .filter((time) => time / duration <= 0.9)
+    .map((time) => ({
+      at: time / duration,
+      label: time === 0 ? "0" : formatInstant(time, step, duration),
+    }));
+  return [...marks, { at: 1, label: formatDuration(duration) }];
 }

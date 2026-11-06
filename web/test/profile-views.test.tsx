@@ -796,7 +796,28 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
   expect(bars.elements()[2]?.classList.contains("marked")).toBe(true);
   await expect.element(dialog.getByText("median 3")).toBeVisible();
   await userEvent.hover(bars.nth(3));
-  await expect.element(page.getByTestId("depth")).toHaveTextContent("4 frames: 3 samples, 30.0%");
+  const depthRegion = dialog.getByRole("region", { name: /stack depth/u });
+  await expect
+    .element(depthRegion.getByRole("status"))
+    .toHaveTextContent("4 frames: 3 samples, 30.0%");
+
+  // Each slice of time reads out its span and count too, under round ticks.
+  const time = dialog.getByRole("region", { name: /over time/u });
+  const slices = time.getByRole("button");
+  expect(slices.elements()).toHaveLength(3);
+  await userEvent.hover(slices.nth(2));
+  await expect
+    .element(time.getByRole("status"))
+    .toHaveTextContent("0.67 s – 1.00 s: 6 samples, 60.0%");
+  const ticks = [...time.element().querySelectorAll(".details-ticks span")];
+  expect(ticks.map((tick) => tick.textContent)).toEqual([
+    "0",
+    "0.2 s",
+    "0.4 s",
+    "0.6 s",
+    "0.8 s",
+    "1.00 s",
+  ]);
 
   // Escape closes it and gives focus back to File details.
   await userEvent.keyboard("{Escape}");

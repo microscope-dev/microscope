@@ -165,7 +165,9 @@ test("File details shows the whole command recorded, the samples' shape, and clo
   const bars = dialog.getByRole("button", { name: /frames?: \d+ samples?$/u });
   await expect(bars.first()).toBeVisible();
   await bars.last().hover();
-  await expect(dialog.getByTestId("depth")).toHaveText(/^[\d,]+ frames?: [\d,]+ samples?, /u);
+  await expect(dialog.getByRole("region", { name: /stack depth/u }).getByRole("status")).toHaveText(
+    /^[\d,]+ frames?: [\d,]+ samples?, /u,
+  );
 
   // A click on the page around it closes it; so does Escape, which gives
   // focus back to the button that opened it.

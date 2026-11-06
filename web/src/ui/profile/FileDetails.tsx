@@ -5,6 +5,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -16,11 +17,13 @@ import {
   recorderBreakdown,
   recordingSettings,
   shellQuote,
+  timeTicks,
 } from "../../profile/inspect";
 import {
   formatBytes,
   formatCount,
   formatDuration,
+  formatInstant,
   formatPercent,
   formatWeight,
   largest,
@@ -356,7 +359,14 @@ function Samples({
     1,
   );
   const bin = summary.duration / Math.max(inspection.overTime.length, 1);
-  const busiestBin = largest(inspection.overTime, 1);
+  const binLabels = useMemo(
+    () =>
+      inspection.overTime.map(
+        (_, index) =>
+          `${formatInstant(index * bin, bin / 10, summary.duration)} – ${formatInstant((index + 1) * bin, bin / 10, summary.duration)}`,
+      ),
+    [inspection.overTime, bin, summary.duration],
+  );
   return (
     <>
       <div className="details-columns">
@@ -393,25 +403,6 @@ function Samples({
             ) : null}
           </Facts>
         </Section>
-        {inspection.overTime.length > 0 ? (
-          <Section title={`Samples over time, ${formatDuration(bin)} bins`}>
-            <div className="details-histogram">
-              {inspection.overTime.map((count, index) => (
-                <Column
-                  // oxlint-disable-next-line react/no-array-index-key -- a bin's place is its identity
-                  key={index}
-                  count={count}
-                  most={busiestBin}
-                  label={`${formatDuration(index * bin)} on`}
-                />
-              ))}
-            </div>
-            <div className="details-axis">
-              <span>0</span>
-              <span>{formatDuration(summary.duration)}</span>
-            </div>
-          </Section>
-        ) : null}
         <Section title="How stacks ended">
           <table className="details-table">
             <tbody>
@@ -433,8 +424,24 @@ function Samples({
             </tbody>
           </table>
         </Section>
-        <Depths depths={inspection.depths} samples={summary.samples} />
       </div>
+      {inspection.overTime.length > 0 ? (
+        <Section title={`Samples over time, ${formatDuration(bin)} bins`}>
+          <Histogram
+            counts={inspection.overTime}
+            labels={binLabels}
+            samples={summary.samples}
+            filled
+          >
+            <div className="details-ticks">
+              {timeTicks(summary.duration).map(({ at, label }) => (
+                <Tick key={label} at={at} label={label} />
+              ))}
+            </div>
+          </Histogram>
+        </Section>
+      ) : null}
+      <Depths depths={inspection.depths} samples={summary.samples} />
       {summary.threads.length > 0 ? (
         <Section title={`Threads, ${summary.threads.length}`}>
           <table className="details-table">
@@ -493,93 +500,128 @@ function Ending({
   );
 }
 
-/** Samples by stack depth, a bar to a depth, the median's marked, each
- * read out when pointed at or focused. */
+/** Samples by stack depth, a bar to a depth, the median's marked. */
 function Depths({ depths, samples }: { depths: number[]; samples: number }) {
   const median = medianDepth(depths);
-  const [shown, setShown] = useState<number | null>(null);
-  const show = useCallback(
-    (event: { currentTarget: HTMLElement }) => setShown(Number(event.currentTarget.dataset.depth)),
-    [],
+  // A stack is at least one frame deep, unless some samples have none.
+  const first = (depths[0] ?? 0) > 0 ? 0 : 1;
+  const counts = useMemo(() => depths.slice(first), [depths, first]);
+  const labels = useMemo(
+    () => counts.map((_, index) => formatCount(index + first, "frame")),
+    [counts, first],
   );
-  const hide = useCallback(() => setShown(null), []);
   if (median === null) {
     return null;
   }
-  // A stack is at least one frame deep, unless some samples have none.
-  const first = (depths[0] ?? 0) > 0 ? 0 : 1;
-  const most = largest(depths, 1);
-  const count = shown === null ? 0 : (depths[shown] ?? 0);
   return (
     <Section title="Samples by stack depth, in frames">
-      <div className="details-histogram" onPointerLeave={hide}>
-        {depths.slice(first).map((each, index) => (
+      <Histogram counts={counts} labels={labels} marked={median - first} samples={samples}>
+        <div className="details-axis">
+          <span>{first}</span>
+          <span>median {median}</span>
+          <span>{depths.length - 1}</span>
+        </div>
+      </Histogram>
+    </Section>
+  );
+}
+
+/** Bars of `counts`, named by `labels`, each read out below the axis in
+ * `children` when pointed at or focused. */
+function Histogram({
+  counts,
+  labels,
+  samples,
+  marked,
+  filled = false,
+  children,
+}: {
+  counts: number[];
+  labels: string[];
+  samples: number;
+  marked?: number;
+  /** Whether every bar takes the main color, as when the bars are the
+   * samples themselves rather than a shape of them. */
+  filled?: boolean;
+  children: ReactNode;
+}) {
+  const [shown, setShown] = useState<number | null>(null);
+  const show = useCallback(
+    (event: { currentTarget: HTMLElement }) => setShown(Number(event.currentTarget.dataset.bar)),
+    [],
+  );
+  const hide = useCallback(() => setShown(null), []);
+  const most = largest(counts, 1);
+  const count = shown === null ? 0 : (counts[shown] ?? 0);
+  return (
+    <>
+      <div
+        className={filled ? "details-histogram filled" : "details-histogram"}
+        onPointerLeave={hide}
+      >
+        {counts.map((each, index) => (
           <Column
-            // oxlint-disable-next-line react/no-array-index-key -- a depth is its bar's identity
-            key={index + first}
+            // oxlint-disable-next-line react/no-array-index-key -- a bar's place is its identity
+            key={index}
+            index={index}
             count={each}
             most={most}
-            label={formatCount(index + first, "frame")}
-            depth={index + first}
-            marked={index + first === median}
+            label={labels[index] ?? ""}
+            marked={index === marked}
             onShow={show}
             onHide={hide}
           />
         ))}
       </div>
-      <div className="details-axis">
-        <span>{first}</span>
-        <span>median {median}</span>
-        <span>{depths.length - 1}</span>
-      </div>
+      {children}
       {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a readout, not a form's result */}
-      <span className="muted" role="status" data-testid="depth">
+      <span className="muted" role="status">
         {shown === null
           ? "Point at a bar for its count."
-          : `${formatCount(shown, "frame")}: ${formatCount(count, "sample")}, ${formatPercent(count, samples)}`}
+          : `${labels[shown] ?? ""}: ${formatCount(count, "sample")}, ${formatPercent(count, samples)}`}
       </span>
-    </Section>
+    </>
   );
 }
 
-/** A histogram's bar: a button when it reads out a depth, else a span
- * that says its count on hover. */
+/** A histogram's bar, a button that reads itself out. */
 function Column({
+  index,
   count,
   most,
   label,
-  depth,
   marked,
   onShow,
   onHide,
 }: {
+  index: number;
   count: number;
   most: number;
   label: string;
-  depth?: number;
-  marked?: boolean;
-  onShow?(event: { currentTarget: HTMLElement }): void;
-  onHide?(): void;
+  marked: boolean;
+  onShow(event: { currentTarget: HTMLElement }): void;
+  onHide(): void;
 }) {
   const style = useMemo(() => ({ height: share(count, most) }), [count, most]);
-  const said = `${label}: ${formatCount(count, "sample")}`;
-  return onShow ? (
+  return (
     <button
       type="button"
       className={marked ? "marked" : undefined}
-      aria-label={said}
-      data-depth={depth}
+      aria-label={`${label}: ${formatCount(count, "sample")}`}
+      data-bar={index}
       onPointerEnter={onShow}
       onFocus={onShow}
       onBlur={onHide}
     >
       <i style={style} />
     </button>
-  ) : (
-    <span title={said}>
-      <i style={style} />
-    </span>
   );
+}
+
+/** A mark under a chart, `at` its share of the way across. */
+function Tick({ at, label }: { at: number; label: string }) {
+  const style = useMemo(() => ({ left: `${at * 100}%` }), [at]);
+  return <span style={style}>{label}</span>;
 }
 
 /** A label, a value, and whether the value is a warning. */
@@ -631,9 +673,10 @@ function share(part: number, of: number): string {
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
+  const heading = useId();
   return (
-    <section className="details-section">
-      <h2>{title}</h2>
+    <section className="details-section" aria-labelledby={heading}>
+      <h2 id={heading}>{title}</h2>
       {children}
     </section>
   );

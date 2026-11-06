@@ -2874,7 +2874,7 @@ textarea.input {
   display: flex;
   align-items: stretch;
   gap: 1px;
-  height: 48px;
+  height: 64px;
 }
 
 .details-histogram > * {
@@ -2892,14 +2892,58 @@ textarea.input {
   min-height: 1px;
 }
 
-/* Bins of time are the samples themselves, so they take the main color. */
-.details-histogram > span i {
+.details-histogram.filled i {
   background: var(--accent);
 }
 
 .details-histogram > button:hover i,
 .details-histogram > button:focus-visible i {
   background: var(--ink);
+}
+
+/* Round times, each under a short mark, centered on it but for the
+ * first and the end, which line up with the chart's edges. */
+.details-ticks {
+  position: relative;
+  height: 20px;
+  border-top: 1px solid var(--line-strong);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.details-ticks span {
+  position: absolute;
+  top: 0;
+  padding-top: 5px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.details-ticks span::before {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.details-ticks span:first-child {
+  transform: none;
+}
+
+.details-ticks span:first-child::before {
+  left: 0;
+}
+
+.details-ticks span:last-child {
+  transform: translateX(-100%);
+}
+
+.details-ticks span:last-child::before {
+  right: 0;
+  left: auto;
 }
 
 .details-axis {
