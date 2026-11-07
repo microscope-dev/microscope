@@ -1046,7 +1046,7 @@ export type ProfileTransform = { op: TransformOp,
  */
 name: string, };
 
-export type TransformOp = "focus" | "merge" | "drop" | "collapse" | "collapseCycles";
+export type TransformOp = "focus" | "merge" | "drop" | "collapseCycles";
 
 export type ProfileGranularity = "function" | "physical" | "line" | "address";
 

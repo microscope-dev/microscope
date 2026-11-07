@@ -477,21 +477,16 @@ it("puts a clicked frame in the search, and Clear or typing lets it go", async (
   await expect.element(page.getByTestId("matched")).not.toBeInTheDocument();
 });
 
-it("lets go of the selection once Focus, Merge, or Drop reshapes the graph, but not Collapse recursion", async () => {
-  for (const [action, kept] of [
-    ["Focus", false],
-    ["Merge", false],
-    ["Drop", false],
-    ["Collapse recursion", true],
-  ] as const) {
+it("lets go of the selection once Focus, Merge, or Drop reshapes the graph", async () => {
+  for (const action of ["Focus", "Merge", "Drop"]) {
     const server = await mount(<FlameView />, { look: { fn: "work" } });
     server.answer(await server.next("profileTree"), ...TREE);
     const search = page.getByRole("searchbox", { name: "Search frames" });
     await expect.element(search).toHaveValue("work");
     await page.getByTestId("details").getByRole("button", { name: action }).click();
     expect(lookShown().tf).toHaveLength(1);
-    expect(lookShown().fn).toBe(kept ? "work" : undefined);
-    await expect.element(search).toHaveValue(kept ? "work" : "");
+    expect(lookShown().fn).toBeUndefined();
+    await expect.element(search).toHaveValue("");
     cleanup();
   }
 });

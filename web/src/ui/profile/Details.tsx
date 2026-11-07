@@ -9,7 +9,6 @@ const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
   { op: "focus", label: "Focus", title: "Only samples through it, rooted at it" },
   { op: "merge", label: "Merge", title: "Hide it, giving its cost to its callers" },
   { op: "drop", label: "Drop", title: "Remove every sample through it" },
-  { op: "collapse", label: "Collapse recursion", title: "Merge its calls of itself" },
 ];
 
 /** The selected function in a bar of its own: its name, then what
@@ -102,12 +101,10 @@ function Action({
   const apply = useCallback(
     () =>
       setLook((look) => {
-        const next = transformed(look, { op, name });
         // Focused, the function is the root at 100%; merged or dropped, it
         // is gone. Either way its selection says nothing more, so it goes.
-        // Collapsing recursion leaves it where it was.
         // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-        return op === "collapse" ? next : withLook(next, "fn", undefined);
+        return withLook(transformed(look, { op, name }), "fn", undefined);
       }, true),
     [setLook, op, name],
   );

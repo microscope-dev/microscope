@@ -82,7 +82,7 @@ const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "zones", "s
 const SYSCALL_GROUPS: ReadonlySet<string> = new Set(["class", "process", "thread", "path", "site"]);
 const SYSCALL_TABS: ReadonlySet<string> = new Set(["log", "files", "network", "processes"]);
 const GRANULARITIES: ReadonlySet<string> = new Set(["physical", "line", "address"]);
-const OPS: readonly TransformOp[] = ["focus", "merge", "drop", "collapse"];
+const OPS: readonly TransformOp[] = ["focus", "merge", "drop"];
 /** The ops that take no name, written in the look as the op alone. */
 const NAMELESS: readonly TransformOp[] = ["collapseCycles"];
 

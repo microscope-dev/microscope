@@ -984,7 +984,6 @@ fn resolve_in(
             TransformOp::Focus => Transform::Focus(key),
             TransformOp::Merge => Transform::Merge(key),
             TransformOp::Drop => Transform::Drop(key),
-            TransformOp::Collapse => Transform::CollapseRecursion(key),
             TransformOp::CollapseCycles => Transform::CollapseCycles,
         }));
     }

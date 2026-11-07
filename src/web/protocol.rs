@@ -1128,9 +1128,6 @@ pub enum TransformOp {
     /// Removes the samples through the function.
     Drop,
 
-    /// Merges the function's calls of itself.
-    Collapse,
-
     /// Cuts each path back to the first call of anything it calls again,
     /// directly or through others. It takes no name.
     CollapseCycles,
