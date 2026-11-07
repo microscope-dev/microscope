@@ -829,11 +829,23 @@ const chosenRows = () =>
   [...document.querySelectorAll<HTMLElement>('[aria-label="Assembly"] [aria-selected="true"]')].map(
     (row) => Number(row.dataset.row),
   );
+/** The chosen source line's number. */
 const chosenLine = () =>
-  document.querySelector<HTMLElement>('[aria-label="Source"] [aria-selected="true"]')?.dataset.line;
+  document.querySelector('[aria-label="Source"] [aria-selected="true"] .line-number')?.textContent;
+/** The source row of the line numbered `number` that holds code. */
+const lineRow = (number: number) =>
+  [...document.querySelectorAll<HTMLElement>('[aria-label="Source"] [data-line]')].find(
+    (row) => row.querySelector(".line-number")?.textContent === String(number),
+  );
 const background = (selector: string) =>
   getComputedStyle(document.querySelector(selector) as Element).backgroundColor;
 const tintOf = (selector: string) => document.querySelector<HTMLElement>(selector)?.dataset.tint;
+/** An instruction's bracket: its name and part, and whether it holds a
+ * chosen instruction. */
+const bracketOf = (row: number) => {
+  const bracket = document.querySelector<HTMLElement>(`[data-row="${row}"] .inlined-from`);
+  return [bracket?.textContent, bracket?.dataset.bracket, bracket?.classList.contains("holds")];
+};
 
 /** An instruction row's pieces, each as its class and text. */
 const pieces = (row: number) =>
@@ -841,15 +853,26 @@ const pieces = (row: number) =>
     (piece) => `${piece.className}:${piece.textContent}`,
   );
 
-it("puts source beside its instructions, tinting the hottest lines and stepping a line's runs", async () => {
+it("nests inlined code under the line it was inlined at, brackets it, and steps a line's runs", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
-  await expect.element(page.getByText("sum += i * i;")).toBeVisible();
+  // It opens on the hottest line of the program's own code, get's line 9,
+  // opening scan's line 3 and step's line 4 above it.
+  await expect.element(page.getByText("return table[i];")).toBeVisible();
+  expect(chosenLine()).toBe("9");
+  expect(chosenRows()).toEqual([1]);
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 1");
+  // No file to choose: every file's code is in the tree.
+  expect(document.querySelector('[aria-label="Source file"]')).toBeNull();
+  await expect
+    .element(page.getByRole("button", { name: "Hide the code inlined at line 3" }))
+    .toHaveAttribute("aria-expanded", "true");
+  await expect
+    .element(page.getByRole("button", { name: "Hide the code inlined at line 4" }))
+    .toBeVisible();
 
   // The source is colored as the debugger colors it.
-  expect(document.querySelector('[aria-label="Source"] [data-line="3"] .tk-k')).toHaveTextContent(
-    "for",
-  );
+  expect(lineRow(3)?.querySelector(".tk-k")).toHaveTextContent("for");
   // So are the instructions, by what the decoder says each piece is; a
   // jump's address gives way to a button to its offset.
   expect(pieces(0)).toEqual([
@@ -865,64 +888,102 @@ it("puts source beside its instructions, tinting the hottest lines and stepping 
     getComputedStyle(document.querySelector(".tk-mnemonic") as Element).color,
   );
 
-  // It opens on the hottest line by own, whose instructions are the two
-  // runs step left, the hottest first.
-  expect(chosenLine()).toBe("4");
-  expect(chosenRows()).toEqual([1, 3]);
-  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 2");
+  // Code inlined from another function is bracketed with its innermost
+  // name of the program's own; scan's own code is not.
+  expect(bracketOf(1)).toEqual(["get", "one", true]);
+  expect(bracketOf(3)).toEqual(["step", "one", false]);
+  expect(bracketOf(0)).toEqual(["", undefined, false]);
 
   // Lines and their instructions share a tint; a line nothing ran on has none.
-  expect(tintOf('[data-line="4"]')).toBe("0");
-  expect(tintOf('[data-line="3"]')).toBe("1");
-  expect(tintOf('[data-line="5"]')).toBeUndefined();
-  expect(tintOf('[data-row="1"]')).toBe("0");
-  expect(tintOf('[data-row="0"]')).toBe("1");
+  expect(tintOf('[data-row="1"]')).toBe(lineRow(9)?.dataset.tint);
+  expect(tintOf('[data-row="0"]')).toBe(lineRow(3)?.dataset.tint);
   expect(tintOf('[data-row="4"]')).toBeUndefined();
+  expect(lineRow(5)?.dataset.tint).toBeUndefined();
   expect(background('[data-row="1"]')).not.toBe(background('[data-row="0"]'));
-  expect(background('[data-row="3"]')).toBe(background('[data-row="1"]'));
 
-  // The arrows step through the runs and wrap around.
+  // A line chooses every instruction under it, inlined or not, in runs
+  // the arrows step through and wrap around.
+  await userEvent.click(lineRow(4) as HTMLElement);
+  expect(chosenLine()).toBe("4");
+  expect(chosenRows()).toEqual([1, 3]);
+  expect(bracketOf(3)).toEqual(["step", "one", true]);
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 2");
   await userEvent.click(page.getByRole("button", { name: "Next run" }));
   await expect.element(page.getByTestId("run")).toHaveTextContent("run 2 of 2");
   await userEvent.click(page.getByRole("button", { name: "Next run" }));
   await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 2");
 
-  // A line chooses its instructions; one with no code chooses nothing.
-  await userEvent.click(page.getByText("for (;;) sum = step(sum);"));
-  expect(chosenLine()).toBe("3");
-  expect(chosenRows()).toEqual([0, 2]);
+  // A line with no code chooses nothing.
   await userEvent.click(page.getByText("int sink;"));
-  expect(chosenLine()).toBe("3");
-
-  // Keys move between lines that have code, and step runs.
-  await userEvent.keyboard("{ArrowDown}");
   expect(chosenLine()).toBe("4");
+
+  // Keys move between lines that have code, in the order they are shown.
+  await userEvent.keyboard("{ArrowDown}");
+  expect(chosenLine()).toBe("9");
   await userEvent.keyboard("{ArrowDown}");
   expect(chosenLine()).toBe("5");
   await userEvent.keyboard("{ArrowDown}");
   expect(chosenLine()).toBe("5");
   await userEvent.keyboard("{ArrowUp}{ArrowUp}");
-  expect(chosenLine()).toBe("3");
+  expect(chosenLine()).toBe("4");
   await userEvent.keyboard("]");
   await expect.element(page.getByTestId("run")).toHaveTextContent("run 2 of 2");
 
-  // An instruction chooses its line, and says what it was inlined through.
+  // Enter closes the chosen line, and the code inlined there goes.
+  await userEvent.keyboard("{ArrowUp}{Enter}");
+  expect(chosenLine()).toBe("3");
+  await expect.element(page.getByText("return table[i];")).not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("button", { name: "Show the code inlined at line 3" }))
+    .toHaveAttribute("aria-expanded", "false");
+
+  // An instruction chooses its line, opening the lines above it, and says
+  // what it was inlined through.
   await userEvent.click(page.getByText("add", { exact: true }));
-  expect(chosenLine()).toBe("4");
+  expect(chosenLine()).toBe("9");
+  await expect.element(page.getByText("return table[i];")).toBeVisible();
   await expect.element(page.getByText("+4 get h.h:9 ← step app.c:4 ← scan app.c:3")).toBeVisible();
 
   // A jump goes to the instruction it targets.
   await userEvent.click(page.getByRole("button", { name: "+0", exact: true }));
   expect(chosenLine()).toBe("3");
   await expect.element(page.getByText("+0 scan app.c:3")).toBeVisible();
+});
 
-  // Another file maps the same instructions to its own lines.
-  await userEvent.selectOptions(page.getByRole("combobox", { name: "Source file" }), "1");
-  await expect.element(page.getByText("return table[i];")).toBeVisible();
-  expect(chosenLine()).toBe("9");
-  expect(chosenRows()).toEqual([1]);
-  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 1");
-  await expect.element(page.getByRole("button", { name: "Next run" })).toBeDisabled();
+it("marks code with no associated source line as not code, in both panes, and gives it no tint", async () => {
+  const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
+  const [first, ...rest] = SPLIT.blocks[0].instructions;
+  server.answer(await server.next("profileCode"), {
+    ...SPLIT,
+    blocks: [
+      {
+        ...SPLIT.blocks[0],
+        instructions: [{ ...first, own: 9, total: 9, lines: [[0, 0, 0]] }, ...rest],
+      },
+    ],
+  });
+  const marker = await vi.waitFor(() => {
+    const row = [
+      ...document.querySelectorAll<HTMLElement>('[aria-label="Source"] [data-line]'),
+    ].find((each) => each.textContent?.includes("no associated source line"));
+    assert(row, "the row of no source line is not drawn");
+    return row;
+  }, POLL);
+  expect(marker.querySelector(".unsourced-note")).toHaveTextContent(
+    "no associated source line · 1 instruction",
+  );
+  expect(marker.classList.contains("unsourced")).toBe(true);
+  // The hottest code, yet no hue: its stripes are its mark.
+  expect(marker.dataset.tint).toBeUndefined();
+  expect(marker.querySelector(".line-number")).toHaveTextContent("");
+  expect(document.querySelector('[data-row="0"]')?.classList.contains("unsourced")).toBe(true);
+  expect(tintOf('[data-row="0"]')).toBeUndefined();
+  expect(document.querySelector('[data-row="1"]')?.classList.contains("unsourced")).toBe(false);
+
+  // It chooses its instructions like any line.
+  await userEvent.click(marker);
+  expect(chosenRows()).toEqual([0]);
+  await expect.element(page.getByText("no line · 1 instruction in 1 run")).toBeVisible();
 });
 
 it("draws only the rows near view of a long file and listing, opening on the far line", async () => {
@@ -940,7 +1001,8 @@ it("draws only the rows near view of a long file and listing, opening on the far
           target: null,
           own: at === count - 1 ? 9 : 0,
           total: at === count - 1 ? 9 : 0,
-          lines: [[0, 0, at + 1]],
+          // Line 6, far above the line it opens on, has none.
+          lines: [[0, 0, at === 5 ? 7 : at + 1]],
         })),
       },
     ],
@@ -949,7 +1011,7 @@ it("draws only the rows near view of a long file and listing, opening on the far
       {
         path: "/src/big.c",
         first: 1,
-        // Line 6, far above the line it opens on, is the widest.
+        // Line 6 is the widest.
         text: Array.from({ length: count }, (_, at) =>
           at === 5 ? `int wide = ${"x".repeat(400)};` : `line ${at + 1}`,
         ),
@@ -964,15 +1026,15 @@ it("draws only the rows near view of a long file and listing, opening on the far
 
   const source = document.querySelector<HTMLElement>('[aria-label="Source"]');
   const listing = document.querySelector<HTMLElement>('[aria-label="Assembly"]');
-  expect(source?.querySelectorAll("[data-line]").length).toBeLessThan(200);
+  expect(source?.querySelectorAll(".code-row").length).toBeLessThan(200);
   expect(listing?.querySelectorAll("[data-row]").length).toBeLessThan(200);
   // The widest line is not drawn, yet the pane scrolls sideways to it.
-  expect(source?.querySelector('[data-line="6"]')).toBeNull();
+  expect(source?.textContent).not.toContain("int wide");
   expect((source?.scrollWidth ?? 0) - (source?.clientWidth ?? 0)).toBeGreaterThan(1000);
 
   // The first instruction, once scrolled to, chooses its far line, which
   // the source draws and brings into view.
-  expect(source?.querySelector('[data-line="1"]')).toBeNull();
+  expect(lineRow(1)).toBeUndefined();
   listing?.scrollTo({ top: 0 });
   const first = await vi.waitFor(() => {
     const row = listing?.querySelector('[data-row="0"]');
@@ -986,21 +1048,7 @@ it("draws only the rows near view of a long file and listing, opening on the far
 
 it("shows an inlined function's code where it was inlined, opening on its own line", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "step", ann: "code" } });
-  server.answer(await server.next("profileCode"), {
-    ...SPLIT,
-    // Line 3, scan's call of step, weighs more than step's own line 4.
-    files: [
-      {
-        ...SPLIT.files[0],
-        lines: [
-          [3, 9, 16],
-          [4, 7, 7],
-        ],
-      },
-      SPLIT.files[1],
-    ],
-    inlined_into: "scan",
-  });
+  server.answer(await server.next("profileCode"), { ...SPLIT, inlined_into: "scan" });
   await expect
     .element(
       page.getByText(
@@ -1008,6 +1056,7 @@ it("shows an inlined function's code where it was inlined, opening on its own li
       ),
     )
     .toBeVisible();
+  // Not get's line 9, though it is hotter: step's own.
   expect(chosenLine()).toBe("4");
   expect(chosenRows()).toEqual([1, 3]);
 });
@@ -1015,8 +1064,8 @@ it("shows an inlined function's code where it was inlined, opening on its own li
 it("forgets the line it chose once another function's code arrives", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
-  await expect.element(page.getByText("sum += i * i;")).toBeVisible();
-  await userEvent.click(page.getByText("for (;;) sum = step(sum);"));
+  await expect.element(page.getByText("return table[i];")).toBeVisible();
+  await userEvent.click(lineRow(3) as HTMLElement);
   expect(chosenLine()).toBe("3");
 
   changeLook((look) => ({ ...look, fn: "walk" }));
@@ -1025,7 +1074,7 @@ it("forgets the line it chose once another function's code arrives", async () =>
     blocks: [{ ...SPLIT.blocks[0], symbol: "walk" }],
     functions: ["walk", "step", "get"],
   });
-  await vi.waitFor(() => expect(chosenLine()).toBe("4"), POLL);
+  await vi.waitFor(() => expect(chosenLine()).toBe("9"), POLL);
 });
 
 it("says it is reading a flame graph, and reads a function's cost from the server", async () => {

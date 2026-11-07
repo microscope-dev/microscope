@@ -1,6 +1,5 @@
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import {
-  type ChangeEvent,
   type CSSProperties,
   Fragment,
   type KeyboardEvent,
@@ -17,15 +16,23 @@ import {
   type CodeRow,
   codeRows,
   hottestRun,
-  lineIn,
-  linesOf,
+  inlinedFrom,
+  inlineTree,
+  linesAbove,
   openingLine,
+  ownCodeAt,
   runsOf,
   shortName,
+  shownLine,
+  type SourceEntry,
+  sourceEntries,
+  tintOfPath,
   tintsOf,
+  type TreeLine,
 } from "../../profile/code";
 import { formatCount, formatPercent, largest } from "../../profile/paint";
-import type { ProfileCode, ProfileToken } from "../../protocol";
+import type { ProfileCode, ProfileSourceFile, ProfileToken } from "../../protocol";
+import { fileName } from "../paths";
 import { type Painted, paintLines } from "../source/languages";
 import { useAnswer, useProfile } from "./context";
 import { ownTone, Share, Unanswered } from "./parts";
@@ -136,46 +143,59 @@ export function Code({ name }: { name: string }) {
   );
 }
 
-/** The line chosen, which of its runs, and the instruction clicked. A
- * null run is the hottest; a null row is the run's first. */
+/** The line chosen, by its key in the inline tree, which of its runs, and
+ * the instruction clicked. A null run is the hottest; a null row is the
+ * run's first. */
 interface Chosen {
-  line: number;
+  line: string;
   run: number | null;
   row: number | null;
 }
 
-/** Source on the left, instructions on the right. Each of the file's
- * hottest lines has a tint its instructions share; the chosen line's
- * instructions are selected, and its runs are stepped through. */
+/** Source on the left, instructions on the right. The source is the
+ * function's own lines; under a line, the functions the compiler inlined
+ * there open as a tree. The hottest lines have tints their instructions
+ * share, each run of instructions inlined from another function is
+ * bracketed with its name, and the chosen line's instructions are
+ * selected and its runs stepped through. */
 function Split({ name, code, current }: { name: string; code: ProfileCode; current: boolean }) {
-  const [fileAt, setFileAt] = useState(0);
+  const rows = useMemo(() => codeRows(code), [code]);
+  const tree = useMemo(() => inlineTree(rows), [rows]);
+  // A function with no code of its own opens on its lines, not those of
+  // the function it was inlined into.
+  const opening = useMemo(
+    () =>
+      openingLine(tree, rows, code.files, code.inlined_into ? code.functions.indexOf(name) : -1),
+    [tree, rows, code.files, code.inlined_into, code.functions, name],
+  );
+  const [open, setOpen] = useState<ReadonlySet<string>>(
+    () => new Set(opening ? linesAbove(opening) : []),
+  );
   const [chosen, setChosen] = useState<Chosen | null>(null);
   const source = useRef<HTMLDivElement>(null);
   const listing = useRef<HTMLDivElement>(null);
 
-  const file = code.files[fileAt];
-  const rows = useMemo(() => codeRows(code), [code]);
-  const lines = useMemo(
-    () => rows.map((row) => lineIn(row.instruction.lines, fileAt)),
-    [rows, fileAt],
-  );
-  const tints = useMemo(() => (file ? tintsOf(file) : new Map<number, number>()), [file]);
-  const painted = useMemo(() => (file?.text ? paintLines(file.path ?? "", file.text) : []), [file]);
-  const coded = useMemo(
-    () => [...new Set(lines)].filter((line) => line > 0).toSorted((a, b) => a - b),
-    [lines],
-  );
-  // A function with no code of its own opens on its lines, not those of
-  // the function it was inlined into.
-  const inlinedLines = useMemo(
-    () =>
-      code.inlined_into ? linesOf(rows, code.functions.indexOf(name), fileAt) : new Set<number>(),
-    [rows, code.inlined_into, code.functions, name, fileAt],
-  );
-  const line = chosen?.line ?? openingLine(file, lines, inlinedLines);
-  const runs = useMemo(() => runsOf(lines, line), [lines, line]);
+  const entries = useMemo(() => sourceEntries(tree, code.files, open), [tree, code.files, open]);
+  const tints = useMemo(() => tintsOf(tree, open), [tree, open]);
+  const from = useMemo(() => inlinedFrom(tree, code.files), [tree, code.files]);
+  const line = (chosen ? tree.lines.get(chosen.line) : undefined) ?? opening;
+  const runs = useMemo(() => runsOf(line?.rows ?? []), [line]);
   const run = chosen?.run ?? hottestRun(rows, runs);
   const shown = chosen?.row ?? runs[run]?.[0];
+  const selected = useMemo(() => new Set(line?.rows), [line]);
+  const paint = useMemo(() => painter(code.files), [code.files]);
+
+  const entryOf = useMemo(
+    () =>
+      new Map(
+        entries.flatMap((entry, at) => (entry.kind === "line" ? [[entry.line.key, at]] : [])),
+      ),
+    [entries],
+  );
+  const coded = useMemo(
+    () => entries.flatMap((entry) => (entry.kind === "line" ? [entry.line] : [])),
+    [entries],
+  );
 
   // The listing's items: its rows, each block's symbol before its first
   // when there are several blocks.
@@ -197,9 +217,12 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     }
     return at;
   }, [items]);
-  const sourceList = usePane(file?.text?.length ?? 0, source);
+  const sourceList = usePane(entries.length, source);
   const listingList = usePane(items.length, listing);
-  const longestSource = useMemo(() => longest(file?.text ?? []), [file]);
+  const longestSource = useMemo(
+    () => longest(entries.map((entry) => entryText(entry, code))),
+    [entries, code],
+  );
   const longestListing = useMemo(
     () =>
       longest(
@@ -212,17 +235,51 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     [rows],
   );
 
+  // Each run of instructions inlined from one function, by row: its
+  // first row, and whether it holds a chosen instruction.
+  const brackets = useMemo(() => {
+    const firsts: number[] = [];
+    const holds = new Set<number>();
+    for (const [index, function_] of from.entries()) {
+      const first =
+        index > 0 && from[index - 1] === function_ ? (firsts[index - 1] ?? index) : index;
+      firsts.push(first);
+      if (function_ !== null && selected.has(index)) {
+        holds.add(first);
+      }
+    }
+    return { firsts, holds };
+  }, [from, selected]);
+  const bracketed = from.some((function_) => function_ !== null);
+
+  const lineKey = line?.key;
   useEffect(() => {
-    reveal(source.current, line - (file?.first ?? 0));
+    reveal(source.current, lineKey === undefined ? -1 : (entryOf.get(lineKey) ?? -1));
     if (shown !== undefined) {
       reveal(listing.current, itemOf[shown] ?? -1);
     }
-  }, [line, shown, file, itemOf]);
+  }, [lineKey, shown, entryOf, itemOf]);
+
+  /** Chooses `to`, opening the lines it was inlined under. */
+  const choose = useCallback((to: TreeLine, at: number | null, row: number | null) => {
+    const above = linesAbove(to);
+    setOpen((was) => (above.every((key) => was.has(key)) ? was : new Set([...was, ...above])));
+    setChosen({ line: to.key, run: at, row });
+  }, []);
+  const toggle = useCallback((key: string) => {
+    setOpen((was) => {
+      const now = new Set(was);
+      if (!now.delete(key)) {
+        now.add(key);
+      }
+      return now;
+    });
+  }, []);
 
   const step = useCallback(
     (by: number) => {
-      if (runs.length > 0) {
-        setChosen({ line, run: (run + by + runs.length) % runs.length, row: null });
+      if (line && runs.length > 0) {
+        setChosen({ line: line.key, run: (run + by + runs.length) % runs.length, row: null });
       }
     },
     [line, run, runs.length],
@@ -233,12 +290,15 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
   const keys = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        const down = event.key === "ArrowDown";
-        const to = down ? coded.find((each) => each > line) : coded.findLast((each) => each < line);
         event.preventDefault();
-        if (to !== undefined) {
-          setChosen({ line: to, run: null, row: null });
+        const at = line ? coded.indexOf(line) : -1;
+        const to = coded[at + (event.key === "ArrowDown" ? 1 : -1)];
+        if (to && at >= 0) {
+          choose(to, null, null);
         }
+      } else if (event.key === "Enter" && line && line.inlined.length > 0) {
+        event.preventDefault();
+        toggle(line.key);
       } else if (event.key === "]" || event.key === "ArrowRight") {
         event.preventDefault();
         step(1);
@@ -247,56 +307,55 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
         step(-1);
       }
     },
-    [coded, line, step],
+    [coded, line, choose, toggle, step],
   );
 
   const pickLine = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      const row = (event.target as Element).closest<HTMLElement>("[data-line]");
-      const picked = Number(row?.dataset.line);
-      if (coded.includes(picked)) {
-        setChosen({ line: picked, run: null, row: null });
+      const target = event.target as Element;
+      const opener = target.closest<HTMLElement>("[data-toggle]")?.dataset.toggle;
+      if (opener !== undefined) {
+        toggle(opener);
+        return;
+      }
+      const picked = tree.lines.get(target.closest<HTMLElement>("[data-line]")?.dataset.line ?? "");
+      if (picked) {
+        choose(picked, null, null);
       }
     },
-    [coded],
+    [tree, choose, toggle],
   );
 
   const indexOf = useMemo(
     () => new Map(rows.map((row, index) => [row.instruction.address, index])),
     [rows],
   );
+  // An instruction chooses its innermost line of the program's own code,
+  // as its bracket names it.
   const pickRow = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
       const target = event.target as Element;
       const jump = target.closest<HTMLElement>("[data-jump]");
       const row = target.closest<HTMLElement>("[data-row]");
       const index = jump ? indexOf.get(Number(jump.dataset.jump)) : Number(row?.dataset.row);
-      if (index === undefined || Number.isNaN(index)) {
+      const path = index === undefined ? undefined : tree.paths[index];
+      const to = path?.[ownCodeAt(path, code.files)];
+      if (index === undefined || !to) {
         return;
       }
-      const picked = lines[index] ?? 0;
-      const at = runsOf(lines, picked).findIndex(
-        ([first, last]) => index >= first && index <= last,
-      );
-      setChosen({ line: picked, run: at, row: index });
+      const at = runsOf(to.rows).findIndex(([first, last]) => index >= first && index <= last);
+      choose(to, at, index);
     },
-    [indexOf, lines],
+    [indexOf, tree, code.files, choose],
   );
 
-  const chooseFile = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    setFileAt(Number(event.target.value));
-    setChosen(null);
-  }, []);
-
-  const costs = new Map(file?.lines.map(([at, own, total]) => [at, [own, total] as const]));
   const counted = runs.reduce((sum, [first, last]) => sum + last - first + 1, 0);
   const clicked = chosen?.row === null || chosen === null ? undefined : rows[chosen.row];
   // Each pane's numbers take as many characters as its widest one.
-  const lastLine = file?.text ? file.first + file.text.length - 1 : 0;
-  const lineDigits = useMemo(
-    () => ({ "--digits": String(lastLine).length }) as CSSProperties,
-    [lastLine],
-  );
+  const lineDigits = useMemo(() => {
+    const widest = Math.max(1, ...[...tree.lines.values()].map((each) => each.line));
+    return { "--digits": String(widest).length } as CSSProperties;
+  }, [tree]);
   const offsetDigits = useMemo(() => {
     const most = rows.reduce((widest, row) => Math.max(widest, row.offset), 0);
     return { "--digits": most.toString(16).length + 1 } as CSSProperties;
@@ -305,17 +364,7 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
   return (
     <div className={`code-split ${current ? "" : "stale"}`} data-testid="code">
       <div className="code-split-head">
-        {code.files.length > 1 ? (
-          <select className="input" aria-label="Source file" value={fileAt} onChange={chooseFile}>
-            {code.files.map((each, at) => (
-              <option key={each.path ?? at} value={at}>
-                {each.path ?? "no file"}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span>{file?.path ?? "no source"}</span>
-        )}
+        <span>{code.files[0]?.path ?? "no source"}</span>
         <span className="muted end">{code.module}</span>
       </div>
       {code.inlined_into ? (
@@ -338,44 +387,28 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
         >
           <CostHead />
           <Sizer text={longestSource} />
-          {file?.text ? (
+          {entries.length > 0 ? (
             <>
               <Gap list={sourceList} side="before" />
               {sourceList.getVirtualItems().map(({ index: at }) => {
-                const text = file.text?.[at] ?? "";
-                const number = file.first + at;
-                const cost = costs.get(number);
-                const has = coded.includes(number);
-                return (
-                  <div
-                    key={number}
-                    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-                    role="option"
-                    aria-selected={number === line}
-                    aria-disabled={!has}
-                    data-line={number}
-                    data-tint={tints.get(number)}
-                    className={`code-row ${has ? "" : "nocode"}`}
-                  >
-                    <span className="pin">
-                      <Costs
-                        own={cost && cost[0] > 0 ? cost[0] : undefined}
-                        total={cost && cost[1] > 0 ? cost[1] : undefined}
-                        weight={code.weight}
-                      />
-                      <span className="line-number">{number}</span>
-                    </span>
-                    <code className="text">
-                      <Tokens runs={painted[at]} text={text} />
-                    </code>
-                  </div>
-                );
+                const entry = entries[at];
+                return entry ? (
+                  <SourceRow
+                    key={entry.kind === "line" ? entry.line.key : `${entry.kind} ${at}`}
+                    entry={entry}
+                    code={code}
+                    chosen={entry.kind === "line" && entry.line === line}
+                    open={open}
+                    tints={tints}
+                    paint={paint}
+                  />
+                ) : null;
               })}
               <Gap list={sourceList} side="after" />
             </>
           ) : (
             <div className="empty">
-              {file?.unread ?? code.unlined ?? "The instructions have no source lines."}
+              {code.unlined ?? code.files[0]?.unread ?? "The instructions have no source lines."}
             </div>
           )}
         </div>
@@ -391,8 +424,8 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
           onClick={pickRow}
           onKeyDown={keys}
         >
-          <CostHead />
-          <Sizer text={longestListing} />
+          <CostHead from={bracketed} />
+          <Sizer text={longestListing} from={bracketed} />
           <Gap list={listingList} side="before" />
           {listingList.getVirtualItems().map(({ index: item }) => {
             const each = items[item];
@@ -409,16 +442,19 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
               return null;
             }
             const instruction = row.instruction;
-            const at = lines[index] ?? 0;
+            const path = tree.paths[index] ?? [];
+            const tint = tintOfPath(path, open, tints);
+            const unsourced = shownLine(path, open)?.line === 0;
             return (
               <div
                 key={instruction.address}
                 // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
                 role="option"
-                aria-selected={at === line}
+                aria-selected={selected.has(index)}
                 data-row={index}
-                data-tint={at > 0 ? tints.get(at) : undefined}
-                className={`code-row ${row.leads ? "leads" : ""} ${index === shown ? "shown" : ""}`}
+                data-tint={tint}
+                style={tinted(tint)}
+                className={`code-row ${row.leads ? "leads" : ""} ${index === shown ? "shown" : ""} ${unsourced ? "unsourced" : ""}`}
               >
                 <span className="pin">
                   <Costs
@@ -426,6 +462,14 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
                     total={instruction.total > 0 ? instruction.total : undefined}
                     weight={code.weight}
                   />
+                  {bracketed ? (
+                    <Bracket
+                      code={code}
+                      from={from}
+                      index={index}
+                      holds={brackets.holds.has(brackets.firsts[index] ?? -1)}
+                    />
+                  ) : null}
                   <span className="offset">+{row.offset.toString(16)}</span>
                 </span>
                 <code className="text">
@@ -467,8 +511,8 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
       </div>
       <div className="code-split-foot">
         <span>
-          {line > 0 ? `line ${line}` : "no line in this file"} ·{" "}
-          {formatCount(counted, "instruction")} in {formatCount(runs.length, "run")}
+          {line ? whereOf(code, line) : "no line"} · {formatCount(counted, "instruction")} in{" "}
+          {formatCount(runs.length, "run")}
         </span>
         {clicked ? (
           <span className="muted chain" title={chainOf(code, clicked, false)}>
@@ -501,6 +545,255 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
       </div>
     </div>
   );
+}
+
+/** Colors a line of the answer's files, each file's lines together the
+ * first time one is shown. */
+function painter(
+  files: readonly ProfileSourceFile[],
+): (file: number, number: number) => Painted | undefined {
+  const painted = new Map<number, Painted[]>();
+  return (file, number) => {
+    const shown = files[file];
+    let lines = painted.get(file);
+    if (!lines && shown?.text) {
+      lines = paintLines(shown.path ?? "", shown.text);
+      painted.set(file, lines);
+    }
+    return lines?.[number - (shown?.first ?? 0)];
+  };
+}
+
+/** A row's tint as the style that draws it. */
+function tinted(tint: number | undefined): CSSProperties | undefined {
+  return tint === undefined ? undefined : ({ "--tint": tint } as CSSProperties);
+}
+
+/** A row of the source pane: a line with code, a line without, a fold of
+ * lines without, or the head of a function inlined at the line above. */
+function SourceRow({
+  entry,
+  code,
+  chosen,
+  open,
+  tints,
+  paint,
+}: {
+  entry: SourceEntry;
+  code: ProfileCode;
+  chosen: boolean;
+  open: ReadonlySet<string>;
+  tints: ReadonlyMap<string, number>;
+  paint: (file: number, number: number) => Painted | undefined;
+}) {
+  if (entry.kind === "call") {
+    const full = code.functions[entry.call.function] ?? "?";
+    const at = entry.call.at;
+    const path = code.files[entry.call.lines[0]?.file ?? -1]?.path;
+    const total = entry.call.lines.reduce((sum, each) => sum + each.total, 0);
+    return (
+      <div
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+        role="option"
+        aria-selected={false}
+        aria-disabled
+        className="code-row code-call nocode"
+      >
+        <span className="pin">
+          <Costs own={undefined} total={total > 0 ? total : undefined} weight={code.weight} />
+          <span className="line-number" />
+          <span className="inline-toggle" />
+        </span>
+        <code className="text">
+          <Indent depth={entry.depth} />
+          <span className="tk-f" title={full}>
+            {at ? shortName(full) : full}
+          </span>
+          {path ? <span className="muted"> {fileName(path)}</span> : null}
+          {at ? <span className="muted"> · inlined at line {at.line}</span> : null}
+        </code>
+      </div>
+    );
+  }
+
+  if (entry.kind === "gap") {
+    return (
+      <div className="code-row nocode" aria-hidden="true">
+        <span className="pin">
+          <Costs own={undefined} total={undefined} weight={code.weight} />
+          <span className="line-number" />
+          <span className="inline-toggle" />
+        </span>
+        <code className="text muted">
+          <Indent depth={entry.depth} />⋯ {formatCount(entry.count, "line")}
+        </code>
+      </div>
+    );
+  }
+
+  if (entry.kind === "text") {
+    const shownFile = code.files[entry.file];
+    return (
+      <div
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+        role="option"
+        aria-selected={false}
+        aria-disabled
+        className="code-row nocode"
+      >
+        <span className="pin">
+          <Costs own={undefined} total={undefined} weight={code.weight} />
+          <span className="line-number">{entry.number}</span>
+          <span className="inline-toggle" />
+        </span>
+        <code className="text">
+          <Indent depth={entry.depth} />
+          <Tokens
+            runs={paint(entry.file, entry.number)}
+            text={shownFile?.text?.[entry.number - shownFile.first] ?? ""}
+          />
+        </code>
+      </div>
+    );
+  }
+
+  const line = entry.line;
+  const tint = tints.get(line.key);
+  const opened = open.has(line.key);
+  const shownFile = line.file === null ? undefined : code.files[line.file];
+  const text = shownFile?.text?.[line.line - shownFile.first];
+  return (
+    <div
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+      role="option"
+      aria-selected={chosen}
+      data-line={line.key}
+      data-tint={tint}
+      style={tinted(tint)}
+      className={`code-row ${line.line === 0 ? "unsourced" : ""}`}
+    >
+      <span className="pin">
+        <Costs
+          own={line.own > 0 ? line.own : undefined}
+          total={line.total > 0 ? line.total : undefined}
+          weight={code.weight}
+        />
+        <span className="line-number">{line.line > 0 ? line.line : ""}</span>
+        {line.inlined.length > 0 ? (
+          <button
+            type="button"
+            className="inline-toggle"
+            data-toggle={line.key}
+            aria-expanded={opened}
+            aria-label={`${opened ? "Hide" : "Show"} the code inlined at line ${line.line}`}
+          >
+            {opened ? "▾" : "▸"}
+          </button>
+        ) : (
+          <span className="inline-toggle" />
+        )}
+      </span>
+      <code className="text">
+        <Indent depth={entry.depth} />
+        {line.line === 0 ? (
+          <span className="unsourced-note">
+            no associated source line · {formatCount(line.rows.length, "instruction")}
+          </span>
+        ) : text !== undefined && line.file !== null ? (
+          <Tokens runs={paint(line.file, line.line)} text={text} />
+        ) : (
+          <span className="muted" title={shownFile?.unread ?? undefined}>
+            {shownFile?.path ? `${fileName(shownFile.path)}:${line.line}` : `line ${line.line}`}
+          </span>
+        )}
+        {line.inlined.length > 0 && !opened ? (
+          <span className="muted inlines">
+            {"  inlines "}
+            {line.inlined.slice(0, INLINES_NAMED).map((call, at) => (
+              <Fragment key={call.key}>
+                {at > 0 ? ", " : null}
+                <span title={code.functions[call.function]}>
+                  {shortName(code.functions[call.function] ?? "?")}
+                </span>
+              </Fragment>
+            ))}
+            {line.inlined.length > INLINES_NAMED
+              ? ` +${line.inlined.length - INLINES_NAMED}`
+              : null}
+          </span>
+        ) : null}
+      </code>
+    </div>
+  );
+}
+
+/** How many of the functions inlined at a closed line it names. */
+const INLINES_NAMED = 3;
+
+/** The guides that indent a row as deep as the functions it is inlined in. */
+function Indent({ depth }: { depth: number }) {
+  return depth > 0 ? (
+    <span className="code-indent" aria-hidden="true">
+      {Array.from({ length: depth }, (_, at) => (
+        <span key={at} />
+      ))}
+    </span>
+  ) : null;
+}
+
+/** An instruction's part of the bracket around its run of code inlined
+ * from one function, named on the run's first row. */
+function Bracket({
+  code,
+  from,
+  index,
+  holds,
+}: {
+  code: ProfileCode;
+  from: readonly (number | null)[];
+  index: number;
+  holds: boolean;
+}) {
+  const inlined = from[index] ?? null;
+  if (inlined === null) {
+    return <span className="inlined-from" />;
+  }
+  const before = from[index - 1] === inlined;
+  const after = from[index + 1] === inlined;
+  const part = before && after ? "middle" : before ? "end" : after ? "start" : "one";
+  const full = code.functions[inlined] ?? "?";
+  return (
+    <span
+      className={`inlined-from ${holds ? "holds" : ""}`}
+      data-bracket={part}
+      title={before ? undefined : full}
+    >
+      {before ? null : shortName(full)}
+    </span>
+  );
+}
+
+/** A line's place, as the foot names it: its number, and the function it
+ * is in when that was inlined. */
+function whereOf(code: ProfileCode, line: TreeLine): string {
+  const number = line.line > 0 ? `line ${line.line}` : "no line";
+  return line.call.at
+    ? `${number} of ${shortName(code.functions[line.call.function] ?? "?")}`
+    : number;
+}
+
+/** An entry's text as wide as it is drawn, for the pane's width. */
+function entryText(entry: SourceEntry, code: ProfileCode): string {
+  const indent = "  ".repeat(entry.depth);
+  if (entry.kind === "text") {
+    const file = code.files[entry.file];
+    return indent + (file?.text?.[entry.number - file.first] ?? "");
+  }
+  if (entry.kind === "line") {
+    const file = entry.line.file === null ? undefined : code.files[entry.line.file];
+    return indent + (file?.text?.[entry.line.line - file.first] ?? "");
+  }
+  return indent;
 }
 
 /** Where an instruction came from, innermost inlined function first, as
@@ -546,8 +839,9 @@ function AsmTokens({ tokens }: { tokens: readonly ProfileToken[] }) {
   ));
 }
 
-/** The columns' names, pinned over a code pane's rows. */
-function CostHead() {
+/** The columns' names, pinned over a code pane's rows, with that of the
+ * functions code was inlined from when the listing brackets them. */
+function CostHead({ from = false }: { from?: boolean }) {
   return (
     <div className="code-row code-head" aria-hidden="true">
       <span className="pin">
@@ -556,6 +850,7 @@ function CostHead() {
             <span className="hover-help">{column}</span>
           </span>
         ))}
+        {from ? <span className="inlined-from">inlined from</span> : null}
         <span className="line-number" />
       </span>
     </div>
@@ -602,13 +897,15 @@ function Gap({
  * one column to it, so the pane scrolls sideways as far as any row reaches
  * though most are not drawn. CSS draws the line, which keeps it out of the
  * page's text and searches. */
-function Sizer({ text }: { text: string }) {
+function Sizer({ text, from = false }: { text: string; from?: boolean }) {
   return (
     <div className="code-row code-sizer" aria-hidden="true">
       <span className="pin">
         <span className="percent" />
         <span className="percent" />
+        {from ? <span className="inlined-from" /> : null}
         <span className="line-number" />
+        <span className="inline-toggle" />
       </span>
       <code className="text" data-text={text} />
     </div>

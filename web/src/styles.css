@@ -15,6 +15,8 @@
   --share: 0;
   /* The hue of a source line's tint, which each tinted code row sets. */
   --tint: 0;
+  /* The stripes of code with no associated source line. */
+  --hatch: repeating-linear-gradient(135deg, var(--unsourced) 0 2px, transparent 2px 6px);
   /* How many characters a code pane's widest line number or offset has. */
   --digits: 6;
   /* A code row's background, which its pinned costs copy. */
@@ -26,6 +28,7 @@
   --accent: #2f56c9;
   --accent-ink: #ffffff;
   --accent-soft: #e2e8fa;
+  --unsourced: rgb(0 0 0 / 6%);
   --pc-bg: #fff0c2;
   --pc-mark: #8a5d00;
   --bp: #d23c3c;
@@ -70,6 +73,7 @@
     --accent: #7da2ff;
     --accent-ink: #0c1530;
     --accent-soft: #212f4f;
+    --unsourced: rgb(255 255 255 / 7%);
     --pc-bg: #3a3014;
     --pc-mark: #e3b33f;
     --bp: #ff6b6b;
@@ -110,6 +114,7 @@
   --accent: #7da2ff;
   --accent-ink: #0c1530;
   --accent-soft: #212f4f;
+  --unsourced: rgb(255 255 255 / 7%);
   --pc-bg: #3a3014;
   --pc-mark: #e3b33f;
   --bp: #ff6b6b;
@@ -4257,28 +4262,116 @@ textarea.input {
   color: var(--ink);
 }
 
-.code-row[data-tint="0"] {
-  --tint: 30;
+/* Code of no source line is hatched rather than tinted, its row in the
+   source and its instructions alike. */
+.code-row.unsourced {
+  background: var(--hatch), var(--row-bg);
 }
 
-.code-row[data-tint="1"] {
-  --tint: 140;
+.code-row.unsourced .pin {
+  background: var(--hatch), linear-gradient(var(--row-bg), var(--row-bg)), var(--surface);
 }
 
-.code-row[data-tint="2"] {
-  --tint: 280;
+.code-row .unsourced-note {
+  font: italic 12px var(--sans);
+  color: var(--ink-3);
 }
 
-.code-row[data-tint="3"] {
-  --tint: 350;
+.code-row.unsourced[aria-selected="true"] .unsourced-note {
+  color: var(--ink-2);
 }
 
-.code-row[data-tint="4"] {
-  --tint: 180;
+/* A line whose code holds inlined functions opens them beneath it. */
+.code-row .inline-toggle {
+  width: 2ch;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  font: inherit;
+  color: var(--ink-2);
 }
 
-.code-row[data-tint="5"] {
-  --tint: 55;
+.code-row button.inline-toggle {
+  cursor: pointer;
+}
+
+.code-row button.inline-toggle:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.code-row .inlines {
+  white-space: pre;
+}
+
+/* Each level of inlining indents a row by a guide. */
+.code-indent {
+  display: inline-flex;
+  align-self: stretch;
+  vertical-align: top;
+  height: var(--row);
+}
+
+.code-indent > span {
+  width: 2ch;
+  margin-left: 0.5ch;
+  border-left: 1px solid var(--line-strong);
+}
+
+.code-call {
+  color: var(--ink-2);
+}
+
+/* Instructions inlined from one function share a bracket, named on its
+   first row. */
+.code-row .inlined-from {
+  position: relative;
+  width: 16ch;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.code-head .inlined-from {
+  color: inherit;
+  padding-left: 0;
+}
+
+.code-row .inlined-from[data-bracket]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 4px;
+  border-left: 1px solid var(--line-strong);
+}
+
+.code-row .inlined-from[data-bracket="start"]::before,
+.code-row .inlined-from[data-bracket="one"]::before {
+  top: 5px;
+  border-top: 1px solid var(--line-strong);
+}
+
+.code-row .inlined-from[data-bracket="end"]::before,
+.code-row .inlined-from[data-bracket="one"]::before {
+  bottom: 5px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.code-row .inlined-from.holds {
+  color: var(--ink);
+}
+
+.code-row .inlined-from.holds::before {
+  border-color: var(--accent);
 }
 
 .code-row button.asm-target {

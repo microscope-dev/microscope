@@ -1,6 +1,7 @@
-// How a function's instructions map to the lines of a source file: which
-// line each belongs to, where its basic blocks begin, which lines get a
-// tint, and how a line's instructions fall into runs.
+// How a function's instructions map to the source they were compiled
+// from: where its basic blocks begin, the tree of its lines and what was
+// inlined at each, which lines get a tint, how runs of inlined code are
+// named, and how a line's instructions fall into runs.
 
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -8,14 +9,23 @@ import { describe, expect, it } from "vitest";
 import {
   type CodeRow,
   codeRows,
+  FOLD,
   hottestRun,
-  lineIn,
-  linesOf,
+  inlinedFrom,
+  inlineTree,
+  isLibrary,
+  linesAbove,
   openingLine,
+  ownCodeAt,
   runsOf,
   shortName,
+  shownLine,
+  type SourceEntry,
+  sourceEntries,
   TINTS,
+  tintOfPath,
   tintsOf,
+  type TreeLine,
 } from "../src/profile/code";
 import type { ProfileCode, ProfileInstruction, ProfileSourceFile } from "../src/protocol";
 
@@ -43,39 +53,6 @@ function code(...blocks: [string, ProfileInstruction[]][]): ProfileCode {
     inlined_into: null,
   };
 }
-
-function file(lines: [number, number, number][]): ProfileSourceFile {
-  return { path: "/src/app.c", lines, first: 1, text: null, unread: null };
-}
-
-describe("lineIn", () => {
-  it("takes the innermost line in the file asked for, not the innermost overall", () => {
-    // `get` from h.h (file 1) inlined into `step` in app.c (file 0),
-    // inlined into `scan` in app.c.
-    const lines: [number, number | null, number][] = [
-      [0, 1, 3],
-      [1, 0, 8],
-      [2, 0, 14],
-    ];
-    expect(lineIn(lines, 0)).toBe(8);
-    expect(lineIn(lines, 1)).toBe(3);
-    expect(lineIn(lines, 2)).toBe(0);
-  });
-
-  it("passes over lines the debug information does not name", () => {
-    expect(
-      lineIn(
-        [
-          [0, 0, 0],
-          [1, 0, 14],
-        ],
-        0,
-      ),
-    ).toBe(14);
-    expect(lineIn([[0, null, 9]], 0)).toBe(0);
-    expect(lineIn([], 0)).toBe(0);
-  });
-});
 
 describe("codeRows", () => {
   const rows = codeRows(
@@ -139,34 +116,378 @@ describe("codeRows", () => {
   });
 });
 
-describe("runsOf", () => {
-  it("splits a line's instructions where others come between", () => {
-    expect(runsOf([3, 3, 5, 3, 0, 0, 3], 3)).toEqual([
-      [0, 1],
-      [3, 3],
-      [6, 6],
-    ]);
-    expect(runsOf([3, 3], 4)).toEqual([]);
+/** scan in app.c (file 0), whose line 4 runs step inlined, which runs
+ * get from Rust's library (file 1) inlined at its line 14; line 8 runs
+ * step inlined again. Lines run innermost first, as the server sends them. */
+const FUNCTIONS = ["scan", "step", "<core::option::Option<u8>>::get"];
+const FILES: ProfileSourceFile[] = [
+  {
+    path: "/src/app.c",
+    lines: [],
+    first: 1,
+    text: Array.from({ length: 30 }, (_, index) => `line ${index + 1}`),
+    unread: null,
+  },
+  {
+    path: "/nix/store/abc-rust/lib/rustlib/src/rust/library/core/src/option.rs",
+    lines: [],
+    first: 1,
+    text: null,
+    unread: "unread",
+  },
+];
+const ROWS = codeRows(
+  code([
+    "scan",
+    [
+      { ...instruction(0, "mov", 1, 1), lines: [[0, 0, 3]] },
+      {
+        ...instruction(1, "add", 5, 5),
+        lines: [
+          [2, 1, 9],
+          [1, 0, 14],
+          [0, 0, 4],
+        ],
+      },
+      { ...instruction(2, "call", 0, 7), lines: [[0, 0, 4]] },
+      {
+        ...instruction(3, "imul", 2, 2),
+        lines: [
+          [1, 0, 19],
+          [0, 0, 4],
+        ],
+      },
+      {
+        ...instruction(4, "sub", 3, 3),
+        lines: [
+          [1, 0, 14],
+          [0, 0, 8],
+        ],
+      },
+      { ...instruction(5, "ret"), lines: [[0, 0, 18]] },
+      // Only library code inlined here.
+      {
+        ...instruction(6, "nop", 0, 0),
+        lines: [
+          [2, 1, 9],
+          [0, 0, 18],
+        ],
+      },
+    ],
+  ]),
+);
+const TREE = inlineTree(ROWS);
+
+/** The tree's line of `function` at `number`, reached through `path`,
+ * the lines above it outermost first. */
+function lineAt(...path: [number, number][]): TreeLine {
+  let lines = TREE.calls.flatMap((call) => call.lines);
+  let found: TreeLine | undefined;
+  for (const [function_, number] of path) {
+    found = lines.find((line) => line.call.function === function_ && line.line === number);
+    expect(found, `${function_}:${number}`).toBeDefined();
+    lines = found?.inlined.flatMap((call) => call.lines) ?? [];
+  }
+  return found as TreeLine;
+}
+
+describe("inlineTree", () => {
+  it("nests each inlined function under the line it was inlined at", () => {
+    expect(TREE.calls.map((call) => call.function)).toEqual([0]);
+    expect(TREE.calls[0]?.lines.map((line) => line.line)).toEqual([3, 4, 8, 18]);
+
+    const four = lineAt([0, 4]);
+    // Its own instruction is the call, which spends nothing itself; the
+    // rest is step's and get's.
+    expect([four.own, four.inside, four.total]).toEqual([0, 7, 14]);
+    expect(four.rows).toEqual([1, 2, 3]);
+    expect(four.inlined.map((call) => call.function)).toEqual([1]);
+    expect(lineAt([0, 4], [1, 14]).inside).toBe(5);
+    expect(lineAt([0, 4], [1, 14]).own).toBe(0);
+    expect(lineAt([0, 4], [1, 14], [2, 9]).own).toBe(5);
+    expect(lineAt([0, 4], [1, 19]).own).toBe(2);
+    expect(TREE.paths[1]?.map((line) => line.line)).toEqual([4, 14, 9]);
   });
 
-  it("covers exactly the line's instructions, in order, each run as long as it can be", () => {
+  it("keeps a function inlined at two lines apart, line by line", () => {
+    const here = lineAt([0, 4], [1, 14]);
+    const there = lineAt([0, 8], [1, 14]);
+    expect(here.key).not.toBe(there.key);
+    expect(there.rows).toEqual([4]);
+    expect(there.own).toBe(3);
+    expect(here.rows).toEqual([1]);
+  });
+
+  /** Random chains: up to 4 deep, of 3 functions, 2 files, and 5 lines. */
+  const chain = fc.array(
+    fc.tuple(
+      fc.integer({ min: 0, max: 2 }),
+      fc.constantFrom(0, 1, null),
+      fc.integer({ min: 0, max: 4 }),
+    ),
+    { minLength: 1, maxLength: 4 },
+  );
+  const listing = fc.array(fc.tuple(chain, fc.nat(9), fc.nat(9)), { maxLength: 30 }).map((each) =>
+    codeRows(
+      code([
+        "f",
+        each.map(([lines, own, more], index) => ({
+          ...instruction(index, "nop", own, own + more),
+          lines,
+        })),
+      ]),
+    ),
+  );
+
+  it("weighs each instruction's own once, at its innermost line, and its total on every line above", () => {
+    fc.assert(
+      fc.property(listing, (rows) => {
+        const tree = inlineTree(rows);
+        const lines = [...tree.lines.values()];
+        const sum = (of: (row: CodeRow) => number) => rows.reduce((all, row) => all + of(row), 0);
+        expect(lines.reduce((all, line) => all + line.own, 0)).toBe(
+          sum((row) => row.instruction.own),
+        );
+        for (const [index, path] of tree.paths.entries()) {
+          expect(path.length).toBe(rows[index]?.instruction.lines.length);
+          // Each step down is a function inlined at the line above.
+          for (const [depth, line] of path.entries()) {
+            expect(line.call.at).toBe(depth === 0 ? null : path[depth - 1]);
+          }
+        }
+        for (const line of lines) {
+          const under = rows.filter((_, index) => tree.paths[index]?.includes(line));
+          expect(line.rows).toEqual(under.map((row) => rows.indexOf(row)));
+          expect(line.inside).toBe(under.reduce((all, row) => all + row.instruction.own, 0));
+          expect(line.total).toBe(under.reduce((all, row) => all + row.instruction.total, 0));
+          // What runs under a line is its own and what was inlined there.
+          const inlined = line.inlined.flatMap((call) => call.lines);
+          expect(line.inside).toBe(line.own + inlined.reduce((all, each) => all + each.inside, 0));
+        }
+      }),
+    );
+  });
+});
+
+describe("ownCodeAt and inlinedFrom", () => {
+  it("knows a toolchain's and a dependency's source from the program's", () => {
+    expect(isLibrary(FILES[1]?.path)).toBe(true);
+    expect(isLibrary("/rustc/0a1b2c/library/core/src/slice/mod.rs")).toBe(true);
+    expect(isLibrary("/home/me/.cargo/registry/src/index/serde-1.0/src/de.rs")).toBe(true);
+    expect(isLibrary("/usr/include/stdlib.h")).toBe(true);
+    expect(isLibrary("/usr/lib/gcc/x86_64-linux-gnu/14/include/c++/vector")).toBe(true);
+    expect(isLibrary("/home/me/go/pkg/mod/golang.org/x/sys@v0.1.0/unix/zsyscall.go")).toBe(true);
+    expect(isLibrary(null)).toBe(true);
+    expect(isLibrary("/src/app.c")).toBe(false);
+    expect(isLibrary("/home/me/project/src/library/main.rs")).toBe(false);
+  });
+
+  it("names the innermost function of the program's own code, past library code", () => {
+    // get is the library's; step, inlined into scan, is the program's.
+    expect(ownCodeAt(TREE.paths[1] ?? [], FILES)).toBe(1);
+    expect(ownCodeAt(TREE.paths[0] ?? [], FILES)).toBe(0);
+    expect(ownCodeAt(TREE.paths[6] ?? [], FILES)).toBe(0);
+    // A function's own code has no bracket; library code alone is named
+    // by the outermost function inlined.
+    expect(inlinedFrom(TREE, FILES)).toEqual([null, 1, null, 1, 1, null, 2]);
+  });
+});
+
+/** Entries as text, such as `line 1:14` for line 14 one level deep. */
+function shown(entries: readonly SourceEntry[]): string[] {
+  return entries.map((entry) => {
+    switch (entry.kind) {
+      case "line":
+        return `line ${entry.depth}:${entry.line.line}`;
+      case "text":
+        return `text ${entry.depth}:${entry.number}`;
+      case "gap":
+        return `gap ${entry.depth}:${entry.count}`;
+      default:
+        return `call ${entry.depth}:${FUNCTIONS[entry.call.function]}`;
+    }
+  });
+}
+
+/** Lines without code from `from` to `to`, as `shown` reads them. */
+function range(depth: number, from: number, to: number): string[] {
+  return Array.from({ length: to - from + 1 }, (_, index) => `text ${depth}:${from + index}`);
+}
+
+describe("sourceEntries", () => {
+  it("reads a function's lines as its file has them, with the text read around them", () => {
+    expect(shown(sourceEntries(TREE, FILES, new Set()))).toEqual([
+      ...range(0, 1, 2),
+      "line 0:3",
+      "line 0:4",
+      ...range(0, 5, 7),
+      "line 0:8",
+      ...range(0, 9, 17),
+      "line 0:18",
+      ...range(0, 19, 30),
+    ]);
+  });
+
+  it("opens what was inlined at a line beneath it, folding an inlined function's long stretches", () => {
+    const four = lineAt([0, 4]);
+    const fourteen = lineAt([0, 4], [1, 14]);
+    const entries = shown(sourceEntries(TREE, FILES, new Set([four.key, fourteen.key])));
+    expect(entries.slice(2, 10)).toEqual([
+      "line 0:3",
+      "line 0:4",
+      "call 1:step",
+      "line 1:14",
+      "call 2:<core::option::Option<u8>>::get",
+      // Its file cannot be read, so it is its line alone.
+      "line 2:9",
+      `gap 1:${FOLD}`,
+      "line 1:19",
+    ]);
+    expect(entries[10]).toBe("text 0:5");
+    // Line 8's step stays closed.
+    expect(entries.filter((entry) => entry.startsWith("call"))).toHaveLength(2);
+  });
+
+  it("shows a short stretch of an inlined function rather than fold it", () => {
+    const rows = codeRows(
+      code([
+        "f",
+        [
+          {
+            ...instruction(0, "nop", 1),
+            lines: [
+              [1, 0, 20],
+              [0, 0, 2],
+            ],
+          },
+          {
+            ...instruction(1, "nop", 1),
+            lines: [
+              [1, 0, 20 + FOLD],
+              [0, 0, 2],
+            ],
+          },
+        ],
+      ]),
+    );
+    const tree = inlineTree(rows);
+    const two = [...tree.lines.values()].find((line) => line.line === 2) as TreeLine;
+    expect(shown(sourceEntries(tree, FILES, new Set([two.key])))).toEqual([
+      "text 0:1",
+      "line 0:2",
+      "call 1:step",
+      "line 1:20",
+      ...range(1, 21, 19 + FOLD),
+      `line 1:${20 + FOLD}`,
+      ...range(0, 3, 30),
+    ]);
+  });
+});
+
+describe("tintsOf and tintOfPath", () => {
+  it("tints the hottest lines, and under an open tinted line its hottest in shades of its hue", () => {
+    const closed = tintsOf(TREE, new Set());
+    // By the own weight under them: 4, 8, 3; 18 ran nothing.
+    expect(closed.get(lineAt([0, 4]).key)).toBe(30);
+    expect(closed.get(lineAt([0, 8]).key)).toBe(140);
+    expect(closed.get(lineAt([0, 3]).key)).toBe(280);
+    expect(closed.has(lineAt([0, 18]).key)).toBe(false);
+    expect(closed.has(lineAt([0, 4], [1, 14]).key)).toBe(false);
+
+    const open = tintsOf(TREE, new Set([lineAt([0, 4]).key]));
+    expect(open.get(lineAt([0, 4], [1, 14]).key)).toBe(30);
+    expect(open.get(lineAt([0, 4], [1, 19]).key)).toBe(58);
+    // Not open, so not tinted.
+    expect(open.has(lineAt([0, 8], [1, 14]).key)).toBe(false);
+  });
+
+  it("tints an instruction as its deepest line shown, or the nearest tinted one above", () => {
+    const four = lineAt([0, 4]);
+    const closed = new Set<string>();
+    const open = new Set([four.key]);
+    expect(tintOfPath(TREE.paths[1] ?? [], closed, tintsOf(TREE, closed))).toBe(30);
+    expect(tintOfPath(TREE.paths[3] ?? [], open, tintsOf(TREE, open))).toBe(58);
+    expect(tintOfPath(TREE.paths[3] ?? [], open, new Map([[four.key, 7]]))).toBe(7);
+    expect(tintOfPath(TREE.paths[5] ?? [], closed, tintsOf(TREE, closed))).toBeUndefined();
+    expect(tintOfPath([], closed, new Map())).toBeUndefined();
+  });
+
+  it("gives code of no source line no tint, though it is the hottest, nor its instructions", () => {
+    const tree = inlineTree(
+      codeRows(
+        code([
+          "f",
+          [
+            { ...instruction(0, "mov", 9), lines: [[0, 0, 0]] },
+            { ...instruction(1, "add", 1), lines: [[0, 0, 5]] },
+            // Inlined at line 5 with no line of its own.
+            {
+              ...instruction(2, "sub", 8),
+              lines: [
+                [1, 0, 0],
+                [0, 0, 5],
+              ],
+            },
+          ],
+        ]),
+      ),
+    );
+    const zero = [...tree.lines.values()].find((line) => line.line === 0 && !line.call.at);
+    const five = [...tree.lines.values()].find((line) => line.line === 5) as TreeLine;
+    const closed = tintsOf(tree, new Set());
+    expect(closed.has(zero?.key ?? "")).toBe(false);
+    // The hottest hue goes to the hottest line that has a number.
+    expect(closed.get(five.key)).toBe(30);
+    expect(tintOfPath(tree.paths[0] ?? [], new Set(), closed)).toBeUndefined();
+    // Closed, line 5 holds the inlined code and tints it; open, its line 0 shows.
+    expect(tintOfPath(tree.paths[2] ?? [], new Set(), closed)).toBe(30);
+    const open = new Set([five.key]);
+    expect(shownLine(tree.paths[2] ?? [], open)?.line).toBe(0);
+    expect(tintOfPath(tree.paths[2] ?? [], open, tintsOf(tree, open))).toBeUndefined();
+  });
+
+  it("tints at most a handful of lines a level, none untouched, none under a closed line", () => {
+    const chain = fc.array(
+      fc.tuple(fc.integer({ min: 0, max: 3 }), fc.constant(0), fc.integer({ min: 1, max: 12 })),
+      {
+        minLength: 1,
+        maxLength: 3,
+      },
+    );
     fc.assert(
       fc.property(
-        fc.array(fc.integer({ min: 0, max: 4 }), { maxLength: 60 }),
-        fc.integer({ min: 0, max: 4 }),
-        (lines, line) => {
-          const runs = runsOf(lines, line);
-          const covered = runs.flatMap(([first, last]) =>
-            Array.from({ length: last - first + 1 }, (_, at) => first + at),
+        fc.array(fc.tuple(chain, fc.nat(5)), { maxLength: 40 }),
+        fc.array(fc.nat(), { maxLength: 6 }),
+        (each, picks) => {
+          const tree = inlineTree(
+            codeRows(
+              code([
+                "f",
+                each.map(([lines, own], index) => ({ ...instruction(index, "nop", own), lines })),
+              ]),
+            ),
           );
-          const expected = lines.flatMap((each, index) => (each === line ? [index] : []));
-          expect(covered).toEqual(expected);
-          for (const [first, last] of runs) {
-            expect(first).toBeLessThanOrEqual(last);
-            // Maximal: something else comes just before and just after,
-            // so no two runs touch.
-            expect(lines[first - 1]).not.toBe(line);
-            expect(lines[last + 1]).not.toBe(line);
+          const all = [...tree.lines.values()];
+          const open = new Set(
+            picks.flatMap((pick) => (all.length > 0 ? [all[pick % all.length]?.key ?? ""] : [])),
+          );
+          const tints = tintsOf(tree, open);
+          const byLevel = new Map<string, number>();
+          for (const line of all) {
+            if (!tints.has(line.key)) {
+              continue;
+            }
+            expect(line.inside + line.total).toBeGreaterThan(0);
+            // Code of no source line is hatched, never tinted.
+            expect(line.line).toBeGreaterThan(0);
+            const above = line.call.at;
+            // A line inlined somewhere is tinted only under an open, tinted line.
+            expect(!above || (open.has(above.key) && tints.has(above.key))).toBe(true);
+            const level = above?.key ?? "";
+            byLevel.set(level, (byLevel.get(level) ?? 0) + 1);
+          }
+          for (const count of byLevel.values()) {
+            expect(count).toBeLessThanOrEqual(TINTS);
           }
         },
       ),
@@ -174,83 +495,45 @@ describe("runsOf", () => {
   });
 });
 
-describe("tintsOf", () => {
-  it("tints the hottest lines by own, then total, then the earlier line", () => {
-    const tints = tintsOf(
-      file([
-        [10, 0, 90],
-        [11, 5, 5],
-        [12, 5, 9],
-        [13, 0, 0],
-        [14, 1, 1],
-        [9, 1, 1],
-      ]),
-      4,
-    );
-    expect([...tints]).toEqual([
-      [12, 0],
-      [11, 1],
-      [9, 2],
-      [14, 3],
-    ]);
-    // A call site whose cost is all in its callees is past the fourth.
-    expect(tints.has(10)).toBe(false);
-    expect(tints.has(13)).toBe(false);
+describe("openingLine and linesAbove", () => {
+  it("opens on the program's own hottest line, library code weighed where it was inlined", () => {
+    // get's 5 count on step's line 14, which beats step's 3 at line 8.
+    expect(openingLine(TREE, ROWS, FILES)).toBe(lineAt([0, 4], [1, 14]));
+    // Read as the program's own, get's line is the hottest.
+    const own = FILES.map((each) => ({ ...each, path: "/src/app.c" }));
+    const get = lineAt([0, 4], [1, 14], [2, 9]);
+    expect(openingLine(TREE, ROWS, own)).toBe(get);
+    expect(linesAbove(get)).toEqual([lineAt([0, 4]).key, lineAt([0, 4], [1, 14]).key]);
+    expect(linesAbove(lineAt([0, 3]))).toEqual([]);
   });
 
-  const line = fc.tuple(
-    fc.integer({ min: 1, max: 40 }),
-    fc.integer({ min: 0, max: 5 }),
-    fc.integer({ min: 0, max: 5 }),
-  );
-  const lines = fc.uniqueArray(line, { selector: ([at]) => at, maxLength: 20 });
-
-  it("tints at most a handful of lines, each a different tint, none untouched", () => {
-    fc.assert(
-      fc.property(lines, (each) => {
-        const tints = tintsOf(file(each));
-        expect(tints.size).toBeLessThanOrEqual(TINTS);
-        expect(new Set(tints.values()).size).toBe(tints.size);
-        for (const [at] of tints) {
-          const [, own, total] = each.find(([number]) => number === at) ?? [0, 0, 0];
-          expect(own + total).toBeGreaterThan(0);
-        }
-      }),
-    );
+  it("opens an inlined function on its own hottest line", () => {
+    expect(openingLine(TREE, ROWS, FILES, 1)).toBe(lineAt([0, 8], [1, 14]));
+    expect(openingLine(inlineTree([]), [], FILES)).toBeUndefined();
   });
+});
 
-  it("never leaves a line hotter than a tinted one untinted", () => {
+describe("runsOf", () => {
+  it("covers exactly the rows given, each run as long as it can be", () => {
     fc.assert(
-      fc.property(lines, (each) => {
-        const tints = tintsOf(file(each));
-        const weighed = new Map(each.map(([at, own, total]) => [at, [own, total]]));
-        const hotter = (a: number, b: number) => {
-          const [ownA = 0, totalA = 0] = weighed.get(a) ?? [];
-          const [ownB = 0, totalB = 0] = weighed.get(b) ?? [];
-          return (
-            ownA > ownB || (ownA === ownB && (totalA > totalB || (totalA === totalB && a < b)))
-          );
-        };
-        for (const [at, own, total] of each) {
-          if (tints.has(at) || own + total === 0) {
-            continue;
-          }
-          for (const tinted of tints.keys()) {
-            expect(hotter(tinted, at)).toBe(true);
-          }
-        }
-        // Tints run in order of heat.
-        for (const [a, tintA] of tints) {
-          for (const [b, tintB] of tints) {
-            expect(tintA < tintB).toBe(tintA !== tintB && hotter(a, b));
-          }
+      fc.property(fc.uniqueArray(fc.nat(60), { maxLength: 40 }), (unsorted) => {
+        const rows = unsorted.toSorted((a, b) => a - b);
+        const runs = runsOf(rows);
+        expect(
+          runs.flatMap(([first, last]) =>
+            Array.from({ length: last - first + 1 }, (_, at) => first + at),
+          ),
+        ).toEqual(rows);
+        for (const [index, [, last]] of runs.entries()) {
+          // No two runs touch, so each is as long as it can be.
+          expect(runs[index + 1]?.[0] ?? Infinity).toBeGreaterThan(last + 1);
         }
       }),
     );
   });
 });
 
-describe("hottestRun and openingLine", () => {
+describe("hottestRun", () => {
   const rows = codeRows(
     code([
       "scan",
@@ -267,7 +550,6 @@ describe("hottestRun and openingLine", () => {
   );
 
   it("picks the run of most own, then of most total", () => {
-    // Own 1, own 0 with 50 total, then own 2 twice: the second has more total.
     expect(
       hottestRun(rows, [
         [0, 0],
@@ -276,7 +558,6 @@ describe("hottestRun and openingLine", () => {
         [6, 6],
       ]),
     ).toBe(3);
-    // Total breaks no tie of own when the first is hotter.
     expect(
       hottestRun(rows, [
         [0, 1],
@@ -291,83 +572,26 @@ describe("hottestRun and openingLine", () => {
     ).toBe(1);
     expect(hottestRun(rows, [])).toBe(0);
   });
-
-  it("opens on the file's hottest line, or the first line any instruction has", () => {
-    expect(
-      openingLine(
-        file([
-          [7, 0, 40],
-          [8, 3, 3],
-        ]),
-        [7, 8],
-      ),
-    ).toBe(8);
-    expect(openingLine(undefined, [0, 0, 12, 4])).toBe(12);
-    // An inlined function opens on its own hottest line, not its caller's.
-    expect(
-      openingLine(
-        file([
-          [7, 0, 40],
-          [8, 3, 3],
-          [9, 1, 1],
-        ]),
-        [7, 8, 9],
-        new Set([7, 9]),
-      ),
-    ).toBe(9);
-    expect(openingLine(file([[3, 0, 0]]), [0])).toBe(0);
-  });
 });
 
 describe("shortName", () => {
-  it("keeps only a function's own name", () => {
+  it("keeps a function's own name and the type a method is of", () => {
     expect(
       shortName("<core::result::Result<&[u8; 8], core::array::TryFromSliceError>>::copied"),
-    ).toBe("copied");
+    ).toBe("Result::copied");
+    expect(
+      shortName("<core::ops::range::Range<usize> as core::slice::index::SliceIndex<[u8]>>::index"),
+    ).toBe("Range::index");
+    expect(shortName("<u64 as core::slice::cmp::SliceContains>::slice_contains")).toBe(
+      "u64::slice_contains",
+    );
+    expect(shortName("<[u8]>::is_empty")).toBe("[u8]::is_empty");
+    expect(shortName("<microscope::perf::Fields>::u64")).toBe("Fields::u64");
     expect(shortName("microscope::backend::linux::perf::decode::next_with_period")).toBe(
       "next_with_period",
     );
     expect(shortName("field::<8>")).toBe("field");
     expect(shortName("scan")).toBe("scan");
     expect(shortName("operator<")).toBe("operator<");
-  });
-});
-
-describe("linesOf", () => {
-  it("finds a function's lines in one file wherever it was inlined", () => {
-    const rows = codeRows(
-      code([
-        "scan",
-        [
-          {
-            ...instruction(0, "mov"),
-            lines: [
-              [1, 0, 8],
-              [0, 0, 14],
-            ],
-          },
-          {
-            ...instruction(1, "add"),
-            lines: [
-              [2, 1, 3],
-              [1, 0, 9],
-              [0, 0, 14],
-            ],
-          },
-          { ...instruction(2, "ret"), lines: [[0, 0, 15]] },
-          {
-            ...instruction(3, "nop"),
-            lines: [
-              [1, 1, 30],
-              [0, 0, 0],
-            ],
-          },
-        ],
-      ]),
-    );
-    expect([...linesOf(rows, 1, 0)].toSorted((a, b) => a - b)).toEqual([8, 9]);
-    expect([...linesOf(rows, 1, 1)]).toEqual([30]);
-    expect([...linesOf(rows, 0, 0)].toSorted((a, b) => a - b)).toEqual([14, 15]);
-    expect(linesOf(rows, 5, 0).size).toBe(0);
   });
 });
