@@ -492,7 +492,7 @@ async fn a_cores_stackless_tasks_refuse_frames_and_pool_jobs_have_their_threads(
         for task in stackless {
             match backtrace(task).backtrace().await {
                 Err(Error::TaskUnavailable { reason, .. })
-                    if reason.contains("it runs no code until Node calls its callback") => {}
+                    if reason.contains("it does not run until Node calls its callback") => {}
                 other => wrong.push(format!("{name}: task {}: {other:?}", task.number)),
             }
         }

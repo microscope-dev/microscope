@@ -819,7 +819,7 @@ impl RuntimeModel for NodeRuntime {
                 _ => Ok(None),
             };
         }
-        let stackless = || "it runs no code until Node calls its callback, so it has no frames";
+        let stackless = || "it has no frames because it does not run until Node calls its callback";
         // The entry this stop's listing located is read alone; without it,
         // or where it no longer proves the task, every list is.
         if let Some(locator) = task.locator

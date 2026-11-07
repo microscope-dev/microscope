@@ -343,7 +343,7 @@ pub enum RecordError {
     #[error("the program has no function named '{0}'")]
     NoSuchFunction(String),
 
-    #[error("{count} functions are named '{name}'; name one by its symbol")]
+    #[error("{count} functions are named '{name}'; pick one by its symbol name")]
     AmbiguousFunction { name: String, count: usize },
 
     #[error("the calls of '{name}' cannot be counted exactly: {why}")]

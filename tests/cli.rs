@@ -106,7 +106,7 @@ fn symbolize_writes_in_symbols_a_recording_left_for_later() {
     let unnamed = assert_success(microscope(&["report", &profile]));
     assert!(
         unnamed.contains(
-            "basic keeps its addresses: its file is gone, and no debug directory or server has \
+            "basic could not be symbolized, so its addresses stay: its file is gone, and no debug directory or server has \
              its build id"
         ),
         "{unnamed}"
@@ -124,7 +124,7 @@ fn symbolize_writes_in_symbols_a_recording_left_for_later() {
     let said = String::from_utf8_lossy(&symbolized.stderr);
     assert!(said.contains("basic: 4 frames from "), "{said}");
     let named = assert_success(microscope(&["report", &profile]));
-    assert!(!named.contains("keeps its addresses"), "{named}");
+    assert!(!named.contains("could not be symbolized"), "{named}");
     assert_in_order(&named, &["breakpoint_target", "main"]);
 }
 
@@ -921,7 +921,7 @@ fn a_waiter_panic_releases_an_attached_process_unharmed() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("the session of [1] failed, and released or killed its process"),
+        stderr.contains("the session of [1] failed, so its process was released or killed"),
         "{stderr}"
     );
     assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -1186,7 +1186,7 @@ fn command_errors_show_the_usage_or_the_reason() {
         &[
             "usage: run\n",
             "no frame is selected to take a line from (the inferior has not been launched); \
-             name a location",
+             give a location",
             info,
             info,
             info,
@@ -3168,7 +3168,7 @@ fn views_check_and_explain_a_programs_types_without_a_process() {
     assert_in_order(
         &report,
         &[
-            "not presented, though views name them:",
+            "not presented, though views match them:",
             "point",
             "app.views:2 `c point`: line 3: `z`: `z` is neither a member",
             "views not tried for any type (absent or shadowed):",
@@ -3412,7 +3412,7 @@ fn a_program_without_variable_information_presents_nothing() {
     ]);
     assert_in_order(
         &assert_success(check),
-        &["no view's pattern names any type"],
+        &["no view's pattern matches any type"],
     );
 }
 
@@ -4034,7 +4034,7 @@ fn a_goroutine_is_selected_or_inspected_by_its_id() {
         &["build/test-programs/workers-go-o0"],
         &["break main.reached", "run", "goroutine 1 next"],
     );
-    assert_failure(&failure, "goroutine 1 runs only commands that inspect");
+    assert_failure(&failure, "goroutine 1 can only run commands that inspect");
 }
 
 #[test]
@@ -4399,7 +4399,7 @@ fn core_dumps_are_inspected_in_batch_mode_without_executing() {
     let (_, stderr) = piped(&["--core", SEGV_CORE], &commands);
     assert_eq!(
         stderr
-            .matches("a post-mortem core dump cannot execute, be modified, or hold breakpoints")
+            .matches("a core dump cannot run, be changed, or have breakpoints")
             .count(),
         commands.len(),
         "{stderr}"
@@ -4737,7 +4737,7 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     // A native name misspelled is still found near its own.
     assert!(
         stderr.contains(
-            "did you mean 'main'? A Python function is named with `py:`, as in `py:mian`"
+            "did you mean 'main'? Write a Python function with `py:`, as in `py:mian`"
         ),
         "{stderr}"
     );
@@ -7171,7 +7171,7 @@ fn report_lists_processes_and_selects_them() {
     assert!(!none.status.success());
     assert!(
         String::from_utf8_lossy(&none.stderr)
-            .contains("no process's command line or recorded comm holds"),
+            .contains("no process's command line or recorded name contains"),
         "{}",
         String::from_utf8_lossy(&none.stderr)
     );
@@ -7639,7 +7639,7 @@ fn tasks_read_no_stack_of_a_stackless_task() {
     // A stackless task's stack says why it has none, as `-t` shows it.
     assert!(
         stdout.contains(
-            "are unavailable: it runs no code until its runtime calls its callback, so it has no frames\n"
+            "are unavailable: it has no frames because it does not run until its runtime calls its callback\n"
         ),
         "{stdout}"
     );

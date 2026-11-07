@@ -965,7 +965,7 @@ impl Cli {
         source_paths: &microscope::SourcePathMap,
     ) -> Result<bool> {
         let spec = commands::parse_breakpoint_location(&entry.location)?
-            .ok_or_else(|| anyhow!("'{}' is no location", entry.location))?;
+            .ok_or_else(|| anyhow!("'{}' is not a location", entry.location))?;
 
         let options = microscope::BreakpointOptions {
             hit_condition: entry.hits.as_deref().map(str::parse).transpose()?,

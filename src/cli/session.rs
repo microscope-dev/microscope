@@ -103,7 +103,7 @@ pub fn prepare(args: &Args, warnings: Renderer) -> Result<Session> {
         (None, true) => None,
         (None, false) => match settings.config.launch.as_slice() {
             [] => bail!(
-                "nothing to debug: name an EXECUTABLE, --attach PID, or --core CORE, or describe the program in a launch configuration"
+                "nothing to debug: give an EXECUTABLE, --attach PID, or --core CORE, or describe the program in a launch configuration"
             ),
             [only] => Some(only),
             several => bail!(
@@ -311,7 +311,7 @@ fn explicit_target(args: &Args) -> Result<Target> {
     }
 
     let Some(executable) = args.executable.clone() else {
-        bail!("the command line names no program, process, or core");
+        bail!("the command line gives no program, process, or core");
     };
 
     Ok(Target::Program(executable))

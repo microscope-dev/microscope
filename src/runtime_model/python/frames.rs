@@ -239,7 +239,7 @@ impl Walk<'_, '_> {
     ) -> Result<(VirtualAddress, CodeId), Problem> {
         let executable = frame.word(Field::FrameExecutable)?;
         let code = self.reference(executable).ok_or_else(|| -> Problem {
-            format!("the frame at {:#x} runs no code", frame.address).into()
+            format!("the frame at {:#x} has no code", frame.address).into()
         })?;
 
         Ok((code, self.code.code(&self.reader, self.code_type, code)?))

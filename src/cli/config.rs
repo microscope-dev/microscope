@@ -597,7 +597,7 @@ impl Launch {
             .find(|name| name.is_empty() || name.contains('='))
         {
             return Err(format!(
-                "launch configuration '{name}' sets the environment variable '{variable}', which is not a name"
+                "launch configuration '{name}' sets the environment variable '{variable}', which is not a valid variable name"
             ));
         }
 
@@ -614,7 +614,7 @@ impl Launch {
                 ConfigError::new(
                     None,
                     format!(
-                        "launch configuration '{}' names no program, process, or core",
+                        "launch configuration '{}' has no program, process, or core",
                         self.name
                     ),
                 )

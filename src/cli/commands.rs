@@ -489,7 +489,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "context",
         ["ctx"],
         "context",
-        "Print the sections a stop prints, as [stop] show names them"
+        "Print the sections shown at each stop, as set by [stop] show"
     ),
     command!(
         Backtrace,
@@ -549,7 +549,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         "detach",
         [],
         "detach process <number>",
-        "Let a stopped process run on without microscope, leaving the others debugged"
+        "Stop debugging a stopped process and let it run; the others stay attached"
     ),
     command!(
         Save,
@@ -604,7 +604,7 @@ pub fn command_named(name: &str) -> Option<&'static CommandSpec> {
 
 /// Why a stackless task, such as an event loop's pending handle, shows no
 /// stack.
-const STACKLESS: &str = "it runs no code until its runtime calls its callback, so it has no frames";
+const STACKLESS: &str = "it has no frames because it does not run until its runtime calls its callback";
 
 /// A command's other names, with each runtime's own name for its tasks for
 /// the commands about tasks: `goroutines` for `tasks` in Go. A runtime that
@@ -1254,7 +1254,7 @@ impl Cli {
             .any(|image| !image.types_named(name).is_empty())
         {
             return Some(format!(
-                "`{name}` names a loaded debug type; `break` needs a function or source line. Use `views explain {name}` to inspect its view"
+                "`{name}` is a loaded debug type; `break` needs a function or source line. Use `views explain {name}` to inspect its view"
             ));
         }
 
@@ -1361,7 +1361,7 @@ impl Cli {
     /// A line of the selected frame's source file.
     async fn frame_source(&self, line: FrameLine) -> Result<BreakpointSpec> {
         let location = self.debugger().current_location().await.map_err(|error| {
-            anyhow!("no frame is selected to take a line from ({error}); name a location")
+            anyhow!("no frame is selected to take a line from ({error}); give a location")
         })?;
         let (Some(source), Ok(image)) = (
             location.image.source.as_ref(),
@@ -1943,7 +1943,7 @@ impl Cli {
             line_command(command).ok_or_else(|| anyhow!("unknown command in `{command}`"))?;
         if !inspects(spec.command) {
             bail!(
-                "{name} {number} runs only commands that inspect, not `{}`",
+                "{name} {number} can only run commands that inspect, not `{}`",
                 spec.name
             );
         }
@@ -1964,7 +1964,7 @@ impl Cli {
 
         match output? {
             Control::Continue(output) => Ok(output),
-            _ => bail!("{name} {number} runs only commands that inspect"),
+            _ => bail!("{name} {number} can only run commands that inspect"),
         }
     }
 
@@ -2683,7 +2683,7 @@ impl Cli {
                 .find(|frame| frame.level == level)
                 .ok_or_else(|| anyhow!("the selected frame {level} no longer exists"))?
                 .instruction
-                .ok_or_else(|| anyhow!("frame {level} is suspended, and runs no code"));
+                .ok_or_else(|| anyhow!("frame {level} is suspended and has no code running"));
         }
 
         let registers = self.debugger().registers().await?;
@@ -3657,7 +3657,7 @@ pub fn python_name_hint(name: &str, program: &microscope::ModuleImage) -> Option
     });
 
     (dotted && crate::present::debug_information::interprets_python(program))
-        .then(|| format!("a Python function is named with `py:`, as in `py:{name}`"))
+        .then(|| format!("write a Python function with `py:`, as in `py:{name}`"))
 }
 
 /// Joins two parts of a command's output, either of which may be empty.

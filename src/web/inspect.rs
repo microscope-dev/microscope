@@ -431,7 +431,7 @@ pub async fn tasks(
         let trace = if task.stackless {
             Err(microscope::Error::TaskUnavailable {
                 task: task.id,
-                reason: "it runs no code".into(),
+                reason: "it has no code running".into(),
             })
         } else {
             handle

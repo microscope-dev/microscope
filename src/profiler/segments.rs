@@ -80,7 +80,7 @@ impl Profile {
         let segments = segments(directory)?;
         if segments.is_empty() {
             return Err(ProfileFileError::Invalid(format!(
-                "{} holds no segments of a recording",
+                "{} has no recording segments",
                 directory.display()
             )));
         }

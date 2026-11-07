@@ -260,12 +260,12 @@ pub struct Reshapes(Vec<report::Reshape>);
 const RESHAPES: [(&str, &str, bool); 4] = [
     (
         "merge",
-        "Remove this function from every stack, giving its cost to its caller",
+        "Remove this function from every stack and add its time to its caller",
         true,
     ),
     (
         "drop",
-        "Remove every sample whose stack holds this function",
+        "Remove every sample whose stack contains this function",
         true,
     ),
     (
@@ -456,7 +456,7 @@ fn python_engine(engine: &str) -> Result<PythonEngine> {
         let every = Duration::try_from_secs_f64(seconds).context("--python")?;
         anyhow::ensure!(
             !every.is_zero(),
-            "--python {engine}: reads take some time apart"
+            "--python {engine}: the time between reads must be more than 0"
         );
         Ok(every)
     };
@@ -517,11 +517,11 @@ fn convert(args: &ConvertArgs) -> Result<()> {
     let kept = match format {
         Format::Usprof => return Ok(()),
         Format::Pprof if trace => {
-            "each call's stack, the call's name its innermost frame, weighing calls and \
+            "each call's stack, with the call as its innermost frame, counting calls and \
              nanoseconds, without times or threads"
         }
         Format::Folded if trace => {
-            "each call's stack, the call's name its innermost frame, weighing calls only"
+            "each call's stack, with the call as its innermost frame, counting calls only"
         }
         Format::Pprof if calls => {
             "the samples' stacks and their weights, without times, threads, instrumentation, or \
@@ -580,7 +580,7 @@ fn symbolize(args: &SymbolizeArgs) -> Result<()> {
                 plural(module.frames, "frame"),
                 source.display()
             ),
-            Err(why) => eprintln!("{}: keeps its addresses: {why}", module.module),
+            Err(why) => eprintln!("{}: could not be symbolized, so its addresses stay: {why}", module.module),
         }
     }
 
@@ -595,7 +595,7 @@ fn symbolize(args: &SymbolizeArgs) -> Result<()> {
 pub fn symbolize_here(profile: &mut Profile, out: &mut impl std::io::Write) -> Result<()> {
     for module in profile.symbolize(&microscope::DebugFileOptions::default()) {
         if let Err(why) = &module.source {
-            writeln!(out, "note: {} keeps its addresses: {why}", module.module)?;
+            writeln!(out, "note: {} could not be symbolized, so its addresses stay: {why}", module.module)?;
         }
     }
 
@@ -1213,7 +1213,7 @@ fn selected_threads(profile: &Profile, args: &ReportArgs, base: bool) -> Result<
         && !threads.iter().any(commanded)
     {
         anyhow::bail!(
-            "no process's command line or recorded comm holds {text:?}{}",
+            "no process's command line or recorded name contains {text:?}{}",
             if base { " in the --base profile" } else { "" }
         );
     }
@@ -1370,7 +1370,7 @@ fn selected_report(
             if base.setting("recorder") != profile.setting("recorder") {
                 writeln!(
                     out,
-                    "The two profiles were not recorded by the same build of microscope, which may name some functions otherwise: such a function shows as new in one and gone in the other."
+                    "The two profiles were not recorded by the same build of microscope, which may name some functions differently. Such a function shows as new in one profile and gone in the other."
                 )?;
             }
             Ok(base)
@@ -1722,7 +1722,7 @@ fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
             writeln!(out)?;
             writeln!(
                 out,
-                "The calls have no stacks to tell where they were made; trace with -k for them."
+                "The calls have no stacks, so where they were made is unknown; trace with -k to record stacks."
             )?;
         }
 
@@ -1981,7 +1981,7 @@ fn program_instrumentation(
             counts.overwritten,
             "overwritten before microscope read them",
         ),
-        (counts.no_ring, "events found no ring to take them"),
+        (counts.no_ring, "events had no ring buffer to go to"),
         (
             counts.interrupted,
             "events were dropped by a signal handler that interrupted a write",

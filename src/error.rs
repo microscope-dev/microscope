@@ -31,7 +31,7 @@ pub enum Error {
 
     /// A location that names several functions where it must name one,
     /// with a location for each that names it alone.
-    #[error("'{name}' names more than one function: {}", candidates.join(", "))]
+    #[error("'{name}' matches more than one function: {}", candidates.join(", "))]
     AmbiguousFunction {
         name: String,
         candidates: Vec<String>,
@@ -244,7 +244,7 @@ pub enum Error {
     #[error("task {0} is parked, not running on a thread")]
     TaskParked(crate::TaskId),
 
-    #[error("the frame is a suspended task's: it has no registers and runs no code")]
+    #[error("this frame belongs to a suspended task, so it has no registers and no code running")]
     FrameSuspended,
 
     #[error("the frame is interpreted: it has no registers and no machine code")]
@@ -381,7 +381,7 @@ pub enum Error {
         error: std::io::Error,
     },
 
-    #[error("a post-mortem core dump cannot execute, be modified, or hold breakpoints")]
+    #[error("a core dump cannot run, be changed, or have breakpoints")]
     PostMortemTarget,
 
     #[error("watchpoint {0} was not found")]
@@ -406,7 +406,7 @@ pub enum Error {
     WatchpointCapacity { required: u64, available: u64 },
 
     #[error(
-        "thread {thread} has no free debug registers; another hardware-breakpoint user such as perf holds them"
+        "thread {thread} has no free debug registers; another program, such as perf, is using them"
     )]
     WatchpointHardwareBusy { thread: crate::ThreadId },
 

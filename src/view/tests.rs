@@ -447,7 +447,7 @@ view kotlin seventh {
         messages[2]
     );
     assert!(
-        messages[3].contains("`octal` is no format"),
+        messages[3].contains("`octal` is not a format"),
         "{}",
         messages[3]
     );
@@ -1165,7 +1165,7 @@ fn example_outcome(views: &ViewSet, name: &str, outcome: &str) -> String {
     );
     let Some(bound) = choice.bound else {
         return choice.candidates.first().map_or_else(
-            || "unbound: no view's pattern names the type".to_owned(),
+            || "unbound: no view's pattern matches the type".to_owned(),
             |candidate| {
                 format!(
                     "unbound: {}",

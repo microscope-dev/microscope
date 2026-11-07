@@ -183,7 +183,7 @@ pub fn command(saved: &Saved) -> Result<String, &'static str> {
             .flatten()
             .any(|text| text.contains(['\n', '\r']))
     {
-        return Err("it holds a line break, and a command is one line");
+        return Err("it has a line break, but a command must be one line");
     }
 
     let quoted = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));

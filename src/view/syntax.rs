@@ -1247,7 +1247,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(self.error(format!(
-                    "`{word}` is no format: write `hex`, `char`, `bytes`, `utf8`, `utf16`, `flags(TYPE)`, `enum(TYPE)`, `duration(UNIT)`, or `time(UNIT)`"
+                    "`{word}` is not a format: write `hex`, `char`, `bytes`, `utf8`, `utf16`, `flags(TYPE)`, `enum(TYPE)`, `duration(UNIT)`, or `time(UNIT)`"
                 )));
             }
         })

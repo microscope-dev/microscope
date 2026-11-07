@@ -148,7 +148,7 @@ impl Profile {
             .max_by_key(|(_, addresses)| addresses.values().map(|(_, total)| total).sum::<u64>())
             .ok_or_else(|| format!("no selected sample ran {name}'s code"))?;
         if module == NONE {
-            return Err(format!("{name}'s samples ran code no module covers"));
+            return Err(format!("{name}'s samples ran code outside every module"));
         }
 
         let record = &capture.modules[module as usize];
@@ -217,7 +217,7 @@ fn decode(
             .and_then(|section| section.data_range(start, symbol.size()).ok().flatten())
             .ok_or_else(|| {
                 format!(
-                    "{module} holds no code for {}",
+                    "{module} has no code for {}",
                     symbol.name().unwrap_or("?")
                 )
             })?;

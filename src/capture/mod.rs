@@ -298,7 +298,7 @@ impl Capture {
             if id == NONE || crate::image::valid_reference(&self.strings, id, true) {
                 Ok(())
             } else {
-                Err(format!("{what} names no string"))
+                Err(format!("{what} refers to a missing string"))
             }
         };
 
@@ -354,7 +354,7 @@ impl Capture {
 
             if kind.named() {
                 let name = u32::try_from(frame.address.get())
-                    .map_err(|_| "a named frame's key names no string".to_owned())?;
+                    .map_err(|_| "a named frame's key refers to a missing string".to_owned())?;
                 string(name, "a named frame's key")?;
             }
 
@@ -636,7 +636,7 @@ impl Capture {
             if note.text.get() != NONE
                 && !crate::image::valid_reference(&self.strings, note.text.get(), true)
             {
-                return Err("a note's text names no string".into());
+                return Err("a note's text refers to a missing string".into());
             }
 
             blob(note.blob.get(), note.blob_len.get(), "a note's")?;
@@ -650,7 +650,7 @@ impl Capture {
             )?;
             let end = u64::from(stat.errnos.get()) + u64::from(stat.errno_count.get());
             if end > self.syscall_errnos.len() as u64 || stat.abi > 2 {
-                return Err("statistics name no errnos or no ABI".into());
+                return Err("statistics refer to missing errnos or an unknown ABI".into());
             }
         }
 

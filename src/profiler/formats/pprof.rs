@@ -155,7 +155,7 @@ pub fn import(bytes: &[u8]) -> Result<Capture, String> {
         for id in &ids {
             let frame = frames
                 .get(id)
-                .ok_or_else(|| format!("a sample names location {id}, which it lacks"))?;
+                .ok_or_else(|| format!("a sample refers to location {id}, which the profile does not have"))?;
             stack.push(*frame);
         }
 
@@ -351,7 +351,7 @@ fn locations(
             0 => NONE,
             mapping => *modules
                 .get(&mapping)
-                .ok_or_else(|| format!("location {id} names mapping {mapping}, which it lacks"))?,
+                .ok_or_else(|| format!("location {id} refers to mapping {mapping}, which the profile does not have"))?,
         };
 
         // Two locations at one address, or none, are still two frames.
@@ -365,7 +365,7 @@ fn locations(
 
             for &(function, line, column) in &lines {
                 let function = functions.get(&function).ok_or_else(|| {
-                    format!("location {id} names function {function}, which it lacks")
+                    format!("location {id} refers to function {function}, which the profile does not have")
                 })?;
                 let name = match (
                     raw.string(function.name)?,

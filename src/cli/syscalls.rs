@@ -431,7 +431,7 @@ fn stamp(text: &str) -> Result<Stamp, String> {
             stamp.precision = Some(named);
         } else {
             return Err(format!(
-                "{token:?} is no format (none, time, unix) or precision (s, ms, us, ns)"
+                "{token:?} is not a format (none, time, unix) or a precision (s, ms, us, ns)"
             ));
         }
     }
@@ -979,7 +979,7 @@ fn continuous(
             .map(|name| {
                 present::errno_named(name)
                     .map(|errno| errno.0)
-                    .with_context(|| format!("--trigger-errno: {name} is no errno"))
+                    .with_context(|| format!("--trigger-errno: {name} is not an errno"))
             })
             .collect::<Result<Vec<_>>>()?,
         None => Vec::new(),

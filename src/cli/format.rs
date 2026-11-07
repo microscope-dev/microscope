@@ -796,7 +796,7 @@ pub const fn invalidation_text(reason: WatchpointInvalidation) -> &'static str {
             "its runtime's collector moved it where the debugger could not follow"
         }
         WatchpointInvalidation::FrameReplaced => {
-            "its runtime replaced its frame's code, which keeps it elsewhere"
+            "the runtime replaced this frame's code, and the new code stores the value elsewhere"
         }
     }
 }
@@ -2729,7 +2729,7 @@ pub fn view_explanation(
         None if !explanation.enabled => lines
             .push("views are off, so it shows as stored; `set views on` turns them on".to_owned()),
         None if explanation.candidates.is_empty() => {
-            lines.push("no view's pattern names the type, so it shows as stored".to_owned());
+            lines.push("no view's pattern matches the type, so it shows as stored".to_owned());
         }
         None => lines.push("no view binds, so it shows as stored".to_owned()),
     }
@@ -2821,7 +2821,7 @@ pub fn type_views(name: &str, types: &[microscope::TypeViews], renderer: Rendere
                 lines.push("  no view presents it; an `extend` binds".to_owned());
             }
             None if views.candidates.is_empty() => {
-                lines.push("  no view's pattern names it".to_owned());
+                lines.push("  no view's pattern matches it".to_owned());
             }
             None => lines.push("  no view binds".to_owned()),
         }
@@ -2911,7 +2911,7 @@ fn refused_type_lines(
         .collect::<Vec<_>>();
 
     if !refused.is_empty() {
-        lines.push("not presented, though views name them:".to_owned());
+        lines.push("not presented, though views match them:".to_owned());
         let mut groups = BTreeMap::<(u8, String), Vec<&microscope::TypeViews>>::new();
         for views in refused {
             let category = match view_type_problem(&views.type_info.kind) {
@@ -3026,7 +3026,7 @@ pub fn view_check(check: &microscope::ViewCheck, renderer: Renderer) -> (String,
 
     failed |= unbound_drawings(check, &mut lines);
     if lines.is_empty() {
-        lines.push("no view's pattern names any type".to_owned());
+        lines.push("no view's pattern matches any type".to_owned());
     } else {
         lines.push("grouped by view and cause; use `views explain TYPE` (or `microscope views explain PROGRAM TYPE`) for every exact candidate and rejection".to_owned());
     }
@@ -3272,7 +3272,7 @@ pub fn group_event(
             renderer.paint(Role::Metadata, program.display())
         ),
         GroupEvent::MemberDetached { member: detached } => format!(
-            "{} {}, and runs on its own",
+            "{} {}",
             member(*detached),
             renderer.paint(Role::Success, "detached")
         ),
@@ -3297,7 +3297,7 @@ pub fn group_event(
             member(*behind)
         ),
         GroupEvent::MemberLost { member: lost } => format!(
-            "{}: the session of {} failed, and released or killed its process",
+            "{}: the session of {} failed, so its process was released or killed",
             renderer.paint(Role::Error, "error"),
             member(*lost)
         ),
