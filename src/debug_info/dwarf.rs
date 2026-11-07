@@ -2260,7 +2260,11 @@ fn v8_frames(
                 Some((next, _)) => *next,
                 None => continue,
             },
-            size => address + size,
+            // Its size is input, and may run past the address space.
+            size => match address.checked_add(size) {
+                Some(end) => end,
+                None => continue,
+            },
         };
         if let Some(code) = code_bytes(object, address, end) {
             super::x86_64::frames::runtime_frames(code, address, false, frames);
@@ -5249,6 +5253,48 @@ mod tests {
         load_debug_info(
             Path::new("claims"),
             &elf,
+            crate::ModuleImageId::new(0),
+            &super::super::DebugFileSearch::default(),
+            LoadLimits::default(),
+            None,
+        )
+        .expect("a load");
+    }
+
+    /// Symbols are input: in V8, whose hand-written code is proved from
+    /// its instructions, a function whose size runs past the end of the
+    /// address space still loads.
+    #[test]
+    fn a_v8_function_sized_past_the_address_space_still_loads() {
+        use object::write;
+
+        let mut object = write::Object::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::X86_64,
+            object::Endianness::Little,
+        );
+        let text = object.add_section(Vec::new(), b".text".to_vec(), object::SectionKind::Text);
+        object.append_section_data(text, &[0xc3; 0x100], 16);
+        for (name, value, size) in [
+            (b"v8_Default_embedded_blob_code_".as_slice(), 0, 0),
+            (b"Builtins_Abort", 0x10, 0x10),
+            (b"PushAllRegistersAndIterateStack", 0x40, u64::MAX - 0x20),
+        ] {
+            object.add_symbol(write::Symbol {
+                name: name.to_vec(),
+                value,
+                size,
+                kind: object::SymbolKind::Text,
+                scope: object::SymbolScope::Dynamic,
+                weak: false,
+                section: write::SymbolSection::Section(text),
+                flags: object::SymbolFlags::None,
+            });
+        }
+
+        load_debug_info(
+            Path::new("v8"),
+            &object.write().unwrap(),
             crate::ModuleImageId::new(0),
             &super::super::DebugFileSearch::default(),
             LoadLimits::default(),
