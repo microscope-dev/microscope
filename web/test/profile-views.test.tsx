@@ -168,7 +168,8 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
   };
 }
 
-const HARNESS_WIDTH = { width: 900 };
+// Sized as a dock pane is, so long lists scroll as they do in the page.
+const HARNESS_SIZE = { width: 900, height: 800, display: "grid" };
 const WIDE = { width: 5000 };
 /** 180 pixels of lane names leave 1000 for the lanes. */
 const SECOND_WIDE = { width: 1180 };
@@ -203,7 +204,7 @@ function Harness({
   return (
     <ProfileContext value={focus}>
       <output data-testid="look">{JSON.stringify(look)}</output>
-      <div style={HARNESS_WIDTH}>{children}</div>
+      <div style={HARNESS_SIZE}>{children}</div>
     </ProfileContext>
   );
 }
@@ -924,6 +925,65 @@ it("puts source beside its instructions, tinting the hottest lines and stepping 
   await expect.element(page.getByRole("button", { name: "Next run" })).toBeDisabled();
 });
 
+it("draws only the rows near view of a long file and listing, opening on the far line", async () => {
+  const count = 3000;
+  const server = await mount(<FunctionsView />, { look: { fn: "big", ann: "code" } });
+  server.answer(await server.next("profileCode"), {
+    ...SPLIT,
+    blocks: [
+      {
+        symbol: "big",
+        stopped: null,
+        instructions: Array.from({ length: count }, (_, at) => ({
+          address: 0x1000 + at * 4,
+          tokens: [["mnemonic", "nop"]],
+          target: null,
+          own: at === count - 1 ? 9 : 0,
+          total: at === count - 1 ? 9 : 0,
+          lines: [[0, 0, at + 1]],
+        })),
+      },
+    ],
+    functions: ["big"],
+    files: [
+      {
+        path: "/src/big.c",
+        first: 1,
+        // Line 6, far above the line it opens on, is the widest.
+        text: Array.from({ length: count }, (_, at) =>
+          at === 5 ? `int wide = ${"x".repeat(400)};` : `line ${at + 1}`,
+        ),
+        unread: null,
+        lines: [[count, 9, 9]],
+      },
+    ],
+  });
+  await expect.element(page.getByText(`line ${count}`, { exact: true })).toBeVisible();
+  expect(chosenLine()).toBe(String(count));
+  expect(chosenRows()).toEqual([count - 1]);
+
+  const source = document.querySelector<HTMLElement>('[aria-label="Source"]');
+  const listing = document.querySelector<HTMLElement>('[aria-label="Assembly"]');
+  expect(source?.querySelectorAll("[data-line]").length).toBeLessThan(200);
+  expect(listing?.querySelectorAll("[data-row]").length).toBeLessThan(200);
+  // The widest line is not drawn, yet the pane scrolls sideways to it.
+  expect(source?.querySelector('[data-line="6"]')).toBeNull();
+  expect((source?.scrollWidth ?? 0) - (source?.clientWidth ?? 0)).toBeGreaterThan(1000);
+
+  // The first instruction, once scrolled to, chooses its far line, which
+  // the source draws and brings into view.
+  expect(source?.querySelector('[data-line="1"]')).toBeNull();
+  listing?.scrollTo({ top: 0 });
+  const first = await vi.waitFor(() => {
+    const row = listing?.querySelector('[data-row="0"]');
+    assert(row, "the first instruction is not drawn");
+    return row;
+  }, POLL);
+  await userEvent.click(first);
+  expect(chosenLine()).toBe("1");
+  await expect.element(page.getByText("line 1", { exact: true })).toBeVisible();
+});
+
 it("shows an inlined function's code where it was inlined, opening on its own line", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "step", ann: "code" } });
   server.answer(await server.next("profileCode"), {
@@ -1066,6 +1126,43 @@ it("lets go of the selection once Focus, Merge, or Drop reshapes the graph", asy
     await expect.element(search).toHaveValue("");
     cleanup();
   }
+});
+
+/** Resolves a frame after now, once the effects of a change have run. */
+function settled(): Promise<void> {
+  return new Promise((done) => {
+    requestAnimationFrame(() => {
+      setTimeout(done, 0);
+    });
+  });
+}
+
+it("paints the lanes again when they change, not when a function is chosen", async () => {
+  const server = await mount(
+    <div style={WIDE}>
+      <Timeline />
+    </div>,
+    { summary: summaryOf({ timed: true }) },
+  );
+  const asked = await server.next("profileTimeline");
+  server.answer(asked, { range: [0, 1e9], lanes: [] });
+  const painted = vi.spyOn(HTMLCanvasElement.prototype, "getContext");
+  // Once its answer and its width have arrived, the lanes are painted and
+  // stay so for a frame.
+  await vi.waitFor(async () => {
+    expect(painted).toHaveBeenCalled();
+    painted.mockClear();
+    await settled();
+    expect(painted).not.toHaveBeenCalled();
+  }, POLL);
+
+  changeLook((look) => ({ ...look, fn: "leaf", ann: "code" }));
+  await settled();
+  expect(painted).not.toHaveBeenCalled();
+
+  changeLook((look) => ({ ...look, lanes: "tasks" }));
+  await vi.waitFor(() => expect(painted).toHaveBeenCalled(), POLL);
+  painted.mockRestore();
 });
 
 it("draws a lane per thread for hundreds of threads", async () => {

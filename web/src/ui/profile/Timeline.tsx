@@ -23,9 +23,13 @@ interface Row {
 }
 
 /** Waits always use tasks. Task-based samples add a lane for unknown tasks. */
-function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
-  const waits = look.src === "waits";
-  if (!waits && look.lanes !== "tasks") {
+function rows(
+  summary: ProfileSummary,
+  src: ProfileFocus["look"]["src"],
+  lanes: ProfileFocus["look"]["lanes"],
+): Row[] {
+  const waits = src === "waits";
+  if (!waits && lanes !== "tasks") {
     return summary.threads
       .toSorted((a, b) => b.weight - a.weight)
       .map((thread) => ({
@@ -79,7 +83,9 @@ export function Timeline() {
     return plot > 0 ? { ...rest, buckets, taskLanes: byTask } : null;
   }, [query, buckets, plot, byTask]);
   const answer = useAnswer("profileTimeline", params);
-  const lanes = useMemo(() => rows(summary, look), [summary, look]);
+  // Read from the look's lane fields alone, so choosing a function, which
+  // changes the rest of it, does not paint the lanes again.
+  const lanes = useMemo(() => rows(summary, look.src, look.lanes), [summary, look.src, look.lanes]);
   const chosen = (byTask ? look.tk : look.th)?.join(",");
   // Kept between renders, so painting runs again only when they change.
   const selected = useMemo(() => (chosen ? new Set(chosen.split(",")) : null), [chosen]);

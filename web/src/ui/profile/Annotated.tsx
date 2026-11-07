@@ -1,3 +1,4 @@
+import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -104,6 +105,15 @@ export function Code({ name }: { name: string }) {
     "profileCode",
     useMemo(() => ({ ...query, function: name }), [query, name]),
   );
+  // The function the answer shown is of, which stays the one before while
+  // another's is read.
+  const answered = useRef(name);
+  if (answer.current) {
+    // oxlint-disable-next-line react/refs -- follows the answer without a second render
+    answered.current = name;
+  }
+  // oxlint-disable-next-line react/refs -- follows the answer without a second render
+  const shownName = answered.current;
   const code = answer.data;
   if (answer.error || !code) {
     return <Unanswered error={answer.error} reading={`Reading the instructions of ${name}…`} />;
@@ -114,12 +124,12 @@ export function Code({ name }: { name: string }) {
   if (code.blocks.length === 0 && code.unplaced.length === 0) {
     return <div className="empty">No selected sample ran an instruction of {name}.</div>;
   }
-  // A kept answer of the function shown before must not leave its
-  // selection behind once this one's arrives.
+  // A kept answer of the function shown before stays as it is while this
+  // one's is read, and leaves no selection behind once it arrives.
   return (
     <Split
-      key={`${name}\n${code.blocks[0]?.symbol ?? ""}`}
-      name={name}
+      key={`${shownName}\n${code.blocks[0]?.symbol ?? ""}`}
+      name={shownName}
       code={code}
       current={answer.current}
     />
@@ -167,12 +177,47 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
   const run = chosen?.run ?? hottestRun(rows, runs);
   const shown = chosen?.row ?? runs[run]?.[0];
 
-  useEffect(() => {
-    reveal(source.current, source.current?.querySelector(`[data-line="${line}"]`));
-    if (shown !== undefined) {
-      reveal(listing.current, listing.current?.querySelector(`[data-row="${shown}"]`));
+  // The listing's items: its rows, each block's symbol before its first
+  // when there are several blocks.
+  const items = useMemo(
+    () =>
+      rows.flatMap((row, index): Item[] =>
+        row.symbol !== null && code.blocks.length > 1
+          ? [{ symbol: row.symbol }, { row: index }]
+          : [{ row: index }],
+      ),
+    [rows, code.blocks.length],
+  );
+  const itemOf = useMemo(() => {
+    const at: number[] = [];
+    for (const [item, each] of items.entries()) {
+      if ("row" in each) {
+        at[each.row] = item;
+      }
     }
-  }, [line, shown]);
+    return at;
+  }, [items]);
+  const sourceList = usePane(file?.text?.length ?? 0, source);
+  const listingList = usePane(items.length, listing);
+  const longestSource = useMemo(() => longest(file?.text ?? []), [file]);
+  const longestListing = useMemo(
+    () =>
+      longest(
+        rows.map(
+          ({ instruction }) =>
+            instruction.tokens.map(([, text]) => text).join("") +
+            (instruction.target ? ` <${instruction.target}>` : ""),
+        ),
+      ),
+    [rows],
+  );
+
+  useEffect(() => {
+    reveal(source.current, line - (file?.first ?? 0));
+    if (shown !== undefined) {
+      reveal(listing.current, itemOf[shown] ?? -1);
+    }
+  }, [line, shown, file, itemOf]);
 
   const step = useCallback(
     (by: number) => {
@@ -292,36 +337,42 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
           onKeyDown={keys}
         >
           <CostHead />
+          <Sizer text={longestSource} />
           {file?.text ? (
-            file.text.map((text, at) => {
-              const number = file.first + at;
-              const cost = costs.get(number);
-              const has = coded.includes(number);
-              return (
-                <div
-                  key={number}
-                  // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-                  role="option"
-                  aria-selected={number === line}
-                  aria-disabled={!has}
-                  data-line={number}
-                  data-tint={tints.get(number)}
-                  className={`code-row ${has ? "" : "nocode"}`}
-                >
-                  <span className="pin">
-                    <Costs
-                      own={cost && cost[0] > 0 ? cost[0] : undefined}
-                      total={cost && cost[1] > 0 ? cost[1] : undefined}
-                      weight={code.weight}
-                    />
-                    <span className="line-number">{number}</span>
-                  </span>
-                  <code className="text">
-                    <Tokens runs={painted[at]} text={text} />
-                  </code>
-                </div>
-              );
-            })
+            <>
+              <Gap list={sourceList} side="before" />
+              {sourceList.getVirtualItems().map(({ index: at }) => {
+                const text = file.text?.[at] ?? "";
+                const number = file.first + at;
+                const cost = costs.get(number);
+                const has = coded.includes(number);
+                return (
+                  <div
+                    key={number}
+                    // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+                    role="option"
+                    aria-selected={number === line}
+                    aria-disabled={!has}
+                    data-line={number}
+                    data-tint={tints.get(number)}
+                    className={`code-row ${has ? "" : "nocode"}`}
+                  >
+                    <span className="pin">
+                      <Costs
+                        own={cost && cost[0] > 0 ? cost[0] : undefined}
+                        total={cost && cost[1] > 0 ? cost[1] : undefined}
+                        weight={code.weight}
+                      />
+                      <span className="line-number">{number}</span>
+                    </span>
+                    <code className="text">
+                      <Tokens runs={painted[at]} text={text} />
+                    </code>
+                  </div>
+                );
+              })}
+              <Gap list={sourceList} side="after" />
+            </>
           ) : (
             <div className="empty">
               {file?.unread ?? code.unlined ?? "The instructions have no source lines."}
@@ -341,52 +392,64 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
           onKeyDown={keys}
         >
           <CostHead />
-          {rows.map((row, index) => {
+          <Sizer text={longestListing} />
+          <Gap list={listingList} side="before" />
+          {listingList.getVirtualItems().map(({ index: item }) => {
+            const each = items[item];
+            if (each && "symbol" in each) {
+              return (
+                <div key={`symbol ${item}`} className="annotated-head">
+                  {each.symbol}
+                </div>
+              );
+            }
+            const index = each?.row ?? -1;
+            const row = rows[index];
+            if (!row) {
+              return null;
+            }
             const instruction = row.instruction;
             const at = lines[index] ?? 0;
             return (
-              <Fragment key={instruction.address}>
-                {row.symbol !== null && code.blocks.length > 1 ? (
-                  <div className="annotated-head">{row.symbol}</div>
-                ) : null}
-                <div
-                  // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
-                  role="option"
-                  aria-selected={at === line}
-                  data-row={index}
-                  data-tint={at > 0 ? tints.get(at) : undefined}
-                  className={`code-row ${row.leads ? "leads" : ""} ${index === shown ? "shown" : ""}`}
-                >
-                  <span className="pin">
-                    <Costs
-                      own={instruction.own > 0 ? instruction.own : undefined}
-                      total={instruction.total > 0 ? instruction.total : undefined}
-                      weight={code.weight}
-                    />
-                    <span className="offset">+{row.offset.toString(16)}</span>
-                  </span>
-                  <code className="text">
-                    {row.jump === null ? (
-                      <>
-                        <AsmTokens tokens={instruction.tokens} />
-                        {instruction.target ? (
-                          <span className="asm-target"> &lt;{instruction.target}&gt;</span>
-                        ) : null}
-                      </>
-                    ) : (
-                      <>
-                        {/* The jump's address gives way to its offset, a button to it. */}
-                        <AsmTokens tokens={instruction.tokens.slice(0, -1)} />
-                        <button type="button" className="asm-target" data-jump={row.jump}>
-                          +{(rows[indexOf.get(row.jump) ?? index]?.offset ?? 0).toString(16)}
-                        </button>
-                      </>
-                    )}
-                  </code>
-                </div>
-              </Fragment>
+              <div
+                key={instruction.address}
+                // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a row of a listbox a select cannot hold
+                role="option"
+                aria-selected={at === line}
+                data-row={index}
+                data-tint={at > 0 ? tints.get(at) : undefined}
+                className={`code-row ${row.leads ? "leads" : ""} ${index === shown ? "shown" : ""}`}
+              >
+                <span className="pin">
+                  <Costs
+                    own={instruction.own > 0 ? instruction.own : undefined}
+                    total={instruction.total > 0 ? instruction.total : undefined}
+                    weight={code.weight}
+                  />
+                  <span className="offset">+{row.offset.toString(16)}</span>
+                </span>
+                <code className="text">
+                  {row.jump === null ? (
+                    <>
+                      <AsmTokens tokens={instruction.tokens} />
+                      {instruction.target ? (
+                        <span className="asm-target"> &lt;{instruction.target}&gt;</span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      {/* The jump's address gives way to its offset, a button to it. */}
+                      <AsmTokens tokens={instruction.tokens.slice(0, -1)} />
+                      <button type="button" className="asm-target" data-jump={row.jump}>
+                        +{(rows[indexOf.get(row.jump) ?? index]?.offset ?? 0).toString(16)}
+                      </button>
+                    </>
+                  )}
+                </code>
+              </div>
             );
           })}
+          <Gap list={listingList} side="after" />
           {code.blocks.map((block) =>
             block.stopped ? (
               <div key={block.symbol} className="empty">
@@ -499,21 +562,83 @@ function CostHead() {
   );
 }
 
-/** Scrolls `pane` to center `row` below its column head when it is out of
- * view. */
-function reveal(pane: HTMLElement | null, row: Element | null | undefined): void {
-  if (!pane || !(row instanceof HTMLElement)) {
+/** A code pane's row height, as `--row` sets it. */
+const ROW = 20;
+
+/** An item of the listing: an instruction's row, or a block's symbol. */
+type Item = { row: number } | { symbol: string };
+
+/** A code pane's rows, of which only those in view and near it are drawn.
+ * They follow the column head, which takes one row's height. */
+function usePane(count: number, pane: RefObject<HTMLDivElement | null>) {
+  // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
+  return useVirtualizer({
+    count,
+    getScrollElement: () => pane.current,
+    estimateSize: () => ROW,
+    overscan: 30,
+    scrollMargin: ROW,
+  });
+}
+
+/** The room the rows not drawn take, before or after those drawn. */
+function Gap({
+  list,
+  side,
+}: {
+  list: Virtualizer<HTMLDivElement, Element>;
+  side: "before" | "after";
+}) {
+  const drawn = list.getVirtualItems();
+  const height =
+    side === "before"
+      ? (drawn[0]?.start ?? ROW) - ROW
+      : list.getTotalSize() - ((drawn.at(-1)?.end ?? ROW) - ROW);
+  const style = useMemo(() => ({ height }), [height]);
+  return <div style={style} aria-hidden="true" />;
+}
+
+/** A hidden row as wide as a pane's longest line, which widens the pane's
+ * one column to it, so the pane scrolls sideways as far as any row reaches
+ * though most are not drawn. CSS draws the line, which keeps it out of the
+ * page's text and searches. */
+function Sizer({ text }: { text: string }) {
+  return (
+    <div className="code-row code-sizer" aria-hidden="true">
+      <span className="pin">
+        <span className="percent" />
+        <span className="percent" />
+        <span className="line-number" />
+      </span>
+      <code className="text" data-text={text} />
+    </div>
+  );
+}
+
+/** The longest of `lines`, its tabs as wide as a tab can be. */
+function longest(lines: readonly string[]): string {
+  let most = "";
+  for (const line of lines) {
+    const wide = line.replaceAll("\t", "        ");
+    if (wide.length > most.length) {
+      most = wide;
+    }
+  }
+  return most;
+}
+
+/** Scrolls `pane` to center its item `index` below the column head when
+ * the item is out of view. */
+function reveal(pane: HTMLElement | null, index: number): void {
+  if (!pane || index < 0) {
     return;
   }
-  const head = pane.querySelector<HTMLElement>(".code-head")?.offsetHeight ?? 0;
-  const top = row.offsetTop;
-  const bottom = top + row.offsetHeight;
-  if (top < pane.scrollTop + head || bottom > pane.scrollTop + pane.clientHeight) {
-    pane.scrollTop = top - head - (pane.clientHeight - head - row.offsetHeight) / 2;
+  const top = ROW * (index + 1);
+  if (top < pane.scrollTop + ROW || top + ROW > pane.scrollTop + pane.clientHeight) {
+    pane.scrollTop = top - ROW - (pane.clientHeight - 2 * ROW) / 2;
   }
 }
 
-/** The class of the row that weighs `total` when it weighs the most. */
 /** A line's or instruction's own and total shares as bars, as the
  * functions list draws a function's; blank where nothing ran there. */
 function Costs({
@@ -540,6 +665,7 @@ function Costs({
   );
 }
 
+/** The class of the row that weighs `total` when it weighs the most. */
 function hottest(total: number | undefined, most: number): string {
   return most > 0 && total === most ? "hottest" : "";
 }

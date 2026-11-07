@@ -4,13 +4,14 @@
 //! instruction's source lines come from that file's debug information.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind};
 
 use super::record::symbolize;
 use super::{Granularity, KeyKind, Profile, Query};
 use crate::capture::records::{FrameKind, NONE};
-use crate::debug_info::DebugFileSearch;
+use crate::debug_info::{DebugFileSearch, DebugInfo};
 use crate::disassembly::{
     AssemblySyntax, InstructionReferenceKind, InstructionToken, RawDecode, decoder_for,
 };
@@ -286,7 +287,7 @@ impl Profile {
         let mut code = decode(&file, path.clone(), addresses)?;
         code.weight = costs.weight;
         code.inlined_into = inlined_into;
-        code.unlined = place_lines(&path, &bytes, &mut code).err();
+        code.unlined = place_lines(&path, &bytes, record.digest, &mut code).err();
         Ok(code)
     }
 
@@ -446,14 +447,13 @@ fn decode(
 /// Gives each instruction of `code` the source lines the debug
 /// information of the module at `path`, holding `bytes`, has for it, or
 /// says why it has none.
-fn place_lines(path: &str, bytes: &[u8], code: &mut Disassembly) -> Result<(), String> {
-    let info = crate::debug_info::load_module_bytes(
-        std::path::Path::new(path),
-        bytes,
-        ModuleImageId::new(0),
-        &DebugFileSearch::default(),
-    )
-    .map_err(|error| format!("{path}'s debug information cannot be read: {error}"))?;
+fn place_lines(
+    path: &str,
+    bytes: &[u8],
+    digest: [u8; 16],
+    code: &mut Disassembly,
+) -> Result<(), String> {
+    let info = loaded(path, bytes, digest)?;
 
     let mut placed = false;
     for instruction in code
@@ -484,6 +484,55 @@ fn place_lines(path: &str, bytes: &[u8], code: &mut Disassembly) -> Result<(), S
     }
 }
 
+/// How many modules' debug information stays loaded.
+const KEPT_MODULES: usize = 2;
+
+/// The debug information of the modules whose code was shown last, by the
+/// digest of the file each was recorded from, latest last. A large
+/// program's takes far longer to load than to show a function's code, and
+/// one is usually shown many times.
+static LOADED: Mutex<Vec<([u8; 16], Arc<DebugInfo>)>> = Mutex::new(Vec::new());
+
+/// The debug information of `bytes`, whose digest is `digest`, loaded once
+/// while it stays among the modules shown last.
+fn loaded(path: &str, bytes: &[u8], digest: [u8; 16]) -> Result<Arc<DebugInfo>, String> {
+    let kept = |loaded: &mut Vec<([u8; 16], Arc<DebugInfo>)>| {
+        let at = loaded.iter().position(|(key, _)| *key == digest)?;
+        let entry = loaded.remove(at);
+        let info = Arc::clone(&entry.1);
+        loaded.push(entry);
+        Some(info)
+    };
+    let hit = kept(&mut LOADED.lock().unwrap_or_else(PoisonError::into_inner));
+    if let Some(info) = hit {
+        return Ok(info);
+    }
+
+    // Loaded without the lock, which another module's code would otherwise
+    // wait on.
+    let info = Arc::new(
+        crate::debug_info::load_module_bytes(
+            std::path::Path::new(path),
+            bytes,
+            ModuleImageId::new(0),
+            &DebugFileSearch::default(),
+        )
+        .map_err(|error| format!("{path}'s debug information cannot be read: {error}"))?,
+    );
+
+    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    let info = kept(&mut loaded).unwrap_or_else(|| {
+        loaded.push((digest, Arc::clone(&info)));
+        if loaded.len() > KEPT_MODULES {
+            loaded.remove(0);
+        }
+        info
+    });
+    debug_assert!(loaded.len() <= KEPT_MODULES);
+    drop(loaded);
+    Ok(info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +554,33 @@ mod tests {
             total,
             lines,
         }
+    }
+
+    /// A module's debug information loads once while it is among the last
+    /// few shown, by the digest of the file it was recorded from.
+    #[test]
+    fn debug_information_is_kept_for_the_modules_shown_last() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/build/test-programs/profile-stacks-gcc-o0"
+        );
+        let bytes = std::fs::read(path).expect("the fixture");
+        let load = |digest: u8| loaded(path, &bytes, [digest; 16]).expect("its debug information");
+
+        let first = load(1);
+        assert!(Arc::ptr_eq(&first, &load(1)), "a second show loads again");
+        let second = load(2);
+        assert!(!Arc::ptr_eq(&first, &second), "two digests share one entry");
+
+        // A third module puts out the one shown longest ago, which is the
+        // second once the first is shown again.
+        assert!(Arc::ptr_eq(&first, &load(1)));
+        load(3);
+        assert!(Arc::ptr_eq(&first, &load(1)), "the first was put out");
+        assert!(
+            !Arc::ptr_eq(&second, &load(2)),
+            "{KEPT_MODULES} modules are kept"
+        );
     }
 
     fn cost(file: &str, line: u32, own: u64, total: u64) -> LineCost {
