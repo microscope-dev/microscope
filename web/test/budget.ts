@@ -34,6 +34,11 @@ export const OWN: Record<string, { ms: number; why: string }> = {
   },
   "test/docking.test.tsx :: keeps the screen and the layout model alike through any run of drags and clicks":
     { ms: 4_500, why: "a hundred runs of up to a dozen drags and clicks, each checked on screen" },
+  "test/documents.test.ts :: arranging the documents > opens a Source pane for each file, in order, and shows what the address names":
+    {
+      ms: 350,
+      why: "builds a hundred layouts of up to 40 checked operations, first in its file, so it warms the layout code; up to 220ms in the full suite",
+    },
   "test/sandbox.test.tsx :: the sandbox > runs four draws at once and queues the rest": {
     ms: 2_500,
     why: "holds four real worker draws open while a fifth queues",
