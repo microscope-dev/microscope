@@ -172,8 +172,8 @@ test("each thread's lane says how long it was off its CPU, and the accounting wh
   // recording cost microscope is File details' to say.
   const accounting = page.getByTestId("accounting");
   await expect(accounting).toContainText("Threads4");
-  await expect(accounting).toContainText(/Cores busy≈[\d.]+On CPU(\d+ ms|[\d.]+ s)/u);
-  await expect(accounting).toContainText(/Off CPU(\d+ ms|[\d.]+ s)/u);
+  await expect(accounting).toContainText(/Cores busy≈[\d.]+On CPU[\d.]+ (ns|µs|ms|s)/u);
+  await expect(accounting).toContainText(/Off CPU[\d.]+ (ns|µs|ms|s)/u);
   await expect(accounting).not.toContainText("of a CPU");
 });
 
