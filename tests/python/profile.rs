@@ -99,26 +99,51 @@ fn names_dataclass_methods<'a>(frames: impl IntoIterator<Item = &'a String>) -> 
 /// Snapshots that stop the program and live ones both name the methods
 /// `dataclasses` compiles from strings by their classes: by each frame's
 /// function, not its code, which every dataclass's `__init__` shares.
-#[test]
-fn snapshots_name_dataclass_methods_by_their_class() {
-    for interpreter in PROFILED {
-        for engine in [
-            PythonEngine::Snapshot { every: EVERY },
-            PythonEngine::Live { every: EVERY },
-        ] {
-            let named = |profile: &Profile| {
-                let paths = python_paths(profile);
-                names_dataclass_methods(paths.keys().flatten())
-            };
-            let profile =
-                record_until_with_args(interpreter, engine, "dataclass_methods.py", &[], named);
-            assert!(
-                named(&profile),
-                "{interpreter} {engine:?}: {:#?}",
-                python_paths(&profile)
-            );
-        }
+fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str) {
+    for engine in [
+        PythonEngine::Snapshot { every: EVERY },
+        PythonEngine::Live { every: EVERY },
+    ] {
+        let named = |profile: &Profile| {
+            let paths = python_paths(profile);
+            names_dataclass_methods(paths.keys().flatten())
+        };
+        let profile =
+            record_until_with_args(interpreter, engine, "dataclass_methods.py", &[], named);
+        assert!(
+            named(&profile),
+            "{interpreter} {engine:?}: {:#?}",
+            python_paths(&profile)
+        );
     }
+}
+
+// One test for each profiled interpreter, since each recording may wait
+// long for its snapshots.
+
+#[test]
+fn snapshots_name_dataclass_methods_by_their_class_on_3_12() {
+    snapshots_name_dataclass_methods_by_their_class("3.12");
+}
+
+#[test]
+fn snapshots_name_dataclass_methods_by_their_class_on_3_14() {
+    snapshots_name_dataclass_methods_by_their_class("3.14");
+}
+
+#[test]
+fn snapshots_name_dataclass_methods_by_their_class_on_3_14t() {
+    snapshots_name_dataclass_methods_by_their_class("3.14t");
+}
+
+#[test]
+fn snapshots_name_dataclass_methods_by_their_class_on_3_15() {
+    snapshots_name_dataclass_methods_by_their_class("3.15");
+}
+
+#[test]
+fn snapshots_name_dataclass_methods_by_their_class_on_standalone_3_14() {
+    snapshots_name_dataclass_methods_by_their_class("standalone-3.14");
 }
 
 /// Whether a Python path passes through `spin` calling `work`. Native
