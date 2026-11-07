@@ -1536,7 +1536,13 @@ export type ProfileCodeBlock = { symbol: string, instructions: Array<ProfileInst
 
 export type ProfileCodeLine = [number, number | null, number];
 
-export type ProfileInstruction = { address: number, text: string, 
+export type ProfileToken = [string, string];
+
+export type ProfileInstruction = { address: number, 
+/**
+ * Its text in pieces, each with what it is, as [`Token`] names them.
+ */
+tokens: Array<ProfileToken>, 
 /**
  * The function a direct jump or call goes to.
  */

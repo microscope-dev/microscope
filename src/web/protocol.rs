@@ -1246,7 +1246,9 @@ pub struct ProfileCodeBlock {
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileInstruction {
     pub address: u64,
-    pub text: String,
+
+    /// Its text in pieces, each with what it is, as [`Token`] names them.
+    pub tokens: Vec<ProfileToken>,
 
     /// The function a direct jump or call goes to.
     pub target: Option<String>,
@@ -1257,6 +1259,12 @@ pub struct ProfileInstruction {
     /// ending with the function it belongs to.
     pub lines: Vec<ProfileCodeLine>,
 }
+
+/// A piece of an instruction's text: its kind and its text, as a pair to
+/// keep a function's thousands of them small.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileToken(pub String, pub String);
 
 /// A source line an instruction was compiled from: its function, by its
 /// index in `functions`, its file, by its index in `files` when that has
@@ -3124,6 +3132,7 @@ mod tests {
         ProfileCode::decl,
         ProfileCodeBlock::decl,
         ProfileCodeLine::decl,
+        ProfileToken::decl,
         ProfileInstruction::decl,
         ProfileBase::decl,
         ProfileBaseWeight::decl,

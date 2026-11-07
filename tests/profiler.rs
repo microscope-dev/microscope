@@ -2062,10 +2062,28 @@ fn a_functions_samples_land_on_its_lines_and_its_instructions() {
     assert!(
         calls
             .iter()
-            .all(|instruction| instruction.text.starts_with("call")
+            .all(|instruction| instruction.text().starts_with("call")
                 && instruction.target.as_deref() == Some("leaf")),
         "{calls:?}"
     );
+    // Each call's text is the decoder's tokens, which say what each is:
+    // the mnemonic, then the address it calls.
+    for call in &calls {
+        let kinds: Vec<_> = call
+            .tokens
+            .iter()
+            .filter(|token| token.kind != microscope::InstructionTokenKind::Text)
+            .map(|token| token.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                microscope::InstructionTokenKind::Mnemonic,
+                microscope::InstructionTokenKind::Address
+            ],
+            "{call:?}"
+        );
+    }
     assert_eq!(
         calls
             .iter()

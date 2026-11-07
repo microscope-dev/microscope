@@ -19,8 +19,15 @@ import {
 } from "../src/profile/code";
 import type { ProfileCode, ProfileInstruction, ProfileSourceFile } from "../src/protocol";
 
+/** An instruction whose text, such as `jne 0x10`, is tokenized as the
+ * decoder does: its mnemonic, then an address operand or other text. */
 function instruction(address: number, text: string, own = 0, total = own): ProfileInstruction {
-  return { address, text, target: null, own, total, lines: [] };
+  const [mnemonic = "", operand] = text.split(" ");
+  const tokens: [string, string][] = [["mnemonic", mnemonic]];
+  if (operand !== undefined) {
+    tokens.push(["text", " "], [/^0x[0-9a-f]+$/u.test(operand) ? "address" : "text", operand]);
+  }
+  return { address, tokens, target: null, own, total, lines: [] };
 }
 
 function code(...blocks: [string, ProfileInstruction[]][]): ProfileCode {

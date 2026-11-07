@@ -691,8 +691,22 @@ it("draws a line's and an instruction's shares as bars, bold where own time is h
         symbol: "spin",
         stopped: null,
         instructions: [
-          { address: 0x10, text: "cmp", target: null, own: 0, total: 9, lines: [] },
-          { address: 0x14, text: "nop", target: null, own: 0, total: 0, lines: [] },
+          {
+            address: 0x10,
+            tokens: [["mnemonic", "cmp"]],
+            target: null,
+            own: 0,
+            total: 9,
+            lines: [],
+          },
+          {
+            address: 0x14,
+            tokens: [["mnemonic", "nop"]],
+            target: null,
+            own: 0,
+            total: 0,
+            lines: [],
+          },
         ],
       },
     ],
@@ -721,10 +735,24 @@ const SPLIT = {
       symbol: "scan",
       stopped: null,
       instructions: [
-        { address: 0x10, text: "mov", target: null, own: 1, total: 1, lines: [[0, 0, 3]] },
+        {
+          address: 0x10,
+          tokens: [
+            ["mnemonic", "mov"],
+            ["text", " "],
+            ["register", "eax"],
+            ["punctuation", ","],
+            ["text", " "],
+            ["number", "1"],
+          ],
+          target: null,
+          own: 1,
+          total: 1,
+          lines: [[0, 0, 3]],
+        },
         {
           address: 0x14,
-          text: "add",
+          tokens: [["mnemonic", "add"]],
           target: null,
           own: 5,
           total: 5,
@@ -736,7 +764,11 @@ const SPLIT = {
         },
         {
           address: 0x18,
-          text: "jne 0x10",
+          tokens: [
+            ["mnemonic", "jne"],
+            ["text", " "],
+            ["address", "0x10"],
+          ],
           target: "scan+0x0",
           own: 0,
           total: 0,
@@ -744,7 +776,7 @@ const SPLIT = {
         },
         {
           address: 0x1c,
-          text: "imul",
+          tokens: [["mnemonic", "imul"]],
           target: null,
           own: 2,
           total: 2,
@@ -753,7 +785,14 @@ const SPLIT = {
             [0, 0, 3],
           ],
         },
-        { address: 0x20, text: "ret", target: null, own: 0, total: 0, lines: [[0, 0, 5]] },
+        {
+          address: 0x20,
+          tokens: [["mnemonic", "ret"]],
+          target: null,
+          own: 0,
+          total: 0,
+          lines: [[0, 0, 5]],
+        },
       ],
     },
   ],
@@ -795,6 +834,12 @@ const background = (selector: string) =>
   getComputedStyle(document.querySelector(selector) as Element).backgroundColor;
 const tintOf = (selector: string) => document.querySelector<HTMLElement>(selector)?.dataset.tint;
 
+/** An instruction row's pieces, each as its class and text. */
+const pieces = (row: number) =>
+  [...document.querySelectorAll(`[data-row="${row}"] .text > *`)].map(
+    (piece) => `${piece.className}:${piece.textContent}`,
+  );
+
 it("puts source beside its instructions, tinting the hottest lines and stepping a line's runs", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
@@ -803,6 +848,20 @@ it("puts source beside its instructions, tinting the hottest lines and stepping 
   // The source is colored as the debugger colors it.
   expect(document.querySelector('[aria-label="Source"] [data-line="3"] .tk-k')).toHaveTextContent(
     "for",
+  );
+  // So are the instructions, by what the decoder says each piece is; a
+  // jump's address gives way to a button to its offset.
+  expect(pieces(0)).toEqual([
+    "tk-mnemonic:mov",
+    "tk-text: ",
+    "tk-register:eax",
+    "tk-punctuation:,",
+    "tk-text: ",
+    "tk-number:1",
+  ]);
+  expect(pieces(2)).toEqual(["tk-mnemonic:jne", "tk-text: ", "asm-target:+0"]);
+  expect(getComputedStyle(document.querySelector(".tk-register") as Element).color).not.toBe(
+    getComputedStyle(document.querySelector(".tk-mnemonic") as Element).color,
   );
 
   // It opens on the hottest line by own, whose instructions are the two

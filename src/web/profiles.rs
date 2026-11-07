@@ -1241,7 +1241,16 @@ fn code(
                 .into_iter()
                 .map(|instruction| protocol::ProfileInstruction {
                     address: instruction.address,
-                    text: instruction.text,
+                    tokens: instruction
+                        .tokens
+                        .into_iter()
+                        .map(|token| {
+                            protocol::ProfileToken(
+                                super::lowlevel::token_kind(token.kind).to_owned(),
+                                token.text.to_string(),
+                            )
+                        })
+                        .collect(),
                     target: instruction.target,
                     own: instruction.own,
                     total: instruction.total,

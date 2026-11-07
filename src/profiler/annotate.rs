@@ -11,7 +11,9 @@ use super::record::symbolize;
 use super::{Granularity, KeyKind, Profile, Query};
 use crate::capture::records::{FrameKind, NONE};
 use crate::debug_info::DebugFileSearch;
-use crate::disassembly::{AssemblySyntax, InstructionReferenceKind, RawDecode, decoder_for};
+use crate::disassembly::{
+    AssemblySyntax, InstructionReferenceKind, InstructionToken, RawDecode, decoder_for,
+};
 use crate::{ImageAddress, MAX_FUNCTION_INSTRUCTIONS, ModuleImageId, TargetDescription};
 
 /// What a function's samples weigh on one of its source lines.
@@ -45,7 +47,9 @@ pub struct CodeLine {
 pub struct InstructionCost {
     /// Its address in its module's file.
     pub address: u64,
-    pub text: String,
+
+    /// Its text in the decoder's pieces, which say what each one is.
+    pub tokens: Vec<InstructionToken>,
 
     /// The function a direct jump or call goes to, with the offset into it
     /// when that is not its start.
@@ -56,6 +60,13 @@ pub struct InstructionCost {
     /// The lines it was compiled from, innermost inlined function first,
     /// ending with the function it belongs to; empty when unknown.
     pub lines: Vec<CodeLine>,
+}
+
+impl InstructionCost {
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.tokens.iter().map(|token| &*token.text).collect()
+    }
 }
 
 /// One symbol's code that a function's samples ran.
@@ -405,7 +416,7 @@ fn decode(
             block.instructions.push(InstructionCost {
                 lines: Vec::new(),
                 address,
-                text: tokens.iter().map(|token| &*token.text).collect(),
+                tokens,
                 target: references
                     .iter()
                     .find(|(kind, _)| *kind == InstructionReferenceKind::BranchTarget)
@@ -488,7 +499,7 @@ mod tests {
     fn instruction(own: u64, total: u64, lines: Vec<CodeLine>) -> InstructionCost {
         InstructionCost {
             address: 0,
-            text: String::new(),
+            tokens: Vec::new(),
             target: None,
             own,
             total,

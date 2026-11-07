@@ -43,16 +43,23 @@ export function lineIn(lines: readonly ProfileCodeLine[], file: number): number 
   return 0;
 }
 
-/** The address a direct jump's text names, as `jne 0x401136` does. */
-function jumpTarget(text: string): number | null {
-  if (!/^j[a-z]*\s/u.test(text)) {
+/** The instruction's mnemonic, without its prefixes. */
+function mnemonicOf(instruction: ProfileInstruction): string {
+  return instruction.tokens.find(([kind]) => kind === "mnemonic")?.[1] ?? "";
+}
+
+/** The address a direct jump goes to: its operand, when that is an
+ * address, as in `jne 0x401136`. */
+function jumpTarget(instruction: ProfileInstruction): number | null {
+  const last = instruction.tokens.at(-1);
+  if (!mnemonicOf(instruction).startsWith("j") || last?.[0] !== "address") {
     return null;
   }
-  const match = /0x([0-9a-f]+)$/u.exec(text);
+  const match = /^0x([0-9a-f]+)$/u.exec(last[1]);
   return match?.[1] === undefined ? null : Number.parseInt(match[1], 16);
 }
 
-const ENDS_BLOCK = /^(?:j[a-z]*|ret[a-z]*|ud2)(?:\s|$)/u;
+const ENDS_BLOCK = /^(?:j[a-z]*|ret[a-z]*|ud2)$/u;
 
 /** The listing's rows: every block's instructions in order, with where
  * basic blocks begin. */
@@ -67,13 +74,13 @@ export function codeRows(code: ProfileCode): CodeRow[] {
   const held = new Set(instructions.map(({ instruction }) => instruction.address));
   const targets = new Set<number>();
   for (const { instruction } of instructions) {
-    const target = jumpTarget(instruction.text);
+    const target = jumpTarget(instruction);
     if (target !== null) {
       targets.add(target);
     }
   }
   return instructions.map(({ instruction, start, symbol }, index) => {
-    const target = jumpTarget(instruction.text);
+    const target = jumpTarget(instruction);
     const before = instructions[index - 1]?.instruction;
     return {
       instruction,
@@ -82,7 +89,7 @@ export function codeRows(code: ProfileCode): CodeRow[] {
         index > 0 &&
         (instruction.address === start ||
           targets.has(instruction.address) ||
-          (before !== undefined && ENDS_BLOCK.test(before.text))),
+          (before !== undefined && ENDS_BLOCK.test(mnemonicOf(before)))),
       jump: target !== null && held.has(target) ? target : null,
       symbol,
     };

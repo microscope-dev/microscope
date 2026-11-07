@@ -24,7 +24,7 @@ import {
   tintsOf,
 } from "../../profile/code";
 import { formatCount, formatPercent, largest } from "../../profile/paint";
-import type { ProfileCode } from "../../protocol";
+import type { ProfileCode, ProfileToken } from "../../protocol";
 import { type Painted, paintLines } from "../source/languages";
 import { useAnswer, useProfile } from "./context";
 import { ownTone, Share, Unanswered } from "./parts";
@@ -368,14 +368,15 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
                   <code className="text">
                     {row.jump === null ? (
                       <>
-                        {instruction.text}
+                        <AsmTokens tokens={instruction.tokens} />
                         {instruction.target ? (
                           <span className="asm-target"> &lt;{instruction.target}&gt;</span>
                         ) : null}
                       </>
                     ) : (
                       <>
-                        {instruction.text.replace(/\s*0x[0-9a-f]+$/u, " ")}
+                        {/* The jump's address gives way to its offset, a button to it. */}
+                        <AsmTokens tokens={instruction.tokens.slice(0, -1)} />
                         <button type="button" className="asm-target" data-jump={row.jump}>
                           +{(rows[indexOf.get(row.jump) ?? index]?.offset ?? 0).toString(16)}
                         </button>
@@ -469,6 +470,17 @@ function Tokens({ runs, text }: { runs: Painted | undefined; text: string }) {
       <Fragment key={at}>{part}</Fragment>
     ),
   );
+}
+
+/** An instruction's text, colored by what each piece is, as the debugger's
+ * disassembly colors it. */
+function AsmTokens({ tokens }: { tokens: readonly ProfileToken[] }) {
+  return tokens.map(([kind, text], at) => (
+    // oxlint-disable-next-line react/no-array-index-key -- an instruction's pieces in order, never reordered
+    <span key={at} className={`tk-${kind}`}>
+      {text}
+    </span>
+  ));
 }
 
 /** The columns' names, pinned over a code pane's rows. */

@@ -274,7 +274,7 @@ fn present(
     }
 }
 
-const fn token_kind(kind: InstructionTokenKind) -> &'static str {
+pub(super) const fn token_kind(kind: InstructionTokenKind) -> &'static str {
     match kind {
         InstructionTokenKind::Mnemonic => "mnemonic",
         InstructionTokenKind::Prefix => "prefix",

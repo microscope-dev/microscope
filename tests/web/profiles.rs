@@ -959,6 +959,11 @@ async fn a_function_is_served_on_its_lines_and_its_instructions() {
     assert_eq!(code["blocks"][0]["symbol"], "leaf");
     assert_eq!(code["blocks"][0]["instructions"][0]["own"], 6);
     assert!(code["unlined"].is_null(), "{code}");
+    // Each instruction's text comes in pieces that say what each is.
+    assert_eq!(
+        code["blocks"][0]["instructions"][0]["tokens"],
+        json!([["mnemonic", "push"], ["text", " "], ["register", "rbp"]])
+    );
 
     // The first instruction is leaf's, on a line of leaf's own file, which
     // comes first and weighs that line with the instruction's samples.
