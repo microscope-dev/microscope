@@ -1866,11 +1866,15 @@ mod tests {
             .expect("the program exits");
         assert!(status.success(), "{status}");
 
+        // A reader that every CPU is busy beside can be scheduled too late
+        // for a ring even when nothing is behind, and `just stress` drops
+        // up to about 50 of the 4000 samples so. A reader that took 20 ms
+        // a pass while shortening lost half of them.
         let counts = events.counts();
-        assert_eq!(
-            (counts.lost_samples, counts.lost_records),
-            (0, 0),
-            "{counts:?}"
+        let possible = counts.counted / 1_000_000;
+        assert!(
+            counts.lost_samples * 50 <= possible && counts.lost_records == 0,
+            "{counts:?} of {possible} possible samples"
         );
         assert_eq!(events.behind(Some(sys::monotonic())), []);
         assert!(counts.shortened > 1000, "{counts:?}");
