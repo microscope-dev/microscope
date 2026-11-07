@@ -12,9 +12,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use microscope::profiler::{
-    DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, Look, MarkerKind, NO_KEY, NO_TASK,
-    Preset, Profile, Query, RecordOptions, SampleSource, Side, Source, Transform, Watch,
-    diff_costs, diff_trees, record_watched,
+    CodeLine, DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, LineCost, Look, MarkerKind,
+    NO_KEY, NO_TASK, Preset, Profile, Query, RecordOptions, SampleSource, Side, Source, Transform,
+    Watch, diff_costs, diff_trees, record_watched,
 };
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
@@ -1100,15 +1100,24 @@ fn source(
     query: &protocol::ProfileFunctionQuery,
 ) -> Result<protocol::ProfileLines, Failure> {
     let costs = profile.line_costs(&selection(profile, query)?, &query.function);
+    Ok(protocol::ProfileLines {
+        weight: costs.weight,
+        files: source_files(costs.lines),
+    })
+}
+
+/// Lines' costs by file, in path order, each file with its text around
+/// them.
+fn source_files(costs: Vec<LineCost>) -> Vec<protocol::ProfileSourceFile> {
     let mut files: BTreeMap<Option<String>, Vec<[u64; 3]>> = BTreeMap::new();
-    for line in costs.lines {
+    for line in costs {
         files
             .entry(line.file)
             .or_default()
             .push([u64::from(line.line), line.own, line.total]);
     }
 
-    let files = files
+    files
         .into_iter()
         .map(|(path, lines)| {
             let lowest = lines.iter().map(|line| line[0]).min().unwrap_or(1);
@@ -1131,12 +1140,7 @@ fn source(
                 unread,
             }
         })
-        .collect();
-
-    Ok(protocol::ProfileLines {
-        weight: costs.weight,
-        files,
-    })
+        .collect()
 }
 
 /// Lines `first` to `last` of a source file, as it reads now.
@@ -1166,39 +1170,98 @@ fn code(
     query: &protocol::ProfileFunctionQuery,
 ) -> Result<protocol::ProfileCode, Failure> {
     let selected = selection(profile, query)?;
-    Ok(match profile.disassemble(&selected, &query.function) {
-        Ok(code) => protocol::ProfileCode {
-            weight: code.weight,
-            module: Some(code.module),
-            blocks: code
-                .blocks
+    let code = match profile.disassemble(&selected, &query.function) {
+        Ok(code) => code,
+        Err(why) => {
+            return Ok(protocol::ProfileCode {
+                weight: 0,
+                module: None,
+                blocks: Vec::new(),
+                unplaced: Vec::new(),
+                unavailable: Some(why),
+                functions: Vec::new(),
+                files: Vec::new(),
+                unlined: None,
+                inlined_into: None,
+            });
+        }
+    };
+
+    // The function's own file is the one its instructions most often
+    // belong to as its own, past what is inlined into it; or, when it has
+    // no code of its own, as what was inlined.
+    let mut owners: BTreeMap<&str, usize> = BTreeMap::new();
+    for instruction in code.blocks.iter().flat_map(|block| &block.instructions) {
+        let own = if code.inlined_into.is_some() {
+            instruction
+                .lines
+                .iter()
+                .find(|line| line.function == query.function)
+        } else {
+            instruction.lines.last()
+        };
+        if let Some(file) = own.and_then(|line| line.file.as_deref()) {
+            *owners.entry(file).or_default() += 1;
+        }
+    }
+    let own_file = owners
+        .into_iter()
+        .max_by_key(|&(file, count)| (count, std::cmp::Reverse(file)))
+        .map(|(file, _)| file.to_owned());
+
+    let mut files = source_files(code.line_costs());
+    files.sort_by_key(|file| file.path != own_file);
+    let file_index: BTreeMap<String, u32> = files
+        .iter()
+        .enumerate()
+        .filter_map(|(index, file)| Some((file.path.clone()?, u32::try_from(index).ok()?)))
+        .collect();
+
+    let mut functions: Vec<String> = Vec::new();
+    let mut function_index: BTreeMap<String, u32> = BTreeMap::new();
+    let mut line = |line: CodeLine| {
+        let next = u32::try_from(functions.len()).unwrap_or(u32::MAX);
+        let function = *function_index
+            .entry(line.function)
+            .or_insert_with_key(|name| {
+                functions.push(name.clone());
+                next
+            });
+        let file = line.file.and_then(|file| file_index.get(&file).copied());
+        protocol::ProfileCodeLine(function, file, line.line)
+    };
+
+    let blocks = code
+        .blocks
+        .into_iter()
+        .map(|block| protocol::ProfileCodeBlock {
+            symbol: block.symbol,
+            instructions: block
+                .instructions
                 .into_iter()
-                .map(|block| protocol::ProfileCodeBlock {
-                    symbol: block.symbol,
-                    instructions: block
-                        .instructions
-                        .into_iter()
-                        .map(|instruction| protocol::ProfileInstruction {
-                            address: instruction.address,
-                            text: instruction.text,
-                            target: instruction.target,
-                            own: instruction.own,
-                            total: instruction.total,
-                        })
-                        .collect(),
-                    stopped: block.stopped,
+                .map(|instruction| protocol::ProfileInstruction {
+                    address: instruction.address,
+                    text: instruction.text,
+                    target: instruction.target,
+                    own: instruction.own,
+                    total: instruction.total,
+                    lines: instruction.lines.into_iter().map(&mut line).collect(),
                 })
                 .collect(),
-            unplaced: code.unplaced.into_iter().map(Into::into).collect(),
-            unavailable: None,
-        },
-        Err(why) => protocol::ProfileCode {
-            weight: 0,
-            module: None,
-            blocks: Vec::new(),
-            unplaced: Vec::new(),
-            unavailable: Some(why),
-        },
+            stopped: block.stopped,
+        })
+        .collect();
+
+    Ok(protocol::ProfileCode {
+        weight: code.weight,
+        module: Some(code.module),
+        blocks,
+        unplaced: code.unplaced.into_iter().map(Into::into).collect(),
+        unavailable: None,
+        functions,
+        files,
+        unlined: code.unlined,
+        inlined_into: code.inlined_into,
     })
 }
 

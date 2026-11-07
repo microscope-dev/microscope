@@ -559,10 +559,86 @@ test("a function's samples show on its source lines and its instructions", async
   const lines = page.getByTestId("source-lines");
   await expect(lines.locator(".hot")).toHaveCount(1);
   await expect(lines.locator(".hot")).toContainText("100.0%");
-  await page.getByRole("button", { name: "Assembly", exact: true }).click();
+  await page.getByRole("button", { name: "Source and assembly", exact: true }).click();
   await expect(page).toHaveURL(/ann=code/u);
+  // Source sits beside the instructions: it opens on leaf's sampled line,
+  // whose instructions, the first among them, are chosen and tinted.
   const code = page.getByTestId("code");
-  await expect(code.locator(".annotated-head").first()).toContainText("leaf");
-  await expect(code.locator(".annotated-row").first()).toContainText("100.0%");
-  await expect(code.locator(".hot")).toHaveCount(1);
+  await expect(code).toContainText("profile-stacks.c");
+  const source = code.getByRole("listbox", { name: "Source" });
+  const assembly = code.getByRole("listbox", { name: "Assembly" });
+  const line = source.getByRole("option", { selected: true });
+  await expect(line).toHaveCount(1);
+  await expect(line).toContainText("100.0%");
+  await expect(line).toHaveAttribute("data-tint", "0");
+  const first = assembly.getByRole("option").first();
+  await expect(first).toContainText("100.0%");
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  await expect(first).toHaveAttribute("data-tint", "0");
+  await expect(code.getByTestId("run")).toContainText(/^run 1 of \d+$/u);
+
+  // Each pane names its columns over its rows, however far it scrolls.
+  for (const pane of [source, assembly]) {
+    const head = pane.locator(".code-head");
+    await expect(head).toHaveText("owntotal");
+    await pane.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    const [edge, shown] = await Promise.all([pane.boundingBox(), head.boundingBox()]);
+    expect(shown?.y).toBeCloseTo(edge?.y ?? -1, 0);
+  }
+
+  // The bar over the panel moves it: a drag, then the arrow keys.
+  const divider = page.getByRole("separator", { name: /^Resize the functions/u });
+  const listed = page.getByRole("listbox", { name: "Functions" });
+  const tall = async () => (await listed.boundingBox())?.height ?? 0;
+  const opened = await tall();
+  const bar = await divider.boundingBox();
+  if (!bar) {
+    throw new Error("the divider is not shown");
+  }
+  await page.mouse.move(bar.x + bar.width / 2, bar.y + bar.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bar.x + bar.width / 2, bar.y + bar.height / 2 + 100, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(tall).toBeCloseTo(opened + 100, -1);
+  await expect(divider).toBeFocused();
+  const dragged = await tall();
+  await page.keyboard.press("ArrowUp");
+  await expect.poll(tall).toBeCloseTo(dragged - 16, 0);
+  await divider.dblclick();
+  await expect.poll(tall).toBeCloseTo(opened, 0);
+
+  // In a narrow window a long line scrolls sideways under its costs,
+  // which stay at the pane's edge. Both panes pin by the same rule; leaf's
+  // instructions are too short to need it.
+  await page.setViewportSize({ width: 400, height: 800 });
+  await expect
+    .poll(() => source.evaluate((element) => element.scrollWidth - element.clientWidth))
+    .toBeGreaterThan(40);
+  const row = source.getByRole("option", { selected: true }).first();
+  const before = {
+    pin: await row.locator(".pin").boundingBox(),
+    text: await row.locator(".text").boundingBox(),
+  };
+  await source.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  const [edge, pin, text] = await Promise.all([
+    source.boundingBox(),
+    row.locator(".pin").boundingBox(),
+    row.locator(".text").boundingBox(),
+  ]);
+  expect(pin?.x).toBe(before.pin?.x);
+  expect(pin?.x).toBeCloseTo(edge?.x ?? -1, 0);
+  expect(text?.x).toBeLessThan((before.text?.x ?? 0) - 40);
+  await expect(row.locator(".percent").first()).toBeVisible();
+  // So do the costs of rows shorter than the scroll.
+  const strays = await source.evaluate((element) => {
+    const { left } = element.getBoundingClientRect();
+    return [...element.querySelectorAll(".pin")]
+      .map((pinned) => pinned.getBoundingClientRect().left - left)
+      .filter((offset) => Math.abs(offset) > 1);
+  });
+  expect(strays).toEqual([]);
 });

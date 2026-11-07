@@ -13,6 +13,12 @@
   /* A share's bar: each sets --share, from 0 to 1, and a heat bar's hue
      warms with it while these hold. */
   --share: 0;
+  /* The hue of a source line's tint, which each tinted code row sets. */
+  --tint: 0;
+  /* How many characters a code pane's widest line number or offset has. */
+  --digits: 6;
+  /* A code row's background, which its pinned costs copy. */
+  --row-bg: transparent;
   --heat-saturation: 95%;
   --heat-lightness: 55%;
   --heat-alpha: 0.45;
@@ -3977,10 +3983,32 @@ textarea.input {
 }
 
 .profile-selected {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   border-top: 1px solid var(--line-strong);
+}
+
+/* Lies over the panel's top border, with a taller target than it shows. */
+.profile-divider {
+  position: absolute;
+  inset: -4px 0 auto;
+  z-index: 3;
+  height: 7px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.profile-divider:hover,
+.profile-divider:focus-visible {
+  outline: 0;
+  background: linear-gradient(
+    transparent 3px,
+    var(--accent) 3px,
+    var(--accent) 5px,
+    transparent 5px
+  );
 }
 
 .profile-selected > .profile-sandwich {
@@ -4025,6 +4053,241 @@ textarea.input {
   width: 52px;
   flex: none;
   text-align: right;
+}
+
+/* A function's source beside its instructions. The hottest lines each
+   have a hue their instructions share, so the mapping shows without a
+   click; the chosen line's rows are marked at the edge. */
+.code-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  font: 12px var(--mono);
+}
+
+.code-split-head,
+.code-split-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--surface-2);
+}
+
+.code-split-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.code-split-note {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--warn-bg);
+  font-family: var(--sans);
+}
+
+.code-split-foot {
+  border-top: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.code-split-head .end,
+.code-split-foot .end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.code-split-foot .chain {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.code-split-panes {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+}
+
+@container (max-width: 640px) {
+  .code-split-panes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+/* Rows' offsetTop is measured from their pane, which reveals them. Its
+   one column is as wide as the longest row, so every row's pinned costs
+   reach the pane's edge however far it scrolls. */
+.code-split-pane {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+  outline-offset: -2px;
+}
+
+.code-split-pane + .code-split-pane {
+  border-left: 1px solid var(--line);
+}
+
+@container (max-width: 640px) {
+  .code-split-pane + .code-split-pane {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* The costs and numbers stay pinned at the pane's left edge, over an
+   opaque copy of the row's background. */
+.code-row {
+  --row-bg: transparent;
+  display: flex;
+  gap: 8px;
+  height: var(--row);
+  background: var(--row-bg);
+  align-items: center;
+  white-space: pre;
+  cursor: pointer;
+}
+
+.code-row > * {
+  flex: none;
+}
+
+.code-row .pin {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  align-self: stretch;
+  align-items: center;
+  padding-right: 8px;
+  background: linear-gradient(var(--row-bg), var(--row-bg)), var(--surface);
+}
+
+/* Wide enough for "100.0%" and the share's padding. */
+.code-row .percent {
+  width: calc(6ch + 4px);
+  text-align: right;
+}
+
+.code-row .line-number,
+.code-row .offset {
+  width: calc(var(--digits) * 1ch);
+  text-align: right;
+  color: var(--ink-3);
+}
+
+.code-row .text {
+  padding-right: 8px;
+}
+
+.code-head {
+  --row-bg: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  color: var(--ink-3);
+  cursor: default;
+  box-shadow: inset 0 -1px var(--line);
+}
+
+.code-head .pin {
+  box-shadow: inset 0 -1px var(--line);
+}
+
+/* A symbol's name sits below the column head. */
+.code-split-pane .annotated-head {
+  top: var(--row);
+  z-index: 2;
+}
+
+.code-row.nocode {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.code-row.leads {
+  border-top: 1px solid var(--line);
+}
+
+.code-row[data-tint] {
+  --row-bg: hsl(var(--tint) 70% 55% / 14%);
+}
+
+.code-row[data-tint][aria-selected="true"] {
+  --row-bg: hsl(var(--tint) 70% 55% / 30%);
+}
+
+.code-row[aria-selected="true"]:not([data-tint]) {
+  --row-bg: var(--select-bg);
+}
+
+.code-row[aria-selected="true"] .pin {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.code-row.shown .offset {
+  color: var(--ink);
+}
+
+.code-row[data-tint="0"] {
+  --tint: 30;
+}
+
+.code-row[data-tint="1"] {
+  --tint: 140;
+}
+
+.code-row[data-tint="2"] {
+  --tint: 280;
+}
+
+.code-row[data-tint="3"] {
+  --tint: 350;
+}
+
+.code-row[data-tint="4"] {
+  --tint: 180;
+}
+
+.code-row[data-tint="5"] {
+  --tint: 55;
+}
+
+.code-row button.asm-target {
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .code-row:not(.nocode, .code-head):hover .pin {
+    box-shadow: inset 3px 0 0 var(--line-strong);
+  }
+
+  .code-row[aria-selected="true"]:hover .pin {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .code-row button.asm-target:hover {
+    text-decoration: underline;
+  }
 }
 
 /* Syscalls */

@@ -380,7 +380,7 @@ function useFirstMatch(rows: number[], matched: Set<number> | null, keys: Active
   }, [rows, matched, move]);
 }
 
-const COLUMN_HELP: Record<string, string> = {
+export const COLUMN_HELP: Record<string, string> = {
   own: "Time in the function itself",
   total: "Time in the function and what it calls",
   change: "Change from the base profile",

@@ -36,7 +36,7 @@ pub const NO_TASK: u32 = NONE;
 pub const NO_KEY: u32 = NONE;
 pub use crate::capture::records::MarkerKind;
 pub use crate::unwind::sample::CHAIN_LIMIT;
-pub use annotate::{CodeBlock, Disassembly, InstructionCost, LineCost, LineCosts};
+pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, LineCosts};
 pub use collector::ProbeSelection;
 pub use formats::Format;
 pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};

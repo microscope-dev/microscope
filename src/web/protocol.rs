@@ -1216,6 +1216,22 @@ pub struct ProfileCode {
     /// total.
     pub unplaced: Vec<[u64; 3]>,
     pub unavailable: Option<String>,
+
+    /// The functions the instructions' lines name.
+    pub functions: Vec<String>,
+
+    /// The source files the instructions were compiled from, the
+    /// function's own first, each line weighed by the instructions
+    /// compiled from it: own on an instruction's innermost line in the
+    /// file, total on every line of the file it was inlined through.
+    pub files: Vec<ProfileSourceFile>,
+
+    /// Why the instructions have no source lines, when they have none.
+    pub unlined: Option<String>,
+
+    /// The functions shown, when the one asked for has no code of its
+    /// own: every sample ran it inlined into them.
+    pub inlined_into: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1236,7 +1252,18 @@ pub struct ProfileInstruction {
     pub target: Option<String>,
     pub own: u64,
     pub total: u64,
+
+    /// The lines it was compiled from, innermost inlined function first,
+    /// ending with the function it belongs to.
+    pub lines: Vec<ProfileCodeLine>,
 }
+
+/// A source line an instruction was compiled from: its function, by its
+/// index in `functions`, its file, by its index in `files` when that has
+/// it, and its number, 0 when the debug information names none.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileCodeLine(pub u32, pub Option<u32>, pub u32);
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -3096,6 +3123,7 @@ mod tests {
         ProfileSourceFile::decl,
         ProfileCode::decl,
         ProfileCodeBlock::decl,
+        ProfileCodeLine::decl,
         ProfileInstruction::decl,
         ProfileBase::decl,
         ProfileBaseWeight::decl,

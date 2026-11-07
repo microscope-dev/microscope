@@ -2088,6 +2088,116 @@ fn a_functions_samples_land_on_its_lines_and_its_instructions() {
     );
 }
 
+/// Each instruction of a function knows the source lines it was compiled
+/// from, inlined functions first: step's arithmetic, inlined into scan,
+/// is on step's line and then on scan's call of it, and every line's
+/// weight in the file adds up to what its instructions weigh.
+#[test]
+fn a_functions_instructions_carry_the_lines_they_were_inlined_through() {
+    let mut command = Command::new(Scenario::fixture("profile-inline"));
+    command.arg("4").stdout(Stdio::null());
+    let recording = record(command, &RecordOptions::preset(Preset::Maximum)).expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+    let code = recording
+        .profile
+        .disassemble(&Query::default(), "scan")
+        .expect("scan's code");
+    assert_eq!(code.unlined, None);
+
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/c/profile-inline.c"
+    ))
+    .expect("the fixture's source");
+    let line_of = |text: &str| {
+        u32::try_from(
+            1 + source
+                .lines()
+                .position(|line| line.contains(text))
+                .expect(text),
+        )
+        .expect("a line number")
+    };
+    let step_line = line_of("return sum * 31 + i * i;");
+    let call_line = line_of("sum = step(sum, i);");
+
+    let instructions: Vec<_> = code
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .collect();
+    assert!(
+        instructions.iter().all(|instruction| instruction
+            .lines
+            .last()
+            .is_some_and(|line| line.function == "scan")),
+        "every instruction belongs to scan: {instructions:#?}"
+    );
+    let inlined: Vec<_> = instructions
+        .iter()
+        .filter(|instruction| instruction.lines.len() > 1)
+        .collect();
+    assert!(!inlined.is_empty(), "step is inlined: {instructions:#?}");
+    for instruction in &inlined {
+        let [step, scan] = instruction.lines.as_slice() else {
+            panic!("only step is inlined into scan: {instruction:#?}");
+        };
+        assert_eq!(
+            (step.function.as_str(), scan.function.as_str()),
+            ("step", "scan")
+        );
+        assert_eq!(scan.line, call_line, "{instruction:#?}");
+        assert!(
+            step.file
+                .as_deref()
+                .is_some_and(|file| file.ends_with("/profile-inline.c")),
+            "{instruction:#?}"
+        );
+    }
+    assert!(
+        inlined
+            .iter()
+            .any(|instruction| instruction.lines[0].line == step_line),
+        "{inlined:#?}"
+    );
+
+    // Own weight is conserved: each instruction's lands on one line of
+    // the file, so the file's lines add up to the function's own.
+    let own: u64 = instructions
+        .iter()
+        .filter(|instruction| instruction.lines.iter().any(|line| line.line > 0))
+        .map(|instruction| instruction.own)
+        .sum();
+    assert!(own > 0, "scan ran: {instructions:#?}");
+    let costs = code.line_costs();
+    assert_eq!(
+        costs.iter().map(|line| line.own).sum::<u64>(),
+        own,
+        "{costs:#?}"
+    );
+
+    // A call site's total holds everything inlined at it.
+    let total_at = |line: u32| {
+        costs
+            .iter()
+            .find(|cost| cost.line == line)
+            .map_or(0, |cost| cost.total)
+    };
+    let inlined_total: u64 = inlined.iter().map(|instruction| instruction.total).sum();
+    assert!(total_at(call_line) >= inlined_total, "{costs:#?}");
+    assert!(total_at(call_line) >= total_at(step_line), "{costs:#?}");
+
+    // step has no code of its own, so its code is scan's, which it was
+    // inlined into, with the same weights.
+    let step = recording
+        .profile
+        .disassemble(&Query::default(), "step")
+        .expect("step's code, inlined into scan");
+    assert_eq!(step.inlined_into.as_deref(), Some("scan"));
+    assert_eq!(code.inlined_into, None);
+    assert_eq!(step.blocks, code.blocks);
+}
+
 #[test]
 fn a_program_that_cannot_start_fails_the_recording() {
     let missing = Command::new("/nonexistent/program");

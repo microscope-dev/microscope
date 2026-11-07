@@ -1510,15 +1510,42 @@ export type ProfileCode = { weight: number, module: string | null, blocks: Array
  * Sampled addresses no decoded instruction holds: address, own, and
  * total.
  */
-unplaced: Array<[number, number, number]>, unavailable: string | null, };
+unplaced: Array<[number, number, number]>, unavailable: string | null, 
+/**
+ * The functions the instructions' lines name.
+ */
+functions: Array<string>, 
+/**
+ * The source files the instructions were compiled from, the
+ * function's own first, each line weighed by the instructions
+ * compiled from it: own on an instruction's innermost line in the
+ * file, total on every line of the file it was inlined through.
+ */
+files: Array<ProfileSourceFile>, 
+/**
+ * Why the instructions have no source lines, when they have none.
+ */
+unlined: string | null, 
+/**
+ * The functions shown, when the one asked for has no code of its
+ * own: every sample ran it inlined into them.
+ */
+inlined_into: string | null, };
 
 export type ProfileCodeBlock = { symbol: string, instructions: Array<ProfileInstruction>, stopped: string | null, };
+
+export type ProfileCodeLine = [number, number | null, number];
 
 export type ProfileInstruction = { address: number, text: string, 
 /**
  * The function a direct jump or call goes to.
  */
-target: string | null, own: number, total: number, };
+target: string | null, own: number, total: number, 
+/**
+ * The lines it was compiled from, innermost inlined function first,
+ * ending with the function it belongs to.
+ */
+lines: Array<ProfileCodeLine>, };
 
 export type ProfileBase = { profile: string, 
 /**

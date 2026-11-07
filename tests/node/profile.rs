@@ -248,6 +248,21 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     let paths = paths(&profile, Source::Waits, Look::Python);
     let missing = missing(&expected(&reported), &paths);
     assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
+
+    // No file holds a JavaScript function's instructions; the Assembly
+    // panel says so and points at its lines.
+    let waits = Query {
+        source: Source::Waits,
+        look: Look::Python,
+        ..Query::default()
+    };
+    let code = profile.disassemble(&waits, "mainOuter");
+    assert!(
+        code.as_ref()
+            .is_err_and(|why| why.contains("Python or JavaScript")),
+        "{:?}",
+        code.map(|code| code.blocks.len())
+    );
 }
 
 /// Live snapshots, which never stop the program, read each thread's

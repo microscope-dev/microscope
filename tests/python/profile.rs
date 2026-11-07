@@ -1310,6 +1310,20 @@ mod bpf {
             });
             assert!(mixed, "{interpreter}: no mixed stack of work");
 
+            // No file holds a Python function's instructions; the
+            // Assembly panel says so and points at its lines.
+            let python_look = Query {
+                look: Look::Python,
+                ..Query::default()
+            };
+            let code = profile.disassemble(&python_look, "work");
+            assert!(
+                code.as_ref()
+                    .is_err_and(|why| why.contains("Python or JavaScript")),
+                "{interpreter}: {:?}",
+                code.map(|code| code.blocks.len())
+            );
+
             // Each count is of samples, as each stack is one.
             let samples = stacks.len();
             let ending = |reason: &str| {

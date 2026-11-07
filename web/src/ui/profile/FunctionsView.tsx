@@ -1,10 +1,21 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { type KeyboardEvent, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { assert } from "../../assert";
 import { diffModeOf } from "../../profile/look";
 import { changeOf, formatCount, formatPercent, formatWeight } from "../../profile/paint";
 import type { ProfileBaseWeight, ProfileCost, ProfileKey, ProfileQuery } from "../../protocol";
+import { trackPointer } from "../../workbench/gesture";
+import { LEAST } from "../../workbench/SplitView";
 import { Code, SourceLines } from "./Annotated";
 import { useAnswer, useProfile, useTree } from "./context";
 import { LookButton, ownTone, Share, Unanswered } from "./parts";
@@ -23,6 +34,9 @@ export function FunctionsView() {
   const { query, look, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
   const [order, setOrder] = useState<Order>("own");
+  // The functions' share of the height, above the selected one's panel.
+  const [split, setSplit] = useState(0.5);
+  const splitStyle = useMemo(() => ({ gridTemplateRows: rowsOf(split) }) as CSSProperties, [split]);
   const [search, setSearch] = useFrameSearch();
   const body = useRef<HTMLDivElement>(null);
   const mode = diffModeOf(look);
@@ -84,7 +98,7 @@ export function FunctionsView() {
   const size = virtual.getTotalSize();
   const sized = useMemo(() => ({ height: size }), [size]);
   return (
-    <div className="profile-functions">
+    <div className="profile-functions" style={look.fn ? splitStyle : undefined}>
       <div className="pane grow">
         <div className="pane-head">
           Functions
@@ -152,7 +166,7 @@ export function FunctionsView() {
           </div>
         )}
       </div>
-      {look.fn ? <Selected name={look.fn} /> : null}
+      {look.fn ? <Selected name={look.fn} split={split} setSplit={setSplit} /> : null}
     </div>
   );
 }
@@ -240,15 +254,24 @@ function FunctionRow({
 const PANELS = [
   [undefined, "Callers and callees"],
   ["lines", "Source"],
-  ["code", "Assembly"],
+  ["code", "Source and assembly"],
 ] as const;
 
 /** The selected function: its callers and callees, or its samples on its
  * source lines or on its instructions. */
-function Selected({ name }: { name: string }) {
+function Selected({
+  name,
+  split,
+  setSplit,
+}: {
+  name: string;
+  split: number;
+  setSplit: (split: number) => void;
+}) {
   const { query, look } = useProfile();
   return (
     <div className="profile-selected">
+      <Divider split={split} setSplit={setSplit} />
       <div className="pane-head">
         <div className="segmented">
           {PANELS.map(([ann, label]) => (
@@ -270,6 +293,82 @@ function Selected({ name }: { name: string }) {
       )}
     </div>
   );
+}
+
+/** How far an arrow key moves the divider, in pixels. */
+const STEP = 16;
+
+/** The bar over the selected function's panel, which a drag or the arrow
+ * keys move to share the height with the functions above. A drag moves
+ * only the grid's style until it ends, so nothing renders as it moves. */
+function Divider({ split, setSplit }: { split: number; setSplit: (split: number) => void }) {
+  const down = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const box = event.currentTarget.closest<HTMLElement>(".profile-functions");
+      if (!box) {
+        return;
+      }
+      const show = (at: number) => {
+        box.style.gridTemplateRows = rowsOf(at);
+      };
+      const tracked = trackPointer(event, {
+        move: (moved) => show(splitAt(box, moved.clientY)),
+        up: (released) => setSplit(splitAt(box, released.clientY)),
+        cancel: () => show(split),
+      });
+      if (tracked) {
+        event.preventDefault();
+        event.currentTarget.focus();
+      }
+    },
+    [split, setSplit],
+  );
+  const key = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      const step = event.shiftKey ? STEP * 4 : STEP;
+      const by = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+      const box = event.currentTarget.closest<HTMLElement>(".profile-functions");
+      if (by === 0 || !box) {
+        return;
+      }
+      event.preventDefault();
+      const { top, height } = box.getBoundingClientRect();
+      setSplit(splitAt(box, top + split * height + by));
+    },
+    [split, setSplit],
+  );
+  const even = useCallback(() => setSplit(0.5), [setSplit]);
+  return (
+    <div
+      className="profile-divider"
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a focusable separator that resizes is a widget, which <hr> is not
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize the functions and the selected function"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(split * 100)}
+      tabIndex={0}
+      data-keys="escape"
+      onPointerDown={down}
+      onKeyDown={key}
+      onDoubleClick={even}
+    />
+  );
+}
+
+/** The functions' share of `box`'s height with the divider at `y`, leaving
+ * each side at least `LEAST` pixels. */
+function splitAt(box: HTMLElement, y: number): number {
+  const { top, height } = box.getBoundingClientRect();
+  const least = Math.min(LEAST, height / 2);
+  return Math.max(least, Math.min(height - least, y - top)) / Math.max(height, 1);
+}
+
+/** The grid's rows for `split`. Factors under 1 take only part of the
+ * space, so they are scaled up past it. */
+function rowsOf(split: number): string {
+  return `minmax(0, ${split * 100}fr) minmax(0, ${(1 - split) * 100}fr)`;
 }
 
 const CALLERS_HELP = "Functions that call this one.";

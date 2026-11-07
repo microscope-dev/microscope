@@ -628,7 +628,7 @@ it("brings each function's own hottest line into view once its lines arrive", as
 
 /** The share cells of the row that shows `text`, own then total. */
 function annotatedShares(text: string): HTMLElement[] {
-  const row = page.getByText(text, { exact: true }).element().closest(".annotated-row");
+  const row = page.getByText(text, { exact: true }).element().closest(".annotated-row, .code-row");
   return [...(row?.querySelectorAll<HTMLElement>(".share") ?? [])];
 }
 
@@ -669,13 +669,17 @@ it("draws a line's and an instruction's shares as bars, bold where own time is h
         symbol: "spin",
         stopped: null,
         instructions: [
-          { address: 0x10, text: "cmp", target: null, own: 0, total: 9 },
-          { address: 0x14, text: "nop", target: null, own: 0, total: 0 },
+          { address: 0x10, text: "cmp", target: null, own: 0, total: 9, lines: [] },
+          { address: 0x14, text: "nop", target: null, own: 0, total: 0, lines: [] },
         ],
       },
     ],
     unplaced: [],
     unavailable: null,
+    functions: [],
+    files: [],
+    unlined: "app's debug information has no source lines for this code",
+    inlined_into: null,
   });
   await expect.element(page.getByText("cmp", { exact: true })).toBeVisible();
   // A call's own time is none of it, so it has a total bar alone.
@@ -683,6 +687,199 @@ it("draws a line's and an instruction's shares as bars, bold where own time is h
   expect(cmpOwn).toHaveTextContent("");
   expect(barWidth(cmpTotal)).toBeCloseTo(90, 1);
   expect(barWidth(annotatedShares("nop")[1])).toBe(0);
+});
+
+/** scan, whose loop runs step inlined at line 3, which runs get from
+ * h.h inlined at its line 4. */
+const SPLIT = {
+  weight: 20,
+  module: "app",
+  blocks: [
+    {
+      symbol: "scan",
+      stopped: null,
+      instructions: [
+        { address: 0x10, text: "mov", target: null, own: 1, total: 1, lines: [[0, 0, 3]] },
+        {
+          address: 0x14,
+          text: "add",
+          target: null,
+          own: 5,
+          total: 5,
+          lines: [
+            [2, 1, 9],
+            [1, 0, 4],
+            [0, 0, 3],
+          ],
+        },
+        {
+          address: 0x18,
+          text: "jne 0x10",
+          target: "scan+0x0",
+          own: 0,
+          total: 0,
+          lines: [[0, 0, 3]],
+        },
+        {
+          address: 0x1c,
+          text: "imul",
+          target: null,
+          own: 2,
+          total: 2,
+          lines: [
+            [1, 0, 4],
+            [0, 0, 3],
+          ],
+        },
+        { address: 0x20, text: "ret", target: null, own: 0, total: 0, lines: [[0, 0, 5]] },
+      ],
+    },
+  ],
+  unplaced: [],
+  unavailable: null,
+  functions: ["scan", "step", "get"],
+  files: [
+    {
+      path: "/src/app.c",
+      first: 1,
+      text: ["int sink;", "void scan() {", "  for (;;) sum = step(sum);", "  sum += i * i;", "}"],
+      lines: [
+        [3, 1, 8],
+        [4, 7, 7],
+        [5, 0, 0],
+      ],
+      unread: null,
+    },
+    {
+      path: "/src/h.h",
+      first: 8,
+      text: ["static int get(int i) {", "  return table[i];", "}"],
+      lines: [[9, 5, 5]],
+      unread: null,
+    },
+  ],
+  unlined: null,
+  inlined_into: null,
+} as const;
+
+/** The rows of the listing the chosen line holds, by index. */
+const chosenRows = () =>
+  [...document.querySelectorAll<HTMLElement>('[aria-label="Assembly"] [aria-selected="true"]')].map(
+    (row) => Number(row.dataset.row),
+  );
+const chosenLine = () =>
+  document.querySelector<HTMLElement>('[aria-label="Source"] [aria-selected="true"]')?.dataset.line;
+const background = (selector: string) =>
+  getComputedStyle(document.querySelector(selector) as Element).backgroundColor;
+const tintOf = (selector: string) => document.querySelector<HTMLElement>(selector)?.dataset.tint;
+
+it("puts source beside its instructions, tinting the hottest lines and stepping a line's runs", async () => {
+  const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
+  server.answer(await server.next("profileCode"), SPLIT);
+  await expect.element(page.getByText("sum += i * i;")).toBeVisible();
+
+  // It opens on the hottest line by own, whose instructions are the two
+  // runs step left, the hottest first.
+  expect(chosenLine()).toBe("4");
+  expect(chosenRows()).toEqual([1, 3]);
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 2");
+
+  // Lines and their instructions share a tint; a line nothing ran on has none.
+  expect(tintOf('[data-line="4"]')).toBe("0");
+  expect(tintOf('[data-line="3"]')).toBe("1");
+  expect(tintOf('[data-line="5"]')).toBeUndefined();
+  expect(tintOf('[data-row="1"]')).toBe("0");
+  expect(tintOf('[data-row="0"]')).toBe("1");
+  expect(tintOf('[data-row="4"]')).toBeUndefined();
+  expect(background('[data-row="1"]')).not.toBe(background('[data-row="0"]'));
+  expect(background('[data-row="3"]')).toBe(background('[data-row="1"]'));
+
+  // The arrows step through the runs and wrap around.
+  await userEvent.click(page.getByRole("button", { name: "Next run" }));
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 2 of 2");
+  await userEvent.click(page.getByRole("button", { name: "Next run" }));
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 2");
+
+  // A line chooses its instructions; one with no code chooses nothing.
+  await userEvent.click(page.getByText("for (;;) sum = step(sum);"));
+  expect(chosenLine()).toBe("3");
+  expect(chosenRows()).toEqual([0, 2]);
+  await userEvent.click(page.getByText("int sink;"));
+  expect(chosenLine()).toBe("3");
+
+  // Keys move between lines that have code, and step runs.
+  await userEvent.keyboard("{ArrowDown}");
+  expect(chosenLine()).toBe("4");
+  await userEvent.keyboard("{ArrowDown}");
+  expect(chosenLine()).toBe("5");
+  await userEvent.keyboard("{ArrowDown}");
+  expect(chosenLine()).toBe("5");
+  await userEvent.keyboard("{ArrowUp}{ArrowUp}");
+  expect(chosenLine()).toBe("3");
+  await userEvent.keyboard("]");
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 2 of 2");
+
+  // An instruction chooses its line, and says what it was inlined through.
+  await userEvent.click(page.getByText("add", { exact: true }));
+  expect(chosenLine()).toBe("4");
+  await expect.element(page.getByText("+4 get h.h:9 ← step app.c:4 ← scan app.c:3")).toBeVisible();
+
+  // A jump goes to the instruction it targets.
+  await userEvent.click(page.getByRole("button", { name: "+0", exact: true }));
+  expect(chosenLine()).toBe("3");
+  await expect.element(page.getByText("+0 scan app.c:3")).toBeVisible();
+
+  // Another file maps the same instructions to its own lines.
+  await userEvent.selectOptions(page.getByRole("combobox", { name: "Source file" }), "1");
+  await expect.element(page.getByText("return table[i];")).toBeVisible();
+  expect(chosenLine()).toBe("9");
+  expect(chosenRows()).toEqual([1]);
+  await expect.element(page.getByTestId("run")).toHaveTextContent("run 1 of 1");
+  await expect.element(page.getByRole("button", { name: "Next run" })).toBeDisabled();
+});
+
+it("shows an inlined function's code where it was inlined, opening on its own line", async () => {
+  const server = await mount(<FunctionsView />, { look: { fn: "step", ann: "code" } });
+  server.answer(await server.next("profileCode"), {
+    ...SPLIT,
+    // Line 3, scan's call of step, weighs more than step's own line 4.
+    files: [
+      {
+        ...SPLIT.files[0],
+        lines: [
+          [3, 9, 16],
+          [4, 7, 7],
+        ],
+      },
+      SPLIT.files[1],
+    ],
+    inlined_into: "scan",
+  });
+  await expect
+    .element(
+      page.getByText(
+        "step has no code of its own. Every sample ran it inlined into scan, shown here.",
+      ),
+    )
+    .toBeVisible();
+  expect(chosenLine()).toBe("4");
+  expect(chosenRows()).toEqual([1, 3]);
+});
+
+it("forgets the line it chose once another function's code arrives", async () => {
+  const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
+  server.answer(await server.next("profileCode"), SPLIT);
+  await expect.element(page.getByText("sum += i * i;")).toBeVisible();
+  await userEvent.click(page.getByText("for (;;) sum = step(sum);"));
+  expect(chosenLine()).toBe("3");
+
+  changeLook((look) => ({ ...look, fn: "walk" }));
+  server.answer(await server.next("profileCode"), {
+    ...SPLIT,
+    blocks: [{ ...SPLIT.blocks[0], symbol: "walk" }],
+    functions: ["walk", "step", "get"],
+  });
+  await vi.waitFor(() => expect(chosenLine()).toBe("4"), POLL);
 });
 
 it("says it is reading a flame graph, and reads a function's cost from the server", async () => {

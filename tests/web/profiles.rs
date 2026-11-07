@@ -958,6 +958,46 @@ async fn a_function_is_served_on_its_lines_and_its_instructions() {
     assert!(code["unavailable"].is_null(), "{code}");
     assert_eq!(code["blocks"][0]["symbol"], "leaf");
     assert_eq!(code["blocks"][0]["instructions"][0]["own"], 6);
+    assert!(code["unlined"].is_null(), "{code}");
+
+    // The first instruction is leaf's, on a line of leaf's own file, which
+    // comes first and weighs that line with the instruction's samples.
+    let [function, file, line] = code["blocks"][0]["instructions"][0]["lines"]
+        .as_array()
+        .and_then(|lines| lines.last())
+        .and_then(|line| line.as_array())
+        .map_or_else(
+            || panic!("the first instruction's lines: {code}"),
+            |line| [line[0].clone(), line[1].clone(), line[2].clone()],
+        );
+    let function = function
+        .as_u64()
+        .and_then(|function| usize::try_from(function).ok())
+        .expect("an index");
+    assert_eq!(code["functions"][function], "leaf");
+    assert_eq!(file, 0, "{code}");
+    let file = &code["files"][0];
+    assert!(
+        file["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("profile-stacks.c")),
+        "{code}"
+    );
+    let line = line.as_u64().expect("a line");
+    let costs = file["lines"].as_array().expect("the file's lines");
+    let weighed = costs
+        .iter()
+        .find(|cost| cost[0] == line)
+        .unwrap_or_else(|| panic!("line {line} is weighed: {code}"));
+    assert_eq!(weighed[1], 6, "{code}");
+    let first = file["first"].as_u64().expect("a first line");
+    assert!(
+        file["text"][usize::try_from(line - first).expect("a line")]
+            .as_str()
+            .is_some_and(|text| text.contains("leaf")),
+        "{code}"
+    );
+
     let unknown = tab
         .ok("profileCode", json!({"profile": id, "function": "nothing"}))
         .await;
