@@ -7,7 +7,8 @@ import { changeOf, formatCount, formatPercent, formatWeight } from "../../profil
 import type { ProfileBaseWeight, ProfileCost, ProfileKey, ProfileQuery } from "../../protocol";
 import { Code, SourceLines } from "./Annotated";
 import { useAnswer, useProfile } from "./context";
-import { LookButton, Unanswered } from "./parts";
+import { SearchRow, useFrameSearch } from "./Details";
+import { LookButton, ownTone, Share, Unanswered } from "./parts";
 import { useActiveRow } from "./rows";
 import { Change, ColumnHead, TreeRows, useTree } from "./TreeView";
 
@@ -15,16 +16,24 @@ const ROW = 20;
 
 type Order = "own" | "total";
 
-/** Every function's cost, and for the selected one a sandwich: its
- * callers above and its callees below, merged from every call. */
+/** Every function's cost, or those a search matches, and for the selected
+ * one a sandwich: its callers above and its callees below, merged from
+ * every call. */
 export function FunctionsView() {
   const { query, look, setLook } = useProfile();
   const answer = useAnswer("profileFunctions", query);
   const [order, setOrder] = useState<Order>("own");
+  const [search, setSearch] = useFrameSearch();
   const body = useRef<HTMLDivElement>(null);
   const mode = diffModeOf(look);
+  const everyRow = answer.data?.rows;
   const rows = useMemo(() => {
-    const all = answer.data?.rows ?? [];
+    const needle = search.toLowerCase();
+    const all = needle
+      ? (everyRow ?? []).filter((row) =>
+          answer.data?.keys[row.key]?.name.toLowerCase().includes(needle),
+        )
+      : (everyRow ?? []);
     if (order === "total") {
       return all.toSorted((a, b) => b.total - a.total || b.own - a.own);
     }
@@ -32,7 +41,7 @@ export function FunctionsView() {
     return answer.data?.base && mode === "time"
       ? all.toSorted((a, b) => Math.abs(b.own - b.baseOwn) - Math.abs(a.own - a.baseOwn))
       : all;
-  }, [answer.data, order, mode]);
+  }, [answer.data, everyRow, search, order, mode]);
   // oxlint-disable-next-line react/incompatible-library -- the app is not built with the React Compiler
   const virtual = useVirtualizer({
     count: rows.length,
@@ -88,11 +97,23 @@ export function FunctionsView() {
             ))}
           </div>
         </div>
+        <SearchRow
+          search={search}
+          onSearch={setSearch}
+          matched={
+            search && everyRow
+              ? `${formatCount(rows.length)} of ${formatCount(everyRow.length, "function")} match`
+              : null
+          }
+          reset={null}
+        />
         <ColumnHead columns={base ? DIFF_COLUMNS : COLUMNS} end="module" />
         {answer.error || !answer.data ? (
           <Unanswered error={answer.error} reading="Reading functions…" />
-        ) : rows.length === 0 ? (
+        ) : everyRow?.length === 0 ? (
           <div className="empty">No samples are selected.</div>
+        ) : rows.length === 0 ? (
+          <div className="empty">No function matches.</div>
         ) : (
           <div
             ref={body}
@@ -186,6 +207,7 @@ function FunctionRow({
   const selected = look.fn === fn.name;
   const own = formatPercent(row.own, weight);
   const total = formatPercent(row.total, weight);
+  const ownShare = row.own / Math.max(weight, 1);
   const change = base
     ? changeOf(diffModeOf(look), [row.own, weight], [row.baseOwn, base.weight], unit)
     : null;
@@ -202,8 +224,12 @@ function FunctionRow({
       title={formatWeight(row.total, unit)}
       onClick={click}
     >
-      <span className="percent">{own}</span>
-      <span className="percent dim">{total}</span>
+      <Share share={ownShare} tone={ownTone(ownShare, "plain")}>
+        {own}
+      </Share>
+      <Share share={row.total / Math.max(weight, 1)} tone="dim">
+        {total}
+      </Share>
       {change ? <Change change={change} /> : null}
       <span className="name">{fn.name}</span>
       {fn.module ? <span className="end">{fn.module}</span> : null}

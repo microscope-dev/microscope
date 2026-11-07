@@ -241,6 +241,14 @@ export function hue(text: string): number {
   return (hash >>> 0) % 360;
 }
 
+/** A bar's fill for a share of the samples, warming from yellow to red as
+ * the share grows, so the hot rows of a list stand out. The square root
+ * spreads the small shares that most rows have. */
+export function heat(share: number, dark: boolean): string {
+  const h = Math.round(50 - 50 * Math.sqrt(Math.min(Math.max(share, 0), 1)));
+  return dark ? `hsl(${h} 85% 45% / 0.5)` : `hsl(${h} 95% 55% / 0.45)`;
+}
+
 /** A frame's fill: warm warnings for truncations, the family's hue for
  * code. Dark themes darken every fill. */
 export function fill(key: ProfileKey, dark: boolean): string {

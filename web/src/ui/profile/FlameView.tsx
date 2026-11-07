@@ -1,15 +1,7 @@
-import {
-  type ChangeEvent,
-  type MouseEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { assert } from "../../assert";
-import { diffModeOf, withLook } from "../../profile/look";
+import { diffModeOf, type ProfileLook, withLook } from "../../profile/look";
 import { changeFill, changeOf, fill, formatPercent, formatWeight } from "../../profile/paint";
 import {
   type CallTree,
@@ -17,6 +9,7 @@ import {
   findPath,
   hit,
   layout,
+  matching,
   nameOf,
   pathOf,
   type Rect,
@@ -24,8 +17,11 @@ import {
 import { useShownScheme } from "../../theme";
 import { prepare, useWidth } from "./canvas";
 import { token, useAnswer, useProfile } from "./context";
-import { Selected } from "./Details";
+import { SearchRow, useFrameSearch } from "./Details";
 import { Unanswered } from "./parts";
+
+// oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+const unzoom = (look: ProfileLook) => withLook(look, "z", undefined);
 
 /** One row of the flame graph, in CSS pixels. */
 const ROW = 18;
@@ -40,7 +36,7 @@ export function FlameView() {
     () => (answer.data ? decodeTree(answer.data, answer.data.payload) : null),
     [answer.data],
   );
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useFrameSearch();
   const zoom = tree && look.z ? findPath(tree, look.z) : null;
   const matched = useMemo(() => {
     const needle = search.toLowerCase();
@@ -51,40 +47,9 @@ export function FlameView() {
     () => (tree && fn ? matching(tree, (name) => name === fn).nodes : null),
     [tree, fn],
   );
-  // A click both zooms and selects, so clearing undoes both, and any search.
-  const searchBox = useRef<HTMLInputElement>(null);
-  const clear = useCallback(() => {
-    setSearch("");
-    setLook(
-      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-      (prev) => withLook(withLook(prev, "z", undefined), "fn", undefined),
-      true,
-    );
-  }, [setLook]);
-  // The button goes once it has cleared, so the search keeps the focus.
-  const clearAndFocus = useCallback(() => {
-    clear();
-    searchBox.current?.focus();
-  }, [clear]);
-  // Typing searches afresh, so the frame the search showed is no longer
-  // selected. Emptying the search clears, as its button does.
   const hasZoom = look.z !== undefined;
-  const edit = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const text = event.target.value;
-      setSearch(text);
-      if (text === "" && (hasZoom || fn !== undefined)) {
-        clear();
-      } else if (fn !== undefined) {
-        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
-        setLook((prev) => withLook(prev, "fn", undefined));
-      }
-    },
-    [hasZoom, fn, setLook, clear],
-  );
   const zoomTo = useCallback(
     (zoomed: CallTree, node: number) => {
-      setSearch("");
       setLook(
         (prev) => ({
           ...withLook(prev, "z", pathOf(zoomed, node)),
@@ -98,34 +63,16 @@ export function FlameView() {
 
   return (
     <div className="pane grow">
-      {/* One row whether or not a frame is selected, so the search stays
-          put and keeps its focus as a click selects or typing lets go. */}
-      <div className="profile-details" data-testid={fn === undefined ? undefined : "details"}>
-        <input
-          ref={searchBox}
-          type="search"
-          className="input profile-search"
-          placeholder="Click or search for a frame"
-          aria-label="Search frames"
-          title={fn}
-          value={fn ?? search}
-          onChange={edit}
-        />
-        {search !== "" || fn !== undefined || hasZoom ? (
-          <button type="button" className="tb ghost" onClick={clearAndFocus}>
-            Clear
-          </button>
-        ) : null}
-        {fn === undefined ? (
-          matched && tree ? (
-            <span className="muted" data-testid="matched">
-              matched {formatPercent(matched.weight, tree.weight)} of samples
-            </span>
-          ) : null
-        ) : (
-          <Selected name={fn} />
-        )}
-      </div>
+      <SearchRow
+        search={search}
+        onSearch={setSearch}
+        matched={
+          matched && tree
+            ? `matched ${formatPercent(matched.weight, tree.weight)} of samples`
+            : null
+        }
+        reset={hasZoom ? unzoom : null}
+      />
       <div className={`pane-body ${answer.current ? "" : "stale"}`}>
         {answer.error || !tree ? (
           <Unanswered error={answer.error} reading="Reading the flame graph…" />
@@ -143,27 +90,6 @@ export function FlameView() {
       </div>
     </div>
   );
-}
-
-/** The nodes whose names `marks` accepts, and the weight under them,
- * counting nested matches once. */
-function matching(tree: CallTree, marks: (name: string) => boolean) {
-  const nodes = new Set<number>();
-  let weight = 0;
-  for (let node = 0; node < tree.count;) {
-    if (marks(nameOf(tree, node))) {
-      weight += tree.total[node] ?? 0;
-      for (let inner = node; inner < (tree.end[node] ?? node + 1); inner += 1) {
-        if (marks(nameOf(tree, inner))) {
-          nodes.add(inner);
-        }
-      }
-      node = tree.end[node] ?? node + 1;
-    } else {
-      node += 1;
-    }
-  }
-  return { nodes, weight };
 }
 
 function FlameGraph({

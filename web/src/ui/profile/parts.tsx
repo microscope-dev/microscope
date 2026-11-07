@@ -1,12 +1,14 @@
 // Small pieces the profile's views share: a removable chip, buttons that
 // change the look, rounded numbers that keep their exact value on hover,
-// and what a view says before its answer comes or when it failed.
+// a share drawn as a bar, and what a view says before its answer comes or
+// when it failed.
 
-import { type ReactNode, useCallback } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 
 import { type ProfileLook, withLook } from "../../profile/look";
-import { formatBytes, formatCount, formatDuration } from "../../profile/paint";
+import { formatBytes, formatCount, formatDuration, heat } from "../../profile/paint";
 import type { RequestError } from "../../protocol";
+import { useShownScheme } from "../../theme";
 import { useProfile } from "./context";
 
 export function Chip({
@@ -140,4 +142,37 @@ export function Unanswered({
   ) : (
     <div className={`${className} muted`}>{reading}</div>
   );
+}
+
+/** The share of the samples a function's own time needs to be hot. */
+export const HOT_OWN = 0.05;
+
+/** A row's percent over a bar as wide as its share of the cell, warmer
+ * as the share grows. A hot share is bold; a dim one is a column read
+ * second. */
+export function Share({
+  share,
+  tone,
+  children,
+}: {
+  share: number;
+  tone: "plain" | "dim" | "hot";
+  children: string;
+}) {
+  const dark = useShownScheme() === "dark";
+  const bar = useMemo(
+    () => ({ width: `${Math.min(Math.max(share, 0), 1) * 100}%`, background: heat(share, dark) }),
+    [share, dark],
+  );
+  return (
+    <span className={`percent share ${tone}`}>
+      <span className="bar" style={bar} />
+      <span className="value">{children}</span>
+    </span>
+  );
+}
+
+/** How an own share reads: bold once hot, else as `otherwise`. */
+export function ownTone(share: number, otherwise: "plain" | "dim"): "plain" | "dim" | "hot" {
+  return share >= HOT_OWN ? "hot" : otherwise;
 }

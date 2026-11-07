@@ -4,6 +4,7 @@ import {
   type MouseEvent,
   type RefObject,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -12,31 +13,44 @@ import {
 import { assert } from "../../assert";
 import { diffModeOf } from "../../profile/look";
 import { type Changed, changeOf, formatPercent } from "../../profile/paint";
-import { type CallTree, decodeTree, nameOf } from "../../profile/tree";
+import { type CallTree, decodeTree, matching, nameOf, revealed } from "../../profile/tree";
 import type { ProfileQuery, RequestError } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
-import { Details } from "./Details";
-import { Unanswered } from "./parts";
+import { SearchRow, useFrameSearch } from "./Details";
+import { ownTone, Share, Unanswered } from "./parts";
 import { type ActiveRow, useActiveRow } from "./rows";
 
 const ROW = 20;
 
 /** The call tree of the query, with the selected function's details. */
 export function TreeView() {
-  const { query, look } = useProfile();
+  const { query } = useProfile();
   const tree = useTree(query);
+  const [search, setSearch] = useFrameSearch();
+  const matched = useMemo(() => {
+    const needle = search.toLowerCase();
+    return tree.tree && needle
+      ? matching(tree.tree, (name) => name.toLowerCase().includes(needle))
+      : null;
+  }, [tree.tree, search]);
   return (
     <div className="pane grow">
       <div className="pane-head">{query.invert ? "Callers" : "Call tree"}</div>
-      {look.fn ? (
-        <Details name={look.fn} />
-      ) : (
-        <div className="profile-details muted">Click a row to select it.</div>
-      )}
+      <SearchRow
+        search={search}
+        onSearch={setSearch}
+        matched={
+          matched && tree.tree
+            ? `matched ${formatPercent(matched.weight, tree.tree.weight)} of samples`
+            : null
+        }
+        reset={null}
+      />
       <TreeRows
         tree={tree}
         label="Call tree"
         reading={query.invert ? "Reading callers…" : "Reading the call tree…"}
+        matched={matched?.nodes ?? null}
       />
     </div>
   );
@@ -75,28 +89,42 @@ function opening(tree: CallTree): Set<number> {
   return open;
 }
 
+interface Opened {
+  tree: CallTree | null;
+  open: Set<number>;
+  /** The matches whose callers `open` has opened. */
+  matched: Set<number> | null;
+}
+
+const NOTHING_OPEN: Opened = { tree: null, open: new Set(), matched: null };
+
 /** A tree's rows, each node under its caller, opened and closed by its
  * twist or by Left and Right; choosing a row, or Enter, selects its
- * function. */
+ * function. A search's matches open their callers, which stay open. */
 export function TreeRows({
   tree: fetched,
   label,
   reading,
+  matched = null,
 }: {
   tree: Fetched;
   label: string;
   reading: string;
+  /** The nodes a search matches, marked in their rows. */
+  matched?: Set<number> | null;
 }) {
   const tree = fetched.tree;
   const body = useRef<HTMLDivElement>(null);
   // Opened nodes belong to one tree; another answer opens its own.
-  const [opened, setOpened] = useState<{ tree: CallTree | null; open: Set<number> }>({
-    tree: null,
-    open: new Set(),
-  });
-  const open = useMemo(
-    () => (opened.tree === tree ? opened.open : tree ? opening(tree) : new Set<number>()),
-    [opened, tree],
+  const [opened, setOpened] = useState<Opened>(NOTHING_OPEN);
+  if (tree && (opened.tree !== tree || opened.matched !== matched)) {
+    const kept = opened.tree === tree ? opened.open : opening(tree);
+    setOpened({ tree, open: matched ? revealed(tree, kept, matched) : kept, matched });
+  }
+  const open = opened.tree === tree ? opened.open : NOTHING_OPEN.open;
+  const setOpen = useCallback(
+    (next: Set<number>) => setOpened((prev) => ({ ...prev, open: next })),
+    [],
   );
   const rows = useMemo(() => {
     const shown: number[] = [];
@@ -128,12 +156,13 @@ export function TreeRows({
       tree={tree}
       rows={rows}
       open={open}
-      setOpen={setOpened}
+      setOpen={setOpen}
       body={body}
       virtual={virtual}
       keys={keys}
       label={label}
       current={fetched.current}
+      matched={matched}
     />
   );
 }
@@ -151,27 +180,30 @@ function TreeBody({
   keys,
   label,
   current,
+  matched,
 }: {
   tree: CallTree;
   rows: number[];
   open: Set<number>;
-  setOpen: (opened: { tree: CallTree; open: Set<number> }) => void;
+  setOpen: (open: Set<number>) => void;
   body: RefObject<HTMLDivElement | null>;
   virtual: Virtualizer<HTMLDivElement, Element>;
   keys: ActiveRow;
   label: string;
   current: boolean;
+  matched: Set<number> | null;
 }) {
   const { setLook } = useProfile();
+  useFirstMatch(rows, matched, keys);
   const toggle = useCallback(
     (node: number) => {
       const next = new Set(open);
       if (!next.delete(node)) {
         next.add(node);
       }
-      setOpen({ tree, open: next });
+      setOpen(next);
     },
-    [tree, open, setOpen],
+    [open, setOpen],
   );
   const select = useCallback(
     (node: number) => {
@@ -257,6 +289,7 @@ function TreeBody({
                 parent={parent(node)}
                 open={open.has(node)}
                 active={item.index === keys.active}
+                matched={matched?.has(node) ?? false}
                 pick={choosePick}
                 twist={chooseToggle}
               />
@@ -280,6 +313,7 @@ function TreeRow({
   parent,
   open,
   active,
+  matched,
   pick,
   twist,
 }: {
@@ -291,6 +325,7 @@ function TreeRow({
   parent: boolean;
   open: boolean;
   active: boolean;
+  matched: boolean;
   pick: (index: number, node: number) => void;
   twist: (index: number, node: number) => void;
 }) {
@@ -309,6 +344,8 @@ function TreeRow({
   const name = nameOf(tree, node);
   const total = formatPercent(tree.total[node] ?? 0, tree.weight);
   const own = formatPercent(tree.own[node] ?? 0, tree.weight);
+  const totalShare = (tree.total[node] ?? 0) / Math.max(tree.weight, 1);
+  const ownShare = (tree.own[node] ?? 0) / Math.max(tree.weight, 1);
   const change = tree.baseTotal
     ? changeOf(
         diffModeOf(look),
@@ -330,8 +367,12 @@ function TreeRow({
       style={placed}
       onClick={click}
     >
-      <span className="percent">{total}</span>
-      <span className="percent dim">{own}</span>
+      <Share share={totalShare} tone="plain">
+        {total}
+      </Share>
+      <Share share={ownShare} tone={ownTone(ownShare, "dim")}>
+        {own}
+      </Share>
       {change ? <Change change={change} /> : null}
       <span style={indent} />
       <button
@@ -344,11 +385,29 @@ function TreeRow({
       >
         {open ? "▾" : "▸"}
       </button>
-      <span className="name" title={name}>
+      <span className={`name ${matched ? "matched" : ""}`} title={name}>
         {name}
       </span>
     </div>
   );
+}
+
+/** Moves to the first row a search matches, in the order the rows read,
+ * once for each search, so opening and closing rows after it leaves the
+ * view where it is. Its callers are already open, so its row is there. */
+function useFirstMatch(rows: number[], matched: Set<number> | null, keys: ActiveRow) {
+  const moved = useRef<Set<number> | null>(null);
+  const { move } = keys;
+  useEffect(() => {
+    if (!matched || matched === moved.current) {
+      return;
+    }
+    moved.current = matched;
+    const first = rows.findIndex((node) => matched.has(node));
+    if (first >= 0) {
+      move(first);
+    }
+  }, [rows, matched, move]);
 }
 
 /** What each column of the rows below holds, over them. Each row names

@@ -3553,13 +3553,6 @@ textarea.input {
   text-overflow: ellipsis;
 }
 
-.profile-details .name {
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .tree-rows {
   position: relative;
 }
@@ -3586,7 +3579,7 @@ textarea.input {
 .tree-row .percent,
 .column-head .percent {
   flex: none;
-  width: 56px;
+  width: 60px;
   text-align: right;
 }
 
@@ -3605,6 +3598,37 @@ textarea.input {
 .tree-row .name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A percent over a bar of its share, so the hot rows show without reading
+   every number. */
+.tree-row .share {
+  position: relative;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+}
+
+.tree-row .share > .bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  border-radius: 2px;
+}
+
+.tree-row .share > .value {
+  position: relative;
+}
+
+.tree-row .share.hot {
+  font-weight: 600;
+}
+
+.tree-row .name.matched {
+  color: var(--accent);
 }
 
 .profile-functions {

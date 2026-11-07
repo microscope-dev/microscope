@@ -7,6 +7,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
+import "../src/styles.css";
 import type { TransportHandlers } from "../src/connection";
 import { type ProfileLook, queryOf } from "../src/profile/look";
 import {
@@ -320,6 +321,147 @@ it("names each row's shares for those who cannot see the columns", async () => {
     .toBeVisible();
 });
 
+/** A call tree's row by its accessible name. */
+const treeRow = (name: RegExp) => page.getByRole("treeitem", { name });
+
+/** A row's share cells, total then own. */
+function shares(name: RegExp): HTMLElement[] {
+  return [...treeRow(name).element().querySelectorAll<HTMLElement>(".share")];
+}
+
+/** How wide a share cell's bar is, in percent of the cell. */
+function barWidth(cell: HTMLElement | undefined): number {
+  const bar = cell?.querySelector<HTMLElement>(".bar");
+  return Number(bar?.style.width.replace("%", ""));
+}
+
+/** The names a search marks. */
+function markedNames(): (string | null)[] {
+  return [...document.querySelectorAll(".tree-row .name.matched")].map((name) => name.textContent);
+}
+
+it("draws each share as a bar, bolds large own time, and searches as the flame graph does", async () => {
+  const server = await mount(<TreeView />);
+  server.answer(await server.next("profileTree"), ...TREE);
+  await expect.element(treeRow(/^main,/u)).toBeVisible();
+
+  // main is 10 of 12 total and spends none of it itself.
+  const [mainTotal, mainOwn] = shares(/^main,/u);
+  expect(barWidth(mainTotal)).toBeCloseTo(83.33, 1);
+  expect(mainOwn?.classList.contains("hot")).toBe(false);
+  // work spends 2 of 12 itself, over the 5% that marks own time hot.
+  expect(shares(/^work,/u)[1]?.classList.contains("hot")).toBe(true);
+
+  // The search marks each leaf, and counts their samples once: 4 + 2 of 12.
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  await userEvent.fill(search, "lea");
+  await expect.element(page.getByTestId("matched")).toHaveTextContent("matched 50.0% of samples");
+  expect(markedNames()).toEqual(["leaf", "leaf"]);
+
+  // A click selects into the search, and Clear lets go of it.
+  await treeRow(/^idle,/u).click();
+  await expect.element(search).toHaveValue("idle");
+  await page.getByRole("button", { name: "Clear" }).click();
+  await expect.element(search).toHaveValue("");
+  expect(lookShown().fn).toBeUndefined();
+  expect(markedNames()).toEqual([]);
+});
+
+/** A tree whose one deep match its opening leaves closed: main opens down
+ * to a, whose child b holds too little of it to open. */
+const HIDDEN = treeOf([
+  ["main", 0, 10, 0],
+  ["a", 4, 6, 1],
+  ["b", 0, 2, 2],
+  ["deep", 2, 2, 3],
+  ["c", 4, 4, 1],
+]);
+
+it("opens the callers of what a search matches, and leaves them as they are after", async () => {
+  const server = await mount(<TreeView />);
+  server.answer(await server.next("profileTree"), ...HIDDEN);
+  const tree = page.getByRole("tree", { name: "Call tree" });
+  const deep = treeRow(/^deep,/u);
+  await expect.element(tree.getByRole("treeitem")).toHaveLength(4);
+  await expect.element(deep).not.toBeInTheDocument();
+
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  await userEvent.fill(search, "dee");
+  await expect.element(deep).toBeVisible();
+  expect(markedNames()).toEqual(["deep"]);
+
+  // Closing a caller the search opened keeps it closed while the search
+  // stands, and a new search opens it again.
+  treeRow(/^b,/u).element().querySelector<HTMLElement>(".twist")?.click();
+  await expect.element(deep).not.toBeInTheDocument();
+  await userEvent.fill(search, "deep");
+  await expect.element(deep).toBeVisible();
+
+  // What a search opened stays open once it is cleared.
+  await page.getByRole("button", { name: "Clear" }).click();
+  await expect.element(search).toHaveValue("");
+  await expect.element(deep).toBeVisible();
+  expect(markedNames()).toEqual([]);
+});
+
+/** A tall tree whose only match is far below, under callers its opening
+ * leaves closed: main's 200 callees come first, then a, b, and target. */
+const TALL = treeOf([
+  ["main", 0, 201, 0],
+  ...Array.from({ length: 200 }, (_, at): [string, number, number, number] => [`f${at}`, 1, 1, 1]),
+  ["a", 0, 1, 1],
+  ["b", 0, 1, 2],
+  ["target", 1, 1, 3],
+]);
+const SHORT = { display: "flex", flexDirection: "column", height: 300 } as const;
+
+/** Whether a row lies wholly inside what its scrolled container shows. */
+function scrolledInto(container: Element, row: Element): boolean {
+  const outer = container.getBoundingClientRect();
+  const inner = row.getBoundingClientRect();
+  return inner.top >= outer.top && inner.bottom <= outer.bottom;
+}
+
+it("scrolls to the first match of each search, but not as rows open and close after", async () => {
+  const server = await mount(
+    <div style={SHORT}>
+      <TreeView />
+    </div>,
+  );
+  server.answer(await server.next("profileTree"), ...TALL);
+  const tree = page.getByRole("tree", { name: "Call tree" });
+  await expect.element(treeRow(/^f0,/u)).toBeVisible();
+  const body = tree.element();
+  expect(body.scrollTop).toBe(0);
+
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  await userEvent.fill(search, "target");
+  const target = treeRow(/^target,/u);
+  await vi.waitFor(() => expect(scrolledInto(body, target.element())).toBe(true), POLL);
+  expect(body.getAttribute("aria-activedescendant")).toBe(target.element().id);
+  // The search keeps the focus as the tree moves.
+  await expect.element(search).toHaveFocus();
+
+  // Scrolled back up, closing a row does not bring the match back.
+  body.scrollTop = 0;
+  await expect.element(treeRow(/^main,/u)).toBeVisible();
+  treeRow(/^main,/u)
+    .element()
+    .querySelector<HTMLElement>(".twist")
+    ?.click();
+  await expect.element(treeRow(/^f0,/u)).not.toBeInTheDocument();
+  treeRow(/^main,/u)
+    .element()
+    .querySelector<HTMLElement>(".twist")
+    ?.click();
+  await expect.element(treeRow(/^f0,/u)).toBeVisible();
+  expect(body.scrollTop).toBe(0);
+
+  // A new search moves again.
+  await userEvent.fill(search, "targe");
+  await vi.waitFor(() => expect(scrolledInto(body, target.element())).toBe(true), POLL);
+});
+
 it("says it is reading a call tree, and why it could not", async () => {
   const server = await mount(<TreeView />);
   await expect.element(page.getByText("Reading the call tree…")).toBeVisible();
@@ -352,6 +494,52 @@ it("walks the functions with the arrow keys, same-named functions included", asy
   );
   await userEvent.keyboard("{Enter}");
   await vi.waitFor(() => expect(lookShown().fn).toBe("leaf"), POLL);
+});
+
+it("finds functions by name, and bolds the ones whose own time is hot", async () => {
+  const server = await mount(<FunctionsView />);
+  server.answer(await server.next("profileFunctions"), {
+    weight: 10,
+    rows: [
+      { key: 0, own: 5, total: 10, baseOwn: 0, baseTotal: 0 },
+      { key: 1, own: 3, total: 3, baseOwn: 0, baseTotal: 0 },
+      { key: 2, own: 1, total: 1, baseOwn: 0, baseTotal: 0 },
+      // Just at the 5% that makes own time hot, and just under it.
+      { key: 3, own: 0.5, total: 0.5, baseOwn: 0, baseTotal: 0 },
+      { key: 4, own: 0.49, total: 0.49, baseOwn: 0, baseTotal: 0 },
+    ],
+    keys: [key("main"), key("leaf", "liba.so"), key("leaf", "libb.so"), key("edge"), key("under")],
+    base: null,
+  });
+  const list = page.getByRole("listbox", { name: "Functions" });
+  const options = list.getByRole("option");
+  await expect.element(options).toHaveLength(5);
+  const hot = () =>
+    [...list.element().querySelectorAll(".tree-row")]
+      .filter((row) => row.querySelector(".share")?.classList.contains("hot"))
+      .map((row) => row.querySelector(".name")?.textContent);
+  expect(hot()).toEqual(["main", "leaf", "leaf", "edge"]);
+  // The own bar is half main's cell, as main's own is half the samples.
+  const ownBar = list.element().querySelector<HTMLElement>(".tree-row .share .bar");
+  expect(ownBar?.style.width).toBe("50%");
+
+  // A search keeps only the functions whose names hold it, in any case.
+  const search = page.getByRole("searchbox", { name: "Search frames" });
+  await userEvent.fill(search, "LEA");
+  await expect.element(options).toHaveLength(2);
+  await expect.element(page.getByTestId("matched")).toHaveTextContent("2 of 5 functions match");
+  await userEvent.fill(search, "zzz");
+  await expect.element(page.getByText("No function matches.")).toBeVisible();
+
+  // Selecting one shows its name in the search, and every function again.
+  await userEvent.fill(search, "ma");
+  await options.first().click();
+  await expect.element(search).toHaveValue("main");
+  await expect.element(options).toHaveLength(5);
+  await page.getByRole("button", { name: "Clear" }).click();
+  await expect.element(search).toHaveValue("");
+  expect(lookShown().fn).toBeUndefined();
+  await expect.element(options).toHaveLength(5);
 });
 
 it("says when no function was sampled", async () => {

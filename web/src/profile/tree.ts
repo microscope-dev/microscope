@@ -202,3 +202,39 @@ export function hit(rects: readonly Rect[], depth: number, x: number): Rect | nu
   }
   return null;
 }
+
+/** The nodes whose names `marks` accepts, and the weight under them,
+ * counting nested matches once. */
+export function matching(tree: CallTree, marks: (name: string) => boolean) {
+  const nodes = new Set<number>();
+  let weight = 0;
+  for (let node = 0; node < tree.count;) {
+    if (marks(nameOf(tree, node))) {
+      weight += tree.total[node] ?? 0;
+      for (let inner = node; inner < (tree.end[node] ?? node + 1); inner += 1) {
+        if (marks(nameOf(tree, inner))) {
+          nodes.add(inner);
+        }
+      }
+      node = tree.end[node] ?? node + 1;
+    } else {
+      node += 1;
+    }
+  }
+  return { nodes, weight };
+}
+
+/** `open` with every caller of each of `nodes` opened too, so that each
+ * of them shows. */
+export function revealed(tree: CallTree, open: Set<number>, nodes: Iterable<number>): Set<number> {
+  const next = new Set(open);
+  // Callers already walked from an earlier node, whose callers are open.
+  const walked = new Set<number>();
+  for (const node of nodes) {
+    for (let at = tree.parent[node] ?? -1; at >= 0 && !walked.has(at); at = tree.parent[at] ?? -1) {
+      walked.add(at);
+      next.add(at);
+    }
+  }
+  return next;
+}

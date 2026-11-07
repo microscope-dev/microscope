@@ -37,7 +37,16 @@ import {
   shareChange,
   weightChange,
 } from "../src/profile/paint";
-import { type CallTree, decodeTree, findPath, hit, layout, pathOf } from "../src/profile/tree";
+import {
+  type CallTree,
+  decodeTree,
+  findPath,
+  hit,
+  layout,
+  matching,
+  pathOf,
+  revealed,
+} from "../src/profile/tree";
 import {
   blockAt,
   decodeZones,
@@ -255,6 +264,25 @@ describe("a call tree's geometry", () => {
 
 const hueOf = (fill: string) => Number(/^hsl\((\d+)/u.exec(fill)?.[1]);
 const lightness = (fill: string) => Number(/(\d+(?:\.\d+)?)%\)$/u.exec(fill)?.[1]);
+
+describe("a search of a call tree", () => {
+  it("marks every match, nested ones too, but counts a nested one's samples once", () => {
+    // main (10) holds leaf (4); thread (2) holds leaf (2): of 12, all of it.
+    const found = matching(tree, (name) => name.includes("a"));
+    expect([...found.nodes].toSorted()).toEqual([0, 2, 4, 5]);
+    expect(found.weight).toBe(12);
+    expect(matching(tree, (name) => name === "leaf").weight).toBe(6);
+  });
+
+  it("opens every caller of each match, and nothing else", () => {
+    expect([...revealed(tree, new Set(), [2])].toSorted()).toEqual([0, 1]);
+    // An open caller under a closed one still opens the closed one.
+    const open = new Set([1]);
+    expect([...revealed(tree, open, [2, 5])].toSorted()).toEqual([0, 1, 4]);
+    expect([...open]).toEqual([1]);
+    expect([...revealed(tree, new Set(), [0, 4])]).toEqual([]);
+  });
+});
 
 describe("a diff's colors", () => {
   it("are red where a share grew, blue where it shrank, stronger the more", () => {

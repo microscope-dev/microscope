@@ -1,6 +1,6 @@
-import { type ReactNode, useCallback } from "react";
+import { type ChangeEvent, type ReactNode, useCallback, useRef, useState } from "react";
 
-import { transformed, withLook } from "../../profile/look";
+import { type ProfileLook, transformed, withLook } from "../../profile/look";
 import { formatPercent, formatWeight } from "../../profile/paint";
 import type { TransformOp } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
@@ -15,15 +15,96 @@ const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
   { op: "drop", label: "Drop", title: "Remove every stack through this function" },
 ];
 
-/** The selected function in a bar of its own: its name, then what
- * `Selected` shows. */
-export function Details({ name }: { name: string }) {
+/** What a view's search holds: the text typed while no frame is selected.
+ * Selecting a frame shows its name in the search instead, so the text
+ * typed before goes, and does not come back once it is let go. */
+export function useFrameSearch(): [string, (text: string) => void] {
+  const { look } = useProfile();
+  const [typed, setTyped] = useState("");
+  const [seen, setSeen] = useState(look.fn);
+  if (seen !== look.fn) {
+    setSeen(look.fn);
+    if (look.fn !== undefined) {
+      setTyped("");
+    }
+  }
+  return [look.fn === undefined ? typed : "", setTyped];
+}
+
+/** One row that searches a view's frames and holds the selected one's
+ * details, the same in every view. A click on a frame puts its name in
+ * the search; typing lets it go, and emptying the search clears, as Clear
+ * does. `reset` also clears what else the view keeps, such as a zoom. */
+export function SearchRow({
+  search,
+  onSearch,
+  matched,
+  reset,
+}: {
+  search: string;
+  onSearch: (text: string) => void;
+  /** What the search matches, once it has text. */
+  matched: string | null;
+  /** Clears the rest of what the view shows, or null when it has none. */
+  reset: ((look: ProfileLook) => ProfileLook) | null;
+}) {
+  const { look, setLook } = useProfile();
+  const { fn } = look;
+  const searchBox = useRef<HTMLInputElement>(null);
+  const clear = useCallback(() => {
+    onSearch("");
+    setLook(
+      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+      (prev) => withLook(reset ? reset(prev) : prev, "fn", undefined),
+      true,
+    );
+  }, [onSearch, setLook, reset]);
+  // The button goes once it has cleared, so the search keeps the focus.
+  const clearAndFocus = useCallback(() => {
+    clear();
+    searchBox.current?.focus();
+  }, [clear]);
+  const edit = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const text = event.target.value;
+      onSearch(text);
+      if (text === "" && (reset !== null || fn !== undefined)) {
+        clear();
+      } else if (fn !== undefined) {
+        // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+        setLook((prev) => withLook(prev, "fn", undefined));
+      }
+    },
+    [reset, fn, onSearch, setLook, clear],
+  );
   return (
-    <div className="profile-details" data-testid="details">
-      <span className="mono name" title={name}>
-        {name}
-      </span>
-      <Selected name={name} />
+    // One row whether or not a frame is selected, so the search stays put
+    // and keeps its focus as a click selects or typing lets go.
+    <div className="profile-details" data-testid={fn === undefined ? undefined : "details"}>
+      <input
+        ref={searchBox}
+        type="search"
+        className="input profile-search"
+        placeholder="Click or search for a frame"
+        aria-label="Search frames"
+        title={fn}
+        value={fn ?? search}
+        onChange={edit}
+      />
+      {search !== "" || fn !== undefined || reset !== null ? (
+        <button type="button" className="tb ghost" onClick={clearAndFocus}>
+          Clear
+        </button>
+      ) : null}
+      {fn === undefined ? (
+        matched ? (
+          <span className="muted" data-testid="matched">
+            {matched}
+          </span>
+        ) : null
+      ) : (
+        <Selected name={fn} />
+      )}
     </div>
   );
 }
