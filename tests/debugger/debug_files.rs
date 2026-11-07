@@ -763,6 +763,31 @@ async fn a_debug_file_whose_supplementary_file_is_missing_is_refused_with_its_re
     scenario.shutdown().await;
 }
 
+/// The supplementary file a module names is input: one that is a FIFO or
+/// a device, which may never end, is not read, and the module's DWARF is
+/// left out as if the file were missing.
+#[tokio::test]
+async fn a_supplementary_file_that_is_no_regular_file_is_not_read() {
+    let scratch = ScratchDir::new("dwz-fifo");
+    let program = scratch.path().join("shapes");
+    fs::copy(dwz("gcc-o0/dwz/shapes"), &program).expect("copy the program");
+    fs::create_dir(scratch.path().join(".dwz")).expect("the .dwz directory");
+    nix::unistd::mkfifo(
+        &scratch.path().join(".dwz/shapes"),
+        nix::sys::stat::Mode::S_IRWXU,
+    )
+    .expect("a FIFO");
+
+    let scenario = Scenario::new("dwz-fifo", &program);
+    let microscope::DebugInformation::Unusable { reason } =
+        scenario.handle().module_image().debug_information()
+    else {
+        panic!("{:?}", scenario.handle().module_image().debug_information());
+    };
+    assert!(reason.ends_with(") was not found"), "{reason}");
+    scenario.shutdown().await;
+}
+
 /// The checksum a `.debug_sup` records: after its version, flag, and name,
 /// a length and that many bytes.
 fn debug_sup_checksum(path: &Path) -> String {

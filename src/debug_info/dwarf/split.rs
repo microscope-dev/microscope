@@ -106,9 +106,10 @@ pub(super) fn read_files(
         .into_par_iter()
         .filter_map(|(index, paths)| {
             let first = paths.first()?.clone();
-            let found = paths
-                .into_iter()
-                .find_map(|path| std::fs::read(&path).ok().map(|bytes| (path, bytes)));
+            let found = paths.into_iter().find_map(|path| {
+                let bytes = crate::image::backing::read_named(&path).ok()?;
+                Some((path, bytes))
+            });
             Some((index, found.ok_or(first)))
         })
         .collect()

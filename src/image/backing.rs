@@ -148,6 +148,31 @@ pub fn read_input(path: &Path) -> std::io::Result<(Vec<u8>, FileStamp)> {
     Ok(read_snapshot(path, MAX_INPUT, &mut |_| {}, vector)?)
 }
 
+/// Reads a file another file names, such as a `.dwo` or supplementary file
+/// a module's DWARF names, as [`read_input`] does, but only a regular
+/// file. The name is input: a device or FIFO it names may never end, and
+/// opening a FIFO to read waits for a writer, so neither is opened to read.
+pub fn read_named(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_PATH.bits())
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+
+    // Reading through the descriptor reads the file that was checked,
+    // whatever its path names now.
+    let opened = format!("/proc/self/fd/{}", file.as_raw_fd());
+    Ok(read_input(Path::new(&opened))?.0)
+}
+
 /// `length` zero bytes, or `None` when they cannot be allocated; zeroed
 /// as [`AlignedBytes::zeroed`] is.
 fn vector(length: usize) -> Option<Vec<u8>> {

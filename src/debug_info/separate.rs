@@ -139,7 +139,7 @@ impl DebugFileSearch {
         // A file where the module's build-id or debug link names one, which
         // is rejected, with why, unless it describes the module.
         let consider = |candidate: &Path, checksum: Option<u32>| {
-            let data = crate::image::backing::read_input(candidate).ok()?.0;
+            let data = crate::image::backing::read_named(candidate).ok()?;
             let file = DebugFile {
                 path: candidate.to_path_buf(),
                 data,
@@ -412,7 +412,7 @@ fn keep(path: &Path, data: &[u8]) -> bool {
 
 /// Reads a file when `describes` accepts its contents.
 fn read_if(path: &Path, describes: impl Fn(&[u8]) -> bool) -> Option<DebugFile> {
-    let data = crate::image::backing::read_input(path).ok()?.0;
+    let data = crate::image::backing::read_named(path).ok()?;
     describes(&data).then(|| DebugFile {
         path: path.to_path_buf(),
         data,

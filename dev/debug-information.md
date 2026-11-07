@@ -195,6 +195,11 @@ directories, build-ID layouts, supplementary links, and debuginfod. Keep
 network fetching outside the controller. Verify that fetched or discovered
 files match the module before loading them.
 
+A name one file gives another, as a debug link, a supplementary link, or a
+skeleton's `.dwo` name, is input: it can name `/dev/zero` or a FIFO. Such
+files are read with `image::backing::read_named`, which reads only a
+regular file and never opens anything else to read.
+
 ## DWARF boundary
 
 DWARF providers own compilation units, DIE traversal, line programs, location

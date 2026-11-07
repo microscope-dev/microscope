@@ -197,3 +197,33 @@ async fn split_dwarf_is_read_from_its_dwo_file() {
 
     scenario.shutdown().await;
 }
+
+/// A skeleton's name for its `.dwo` file is input: one that names a FIFO
+/// or a device, which may never end, is not read, and the unit is left
+/// described as if its file were missing.
+#[tokio::test]
+async fn a_dwo_file_that_is_no_regular_file_is_not_read() {
+    let scratch = ScratchDir::new("dwo-fifo");
+    let program = scratch.path().join("profile-inline-clang-split");
+    fs::copy(Scenario::fixture("profile-inline-clang-split"), &program).expect("copy the program");
+
+    // The skeleton names `build/test-programs/...dwo` in its compile
+    // directory, `.`, which is the copy's.
+    let named = scratch
+        .path()
+        .join("build/test-programs/profile-inline-clang-split-profile-inline.dwo");
+    fs::create_dir_all(named.parent().expect("a directory")).expect("the directories");
+    nix::unistd::mkfifo(&named, nix::sys::stat::Mode::S_IRWXU).expect("a FIFO");
+
+    let scenario = Scenario::new("dwo-fifo", &program);
+    let microscope::DebugInformation::Incomplete { reason } =
+        scenario.handle().module_image().debug_information()
+    else {
+        panic!("{:?}", scenario.handle().module_image().debug_information());
+    };
+    assert!(
+        reason.contains("that was not found or could not be read"),
+        "{reason}"
+    );
+    scenario.shutdown().await;
+}
