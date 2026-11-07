@@ -318,14 +318,14 @@ it("names each row's shares for those who cannot see the columns", async () => {
   const server = await mount(<TreeView />);
   server.answer(await server.next("profileTree"), ...TREE);
   await expect
-    .element(page.getByRole("treeitem", { name: "main, 83.3% total, 0.00% own" }))
+    .element(page.getByRole("treeitem", { name: "main, 0.00% own, 83.3% total" }))
     .toBeVisible();
 });
 
 /** A call tree's row by its accessible name. */
 const treeRow = (name: RegExp) => page.getByRole("treeitem", { name });
 
-/** A row's share cells, total then own. */
+/** A row's share cells, own then total. */
 function shares(name: RegExp): HTMLElement[] {
   return [...treeRow(name).element().querySelectorAll<HTMLElement>(".share")];
 }
@@ -360,18 +360,18 @@ it("draws each share as a bar, bolds large own time, and searches as the flame g
   await expect.element(treeRow(/^main,/u)).toBeVisible();
 
   // main is 10 of 12 total and spends none of it itself.
-  const [mainTotal, mainOwn] = shares(/^main,/u);
+  const [mainOwn, mainTotal] = shares(/^main,/u);
   expect(barWidth(mainTotal)).toBeCloseTo(83.33, 1);
   expect(barWidth(mainOwn)).toBe(0);
   expect(mainOwn?.classList.contains("strong")).toBe(false);
   // The larger share is drawn redder: as much red, less green.
   const [hotRed, hotGreen] = barColor(mainTotal);
-  const [coolRed, coolGreen, , coolAlpha] = barColor(shares(/^idle,/u)[0]);
+  const [coolRed, coolGreen, , coolAlpha] = barColor(shares(/^idle,/u)[1]);
   expect(coolAlpha).toBeGreaterThan(0);
   expect(hotRed).toBeGreaterThanOrEqual(coolRed ?? 0);
   expect(hotGreen).toBeLessThan(coolGreen ?? 0);
   // work spends 2 of 12 itself, over the 5% that marks own time hot.
-  expect(shares(/^work,/u)[1]?.classList.contains("strong")).toBe(true);
+  expect(shares(/^work,/u)[0]?.classList.contains("strong")).toBe(true);
 
   // The search marks each leaf, and counts their samples once: 4 + 2 of 12.
   const search = page.getByRole("searchbox", { name: "Search frames" });
@@ -563,6 +563,30 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
   await expect.element(search).toHaveValue("");
   expect(lookShown().fn).toBeUndefined();
   await expect.element(options).toHaveLength(5);
+});
+
+it("orders functions by own until asked to order them by total", async () => {
+  const server = await mount(<FunctionsView />);
+  server.answer(await server.next("profileFunctions"), {
+    weight: 10,
+    rows: [
+      { key: 0, own: 5, total: 5, baseOwn: 0, baseTotal: 0 },
+      { key: 1, own: 1, total: 9, baseOwn: 0, baseTotal: 0 },
+    ],
+    keys: [key("busy"), key("caller")],
+    base: null,
+  });
+  const list = page.getByRole("listbox", { name: "Functions" });
+  const names = () =>
+    [...list.element().querySelectorAll(".tree-row .name")].map((name) => name.textContent);
+  await expect.element(list.getByRole("option")).toHaveLength(2);
+  expect(names()).toEqual(["busy", "caller"]);
+  await expect
+    .element(page.getByRole("button", { name: "by own" }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "by total" }).click();
+  await vi.waitFor(() => expect(names()).toEqual(["caller", "busy"]), POLL);
 });
 
 it("says when no function was sampled", async () => {

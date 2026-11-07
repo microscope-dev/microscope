@@ -137,8 +137,8 @@ export function TreeRows({
   );
 }
 
-const TREE_COLUMNS = ["total", "own"];
-const DIFF_TREE_COLUMNS = ["total", "own", "change"];
+const TREE_COLUMNS = ["own", "total"];
+const DIFF_TREE_COLUMNS = ["own", "total", "change"];
 
 function TreeBody({
   tree,
@@ -332,16 +332,16 @@ function TreeRow({
       aria-level={depth + 1}
       aria-expanded={parent ? open : undefined}
       aria-selected={look.fn === name}
-      aria-label={`${name}, ${total} total, ${own} own${change ? `, ${change.text} change` : ""}`}
+      aria-label={`${name}, ${own} own, ${total} total${change ? `, ${change.text} change` : ""}`}
       className={`row tree-row ${look.fn === name ? "selected" : ""} ${active ? "active" : ""}`}
       style={placed}
       onClick={click}
     >
-      <Share share={totalShare} tone="plain">
-        {total}
-      </Share>
-      <Share share={ownShare} tone={ownTone(ownShare, "dim")}>
+      <Share share={ownShare} tone={ownTone(ownShare, "plain")}>
         {own}
+      </Share>
+      <Share share={totalShare} tone="dim">
+        {total}
       </Share>
       {change ? <Change change={change} /> : null}
       <span style={indent} />
@@ -380,14 +380,24 @@ function useFirstMatch(rows: number[], matched: Set<number> | null, keys: Active
   }, [rows, matched, move]);
 }
 
+const COLUMN_HELP: Record<string, string> = {
+  own: "Time in the function itself",
+  total: "Time in the function and what it calls",
+  change: "Change from the base profile",
+};
+
 /** What each column of the rows below holds, over them. Each row names
  * its own columns for screen readers. */
 export function ColumnHead({ columns, end }: { columns: string[]; end?: string }) {
   return (
     <div className="row column-head" aria-hidden="true">
       {columns.map((column) => (
-        <span key={column} className={`percent ${column === "change" ? "change" : ""}`}>
-          {column}
+        <span
+          key={column}
+          className={`percent ${column === "change" ? "change" : ""}`}
+          title={COLUMN_HELP[column]}
+        >
+          <span className="hover-help">{column}</span>
         </span>
       ))}
       <span className="name">function</span>
