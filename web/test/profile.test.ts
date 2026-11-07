@@ -156,7 +156,13 @@ describe("a profile's address", () => {
     expect(focused).toEqual({ fn: "leaf", tf: ["focus:outer"] });
     const both = transformed(focused, { op: "merge", name: "middle" });
     expect(untransformed(both, 1)).toEqual(focused);
-    expect(untransformed(both, 0)).toEqual({ fn: "leaf" });
+    expect(untransformed(focused, 0)).toEqual({ fn: "leaf" });
+  });
+
+  it("removes only the transform asked, keeping those before and after it", () => {
+    const look = { z: ["main"], tf: ["focus:outer", "merge:middle", "drop:leaf"] };
+    expect(untransformed(look, 1)).toEqual({ tf: ["focus:outer", "drop:leaf"] });
+    expect(untransformed(look, 0)).toEqual({ tf: ["merge:middle", "drop:leaf"] });
   });
 });
 

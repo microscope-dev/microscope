@@ -295,14 +295,15 @@ export function transformed(look: ProfileLook, transform: ProfileTransform): Pro
   return { ...rest, tf: [...(look.tf ?? []), formatTransform(transform)] };
 }
 
-/** The same look without its transform at `index`, and those after it. */
+/** The same look without its transform at `index`. The others still name
+ * functions of the profile, so each still applies without it. */
 export function untransformed(look: ProfileLook, index: number): ProfileLook {
   const { tf, z: _z, ...rest } = look;
   assert(
     index >= 0 && index < (tf?.length ?? 0),
     `transform ${index} is outside ${tf?.length ?? 0} transforms`,
   );
-  const kept = (tf ?? []).slice(0, index);
+  const kept = (tf ?? []).toSpliced(index, 1);
   return kept.length > 0 ? { ...rest, tf: kept } : rest;
 }
 

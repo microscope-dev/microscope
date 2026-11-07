@@ -298,7 +298,7 @@ function TransformChip({ entry, index }: { entry: string; index: number }) {
   return transform && transform.op !== "collapseCycles" ? (
     <Chip
       label={`${transform.op} ${transform.name}`}
-      title="Remove this transform and those after it"
+      title="Remove this transform"
       remove={remove}
     />
   ) : null;

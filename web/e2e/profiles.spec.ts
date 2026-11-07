@@ -132,10 +132,7 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(search).toHaveValue(long);
   await expect(search).toHaveAttribute("title", long);
   const chip = page.locator(".profile-chip", { hasText: "merge <alloc::boxed" });
-  await expect(chip).toHaveAttribute(
-    "title",
-    `merge ${long}\nRemove this transform and those after it`,
-  );
+  await expect(chip).toHaveAttribute("title", `merge ${long}\nRemove this transform`);
   const short = await page.locator(".profile-chip", { hasText: "merge middle" }).boundingBox();
   expect((await chip.boundingBox())?.height).toBe(short?.height);
   const widths = await page.evaluate(() => ({
