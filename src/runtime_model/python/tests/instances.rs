@@ -493,6 +493,42 @@ fn an_instance_with_tagged_values_shows_its_attributes_by_name_in_insertion_orde
     );
 }
 
+/// A class, a function, and a code object are named by a `str`. Damaged
+/// memory can name one by an object that leads back to it: a class by an
+/// instance of itself, a function or a code object by itself. Each is
+/// unreadable, not read until the stack runs out.
+#[test]
+fn an_object_named_by_what_leads_back_to_it_is_unreadable() {
+    let mut process = Process::new(layout());
+    let (types, object) = world(&mut process);
+    let point = class(
+        &mut process,
+        &types,
+        &Spec {
+            name: "Point",
+            basicsize: 16,
+            ..Spec::default()
+        },
+        &[object],
+    );
+    let instance = process.object(VirtualAddress::new(point), 16);
+    process.word(point, Field::HeapTypeQualname, instance);
+
+    let function = function_object(&mut process, &types, "f");
+    process.word(function, Field::FunctionQualname, function);
+    let code = code_object(&mut process, &types, "g", 3);
+    process.word(code, Field::CodeName, code);
+
+    for object in [instance, function, code] {
+        let slot = value_at(&process, types, object);
+        assert!(
+            matches!(slot, InterpretedSlot::Unreadable(_)),
+            "{object:#x}: {}",
+            describe(&slot)
+        );
+    }
+}
+
 #[test]
 fn an_instance_whose_managed_word_is_a_dict_shows_the_dict_entries() {
     let mut process = Process::new(layout());

@@ -138,6 +138,14 @@ impl Values<'_, '_> {
     /// The text of the `str` at `object`, where it is a whole `str` of
     /// characters, as a name is.
     pub(super) fn str_text(&self, object: VirtualAddress) -> Option<Arc<str>> {
+        // Only a `str` is read: reading any other object to learn what it
+        // is reads what names it, which damaged memory can make the object
+        // that asked.
+        let ty = self.reader.field_word(object, Field::ObjectType).ok()?;
+        if VirtualAddress::new(ty) != self.types.str {
+            return None;
+        }
+
         match self.object(object).ok()? {
             Object::Str { points, length } if points.len() as u64 == length => points
                 .into_iter()
