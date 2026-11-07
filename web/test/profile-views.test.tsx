@@ -632,6 +632,28 @@ function annotatedShares(text: string): HTMLElement[] {
   return [...(row?.querySelectorAll<HTMLElement>(".share") ?? [])];
 }
 
+/** The text of the profile source spans colored as `token`. */
+const colored = (token: string) =>
+  [...document.querySelectorAll(`[data-testid="source-lines"] .${token}`)].map(
+    (span) => span.textContent,
+  );
+
+it("colors each file's source lines in that file's language, as the debugger does", async () => {
+  const server = await mount(<FunctionsView />, { look: { fn: "spin", ann: "lines" } });
+  server.answer(await server.next("profileLines"), {
+    weight: 10,
+    files: [
+      { ...file(1), text: ["return 0; /* a", "b */"], lines: [[1, 1, 1]] },
+      { ...file(1), path: "/src/spin.py", text: ["def spin(): pass  # c"], lines: [[1, 1, 1]] },
+      { ...file(1), path: "/src/NOTES", text: ["return 0;"], lines: [[1, 1, 1]] },
+    ],
+  });
+  await expect.element(page.getByText("def")).toBeVisible();
+  expect(colored("tk-k")).toEqual(["return", "def", "pass"]);
+  expect(colored("tk-c")).toEqual(["/* a", "b */", "# c"]);
+  expect(colored("tk-f")).toEqual(["spin"]);
+});
+
 it("draws a line's and an instruction's shares as bars, bold where own time is hot", async () => {
   const server = await mount(<FunctionsView />, { look: { fn: "spin", ann: "lines" } });
   server.answer(await server.next("profileLines"), {
@@ -777,6 +799,11 @@ it("puts source beside its instructions, tinting the hottest lines and stepping 
   const server = await mount(<FunctionsView />, { look: { fn: "scan", ann: "code" } });
   server.answer(await server.next("profileCode"), SPLIT);
   await expect.element(page.getByText("sum += i * i;")).toBeVisible();
+
+  // The source is colored as the debugger colors it.
+  expect(document.querySelector('[aria-label="Source"] [data-line="3"] .tk-k')).toHaveTextContent(
+    "for",
+  );
 
   // It opens on the hottest line by own, whose instructions are the two
   // runs step left, the hottest first.

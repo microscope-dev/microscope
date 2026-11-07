@@ -9,9 +9,10 @@ import {
 } from "@codemirror/lang-javascript";
 import { Language } from "@codemirror/language";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
+import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { language, tokenStyle } from "../src/ui/source/languages";
+import { language, paintLines, tokenStyle } from "../src/ui/source/languages";
 
 /** The highlighted tokens of `text`, as [text, class] pairs. */
 function tokens(path: string, text: string): [string, string][] {
@@ -207,5 +208,72 @@ describe("JavaScript and TypeScript", () => {
     expect(typescript["tk-t"]).toEqual(["P", "number", "P"]);
     expect(typescript["tk-n"]).toEqual(["1"]);
     expect(roles("a.mjs", text)["tk-t"]).not.toContain("number");
+  });
+});
+
+describe("painting a profile's source lines", () => {
+  const PATHS = ["a.c", "a.cpp", "a.rs", "a.go", "a.zig", "a.odin", "a.f90", "a.d", "a.nim"].concat(
+    ["a.adb", "a.py", "a.js", "a.jsx", "a.ts", "a.tsx", "a.txt"],
+  );
+  // Fragments that open comments and strings a line may not close.
+  const PIECES = ["/*", "*/", "/+", "+/", "#[", "]#", "//", "#", "--", "!", '"', '"""', "'", "`"]
+    .concat(['r"', "{", "}", "(", ")", "if", "fn", "def", "0x1f", "3.5e2", "x", "\\", "\t", " "])
+    .concat(["\u{E9}", "\u{1F600}"]);
+
+  it("keeps each line's text whole, in order, in every language", () => {
+    const line = fc
+      .array(fc.constantFrom(...PIECES), { maxLength: 12 })
+      .map((parts) => parts.join(""));
+    fc.assert(
+      fc.property(fc.constantFrom(...PATHS), fc.array(line, { maxLength: 8 }), (path, lines) => {
+        const painted = paintLines(path, lines);
+        expect(painted.map((runs) => runs.map(([text]) => text).join(""))).toEqual(lines);
+        expect(painted.flat().every(([text]) => text !== "")).toBe(true);
+      }),
+    );
+  });
+
+  it("colors a comment on every line it spans, and the code after it", () => {
+    const painted = paintLines("/src/a.c", ["int x; /* one", "two */ return x;", "", "}"]);
+    expect(painted).toEqual([
+      [
+        ["int", "tk-t"],
+        [" x; ", ""],
+        ["/* one", "tk-c"],
+      ],
+      [
+        ["two */", "tk-c"],
+        [" ", ""],
+        ["return", "tk-k"],
+        [" x;", ""],
+      ],
+      [],
+      [["}", ""]],
+    ]);
+  });
+
+  it("colors Python and JavaScript as the debugger does", () => {
+    expect(paintLines("a.py", ["def f(): return 'x'  # y"])[0]).toEqual([
+      ["def", "tk-k"],
+      [" ", ""],
+      ["f", "tk-f"],
+      ["(): ", ""],
+      ["return", "tk-k"],
+      [" ", ""],
+      ["'x'", "tk-s"],
+      ["  ", ""],
+      ["# y", "tk-c"],
+    ]);
+    expect(paintLines("a.mjs", ["const n = 1;"])[0]).toEqual([
+      ["const", "tk-k"],
+      [" n = ", ""],
+      ["1", "tk-n"],
+      [";", ""],
+    ]);
+  });
+
+  it("leaves a file in a language it does not know plain", () => {
+    expect(paintLines("notes.txt", ["if (x) return 1;"])).toEqual([[["if (x) return 1;", ""]]]);
+    expect(paintLines("", ["fn main() {}"])).toEqual([[["fn main() {}", ""]]]);
   });
 });

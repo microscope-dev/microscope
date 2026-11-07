@@ -25,6 +25,7 @@ import {
 } from "../../profile/code";
 import { formatCount, formatPercent, largest } from "../../profile/paint";
 import type { ProfileCode } from "../../protocol";
+import { type Painted, paintLines } from "../source/languages";
 import { useAnswer, useProfile } from "./context";
 import { ownTone, Share, Unanswered } from "./parts";
 import { COLUMN_HELP } from "./TreeView";
@@ -39,6 +40,10 @@ export function SourceLines({ name }: { name: string }) {
   const body = useRef<HTMLDivElement>(null);
   useHottestInView(body, name, answer.current);
   const files = answer.data?.files;
+  const painted = useMemo(
+    () => files?.map((file) => (file.text ? paintLines(file.path ?? "", file.text) : [])),
+    [files],
+  );
   if (answer.error || !files) {
     return <Unanswered error={answer.error} reading={`Reading the source lines of ${name}…`} />;
   }
@@ -59,7 +64,7 @@ export function SourceLines({ name }: { name: string }) {
       className={`pane-body annotated ${answer.current ? "" : "stale"}`}
       data-testid="source-lines"
     >
-      {files.map((file) => {
+      {files.map((file, fileAt) => {
         const costs = new Map(file.lines.map(([line, own, total]) => [line, [own, total]]));
         return (
           <div key={file.path ?? ""} className="annotated-file">
@@ -75,7 +80,9 @@ export function SourceLines({ name }: { name: string }) {
                   >
                     <Costs own={cost?.[0]} total={cost?.[1]} weight={weight} />
                     <span className="line-number">{line}</span>
-                    <code>{text}</code>
+                    <code>
+                      <Tokens runs={painted?.[fileAt]?.[at]} text={text} />
+                    </code>
                   </div>
                 );
               })
@@ -143,6 +150,7 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
     [rows, fileAt],
   );
   const tints = useMemo(() => (file ? tintsOf(file) : new Map<number, number>()), [file]);
+  const painted = useMemo(() => (file?.text ? paintLines(file.path ?? "", file.text) : []), [file]);
   const coded = useMemo(
     () => [...new Set(lines)].filter((line) => line > 0).toSorted((a, b) => a - b),
     [lines],
@@ -308,7 +316,9 @@ function Split({ name, code, current }: { name: string; code: ProfileCode; curre
                     />
                     <span className="line-number">{number}</span>
                   </span>
-                  <code className="text">{text}</code>
+                  <code className="text">
+                    <Tokens runs={painted[at]} text={text} />
+                  </code>
                 </div>
               );
             })
@@ -441,6 +451,24 @@ function chainOf(code: ProfileCode, row: CodeRow, short: boolean): string {
     return base && line > 0 ? `${name} ${base}:${line}` : name;
   });
   return `+${row.offset.toString(16)} ${where.join(" ← ")}`;
+}
+
+/** A source line's text in its token colors, or plain until they are known. */
+function Tokens({ runs, text }: { runs: Painted | undefined; text: string }) {
+  if (!runs) {
+    return text;
+  }
+  return runs.map(([part, token], at) =>
+    token ? (
+      // oxlint-disable-next-line react/no-array-index-key -- runs are a line's text in order, never reordered
+      <span key={at} className={token}>
+        {part}
+      </span>
+    ) : (
+      // oxlint-disable-next-line react/no-array-index-key -- runs are a line's text in order, never reordered
+      <Fragment key={at}>{part}</Fragment>
+    ),
+  );
 }
 
 /** The columns' names, pinned over a code pane's rows. */

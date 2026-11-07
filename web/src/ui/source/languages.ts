@@ -11,12 +11,14 @@ import {
 import { rust } from "@codemirror/lang-rust";
 import {
   HighlightStyle,
+  Language,
+  LanguageSupport,
   StreamLanguage,
   type StringStream,
   syntaxHighlighting,
 } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
-import { tags } from "@lezer/highlight";
+import { highlightTree, tags } from "@lezer/highlight";
 
 import { assert } from "../../assert";
 import { PYTHON_KEYWORDS, pythonKeywordHolds } from "../../python";
@@ -607,3 +609,47 @@ export const tokenStyle = HighlightStyle.define([
 ]);
 
 export const highlighting = syntaxHighlighting(tokenStyle);
+
+/** One line's text in runs, each with the token class that colors it, or
+ * "" for none; an empty line has no runs. */
+export type Painted = [text: string, token: string][];
+
+/** `lines` of a file at `path`, colored as the source view colors them:
+ * one entry per line, the whole line plain for a language it does not
+ * know. The lines are parsed together, so a comment or string that spans
+ * them is read as one. */
+export function paintLines(path: string, lines: readonly string[]): Painted[] {
+  const found = language(path);
+  const grammar =
+    found instanceof LanguageSupport ? found.language : found instanceof Language ? found : null;
+  if (!grammar) {
+    return lines.map((line) => (line === "" ? [] : [[line, ""]]));
+  }
+
+  const text = lines.join("\n");
+  const painted: Painted[] = lines.map(() => []);
+  // The line `row`, which begins at `start`, is painted up to `at`.
+  let row = 0;
+  let start = 0;
+  let at = 0;
+  const paint = (to: number, token: string) => {
+    while (at < to) {
+      const end = start + (lines[row]?.length ?? 0);
+      if (at >= end) {
+        row += 1;
+        start = end + 1;
+        at = Math.max(at, start);
+        continue;
+      }
+      const stop = Math.min(to, end);
+      painted[row]?.push([text.slice(at, stop), token]);
+      at = stop;
+    }
+  };
+  highlightTree(grammar.parser.parse(text), tokenStyle, (from, to, classes) => {
+    paint(from, "");
+    paint(to, classes);
+  });
+  paint(text.length, "");
+  return painted;
+}
