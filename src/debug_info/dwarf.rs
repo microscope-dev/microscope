@@ -856,6 +856,11 @@ pub(super) fn fuzz_expression(data: &[u8]) {
     variables::fuzz_expression(data);
 }
 
+#[cfg(all(feature = "fuzzing", feature = "tools"))]
+mod fuzz;
+#[cfg(all(feature = "fuzzing", feature = "tools"))]
+pub(super) use fuzz::fuzz_load;
+
 /// Unwinds by the call-frame sections and Go's table an image keeps.
 struct DwarfUnwindInfo {
     tables: Arc<crate::image::Image>,

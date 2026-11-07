@@ -13,7 +13,7 @@ max_test_threads := "16"
 
 # The fuzz targets that decode x86, whose decoder tables iced-x86 never
 # frees; see `fuzz`.
-decoding_fuzz_targets := "disassembly dispatch elf-symbols"
+decoding_fuzz_targets := "disassembly dispatch elf-symbols dwarf-load jit-code"
 
 # The JavaScript and TypeScript that oxlint and oxfmt check.
 js_files := "web/src web/test web/e2e web/*.ts web/*.json editors/vscode views/visualizers"
@@ -482,7 +482,8 @@ probe-cost COUNT="100000000": build-test-programs
 # Runs one fuzz target: expression-parse, dwarf-expression, core-dump, dispatch,
 # elf-symbols, gopclntab, disassembly, debug-register-plan, dap-transport,
 # dap-request, views, image, perf-records, capture, profile-import,
-# syscall-record, syscall-filter, glibc-tls, js-source-map, or cdp-message.
+# syscall-record, syscall-filter, glibc-tls, js-source-map, cdp-message,
+# dwarf-load, or jit-code.
 # Arguments go to libFuzzer.
 # iced-x86 builds its decoder tables once and never frees them, which
 # LeakSanitizer reports when a target that decodes x86 exits: those run

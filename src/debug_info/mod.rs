@@ -40,6 +40,16 @@ pub fn fuzz_dwarf_expression(data: &[u8]) {
     dwarf::fuzz_expression(data);
 }
 
+#[cfg(all(feature = "fuzzing", target_arch = "x86_64"))]
+mod jit_fuzz;
+#[cfg(all(feature = "fuzzing", target_arch = "x86_64"))]
+pub use jit_fuzz::fuzz as fuzz_jit_code;
+
+#[cfg(all(feature = "fuzzing", feature = "tools"))]
+pub fn fuzz_dwarf_load(data: &[u8]) {
+    dwarf::fuzz_load(data);
+}
+
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_elf_symbols(data: &[u8]) {
     elf::fuzz(data);

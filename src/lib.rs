@@ -348,6 +348,23 @@ pub fn fuzz_glibc_tls(data: &[u8]) {
     backend::fuzz_glibc_tls(data);
 }
 
+/// Loads a module's debug information from its file's bytes, or from a
+/// file the bytes describe, and asks the loaded image every question the
+/// dump tool does, for the fuzz harness.
+#[cfg(all(feature = "fuzzing", feature = "tools"))]
+#[doc(hidden)]
+pub fn fuzz_dwarf_load(data: &[u8]) {
+    debug_info::fuzz_dwarf_load(data);
+}
+
+/// Reads a perf map and a JIT compiler's list of objects from hostile
+/// bytes, and unwinds the code the map names, for the fuzz harness.
+#[cfg(all(feature = "fuzzing", target_arch = "x86_64"))]
+#[doc(hidden)]
+pub fn fuzz_jit_code(data: &[u8]) {
+    debug_info::fuzz_jit_code(data);
+}
+
 /// Exercises ELF symbol-table normalization and symbol lookup invariants for
 /// the fuzz harness.
 #[cfg(feature = "fuzzing")]
