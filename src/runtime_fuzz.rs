@@ -22,13 +22,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
     Arming, CodeAt, CodeFrame, HookPlace, ImageSymbol, InterpretedChild, InterpretedFrameRef,
     InterpretedHandle, InterpretedKey, InterpretedName, InterpretedSlot, InterpretedStep,
     LiveThread, Member, RuntimeImage, RuntimeModel, RuntimeStop, SampledCode, SampledCodeFrame,
     SampledFrame, StopMemory, StoredValue, TargetThreadId, TaskContext, TaskRef, futures,
 };
-use crate::inspection::InspectionBudget;
 use crate::unwind::{DwarfRegister, FS_BASE, RETURN_ADDRESS, RSP, RegisterFile};
 use crate::{
     CoroutineInfo, ImageAddress, InspectionLimits, IntegerValue, ModuleImage, ThreadId,
@@ -80,6 +80,7 @@ const MOST_FRAMES: usize = 32;
 const MOST_CHILDREN: u64 = 16;
 const MOST_LOCALS: usize = 16;
 const MOST_FUTURES: usize = 64;
+const MOST_SEARCHED: usize = 4;
 
 /// The most pages of tasks listed. A runtime's own bounds allow far more,
 /// as Go's 16M goroutines do, which a run need not read through.
@@ -832,44 +833,78 @@ impl<'a> Stop<'a> {
         VirtualAddress::new(base.wrapping_add(offset))
     }
 
-    /// Whether the byte at `at` is mapped, and what it holds before the
-    /// input writes it.
-    fn original(&self, at: u64) -> Option<u8> {
-        let heap = HEAP..HEAP + REGIONS * REGION;
-        let threads = THREADS..THREADS + u64::from(MOST_THREADS) * THREAD_BLOCK;
-        if heap.contains(&at) || threads.contains(&at) {
-            return Some(0);
+    /// Fills `bytes` with what memory from `at` holds before the input
+    /// writes it, a mapped range at a time, or says some of it is unmapped.
+    fn original(&self, mut at: u64, mut bytes: &mut [u8]) -> bool {
+        let heap = (HEAP, REGIONS * REGION);
+        let threads = (THREADS, u64::from(MOST_THREADS) * THREAD_BLOCK);
+        while !bytes.is_empty() {
+            let within = |(start, size): (u64, u64)| at >= start && at - start < size;
+            let (count, data) =
+                if let Some((start, size)) = [heap, threads].into_iter().find(|&r| within(r)) {
+                    (start + size - at, &[][..])
+                } else if let Some((start, size, data)) = self
+                    .fixture
+                    .segments
+                    .iter()
+                    .find(|&&(start, size, _)| within((start, size)))
+                {
+                    let offset = usize::try_from(at - start).unwrap_or(usize::MAX);
+                    (start + size - at, data.get(offset..).unwrap_or_default())
+                } else {
+                    return false;
+                };
+
+            let count = usize::try_from(count)
+                .unwrap_or(usize::MAX)
+                .min(bytes.len());
+            let (chunk, rest) = bytes.split_at_mut(count);
+            let copied = data.len().min(count);
+            chunk[..copied].copy_from_slice(&data[..copied]);
+            chunk[copied..].fill(0);
+            bytes = rest;
+            at += count as u64;
         }
 
-        self.fixture
-            .segments
-            .iter()
-            .find(|(start, size, _)| at >= *start && at - start < *size)
-            .map(|(start, _, data)| {
-                usize::try_from(at - start)
-                    .ok()
-                    .and_then(|index| data.get(index).copied())
-                    .unwrap_or(0)
-            })
+        true
     }
 
-    fn write(&mut self, address: u64, bytes: &[u8]) {
-        for (at, &byte) in (address..).zip(bytes) {
+    /// Writes `bytes` a page at a time, leaving out what is unmapped.
+    fn write(&mut self, address: u64, mut bytes: &[u8]) {
+        let mut at = address;
+        while !bytes.is_empty() {
             let page = at - at % PAGE;
-            if !self.pages.contains_key(&page) {
-                if self.pages.len() >= MOST_PAGES || self.original(page).is_none() {
-                    continue;
-                }
+            let within = usize::try_from(at - page).unwrap_or(0);
+            let count = bytes
+                .len()
+                .min(usize::try_from(PAGE).unwrap_or(4096) - within);
+            let (chunk, rest) = bytes.split_at(count);
 
-                let held = (page..page + PAGE)
-                    .map(|at| self.original(at).unwrap_or(0))
-                    .collect();
+            if !self.pages.contains_key(&page)
+                && self.pages.len() < MOST_PAGES
+                && self.original(page, &mut [0])
+            {
+                // A page that runs past the end of what is mapped holds
+                // zero there.
+                let mut held = vec![0; usize::try_from(PAGE).unwrap_or(4096)].into_boxed_slice();
+                if !self.original(page, &mut held) {
+                    held.fill(0);
+                    for (at, byte) in (page..).zip(held.iter_mut()) {
+                        let _ = self.original(at, std::slice::from_mut(byte));
+                    }
+                }
                 self.pages.insert(page, held);
             }
 
             if let Some(held) = self.pages.get_mut(&page) {
-                held[usize::try_from(at % PAGE).unwrap_or(0)] = byte;
+                held[within..within + count].copy_from_slice(chunk);
             }
+
+            let Some(next) = at.checked_add(count as u64) else {
+                break;
+            };
+            at = next;
+            bytes = rest;
         }
     }
 
@@ -896,13 +931,8 @@ impl RuntimeStop for Stop<'_> {
             let (chunk, after) = rest.split_at_mut(count);
             if let Some(held) = self.pages.get(&page) {
                 chunk.copy_from_slice(&held[within..within + count]);
-            } else {
-                for (byte, at) in chunk.iter_mut().zip(at..) {
-                    let Some(original) = self.original(at) else {
-                        return false;
-                    };
-                    *byte = original;
-                }
+            } else if !self.original(at, chunk) {
+                return false;
             }
 
             rest = after;
@@ -1106,8 +1136,16 @@ fn tasks(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Q
         start = next;
     }
 
-    for task in tasks.iter().take(MOST_TASKS) {
-        for locator in [Some(task.locator), None] {
+    for (index, task) in tasks.iter().take(MOST_TASKS).enumerate() {
+        // Without its locator a task is found by searching every task,
+        // which costs the same for each one, so only the first few are.
+        let both = [Some(task.locator), None];
+        let locators = if index < MOST_SEARCHED {
+            &both[..]
+        } else {
+            &both[..1]
+        };
+        for &locator in locators {
             let task = TaskRef {
                 number: task.number,
                 locator,
