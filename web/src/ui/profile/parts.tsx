@@ -168,7 +168,9 @@ export function Share({
   children: string;
 }) {
   return (
-    <span className={`percent share ${tone}`}>
+    // A hot share is "strong", apart from the rows' own "hot", which marks
+    // a source line or instruction that ran at all.
+    <span className={`percent share ${tone === "hot" ? "strong" : tone}`}>
       <Fill share={share} />
       <span className="value">{children}</span>
     </span>

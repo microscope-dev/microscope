@@ -363,7 +363,7 @@ it("draws each share as a bar, bolds large own time, and searches as the flame g
   const [mainTotal, mainOwn] = shares(/^main,/u);
   expect(barWidth(mainTotal)).toBeCloseTo(83.33, 1);
   expect(barWidth(mainOwn)).toBe(0);
-  expect(mainOwn?.classList.contains("hot")).toBe(false);
+  expect(mainOwn?.classList.contains("strong")).toBe(false);
   // The larger share is drawn redder: as much red, less green.
   const [hotRed, hotGreen] = barColor(mainTotal);
   const [coolRed, coolGreen, , coolAlpha] = barColor(shares(/^idle,/u)[0]);
@@ -371,7 +371,7 @@ it("draws each share as a bar, bolds large own time, and searches as the flame g
   expect(hotRed).toBeGreaterThanOrEqual(coolRed ?? 0);
   expect(hotGreen).toBeLessThan(coolGreen ?? 0);
   // work spends 2 of 12 itself, over the 5% that marks own time hot.
-  expect(shares(/^work,/u)[1]?.classList.contains("hot")).toBe(true);
+  expect(shares(/^work,/u)[1]?.classList.contains("strong")).toBe(true);
 
   // The search marks each leaf, and counts their samples once: 4 + 2 of 12.
   const search = page.getByRole("searchbox", { name: "Search frames" });
@@ -537,7 +537,7 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
   await expect.element(options).toHaveLength(5);
   const hot = () =>
     [...list.element().querySelectorAll(".tree-row")]
-      .filter((row) => row.querySelector(".share")?.classList.contains("hot"))
+      .filter((row) => row.querySelector(".share")?.classList.contains("strong"))
       .map((row) => row.querySelector(".name")?.textContent);
   expect(hot()).toEqual(["main", "leaf", "leaf", "edge"]);
   // The own bar is half main's cell, as main's own is half the samples.
@@ -600,6 +600,65 @@ it("brings each function's own hottest line into view once its lines arrive", as
     expect(bounds.top).toBeGreaterThanOrEqual(0);
     expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight);
   }, POLL);
+});
+
+/** The share cells of the row that shows `text`, own then total. */
+function annotatedShares(text: string): HTMLElement[] {
+  const row = page.getByText(text, { exact: true }).element().closest(".annotated-row");
+  return [...(row?.querySelectorAll<HTMLElement>(".share") ?? [])];
+}
+
+it("draws a line's and an instruction's shares as bars, bold where own time is hot", async () => {
+  const server = await mount(<FunctionsView />, { look: { fn: "spin", ann: "lines" } });
+  server.answer(await server.next("profileLines"), {
+    weight: 10,
+    files: [
+      {
+        ...file(3),
+        text: ["one", "two", "three", "four", "five"],
+        lines: [
+          [3, 1, 4],
+          [5, 0.2, 0.2],
+        ],
+      },
+    ],
+  });
+  await expect.element(page.getByText("three", { exact: true })).toBeVisible();
+  // Line 3 spends 1 of 10 itself, and 4 of 10 under it.
+  const [threeOwn, threeTotal] = annotatedShares("three");
+  expect(threeOwn).toHaveTextContent("10.0%");
+  expect(barWidth(threeOwn)).toBeCloseTo(10, 1);
+  expect(barWidth(threeTotal)).toBeCloseTo(40, 1);
+  expect(threeOwn?.classList.contains("strong")).toBe(true);
+  expect(annotatedShares("five")[0]?.classList.contains("strong")).toBe(false);
+  // A line nothing ran on has no number and no bar.
+  const [oneOwn] = annotatedShares("one");
+  expect(oneOwn).toHaveTextContent("");
+  expect(barWidth(oneOwn)).toBe(0);
+
+  changeLook((look) => ({ ...look, ann: "code" }));
+  server.answer(await server.next("profileCode"), {
+    weight: 10,
+    module: "app",
+    blocks: [
+      {
+        symbol: "spin",
+        stopped: null,
+        instructions: [
+          { address: 0x10, text: "cmp", target: null, own: 0, total: 9 },
+          { address: 0x14, text: "nop", target: null, own: 0, total: 0 },
+        ],
+      },
+    ],
+    unplaced: [],
+    unavailable: null,
+  });
+  await expect.element(page.getByText("cmp", { exact: true })).toBeVisible();
+  // A call's own time is none of it, so it has a total bar alone.
+  const [cmpOwn, cmpTotal] = annotatedShares("cmp");
+  expect(cmpOwn).toHaveTextContent("");
+  expect(barWidth(cmpTotal)).toBeCloseTo(90, 1);
+  expect(barWidth(annotatedShares("nop")[1])).toBe(0);
 });
 
 it("says it is reading a flame graph, and reads a function's cost from the server", async () => {

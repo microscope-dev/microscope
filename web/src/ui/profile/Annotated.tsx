@@ -2,7 +2,7 @@ import { type RefObject, useEffect, useMemo, useRef } from "react";
 
 import { formatCount, formatPercent, largest } from "../../profile/paint";
 import { useAnswer, useProfile } from "./context";
-import { Unanswered } from "./parts";
+import { ownTone, Share, Unanswered } from "./parts";
 
 /** A function's samples on its source lines, by file, as each reads now. */
 export function SourceLines({ name }: { name: string }) {
@@ -48,12 +48,7 @@ export function SourceLines({ name }: { name: string }) {
                     key={line}
                     className={`row annotated-row ${cost ? "hot" : ""} ${hottest(cost?.[1], most)}`}
                   >
-                    <span className="percent">
-                      {cost ? formatPercent(cost[0] ?? 0, weight) : ""}
-                    </span>
-                    <span className="percent dim">
-                      {cost ? formatPercent(cost[1] ?? 0, weight) : ""}
-                    </span>
+                    <Costs own={cost?.[0]} total={cost?.[1]} weight={weight} />
                     <span className="line-number">{line}</span>
                     <code>{text}</code>
                   </div>
@@ -112,12 +107,11 @@ export function Code({ name }: { name: string }) {
               key={instruction.address}
               className={`row annotated-row ${instruction.total > 0 ? "hot" : ""} ${hottest(instruction.total, most)}`}
             >
-              <span className="percent">
-                {instruction.own > 0 ? formatPercent(instruction.own, weight) : ""}
-              </span>
-              <span className="percent dim">
-                {instruction.total > 0 ? formatPercent(instruction.total, weight) : ""}
-              </span>
+              <Costs
+                own={instruction.own > 0 ? instruction.own : undefined}
+                total={instruction.total > 0 ? instruction.total : undefined}
+                weight={weight}
+              />
               <span className="line-number">{instruction.address.toString(16)}</span>
               <code>
                 {instruction.text}
@@ -141,6 +135,32 @@ export function Code({ name }: { name: string }) {
 }
 
 /** The class of the row that weighs `total` when it weighs the most. */
+/** A line's or instruction's own and total shares as bars, as the
+ * functions list draws a function's; blank where nothing ran there. */
+function Costs({
+  own,
+  total,
+  weight,
+}: {
+  own: number | undefined;
+  total: number | undefined;
+  weight: number;
+}) {
+  const share = (part: number | undefined) => (part ?? 0) / Math.max(weight, 1);
+  const text = (part: number | undefined) =>
+    part === undefined ? "" : formatPercent(part, weight);
+  return (
+    <>
+      <Share share={share(own)} tone={ownTone(share(own), "plain")}>
+        {text(own)}
+      </Share>
+      <Share share={share(total)} tone="dim">
+        {text(total)}
+      </Share>
+    </>
+  );
+}
+
 function hottest(total: number | undefined, most: number): string {
   return most > 0 && total === most ? "hottest" : "";
 }
