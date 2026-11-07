@@ -2828,7 +2828,7 @@ impl RuntimeImage for ModuleImage {
 }
 
 /// The type that lays out a value of `ty`, through names and qualifiers.
-fn representation<'a>(image: &'a ModuleImage, mut ty: &'a TypeInfo) -> Option<&'a TypeInfo> {
+pub fn representation<'a>(image: &'a ModuleImage, mut ty: &'a TypeInfo) -> Option<&'a TypeInfo> {
     for _ in 0..16 {
         match &ty.kind {
             TypeKind::Named { target, .. } => ty = image.type_info((*target)?)?,

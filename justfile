@@ -13,7 +13,7 @@ max_test_threads := "16"
 
 # The fuzz targets that decode x86, whose decoder tables iced-x86 never
 # frees; see `fuzz`.
-decoding_fuzz_targets := "disassembly dispatch elf-symbols dwarf-load jit-code"
+decoding_fuzz_targets := "disassembly dispatch elf-symbols dwarf-load jit-code runtime-go runtime-tokio runtime-python runtime-node"
 
 # The JavaScript and TypeScript that oxlint and oxfmt check.
 js_files := "web/src web/test web/e2e web/*.ts web/*.json editors/vscode views/visualizers"
@@ -483,18 +483,21 @@ probe-cost COUNT="100000000": build-test-programs
 # elf-symbols, gopclntab, disassembly, debug-register-plan, dap-transport,
 # dap-request, views, image, perf-records, capture, profile-import,
 # syscall-record, syscall-filter, glibc-tls, js-source-map, cdp-message,
-# dwarf-load, or jit-code.
-# Arguments go to libFuzzer.
+# dwarf-load, jit-code, runtime-go, runtime-tokio, runtime-python, or
+# runtime-node. Arguments go to libFuzzer.
+# The runtime targets load a test program, CPython, or Node from the dev
+# shell. A first load after a build fills the image cache and takes about
+# 20 seconds, so warm it with one run before forking workers.
 # iced-x86 builds its decoder tables once and never frees them, which
 # LeakSanitizer reports when a target that decodes x86 exits: those run
 # without leak checks, libFuzzer's and the exit's.
-fuzz TARGET *ARGS="":
+fuzz TARGET *ARGS="": build-test-programs
     leaks=1; if [[ " {{decoding_fuzz_targets}} " == *" $1 "* ]]; then leaks=0; fi; ASAN_OPTIONS="detect_leaks=$leaks" cargo fuzz run "$1" -- -detect_leaks="$leaks" "${@:2}"
 
 # Runs every fuzz target once over each input of its corpus without
 # fuzzing, so an input a fuzzer saved keeps passing. `just all` runs it.
 [script]
-fuzz-replay:
+fuzz-replay: build-test-programs
     cargo fuzz build
     for target in $(cargo fuzz list); do
         leaks=1

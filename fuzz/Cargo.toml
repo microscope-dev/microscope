@@ -172,3 +172,31 @@ path = "fuzz_targets/jit_code.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "runtime-go"
+path = "fuzz_targets/runtime_go.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "runtime-tokio"
+path = "fuzz_targets/runtime_tokio.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "runtime-python"
+path = "fuzz_targets/runtime_python.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "runtime-node"
+path = "fuzz_targets/runtime_node.rs"
+test = false
+doc = false
+bench = false

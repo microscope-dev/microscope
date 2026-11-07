@@ -357,6 +357,21 @@ pub fn fuzz_dwarf_load(data: &[u8]) {
     debug_info::fuzz_dwarf_load(data);
 }
 
+/// Asks a language runtime's model everything a session asks at a stop,
+/// over memory of a real image the bytes write, for the fuzz harness: Go's
+/// goroutines, tokio's tasks and Rust's futures, CPython's frames, or V8's.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_runtime_model(runtime: FuzzedRuntime, data: &[u8]) {
+    runtime_fuzz::fuzz(runtime, data);
+}
+
+#[cfg(feature = "fuzzing")]
+mod runtime_fuzz;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use runtime_fuzz::Runtime as FuzzedRuntime;
+
 /// Reads a perf map and a JIT compiler's list of objects from hostile
 /// bytes, and unwinds the code the map names, for the fuzz harness.
 #[cfg(all(feature = "fuzzing", target_arch = "x86_64"))]
