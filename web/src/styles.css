@@ -3664,6 +3664,13 @@ textarea.input {
   grid-template-rows: minmax(0, 1fr);
 }
 
+/* A label that explains itself on hover. */
+.hover-help {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
 .profile-sandwich {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

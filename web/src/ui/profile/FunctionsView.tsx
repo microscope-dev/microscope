@@ -272,6 +272,9 @@ function Selected({ name }: { name: string }) {
   );
 }
 
+const CALLERS_HELP = "Functions that call this one.";
+const CALLEES_HELP = "Functions this one calls.";
+
 /** A function's callers, inverted from it, and its callees, from it. */
 function Sandwich({ query, name }: { query: ProfileQuery; name: string }) {
   const focused = useMemo(
@@ -284,13 +287,19 @@ function Sandwich({ query, name }: { query: ProfileQuery; name: string }) {
     <div className="profile-sandwich" data-testid="sandwich">
       <div className="pane grow">
         <div className="pane-head">
-          Callers of <span className="subject">{name}</span>
+          <span className="hover-help" title={CALLERS_HELP}>
+            Callers of
+          </span>{" "}
+          <span className="subject">{name}</span>
         </div>
         <TreeRows tree={callers} label="Callers" reading={`Reading the callers of ${name}…`} />
       </div>
       <div className="pane grow">
         <div className="pane-head">
-          Callees of <span className="subject">{name}</span>
+          <span className="hover-help" title={CALLEES_HELP}>
+            Callees of
+          </span>{" "}
+          <span className="subject">{name}</span>
         </div>
         <TreeRows tree={callees} label="Callees" reading={`Reading the callees of ${name}…`} />
       </div>
