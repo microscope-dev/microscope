@@ -257,10 +257,12 @@ pub fn lies(
         lies.push("no call took the fast path".to_owned());
     }
 
+    // V8 wakes an idle worker every few seconds for a delayed task of its
+    // own, so a read may find it not asleep, as it may a blocked thread.
     let (idle, idle_since) = reported.idle;
     let paths = thread_paths(profile, idle, (idle_since.max(since), until));
     let reasons = left_out_threads(idle);
-    if !paths.is_empty() || !reasons.is_empty() {
+    if !paths.is_empty() || reasons.iter().any(|reason| *reason != NOT_ASLEEP) {
         lies.push(format!("idle: {paths:#?} {reasons:?}"));
     }
     let (spin, spin_since) = reported.spin;
