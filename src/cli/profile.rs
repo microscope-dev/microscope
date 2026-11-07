@@ -580,7 +580,10 @@ fn symbolize(args: &SymbolizeArgs) -> Result<()> {
                 plural(module.frames, "frame"),
                 source.display()
             ),
-            Err(why) => eprintln!("{}: could not be symbolized, so its addresses stay: {why}", module.module),
+            Err(why) => eprintln!(
+                "{}: could not be symbolized, so its addresses stay: {why}",
+                module.module
+            ),
         }
     }
 
@@ -595,7 +598,11 @@ fn symbolize(args: &SymbolizeArgs) -> Result<()> {
 pub fn symbolize_here(profile: &mut Profile, out: &mut impl std::io::Write) -> Result<()> {
     for module in profile.symbolize(&microscope::DebugFileOptions::default()) {
         if let Err(why) = &module.source {
-            writeln!(out, "note: {} could not be symbolized, so its addresses stay: {why}", module.module)?;
+            writeln!(
+                out,
+                "note: {} could not be symbolized, so its addresses stay: {why}",
+                module.module
+            )?;
         }
     }
 

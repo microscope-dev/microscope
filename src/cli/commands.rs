@@ -604,7 +604,8 @@ pub fn command_named(name: &str) -> Option<&'static CommandSpec> {
 
 /// Why a stackless task, such as an event loop's pending handle, shows no
 /// stack.
-const STACKLESS: &str = "it has no frames because it does not run until its runtime calls its callback";
+const STACKLESS: &str =
+    "it has no frames because it does not run until its runtime calls its callback";
 
 /// A command's other names, with each runtime's own name for its tasks for
 /// the commands about tasks: `goroutines` for `tasks` in Go. A runtime that

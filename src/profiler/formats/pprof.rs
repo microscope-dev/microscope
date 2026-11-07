@@ -153,9 +153,9 @@ pub fn import(bytes: &[u8]) -> Result<Capture, String> {
 
         let mut stack = Vec::with_capacity(ids.len());
         for id in &ids {
-            let frame = frames
-                .get(id)
-                .ok_or_else(|| format!("a sample refers to location {id}, which the profile does not have"))?;
+            let frame = frames.get(id).ok_or_else(|| {
+                format!("a sample refers to location {id}, which the profile does not have")
+            })?;
             stack.push(*frame);
         }
 
@@ -349,9 +349,11 @@ fn locations(
 
         let module = match mapping {
             0 => NONE,
-            mapping => *modules
-                .get(&mapping)
-                .ok_or_else(|| format!("location {id} refers to mapping {mapping}, which the profile does not have"))?,
+            mapping => *modules.get(&mapping).ok_or_else(|| {
+                format!(
+                    "location {id} refers to mapping {mapping}, which the profile does not have"
+                )
+            })?,
         };
 
         // Two locations at one address, or none, are still two frames.

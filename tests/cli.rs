@@ -4736,9 +4736,7 @@ fn python_breakpoints_wait_for_their_code_and_stop_in_the_programs_frame() {
     );
     // A native name misspelled is still found near its own.
     assert!(
-        stderr.contains(
-            "did you mean 'main'? Write a Python function with `py:`, as in `py:mian`"
-        ),
+        stderr.contains("did you mean 'main'? Write a Python function with `py:`, as in `py:mian`"),
         "{stderr}"
     );
 

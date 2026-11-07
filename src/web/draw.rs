@@ -458,7 +458,9 @@ impl Walk<'_> {
         depth: usize,
     ) -> Walked {
         let Some(active) = active else {
-            return Err(format!("`{path}`: its value matches none of its type's variants"));
+            return Err(format!(
+                "`{path}`: its value matches none of its type's variants"
+            ));
         };
 
         let members = active.members.len();

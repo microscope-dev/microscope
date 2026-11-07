@@ -193,7 +193,9 @@ impl Cli {
                 }
                 GroupEvent::GroupExited => break,
                 GroupEvent::MemberLost { member: lost } if lost == member => {
-                    bail!("the session of [{member}] failed, so its process was released or killed");
+                    bail!(
+                        "the session of [{member}] failed, so its process was released or killed"
+                    );
                 }
                 event => {
                     if let Some(line) = self.group_notice(&event) {
@@ -268,7 +270,9 @@ impl Cli {
             match event {
                 GroupEvent::GroupStopped { member, reason } => break (member, reason),
                 GroupEvent::MemberLost { member } => {
-                    bail!("the session of [{member}] failed, so its process was released or killed");
+                    bail!(
+                        "the session of [{member}] failed, so its process was released or killed"
+                    );
                 }
                 GroupEvent::GroupExited => {
                     let status = match &group.handle.members()[0].state {

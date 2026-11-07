@@ -127,7 +127,10 @@ impl Profiles {
             .symbolize(&microscope::DebugFileOptions::default())
         {
             if let Err(why) = &module.source {
-                eprintln!("note: {} could not be symbolized, so its addresses stay: {why}", module.module);
+                eprintln!(
+                    "note: {} could not be symbolized, so its addresses stay: {why}",
+                    module.module
+                );
             }
         }
 

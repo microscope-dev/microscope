@@ -215,12 +215,7 @@ fn decode(
             .section_index()
             .and_then(|index| file.section_by_index(index).ok())
             .and_then(|section| section.data_range(start, symbol.size()).ok().flatten())
-            .ok_or_else(|| {
-                format!(
-                    "{module} has no code for {}",
-                    symbol.name().unwrap_or("?")
-                )
-            })?;
+            .ok_or_else(|| format!("{module} has no code for {}", symbol.name().unwrap_or("?")))?;
         let name = symbol.name().unwrap_or("?");
         let mut block = CodeBlock {
             symbol: crate::demangle::qualified_name(name).unwrap_or_else(|| name.to_owned()),

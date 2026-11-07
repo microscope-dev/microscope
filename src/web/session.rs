@@ -1324,9 +1324,12 @@ impl Session {
     /// requests act on.
     async fn select_member(&self, number: MemberNumber) -> Result<String, Failure> {
         let (group, selection) = self.group_selection().await?;
-        let handle = group
-            .member(number)
-            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("there is no process [{number}]")))?;
+        let handle = group.member(number).ok_or_else(|| {
+            Failure::new(
+                ErrorKind::Invalid,
+                format!("there is no process [{number}]"),
+            )
+        })?;
         if handle.snapshot().await.is_err() {
             return Err(Failure::new(
                 ErrorKind::Invalid,
@@ -1359,7 +1362,12 @@ impl Session {
             .members()
             .into_iter()
             .find(|member| member.number == number)
-            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("there is no process [{number}]")))?;
+            .ok_or_else(|| {
+                Failure::new(
+                    ErrorKind::Invalid,
+                    format!("there is no process [{number}]"),
+                )
+            })?;
         group.detach(number).await?;
         Ok(format!(
             "detached {}",

@@ -487,10 +487,7 @@ fn describe_member(
             protocol::MemberState::Watched,
             format!("watched, running {}", program.display()),
         ),
-        MemberState::Detached => (
-            protocol::MemberState::Detached,
-            "detached".to_owned(),
-        ),
+        MemberState::Detached => (protocol::MemberState::Detached, "detached".to_owned()),
         MemberState::Lost => (
             protocol::MemberState::Lost,
             "lost: its session failed, so the process was released or killed".to_owned(),
