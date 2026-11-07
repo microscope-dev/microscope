@@ -294,7 +294,11 @@ fn components(name: &str) -> Vec<&str> {
     let mut start = 0;
     let mut previous = None;
     find_outside(name, |at, character| {
-        if character == ':' && previous == Some((at - 1, ':')) {
+        if character == ':'
+            && at
+                .checked_sub(1)
+                .is_some_and(|before| previous == Some((before, ':')))
+        {
             components.push(&name[start..at - 1]);
             start = at + 1;
             previous = None;
@@ -614,6 +618,8 @@ mod tests {
             ),
             ("_RNvCsdHzz05DFzbQ_5crash9crash_now", "crash::crash", false),
             ("main", "main", false),
+            // A name is what a person typed, and may begin with a colon.
+            ("_ZN6shapes5scaleEd", ":scale", false),
         ] {
             assert_eq!(spells(mangled, name), expected, "{mangled} as {name}");
         }
