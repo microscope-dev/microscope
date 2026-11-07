@@ -99,51 +99,87 @@ fn names_dataclass_methods<'a>(frames: impl IntoIterator<Item = &'a String>) -> 
 /// Snapshots that stop the program and live ones both name the methods
 /// `dataclasses` compiles from strings by their classes: by each frame's
 /// function, not its code, which every dataclass's `__init__` shares.
-fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str) {
-    for engine in [
-        PythonEngine::Snapshot { every: EVERY },
-        PythonEngine::Live { every: EVERY },
-    ] {
-        let named = |profile: &Profile| {
-            let paths = python_paths(profile);
-            names_dataclass_methods(paths.keys().flatten())
-        };
-        let profile =
-            record_until_with_args(interpreter, engine, "dataclass_methods.py", &[], named);
-        assert!(
-            named(&profile),
-            "{interpreter} {engine:?}: {:#?}",
-            python_paths(&profile)
-        );
-    }
+fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: PythonEngine) {
+    let named = |profile: &Profile| {
+        let paths = python_paths(profile);
+        names_dataclass_methods(paths.keys().flatten())
+    };
+    let profile = record_until_with_args(interpreter, engine, "dataclass_methods.py", &[], named);
+    assert!(
+        named(&profile),
+        "{interpreter} {engine:?}: {:#?}",
+        python_paths(&profile)
+    );
 }
 
-// One test for each profiled interpreter, since each recording may wait
-// long for its snapshots.
+// One test for each recording, since each may wait long for its snapshots.
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_12() {
-    snapshots_name_dataclass_methods_by_their_class("3.12");
+    snapshots_name_dataclass_methods_by_their_class(
+        "3.12",
+        PythonEngine::Snapshot { every: EVERY },
+    );
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_14() {
-    snapshots_name_dataclass_methods_by_their_class("3.14");
+    snapshots_name_dataclass_methods_by_their_class(
+        "3.14",
+        PythonEngine::Snapshot { every: EVERY },
+    );
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_14t() {
-    snapshots_name_dataclass_methods_by_their_class("3.14t");
+    snapshots_name_dataclass_methods_by_their_class(
+        "3.14t",
+        PythonEngine::Snapshot { every: EVERY },
+    );
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_15() {
-    snapshots_name_dataclass_methods_by_their_class("3.15");
+    snapshots_name_dataclass_methods_by_their_class(
+        "3.15",
+        PythonEngine::Snapshot { every: EVERY },
+    );
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_standalone_3_14() {
-    snapshots_name_dataclass_methods_by_their_class("standalone-3.14");
+    snapshots_name_dataclass_methods_by_their_class(
+        "standalone-3.14",
+        PythonEngine::Snapshot { every: EVERY },
+    );
+}
+
+#[test]
+fn live_name_dataclass_methods_by_their_class_on_3_12() {
+    snapshots_name_dataclass_methods_by_their_class("3.12", PythonEngine::Live { every: EVERY });
+}
+
+#[test]
+fn live_name_dataclass_methods_by_their_class_on_3_14() {
+    snapshots_name_dataclass_methods_by_their_class("3.14", PythonEngine::Live { every: EVERY });
+}
+
+#[test]
+fn live_name_dataclass_methods_by_their_class_on_3_14t() {
+    snapshots_name_dataclass_methods_by_their_class("3.14t", PythonEngine::Live { every: EVERY });
+}
+
+#[test]
+fn live_name_dataclass_methods_by_their_class_on_3_15() {
+    snapshots_name_dataclass_methods_by_their_class("3.15", PythonEngine::Live { every: EVERY });
+}
+
+#[test]
+fn live_name_dataclass_methods_by_their_class_on_standalone_3_14() {
+    snapshots_name_dataclass_methods_by_their_class(
+        "standalone-3.14",
+        PythonEngine::Live { every: EVERY },
+    );
 }
 
 /// Whether a Python path passes through `spin` calling `work`. Native
@@ -371,86 +407,128 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_st
 /// Live snapshots read each thread's Python frames as the program runs,
 /// never stopping it: only Python frames, each thread whose frames changed
 /// as they were read left out and counted, never kept shorter.
-#[test]
-fn live_snapshots_read_each_python_thread_as_it_runs() {
+fn live_snapshots_read_each_python_thread_as_it_runs(interpreter: &str) {
     let lines = lines();
-    for interpreter in PROFILED {
-        let ready = |profile: &Profile| {
-            let paths = python_paths(profile);
-            paths.keys().any(|path| spins(path, &lines))
-                && paths.keys().any(|path| naps(path, &lines))
-        };
+    let ready = |profile: &Profile| {
+        let paths = python_paths(profile);
+        paths.keys().any(|path| spins(path, &lines)) && paths.keys().any(|path| naps(path, &lines))
+    };
 
-        let profile = record_until(interpreter, PythonEngine::Live { every: EVERY }, ready);
-        let (taken, paused, _) = profile.task_snapshots();
-        let (live, _, _) = profile.live_snapshots();
-        assert!(taken > 0, "{interpreter}");
-        assert_eq!(
-            (live, paused),
-            (taken, 0),
-            "{interpreter}: it never stops the program"
-        );
+    let profile = record_until(interpreter, PythonEngine::Live { every: EVERY }, ready);
+    let (taken, paused, _) = profile.task_snapshots();
+    let (live, _, _) = profile.live_snapshots();
+    assert!(taken > 0, "{interpreter}");
+    assert_eq!(
+        (live, paused),
+        (taken, 0),
+        "{interpreter}: it never stops the program"
+    );
 
-        let paths = python_paths(&profile);
+    let paths = python_paths(&profile);
+    assert!(
+        paths.keys().any(|path| spins(path, &lines)),
+        "{interpreter}: no spinner in {paths:#?}"
+    );
+
+    assert!(
+        paths.keys().any(|path| naps(path, &lines)),
+        "{interpreter}: no napper in {paths:#?}"
+    );
+
+    // Every frame is the program's Python code or the library's.
+    for wait in profile.task_waits() {
+        assert_eq!(wait.noun, "thread");
         assert!(
-            paths.keys().any(|path| spins(path, &lines)),
-            "{interpreter}: no spinner in {paths:#?}"
+            !wait.functions.iter().any(|function| evaluates(function)),
+            "{interpreter}: a live stack with native frames: {wait:?}"
         );
-
-        assert!(
-            paths.keys().any(|path| naps(path, &lines)),
-            "{interpreter}: no napper in {paths:#?}"
-        );
-
-        // Every frame is the program's Python code or the library's.
-        for wait in profile.task_waits() {
-            assert_eq!(wait.noun, "thread");
-            assert!(
-                !wait.functions.iter().any(|function| evaluates(function)),
-                "{interpreter}: a live stack with native frames: {wait:?}"
-            );
-        }
     }
 }
 
+// One test for each recording, since each may wait long for its snapshots.
+
 #[test]
-fn arbitrary_kernel_names_preserve_live_and_stopped_python_profiles() {
+fn live_snapshots_read_each_python_thread_as_it_runs_on_3_12() {
+    live_snapshots_read_each_python_thread_as_it_runs("3.12");
+}
+
+#[test]
+fn live_snapshots_read_each_python_thread_as_it_runs_on_3_14() {
+    live_snapshots_read_each_python_thread_as_it_runs("3.14");
+}
+
+#[test]
+fn live_snapshots_read_each_python_thread_as_it_runs_on_3_14t() {
+    live_snapshots_read_each_python_thread_as_it_runs("3.14t");
+}
+
+#[test]
+fn live_snapshots_read_each_python_thread_as_it_runs_on_3_15() {
+    live_snapshots_read_each_python_thread_as_it_runs("3.15");
+}
+
+#[test]
+fn live_snapshots_read_each_python_thread_as_it_runs_on_standalone_3_14() {
+    live_snapshots_read_each_python_thread_as_it_runs("standalone-3.14");
+}
+
+fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: PythonEngine) {
     let lines = lines();
-    for interpreter in ["3.14", "3.14t"] {
-        for engine in [
-            PythonEngine::Snapshot { every: EVERY },
-            PythonEngine::Live { every: EVERY },
-        ] {
-            let ready = |profile: &Profile| {
-                let paths = python_paths(profile);
-                paths.keys().any(|path| spins(path, &lines))
-                    && paths.keys().any(|path| naps(path, &lines))
-            };
+    let ready = |profile: &Profile| {
+        let paths = python_paths(profile);
+        paths.keys().any(|path| spins(path, &lines)) && paths.keys().any(|path| naps(path, &lines))
+    };
 
-            let profile =
-                record_until_with_args(interpreter, engine, "profiled.py", &["--bad-names"], ready);
-            assert!(
-                ready(&profile),
-                "{interpreter}: {:?}",
-                python_paths(&profile)
-            );
+    let profile =
+        record_until_with_args(interpreter, engine, "profiled.py", &["--bad-names"], ready);
+    assert!(
+        ready(&profile),
+        "{interpreter}: {:?}",
+        python_paths(&profile)
+    );
 
-            if matches!(engine, PythonEngine::Snapshot { .. }) {
-                assert!(
-                    profile.task_snapshot_problems().is_empty(),
-                    "{interpreter}: {:?}",
-                    profile.task_snapshot_problems()
-                );
-            } else {
-                // Live reads can race thread creation, exit, and mapping
-                // records. Require the actual stacks, as the live contract
-                // does, rather than treating its visible gaps as failures.
-                let (taken, paused, _) = profile.task_snapshots();
-                assert!(taken > 0);
-                assert_eq!(paused, 0);
-            }
-        }
+    if matches!(engine, PythonEngine::Snapshot { .. }) {
+        assert!(
+            profile.task_snapshot_problems().is_empty(),
+            "{interpreter}: {:?}",
+            profile.task_snapshot_problems()
+        );
+    } else {
+        // Live reads can race thread creation, exit, and mapping
+        // records. Require the actual stacks, as the live contract
+        // does, rather than treating its visible gaps as failures.
+        let (taken, paused, _) = profile.task_snapshots();
+        assert!(taken > 0);
+        assert_eq!(paused, 0);
     }
+}
+
+// One test for each recording, since each may wait long for its snapshots.
+
+#[test]
+fn arbitrary_kernel_names_preserve_stopped_python_profiles_on_3_14() {
+    arbitrary_kernel_names_preserve_python_profiles(
+        "3.14",
+        PythonEngine::Snapshot { every: EVERY },
+    );
+}
+
+#[test]
+fn arbitrary_kernel_names_preserve_stopped_python_profiles_on_3_14t() {
+    arbitrary_kernel_names_preserve_python_profiles(
+        "3.14t",
+        PythonEngine::Snapshot { every: EVERY },
+    );
+}
+
+#[test]
+fn arbitrary_kernel_names_preserve_live_python_profiles_on_3_14() {
+    arbitrary_kernel_names_preserve_python_profiles("3.14", PythonEngine::Live { every: EVERY });
+}
+
+#[test]
+fn arbitrary_kernel_names_preserve_live_python_profiles_on_3_14t() {
+    arbitrary_kernel_names_preserve_python_profiles("3.14t", PythonEngine::Live { every: EVERY });
 }
 
 /// A program instrumented with the `microscope` package is recorded as one
