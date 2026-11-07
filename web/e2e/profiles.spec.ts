@@ -53,8 +53,8 @@ test("a profile is explored, and its address opens the same view", async ({
   await join(page, served.link);
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}$/u);
   const accounting = page.getByTestId("accounting");
-  await expect(accounting).toContainText("6 executions sampled");
-  await expect(accounting).toContainText("each call of leaf");
+  await expect(accounting).toContainText("Sampled6 executions");
+  await expect(accounting).toContainText("Samplingeach call of leaf");
 
   // leaf owns every sample, and its callers are middle, then outer.
   await showView(page, "Functions");
@@ -145,7 +145,7 @@ test("a profile is explored, and its address opens the same view", async ({
   expect(widths.page).toBe(widths.window);
 });
 
-test("each thread's lane says how long it was off its CPU, and the footer what recording cost", async ({
+test("each thread's lane says how long it was off its CPU, and the accounting what it all adds up to", async ({
   page,
   microscope,
 }, info) => {
@@ -168,7 +168,13 @@ test("each thread's lane says how long it was off its CPU, and the footer what r
   for (const spinner of await spinners.all()) {
     await expect(spinner).toHaveAttribute("title", /, (?!0 ns)[\d.]+ \S+ preempted$/u);
   }
-  await expect(page.getByTestId("accounting")).toContainText(/microscope [\d.]+% of a CPU/u);
+  // The sleeper's naps and the spinners' turns add up off their CPUs; what
+  // recording cost microscope is File details' to say.
+  const accounting = page.getByTestId("accounting");
+  await expect(accounting).toContainText("Threads4");
+  await expect(accounting).toContainText(/Cores busy≈[\d.]+On CPU(\d+ ms|[\d.]+ s)/u);
+  await expect(accounting).toContainText(/Off CPU(\d+ ms|[\d.]+ s)/u);
+  await expect(accounting).not.toContainText("of a CPU");
 });
 
 test("File details shows the whole command recorded, the samples' shape, and closes", async ({
@@ -315,7 +321,7 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   }
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await expect(page.getByTestId("accounting")).toContainText("task snapshots");
+  await expect(page.getByTestId("accounting")).toContainText("Task snapshots");
 
   // The waits' functions are the receivers', and by task each is its own.
   await page.getByRole("button", { name: "Waits", exact: true }).click();
@@ -357,7 +363,7 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await expect(page.getByTestId("accounting")).toContainText("probe events, lost 0");
+  await expect(page.getByTestId("accounting")).toContainText(/Probe events[\d,]+, lost 0/u);
   await showView(page, "Zones");
   await expect(page).toHaveURL(/view=zones/u);
   await expect(page.getByRole("img", { name: /^Zones over/u })).toBeVisible();

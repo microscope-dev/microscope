@@ -1,5 +1,13 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ChangeEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
   type ProfileLook,
@@ -19,11 +27,12 @@ import {
   formatWeight,
 } from "../../profile/paint";
 import { tracedBy, traceNotes } from "../../profile/syscalls";
-import type { ProfileInfo, ProfileSummary } from "../../protocol";
+import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import type { PaneProps } from "../../workbench/kinds";
 import { groups, type Json, type Pane, setParams } from "../../workbench/layout";
 import { change, useLayout, workbench } from "../../workbench/store";
+import { useDialogFocus, useDismiss } from "../dialog";
 import {
   ProfileContext,
   type ProfileFocus,
@@ -31,7 +40,7 @@ import {
   useDisconnected,
   useProfile,
 } from "./context";
-import { FileDetails } from "./FileDetails";
+import { CommandBlock, FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
 import { defaultView, Options } from "./Options";
@@ -396,92 +405,211 @@ function Recording({ info }: { info: ProfileInfo }) {
   );
 }
 
-/** What the profile cannot show, always in view. */
+/** A fact of the recording, its label over its value. */
+function Stat({
+  label,
+  title,
+  warn = false,
+  children,
+}: {
+  label: string;
+  title?: string;
+  warn?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="stat" title={title}>
+      <span className="stat-label">{label}</span>
+      <span className={warn ? "stat-value warn" : "stat-value"}>{children}</span>
+    </div>
+  );
+}
+
+/** A small bar `share` full, up to all of it. */
+function ShareBar({ share }: { share: number }) {
+  const style = useMemo(() => ({ width: `${Math.min(Math.max(share, 0), 1) * 100}%` }), [share]);
+  return (
+    <span className="stat-bar" aria-hidden="true">
+      <i style={style} />
+    </span>
+  );
+}
+
+/** The program recorded, by its name, which shows its whole command. */
+function Program({ summary }: { summary: ProfileSummary }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLDivElement>(null);
+  const toggle = useCallback(() => setOpen((was) => !was), []);
+  const away = useCallback(() => setOpen(false), []);
+  useDismiss(anchor, open, away);
+  const { command } = summary;
+  const program = command?.arguments?.[0] ?? command?.text.split(" ")[0] ?? summary.program;
+  if (!program) {
+    return null;
+  }
+  // By its name alone: a path, such as a Nix store's, says little at a glance.
+  const name = program.slice(program.lastIndexOf("/") + 1);
+  return (
+    <div className="stat anchor" ref={anchor}>
+      <span className="stat-label">Program</span>
+      {command ? (
+        <button
+          type="button"
+          className="stat-value stat-program"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title="Show the whole command"
+          onClick={toggle}
+        >
+          {name}
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path
+              d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+            />
+            <circle cx="8" cy="8" r="2" fill="currentColor" />
+          </svg>
+        </button>
+      ) : (
+        <span className="stat-value">{name}</span>
+      )}
+      {open && command ? <CommandPopover command={command} /> : null}
+    </div>
+  );
+}
+
+/** Its focus goes back to the program's button when it closes. */
+function CommandPopover({ command }: { command: ProfileCommand }) {
+  const dialog = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialog);
+  return (
+    <div
+      className="popover command-popover"
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a popover, not a modal <dialog>
+      role="dialog"
+      aria-label="Command"
+      tabIndex={-1}
+      ref={dialog}
+    >
+      <CommandBlock command={command} />
+    </div>
+  );
+}
+
+/** What was recorded and how far to trust it, always in view: the program,
+ * how long it ran and on how many threads, where its time went, how it was
+ * sampled, and any loss, which alone shows in warning colors. */
 function Accounting({ summary }: { summary: ProfileSummary }) {
   const truncated = summary.truncations.reduce((sum, each) => sum + each.count, 0);
   const setting = (name: string) => summary.settings.find((each) => each.name === name)?.value;
   const source = setting("source");
-  const stack = setting("stack bytes");
+  const rate = source?.match(/^CPU time at (\d+ Hz)$/u)?.[1];
+  const kernel = setting("kernel") === "on";
   const paused = summary.gaps.reduce((sum, [from, to]) => sum + (to - from), 0);
   const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
   const span = Math.max(summary.duration, 1);
+  const offCpu = summary.threads.reduce((sum, each) => sum + each.blocked + each.preempted, 0);
+  const cpu = summary.unit === "nanoseconds" && summary.timed;
+  const busy = summary.weight / span;
   const by = tracedBy(summary.settings);
   const vdso =
     "Calls through the vDSO, such as clock_gettime, never enter the kernel and are not traced";
-  const traced =
-    summary.syscalls > 0 ? (
-      <>
-        <span title={by.title ? `${by.title}\n${vdso}` : vdso}>
-          {formatCount(summary.syscalls, "call")} traced{by.text}
-        </span>
-        <span className={summary.syscallsLost > 0 ? "warn" : undefined}>
-          calls lost {formatCount(summary.syscallsLost)}
-        </span>
-        {traceNotes(summary.settings).map((note) => (
-          <span key={note.text} className={note.warn ? "warn" : undefined} title={note.title}>
-            {note.text}
-          </span>
-        ))}
-      </>
-    ) : null;
-  if (summary.samples === 0 && summary.syscalls > 0) {
-    return (
-      <div className="profile-accounting" data-testid="accounting">
-        {traced}
-      </div>
-    );
-  }
   const probesLost =
     summary.probes.overwritten +
     summary.probes.noRing +
     summary.probes.interrupted +
     summary.probes.malformed;
+  const sampled = summary.samples > 0 || summary.syscalls === 0;
+
   return (
     <div className="profile-accounting" data-testid="accounting">
-      <span>{formatWeight(summary.weight, summary.unit)} sampled</span>
-      {traced}
-      {source ? <span>{source}</span> : null}
-      {stack ? <span>{stack} B of stack copied</span> : null}
-      <span className={summary.lost > 0 ? "warn" : undefined}>
-        lost {formatCount(summary.lost)}
-      </span>
-      <span className={summary.throttles > 0 ? "warn" : undefined}>
-        throttled {formatCount(summary.throttles)}
-      </span>
-      <span
-        className={truncated > 0 ? "warn" : undefined}
-        title={summary.truncations.map((each) => `${each.what}: ${each.count}`).join("\n")}
-      >
-        truncated {formatPercent(truncated, summary.samples)}
-      </span>
-      {summary.recorderCpu > 0 ? (
-        <span
-          title={`${formatDuration(summary.recorderCpu)} of CPU time recording, ${formatDuration(summary.recorderLoading)} of it reading debug information`}
+      <Program summary={summary} />
+      {sampled && source ? (
+        <Stat label="Sampling" title={kernel ? `${source}, kernel too` : source}>
+          {rate ?? source}
+          {kernel ? " + kernel" : ""}
+        </Stat>
+      ) : null}
+      {summary.timed ? (
+        <Stat label="Ran for" title="How long the recording ran">
+          {formatDuration(summary.duration)}
+        </Stat>
+      ) : null}
+      {summary.threads.length > 0 ? (
+        <Stat label="Threads">{formatCount(summary.threads.length)}</Stat>
+      ) : null}
+      {sampled && cpu ? (
+        <>
+          <Stat
+            label="Cores busy"
+            title={`On average ${busy.toFixed(1)} CPUs ran the program at once${summary.threads.length > 0 ? `, of ${summary.threads.length} threads` : ""}`}
+          >
+            ≈{busy.toFixed(1)}
+            {summary.threads.length > 0 ? <ShareBar share={busy / summary.threads.length} /> : null}
+          </Stat>
+          <Stat label="On CPU" title="CPU time sampled, every thread's added up">
+            {formatDuration(summary.weight)}
+          </Stat>
+        </>
+      ) : sampled ? (
+        <Stat label="Sampled">{formatWeight(summary.weight, summary.unit)}</Stat>
+      ) : null}
+      {offCpu > 0 ? (
+        <Stat label="Off CPU" title="Time the threads spent blocked or preempted, added up">
+          {formatDuration(offCpu)}
+        </Stat>
+      ) : null}
+      {summary.syscalls > 0 ? (
+        <Stat label="Calls traced" title={by.title ? `${by.title}\n${vdso}` : vdso}>
+          {formatCount(summary.syscalls)}
+          {by.text}
+        </Stat>
+      ) : null}
+      {summary.syscallsLost > 0 ? (
+        <Stat label="Calls lost" warn>
+          {formatCount(summary.syscallsLost)}
+        </Stat>
+      ) : null}
+      {summary.throttles > 0 ? (
+        <Stat label="Throttled" warn>
+          {formatCount(summary.throttles)}
+        </Stat>
+      ) : null}
+      {truncated > 0 ? (
+        <Stat
+          label="Cut short"
+          title={summary.truncations.map((each) => `${each.what}: ${each.count}`).join("\n")}
+          warn
         >
-          microscope {formatPercent(summary.recorderCpu, span)} of a CPU
-        </span>
+          {formatPercent(truncated, summary.samples)}
+        </Stat>
       ) : null}
       {summary.gaps.length > 0 ? (
-        <span
-          className="warn"
+        <Stat
+          label="Paused for budget"
           title={summary.budgetChanges
             .map((each) => `${formatDuration(each.time)}: ${each.text}`)
             .join("\n")}
+          warn
         >
-          paused {formatPercent(paused, span)} for the budget
-        </span>
+          {formatPercent(paused, span)}
+        </Stat>
       ) : null}
       {summary.behind.length > 0 ? (
-        <span
-          className="warn"
+        <Stat
+          label="Paused to catch up"
           title={`Sampling was off ${formatCount(summary.behind.length, "time")} while microscope caught up on the samples it had read; a lower --rate or --stack-bytes keeps more`}
+          warn
         >
-          paused {formatPercent(behind, span)} to catch up
-        </span>
+          {formatPercent(behind, span)}
+        </Stat>
       ) : null}
       {summary.probes.events > 0 || probesLost > 0 ? (
-        <span
-          className={probesLost > 0 || summary.probeProblems.length > 0 ? "warn" : undefined}
+        <Stat
+          label="Probe events"
           title={[
             `${formatCount(summary.probes.overwritten, "record")} overwritten before microscope read them`,
             `${formatCount(summary.probes.noRing, "event")} found no ring`,
@@ -489,24 +617,34 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
             `${formatCount(summary.probes.malformed, "record")} broke the probes ABI`,
             ...summary.probeProblems.map((problem) => problem.text),
           ].join("\n")}
+          warn={probesLost > 0 || summary.probeProblems.length > 0}
         >
-          {formatCount(summary.probes.events, "probe event")}, lost {formatCount(probesLost)}
-        </span>
+          {formatCount(summary.probes.events)}, lost {formatCount(probesLost)}
+        </Stat>
       ) : null}
       {summary.snapshots > 0 ? (
-        <span
-          className={summary.snapshotProblems.length > 0 ? "warn" : undefined}
+        <Stat
+          label="Task snapshots"
           title={[
             `${formatPercent(summary.taskSamples, summary.samples)} of samples know their task`,
             ...summary.snapshotProblems.map(
               (problem) => `${formatDuration(problem.time)}: ${problem.text}`,
             ),
           ].join("\n")}
+          warn={summary.snapshotProblems.length > 0}
         >
-          {formatCount(summary.snapshots, "task snapshot")}, stopped{" "}
-          {formatPercent(summary.snapshotPause, span)}
-        </span>
+          {formatCount(summary.snapshots)}, stopped {formatPercent(summary.snapshotPause, span)}
+        </Stat>
       ) : null}
+      {traceNotes(summary.settings).map((note) => (
+        <span
+          key={note.text}
+          className={note.warn ? "stat-note warn" : "stat-note"}
+          title={note.title}
+        >
+          {note.text}
+        </span>
+      ))}
     </div>
   );
 }

@@ -6,14 +6,16 @@ use crate::web::protocol::{
     ProfileCommand, ProfileFile, ProfileInspection, ProfileModule, ProfileProcess, ProfileTable,
 };
 
-pub(super) fn inspection(profile: &Profile, file: Option<ProfileFile>) -> ProfileInspection {
-    let seen = profile.inspect();
-    let command = |command: InspectedCommand| ProfileCommand {
+pub(super) fn command(command: InspectedCommand) -> ProfileCommand {
+    ProfileCommand {
         arguments: command.arguments,
         text: command.text,
-    };
+    }
+}
+
+pub(super) fn inspection(profile: &Profile, file: Option<ProfileFile>) -> ProfileInspection {
+    let seen = profile.inspect();
     ProfileInspection {
-        command: seen.command.map(command),
         processes: seen
             .processes
             .into_iter()

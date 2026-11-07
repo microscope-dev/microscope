@@ -16,6 +16,7 @@ import {
 } from "react";
 
 import { assert } from "../assert";
+import { copyText } from "../clipboard";
 import { useRequest } from "../data";
 import { type At, drawing, formatPinned, type Look, type Pinned, parsePinned } from "../focus";
 import type { Drawing, Row } from "../protocol";
@@ -629,22 +630,9 @@ function free(shown: Shown | null): void {
 
 /** Copies every input value as CSV, and says so. */
 async function copyCsv(rows: InputRows): Promise<void> {
-  const text = csv(rows);
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // Pages served over plain HTTP to another machine have no clipboard
-    // API, but can still copy a selection.
-    const area = document.createElement("textarea");
-    area.value = text;
-    document.body.append(area);
-    area.select();
-    const copied = document.execCommand("copy");
-    area.remove();
-    if (!copied) {
-      flash("The browser would not copy");
-      return;
-    }
+  if (!(await copyText(csv(rows)))) {
+    flash("The browser would not copy");
+    return;
   }
   flash(`Copied ${rows.count} ${rows.count === 1 ? "value" : "values"} as CSV`);
 }

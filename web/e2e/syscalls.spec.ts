@@ -29,8 +29,8 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
   // A trace alone opens in its own view, without sampling's controls.
   const view = page.getByTestId("syscalls");
   await expect(page.getByTestId("syscall-counts")).toContainText("ptrace");
-  await expect(page.getByTestId("accounting")).toContainText("calls traced by ptrace");
-  await expect(page.getByTestId("accounting")).toContainText("calls lost 0");
+  await expect(page.getByTestId("accounting")).toContainText(/Calls traced[\d,]+ by ptrace/u);
+  await expect(page.getByTestId("accounting")).not.toContainText("Calls lost");
   await expect(page.getByRole("button", { name: /^Options/u })).toHaveCount(0);
   await expect(view.getByRole("img", { name: "Each thread's time in system calls" })).toBeVisible();
 

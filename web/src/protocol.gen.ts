@@ -1119,6 +1119,10 @@ export type ProfileSummary = { id: string, name: string,
  */
 program: string | null, 
 /**
+ * The command recorded: its first process's, or a trace's program.
+ */
+command: ProfileCommand | null, 
+/**
  * What a sample weighs: `nanoseconds` of CPU time, `executions`,
  * `bytes`, or what an imported profile counts.
  */
@@ -1218,11 +1222,7 @@ labelKeys: Array<string>,
  */
 probeProblems: Array<ProfileMarker>, };
 
-export type ProfileInspection = { 
-/**
- * The command recorded: its first process's, or a trace's program.
- */
-command: ProfileCommand | null, processes: Array<ProfileProcess>, modules: Array<ProfileModule>, 
+export type ProfileInspection = { processes: Array<ProfileProcess>, modules: Array<ProfileModule>, 
 /**
  * Samples by their stacks' depth in frames, the index being the depth.
  */

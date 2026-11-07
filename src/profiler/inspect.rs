@@ -99,10 +99,7 @@ impl Profile {
                 }
             })
             .collect();
-        let command = processes
-            .first()
-            .and_then(|first| first.command.clone())
-            .or_else(|| self.command_of(ARGUMENTS, self.setting("program").map(str::to_owned)));
+        let command = self.recorded_command();
 
         let mut module_frames = vec![0_u64; capture.modules.len()];
         for frame in &capture.frames {
@@ -159,6 +156,17 @@ impl Profile {
                 .map(|(kind, bytes)| (table_name(kind), bytes))
                 .collect(),
         }
+    }
+
+    /// The command the recording ran or attached to: its first process's,
+    /// or for a system call trace, the one it ran.
+    #[must_use]
+    pub fn recorded_command(&self) -> Option<InspectedCommand> {
+        let first = (!self.capture.processes.is_empty())
+            .then(|| self.command_of(&arguments_setting(0), self.command(0).map(str::to_owned)))
+            .flatten();
+
+        first.or_else(|| self.command_of(ARGUMENTS, self.setting("program").map(str::to_owned)))
     }
 
     /// A command from the arguments under `key`, or `text` alone when the

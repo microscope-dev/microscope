@@ -391,17 +391,20 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     tab.save_traffic("profile");
 }
 
-/// Inspect names the recorded command, its file, and every sample once.
+/// The summary names the recorded command; Inspect, its file and every
+/// sample once.
 async fn inspected(tab: &mut Client, id: &str, path: &std::path::Path) {
-    let inspection = tab.ok("profileInspect", json!({"profile": id})).await;
-    let arguments = &inspection["command"]["arguments"];
-    assert_eq!(arguments[1], "1", "{inspection}");
+    let summary = tab.ok("profile", json!({"profile": id})).await;
+    let arguments = &summary["command"]["arguments"];
+    assert_eq!(arguments[1], "1", "{summary}");
     assert!(
         arguments[0]
             .as_str()
             .is_some_and(|program| program.ends_with("profile-stacks-gcc-o0")),
-        "{inspection}"
+        "{summary}"
     );
+
+    let inspection = tab.ok("profileInspect", json!({"profile": id})).await;
     let depths = inspection["depths"].as_array().expect("depths");
     let by_depth: u64 = depths.iter().filter_map(Value::as_u64).sum();
     assert_eq!(by_depth, 6, "{inspection}");

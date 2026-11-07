@@ -785,6 +785,7 @@ fn summary(entry: &Entry) -> ProfileSummary {
         id: entry.info.id.clone(),
         name: entry.info.name.clone(),
         program: profile.setting("program").map(str::to_owned),
+        command: profile.recorded_command().map(inspect::command),
         unit: profile
             .setting("weight")
             .unwrap_or("nanoseconds")

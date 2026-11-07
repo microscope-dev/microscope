@@ -132,6 +132,7 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
     id: `p${profiles}-${Date.now()}`,
     name: "test.usprof",
     program: null,
+    command: null,
     unit: "nanoseconds",
     source: null,
     timed: false,
@@ -934,7 +935,6 @@ it("says nothing the tab says, and shows a bar only for a recording", async () =
  * shell would split. */
 function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspection {
   return {
-    command: { arguments: ["/bin/rg", "-c", "a b", "it's"], text: "/bin/rg -c a b it's" },
     processes: [{ pid: 7, name: "rg", command: null }],
     modules: [
       { path: "/bin/rg", size: 2048, buildId: null, frames: 9 },
@@ -960,8 +960,12 @@ function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspectio
   };
 }
 
+/** A recording of a program with an argument a shell would split. */
+const RG = { arguments: ["/bin/rg", "-c", "a b", "it's"], text: "/bin/rg -c a b it's" };
+
 it("shows the file's details in a dialog: its whole command, then its samples", async () => {
   const summary = summaryOf({
+    command: RG,
     timed: true,
     truncations: [{ what: "Stack copy ran out", count: 3 }],
     recorderCpu: 20e6,
@@ -1065,14 +1069,15 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
 });
 
 it("closes File details on a click outside, and says when a recording kept only the joined command", async () => {
-  const summary = summaryOf({ samples: 0, syscalls: 4 });
+  const summary = summaryOf({
+    samples: 0,
+    syscalls: 4,
+    command: { arguments: null, text: "/bin/sh -c 'a b'" },
+  });
   const server = await mountPage(summary, true);
   server.answer(await server.next("profile"), summary);
   await userEvent.click(page.getByRole("button", { name: "File details" }));
-  server.answer(
-    await server.next("profileInspect"),
-    inspectionOf({ command: { arguments: null, text: "/bin/sh -c 'a b'" }, file: null }),
-  );
+  server.answer(await server.next("profileInspect"), inspectionOf({ file: null }));
   const dialog = page.getByRole("dialog");
   // A trace with no samples has nothing for a Samples tab.
   await expect.element(dialog.getByText(/kept the command as one line/u)).toBeVisible();
@@ -1089,6 +1094,113 @@ it("closes File details on a click outside, and says when a recording kept only 
     scrim.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
   });
   await expect.element(dialog).not.toBeInTheDocument();
+});
+
+/** Takes the clipboard API away, as from a page served over plain HTTP to
+ * another machine, and copies through a selection, as such a page must. */
+function withoutClipboard() {
+  Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+  const selected: string[] = [];
+  const copy = vi.spyOn(document, "execCommand").mockImplementation((command) => {
+    const area = document.activeElement;
+    if (command === "copy" && area instanceof HTMLTextAreaElement) {
+      selected.push(area.value.slice(area.selectionStart, area.selectionEnd));
+    }
+    return command === "copy";
+  });
+  return {
+    selected,
+    restore() {
+      copy.mockRestore();
+      // The page's own value goes, and Navigator's getter answers again.
+      delete (navigator as unknown as Record<string, unknown>).clipboard;
+    },
+  };
+}
+
+it("copies the command from File details where the page has no clipboard API", async () => {
+  const summary = summaryOf({ command: RG });
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  await userEvent.click(page.getByRole("button", { name: "File details" }));
+  server.answer(await server.next("profileInspect"), inspectionOf());
+  const dialog = page.getByRole("dialog", { name: "test.usprof" });
+  const without = withoutClipboard();
+  try {
+    await userEvent.click(dialog.getByRole("button", { name: "Copy" }));
+    await expect.element(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
+    expect(without.selected).toEqual([String.raw`/bin/rg -c 'a b' 'it'\''s'`]);
+  } finally {
+    without.restore();
+  }
+});
+
+/** The accounting's facts, each its label and value. */
+const stats = () =>
+  [...document.querySelectorAll("[data-testid=accounting] .stat")].map(
+    (stat) =>
+      `${stat.querySelector(".stat-label")?.textContent}: ${stat.querySelector(".stat-value")?.textContent}`,
+  );
+
+it("leads with what was recorded, and shows only the losses there were", async () => {
+  const thread = { pid: 1, samples: 1, weight: 1, blocked: 0, preempted: 0 };
+  const summary = summaryOf({
+    command: RG,
+    timed: true,
+    duration: 2e9,
+    weight: 3e9,
+    samples: 3000,
+    lost: 1000,
+    throttles: 7,
+    threads: [
+      { ...thread, row: 0, tid: 10, name: "main", blocked: 1e9 },
+      { ...thread, row: 1, tid: 11, name: "worker", preempted: 5e8 },
+    ],
+    settings: [
+      { name: "source", value: "CPU time at 999 Hz" },
+      { name: "kernel", value: "on" },
+    ],
+  });
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  const program = page.getByRole("button", { name: "rg", exact: true });
+  await expect.element(program).toBeVisible();
+  // Two threads at most keep two CPUs busy; 3 s of CPU in 2 s is 1.5. Lost
+  // samples stay in File details.
+  expect(stats()).toEqual([
+    "Program: rg",
+    "Sampling: 999 Hz + kernel",
+    "Ran for: 2.00 s",
+    "Threads: 2",
+    "Cores busy: ≈1.5",
+    "On CPU: 3.00 s",
+    "Off CPU: 1.50 s",
+    "Throttled: 7",
+  ]);
+  expect(
+    [...document.querySelectorAll("[data-testid=accounting] .warn")].map(
+      (each) => each.textContent,
+    ),
+  ).toEqual(["7"]);
+
+  // The program shows its whole command, which copies where the page has
+  // no clipboard API, and Escape puts it away.
+  await userEvent.click(program);
+  const dialog = page.getByRole("dialog", { name: "Command" });
+  await expect
+    .element(dialog.getByTestId("command"))
+    .toHaveTextContent(String.raw`/bin/rg \-c \'a b' \'it'\''s'`);
+  const without = withoutClipboard();
+  try {
+    await userEvent.click(dialog.getByRole("button", { name: "Copy" }));
+    await expect.element(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
+    expect(without.selected).toEqual([String.raw`/bin/rg -c 'a b' 'it'\''s'`]);
+  } finally {
+    without.restore();
+  }
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(program).toHaveFocus();
 });
 
 it("says why File details failed", async () => {

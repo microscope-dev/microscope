@@ -1266,6 +1266,9 @@ pub struct ProfileSummary {
     /// The program recorded.
     pub program: Option<String>,
 
+    /// The command recorded: its first process's, or a trace's program.
+    pub command: Option<ProfileCommand>,
+
     /// What a sample weighs: `nanoseconds` of CPU time, `executions`,
     /// `bytes`, or what an imported profile counts.
     pub unit: String,
@@ -1565,8 +1568,6 @@ pub struct ProfileMarker {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileInspection {
-    /// The command recorded: its first process's, or a trace's program.
-    pub command: Option<ProfileCommand>,
     pub processes: Vec<ProfileProcess>,
     pub modules: Vec<ProfileModule>,
 

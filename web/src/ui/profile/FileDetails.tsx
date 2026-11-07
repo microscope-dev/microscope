@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 
+import { copyText } from "../../clipboard";
 import {
   commandLine,
   medianDepth,
@@ -182,7 +183,7 @@ function Metadata({
   );
   return (
     <>
-      {inspection.command ? <Command command={inspection.command} /> : null}
+      {summary.command ? <Command command={summary.command} /> : null}
       {inspection.processes.length > 1 ? (
         <Section title={`Processes, ${inspection.processes.length}`}>
           <table className="details-table">
@@ -305,26 +306,35 @@ function Metadata({
   );
 }
 
-/** The whole command, one argument to a line, as a shell reads it. */
+/** The whole command, in a section of its own. */
 function Command({ command }: { command: ProfileCommand }) {
+  return (
+    <Section title="Command">
+      <CommandBlock command={command} />
+    </Section>
+  );
+}
+
+/** The whole command, one argument to a line, as a shell reads it, and a
+ * button that copies the line a shell runs. */
+export function CommandBlock({ command }: { command: ProfileCommand }) {
   const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
   const block = useRef<HTMLDivElement>(null);
   const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(commandLine(command));
+    if (await copyText(commandLine(command))) {
       setCopied("copied");
-    } catch {
-      // Selected, it can still be copied by hand.
-      if (block.current) {
-        window.getSelection()?.selectAllChildren(block.current);
-      }
-      setCopied("failed");
+      return;
     }
+    // Selected, it can still be copied by hand.
+    if (block.current) {
+      window.getSelection()?.selectAllChildren(block.current);
+    }
+    setCopied("failed");
   }, [command]);
 
   const lines = command.arguments?.map(shellQuote) ?? [command.text];
   return (
-    <Section title="Command">
+    <>
       <div className="details-command">
         <div className="details-lines" ref={block} data-testid="command">
           {lines.map((line, index) => (
@@ -344,7 +354,7 @@ function Command({ command }: { command: ProfileCommand }) {
           This recording kept the command as one line, so where each argument ends is unknown.
         </span>
       )}
-    </Section>
+    </>
   );
 }
 
