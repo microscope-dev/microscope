@@ -176,7 +176,7 @@ function useArranged(wants: Wants, start: () => Layout) {
   }
   useEffect(() => {
     if (refused) {
-      flash(`The layout this browser kept can't be used (${refused}), so it starts over`);
+      flash(`The saved layout can't be used (${refused}), so the default layout is shown`);
     }
   }, [refused]);
   useEffect(keepSaving, []);

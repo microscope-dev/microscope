@@ -111,7 +111,7 @@ it("keeps this browser's layout across a reload, and says once when it can't", a
   await expect.poll(() => readGroups()).toHaveLength(8);
   await expect
     .poll(() => document.querySelector("[data-testid=flash]")?.textContent)
-    .toMatch(/kept can't be used \(panes is not an object\), so it starts over/u);
+    .toMatch(/can't be used \(panes is not an object\), so the default layout is shown/u);
 });
 
 it("shows one group at a time in a narrow window, and any pane from its list", async () => {

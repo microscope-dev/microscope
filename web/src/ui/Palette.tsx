@@ -280,7 +280,7 @@ function useGroups(mode: Mode, query: string): Found {
 
   if (mode === "save") {
     if (query === "") {
-      return { groups: [], why: "Type a name; a layout of that name is replaced." };
+      return { groups: [], why: "Type a name. A layout with the same name gets replaced." };
     }
     return {
       groups: [
@@ -408,7 +408,7 @@ function useGroups(mode: Mode, query: string): Found {
       return { groups: [], why: "Reading the program's files…" };
     }
     if (files.length === 0) {
-      return { groups: [], why: "The debug information names no source files." };
+      return { groups: [], why: "The debug information lists no source files." };
     }
     return { groups: group ? [group] : [] };
   }

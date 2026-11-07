@@ -338,7 +338,7 @@ export const COMMANDS = registry({
     run: () => {
       void navigator.clipboard
         .writeText(window.location.href)
-        .then(() => flash("Copied the link to this view; it carries no access"))
+        .then(() => flash("Copied a link to this view. It does not grant access."))
         .catch(() => flash("The browser did not let the page copy"));
     },
   },

@@ -423,7 +423,7 @@ extend c life {
     // A renderer that never returns is stopped, and the page answers meanwhile.
     await tab("forever").click();
     await expect(board.getByRole("alert")).toHaveText(
-      "The renderer took longer than 2 s, so it was stopped.",
+      "The renderer took longer than 2 s, so microscope stopped it.",
     );
     await page.keyboard.press("Alt+s");
     await expect(page).not.toHaveURL(/view=drawings/u);

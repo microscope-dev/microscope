@@ -396,7 +396,7 @@ pub async fn source(
         None => {
             return Err(Failure::new(
                 ErrorKind::Invalid,
-                format!("the debug information names no source file {path}"),
+                format!("{path} is not a source file in the debug information"),
             ));
         }
     };

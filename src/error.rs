@@ -341,7 +341,7 @@ pub enum Error {
 
     /// The code was compiled from text with no file, which its runtime
     /// names in angle brackets, as Python names code from `-c` `<string>`.
-    #[error("the code was compiled from {name}, which names no file")]
+    #[error("the code was compiled from {name}, which is not a file")]
     SourceNotAFile { name: Arc<str> },
 
     #[error("a source path rule needs a nonempty prefix to replace")]

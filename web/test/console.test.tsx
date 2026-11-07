@@ -215,7 +215,7 @@ it("steps into the call it names, and lists the line's calls when it names none"
   server.answer(await server.next("stepTargets"), calls);
   await expect
     .element(entries().last())
-    .toMatchTextContent("this line calls no missing; it calls hash, strcmp");
+    .toMatchTextContent("this line does not call missing; it calls hash, strcmp");
 });
 
 it("leaves expressions that start with a command's name to microscope", async () => {

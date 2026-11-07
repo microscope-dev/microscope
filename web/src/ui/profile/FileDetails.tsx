@@ -233,7 +233,7 @@ function Metadata({
               ) : null}
               {file === null ? null : <Fact name="Chunks" value={formatCount(file.chunks)} />}
               {file?.truncated ? (
-                <Fact name="Truncated" value="yes, only its complete chunks were read" warn />
+                <Fact name="Truncated" value="yes, only complete chunks were read" warn />
               ) : null}
               {recorder ? <Fact name="Recorder" value={recorder} /> : null}
             </Facts>

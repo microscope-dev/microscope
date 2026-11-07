@@ -1020,7 +1020,7 @@ function Copy({ text, label }: { text: string; label: string }) {
 
 function RecoveryCodes({ codes, done }: { codes: string[]; done: () => void }) {
   const [saved, setSaved] = useState(false);
-  const text = `Microscope recovery codes. Each signs you in once.\n\n${codes.join("\n")}\n`;
+  const text = `Microscope recovery codes. Each code works once.\n\n${codes.join("\n")}\n`;
   const download = useCallback(() => {
     const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
     const link = document.createElement("a");

@@ -1112,7 +1112,7 @@ fn source(
             let highest = lines.iter().map(|line| line[0]).max().unwrap_or(1);
             let first = lowest.saturating_sub(SOURCE_MARGIN).max(1);
             let read = path.as_deref().map_or_else(
-                || Err("its lines name no file".to_owned()),
+                || Err("the debug information has no source file for these lines".to_owned()),
                 |path| source_lines(path, first, highest + SOURCE_MARGIN),
             );
             let (text, unread) = match read {

@@ -221,7 +221,7 @@ function LaunchForm({ working, submit }: FormProps) {
         )}
       </Field>
       <div className="two">
-        <Field label="Working directory" note="Empty runs it where microscope runs.">
+        <Field label="Working directory" note="Leave empty to use microscope's directory.">
           {(id) => (
             <PathInput
               id={id}
@@ -460,7 +460,7 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
         )}
       </Field>
       <div className="two">
-        <Field label="Working directory" note="Empty runs it where microscope runs.">
+        <Field label="Working directory" note="Leave empty to use microscope's directory.">
           {(id) => (
             <PathInput
               id={id}
@@ -489,7 +489,7 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
       </div>
       {traced ? (
         <div className="two">
-          <Field label="Calls" note="As strace's -e takes them; empty traces every call.">
+          <Field label="Calls" note="Same syntax as strace -e. Leave empty to trace every call.">
             {(id) => (
               <input
                 id={id}
@@ -520,7 +520,7 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
                 </select>
               )}
             </Field>
-            <Field label="Calls of" note="A function to sample each call of, instead of CPU time.">
+            <Field label="Calls of" note="Sample every call of this function instead of CPU time.">
               {(id) => (
                 <input
                   id={id}
@@ -534,10 +534,7 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
             </Field>
           </div>
           <div className="two">
-            <Field
-              label="Keep the last"
-              note="Seconds of the recording to keep, which the page shows and saves; empty keeps all of it."
-            >
+            <Field label="Keep the last" note="Seconds to keep. Leave empty to keep everything.">
               {(id) => (
                 <input
                   id={id}
@@ -764,7 +761,7 @@ function CoreForm({ working, submit }: FormProps) {
           <PathInput id={id} value={core} onChange={setCore} placeholder="./core.41870" autoFocus />
         )}
       </Field>
-      <Field label="Executable" note="Empty uses the one the dump records.">
+      <Field label="Executable" note="Leave empty to use the program recorded in the dump.">
         {(id) => (
           <PathInput
             id={id}

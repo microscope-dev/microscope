@@ -6,9 +6,13 @@ import type { TransformOp } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
 
 const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
-  { op: "focus", label: "Focus", title: "Only samples through it, rooted at it" },
-  { op: "merge", label: "Merge", title: "Hide it, giving its cost to its callers" },
-  { op: "drop", label: "Drop", title: "Remove every sample through it" },
+  {
+    op: "focus",
+    label: "Focus",
+    title: "Show only stacks through this function, starting from it",
+  },
+  { op: "merge", label: "Merge", title: "Hide this function and add its time to its callers" },
+  { op: "drop", label: "Drop", title: "Remove every stack through this function" },
 ];
 
 /** The selected function in a bar of its own: its name, then what
@@ -54,7 +58,7 @@ export function Selected({ name }: { name: string }) {
           <span className="error">{answer.error.message}</span>
         ) : functions ? (
           costs.length === 0 ? (
-            <span className="muted">No selected sample runs it.</span>
+            <span className="muted">None of the selected samples ran this function.</span>
           ) : (
             costs.map(({ row, key }) => (
               <span key={row.key} className="muted">
@@ -65,7 +69,7 @@ export function Selected({ name }: { name: string }) {
             ))
           )
         ) : (
-          <span className="muted">Reading its cost…</span>
+          <span className="muted">Loading cost…</span>
         )}
       </span>
       {ACTIONS.map(({ op, label, title }) => (
@@ -76,7 +80,7 @@ export function Selected({ name }: { name: string }) {
       <button
         type="button"
         className="tb ghost"
-        title="Its callers and callees"
+        title="Who calls this function, and what it calls"
         onClick={showCallers}
       >
         Callers and callees

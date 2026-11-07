@@ -284,7 +284,7 @@ function LabelChip({ label }: { label: string }) {
       }),
     [setLook, label],
   );
-  return <Chip label={label} title="Samples that carry this label" remove={remove} />;
+  return <Chip label={label} title="Samples with this label" remove={remove} />;
 }
 
 function TransformChip({ entry, index }: { entry: string; index: number }) {
@@ -612,7 +612,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
           label="Probe events"
           title={[
             `${formatCount(summary.probes.overwritten, "record")} overwritten before microscope read them`,
-            `${formatCount(summary.probes.noRing, "event")} found no ring`,
+            `${formatCount(summary.probes.noRing, "event")} had no ring buffer to go to`,
             `${formatCount(summary.probes.interrupted, "event")} dropped by a signal handler`,
             `${formatCount(summary.probes.malformed, "record")} broke the probes ABI`,
             ...summary.probeProblems.map((problem) => problem.text),
@@ -626,7 +626,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
         <Stat
           label="Task snapshots"
           title={[
-            `${formatPercent(summary.taskSamples, summary.samples)} of samples know their task`,
+            `${formatPercent(summary.taskSamples, summary.samples)} of samples have a known task`,
             ...summary.snapshotProblems.map(
               (problem) => `${formatDuration(problem.time)}: ${problem.text}`,
             ),

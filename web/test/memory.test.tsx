@@ -100,5 +100,5 @@ it("selects a character array's string and marks the rest of the array", async (
   }
   expect(classes(16)).not.toContain("in-value");
   await expect.element(page.getByTestId("selection").getByText("7 bytes at 0x1000")).toBeVisible();
-  await expect.element(page.getByText(/16 bytes · 7 hold its string/u)).toBeVisible();
+  await expect.element(page.getByText(/16 bytes · string: 7 bytes/u)).toBeVisible();
 });

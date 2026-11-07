@@ -4662,7 +4662,7 @@ fn an_uncaught_python_exception_stops_where_it_leaves_the_program() {
     });
     assert_eq!(message, stopped + 1, "{stdout}");
     line_index(&lines, message, |line| {
-        line == "source unavailable: the code was compiled from <string>, which names no file"
+        line == "source unavailable: the code was compiled from <string>, which is not a file"
     });
     line_index(&lines, message, |line| {
         line.starts_with('#') && line.ends_with("in <module> at <string>:4")

@@ -207,7 +207,7 @@ function remember(key: string, stop: number, inputs: Record<string, Value>): voi
 function outcomeProblem(outcome: Outcome): string | null {
   switch (outcome.kind) {
     case "timeout":
-      return `The renderer took longer than ${DRAW_TIMEOUT / 1_000} s, so it was stopped.`;
+      return `The renderer took longer than ${DRAW_TIMEOUT / 1_000} s, so microscope stopped it.`;
     case "failed":
       return failureText(outcome.failure);
     case "picture":

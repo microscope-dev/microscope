@@ -191,7 +191,7 @@ function Popover({ views }: { views: typeof VIEWS }) {
           {summary.interpreted ? (
             <LookCheck
               field="py"
-              title="Show each stack as its Python code sees it, without the interpreter's own frames"
+              title="Show Python frames only, without the interpreter's frames"
               checked={look.py === "1"}
               on="1"
               off={undefined}
@@ -205,7 +205,7 @@ function Popover({ views }: { views: typeof VIEWS }) {
         <>
           <LookCheck
             field="bt"
-            title="Root each path at the task it ran or waited in"
+            title="Group stacks by the task they ran or waited in"
             checked={look.bt === "1"}
             on="1"
             off={undefined}
@@ -228,7 +228,7 @@ function Popover({ views }: { views: typeof VIEWS }) {
       {sampled(summary) ? (
         <label
           className="check"
-          title="Cut each path back to the first call of anything it calls again, directly or through others"
+          title="Merge recursive calls, direct or indirect, into the first call"
         >
           <input type="checkbox" checked={collapsed} onChange={collapseCycles} />
           Collapse recursion

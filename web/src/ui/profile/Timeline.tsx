@@ -52,7 +52,7 @@ function rows(summary: ProfileSummary, look: ProfileFocus["look"]): Row[] {
       id: "none",
       lane: -1,
       label: "no task known",
-      title: "Samples no task snapshot named the task of",
+      title: "Samples whose task is not known",
     });
   }
   return tasks;

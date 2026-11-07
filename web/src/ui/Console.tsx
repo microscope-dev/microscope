@@ -408,7 +408,7 @@ function runLine(line: string, { store, connection, at, frame, look }: Context):
             throw new Error(
               named.length === 0
                 ? "this line calls nothing to step into"
-                : `this line calls no ${call}; it calls ${named.join(", ")}`,
+                : `this line does not call ${call}; it calls ${named.join(", ")}`,
             );
           }
           return follow(store, id, () =>

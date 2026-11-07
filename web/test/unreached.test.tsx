@@ -37,6 +37,6 @@ it.each([
 it("says a stop the session has left has passed", async () => {
   await mountPane(<Stack />, { at: { stop: 1, thread: 1, frame: 0 }, stale: "passed" }, state);
   await expect
-    .element(page.getByText("Stop #1 has passed; its stack is gone with it."))
+    .element(page.getByText("Stop #1 has passed, so its stack is no longer available."))
     .toBeVisible();
 });

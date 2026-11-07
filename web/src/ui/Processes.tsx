@@ -106,7 +106,7 @@ export function Processes() {
           type="button"
           className="button small"
           disabled={busy}
-          title="Let this process run on without microscope; the others stay debugged"
+          title="Stop debugging this process and let it run. The others stay attached."
           onClick={detach}
         >
           Detach [{selected.number}]

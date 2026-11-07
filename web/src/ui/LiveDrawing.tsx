@@ -69,7 +69,7 @@ function liveContext(job: LiveJob, size: Size): LiveContext {
 function liveProblem(failure: LiveFailure): string {
   switch (failure.kind) {
     case "unresponsive":
-      return `The renderer stopped answering for ${UNRESPONSIVE / 1_000} s, so it was stopped.`;
+      return `The renderer stopped responding for ${UNRESPONSIVE / 1_000} s, so microscope stopped it.`;
     case "lost":
       return "The renderer lost its WebGL context.";
     case "failed":

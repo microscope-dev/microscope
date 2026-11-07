@@ -91,7 +91,7 @@ export function Stack() {
         {stale === "passed"
           ? unreached(state, at.stop)
             ? `This session has not reached stop #${at.stop}.`
-            : `Stop #${at.stop} has passed; its stack is gone with it.`
+            : `Stop #${at.stop} has passed, so its stack is no longer available.`
           : "Reading the stack…"}
       </div>
     );

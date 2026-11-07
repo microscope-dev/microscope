@@ -93,7 +93,7 @@ function Input() {
       <input
         className="input quiet"
         aria-label="Program input"
-        placeholder="input for the program; Enter sends a line, Ctrl+D ends its input"
+        placeholder="input for the program; Enter sends a line, Ctrl+D closes input"
         value={text}
         onChange={onChange}
         onKeyDown={onKeyDown}

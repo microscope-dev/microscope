@@ -170,7 +170,7 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
               type="button"
               className="tb ghost"
               aria-pressed={look.bl === site.name}
-              title="Root each stack at its value of this label"
+              title="Group stacks by this label's value"
               onClick={rootByValue}
             >
               By {site.name}
@@ -241,7 +241,7 @@ function LabelValue({ label, on }: { label: string; on: boolean }) {
       type="button"
       className="link-button"
       aria-pressed={on}
-      title="Keep only samples that carry this label"
+      title="Keep only samples with this label"
       onClick={toggle}
     >
       {label}

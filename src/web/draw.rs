@@ -322,7 +322,7 @@ impl Walk<'_> {
                     }),
                     TextCompletion::Truncated { .. } | TextCompletion::Limited { .. } => {
                         Err(format!(
-                            "`{path}`: its text is longer than a drawing reads, {} bytes",
+                            "`{path}`: the string is longer than the {} bytes a drawing reads",
                             microscope::TextSummary::MAX_BYTES
                         ))
                     }
@@ -458,7 +458,7 @@ impl Walk<'_> {
         depth: usize,
     ) -> Walked {
         let Some(active) = active else {
-            return Err(format!("`{path}`: it holds no variant its type describes"));
+            return Err(format!("`{path}`: its value matches none of its type's variants"));
         };
 
         let members = active.members.len();
@@ -731,7 +731,7 @@ fn exact(count: Option<PresentedCount>, path: &str) -> Result<u64, String> {
     match count {
         Some(PresentedCount::Exact(count)) => Ok(count),
         Some(PresentedCount::AtLeast(count)) => Err(format!(
-            "`{path}`: it holds at least {count} elements, and counting them all ran out of budget"
+            "`{path}`: it has at least {count} elements, too many to count"
         )),
         None => Ok(0),
         Some(_) => Err(format!("`{path}`: its count is not known")),

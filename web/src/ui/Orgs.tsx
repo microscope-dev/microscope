@@ -1300,7 +1300,7 @@ function TeamRow(props: { org: Org; team: Team; members: readonly Member[]; chan
                 </button>
                 <Confirm
                   label="Delete"
-                  question={`Delete ${team.name}? Its access to projects goes with it.`}
+                  question={`Delete ${team.name}? The team loses access to all its projects.`}
                   act={remove}
                 />
               </>

@@ -61,7 +61,7 @@ export function Memory() {
           <span className="dim">
             {hex(shown.address)}
             {shown.bytes ? ` · ${shown.bytes} bytes` : ""}
-            {shown.text ? ` · ${shown.text} hold its string` : ""}
+            {shown.text ? ` · string: ${shown.text} bytes` : ""}
           </span>
         )}
       </div>
@@ -105,7 +105,7 @@ function GoTo() {
         return;
       }
       if (!at || stale) {
-        setError("Expressions are read at the stop shown, while it is the program's");
+        setError("Expressions only work while the program is at the stop shown");
         return;
       }
       const settled = await cache.get(connection, "evaluate", { ...at, expression: wanted })
@@ -119,7 +119,7 @@ function GoTo() {
       } else if (row?.memory) {
         go(rowTarget(row) ?? row.memory);
       } else {
-        setError(`${wanted} names no memory`);
+        setError(`${wanted} has no address in memory`);
       }
     },
     [text, at, stale, connection, go],
@@ -400,7 +400,7 @@ function ByteEditor({ address, onDone }: { address: bigint; onDone(address: bigi
         className="input"
         name="bytes"
         aria-label={`New byte at ${hex(address)}`}
-        title="hexadecimal pairs; several write the bytes after it too"
+        title="Hex bytes, such as 0a ff. Extra bytes overwrite the ones after it."
         aria-invalid={error !== null}
         // oxlint-disable-next-line jsx-a11y/no-autofocus -- the person asked to edit this byte
         autoFocus

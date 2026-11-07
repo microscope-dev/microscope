@@ -489,11 +489,11 @@ fn describe_member(
         ),
         MemberState::Detached => (
             protocol::MemberState::Detached,
-            "detached, and runs on its own".to_owned(),
+            "detached".to_owned(),
         ),
         MemberState::Lost => (
             protocol::MemberState::Lost,
-            "lost: its session failed, and released or killed its process".to_owned(),
+            "lost: its session failed, so the process was released or killed".to_owned(),
         ),
     };
     let joined = match (member.number, &member.executed) {

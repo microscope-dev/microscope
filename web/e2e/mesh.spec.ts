@@ -266,7 +266,7 @@ test("a live renderer that stops answering is ended, and restarts", async ({
   await canvas.focus();
   await page.keyboard.press("h");
   await expect(board.getByRole("alert")).toHaveText(
-    "The renderer stopped answering for 2 s, so it was stopped. Restart",
+    "The renderer stopped responding for 2 s, so microscope stopped it. Restart",
   );
   await board.getByRole("button", { name: "Restart" }).click();
   await expect(board.getByRole("alert")).toHaveCount(0);

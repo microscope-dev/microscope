@@ -1245,14 +1245,14 @@ impl Session {
         let Some(spec) = launch else {
             return Err(Failure::new(
                 ErrorKind::Invalid,
-                "name the stop to continue",
+                "pick a stop to continue from",
             ));
         };
 
         if started {
             return Err(Failure::new(
                 ErrorKind::NotStopped,
-                "the program has already started; name the stop to continue",
+                "the program has already started; pick a stop to continue from",
             ));
         }
 
@@ -1326,11 +1326,11 @@ impl Session {
         let (group, selection) = self.group_selection().await?;
         let handle = group
             .member(number)
-            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("no process is [{number}]")))?;
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("there is no process [{number}]")))?;
         if handle.snapshot().await.is_err() {
             return Err(Failure::new(
                 ErrorKind::Invalid,
-                format!("[{number}] is no longer debugged"),
+                format!("[{number}] is no longer being debugged"),
             ));
         }
 
@@ -1359,7 +1359,7 @@ impl Session {
             .members()
             .into_iter()
             .find(|member| member.number == number)
-            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("no process is [{number}]")))?;
+            .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("there is no process [{number}]")))?;
         group.detach(number).await?;
         Ok(format!(
             "detached {}",
@@ -1693,7 +1693,7 @@ impl Session {
         if role != Role::Control {
             return Err(Failure::new(
                 ErrorKind::Forbidden,
-                "this link can only view the session; it evaluates, but runs no commands",
+                "this link can only view the session. It can evaluate expressions but not run commands.",
             ));
         }
 

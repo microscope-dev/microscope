@@ -73,7 +73,7 @@ pub async fn disassemble(
         let executing = executing(&trace.frames, index).ok_or_else(|| {
             Failure::new(
                 ErrorKind::Invalid,
-                "the frame is suspended, and runs no code",
+                "this frame is suspended and has no code running",
             )
         })?;
         (executing, Some(executing.get()))

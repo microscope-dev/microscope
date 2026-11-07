@@ -528,7 +528,7 @@ impl Reader<'_> {
         if target.assignment_target().is_some() {
             return Err(Failure::new(
                 ErrorKind::Invalid,
-                "a value's path names it; it does not assign",
+                "give only the new value, not an assignment",
             ));
         }
 

@@ -186,7 +186,7 @@ export function useMissing(need: string | null): string | null {
           ? "Not connected to a microscope. Connect with a join link from the File menu."
           : "microscope refused this page's link. Open a new join link."
         : link === "incompatible"
-          ? "This page is from another version of microscope. Reload to get this one's."
+          ? "This page is from another version of microscope. Reload to update it."
           : link === "unreachable"
             ? "Can't reach microscope. It may have stopped; this page keeps trying."
             : "Connecting to microscope…";
