@@ -1,7 +1,8 @@
-import { type ChangeEvent, type ReactNode, useCallback, useRef, useState } from "react";
+import { type ChangeEvent, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 
 import { type ProfileLook, transformed, withLook } from "../../profile/look";
 import { formatPercent, formatWeight } from "../../profile/paint";
+import { type CallTree, matching } from "../../profile/tree";
 import type { TransformOp } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
 
@@ -29,6 +30,25 @@ export function useFrameSearch(): [string, (text: string) => void] {
     }
   }
   return [look.fn === undefined ? typed : "", setTyped];
+}
+
+/** The frames of `tree` whose names hold `search`, in any case, and what
+ * the search row says of them: the share of the samples they ran in. */
+export function useTreeSearch(
+  tree: CallTree | null,
+  search: string,
+): { matched: Set<number> | null; note: string | null } {
+  return useMemo(() => {
+    const needle = search.toLowerCase();
+    if (!tree || !needle) {
+      return { matched: null, note: null };
+    }
+    const found = matching(tree, (name) => name.toLowerCase().includes(needle));
+    return {
+      matched: found.nodes,
+      note: `matched ${formatPercent(found.weight, tree.weight)} of samples`,
+    };
+  }, [tree, search]);
 }
 
 /** One row that searches a view's frames and holds the selected one's

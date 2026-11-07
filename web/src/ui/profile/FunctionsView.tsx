@@ -6,11 +6,11 @@ import { diffModeOf } from "../../profile/look";
 import { changeOf, formatCount, formatPercent, formatWeight } from "../../profile/paint";
 import type { ProfileBaseWeight, ProfileCost, ProfileKey, ProfileQuery } from "../../protocol";
 import { Code, SourceLines } from "./Annotated";
-import { useAnswer, useProfile } from "./context";
-import { SearchRow, useFrameSearch } from "./Details";
+import { useAnswer, useProfile, useTree } from "./context";
 import { LookButton, ownTone, Share, Unanswered } from "./parts";
 import { useActiveRow } from "./rows";
-import { Change, ColumnHead, TreeRows, useTree } from "./TreeView";
+import { SearchRow, useFrameSearch } from "./Search";
+import { Change, ColumnHead, TreeRows } from "./TreeView";
 
 const ROW = 20;
 

@@ -10,6 +10,12 @@
   --line-strong: #c4cbd6;
   --ink: #1a2230;
   --ink-2: #4a5566;
+  /* A share's bar: each sets --share, from 0 to 1, and a heat bar's hue
+     warms with it while these hold. */
+  --share: 0;
+  --heat-saturation: 95%;
+  --heat-lightness: 55%;
+  --heat-alpha: 0.45;
   --ink-3: #5f6978;
   --accent: #2f56c9;
   --accent-ink: #ffffff;
@@ -44,6 +50,9 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
+    --heat-saturation: 85%;
+    --heat-lightness: 45%;
+    --heat-alpha: 0.5;
     --paper: #101318;
     --surface: #161a20;
     --surface-2: #1d222a;
@@ -81,6 +90,9 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+  --heat-saturation: 85%;
+  --heat-lightness: 45%;
+  --heat-alpha: 0.5;
   --paper: #101318;
   --surface: #161a20;
   --surface-2: #1d222a;
@@ -3602,7 +3614,7 @@ textarea.input {
 
 /* A percent over a bar of its share, so the hot rows show without reading
    every number. */
-.tree-row .share {
+.share {
   position: relative;
   align-self: stretch;
   display: flex;
@@ -3611,19 +3623,30 @@ textarea.input {
   padding-right: 4px;
 }
 
-.tree-row .share > .bar {
+/* Filled to its share by --share, which each bar sets. */
+.share-fill {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 0;
-  border-radius: 2px;
+  inset: 0 auto 0 0;
+  width: calc(var(--share) * 100%);
 }
 
-.tree-row .share > .value {
+/* Yellow for a sliver, red for all of it; the root spreads the small
+   shares most rows have. */
+.share > .share-fill {
+  top: 3px;
+  bottom: 3px;
+  border-radius: 2px;
+  background: hsl(
+    calc(50 - 50 * sqrt(var(--share))) var(--heat-saturation) var(--heat-lightness) /
+      var(--heat-alpha)
+  );
+}
+
+.share > .value {
   position: relative;
 }
 
-.tree-row .share.hot {
+.share.hot {
   font-weight: 600;
 }
 
@@ -3721,9 +3744,7 @@ textarea.input {
   background: var(--line-strong);
 }
 
-.stat-bar i {
-  position: absolute;
-  inset: 0 auto 0 0;
+.stat-bar > .share-fill {
   background: var(--accent);
 }
 

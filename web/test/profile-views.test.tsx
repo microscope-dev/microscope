@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
 import "../src/styles.css";
+import { assert } from "../src/assert";
 import type { TransportHandlers } from "../src/connection";
 import { type ProfileLook, queryOf } from "../src/profile/look";
 import {
@@ -329,10 +330,23 @@ function shares(name: RegExp): HTMLElement[] {
   return [...treeRow(name).element().querySelectorAll<HTMLElement>(".share")];
 }
 
-/** How wide a share cell's bar is, in percent of the cell. */
-function barWidth(cell: HTMLElement | undefined): number {
-  const bar = cell?.querySelector<HTMLElement>(".bar");
-  return Number(bar?.style.width.replace("%", ""));
+/** A share cell's bar. */
+function fillOf(cell: Element | null | undefined): HTMLElement {
+  const fill = cell?.querySelector<HTMLElement>(".share-fill");
+  assert(fill, "a share cell has a bar");
+  return fill;
+}
+
+/** How wide a share cell's bar is drawn, in percent of the cell. */
+function barWidth(cell: Element | undefined): number {
+  return (
+    (fillOf(cell).getBoundingClientRect().width / (cell?.getBoundingClientRect().width ?? 1)) * 100
+  );
+}
+
+/** A bar's drawn color as red, green, blue, and alpha. */
+function barColor(cell: Element | undefined): number[] {
+  return (getComputedStyle(fillOf(cell)).backgroundColor.match(/[\d.]+/gu) ?? []).map(Number);
 }
 
 /** The names a search marks. */
@@ -348,7 +362,14 @@ it("draws each share as a bar, bolds large own time, and searches as the flame g
   // main is 10 of 12 total and spends none of it itself.
   const [mainTotal, mainOwn] = shares(/^main,/u);
   expect(barWidth(mainTotal)).toBeCloseTo(83.33, 1);
+  expect(barWidth(mainOwn)).toBe(0);
   expect(mainOwn?.classList.contains("hot")).toBe(false);
+  // The larger share is drawn redder: as much red, less green.
+  const [hotRed, hotGreen] = barColor(mainTotal);
+  const [coolRed, coolGreen, , coolAlpha] = barColor(shares(/^idle,/u)[0]);
+  expect(coolAlpha).toBeGreaterThan(0);
+  expect(hotRed).toBeGreaterThanOrEqual(coolRed ?? 0);
+  expect(hotGreen).toBeLessThan(coolGreen ?? 0);
   // work spends 2 of 12 itself, over the 5% that marks own time hot.
   expect(shares(/^work,/u)[1]?.classList.contains("hot")).toBe(true);
 
@@ -520,8 +541,10 @@ it("finds functions by name, and bolds the ones whose own time is hot", async ()
       .map((row) => row.querySelector(".name")?.textContent);
   expect(hot()).toEqual(["main", "leaf", "leaf", "edge"]);
   // The own bar is half main's cell, as main's own is half the samples.
-  const ownBar = list.element().querySelector<HTMLElement>(".tree-row .share .bar");
-  expect(ownBar?.style.width).toBe("50%");
+  expect(barWidth(list.element().querySelector(".tree-row .share") ?? undefined)).toBeCloseTo(
+    50,
+    1,
+  );
 
   // A search keeps only the functions whose names hold it, in any case.
   const search = page.getByRole("searchbox", { name: "Search frames" });

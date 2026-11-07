@@ -5,7 +5,6 @@ import { diffModeOf, type ProfileLook, withLook } from "../../profile/look";
 import { changeFill, changeOf, fill, formatPercent, formatWeight } from "../../profile/paint";
 import {
   type CallTree,
-  decodeTree,
   findPath,
   hit,
   layout,
@@ -16,9 +15,9 @@ import {
 } from "../../profile/tree";
 import { useShownScheme } from "../../theme";
 import { prepare, useWidth } from "./canvas";
-import { token, useAnswer, useProfile } from "./context";
-import { SearchRow, useFrameSearch } from "./Details";
+import { token, useProfile, useTree } from "./context";
 import { Unanswered } from "./parts";
+import { SearchRow, useFrameSearch, useTreeSearch } from "./Search";
 
 // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
 const unzoom = (look: ProfileLook) => withLook(look, "z", undefined);
@@ -31,17 +30,11 @@ const ROW = 18;
  * selects it, which puts its name in the search. */
 export function FlameView() {
   const { query, look, setLook } = useProfile();
-  const answer = useAnswer("profileTree", query);
-  const tree = useMemo(
-    () => (answer.data ? decodeTree(answer.data, answer.data.payload) : null),
-    [answer.data],
-  );
+  const answer = useTree(query);
+  const { tree } = answer;
   const [search, setSearch] = useFrameSearch();
+  const { matched, note } = useTreeSearch(tree, search);
   const zoom = tree && look.z ? findPath(tree, look.z) : null;
-  const matched = useMemo(() => {
-    const needle = search.toLowerCase();
-    return tree && needle ? matching(tree, (name) => name.toLowerCase().includes(needle)) : null;
-  }, [tree, search]);
   const { fn } = look;
   const selected = useMemo(
     () => (tree && fn ? matching(tree, (name) => name === fn).nodes : null),
@@ -66,11 +59,7 @@ export function FlameView() {
       <SearchRow
         search={search}
         onSearch={setSearch}
-        matched={
-          matched && tree
-            ? `matched ${formatPercent(matched.weight, tree.weight)} of samples`
-            : null
-        }
+        matched={note}
         reset={hasZoom ? unzoom : null}
       />
       <div className={`pane-body ${answer.current ? "" : "stale"}`}>
@@ -82,7 +71,7 @@ export function FlameView() {
           <FlameGraph
             tree={tree}
             zoom={zoom}
-            matched={matched?.nodes ?? null}
+            matched={matched}
             selected={selected}
             onZoom={zoomTo}
           />

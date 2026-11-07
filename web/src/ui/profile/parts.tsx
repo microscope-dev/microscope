@@ -3,12 +3,11 @@
 // a share drawn as a bar, and what a view says before its answer comes or
 // when it failed.
 
-import { type ReactNode, useCallback, useMemo } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useMemo } from "react";
 
 import { type ProfileLook, withLook } from "../../profile/look";
-import { formatBytes, formatCount, formatDuration, heat } from "../../profile/paint";
+import { formatBytes, formatCount, formatDuration } from "../../profile/paint";
 import type { RequestError } from "../../protocol";
-import { useShownScheme } from "../../theme";
 import { useProfile } from "./context";
 
 export function Chip({
@@ -147,9 +146,18 @@ export function Unanswered({
 /** The share of the samples a function's own time needs to be hot. */
 export const HOT_OWN = 0.05;
 
-/** A row's percent over a bar as wide as its share of the cell, warmer
- * as the share grows. A hot share is bold; a dim one is a column read
- * second. */
+/** A bar filled to `share` of its width, whose look its container's
+ * class gives: a heat bar behind a row's percent, or a summary's gauge. */
+function Fill({ share }: { share: number }) {
+  const style = useMemo(
+    () => ({ "--share": String(Math.min(Math.max(share, 0), 1)) }) as CSSProperties,
+    [share],
+  );
+  return <span className="share-fill" style={style} />;
+}
+
+/** A row's percent over a bar of its share, warmer as the share grows. A
+ * hot share is bold; a dim one is a column read second. */
 export function Share({
   share,
   tone,
@@ -159,15 +167,19 @@ export function Share({
   tone: "plain" | "dim" | "hot";
   children: string;
 }) {
-  const dark = useShownScheme() === "dark";
-  const bar = useMemo(
-    () => ({ width: `${Math.min(Math.max(share, 0), 1) * 100}%`, background: heat(share, dark) }),
-    [share, dark],
-  );
   return (
     <span className={`percent share ${tone}`}>
-      <span className="bar" style={bar} />
+      <Fill share={share} />
       <span className="value">{children}</span>
+    </span>
+  );
+}
+
+/** A small gauge of a share, such as how busy the cores were. */
+export function ShareBar({ share }: { share: number }) {
+  return (
+    <span className="stat-bar" aria-hidden="true">
+      <Fill share={share} />
     </span>
   );
 }

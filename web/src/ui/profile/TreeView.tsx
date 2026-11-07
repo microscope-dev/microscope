@@ -13,12 +13,11 @@ import {
 import { assert } from "../../assert";
 import { diffModeOf } from "../../profile/look";
 import { type Changed, changeOf, formatPercent } from "../../profile/paint";
-import { type CallTree, decodeTree, matching, nameOf, revealed } from "../../profile/tree";
-import type { ProfileQuery, RequestError } from "../../protocol";
-import { useAnswer, useProfile } from "./context";
-import { SearchRow, useFrameSearch } from "./Details";
+import { type CallTree, nameOf, revealed } from "../../profile/tree";
+import { type Fetched, useProfile, useTree } from "./context";
 import { ownTone, Share, Unanswered } from "./parts";
 import { type ActiveRow, useActiveRow } from "./rows";
+import { SearchRow, useFrameSearch, useTreeSearch } from "./Search";
 
 const ROW = 20;
 
@@ -27,48 +26,19 @@ export function TreeView() {
   const { query } = useProfile();
   const tree = useTree(query);
   const [search, setSearch] = useFrameSearch();
-  const matched = useMemo(() => {
-    const needle = search.toLowerCase();
-    return tree.tree && needle
-      ? matching(tree.tree, (name) => name.toLowerCase().includes(needle))
-      : null;
-  }, [tree.tree, search]);
+  const { matched, note } = useTreeSearch(tree.tree, search);
   return (
     <div className="pane grow">
       <div className="pane-head">{query.invert ? "Callers" : "Call tree"}</div>
-      <SearchRow
-        search={search}
-        onSearch={setSearch}
-        matched={
-          matched && tree.tree
-            ? `matched ${formatPercent(matched.weight, tree.tree.weight)} of samples`
-            : null
-        }
-        reset={null}
-      />
+      <SearchRow search={search} onSearch={setSearch} matched={note} reset={null} />
       <TreeRows
         tree={tree}
         label="Call tree"
         reading={query.invert ? "Reading callers…" : "Reading the call tree…"}
-        matched={matched?.nodes ?? null}
+        matched={matched}
       />
     </div>
   );
-}
-
-export interface Fetched {
-  tree: CallTree | null;
-  error: RequestError | undefined;
-  current: boolean;
-}
-
-export function useTree(query: ProfileQuery): Fetched {
-  const answer = useAnswer("profileTree", query);
-  const tree = useMemo(
-    () => (answer.data ? decodeTree(answer.data, answer.data.payload) : null),
-    [answer.data],
-  );
-  return { tree, error: answer.error, current: answer.current };
 }
 
 /** The nodes a tree opens with: down the heaviest path while each child

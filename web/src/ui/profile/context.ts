@@ -1,10 +1,18 @@
 // Shared profile state. View changes update the URL so the view can be linked.
 
-import { createContext, useContext, useRef } from "react";
+import { createContext, useContext, useMemo, useRef } from "react";
 
 import { type Requested, useRequest } from "../../data";
 import type { ProfileLook } from "../../profile/look";
-import type { Method, ParamsOf, ProfileQuery, ProfileSummary, Results } from "../../protocol";
+import { type CallTree, decodeTree } from "../../profile/tree";
+import type {
+  Method,
+  ParamsOf,
+  ProfileQuery,
+  ProfileSummary,
+  RequestError,
+  Results,
+} from "../../protocol";
 import { useModel } from "../../store";
 
 export interface ProfileFocus {
@@ -56,4 +64,21 @@ export function useDisconnected(): boolean {
 /** Reads a CSS color token where the page is drawn. */
 export function token(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+export interface Fetched {
+  tree: CallTree | null;
+  error: RequestError | undefined;
+  current: boolean;
+}
+
+/** A query's call tree, decoded from its answer, as the flame graph,
+ * the call tree, and a function's callers and callees each show it. */
+export function useTree(query: ProfileQuery): Fetched {
+  const answer = useAnswer("profileTree", query);
+  const tree = useMemo(
+    () => (answer.data ? decodeTree(answer.data, answer.data.payload) : null),
+    [answer.data],
+  );
+  return { tree, error: answer.error, current: answer.current };
 }

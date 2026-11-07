@@ -44,7 +44,7 @@ import { CommandBlock, FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
 import { defaultView, Options } from "./Options";
-import { Chip, ClearChip, LaneChip, LookButton } from "./parts";
+import { Chip, ClearChip, LaneChip, LookButton, ShareBar } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { Timeline } from "./Timeline";
 import { TreeView } from "./TreeView";
@@ -422,16 +422,6 @@ function Stat({
       <span className="stat-label">{label}</span>
       <span className={warn ? "stat-value warn" : "stat-value"}>{children}</span>
     </div>
-  );
-}
-
-/** A small bar `share` full, up to all of it. */
-function ShareBar({ share }: { share: number }) {
-  const style = useMemo(() => ({ width: `${Math.min(Math.max(share, 0), 1) * 100}%` }), [share]);
-  return (
-    <span className="stat-bar" aria-hidden="true">
-      <i style={style} />
-    </span>
   );
 }
 
