@@ -2273,16 +2273,17 @@ fn v8_frames(
 /// of `object`'s executable sections.
 #[cfg(target_arch = "x86_64")]
 fn sparsely_described(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> bool {
-    let code: u64 = object
+    // Section sizes are input, and may claim more than a number holds.
+    let code = object
         .sections()
         .filter(|section| section.kind() == object::SectionKind::Text)
         .map(|section| section.size())
-        .sum();
-    let described: u64 = [&unwind.eh_frame_index, &unwind.debug_frame_index]
+        .fold(0, u64::saturating_add);
+    let described = [&unwind.eh_frame_index, &unwind.debug_frame_index]
         .iter()
         .flat_map(|index| index.entries.iter())
         .map(|entry| entry.end.get().saturating_sub(entry.start.get()))
-        .sum();
+        .fold(0, u64::saturating_add);
     described.saturating_mul(2) < code
 }
 
@@ -5223,6 +5224,37 @@ mod tests {
             assert!(reason.starts_with(expected), "{case}: {reason}");
             assert!(used < 8 << 20, "{case}: {used} bytes");
         }
+    }
+
+    /// Section headers are input: code sections that together claim more
+    /// bytes than any number holds still load.
+    #[test]
+    fn code_sections_claiming_more_bytes_than_a_number_holds_still_load() {
+        let code = u64::from(object::elf::SHF_ALLOC | object::elf::SHF_EXECINSTR);
+        let mut elf = elf_with_sections(
+            0x1000,
+            0x10,
+            &[
+                (".text.a", vec![0xc3; 0x10], code),
+                (".text.b", vec![0xc3; 0x10], code),
+            ],
+        );
+        let headers =
+            usize::try_from(u64::from_le_bytes(elf[0x28..0x30].try_into().unwrap())).unwrap();
+        for section in [2, 3] {
+            let size = headers + section * 64 + 0x20;
+            elf[size..size + 8].copy_from_slice(&(1_u64 << 63).to_le_bytes());
+        }
+
+        load_debug_info(
+            Path::new("claims"),
+            &elf,
+            crate::ModuleImageId::new(0),
+            &super::super::DebugFileSearch::default(),
+            LoadLimits::default(),
+            None,
+        )
+        .expect("a load");
     }
 
     /// Clang leaves some functions with code and no name of any kind, as
