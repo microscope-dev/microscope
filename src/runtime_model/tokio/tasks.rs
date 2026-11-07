@@ -65,7 +65,30 @@ impl TokioRuntime {
         };
 
         if let Some((first, mut shard, mut node)) = resume {
-            for &runtime in census.runtimes.iter().skip(first) {
+            // tokio numbers each list once in a process. Two runtimes whose
+            // lists claim one id are damage: only the first is listed, as
+            // `locate` finds a page's task in the first, so that the pages
+            // neither list a task twice nor come back to where they began.
+            let list_id = |runtime| self.list(stop, runtime).ok().map(|list| list.id);
+            for (index, &runtime) in census.runtimes.iter().enumerate().skip(first) {
+                if let Some(id) = list_id(runtime)
+                    && census.runtimes[..index]
+                        .iter()
+                        .any(|&earlier| list_id(earlier) == Some(id))
+                {
+                    page.gaps.push(
+                        format!(
+                            "the {} at {:#x} claims task list {id}, which another runtime \
+                             holds; its tasks are not listed",
+                            runtime.flavor.describe(),
+                            runtime.handle
+                        )
+                        .into(),
+                    );
+                    (shard, node) = (0, None);
+                    continue;
+                }
+
                 if self.list_page(stop, census, runtime, (shard, node), limit, page) {
                     return;
                 }

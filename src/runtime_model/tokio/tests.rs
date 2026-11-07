@@ -1763,6 +1763,33 @@ fn a_wrong_count_read_over_two_pages_lists_every_task() {
     .unwrap();
 }
 
+/// Found by the fuzzer: tokio numbers each runtime's task list once in a
+/// process, so two runtimes whose lists claim one id are damage. Only the
+/// first is listed, with a gap, and the pages end: a page that ended in
+/// the second named a task the next page looked for in the first, which
+/// listed the second again from its head, without end.
+#[test]
+fn two_runtimes_whose_lists_claim_one_id_are_listed_once() {
+    let mut world = World::new(&[]);
+    let multi = world.runtime(Flavor::MultiThread, 3, &[vec![(10, 0)], vec![(11, 0)]]);
+    let current = world.runtime(Flavor::CurrentThread, 3, &[vec![(30, 0), (31, 0)]]);
+    world.thread(1, Some(&multi), true, None);
+    world.thread(2, Some(&current), true, None);
+
+    // The first runtime's shards are unreadable, so a page that looks for
+    // the second's task in it finds nothing there.
+    let owned = &world.runtime_layout(Flavor::MultiThread).owned;
+    let shards = multi.handle + owned.at + owned.shards;
+    world.memory.word(shards, 0x10);
+
+    let (tasks, gaps) = world.tasks(1, false);
+    assert!(tasks.is_empty(), "{tasks:?}");
+    assert!(
+        gaps.iter().any(|gap| gap.contains("task list 3")),
+        "{gaps:?}"
+    );
+}
+
 /// Found by the property below: a task whose id picks another shard
 /// than the one that holds it is not listed, since a later page and a
 /// search by its number would look for it there; and a shard whose head
