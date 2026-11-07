@@ -28,6 +28,7 @@ their own, join native backtraces as interpreted frames.
 | `src/backend/linux/runtimes.rs`, `src/backend/linux/async_frames.rs`, `src/backend/linux/frames.rs` | Stop-scoped runtime snapshots and logical stacks |
 | `src/backend/linux/holdings.rs` | Process-lifetime numbers for the thread labels, such as `isolate 1` |
 | `tests/go/`, `tests/tokio/`, `tests/python/`, `tests/node/` | Runtime integration suites |
+| `src/runtime_fuzz.rs`, `fuzz/fuzz_targets/runtime_*.rs` | Fuzzing every model over corrupt memory of a real image |
 | `tests/fixtures/go/`, `tests/fixtures/rust/tokio/`, `tests/fixtures/python/`, `tests/fixtures/node/` | Programs that expose scheduler, task, and frame states |
 | `views/` | Built-in Go, Rust, Tokio, Python, and JavaScript value views |
 
@@ -1362,6 +1363,21 @@ Check invariants at every relevant stop:
 - task completion and runtime shutdown clean every plan and cache;
 - unsupported versions fail as unsupported, not as empty task lists;
 - work stays within task, read, depth, and time bounds.
+
+A crashing program's memory is often corrupt, and fixtures only produce
+well-formed layouts. The `runtime-go`, `runtime-tokio`, `runtime-python`, and
+`runtime-node` fuzz targets cover the rest. Each one loads a real image once
+(`steps-go-o2`, `tokio-workers-o0`, the dev shell's CPython 3.14 or Node 26)
+and binds every model it carries. The input then writes into the image's
+segments, a heap, and per-thread blocks. It writes relative to the symbols the
+models looked up, and can set any field they read to any constant they compare
+against. After that the harness asks everything a session asks: pages of tasks,
+task contexts and stacks, thread activity, interpreted frames and their locals,
+sampled frames, and await chains. Paging that comes back to a cursor fails the
+target, since a session would list forever. The harness lives at the crate
+root because it reads files, which the boundary tests forbid under
+`src/runtime_model/`. When a new model or entry point reads tracee memory, add
+it to the harness.
 
 Use a version matrix only where runtime or compiler output changes behavior.
 Run runtime integration tests, DAP and web task tests, stress, soak where

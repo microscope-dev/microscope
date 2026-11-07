@@ -562,7 +562,10 @@ still needs observable progress and per-operation deadlines.
 
 Fuzz targets live in `fuzz/` and call feature-gated library entry points. They
 cover object and debug parsing, image and capture validation, expressions,
-views, disassembly, perf records, and other binary boundaries.
+views, disassembly, perf records, the runtime models over corrupt process
+memory, and other binary boundaries. Targets that load an image decode x86
+with iced-x86, which leaks its tables, so they are listed in the justfile's
+`decoding_fuzz_targets` and run without leak checks.
 
 Run fuzzers only through a contained recipe or `scripts/contained.sh`. Keep
 corpora and artifact growth bounded. A discovered crash becomes the smallest
