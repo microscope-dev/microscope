@@ -4116,19 +4116,23 @@ mod tests {
             .join("build/test-programs/profile-stacks-gcc-o2-nofp");
         let mut command = std::process::Command::new(program);
         command.arg("30000000");
-        let launched = perf::launch(command, &options, perf::LaunchOptions::default(), |_, _| {
-            Ok(())
-        })
-        .expect("launch the program");
-        let status = launched
-            .exit
-            .join()
+        let perf::Launched { events, exit, .. } =
+            perf::launch(command, &options, perf::LaunchOptions::default(), |_, _| {
+                Ok(())
+            })
+            .expect("launch the program");
+
+        // Read as the program runs, as recording does: the rings may be far
+        // smaller than asked when other recordings hold the user's share of
+        // locked memory, and would drop most samples by the program's end.
+        let status = events
+            .read_while(|| exit.join())
             .expect("the launch thread ends")
             .expect("the program exits");
         assert!(status.success(), "{status}");
 
         let mut records = Vec::new();
-        launched.events.drain(&mut records);
+        events.drain(&mut records);
         let (mut samples, mut times) = (Vec::new(), Vec::new());
         let mut rest = records.as_slice();
         while let Some(Ok((record, length))) = decode::next(rest) {
