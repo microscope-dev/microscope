@@ -403,3 +403,41 @@ fn a_run_time_site_writes_by_its_key_only_while_on() {
     disable();
     assert!(!zone.on() && !message.on() && !late.on());
 }
+
+/// A call the thread begins while it is keeping another's, as a signal
+/// handler or a traced allocator that interrupts it does, is dropped and
+/// counted instead of aborting the program, and an end there ends nothing.
+#[cfg(feature = "c")]
+#[test]
+fn a_call_begun_while_the_thread_keeps_one_is_dropped_and_counted() {
+    use crate::c::{CALLS, microscope_probes_call_begin, microscope_probes_call_end};
+
+    let _serial = listen();
+    let site = define(abi::SITE_ZONE, "c.interrupted", "app.py", 1).unwrap();
+    site.state.store(1, Ordering::Relaxed);
+    let index = index(site).unwrap();
+
+    let ring = std::thread::spawn(move || {
+        microscope_probes_call_begin(index);
+        CALLS.with(|calls| {
+            let _keeping = calls.borrow();
+            microscope_probes_call_begin(index);
+            microscope_probes_call_end(index);
+        });
+        microscope_probes_call_end(index);
+        mine()
+    })
+    .join()
+    .unwrap();
+
+    let written = read(ring, 0)
+        .0
+        .iter()
+        .map(|event| (event.site, event.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        written,
+        [(site.key(), abi::ZONE_BEGIN), (site.key(), abi::ZONE_END)]
+    );
+    assert_eq!(ring.header.signal_drops.load(Ordering::Relaxed), 1);
+}

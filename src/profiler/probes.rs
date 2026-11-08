@@ -68,7 +68,7 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
     let version = version(block)?;
 
     let sites = file
-        .section_by_name("microscope_sites")
+        .section_by_name(abi::SITE_SECTION)
         .ok_or("it has a control block but no sites")?;
     let data = sites
         .data()

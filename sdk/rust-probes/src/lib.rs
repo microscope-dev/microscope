@@ -122,6 +122,19 @@ pub mod abi {
 
     pub const SITE_SIZE: usize = 32;
 
+    /// The section that holds version 1's sites. The linker merges every
+    /// copy of the SDK in a program into one section of a name, and each
+    /// copy walks the whole section a site at a time, so a copy that laid
+    /// sites out differently would be walked at the wrong size. A layout
+    /// that changes takes a new [`SITE_VERSION`] and its own section,
+    /// `microscope_sites_<version>`.
+    pub const SITE_SECTION: &str = "microscope_sites";
+
+    const _: () = assert!(
+        SITE_VERSION == 1 && SITE_SIZE == 32,
+        "a new site layout takes a section of its own: see SITE_SECTION"
+    );
+
     /// The SDK's own site, which keeps the section present.
     pub const SITE_NONE: u8 = 0;
 
@@ -460,8 +473,8 @@ macro_rules! trigger {
     };
 }
 
-/// A site of `kind` named `name`, here: its record goes into the
-/// `microscope_sites` section, and the expression is its state byte.
+/// A site of `kind` named `name`, here: its record goes into
+/// [`abi::SITE_SECTION`], and the expression is its state byte.
 #[cfg(feature = "enabled")]
 #[doc(hidden)]
 #[macro_export]

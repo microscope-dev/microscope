@@ -10,7 +10,9 @@ use core::cell::RefCell;
 use core::fmt;
 
 use crate::abi;
-use crate::probes::{Site, define, end, found, index, listening, reserve, runtime_site, sites};
+use crate::probes::{
+    Site, define, end, found, index, interrupted, listening, reserve, runtime_site, sites,
+};
 
 /// The ABI the library writes.
 #[unsafe(no_mangle)]
@@ -84,7 +86,7 @@ pub extern "C" fn microscope_probes_reserve(size: u32) {
 thread_local! {
     /// The keys of the calls the thread began and has not ended, outermost
     /// first.
-    static CALLS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static CALLS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Where the run-time sites' records begin, each [`abi::RUNTIME_SITE_SIZE`]
@@ -108,12 +110,28 @@ pub extern "C" fn microscope_probes_index(site: Option<&Site>) -> i32 {
 /// sees each call's start and end, as a tracer of calls does, but not
 /// whether it began a zone at the start: the thread keeps that. A site is
 /// taken by its index, which a caller passes faster than a pointer.
+///
+/// A call begun while the thread is in here already, as from a signal
+/// handler or a traced allocator, is dropped and counted as a signal
+/// handler's is.
 #[unsafe(no_mangle)]
 pub extern "C" fn microscope_probes_call_begin(index: u32) {
-    if let Some(site) = runtime_site(index)
-        && site.zone().began()
-    {
-        let _ = CALLS.try_with(|calls| calls.borrow_mut().push(index));
+    let Some(site) = runtime_site(index) else {
+        return;
+    };
+
+    // The zone begins only once the thread can keep it, so that it ends.
+    let kept = CALLS.try_with(|calls| {
+        let Ok(mut calls) = calls.try_borrow_mut() else {
+            return false;
+        };
+        if site.zone().began() {
+            calls.push(index);
+        }
+        true
+    });
+    if kept != Ok(true) && site.on() {
+        interrupted();
     }
 }
 
@@ -127,8 +145,12 @@ pub extern "C" fn microscope_probes_call_end(index: u32) {
         return;
     };
 
+    // An end while the thread is in here already ends nothing: its begin
+    // was dropped, or the call ends with the one around it.
     let began = CALLS.try_with(|calls| {
-        let mut calls = calls.borrow_mut();
+        let Ok(mut calls) = calls.try_borrow_mut() else {
+            return false;
+        };
         let at = calls.iter().rposition(|&call| call == index);
         at.inspect(|&at| calls.truncate(at)).is_some()
     });

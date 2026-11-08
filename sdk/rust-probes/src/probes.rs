@@ -470,6 +470,18 @@ pub(crate) fn end(key: u32, kind: u8) {
     write(key, kind, 0, &[]);
 }
 
+/// Counts an event the thread dropped because it was already in the SDK, as
+/// [`write`] counts one a signal handler drops: in its ring, or as one no
+/// ring could take.
+#[cfg(feature = "c")]
+#[cold]
+pub(crate) fn interrupted() {
+    match RING.with(Cell::get) {
+        Slot::Ring(ring) => ring.header.signal_drops.fetch_add(1, Ordering::Relaxed),
+        Slot::Unset | Slot::Nothing => CONTROL.dropped.fetch_add(1, Ordering::Relaxed),
+    };
+}
+
 #[doc(hidden)]
 #[inline(always)]
 pub fn __event(state: &'static AtomicU8, kind: u8) {

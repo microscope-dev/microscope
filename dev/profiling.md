@@ -784,7 +784,9 @@ thread and a worker, and checks the package without its native parts.
 Probe writers must remain safe when no recorder exists, when the recorder is
 killed, and when a reader falls behind. The timeout turns instrumentation off
 after reader loss. Changes to record layout require coordinated SDK, decoder,
-fixture, and format tests.
+fixture, and format tests. A new static site layout also takes a section of its
+own, as `abi::SITE_SECTION` says, so that two SDKs in one program never walk
+each other's sites.
 
 The Rust SDK writes records as atomic words and never frees a ring, so its
 unsafe code is limited to making a ring and walking the site table. Its tests
