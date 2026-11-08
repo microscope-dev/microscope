@@ -13,14 +13,18 @@ stopping = threading.Event()
 MINIMUM = 0.3
 
 
-# Many fields, so that most of the time goes to `Line.__init__` itself.
-FIELDS = [f"field_{number}" for number in range(32)]
-VALUES = tuple(range(len(FIELDS)))
-Line = dataclasses.make_dataclass("Line", FIELDS)
+def trace(line):
+    for _ in range(10_000):
+        pass
+
+
+# `Line.__init__` calls `trace`, where nearly all the time goes, so that
+# nearly every snapshot finds it; one under `just stress` can take seconds.
+Line = dataclasses.make_dataclass("Line", ["end"], namespace={"__post_init__": trace})
 
 
 def draw(point):
-    point.line = Line(*VALUES)
+    point.line = Line(0)
 
 
 # `Point.__init__` makes a `Line`, so that one stack, as one snapshot takes,
@@ -31,7 +35,7 @@ Point = dataclasses.make_dataclass("Point", ["origin"], namespace={"__post_init_
 def build():
     started = time.monotonic()
     while not stopping.is_set() or time.monotonic() - started < MINIMUM:
-        for _ in range(1000):
+        for _ in range(100):
             Point(0)
 
 

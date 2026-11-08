@@ -104,10 +104,13 @@ fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: Py
         let paths = python_paths(profile);
         names_dataclass_methods(paths.keys().flatten())
     };
+    let started = Instant::now();
     let profile = record_until_with_args(interpreter, engine, "dataclass_methods.py", &[], named);
     assert!(
         named(&profile),
-        "{interpreter} {engine:?}: {:#?}",
+        "{interpreter} {engine:?}, {} snapshots in {:?}: {:#?}",
+        profile.task_snapshots().0,
+        started.elapsed(),
         python_paths(&profile)
     );
 }
