@@ -501,3 +501,53 @@ fn an_attach_gives_up_on_threads_that_keep_appearing_past_its_limit() {
         "Backend(AttachThreadsUnstable)"
     );
 }
+
+/// A launch held while an exited program's fork children are released
+/// starts once every child is, not once the first is.
+#[test]
+fn a_held_launch_waits_for_every_fork_child_to_be_released() {
+    const SECOND: Pid = Pid::from_raw(6001);
+
+    let mut harness = hit_harness(1, ">=1");
+    let parent = harness.threads[0];
+    for child in [CHILD, SECOND] {
+        harness.trace().clone.replace(Some((child, child)));
+        harness.controller.handle_wait(WaitEvent::PtraceEvent(
+            parent,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_FORK,
+        ));
+    }
+    harness.trace().clone.replace(None);
+    for status in [
+        WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
+        WaitEvent::Exited(parent, 0),
+    ] {
+        harness.controller.handle_wait(status);
+    }
+
+    let (_, mut launched) = launch(&mut harness);
+    let launched_pid = |harness: &WatchHarness| {
+        harness
+            .controller
+            .session
+            .inferior()
+            .map(|inferior| inferior.tgid)
+    };
+
+    harness
+        .controller
+        .handle_wait(WaitEvent::Stopped(CHILD, Signal::SIGSTOP));
+    assert_eq!(
+        launched_pid(&harness),
+        None,
+        "the second child is not released yet"
+    );
+    assert_eq!(launched(), "pending");
+
+    harness
+        .controller
+        .handle_wait(WaitEvent::Stopped(SECOND, Signal::SIGSTOP));
+    assert_eq!(launched_pid(&harness), Some(LAUNCHED));
+    assert_eq!(launched(), "pending", "the launch waits for its first stop");
+}
