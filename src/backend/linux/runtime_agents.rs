@@ -212,7 +212,7 @@ impl super::Inferior {
 
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn agent_timeout(&mut self, now: Instant) -> crate::Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         let mut expired = None;
@@ -258,16 +258,16 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// before dispatching any application event. Shutdown never runs a thread.
     pub(super) fn prepare_agents_for_detach(&mut self) -> Result<(), Arc<str>> {
         let runtimes = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .map(|inferior| self.runtimes(inferior))
             .unwrap_or_default();
         let mut problems = Vec::new();
 
         for bound in runtimes {
             let Some(mut installation) = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .and_then(|inferior| inferior.agents.remove(&bound.id))
             else {
                 continue;
@@ -279,7 +279,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
 
                 if let Some(ticket) = installation.ticket.as_ref() {
-                    let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+                    let inferior = self.session.inferior().ok_or("the process is gone")?;
                     let retirement = self.with_runtime_stop(
                         inferior,
                         &bound,
@@ -304,7 +304,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         )?;
                     installation.ticket = None;
                 } else if installation.library.is_some() {
-                    let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+                    let inferior = self.session.inferior().ok_or("the process is gone")?;
                     let agent = bound.model.agent().ok_or("the runtime has no agent")?;
                     let control = self
                         .owned_agent_symbol(
@@ -351,7 +351,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 problems.push(reason.to_string());
             }
 
-            if let Some(inferior) = self.inferior.as_mut() {
+            if let Some(inferior) = self.session.inferior_mut() {
                 inferior.agents.insert(bound.id, installation);
             }
         }
@@ -366,7 +366,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if matches!(scope, crate::ResumeScope::Process(_)) {
             return Ok(());
         }
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -412,8 +412,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<(), Arc<str>> {
         self.write_for_runtime(&[])?;
         let inferior = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let previous = inferior.agents.remove(&bound.id);
         let asked = bound
@@ -456,7 +456,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             },
         };
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             // An internal stop starts the deadline as it resumes.
             if inferior.active.is_some()
                 && inferior.public_stop.is_none()
@@ -484,7 +484,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         installation: &mut Installation,
     ) -> Result<(), AgentFailure> {
         let agent = bound.model.agent().ok_or("the runtime has no agent")?;
-        let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
         installation.expired = false;
         installation.deadline = None;
         installation.remaining = ACK_TIMEOUT;
@@ -646,7 +646,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         installation.request_thread = None;
 
         if let Err(reason) = &result {
-            let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+            let inferior = self.session.inferior().ok_or("the process is gone")?;
             let mut held = vec![0; publication.expected.len()];
             let readable =
                 self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
@@ -687,7 +687,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         proof: AgentRetirementProof,
     ) -> Result<(), Arc<str>> {
         self.withdraw_bootstrap(installation, proof)?;
-        let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
         let ticket = installation
             .ticket
             .as_ref()
@@ -725,8 +725,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         if proof != AgentRetirementProof::Acknowledged {
             let launch = match self
-                .inferior
-                .as_ref()
+                .session
+                .inferior()
                 .and_then(|inferior| inferior.python_launch.as_ref())
             {
                 Some(Ok(launch)) => launch,
@@ -752,7 +752,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         generation: u64,
         failure: Option<Arc<str>>,
     ) -> Result<bool, Arc<str>> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
         let Some(installation) = inferior.agents.get(&runtime) else {
@@ -766,8 +766,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map_err(|error| Arc::<str>::from(error.to_string()))?;
 
         let barrier = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.barrier.as_mut())
             .ok_or("the report has no all-stop barrier")?;
         // Unlike ArmAgents these reports cannot be coalesced: two generations
@@ -789,8 +789,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) {
         if let Err(description) = self.agent_report(runtime, generation, failure)
             && let Some(barrier) = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .and_then(|inferior| inferior.barrier.as_mut())
         {
             // As any other reason a barrier's threads give, it does not
@@ -815,7 +815,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         generation: u64,
         failure: Option<&Arc<str>>,
     ) -> Result<bool, Arc<str>> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(false);
         };
         let Some(mut installation) = inferior.agents.remove(&runtime) else {
@@ -837,7 +837,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 installation.sequence = generation;
             }
             if source {
-                let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+                let inferior = self.session.inferior().ok_or("the process is gone")?;
                 let bound = self
                     .runtimes(inferior)
                     .into_iter()
@@ -874,7 +874,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             Ok(true)
         })();
 
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.agents.insert(runtime, installation);
             if matches!(result, Ok(true)) {
                 inferior.managed.mark_stale(runtime);
@@ -888,8 +888,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// new one replaces. Its stopped thread reads the command as its hook
     /// returns, whatever events it monitors.
     pub(super) fn agent_takes_commands(&self, runtime: RuntimeId) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.agents.get(&runtime))
             .is_some_and(|installation| {
                 installation.library.is_some()
@@ -900,7 +900,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the runtime's agent has been sent the active assignment as
     /// a command, which the thread it stopped reads as its hook returns.
     pub(super) fn agent_assignment_sent(&self, runtime: RuntimeId) -> bool {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return false;
         };
         let assignment = inferior
@@ -924,7 +924,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the runtime's agent has been sent the active step, and has
     /// only to acknowledge it: the step has begun.
     pub(super) fn agent_step_sent(&self, runtime: RuntimeId) -> bool {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return false;
         };
         let step = inferior
@@ -948,7 +948,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn agent_entry(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.managed.mark_stale(runtime);
         }
         self.queue_internal_edit(Edit::ArmAgents)
@@ -956,7 +956,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn agent_entry_hooks(&self, bound: &BoundRuntime) -> Vec<HookPlace> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Vec::new();
         };
         if inferior
@@ -1002,7 +1002,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the module that carries it loads: what it is to report may ask for
     /// it before any breakpoint does, as an exception that stops does.
     pub(super) fn arm_new_agents(&mut self) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
         let new = self
@@ -1014,7 +1014,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|runtime| runtime.id)
             .collect::<Vec<_>>();
 
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             for runtime in new {
                 inferior.managed.mark_stale(runtime);
             }
@@ -1110,7 +1110,7 @@ mod tests {
         let mut harness = watch_harness(1);
         let mut installation = awaiting();
         installation.deadline = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
-        let inferior = harness.controller.inferior.as_mut().expect("inferior");
+        let inferior = harness.controller.session.inferior_mut().expect("inferior");
         let pid = inferior.tgid;
         inferior.agents.insert(RuntimeId::new(0), installation);
         harness
@@ -1136,12 +1136,12 @@ mod tests {
         let now = Instant::now();
         let mut later = awaiting();
         later.deadline = Some(now + Duration::from_secs(1));
-        let inferior = harness.controller.inferior.as_mut().expect("inferior");
+        let inferior = harness.controller.session.inferior_mut().expect("inferior");
         inferior.agents.insert(RuntimeId::new(0), later);
         inferior.agents.insert(RuntimeId::new(1), awaiting());
         harness.controller.agent_timeout(now).expect("no timeout");
 
-        let inferior = harness.controller.inferior.as_ref().expect("inferior");
+        let inferior = harness.controller.session.inferior().expect("inferior");
         assert!(inferior.agents.values().all(|agent| !agent.expired));
         assert!(inferior.managed.unarmed.is_empty());
     }
@@ -1152,8 +1152,8 @@ mod tests {
         let runtime = RuntimeId::new(0);
         harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .expect("inferior")
             .agents
             .insert(runtime, awaiting());
@@ -1164,7 +1164,7 @@ mod tests {
                 .expect("stale acknowledgement")
         );
         assert!(matches!(
-            harness.controller.inferior.as_ref().unwrap().agents[&runtime].state,
+            harness.controller.session.inferior().unwrap().agents[&runtime].state,
             State::Awaiting { .. }
         ));
         assert!(
@@ -1174,7 +1174,7 @@ mod tests {
                 .expect("matching acknowledgement")
         );
         assert!(matches!(
-            harness.controller.inferior.as_ref().unwrap().agents[&runtime].state,
+            harness.controller.session.inferior().unwrap().agents[&runtime].state,
             State::Ready
         ));
         assert!(
@@ -1191,7 +1191,7 @@ mod tests {
                 .expect("stale failure")
         );
         assert!(matches!(
-            harness.controller.inferior.as_ref().unwrap().agents[&runtime].state,
+            harness.controller.session.inferior().unwrap().agents[&runtime].state,
             State::Ready
         ));
         assert!(
@@ -1201,7 +1201,7 @@ mod tests {
                 .expect("matching failure")
         );
         assert!(
-            matches!(&harness.controller.inferior.as_ref().unwrap().agents[&runtime].state, State::Refused(reason) if reason == &failure)
+            matches!(&harness.controller.session.inferior().unwrap().agents[&runtime].state, State::Refused(reason) if reason == &failure)
         );
     }
 
@@ -1271,7 +1271,7 @@ mod tests {
                 calls: Arc::clone(&calls),
                 fail_exit,
             }));
-            let inferior = harness.controller.inferior.as_mut().expect("inferior");
+            let inferior = harness.controller.session.inferior_mut().expect("inferior");
             let pid = inferior.tgid;
             inferior.agents.insert(RuntimeId::new(0), installation);
             harness
@@ -1279,7 +1279,7 @@ mod tests {
                 .handle_terminal(pid, ExitStatus::Code(0))
                 .expect("terminal exit");
             assert_eq!(*calls.lock().unwrap(), ["exit"]);
-            assert!(harness.controller.inferior.is_none());
+            assert!(harness.controller.session.inferior().is_none());
             let (reply, mut result) = tokio::sync::oneshot::channel();
             harness.controller.begin_shutdown(Some(reply));
             let outcome = result.try_recv().expect("shutdown completed");
@@ -1305,7 +1305,7 @@ mod tests {
                 .insert(image.id(), vec![Ok(Arc::new(ScriptedRuntime::default()))]);
             let runtime = harness
                 .controller
-                .runtimes(harness.controller.inferior.as_ref().unwrap())[0]
+                .runtimes(harness.controller.session.inferior().unwrap())[0]
                 .id;
             let calls = Arc::new(Mutex::new(Vec::new()));
             let mut installation = awaiting();
@@ -1320,8 +1320,8 @@ mod tests {
             }));
             harness
                 .controller
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .unwrap()
                 .agents
                 .insert(runtime, installation);
@@ -1344,8 +1344,8 @@ mod tests {
             assert_eq!(
                 harness
                     .controller
-                    .inferior
-                    .as_ref()
+                    .session
+                    .inferior()
                     .unwrap()
                     .public_stop
                     .as_ref()
@@ -1460,7 +1460,7 @@ mod tests {
             .insert(image.id(), vec![Ok(Arc::new(model))]);
         harness
             .controller
-            .runtimes(harness.controller.inferior.as_ref().unwrap())
+            .runtimes(harness.controller.session.inferior().unwrap())
             .remove(0)
     }
 
@@ -1476,7 +1476,7 @@ mod tests {
         let mut harness = watch_harness(1);
         let calls = Arc::new(Mutex::new(Vec::new()));
         let thread =
-            super::super::debug_thread_id(harness.controller.inferior.as_ref().unwrap().tgid);
+            super::super::debug_thread_id(harness.controller.session.inferior().unwrap().tgid);
         let bound = scripted_agent(
             &harness,
             Agent {
@@ -1506,8 +1506,8 @@ mod tests {
         });
         harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .unwrap()
             .agents
             .insert(bound.id, installation);
@@ -1525,7 +1525,7 @@ mod tests {
                 .is_err(),
             "the scripted command cannot be prepared"
         );
-        let installation = &harness.controller.inferior.as_ref().unwrap().agents[&bound.id];
+        let installation = &harness.controller.session.inferior().unwrap().agents[&bound.id];
         assert!(matches!(installation.state, State::Ready));
         assert_eq!(installation.sent.as_ref().unwrap().breakpoints, first);
         harness
@@ -1543,7 +1543,7 @@ mod tests {
     fn free_threaded_resume_is_restricted_only_while_an_agent_may_be_active() {
         let mut harness = watch_harness(2);
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let inferior = harness.controller.inferior.as_ref().unwrap();
+        let inferior = harness.controller.session.inferior().unwrap();
         let first = super::super::debug_thread_id(inferior.tgid);
         let bound = scripted_agent(
             &harness,
@@ -1586,8 +1586,8 @@ mod tests {
             installation.sent = sent;
             harness
                 .controller
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .unwrap()
                 .agents
                 .insert(bound.id, installation);
@@ -1608,7 +1608,7 @@ mod tests {
             let mut harness = watch_harness(1);
             let calls = Arc::new(Mutex::new(Vec::new()));
             let thread =
-                super::super::debug_thread_id(harness.controller.inferior.as_ref().unwrap().tgid);
+                super::super::debug_thread_id(harness.controller.session.inferior().unwrap().tgid);
             let mut model = ScriptedRuntime::default();
             model.agent = Some(Arc::new(Agent {
                 thread,
@@ -1624,7 +1624,7 @@ mod tests {
                 .insert(image.id(), vec![Ok(Arc::new(model))]);
             let bound = harness
                 .controller
-                .runtimes(harness.controller.inferior.as_ref().unwrap())
+                .runtimes(harness.controller.session.inferior().unwrap())
                 .remove(0);
             let mut installation = Installation::new();
             installation.sequence = 7;
@@ -1662,8 +1662,8 @@ mod tests {
                 ));
                 harness
                     .controller
-                    .inferior
-                    .as_mut()
+                    .session
+                    .inferior_mut()
                     .unwrap()
                     .agents
                     .insert(bound.id, installation);
@@ -1694,20 +1694,20 @@ mod tests {
         let mut harness = watch_harness(1);
         harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .unwrap()
             .agents
             .insert(RuntimeId::new(0), awaiting());
         harness.start_continue();
         let installation = |harness: &super::super::tests::WatchHarness| {
-            harness.controller.inferior.as_ref().unwrap().agents[&RuntimeId::new(0)].deadline()
+            harness.controller.session.inferior().unwrap().agents[&RuntimeId::new(0)].deadline()
         };
         let started = Instant::now();
         harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .unwrap()
             .agents
             .get_mut(&RuntimeId::new(0))
@@ -1719,8 +1719,8 @@ mod tests {
         assert!(
             harness
                 .controller
-                .inferior
-                .as_ref()
+                .session
+                .inferior()
                 .unwrap()
                 .barrier
                 .is_none()
@@ -1749,7 +1749,7 @@ mod tests {
     fn a_source_request_cannot_resume_only_a_different_gil_thread() {
         let mut harness = watch_harness(2);
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let inferior = harness.controller.inferior.as_ref().unwrap();
+        let inferior = harness.controller.session.inferior().unwrap();
         let process = super::super::process_id(inferior.tgid);
         let stop = inferior.public_stop.as_ref().unwrap().id;
         let first = super::super::debug_thread_id(inferior.tgid);
@@ -1769,7 +1769,7 @@ mod tests {
             .insert(image.id(), vec![Ok(Arc::new(model))]);
         let runtime = harness
             .controller
-            .runtimes(harness.controller.inferior.as_ref().unwrap())[0]
+            .runtimes(harness.controller.session.inferior().unwrap())[0]
             .id;
         let mut installation = awaiting();
         installation.state = State::Awaiting {
@@ -1779,8 +1779,8 @@ mod tests {
         installation.request_thread = Some(second);
         harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .unwrap()
             .agents
             .insert(runtime, installation);
@@ -1801,8 +1801,8 @@ mod tests {
         assert_eq!(
             harness
                 .controller
-                .inferior
-                .as_ref()
+                .session
+                .inferior()
                 .unwrap()
                 .public_stop
                 .as_ref()
@@ -1829,7 +1829,7 @@ mod tests {
                 .insert(image.id(), vec![Ok(Arc::new(ScriptedRuntime::default()))]);
             let bound = harness
                 .controller
-                .runtimes(harness.controller.inferior.as_ref().unwrap())
+                .runtimes(harness.controller.session.inferior().unwrap())
                 .remove(0);
             let mut installation = Installation::new();
             installation.state = State::Ready;
@@ -1956,7 +1956,7 @@ mod tests {
     #[test]
     fn an_agent_steps_only_from_where_it_stopped_the_thread() {
         let mut harness = watch_harness(1);
-        let pid = harness.controller.inferior.as_ref().unwrap().tgid;
+        let pid = harness.controller.session.inferior().unwrap().tgid;
         let bound = scripted_agent(
             &harness,
             Agent {
@@ -1988,8 +1988,8 @@ mod tests {
         assert!(
             harness
                 .controller
-                .inferior
-                .as_ref()
+                .session
+                .inferior()
                 .unwrap()
                 .runtime_step
                 .is_none()
@@ -2013,21 +2013,21 @@ mod tests {
             assignment: None,
             exceptions: crate::ExceptionStops::default(),
         });
-        let inferior = harness.controller.inferior.as_mut().unwrap();
+        let inferior = harness.controller.session.inferior_mut().unwrap();
         inferior.agents.insert(runtime, installation);
 
         assert!(
             !harness.controller.agent_step_sent(runtime),
             "no step is active"
         );
-        let inferior = harness.controller.inferior.as_mut().unwrap();
+        let inferior = harness.controller.session.inferior_mut().unwrap();
         inferior.runtime_step = Some((runtime, stepping(1)));
         assert!(harness.controller.agent_step_sent(runtime));
         assert!(!harness.controller.agent_step_sent(RuntimeId::new(4)));
-        let inferior = harness.controller.inferior.as_mut().unwrap();
+        let inferior = harness.controller.session.inferior_mut().unwrap();
         inferior.runtime_step = Some((runtime, stepping(2)));
         assert!(!harness.controller.agent_step_sent(runtime), "another step");
-        let inferior = harness.controller.inferior.as_mut().unwrap();
+        let inferior = harness.controller.session.inferior_mut().unwrap();
         inferior.runtime_step = Some((runtime, stepping(1)));
         inferior.agents.get_mut(&runtime).unwrap().state = State::Ready;
         assert!(!harness.controller.agent_step_sent(runtime), "acknowledged");
@@ -2043,19 +2043,19 @@ mod tests {
         assert_eq!(installation.sequence, 0);
         harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .unwrap()
             .agents
             .insert(runtime, installation);
         assert!(!harness.controller.agent_report(runtime, 4, None).unwrap());
         assert_eq!(
-            harness.controller.inferior.as_ref().unwrap().agents[&runtime].sequence,
+            harness.controller.session.inferior().unwrap().agents[&runtime].sequence,
             0
         );
         assert!(harness.controller.agent_report(runtime, 5, None).unwrap());
         assert_eq!(
-            harness.controller.inferior.as_ref().unwrap().agents[&runtime].sequence,
+            harness.controller.session.inferior().unwrap().agents[&runtime].sequence,
             5
         );
     }

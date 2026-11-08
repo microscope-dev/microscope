@@ -145,7 +145,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// edit publishes its whole change; standalone rearming must notify it.
     #[must_use]
     pub(super) fn sync_runtime_arming(&mut self) -> bool {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return false;
         };
         let mut changed = false;
@@ -162,7 +162,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// report: its managed locations, its step, and which exceptions stop.
     pub(super) fn arm_runtime(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
         let result = self.prepare_runtime_arming(runtime);
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             match &result {
                 Ok(()) => {
                     inferior.managed.unarmed.remove(&runtime);
@@ -178,8 +178,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn arming_problem(&self, runtime: RuntimeId) -> Option<Arc<str>> {
-        self.inferior
-            .as_ref()?
+        self.session
+            .inferior()?
             .managed
             .unarmed
             .get(&runtime)
@@ -204,8 +204,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     fn prepare_runtime_arming(&mut self, runtime: RuntimeId) -> Result<(), Arc<str>> {
         let inferior = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let breakpoints = inferior.managed.arms(runtime);
         let step = inferior
@@ -256,7 +256,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Marks every loaded runtime that reports events through internal
     /// hooks to be armed again, as when which exceptions stop changed.
     pub(super) fn rearm_reporting_runtimes(&mut self) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
 
@@ -269,7 +269,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|runtime| runtime.id)
             .collect::<Vec<_>>();
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             for runtime in reporting {
                 inferior.managed.mark_stale(runtime);
             }

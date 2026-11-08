@@ -231,7 +231,7 @@ impl Scripted {
             &harness,
             ScriptedRuntime::inspected(ImageAddress::new(HOOK)),
         );
-        let inferior = harness.controller.inferior.as_ref().expect("inferior");
+        let inferior = harness.controller.session.inferior().expect("inferior");
         let runtime = harness.controller.runtimes(inferior)[0].id;
         let mut scripted = Self {
             harness,
@@ -258,8 +258,8 @@ impl Scripted {
         let runtime = self.runtime;
         self.harness
             .controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .expect("inferior")
             .inspectors
             .records
@@ -1080,7 +1080,7 @@ fn a_process_exiting_while_armed_closes_the_connection() {
             .process_wait(super::super::WaitEvent::Exited(pid, 0))
             .expect("exit");
     }
-    assert!(scripted.harness.controller.inferior.is_none());
+    assert!(scripted.harness.controller.session.inferior().is_none());
     scripted.inspector.wait_gone();
 
     let mut replies = 0;
@@ -1273,8 +1273,8 @@ fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
     let inferior = scripted
         .harness
         .controller
-        .inferior
-        .as_ref()
+        .session
+        .inferior()
         .expect("inferior");
     let process = super::super::process_id(inferior.tgid);
     let stop = inferior.public_stop.as_ref().expect("a stop").id;
@@ -1348,8 +1348,8 @@ fn a_thread_exiting_in_the_cleanup_stop_of_a_shutdown_lets_it_detach() {
     scripted
         .harness
         .controller
-        .inferior
-        .as_mut()
+        .session
+        .inferior_mut()
         .expect("inferior")
         .origin = super::super::InferiorOrigin::Attached;
 
@@ -1418,8 +1418,8 @@ fn a_borrowed_inspector_answers_the_close_of_its_session_before_the_detach() {
     scripted
         .harness
         .controller
-        .inferior
-        .as_mut()
+        .session
+        .inferior_mut()
         .expect("inferior")
         .origin = super::super::InferiorOrigin::Attached;
 
@@ -1478,7 +1478,7 @@ fn a_step_from_a_native_stop_holds_the_main_thread_until_its_pause_is_handed_on(
     };
     let entry = {
         let controller = &scripted.harness.controller;
-        let inferior = controller.inferior.as_ref().expect("inferior");
+        let inferior = controller.session.inferior().expect("inferior");
         controller.runtimes(inferior)[0]
             .module
             .virtual_address(crate::ImageAddress::new(0x60))
@@ -1562,7 +1562,7 @@ fn begin_native_step(scripted: &mut Scripted) -> crate::VirtualAddress {
     let main = scripted.main();
     let entry = {
         let controller = &scripted.harness.controller;
-        let inferior = controller.inferior.as_ref().expect("inferior");
+        let inferior = controller.session.inferior().expect("inferior");
         controller.runtimes(inferior)[0]
             .module
             .virtual_address(crate::ImageAddress::new(0x60))
@@ -1621,8 +1621,8 @@ fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
     let inferior = scripted
         .harness
         .controller
-        .inferior
-        .as_mut()
+        .session
+        .inferior_mut()
         .expect("inferior");
     inferior
         .breakpoints
@@ -1642,8 +1642,8 @@ fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
     let inferior = scripted
         .harness
         .controller
-        .inferior
-        .as_ref()
+        .session
+        .inferior()
         .expect("inferior");
     assert!(
         inferior.breakpoints[&entry].installed,

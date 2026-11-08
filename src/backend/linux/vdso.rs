@@ -251,7 +251,7 @@ impl<P: InspectionOps> Controller<P> {
     /// Reads the vDSO image at `mapping` as the process sees it, without the
     /// debugger's breakpoint traps.
     fn read_vdso(&self, pid: Pid, mapping: &Range<u64>) -> Result<MemoryImage, MemoryImageError> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Err(MemoryImageError::Unreadable(mapping.start));
         };
 

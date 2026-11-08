@@ -377,8 +377,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .as_ref()
             .is_some_and(|group| !group.root && !group.following.debugs(program))
             && self
-                .inferior
-                .as_ref()
+                .session
+                .inferior()
                 .is_some_and(|inferior| inferior.retired_threads.is_empty())
     }
 }

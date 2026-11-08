@@ -24,7 +24,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the dynamic loader, is loaded. A program without one loads no
     /// libraries after it starts.
     pub(super) fn ensure_loader_breakpoint(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -45,7 +45,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let pid = inferior.memory_thread();
         self.ptrace.install_breakpoint(
             pid,
@@ -59,8 +59,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Whether a site is the loader's breakpoint.
     pub(super) fn is_loader_site(&self, address: VirtualAddress) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .is_some_and(|inferior| inferior.loader_site == Some(address))
     }
 
@@ -122,7 +122,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Arc::clone(&resolved),
             );
             changed = true;
-            let Some(inferior) = self.inferior.as_mut() else {
+            let Some(inferior) = self.session.inferior_mut() else {
                 continue;
             };
 

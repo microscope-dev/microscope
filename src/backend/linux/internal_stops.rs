@@ -28,17 +28,16 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// still establishing its first stop, the edit applies at once. While
     /// the inferior runs, every thread is stopped first.
     pub(super) fn edit(&mut self, edit: Edit) {
-        if self.shutting_down {
+        if self.shutdown.is_some() {
             edit.reject(Error::RequestCancelled);
             return;
         }
 
         let running = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .is_some_and(|inferior| inferior.public_stop.is_none())
-            && self.launch_reply.is_none()
-            && self.attach_reply.is_none();
+            && !self.session.starting();
         if !running {
             self.apply_edit(edit);
             return;
@@ -50,8 +49,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let Some(barrier) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.barrier.as_mut())
         else {
             edit.reject(Error::internal("an internal stop has a barrier"));
@@ -69,7 +68,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// outlive any process, unless the session is ending.
     pub(super) fn settle_pending_edits(&mut self, edits: Vec<Edit>) {
         for edit in edits {
-            if self.shutting_down {
+            if self.shutdown.is_some() {
                 edit.reject(Error::RequestCancelled);
             } else {
                 self.apply_edit(edit);
@@ -81,9 +80,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the inferior has completed its first stop and every thread is
     /// settled.
     pub(super) fn sites_live(&self) -> bool {
-        self.launch_reply.is_none()
-            && self.attach_reply.is_none()
-            && self.inferior.as_ref().is_some_and(|inferior| {
+        !self.session.starting()
+            && self.session.inferior().is_some_and(|inferior| {
                 inferior
                     .threads
                     .iter()
@@ -175,8 +173,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// queued is applied once.
     pub(super) fn queue_internal_edit(&mut self, edit: Edit) -> Result<()> {
         if self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .barrier
             .is_none()
@@ -185,8 +183,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let barrier = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.barrier.as_mut())
             .ok_or_else(|| Error::internal("an internal stop has a barrier"))?;
 
@@ -206,7 +204,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// unless a barrier is already doing so. The caller completes it with
     /// [`Self::finish_barrier_if_ready`].
     pub(super) fn begin_internal_stop(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if inferior.barrier.is_some() {
             return Ok(());
         }
@@ -235,7 +233,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// it would silently miss accesses the user asked to watch. The stop is
     /// then published from it, as for a new thread that can't be armed.
     pub(super) fn resume_after_internal_stop(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.barrier = None;
         if inferior.active.is_none() {
             return Ok(());
@@ -246,7 +244,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match self.sync_debug_registers() {
             Err(error @ Error::WatchpointHardwareBusy { thread }) => {
-                let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+                let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
                 let pid = inferior
                     .threads
                     .keys()
@@ -264,7 +262,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             result => result?,
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.repairs = collect_repairs(inferior);
         self.advance_execution()
     }
@@ -273,7 +271,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// published stop reports. Removing the site lets any other running
     /// thread pass it unnoticed, so every other thread is stopped first.
     pub(super) fn repair_when_alone(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.thread_mut(pid)?.stopped_at_breakpoint = Some(address);
         if inferior.barrier.is_none() && others_stopped(inferior, pid) {
             self.queue_repair(pid, address)?;
@@ -289,8 +287,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// effect on the step is evaluated before the step resumes.
     pub(super) fn note_step_progress(&mut self, pid: Pid) {
         let owner = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match active.kind {
                 ActiveKind::Step { owner, .. } => Some(owner),
@@ -301,8 +299,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if let Some(ActiveKind::Step { progress_owed, .. }) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.active.as_mut())
             .map(|active| &mut active.kind)
         {
@@ -313,7 +311,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Resumes every stopped thread of the active execution's scope, unless
     /// a barrier is stopping them or the execution has ended.
     pub(super) fn continue_scope_threads(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -353,8 +351,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// then publishes the next most important reason, or turns internal.
     pub(super) fn settle_edited_reasons(&mut self) -> Result<()> {
         let unchanged = self.unchanged_watchpoints(
-            self.inferior
-                .iter()
+            self.session
+                .inferior()
+                .into_iter()
                 .flat_map(|inferior| inferior.threads.values())
                 .flat_map(|thread| thread.watch_hits.keys().copied()),
         )?;
@@ -368,7 +367,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .any(|breakpoint| breakpoint.id == id && breakpoint.enabled)
         };
 
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
 

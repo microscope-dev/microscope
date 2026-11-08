@@ -31,7 +31,7 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Result<VisualizerInputs> {
         let children = &reference.children;
         let (bound, place) = view_place(children)?;
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let root = self.stack_root(children.stop_id, children.context)?;
         let frame = self.resolve_frame(inferior, &root, children.frame)?;
         let scope = self.frame_for(inferior, children.stop_id, &root, &frame);
@@ -99,7 +99,7 @@ impl<P: InspectionOps> Controller<P> {
     /// Reads `length` bytes of the stopped program's memory at once, as
     /// stored, with no breakpoint's trap among them.
     fn read_block(&self, address: u64, length: u64) -> Result<Arc<[u8]>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let pid = inferior
             .public_stop
             .as_ref()
@@ -252,7 +252,7 @@ impl<P: InspectionOps> Controller<P> {
                 return Ok(None);
             }
 
-            let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
             let root = self.stack_root(reference.stop_id, reference.context)?;
             let frame = self.resolve_frame(inferior, &root, reference.frame)?;
             let scope = self.frame_for(inferior, reference.stop_id, &root, &frame);

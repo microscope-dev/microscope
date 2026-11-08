@@ -136,8 +136,8 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn describe_breakpoint(&self, breakpoint: &Breakpoint) -> Breakpoint {
         let mut shown = breakpoint.clone();
         let pending = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .filter(|_| breakpoint.enabled)
             .map_or_else(Vec::new, |inferior| {
                 breakpoint
@@ -239,8 +239,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if breakpoint.enabled && self.sites_live() {
             let inferior = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .ok_or_else(|| Error::internal("live sites have an inferior"))?;
             install_logical_breakpoint(&self.ptrace, inferior, &breakpoint)?;
             self.step_over_where_threads_trapped(&breakpoint)?;
@@ -278,7 +278,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn location_in_stopped_package(&self, location: &str) -> Option<String> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let stop = inferior.public_stop.as_ref()?;
         let root = self.stack_root(stop.id, stop.selected).ok()?;
         let frame = self
@@ -434,7 +434,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> (Vec<ResolvedBreakpointLocation>, Option<Arc<str>>) {
         let mut locations = Vec::new();
         let mut refusal = None;
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return (locations, refusal);
         };
 
@@ -491,7 +491,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Any other thread standing at the new breakpoint arrives there when it
     /// resumes, as one does after a step that ends at a breakpoint.
     fn step_over_where_threads_trapped(&mut self, breakpoint: &Breakpoint) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let sites = trap_addresses(inferior, breakpoint)?
             .into_iter()
             .collect::<BTreeSet<_>>();
@@ -515,8 +515,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let breakpoint = self.breakpoints[index].clone();
         if breakpoint.enabled && self.sites_live() {
             let inferior = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .ok_or_else(|| Error::internal("live sites have an inferior"))?;
             remove_logical_breakpoint(&self.ptrace, inferior, &breakpoint)?;
         }
@@ -571,8 +571,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if self.sites_live() {
             let inferior = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .ok_or_else(|| Error::internal("live sites have an inferior"))?;
             if enabled {
                 install_logical_breakpoint(&self.ptrace, inferior, &breakpoint)?;
@@ -596,7 +596,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// publishing that stop, and returns whether any was. The hits stay in
     /// the threads' stop reasons.
     pub(super) fn remove_stopped_temporaries(&mut self) -> Result<bool> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(false);
         };
 
@@ -643,8 +643,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if self.sites_live() {
             let inferior = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .ok_or_else(|| Error::internal("live sites have an inferior"))?;
             let stopped_at = inferior
                 .threads
@@ -761,8 +761,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
     ) -> Arc<[BreakpointHit]> {
         let Some(site) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.breakpoints.get(&address))
         else {
             return Arc::from([]);
@@ -962,8 +962,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         event: impl FnOnce(u64, crate::ProcessId, crate::ThreadId) -> DebuggerEvent,
     ) {
         let Some(process_id) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .map(|inferior| super::process_id(inferior.tgid))
         else {
             return;
@@ -996,13 +996,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
         owner: BreakpointOwner,
     ) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         remove_breakpoint_owner_from(&self.ptrace, inferior, address, owner)
     }
 
     pub(super) fn cleanup_plan_breakpoints(&mut self, execution: ExecutionId) -> Result<()> {
         let owner = BreakpointOwner::Plan(execution);
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(recorded) = inferior.plan_sites.get(&execution) else {
             return Ok(());
         };
@@ -1022,8 +1022,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.remove_breakpoint_owner(address, owner)?;
         }
 
-        self.inferior
-            .as_mut()
+        self.session
+            .inferior_mut()
             .ok_or(Error::NotRunning)?
             .plan_sites
             .remove(&execution);
@@ -1037,7 +1037,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<()> {
         let owner = BreakpointOwner::Plan(execution);
         let new_addresses = {
-            let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
             addresses
                 .iter()
                 .copied()
@@ -1052,14 +1052,14 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let mut installed = Vec::new();
         for address in new_addresses {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             if let Err(error) = install_plan_breakpoint(&self.ptrace, inferior, address, execution)
             {
                 if self.lost_to_sigkill(&error) {
                     return Err(error);
                 }
 
-                let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+                let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
                 for address in installed.into_iter().rev() {
                     if let Err(recovery) =
                         remove_breakpoint_owner_from(&self.ptrace, inferior, address, owner)
@@ -1082,7 +1082,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn restore_active_breakpoints(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
 
@@ -1112,7 +1112,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// breakpoint its location, a plan its site, and the loader its hook.
     /// Returns whether any breakpoint lost a location.
     pub(super) fn reconcile_sites(&mut self, moved: &[MovedCode]) -> Result<bool> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(false);
         };
 

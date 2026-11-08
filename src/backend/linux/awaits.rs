@@ -327,7 +327,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &self,
         statements: BTreeSet<VirtualAddress>,
     ) -> BTreeSet<VirtualAddress> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return statements;
         };
 
@@ -345,7 +345,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the awaits of `future` hold more than one future of
     /// `function`, which a step in its inlined body cannot tell apart.
     fn awaits_twice(&self, pid: Pid, future: RunningFuture, function: FunctionId) -> bool {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return false;
         };
 
@@ -394,7 +394,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Err(parked());
         }
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let root = self.stack_root(stop_id, ExecutionContext::Task(task))?;
         let super::frames::RootOrigin::Suspended { reader, .. } = root.origin else {
             return Err(parked());
@@ -604,7 +604,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// inlined into another's has a future of its own, or none the step
     /// can name, never the other's.
     fn running_future(&self, pid: Pid, selected: Option<CodeInstanceId>) -> Option<RunningFuture> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let module = self.modules.get(&inferior.loaded_module.id)?;
         let root = StackRoot::of_thread(pid);
         let stack = self.physical_stack(inferior, &root, 1).ok()?;
@@ -680,7 +680,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// The state a future that is not running is in, and its number.
     fn future_state(&self, pid: Pid, future: RunningFuture) -> Option<(u64, CoroutineStateKind)> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let module = self.module_of(future.ty)?;
 
         // The walk lists the future it began at last.
@@ -763,8 +763,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         kind: StepKind,
     ) -> Result<Option<Followed>> {
         let Some((execution, task, awaiting, activation)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, start, .. } => {
@@ -773,8 +773,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                         record!(
                             "thread {pid} runs no task of the step that follows a future, \
                              {owner:?}: {:?}",
-                            self.inferior
-                                .as_ref()
+                            self.session
+                                .inferior()
                                 .and_then(|inferior| self.thread_activity(inferior, pid))
                         );
                         return None;
@@ -872,7 +872,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         reader: Pid,
         task: crate::TaskId,
     ) -> Option<(crate::TaskId, TaskEntries)> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let runtime = self
             .runtimes(inferior)
             .into_iter()
@@ -894,7 +894,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Where the runtime's dispatch that runs the task on thread `pid`
     /// returns to, read from the thread's stack.
     fn dispatch_return(&self, pid: Pid) -> Option<TaskReturn> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let stack = self
             .physical_stack(inferior, &StackRoot::of_thread(pid), DEFAULT_MAX_FRAMES)
             .ok()?;
@@ -1020,7 +1020,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             &dyn crate::runtime_model::RuntimeStop,
         ) -> std::result::Result<T, std::sync::Arc<str>>,
     ) -> std::result::Result<T, std::sync::Arc<str>> {
-        let inferior = self.inferior.as_ref().ok_or("the process has ended")?;
+        let inferior = self.session.inferior().ok_or("the process has ended")?;
         let runtime = self
             .runtimes(inferior)
             .into_iter()
@@ -1103,7 +1103,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let entries = self
             .active_step()
             .and_then(|start| start.awaiting.as_ref()?.task_entries.clone());
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let stack =
             self.physical_stack(inferior, &StackRoot::of_thread(pid), DEFAULT_MAX_FRAMES)?;
 
@@ -1189,8 +1189,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             start: active,
             ..
         }) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.active.as_mut())
             .map(|active| &mut active.kind)
         {
@@ -1213,7 +1213,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         level: usize,
         dropped: RunningFuture,
     ) -> Result<Option<StepStart>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let (Some(frame), Some(lookup)) = (stack.frames.get(level), stack.lookup_address(level))
         else {
             return Ok(None);
@@ -1266,8 +1266,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// as it completes: that the future was dropped.
     pub(super) fn dropped_step_reason(&self, reason: StopReason) -> StopReason {
         let dropped = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(
                 |active| matches!(&active.kind, ActiveKind::Step { start, .. } if start.dropped.is_some()),
@@ -1292,7 +1292,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return false;
         }
 
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return false;
         };
 
@@ -1330,8 +1330,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
     ) -> Result<bool> {
         let Some((kind, owner, awaiting)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {

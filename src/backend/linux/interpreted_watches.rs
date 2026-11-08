@@ -249,7 +249,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// runtime with an interpreted watch, and removes the rest, with the
     /// returns of collections no watch waits for any more.
     pub(super) fn sync_interpreted_movers(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -292,7 +292,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.interpreted_moves.frame_slots = frame_slots;
         inferior.interpreted_moves.collecting.retain(|collection| {
             !collection.returned
@@ -361,7 +361,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: VirtualAddress,
     ) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let moves = &inferior.interpreted_moves;
         let thread = debug_thread_id(pid);
         let watched = watched_threads(inferior);
@@ -373,7 +373,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             let registers = self.ptrace.registers(pid)?;
             let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
             record!("a collection begins on {pid}, returning to {returns_to}");
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.interpreted_moves.collecting.push(Collection {
                 thread: pid,
                 runtime,
@@ -403,7 +403,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Ok(());
             }
             record!("the frame at {frame} on {pid} is replaced");
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior
                 .interpreted_moves
                 .replacing
@@ -415,7 +415,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
         let registers = self.ptrace.registers(pid)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(collection) =
             inferior
                 .interpreted_moves
@@ -452,7 +452,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         )]
         if let Err(error) = self.try_follow_interpreted() {
             record!("interpreted watches could not follow their objects: {error}");
-            let collecting = self.inferior.as_ref().map_or_else(Vec::new, |inferior| {
+            let collecting = self.session.inferior().map_or_else(Vec::new, |inferior| {
                 inferior
                     .interpreted_moves
                     .collecting
@@ -482,7 +482,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.note_replaced_frames(&mut ended)?;
         self.note_collection_places(&mut ended)?;
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let mut plan = inferior.watch.plan.clone();
         let mut placed = BTreeMap::new();
         for collection in &inferior.interpreted_moves.collecting {
@@ -548,7 +548,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.arm_all_threads(plan)?;
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior
             .interpreted_moves
             .collecting
@@ -583,7 +583,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // The collection's rewrites of a word that names a moved object
         // are not the program's, so the value each watch reports a change
         // from is the one it finds now.
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let observed = placed
             .keys()
             .filter_map(|id| {
@@ -595,7 +595,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(id, record)| self.observe_record(record).map(|observed| (id, observed)))
             .collect::<Result<Vec<_>>>()?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for (id, (bytes, value)) in observed {
             if let Some(record) = inferior.watch.watchpoints.get_mut(&id) {
                 record.observed = bytes;
@@ -608,7 +608,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let invalidated = {
-            let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
             ended
                 .iter()
                 .filter_map(|(id, reason)| {
@@ -633,9 +633,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         &mut self,
         ended: &mut Vec<(WatchpointId, WatchpointInvalidation)>,
     ) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let replacing = std::mem::take(&mut inferior.interpreted_moves.replacing);
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         for (thread, runtime, frame) in replacing {
             let Some(bound) = self
                 .runtimes(inferior)
@@ -677,7 +677,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &mut self,
         ended: &mut Vec<(WatchpointId, WatchpointInvalidation)>,
     ) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let mut noted = Vec::new();
         for (index, collection) in inferior.interpreted_moves.collecting.iter().enumerate() {
             if collection.places.is_some() {
@@ -735,7 +735,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             noted.push((index, places));
         }
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for (index, places) in noted {
             if let Some(collection) = inferior.interpreted_moves.collecting.get_mut(index) {
                 collection.places = Some(places);
@@ -750,7 +750,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         ending: impl Fn(&WatchScope) -> bool,
         reason: WatchpointInvalidation,
     ) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.interpreted_moves.collecting.clear();
         let invalidated = inferior
             .watch

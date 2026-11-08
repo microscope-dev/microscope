@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use super::session::Session;
 use super::{BreakpointOwner, Controller, Inferior, NativeThreadState, debug_thread_id};
 use crate::backend::linux::native::InspectionOps;
 
@@ -19,7 +20,7 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn invariant_check_stride(&self) -> u64 {
         let size = self.breakpoints.len()
             + self.modules.len()
-            + self.inferior.as_ref().map_or(0, |inferior| {
+            + self.session.inferior().map_or(0, |inferior| {
                 inferior.breakpoints.len()
                     + inferior.threads.len()
                     + inferior.watch.watchpoints.len()
@@ -31,9 +32,9 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn check_invariants(&self) {
         self.check_modules();
         self.check_user_breakpoints();
-        self.check_lifecycle();
-        if let Some(inferior) = &self.inferior {
-            inferior.check_invariants(self.shutting_down);
+        self.check_session();
+        if let Some(inferior) = self.session.inferior() {
+            inferior.check_invariants(self.shutdown.is_some());
             self.check_run_phase(inferior);
             self.check_watchpoint_ids(inferior);
             self.check_managed(inferior);
@@ -43,7 +44,7 @@ impl<P: InspectionOps> Controller<P> {
     /// Once launched or attached, and until shutdown, the inferior is
     /// always running an execution, gathering a stop, or stopped.
     fn check_run_phase(&self, inferior: &Inferior) {
-        if self.shutting_down || self.launch_reply.is_some() || self.attach_reply.is_some() {
+        if self.shutdown.is_some() || self.session.starting() {
             return;
         }
 
@@ -78,8 +79,7 @@ impl<P: InspectionOps> Controller<P> {
             }
         }
 
-        let sites_live = self.launch_reply.is_none()
-            && self.attach_reply.is_none()
+        let sites_live = !self.session.starting()
             && inferior
                 .threads
                 .iter()
@@ -191,32 +191,35 @@ impl<P: InspectionOps> Controller<P> {
         }
     }
 
-    fn check_lifecycle(&self) {
-        if let Some(orphans) = &self.orphans {
-            debug_assert!(
-                !orphans.children.is_empty() || !orphans.killed.is_empty(),
-                "orphans of {} are kept with no child left to wait for",
-                orphans.parent
-            );
-            for pid in &orphans.killed {
+    fn check_session(&self) {
+        match &self.session {
+            Session::Idle { .. } => {}
+            Session::Traced(traced) => debug_assert!(
+                self.shutdown.is_none() || traced.startup.is_none(),
+                "a launch or attach of {} is still starting during shutdown",
+                traced.inferior.tgid
+            ),
+            Session::Draining {
+                orphans, deferred, ..
+            } => {
                 debug_assert!(
-                    !orphans.children.contains_key(pid),
-                    "orphan {pid} is both awaiting its first stop and killed"
+                    !orphans.children.is_empty() || !orphans.killed.is_empty(),
+                    "orphans of {} are kept with no child left to wait for",
+                    orphans.parent
+                );
+                for pid in &orphans.killed {
+                    debug_assert!(
+                        !orphans.children.contains_key(pid),
+                        "orphan {pid} is both awaiting its first stop and killed"
+                    );
+                }
+                debug_assert!(
+                    self.shutdown.is_none() || deferred.is_none(),
+                    "a launch or attach is held for orphans of {} during shutdown",
+                    orphans.parent
                 );
             }
         }
-
-        debug_assert!(
-            self.inferior.is_some()
-                || (self.launch_reply.is_none()
-                    && self.attach_reply.is_none()
-                    && self.kill_reply.is_none()),
-            "a launch, attach, or kill reply is pending with no inferior to answer it"
-        );
-        debug_assert!(
-            self.deferred_start.is_none() || (self.orphans.is_some() && !self.shutting_down),
-            "a launch or attach is deferred with no orphans to wait for, or during shutdown"
-        );
     }
 }
 

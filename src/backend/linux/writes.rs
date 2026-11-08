@@ -30,7 +30,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
         bytes: &[u8],
     ) -> Result<u64> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let pid = inferior
@@ -49,8 +49,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         writes: &[RuntimeWrite],
     ) -> std::result::Result<(), Arc<str>> {
         let inferior = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         if !inferior
             .threads
@@ -131,8 +131,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.views.forget_scans();
 
         if let Some(stop) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.public_stop.as_ref())
         {
             stop.task_locators.borrow_mut().clear();
@@ -148,7 +148,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         write_logical_memory_with(
             &mut inferior.breakpoints,
             address,
@@ -226,7 +226,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         spec: BreakpointSpec,
     ) -> Result<VirtualAddress> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_process(inferior, process_id)?;
         validate_public_stop(inferior, Some(stop_id))?;
         validate_resumable(inferior)?;
@@ -251,7 +251,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// The module and out-of-line code instance holding an address.
     fn physical_function_at(&self, address: VirtualAddress) -> Option<(ModuleId, CodeInstanceId)> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let main = (self.main.id, &self.main.image, &inferior.loaded_module);
         std::iter::once(main)
             .chain(
@@ -281,7 +281,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let presentation = self.presentation_for_thread(pid, Some(&reason))?;
         let pc = VirtualAddress::new(self.ptrace.registers(pid)?.rip);
         let stop_id = self.ptrace.allocate_stop_id()?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let execution = ExecutionId::new(inferior.next_execution + 1);
         inferior.next_execution = execution.get();
         let thread = inferior.thread_mut(pid)?;

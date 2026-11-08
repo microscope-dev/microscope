@@ -13,7 +13,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Requests pauses in all connected isolates and arms the native-stop
     /// deadline. Returns whether any pause was requested.
     pub(in crate::backend::linux) fn interrupt_javascript(&mut self) -> bool {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return false;
         };
         // A second interrupt does not wait again.
@@ -41,7 +41,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &mut self,
         now: std::time::Instant,
     ) -> Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         if inferior

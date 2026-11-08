@@ -261,7 +261,11 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// has a watch, and removes the rest, with the returns of moves no
     /// watch waits for any more.
     pub(super) fn sync_stack_movers(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref().filter(|inferior| !inferior.observer) else {
+        let Some(inferior) = self
+            .session
+            .inferior()
+            .filter(|inferior| !inferior.observer)
+        else {
             return Ok(());
         };
 
@@ -275,7 +279,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Some((runtime.module.virtual_address(entry).ok()?, runtime.id))
             })
             .collect::<BTreeMap<_, _>>();
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior
             .stack_moves
             .moving
@@ -333,7 +337,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// `address` is one, and stops every thread to set its task's watches
     /// aside, or place them on its new stack.
     pub(super) fn note_stack_move(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let moves = &inferior.stack_moves;
         if !moves.movers.contains_key(&address) && !moves.returns.contains(&address) {
             return Ok(());
@@ -367,7 +371,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 )]
                 Err(reason) => {
                     record!("a stack moves whose task is unknown: {reason}");
-                    let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+                    let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
                     inferior.stack_moves.unknown = true;
                     return self.queue_stack_follow();
                 }
@@ -380,7 +384,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
             record!("task {task}'s stack moves on {pid}, returning to {returns_to}");
 
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.stack_moves.moving.push(Move {
                 thread: pid,
                 task,
@@ -392,7 +396,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.queue_stack_follow();
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(moving) = inferior.stack_moves.moving.iter_mut().find(|moving| {
             moving.thread == pid
                 && moving.returns_to == address
@@ -434,12 +438,12 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn try_follow_stacks(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if std::mem::take(&mut inferior.stack_moves.unknown) {
             return self.end_task_watches(|_| true);
         }
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let moving = inferior
             .stack_moves
             .moving
@@ -519,7 +523,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.arm_all_threads(plan)?;
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for (id, (address, chunks)) in &moved {
             let record = inferior
                 .watch
@@ -552,7 +556,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Ends the task watches `ending` names, whose stacks moved where the
     /// debugger could not follow.
     fn end_task_watches(&mut self, ending: impl Fn(WatchpointId) -> bool) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let invalidated = inferior
             .watch
             .watchpoints

@@ -186,8 +186,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// call's own activation returns. Returns whether it did.
     pub(super) fn guard_unchosen_call(&mut self, pid: Pid) -> Result<bool> {
         let Some(chosen) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, owner, .. }
@@ -206,7 +206,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         }
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some((address, stack)) = self.call_return(inferior, pid, &registers)? else {
             return Ok(false);
         };

@@ -76,25 +76,25 @@ impl Cleanup {
 
 impl<P: LinuxTraceOps> Controller<P> {
     pub(in crate::backend::linux) fn inspector_cleanup_running(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .is_some_and(|inferior| inferior.inspectors.cleanup.is_some())
     }
 
     pub(super) fn inspector_cleanup_starting(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.cleanup.as_ref())
             .is_some_and(|cleanup| matches!(cleanup.phase, Phase::Starting))
     }
 
     pub(super) fn capture_inspector_ownership(&mut self) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
         let runtimes = self.runtimes(inferior);
         for bound in runtimes {
-            let Some(inferior) = self.inferior.as_ref() else {
+            let Some(inferior) = self.session.inferior() else {
                 return;
             };
             let Some(inspector) = inferior.inspectors.records.get(&bound.id) else {
@@ -127,8 +127,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Ownership::Borrowed
             };
             if let Some(inspector) = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .and_then(|inferior| inferior.inspectors.records.get_mut(&bound.id))
             {
                 inspector.ownership = ownership;
@@ -144,7 +144,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(true);
         }
         self.capture_inspector_ownership();
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let deadline = inferior.inspectors.cleanup.as_ref().map_or_else(
             || Instant::now() + crate::SHUTDOWN_TIMEOUT.saturating_sub(Duration::from_secs(1)),
             |cleanup| cleanup.deadline,
@@ -234,7 +234,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.remove_all_breakpoints()?;
         self.remove_all_watchpoints()?;
         self.set_exception_stops(crate::ExceptionStops::default())?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if cleanup.stop.is_some()
             && let Some(startup) = inferior.inspectors.startup.get_mut(&cleanup.runtime)
         {
@@ -332,7 +332,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: VirtualAddress,
     ) -> Result<bool> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
         let Some(cleanup) = inferior.inspectors.cleanup.as_ref() else {
@@ -377,8 +377,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             _ => return Ok(false),
         };
         if let Some(cleanup) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.cleanup.as_mut())
         {
             cleanup.phase = phase;
@@ -399,8 +399,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn progress_inspector_quiescence(&mut self) -> Result<()> {
         self.install_inspector_startup_hooks()?;
         let Some(cleanup) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.cleanup.as_ref())
         else {
             return Ok(());
@@ -413,7 +413,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if !self.verify_inspector_startup(runtime, agent)? {
             return Ok(());
         }
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let inspector = inferior
             .inspectors
             .records
@@ -442,7 +442,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn redirect_inspector_cleanup(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(cleanup) = inferior.inspectors.cleanup.as_ref() else {
             return Ok(());
         };
@@ -488,7 +488,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let stop = cleanup
             .stop
             .ok_or_else(|| Error::internal("a captured cleanup has a native Stop"))?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         self.ptrace.install_breakpoint(
             pid,
             &mut inferior.breakpoints,
@@ -524,7 +524,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             return Ok(true);
         }
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
         let Some(cleanup) = inferior.inspectors.cleanup.as_ref() else {
@@ -557,8 +557,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             Phase::Failed(reason) => Some(Arc::clone(reason)),
             _ => {
                 if let Some(barrier) = self
-                    .inferior
-                    .as_mut()
+                    .session
+                    .inferior_mut()
                     .and_then(|inferior| inferior.barrier.as_mut())
                 {
                     barrier.reason = None;
@@ -577,8 +577,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn fail_inspector_cleanup(&mut self, reason: Arc<str>) {
         record!("native inspector cleanup failed: {reason}");
         if let Some(cleanup) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.cleanup.as_mut())
         {
             cleanup.phase = Phase::Failed(reason);
@@ -590,8 +590,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         now: Instant,
     ) -> Result<()> {
         let expired = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.cleanup.as_ref())
             .and_then(Cleanup::deadline)
             .is_some_and(|deadline| deadline <= now);
@@ -606,7 +606,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn inspector_cleanup_message(&mut self, message: InspectorMessage) -> Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         let Some(cleanup) = inferior.inspectors.cleanup.as_ref() else {

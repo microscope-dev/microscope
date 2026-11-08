@@ -14,6 +14,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use super::debug_registers::CONTROL_REGISTER;
 use super::memory::holding_word;
 use super::native::LinuxTraceOps;
+use super::session::{Orphans, Session, Shutdown};
 use super::{
     BREAKPOINT_OPCODE, Controller, ControllerMessage, Ending, Inferior, InferiorOrigin, Signal,
     WaitEvent, Waiter,
@@ -83,16 +84,18 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// released instead.
     pub(super) fn release_after_panic(&mut self) {
         // A fork child is released, never held for another session.
-        self.shutting_down = true;
-        let Some(mut inferior) = self.inferior.take() else {
-            self.release_orphans_after_panic();
-            return;
+        self.shutdown.get_or_insert_with(Shutdown::default);
+
+        // The replies the session owed are dropped: the panic ends the
+        // controller, which fails them at their clients.
+        let mut inferior = match std::mem::replace(&mut self.session, Session::idle()) {
+            Session::Traced(traced) => traced.inferior,
+            Session::Draining { orphans, .. } => {
+                self.release_orphans_after_panic(orphans);
+                return;
+            }
+            Session::Idle { .. } => return,
         };
-        debug_assert!(
-            self.orphans.is_none(),
-            "{} has orphans while it runs",
-            inferior.tgid
-        );
 
         if inferior.origin == InferiorOrigin::PostMortem {
             return;
@@ -257,11 +260,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// first stop, scrubbed of the traps they inherited, as that stop and a
     /// shutdown would have, whether the process was attached or launched.
     /// Children already killed for traps they kept need nothing more.
-    fn release_orphans_after_panic(&mut self) {
-        let Some(mut orphans) = self.orphans.take() else {
-            return;
-        };
-
+    fn release_orphans_after_panic(&mut self, mut orphans: Orphans) {
         record!(
             "releasing the fork children of {} after a panic",
             orphans.parent

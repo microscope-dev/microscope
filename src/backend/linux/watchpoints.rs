@@ -56,7 +56,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             WatchAccess::Read => return Err(Error::UnsupportedWatchAccess(access)),
         };
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         if !self.sites_live() {
             return Err(Error::NotStopped);
         }
@@ -143,8 +143,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             enabled: options.enabled,
         };
 
-        self.inferior
-            .as_mut()
+        self.session
+            .inferior_mut()
             .ok_or(Error::NotRunning)?
             .watch
             .watchpoints
@@ -197,8 +197,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         edit: impl FnOnce(&mut Watchpoint),
     ) -> Result<Watchpoint> {
         let record = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.watch.watchpoints.get_mut(&id))
             .ok_or(Error::WatchpointNotFound(id.get()))?;
         edit(&mut record.watchpoint);
@@ -231,8 +231,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         for id in self.reportable_watch_hits(owners)? {
             let Some(watchpoint) = self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .and_then(|inferior| inferior.watch.watchpoints.get_mut(&id))
                 .map(|record| &mut record.watchpoint)
             else {
@@ -270,7 +270,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Takes the bytes a declined hit left as a watchpoint's last observed
     /// bytes, unless another thread's hit on it awaits the stop.
     fn observe_declined_hit(&mut self, id: WatchpointId) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -289,8 +289,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (observed, value) = self.observe_record(record)?;
 
         if let Some(record) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.watch.watchpoints.get_mut(&id))
         {
             record.observed = observed;
@@ -311,8 +311,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         enabled: bool,
     ) -> Result<Watchpoint> {
         let inferior = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::WatchpointNotFound(id.get()))?;
         let record = inferior
             .watch
@@ -366,8 +366,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let record = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.watch.watchpoints.get_mut(&id))
             .ok_or_else(|| Error::internal("armed watchpoint is recorded"))?;
         record.watchpoint.enabled = enabled;
@@ -383,15 +383,15 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn remove_watchpoint(&mut self, id: WatchpointId) -> Result<Watchpoint> {
         let inferior = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .filter(|inferior| inferior.watch.watchpoints.contains_key(&id))
             .ok_or(Error::WatchpointNotFound(id.get()))?;
         let plan = inferior.watch.plan.without_watchpoint(id);
         self.arm_all_threads(plan)?;
         let record = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.watch.watchpoints.remove(&id))
             .ok_or_else(|| Error::internal("removed watchpoint was recorded"))?;
         self.publish_watchpoints_changed();
@@ -402,8 +402,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn remove_all_watchpoints(&mut self) -> Result<Arc<[Watchpoint]>> {
         if self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .is_none_or(|inferior| inferior.watch.watchpoints.is_empty())
         {
             return Ok(Arc::from([]));
@@ -412,8 +412,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.arm_all_threads(DebugRegisterPlan::default())?;
         let removed = std::mem::take(
             &mut self
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .ok_or(Error::NotRunning)?
                 .watch
                 .watchpoints,
@@ -445,7 +445,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// it previously carried already reserved, so rollback needs no new
     /// kernel capacity.
     pub(super) fn arm_all_threads(&mut self, plan: DebugRegisterPlan) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let previous = inferior.watch.plan.clone();
         let generation = inferior.watch.generation;
         let threads = inferior
@@ -501,7 +501,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// plan, so no thread ever runs unwatched. Failure leaves the inferior
     /// stopped.
     pub(super) fn sync_debug_registers(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let generation = inferior.watch.generation;
         let stale = inferior
             .threads
@@ -529,7 +529,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Arms a newly started thread before it executes. Returns the failure
     /// to publish when it cannot be armed.
     pub(super) fn arm_new_thread(&mut self, pid: Pid) -> Option<Error> {
-        let inferior = self.inferior.as_mut()?;
+        let inferior = self.session.inferior_mut()?;
         let generation = inferior.watch.generation;
 
         // Debug registers are never inherited, so an unarmed thread already
@@ -553,7 +553,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Clears debug-register state a previous tracer may have left armed in
     /// an attached process, which would otherwise kill it with SIGTRAP.
     pub(super) fn clear_attached_debug_registers(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         debug_assert!(
             inferior.watch.plan.is_empty(),
             "an attached process starts with {} debug-register slots planned",
@@ -580,7 +580,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// untraced hit would kill the process with SIGTRAP. Every thread is
     /// attempted even if one fails.
     pub(super) fn disarm_for_detach(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let empty = DebugRegisterPlan::default();
         let mut first_error = None;
 
@@ -604,7 +604,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// hit reports what the access changed since the debugger last looked,
     /// including the debugger's own writes.
     pub(super) fn refresh_watch_baselines(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -614,7 +614,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .iter()
             .map(|(&id, record)| self.observe_record(record).map(|observed| (id, observed)))
             .collect::<Result<Vec<_>>>()?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         for (id, (bytes, value)) in observed {
             let record = inferior
@@ -634,7 +634,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// ended, reports hits on the remaining ones, and publishes the result
     /// as each thread's stop reason.
     pub(super) fn evaluate_watchpoints(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -681,7 +681,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .collect::<Vec<_>>();
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         for (&pid, thread) in &mut inferior.threads {
             let owners = std::mem::take(&mut thread.watch_hits);
@@ -746,14 +746,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let plan = invalidated
             .iter()
             .fold(inferior.watch.plan.clone(), |plan, entry| {
                 plan.without_watchpoint(entry.watchpoint.id)
             });
         self.arm_all_threads(plan)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         for entry in &invalidated {
             inferior.watch.watchpoints.remove(&entry.watchpoint.id);
@@ -772,7 +772,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Discards the watchpoints of a process that no longer exists or whose
     /// image was replaced.
     pub(super) fn discard_watchpoints(&mut self) {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
 
@@ -808,7 +808,7 @@ impl<P: InspectionOps> Controller<P> {
         let WatchScope::Interpreted { runtime, .. } = scope else {
             return Ok((bytes, None));
         };
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(bound) = self
             .runtimes(inferior)
             .into_iter()
@@ -863,7 +863,7 @@ impl<P: InspectionOps> Controller<P> {
         address: VirtualAddress,
         byte_size: u64,
     ) -> Result<Option<Arc<[u8]>>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let size = usize::try_from(byte_size).map_err(|_| Error::AddressOverflow)?;
         let stopped = inferior
             .threads
@@ -891,7 +891,7 @@ impl<P: InspectionOps> Controller<P> {
         &self,
         owners: impl IntoIterator<Item = WatchpointId>,
     ) -> Result<BTreeSet<WatchpointId>> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(BTreeSet::new());
         };
 

@@ -978,8 +978,8 @@ impl SimController {
     #[must_use]
     pub fn inferior(&self) -> Option<Tgid> {
         self.controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .map(|inferior| Tgid::new(inferior.tgid.as_raw()))
     }
 
@@ -988,8 +988,8 @@ impl SimController {
     #[must_use]
     pub fn public_stop(&self) -> Option<u64> {
         self.controller
-            .inferior
-            .as_ref()?
+            .session
+            .inferior()?
             .public_stop
             .as_ref()
             .map(|stop| stop.id.get())
@@ -998,7 +998,7 @@ impl SimController {
     /// The controller's beliefs about the inferior.
     #[must_use]
     pub fn truth(&self) -> Truth {
-        let inferior = self.controller.inferior.as_ref();
+        let inferior = self.controller.session.inferior();
         let breakpoints = self
             .controller
             .breakpoints
@@ -1082,8 +1082,7 @@ impl SimController {
             active_execution: inferior.active.as_ref().map(|active| active.id.get()),
             public_stop: inferior.public_stop.as_ref().map(|stop| stop.id.get()),
             inferior: Some(tgid(inferior.tgid)),
-            established: self.controller.launch_reply.is_none()
-                && self.controller.attach_reply.is_none(),
+            established: !self.controller.session.starting(),
             threads: inferior.threads.keys().map(|pid| pid.as_raw()).collect(),
             stopped: threads_in(inferior, super::NativeThreadState::Stopped),
             stop_requested: threads_in(inferior, super::NativeThreadState::StopRequested),

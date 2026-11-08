@@ -278,12 +278,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         // as a worker's listing passes through the main thread, which may
         // be blocked outside JavaScript and never pass it on.
         let interrupted = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .is_some_and(|inferior| inferior.inspectors.interrupt.is_some());
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return Ok(());
@@ -389,8 +389,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Resumes the isolate `session` reaches from a pause no one sees.
     fn let_v8_go(&self, runtime: RuntimeId, session: &Session) {
         if let Some(link) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
             .and_then(|inspector| inspector.connection.as_ref())
         {
@@ -412,8 +412,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         result: std::result::Result<serde_json::Value, super::super::cdp::CdpError>,
     ) -> Result<()> {
         let Some(paused) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
             .and_then(|inspector| {
                 inspector
@@ -447,7 +447,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Has the pauses whose variables are listed judged: at once while the
     /// program runs, or as it resumes when it is stopped.
     fn judge_inspector_pause(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         if inferior.public_stop.is_none() && inferior.active.is_some() {
             self.queue_internal_edit(super::super::Edit::InspectorPaused)?;
             self.finish_barrier_if_ready()?;
@@ -462,7 +462,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         expect(unused_variables, reason = "only recorded")
     )]
     pub(in crate::backend::linux) fn apply_inspector_pauses(&mut self) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
         // The main isolate's first, so that its thread is known before a
@@ -498,7 +498,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     )]
     fn judge_pause(&mut self, key: &PauseKey) {
         let thread = self.paused_thread(key);
-        let fallback = self.inferior.as_ref().map(|inferior| inferior.tgid);
+        let fallback = self.session.inferior().map(|inferior| inferior.tgid);
         let Some(paused) = self.paused_mut(key) else {
             return;
         };
@@ -528,7 +528,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             record!("V8's pause stops for none of microscope's breakpoints or steps");
             return;
         };
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
         if let Some(thread) = inferior.threads.get_mut(&pid)
@@ -554,7 +554,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Why the pause `key` names, on `pid`, stops, if it does.
     fn pause_reason(&mut self, key: &PauseKey, pid: Pid) -> Option<StopReason> {
         let (runtime, session) = key;
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let isolate = inferior
             .inspectors
             .records
@@ -622,7 +622,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// for the main isolate, and for a worker the one thread no other
     /// pause holds whose script frames are the ones V8 listed.
     fn paused_thread(&self, key: &PauseKey) -> std::result::Result<Pid, Arc<str>> {
-        let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
         if key.1.path().is_empty() {
             return Ok(inferior.tgid);
         }
@@ -663,7 +663,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// The script frames of `pid`'s stack, innermost first.
     fn script_frames(&self, pid: Pid) -> Result<Vec<ScriptFrame>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let presentation = self.presentation_for_thread(pid, None)?;
         let root = super::super::frames::StackRoot::of_thread(pid);
         let stack = self.physical_stack(inferior, &root, crate::unwind::DEFAULT_MAX_FRAMES)?;
@@ -739,7 +739,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             paused.bound = indices;
         }
         record!("V8 named the locals of {} frames", bound.len());
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.inspectors.locals.extend(bound);
         }
         Ok(())
@@ -752,7 +752,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         reason: &StopReason,
     ) {
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             for isolate in inferior.inspectors.isolates_mut() {
                 if let Some(paused) = isolate.paused.as_mut().filter(|paused| {
                     paused.thread == Some(pid)
@@ -773,7 +773,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &mut self,
         resumed: &BTreeSet<Pid>,
     ) -> Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         let main = inferior.tgid;
@@ -848,8 +848,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
 impl<P: InspectionOps> Controller<P> {
     pub(super) fn paused(&self, (runtime, session): &PauseKey) -> Option<&Paused> {
-        self.inferior
-            .as_ref()?
+        self.session
+            .inferior()?
             .inspectors
             .records
             .get(runtime)?
@@ -864,8 +864,8 @@ impl<P: InspectionOps> Controller<P> {
     }
 
     fn isolate_mut(&mut self, runtime: RuntimeId, session: &Session) -> Option<&mut Isolate> {
-        self.inferior
-            .as_mut()?
+        self.session
+            .inferior_mut()?
             .inspectors
             .records
             .get_mut(&runtime)?
@@ -876,7 +876,7 @@ impl<P: InspectionOps> Controller<P> {
     /// Whether V8 holds thread `thread` paused, where its innermost
     /// JavaScript frame is the stop's.
     pub(in crate::backend::linux) fn inspector_holds(&self, thread: crate::ThreadId) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             inferior
                 .inspectors
                 .records

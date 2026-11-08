@@ -616,7 +616,7 @@ impl<P: InspectionOps> Controller<P> {
         limit: usize,
         program_only: bool,
     ) -> Result<TaskPage> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let reader = inferior
             .public_stop
@@ -1089,7 +1089,7 @@ impl<P: InspectionOps> Controller<P> {
     /// Whether a runtime in the process tolerates `signal` arriving late.
     pub(super) fn defers(&self, signal: Signal) -> bool {
         // A runtime that cannot be bound uses signals as it does bound.
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             self.loaded_images(inferior)
                 .flat_map(|(_, image)| self.bind_runtimes(image))
                 .any(|runtime| {
@@ -1120,7 +1120,7 @@ impl<P: InspectionOps> Controller<P> {
             ExecutionContext::Task(task) => task,
         };
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let reader = inferior
             .public_stop

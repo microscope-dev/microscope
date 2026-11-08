@@ -54,7 +54,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// at its hook for each exception that stops, and removes the rest. The
     /// runtimes' signals take their defaults from the same runtimes.
     pub(super) fn sync_runtime_hooks(&mut self) -> Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
 
@@ -117,7 +117,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let stale = inferior
             .runtime_hooks
             .iter()
@@ -187,7 +187,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: VirtualAddress,
     ) -> Option<StopReason> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let site = *inferior.runtime_hooks.get(&address)?;
 
         match site.purpose {
@@ -283,7 +283,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         stop_id: crate::protocol::StopId,
         pid: Pid,
     ) -> Option<crate::StackFrameId> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         if !self.inspector_holds(debug_thread_id(pid)) {
             self.agent_hook(pid)?;
         }
@@ -296,8 +296,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// at a breakpoint it reported or a step's end.
     pub(super) fn agent_hook(&self, pid: Pid) -> Option<&HookSite> {
         let registers = self.ptrace.registers(pid).ok()?;
-        self.inferior
-            .as_ref()?
+        self.session
+            .inferior()?
             .runtime_hooks
             .get(&VirtualAddress::new(registers.rip))
             .filter(|site| matches!(site.purpose, HookPurpose::Internal(HookPlace::Companion(_))))
@@ -314,7 +314,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the runtime `runtime` numbers `numbers`, if a breakpoint that owns
     /// one stops. One since removed is owned by none.
     fn managed_hit(&mut self, pid: Pid, runtime: RuntimeId, numbers: &[u64]) -> Option<StopReason> {
-        let managed = &self.inferior.as_ref()?.managed;
+        let managed = &self.session.inferior()?.managed;
         let owners: BTreeSet<_> = numbers
             .iter()
             .filter_map(|&number| managed.site(runtime, number))
@@ -344,8 +344,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         ) -> std::result::Result<T, Arc<str>>,
     ) -> std::result::Result<T, Arc<str>> {
         let inferior = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let runtime = self
             .runtimes(inferior)
@@ -367,8 +367,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// `frame`, where the thread runs it.
     pub(super) fn select_interpreted_frame(&mut self, pid: Pid, frame: crate::VirtualAddress) {
         let Some(stop) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.public_stop.as_ref())
         else {
             return;
@@ -388,8 +388,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         if let Some(stop) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.public_stop.as_mut())
         {
             stop.selected_frames.insert(context, id);
@@ -401,7 +401,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// report it and the runtime's library code that raised it; for a hit
     /// a runtime reports, the program's frame it happened in.
     pub(super) fn select_blamed_frame(&mut self, pid: Pid) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
 
@@ -423,8 +423,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             crate::ExecutionContext::Thread(debug_thread_id(pid))
         );
         if let Some(stop) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.public_stop.as_mut())
         {
             stop.selected_frames.insert(context, frame);

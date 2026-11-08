@@ -562,7 +562,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         assigned_name: Option<&str>,
         number: u64,
     ) -> std::result::Result<Assigning, Arc<str>> {
-        let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
         if self.inspector_cleanup_running() {
             return Err("the debugger is leaving Node's inspector".into());
         }
@@ -652,8 +652,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         assignment: Option<Assigning>,
     ) {
         if let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         {
             inspector.assigning = assignment;
@@ -668,8 +668,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         result: std::result::Result<Value, CdpError>,
     ) -> crate::Result<()> {
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return Ok(());
@@ -767,7 +767,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &mut self,
         now: Instant,
     ) -> crate::Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         let mut expired = false;
@@ -802,7 +802,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         expect(unused_variables, reason = "only recorded")
     )]
     pub(in crate::backend::linux) fn apply_inspector_assignment(&mut self) {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
         let Some((runtime, assignment)) =
@@ -829,8 +829,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             record!("the assigned frame's variables are not bound: {error}");
         }
         let current = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(
@@ -843,7 +843,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         }
         self.javascript_assignment_ended(failure.is_none(), failure);
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
         let reason = StopReason::Assignment;
@@ -864,7 +864,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Forgets every assignment under way as a stop forms, noting whether
     /// V8 made it, so that its request is answered by the stop.
     pub(in crate::backend::linux) fn end_javascript_assignments(&mut self) {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
         let ended = inferior

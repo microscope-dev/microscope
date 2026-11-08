@@ -103,7 +103,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// to run the code there once the copy is registered.
     pub(super) fn rewind_copied_trap(&self, pid: Pid) -> bool {
         let rewind = || {
-            let inferior = self.inferior.as_ref()?;
+            let inferior = self.session.inferior()?;
             let mut registers = self.ptrace.registers(pid).ok()?;
             let address = registers.rip.checked_sub(1)?;
             let memory = inferior.memory_thread();
@@ -292,7 +292,7 @@ impl<P: InspectionOps> Controller<P> {
     /// read through `pid`, which a copy may begin with: V8's builtins, where
     /// no symbol begins them.
     fn stored_code(&self, pid: Pid) -> Vec<(ModuleId, ImageAddress, ImageAddress)> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Vec::new();
         };
         let runtimes = self.runtimes(inferior);
@@ -350,7 +350,7 @@ impl<P: InspectionOps> Controller<P> {
     /// source, which the program copied with the code it lies in.
     fn compare(&self, pid: Pid, source: u64, copy: u64, limit: u64) -> (u64, Vec<CopiedTrap>) {
         let mut traps = Vec::new();
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return (0, traps);
         };
         let sites = &inferior.breakpoints;

@@ -113,7 +113,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let sites: [VirtualAddress; 3] = sites
             .try_into()
             .map_err(|_| Error::internal("three inspector startup checkpoints"))?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for &site in &sites[..2] {
             self.ptrace.install_breakpoint(
                 inferior.memory_thread(),
@@ -136,7 +136,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn install_inspector_startup_hooks(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for address in inferior
             .inspectors
             .startup
@@ -159,7 +159,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: VirtualAddress,
     ) -> Result<bool> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
         let Some(runtime) = inferior
@@ -186,8 +186,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             returns_to: VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?),
         };
         let startup = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .ok_or(Error::NotRunning)?
             .inspectors
             .startup
@@ -200,7 +200,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn inspector_startup_verified(&self, runtime: RuntimeId) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             inferior
                 .inspectors
                 .startup
@@ -214,7 +214,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         runtime: RuntimeId,
         agent: VirtualAddress,
     ) -> Result<bool> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(startup) = inferior.inspectors.startup.get(&runtime) else {
             return Ok(true);
         };
@@ -232,8 +232,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map_err(Error::RuntimeAgent)?;
         let drain = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .ok_or(Error::NotRunning)?
             .inspectors
             .startup

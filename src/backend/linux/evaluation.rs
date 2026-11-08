@@ -1943,7 +1943,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether a frame's registers are the thread's own, as the innermost
     /// activation's frames, inlined ones too, share them.
     fn shares_thread_registers(&self, root: &StackRoot, frame: StackFrameId) -> Result<bool> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let resolved = self.resolve_frame(inferior, root, frame)?;
         Ok(matches!(resolved.registers, FrameRegisters::Thread(_)))
     }
@@ -2073,7 +2073,7 @@ impl<P: InspectionOps> Controller<P> {
         reason: &crate::StopReason,
     ) -> Result<Evaluation> {
         let _span = crate::span!("eval hit");
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
 
         // The thread is in the ptrace-stop that reported the hit, which its
         // recorded state does not reflect until the hit is resolved.

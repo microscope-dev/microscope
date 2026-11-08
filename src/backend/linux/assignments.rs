@@ -94,7 +94,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let value = assigned_value(runtime, value, span)?;
         self.assignable(pid, runtime, span)?;
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let number = inferior.next_runtime_assignment.saturating_add(1);
         inferior.next_runtime_assignment = number;
         inferior.runtime_assignment = Some((
@@ -139,7 +139,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             begun
         })?;
 
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.assignment = Some(PendingAssignment {
                 reply: None,
                 thread: pid,
@@ -163,7 +163,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the runtime `runtime` is driven through its inspector, which
     /// makes its assignments, rather than an agent.
     fn inspects(&self, runtime: RuntimeId) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             inferior.inspectors.has(runtime)
                 && self
                     .runtimes(inferior)
@@ -184,7 +184,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         value: Assigned<Place>,
         span: Span,
     ) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let number = inferior.next_runtime_assignment.saturating_add(1);
         let assignment = self
             .javascript_assignment(
@@ -220,7 +220,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Err(error);
             }
         };
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.next_runtime_assignment = number;
             inferior.assignment = Some(PendingAssignment {
                 reply: None,
@@ -246,8 +246,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// why, not.
     pub(super) fn javascript_assignment_ended(&mut self, made: bool, failure: Option<Arc<str>>) {
         if let Some(pending) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.assignment.as_mut())
         {
             pending.made |= made;
@@ -262,7 +262,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// thread, takes commands there, and the thread is the interpreter's
     /// only one, of an interpreter that runs one thread at a time.
     fn assignable(&self, pid: Pid, runtime: RuntimeId, span: Span) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let bound = self
             .runtimes(inferior)
             .into_iter()
@@ -330,8 +330,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Holds an assignment's request until the stop that ends it.
     pub(super) fn await_assignment(&mut self, reply: Reply<Evaluation>) {
         let pending = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.assignment.as_mut());
         match pending {
             Some(pending) => pending.reply = Some(reply),
@@ -351,7 +351,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         number: u64,
         failure: Option<Arc<str>>,
     ) -> Option<StopReason> {
-        let inferior = self.inferior.as_mut()?;
+        let inferior = self.session.inferior_mut()?;
         let active = inferior.active.as_ref()?;
         let ActiveKind::RuntimeAssignment {
             thread,
@@ -378,8 +378,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.end_javascript_assignments();
         // Only an agent is armed with an assignment.
         let runtime = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .filter(|inferior| inferior.runtime_assignment.is_some())
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match active.kind {
@@ -400,16 +400,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         }
         let Some((thread, frame)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.assignment.as_ref())
             .map(|pending| (pending.thread, pending.frame))
         else {
             return;
         };
         let Some((stop_id, context)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.public_stop.as_ref())
             .map(|stop| (stop.id, stop.selected))
         else {
@@ -422,8 +422,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
         if let Some(stop) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.public_stop.as_mut())
         {
             stop.selected_frames.insert(context, id);
@@ -435,8 +435,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the agent made it; otherwise with why not.
     pub(super) fn answer_assignment(&mut self, stop_id: StopId, reason: &StopReason) {
         let Some(pending) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.assignment.take())
         else {
             return;
@@ -517,7 +517,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         expect(unused_variables, reason = "only recorded")
     )]
     fn disarm_runtime_assignment(&mut self, runtime: RuntimeId) {
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.runtime_assignment = None;
         }
 

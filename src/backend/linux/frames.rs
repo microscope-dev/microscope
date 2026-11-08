@@ -38,7 +38,7 @@ use super::{
 
 impl<P: InspectionOps> Controller<P> {
     pub(super) fn presentation_for_stopped_thread(&self, pid: Pid) -> Result<FramePresentation> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, inferior.public_stop.as_ref().map(|stop| stop.id))?;
         validate_stopped_thread(inferior, pid)?;
         let stop = inferior.public_stop.as_ref().ok_or(Error::NotStopped)?;
@@ -59,7 +59,7 @@ impl<P: InspectionOps> Controller<P> {
         pid: Pid,
         reason: Option<&StopReason>,
     ) -> Result<FramePresentation> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let registers = self.ptrace.registers(pid)?;
         let instruction = VirtualAddress::new(registers.rip);
         let physical = || FramePresentation {
@@ -233,7 +233,7 @@ impl<P: InspectionOps> Controller<P> {
         stop_id: StopId,
         address: VirtualAddress,
     ) -> Result<AddressDescription> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         validate_image_current(inferior)?;
         let modules = self.unwind_modules(inferior);
@@ -724,7 +724,7 @@ impl<P: InspectionOps> Controller<P> {
             return owner.thread == pid;
         };
 
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             self.current_task(inferior, pid)
                 .is_some_and(|current| current == Ok(Some(task)))
         })
@@ -732,8 +732,8 @@ impl<P: InspectionOps> Controller<P> {
 
     /// How the stacks a stopped thread runs on are seen at this stop.
     pub(super) fn stack_view(&self, pid: Pid) -> StackView {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| self.task_stack(inferior, pid))
             .map_or_else(
                 || StackView::thread(pid),
@@ -787,7 +787,7 @@ impl<P: InspectionOps> Controller<P> {
             .resolve_frame(inferior, &root, frame)?
             .frame
             .ok_or(Error::AmbiguousInlineFrame)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         inferior
             .public_stop
@@ -806,12 +806,12 @@ impl<P: InspectionOps> Controller<P> {
         stop_id: StopId,
         context: ExecutionContext,
     ) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let root = self.stack_root(stop_id, context)?;
         let thread = root.thread();
         let presentation = self.root_presentation(&root)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let stop = inferior.public_stop.as_mut().ok_or(Error::NotStopped)?;
         if let (Some(pid), Some(presentation)) = (thread, presentation) {
             stop.presentations.insert(pid, presentation);

@@ -22,6 +22,7 @@ use super::frames::{default_inline_visible_count, frame_lookup_address};
 use super::memory::{MemoryAccessError, read_logical_memory_with};
 use super::modules::{ModuleMapping, parse_maps};
 use super::native::{InspectionOps, LinuxTraceOps, interrupt_outcome, queued_in_status};
+use super::session::Startup;
 
 use super::*;
 
@@ -406,12 +407,17 @@ fn sectionless_elf() -> Arc<[u8]> {
 #[test]
 fn pause_during_launch_completes_at_the_initial_exec_stop() {
     let mut harness = watch_harness(1);
-    harness.controller.inferior = None;
+    harness.controller.session = Session::idle();
     let (launch_reply, launch_result) = tokio::sync::oneshot::channel();
     harness
         .controller
         .start(Start::Launch(LaunchOptions::default(), launch_reply));
-    let pid = harness.controller.inferior.as_ref().expect("launched").tgid;
+    let pid = harness
+        .controller
+        .session
+        .inferior()
+        .expect("launched")
+        .tgid;
 
     assert_eq!(
         harness
@@ -482,8 +488,8 @@ fn virtual_inline_step_emits_a_new_stop_without_native_operations() {
 
     let stop = harness
         .controller
-        .inferior
-        .as_ref()
+        .session
+        .inferior()
         .and_then(|inferior| inferior.public_stop.as_ref())
         .expect("new public stop");
 
@@ -1608,7 +1614,7 @@ impl WatchHarness {
     }
 
     fn inferior(&mut self) -> &mut Inferior {
-        self.controller.inferior.as_mut().expect("inferior")
+        self.controller.session.inferior_mut().expect("inferior")
     }
 
     /// Makes the process one the debugger attached to.
@@ -1618,8 +1624,8 @@ impl WatchHarness {
 
     pub(super) fn stop_id(&self) -> StopId {
         self.controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.public_stop.as_ref())
             .expect("a public stop")
             .id
@@ -1701,8 +1707,8 @@ impl WatchHarness {
 
     fn thread(&mut self, pid: Pid) -> &mut TraceThread {
         self.controller
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.threads.get_mut(&pid))
             .expect("harness thread exists")
     }
@@ -1721,7 +1727,7 @@ impl WatchHarness {
 
     /// Marks every thread running inside a process-wide continue.
     pub(super) fn start_continue(&mut self) {
-        let inferior = self.controller.inferior.as_mut().expect("inferior");
+        let inferior = self.controller.session.inferior_mut().expect("inferior");
         inferior.public_stop = None;
         inferior.active = Some(ActiveExecution {
             id: ExecutionId::new(2),
@@ -1741,8 +1747,8 @@ impl WatchHarness {
     pub(super) fn settle_requested_stops(&mut self) {
         let requested = self
             .controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .expect("inferior")
             .threads
             .iter()
@@ -1819,8 +1825,8 @@ impl WatchHarness {
 
     fn public_reason(&self) -> Option<StopReason> {
         self.controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.public_stop.as_ref())
             .map(|stop| stop.reason.clone())
     }
@@ -1894,7 +1900,7 @@ fn watch_harness_of(thread_count: i32, image: &Arc<ModuleImage>) -> WatchHarness
     };
 
     inferior.thread_mut(pid).expect("first thread").reason = Some(StopReason::Pause);
-    controller.inferior = Some(inferior);
+    controller.session = Session::live(inferior);
     WatchHarness {
         controller,
         events: event_receiver,
@@ -1977,7 +1983,7 @@ fn a_failure_on_any_thread_restores_every_thread_and_publishes_nothing() {
         }
 
         assert_eq!(harness.watch_events(), 0);
-        let inferior = harness.controller.inferior.as_ref().expect("inferior");
+        let inferior = harness.controller.session.inferior().expect("inferior");
         assert_eq!(
             inferior
                 .watch
@@ -2073,8 +2079,8 @@ fn readback_mismatches_report_unavailable_hardware_and_arm_nothing() {
     assert!(
         harness
             .controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .expect("inferior")
             .watch
             .watchpoints
@@ -2366,7 +2372,7 @@ fn a_hit_while_stepping_over_a_breakpoint_completes_the_repair_and_stops() {
     };
 
     assert_eq!(hits[0].watchpoint, watchpoint.id);
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(inferior.repairs.is_empty());
     assert!(
         inferior.breakpoints[&site].installed,
@@ -2479,7 +2485,7 @@ fn a_failed_disarm_still_detaches_and_publishes_the_detach() {
         );
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     let detached = std::iter::from_fn(|| harness.events.try_recv().ok())
         .filter(|event| matches!(event, DebuggerEvent::InferiorDetached { .. }))
         .count();
@@ -2555,7 +2561,7 @@ fn detaching_a_process_killed_from_outside_succeeds() {
     harness.controller.begin_shutdown(Some(reply));
     let result = result.blocking_recv().expect("shutdown reply");
     assert!(result.is_ok(), "{result:?}");
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     let detached = std::iter::from_fn(|| harness.events.try_recv().ok())
         .filter(|event| matches!(event, DebuggerEvent::InferiorDetached { .. }))
         .count();
@@ -2616,7 +2622,7 @@ fn a_failure_that_detaches_an_attached_process_ends_the_controller() {
         .controller
         .handle_message(ControllerMessage::Wait(unowned));
     assert!(
-        harness.controller.inferior.is_none(),
+        harness.controller.session.inferior().is_none(),
         "the process was detached"
     );
     assert!(!keeps_running, "the controller ends");
@@ -2705,7 +2711,7 @@ fn a_process_killed_while_its_temporary_breakpoint_is_deleted_reports_its_death(
         "no detach is reported: {published:?}"
     );
     assert!(
-        harness.controller.inferior.is_none(),
+        harness.controller.session.inferior().is_none(),
         "the process is reaped"
     );
     assert!(ended, "the controller ends");
@@ -2749,7 +2755,7 @@ fn a_breakpoint_a_dying_process_cannot_take_is_not_taken_back() {
     let breakpoint = two_location_breakpoint();
     *harness.trace().kill_point.borrow_mut() = Some((pid, "install_breakpoint", 1));
     let controller = &mut harness.controller;
-    let inferior = controller.inferior.as_mut().expect("inferior");
+    let inferior = controller.session.inferior_mut().expect("inferior");
     let error = breakpoints::install_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
         .expect_err("the second trap fails");
     assert!(is_vanished_tracee(&error), "{error:?}");
@@ -2846,7 +2852,7 @@ fn a_process_killed_while_its_attach_plants_a_breakpoint_reports_its_death() {
         "no detach is reported: {published:?}"
     );
     assert!(
-        harness.controller.inferior.is_none(),
+        harness.controller.session.inferior().is_none(),
         "the process is reaped"
     );
     assert!(ended, "the controller ends");
@@ -2893,7 +2899,7 @@ fn assert_reported_killed(harness: &mut WatchHarness, pid: Pid) {
         "no detach is reported: {published:?}"
     );
     assert!(
-        harness.controller.inferior.is_none(),
+        harness.controller.session.inferior().is_none(),
         "the process is reaped"
     );
 }
@@ -2941,7 +2947,7 @@ fn a_rollback_a_dying_process_cannot_take_reports_its_death() {
         let pid = harness.threads[0];
         let breakpoint = two_location_breakpoint();
         let controller = &mut harness.controller;
-        let inferior = controller.inferior.as_mut().expect("inferior");
+        let inferior = controller.session.inferior_mut().expect("inferior");
         if failing == "remove_breakpoint" {
             breakpoints::install_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
                 .expect("installed");
@@ -2950,7 +2956,7 @@ fn a_rollback_a_dying_process_cannot_take_reports_its_death() {
         *harness.trace().fail_point.borrow_mut() = Some((failing, 1, Errno::EIO));
         *harness.trace().kill_point.borrow_mut() = Some((pid, killing, 0));
         let controller = &mut harness.controller;
-        let inferior = controller.inferior.as_mut().expect("inferior");
+        let inferior = controller.session.inferior_mut().expect("inferior");
         let error = if failing == "install_breakpoint" {
             breakpoints::install_logical_breakpoint(&controller.ptrace, inferior, &breakpoint)
         } else {
@@ -3145,7 +3151,7 @@ fn an_attached_stop_collects_traps_queued_behind_its_interrupt() {
         harness.public_reason(),
         Some(StopReason::Watchpoint { ref hits }) if hits[0].watchpoint == watchpoint.id
     ));
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
 
     for pid in [first, second] {
         assert!(matches!(
@@ -3312,8 +3318,9 @@ impl WatchHarness {
     /// interrupted them, and returns the attach's reply.
     fn begin_attach(&mut self) -> tokio::sync::oneshot::Receiver<Result<StopId>> {
         let (reply, attached) = tokio::sync::oneshot::channel();
-        self.controller.attach_reply = Some(reply);
-        let inferior = self.controller.inferior.as_mut().expect("inferior");
+        let traced = self.controller.session.traced_mut().expect("traced");
+        traced.startup = Some(Startup::Attach { reply, rescans: 0 });
+        let inferior = &mut traced.inferior;
         inferior.origin = InferiorOrigin::Attached;
         inferior.public_stop = None;
         inferior.barrier = Some(StopBarrier::visible(inferior.tgid, StopReason::Attach));
@@ -3334,7 +3341,7 @@ impl WatchHarness {
 
     /// Reports `parent` stopped at its clone event for `child`.
     fn cloned(&mut self, parent: Pid, child: Pid) -> Result<()> {
-        let tgid = self.controller.inferior.as_ref().expect("inferior").tgid;
+        let tgid = self.controller.session.inferior().expect("inferior").tgid;
         self.trace().clone.replace(Some((child, tgid)));
         self.event(parent, libc::PTRACE_EVENT_CLONE)
     }
@@ -3368,7 +3375,7 @@ fn an_attach_traces_threads_created_while_their_creators_were_seized() {
         .expect("attach replied")
         .expect("attached");
     assert_eq!(harness.public_reason(), Some(StopReason::Attach));
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert_eq!(
         inferior.threads.keys().copied().collect::<Vec<_>>(),
         [leader, untraced]
@@ -3668,7 +3675,7 @@ fn a_fork_whose_parent_is_killed_before_its_event_still_cleans_the_child() {
         assert!(harness.controller.handle_wait(status));
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     let actions = harness.trace().take_actions();
     assert!(
         actions.contains(&format!("write_word {child} {HIT_SITE:#x} 0x90")),
@@ -3735,8 +3742,11 @@ fn a_fork_child_still_starting_when_its_parent_exits_is_released_not_killed() {
     }
 
     // The program is gone, but the controller still releases its child.
-    assert!(harness.controller.inferior.is_none());
-    assert!(harness.controller.orphans.is_some());
+    assert!(harness.controller.session.inferior().is_none());
+    assert!(matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
     harness.trace().take_actions();
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
     assert!(
@@ -3751,7 +3761,10 @@ fn a_fork_child_still_starting_when_its_parent_exits_is_released_not_killed() {
             format!("detach {child} None"),
         ]
     );
-    assert!(harness.controller.orphans.is_none());
+    assert!(!matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
 }
 
 #[test]
@@ -3784,8 +3797,11 @@ fn a_fork_child_whose_event_was_lost_is_found_as_its_parent_exits() {
         actions.contains(&format!("detach {child} None")),
         "{actions:?}"
     );
-    assert!(harness.controller.inferior.is_none());
-    assert!(harness.controller.orphans.is_none());
+    assert!(harness.controller.session.inferior().is_none());
+    assert!(!matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
 }
 
 /// After a panic, an attached process is released as a detach would:
@@ -3840,7 +3856,7 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
         assert!(actions.contains(&expected), "{expected} in {actions:#?}");
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
 }
 
 /// After a panic, a thread that an interrupt stopped just after it executed
@@ -3961,7 +3977,7 @@ fn a_shutdown_requested_during_another_is_answered_when_it_ends() {
     harness.attached();
     harness.controller.begin_shutdown(None);
     assert!(
-        harness.controller.inferior.is_none(),
+        harness.controller.session.inferior().is_none(),
         "the stopped process is detached at once"
     );
     let (reply, mut result) = tokio::sync::oneshot::channel();
@@ -3985,7 +4001,7 @@ fn a_kill_during_a_detach_is_answered_when_it_ends() {
     harness.controller.kill(reply);
     harness.controller.begin_shutdown(None);
     assert!(
-        harness.controller.inferior.is_none(),
+        harness.controller.session.inferior().is_none(),
         "the process is detached"
     );
     assert!(
@@ -4005,14 +4021,14 @@ fn a_vanished_attached_process_leaves_its_killed_child_to_be_reaped() {
     let inferior = harness.inferior();
     inferior.killed_children.insert(child);
     inferior.threads.clear();
-    harness.controller.shutting_down = true;
+    harness.controller.shutdown = Some(Shutdown::default());
     harness.controller.detach_when_stopped().expect("detach");
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     assert_eq!(
         harness
             .controller
-            .orphans
-            .as_ref()
+            .session
+            .orphans_mut()
             .map(|orphans| orphans.killed.clone()),
         Some(BTreeSet::from([child]))
     );
@@ -4050,7 +4066,7 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
     }
 
     assert!(
-        harness.controller.orphans.is_some(),
+        matches!(harness.controller.session, Session::Draining { .. }),
         "the controller waits to release the child"
     );
     harness
@@ -4065,7 +4081,10 @@ fn a_shutdown_meeting_a_superseded_fork_event_still_releases_the_child() {
         actions.contains(&format!("detach {child} None")),
         "{actions:?}"
     );
-    assert!(harness.controller.orphans.is_none());
+    assert!(!matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
 }
 
 /// After a panic, a fork child still on its way to its first stop when its
@@ -4094,8 +4113,11 @@ fn a_panic_releases_orphaned_fork_children() {
             assert!(harness.controller.handle_wait(status));
         }
 
-        assert!(harness.controller.inferior.is_none());
-        assert!(harness.controller.orphans.is_some());
+        assert!(harness.controller.session.inferior().is_none());
+        assert!(matches!(
+            harness.controller.session,
+            Session::Draining { .. }
+        ));
         harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
         harness.trace().take_actions();
 
@@ -4109,7 +4131,10 @@ fn a_panic_releases_orphaned_fork_children() {
             ],
             "attached {attached}"
         );
-        assert!(harness.controller.orphans.is_none(), "attached {attached}");
+        assert!(
+            !matches!(harness.controller.session, Session::Draining { .. }),
+            "attached {attached}"
+        );
     }
 }
 
@@ -4137,7 +4162,7 @@ fn a_panic_kills_a_launched_process_unless_the_session_releases_it() {
             super::Ending::Kill => assert!(killed && !released, "{actions:#?}"),
             super::Ending::Release => assert!(released && !killed, "{actions:#?}"),
         }
-        assert!(harness.controller.inferior.is_none());
+        assert!(harness.controller.session.inferior().is_none());
     }
 }
 
@@ -4303,7 +4328,10 @@ fn a_launch_while_fork_children_are_released_waits_for_them() {
         harness.controller.handle_wait(status);
     }
 
-    assert!(harness.controller.orphans.is_some());
+    assert!(matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
     harness.trace().take_actions();
 
     let (reply, mut launched) = tokio::sync::oneshot::channel();
@@ -4324,8 +4352,11 @@ fn a_launch_while_fork_children_are_released_waits_for_them() {
         Some(actions.len() - 1),
         "the child is released, and then the program launched: {actions:?}"
     );
-    assert!(harness.controller.orphans.is_none());
-    assert!(harness.controller.inferior.is_some());
+    assert!(!matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
+    assert!(harness.controller.session.inferior().is_some());
 }
 
 #[test]
@@ -4357,9 +4388,9 @@ fn a_fork_child_that_dies_as_it_is_released_is_awaited_until_its_exit() {
 
     // The program is gone, but its child is still traced: it stops at its
     // exit event, which waits for the tracer, and only then exits.
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     assert!(
-        harness.controller.orphans.is_some(),
+        matches!(harness.controller.session, Session::Draining { .. }),
         "the killed child is still traced"
     );
     harness.trace().take_actions();
@@ -4378,7 +4409,7 @@ fn a_fork_child_that_dies_as_it_is_released_is_awaited_until_its_exit() {
             .handle_wait(WaitEvent::Signaled(child, Signal::SIGKILL, false))
     );
     assert!(
-        harness.controller.orphans.is_none(),
+        !matches!(harness.controller.session, Session::Draining { .. }),
         "no child is left to wait for"
     );
 }
@@ -4401,7 +4432,7 @@ fn a_fork_event_whose_thread_is_killed_as_its_message_is_read_is_superseded() {
         libc::PTRACE_EVENT_FORK,
     )));
     assert!(harness.trace().kill_point.borrow().is_none());
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(
         inferior.fork_children.is_empty(),
         "no child is expected: {:?}",
@@ -4471,7 +4502,7 @@ fn continuing_tolerates_threads_killed_by_a_siblings_exit() {
             .expect("exit");
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
 }
 
 #[test]
@@ -4502,7 +4533,7 @@ fn a_hit_during_a_pause_outranks_the_pause() {
 
     assert_eq!(hits[0].watchpoint, watchpoint.id);
     assert_eq!(hits[0].thread, debug_thread_id(first));
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert_eq!(inferior.threads[&second].reason, None);
     assert!(
         inferior.threads[&first].debugger_stop_pending,
@@ -4569,7 +4600,7 @@ fn a_new_thread_killed_out_of_its_first_stop_is_retired_by_its_exit() {
             .expect("exit");
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
 }
 
 #[test]
@@ -4674,7 +4705,7 @@ fn a_stop_whose_thread_sigkill_ends_while_it_is_handled_waits_for_the_exit() {
         assert!(harness.controller.handle_wait(status));
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
 }
 
 #[test]
@@ -4803,7 +4834,7 @@ fn a_launch_killed_at_its_first_stop_ends_in_its_exit() {
             .controller
             .handle_wait(WaitEvent::Signaled(pid, Signal::SIGKILL, false))
     );
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     assert!(
         !harness.trace().took("kill"),
         "the debugger does not give up on the program"
@@ -4865,7 +4896,7 @@ fn repairs_after_the_debuggers_own_kill_are_left_undone() {
         assert!(harness.controller.handle_wait(status));
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     assert!(matches!(killed.try_recv(), Ok(Ok(()))), "the kill succeeds");
     let kills = harness
         .trace()
@@ -4895,7 +4926,7 @@ fn a_repair_whose_process_dies_leaves_its_trap_unrestored() {
         assert!(harness.controller.handle_wait(status));
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     assert!(
         !harness.trace().took("kill"),
         "the debugger does not give up on the program"
@@ -4982,7 +5013,7 @@ impl WatchHarness {
     }
 
     pub(super) fn resume(&mut self) -> Result<ExecutionId> {
-        let inferior = self.controller.inferior.as_ref().expect("inferior");
+        let inferior = self.controller.session.inferior().expect("inferior");
         let process = process_id(inferior.tgid);
         let stop = inferior.public_stop.as_ref().expect("public stop").id;
         self.controller.begin_execution(
@@ -5142,8 +5173,8 @@ fn a_co_hit_meeting_its_condition_turns_an_internal_stop_visible() {
     assert_eq!(harness.public_reason(), Some(site_hit(2)));
     let stop = harness
         .controller
-        .inferior
-        .as_ref()
+        .session
+        .inferior()
         .and_then(|inferior| inferior.public_stop.as_ref())
         .expect("published stop");
     assert_eq!(stop.triggering_thread, second);
@@ -5174,7 +5205,7 @@ fn frames_ignore_a_breakpoint_removed_while_a_sibling_exits() {
         .controller
         .remove_breakpoint(BreakpointId::new(1))
         .expect("remove");
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     let instances = harness
         .controller
         .breakpoint_code_instances(inferior, VirtualAddress::new(HIT_SITE))
@@ -5413,7 +5444,7 @@ fn a_hit_on_a_breakpoint_removed_while_running_is_dropped() {
             .any(|event| matches!(event, DebuggerEvent::InferiorStopped { .. })),
         "a removed breakpoint's hit is never published"
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(inferior.breakpoints.is_empty());
     assert!(
         inferior
@@ -5563,7 +5594,7 @@ fn another_thread_at_a_stepping_plans_site_is_stepped_over_while_the_others_are_
             .any(|event| matches!(event, DebuggerEvent::InferiorStopped { .. })),
         "the stepping plan's site is never reported for another thread"
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(inferior.barrier.is_none() && inferior.repairs.is_empty());
     assert_eq!(
         inferior.active.as_ref().map(|active| active.id),
@@ -5638,7 +5669,7 @@ fn a_steps_site_shared_with_a_breakpoint_edited_while_running(
         !actions.contains(&format!("step {stepping}")),
         "the step stops before the instruction its site covers: {actions:?}"
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(inferior.breakpoints.is_empty(), "every trap is gone");
 }
 
@@ -6685,8 +6716,8 @@ fn a_managed_change_not_yet_armed_is_not_shown_ready() {
     };
     harness
         .controller
-        .inferior
-        .as_mut()
+        .session
+        .inferior_mut()
         .expect("inferior")
         .managed
         .mark_stale(location.runtime);
@@ -7379,7 +7410,7 @@ fn ending_a_plan_removes_only_the_sites_it_still_owns() {
     {
         let controller = &mut harness.controller;
         let ptrace = &controller.ptrace;
-        let inferior = controller.inferior.as_mut().expect("inferior");
+        let inferior = controller.session.inferior_mut().expect("inferior");
 
         for site in [0x20, 0x30, 0x40] {
             breakpoints::install_plan_breakpoint(ptrace, inferior, address(site), ending)
@@ -7411,7 +7442,7 @@ fn ending_a_plan_removes_only_the_sites_it_still_owns() {
         .expect("cleanup");
 
     assert_eq!(harness.trace().take_actions(), ["remove_site 0x30"]);
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     let owners = inferior
         .breakpoints
         .iter()
@@ -7469,7 +7500,7 @@ fn a_hit_on_a_watchpoint_removed_while_running_is_dropped() {
             .iter()
             .any(|event| matches!(event, DebuggerEvent::WatchpointsChanged { .. }))
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(inferior.watch.watchpoints.is_empty() && inferior.barrier.is_none());
     assert!(
         inferior.threads.values().all(
@@ -7580,7 +7611,7 @@ fn a_thread_an_internal_stop_cannot_arm_stops_visibly() {
         )),
         "the thread that can't be armed is stopped visibly"
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(
         inferior
             .threads
@@ -7630,7 +7661,7 @@ fn a_store_that_changes_nothing_resumes_only_its_own_thread() {
         "no sibling stops for a store that changed nothing: {actions:?}"
     );
     assert_eq!(harness.published(), []);
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(inferior.barrier.is_none());
     assert!(inferior.threads.values().all(|thread| {
         thread.state == NativeThreadState::Running && thread.watch_hits.is_empty()
@@ -7715,7 +7746,7 @@ fn declined_watch_hits_are_counted_and_resume_only_their_thread() {
             }]),
         })
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert_eq!(
         inferior.watch.watchpoints[&watchpoint.id]
             .watchpoint
@@ -7757,8 +7788,8 @@ fn a_thread_killed_while_its_condition_is_evaluated_reports_no_condition_failure
         );
         let counted = harness
             .controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.watch.watchpoints.get(&watchpoint.id))
             .is_some_and(|record| record.watchpoint.hit_count == 1);
         assert!(counted || killed, "the hit was judged at {killed_at}");
@@ -7809,7 +7840,7 @@ fn a_declined_change_keeps_the_bytes_a_siblings_pending_hit_reports_from() {
             }]),
         })
     );
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     let record = &inferior.watch.watchpoints[&watchpoint.id];
     assert_eq!(record.watchpoint.hit_count, 2);
     assert_eq!(record.observed, Some(word(10)));
@@ -7868,7 +7899,7 @@ fn a_change_undone_before_every_thread_stopped_lets_a_stepi_finish_once() {
         .filter(|event| matches!(event, DebuggerEvent::InferiorStopped { .. }))
         .count();
     assert_eq!(stops, 1);
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(
         inferior
             .threads
@@ -7901,7 +7932,7 @@ fn a_pause_survives_the_change_it_coincided_with_being_undone() {
 
     // The change is gone, but the client still asked for a stop.
     assert_eq!(harness.public_reason(), Some(StopReason::Pause));
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(
         inferior
             .threads
@@ -7973,7 +8004,7 @@ fn an_unchanged_store_while_stepping_over_a_breakpoint_finishes_the_repair_and_r
             "{code}: {actions:?}"
         );
         assert_eq!(harness.published(), []);
-        let inferior = harness.controller.inferior.as_ref().expect("inferior");
+        let inferior = harness.controller.session.inferior().expect("inferior");
         assert!(inferior.repairs.is_empty());
         assert_eq!(inferior.threads[&repairing].stopped_at_breakpoint, None);
     }
@@ -8043,8 +8074,8 @@ fn a_failed_read_of_watched_bytes_is_an_error_rather_than_a_change() {
     assert_eq!(
         harness
             .controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .expect("inferior")
             .watch
             .watchpoints[&watchpoint.id]
@@ -8102,7 +8133,7 @@ fn an_unchanged_store_during_a_pause_gives_its_thread_no_reason() {
     );
     harness.settle_requested_stops();
     assert_eq!(harness.public_reason(), Some(StopReason::Pause));
-    let inferior = harness.controller.inferior.as_ref().expect("inferior");
+    let inferior = harness.controller.session.inferior().expect("inferior");
     assert_eq!(inferior.threads[&second].reason, None);
     assert!(inferior.threads[&second].debugger_stop_pending);
 }
@@ -8167,7 +8198,7 @@ fn a_step_whose_main_thread_exited_alone_runs_its_siblings_on() {
         actions.contains(&format!("continue {repairing} None")),
         "{actions:?}"
     );
-    assert!(harness.controller.inferior.is_some());
+    assert!(harness.controller.session.inferior().is_some());
 }
 
 /// A thread waiting to step over its breakpoint that is exiting meanwhile,
@@ -8298,7 +8329,12 @@ fn a_discarded_signal_during_a_repair_repeats_the_repair_step() {
 fn threads_ending_before_their_announcement_never_become_live() {
     let mut harness = watch_harness(2);
     let (leader, sibling) = (harness.threads[0], harness.threads[1]);
-    let tgid = harness.controller.inferior.as_ref().expect("inferior").tgid;
+    let tgid = harness
+        .controller
+        .session
+        .inferior()
+        .expect("inferior")
+        .tgid;
     harness.start_continue();
     harness.trace().take_actions();
     let unannounced = Pid::from_raw(5009);
@@ -8318,8 +8354,8 @@ fn threads_ending_before_their_announcement_never_become_live() {
     assert!(
         !harness
             .controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .expect("inferior")
             .threads
             .contains_key(&unannounced),
@@ -8346,7 +8382,7 @@ fn threads_ending_before_their_announcement_never_become_live() {
         .controller
         .process_wait(WaitEvent::Exited(leader, 0))
         .expect("the leader's exit");
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     assert!(harness.published().iter().any(|event| matches!(
         event,
         DebuggerEvent::InferiorExited {
@@ -8393,7 +8429,7 @@ fn lost_frame_harness() -> WatchHarness {
     let execution = ExecutionId::new(2);
     let controller = &mut harness.controller;
     controller.main.unwind = Arc::new(LostUnwindInfo);
-    let inferior = controller.inferior.as_mut().expect("inferior");
+    let inferior = controller.session.inferior_mut().expect("inferior");
     controller
         .ptrace
         .install_breakpoint(
@@ -8519,8 +8555,8 @@ fn a_step_that_loses_its_frame_stops_explicitly_and_leaves_the_program_alone() {
     assert!(
         harness
             .controller
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .expect("inferior")
             .breakpoints
             .values()
@@ -8549,7 +8585,7 @@ fn an_edit_waiting_for_an_internal_stop_is_answered_when_the_process_ends_first(
             .expect("an exit is handled");
     }
 
-    assert!(harness.controller.inferior.is_none());
+    assert!(harness.controller.session.inferior().is_none());
     let breakpoint = added
         .try_recv()
         .expect("the edit is answered")
@@ -9071,7 +9107,7 @@ fn nested_presentations_share_one_interval_between_looks_for_run_control() {
     let harness = watch_harness(1);
     let controller = &harness.controller;
     let pid = harness.threads[0];
-    let inferior = controller.inferior.as_ref().expect("inferior");
+    let inferior = controller.session.inferior().expect("inferior");
     let resolved = ResolvedFrame {
         id: StackFrameId::INNERMOST,
         presented: PresentedFrame::Physical,
@@ -9433,6 +9469,9 @@ fn a_handed_over_child_is_not_taken_for_a_lost_one_as_its_parent_exits() {
             .any(|action| action.contains(&child.to_string())),
         "{actions:?}"
     );
-    assert!(harness.controller.inferior.is_none());
-    assert!(harness.controller.orphans.is_none());
+    assert!(harness.controller.session.inferior().is_none());
+    assert!(!matches!(
+        harness.controller.session,
+        Session::Draining { .. }
+    ));
 }

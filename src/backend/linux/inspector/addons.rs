@@ -64,7 +64,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Where `runtime`, loaded, enters a native function a step into a
     /// call of one may end in.
     fn native_entry(&self, runtime: RuntimeId) -> Option<VirtualAddress> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let bound = self
             .runtimes(inferior)
             .into_iter()
@@ -91,7 +91,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             record!("V8 enters no Node-API function microscope can find; a step steps over them");
             return Ok(());
         };
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         let paused = inferior
@@ -119,8 +119,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
     ) -> bool {
         let Some(active) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
         else {
             return false;
@@ -154,8 +154,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return true;
         }
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return true;
@@ -181,7 +181,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if !matches!(kind, StepKind::OverSource | StepKind::Out) {
             return Ok(false);
         }
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
         if !inferior.inspectors.records.values().any(|inspector| {
@@ -198,8 +198,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The runtime whose inspector runs a step back to JavaScript for
     /// `pid`, if one does.
     pub(in crate::backend::linux) fn returns_through(&self, pid: Pid) -> Option<RuntimeId> {
-        self.inferior
-            .as_ref()?
+        self.session
+            .inferior()?
             .inspectors
             .records
             .iter()

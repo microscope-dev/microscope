@@ -151,8 +151,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the runtime has a function breakpoint. Returns whether one runs.
     pub(super) fn search_functions(&mut self, runtime: RuntimeId, session: &Session) -> bool {
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return false;
@@ -172,8 +172,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Whether `id` is a request of a search in `runtime`.
     pub(super) fn searches(&self, runtime: RuntimeId, id: RequestId) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
             .is_some_and(|inspector| {
                 inspector.isolates.values().any(|isolate| {
@@ -194,8 +194,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         result: std::result::Result<serde_json::Value, CdpError>,
     ) -> Result<()> {
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return Ok(());

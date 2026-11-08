@@ -378,7 +378,11 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Plants each loaded runtime's target entry and cleanup checkpoints.
     pub(super) fn sync_inspector_hooks(&mut self) -> Result<()> {
         self.sync_step_gates(true)?;
-        let Some(inferior) = self.inferior.as_ref().filter(|inferior| !inferior.observer) else {
+        let Some(inferior) = self
+            .session
+            .inferior()
+            .filter(|inferior| !inferior.observer)
+        else {
             return Ok(());
         };
         let entries = self
@@ -390,7 +394,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let planted = inferior.inspectors.planted();
         let needed = entries
             .keys()
@@ -453,7 +457,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// it (F12). A launched node opens its own, through the preload, and
     /// what may keep it from doing so is noted.
     pub(super) fn open_inspectors(&mut self) {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
         let pid = inferior.tgid;
@@ -468,7 +472,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             return;
         }
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
         if inferior
@@ -482,7 +486,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         for bound in runtimes {
             let runtime = bound.id;
             if bound.model.inspector_hook().is_none()
-                || self.inferior.as_ref().is_some_and(|inferior| {
+                || self.session.inferior().is_some_and(|inferior| {
                     inferior
                         .inspectors
                         .records
@@ -492,7 +496,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             {
                 continue;
             }
-            let Some(inferior) = self.inferior.as_ref() else {
+            let Some(inferior) = self.session.inferior() else {
                 return;
             };
             let existing = self.with_runtime_stop(inferior, &bound, pid, |stop| {
@@ -502,7 +506,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Ok(existing) => existing,
                 Err(reason) => {
                     self.inspector_problem(runtime, &reason);
-                    if let Some(inferior) = self.inferior.as_mut() {
+                    if let Some(inferior) = self.session.inferior_mut() {
                         inferior
                             .inspectors
                             .records
@@ -514,7 +518,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             };
             if let Some((address, target)) = existing {
-                let Some(inferior) = self.inferior.as_mut() else {
+                let Some(inferior) = self.session.inferior_mut() else {
                     return;
                 };
                 let inspector = inferior.inspectors.records.entry(runtime).or_default();
@@ -527,8 +531,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             // Do not enqueue Node's asynchronous startup before the first
             // resume: an immediate detach must leave no pending server open.
             if self
-                .inferior
-                .as_ref()
+                .session
+                .inferior()
                 .is_some_and(|inferior| inferior.active.is_some())
             {
                 self.activate_inspector(&bound, pid);
@@ -548,8 +552,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .and_then(|native| {
                 if self
-                    .inferior
-                    .as_ref()
+                    .session
+                    .inferior()
                     .and_then(|inferior| inferior.threads.get(&pid))
                     .is_none_or(|thread| {
                         thread.pending_signal.is_some() || thread.held_signal.is_some()
@@ -564,7 +568,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.ptrace
                     .open_inspector_signal(pid, native.get(), &mut interrupted)
             });
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
         if let Some(pending) = interrupted
@@ -603,7 +607,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if self.note_inspector_cleanup_hook(pid, address)? {
             return Ok(());
         }
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(&runtime) = inferior.inspectors.entries.get(&address) else {
             return Ok(());
         };
@@ -639,7 +643,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .checked_add(8)
             .ok_or_else(|| Error::RuntimeAgent("the inspector return stack overflows".into()))?;
         self.ptrace.set_registers(pid, registers)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.thread_mut(pid)?.stopped_at_breakpoint = None;
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
         if inspector.target.is_none() {
@@ -656,7 +660,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Connects to the inspector of `runtime`, whose target is known, at
     /// the process's one loopback listener.
     fn connect_inspector(&mut self, runtime: RuntimeId) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
         let known = inferior
@@ -721,8 +725,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Connects to the inspector of `runtime` listening at `address`.
     fn open_connection(&mut self, runtime: RuntimeId, address: SocketAddr) {
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return;
@@ -765,7 +769,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     fn inspector_problem(&mut self, runtime: RuntimeId, reason: &str) {
         record!("the inspector of runtime {runtime} cannot be used: {reason}");
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior
                 .inspectors
                 .records
@@ -791,8 +795,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             incoming,
         } = message;
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return Ok(());
@@ -872,8 +876,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the preload holds run on.
     fn inspector_connected(&mut self, runtime: RuntimeId) {
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return;
@@ -899,8 +903,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A release Node takes before the preload's waitForDebugger begins
         // is lost, so the release answers Node's report that it waits.
         if let Some(link) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
             .and_then(|inspector| inspector.connection.as_ref())
         {
@@ -924,8 +928,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the preload holds, or a worker waiting for its debugger.
     fn release_isolate(&self, runtime: RuntimeId, session: &Session) {
         if let Some(link) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
             .and_then(|inspector| inspector.connection.as_ref())
         {
@@ -943,7 +947,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         runtime: RuntimeId,
         params: &serde_json::Value,
     ) -> Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         if inferior.origin == super::InferiorOrigin::Attached {
@@ -978,8 +982,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.inspector_preload_acknowledged(runtime, params);
         }
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return Ok(());
@@ -1075,8 +1079,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn attach_worker(&mut self, runtime: RuntimeId, session: &Session) {
         record!("worker {session:?} attached");
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return;

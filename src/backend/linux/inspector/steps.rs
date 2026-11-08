@@ -57,8 +57,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> bool {
         let (skips, enter) = (self.step_skips.clone(), self.step_into_runtime);
         let Some(inspectors) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .map(|inferior| &mut inferior.inspectors)
         else {
             return false;
@@ -129,8 +129,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether a step V8 was told to run runs in the isolate `session`
     /// reaches.
     pub(super) fn steps_in(&self, runtime: RuntimeId, session: &Session) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime)?.step.as_ref())
             .is_some_and(|step| step.sent && step.session == *session)
     }
@@ -147,8 +147,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Option<StopReason> {
         let (runtime, session) = key;
         let step = self
-            .inferior
-            .as_mut()?
+            .session
+            .inferior_mut()?
             .inspectors
             .records
             .get_mut(runtime)?
@@ -184,7 +184,7 @@ impl<P: InspectionOps> Controller<P> {
         frame: crate::StackFrameId,
         kind: crate::StepKind,
     ) -> Option<RuntimeId> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         if !matches!(
             kind,
             crate::StepKind::IntoSource | crate::StepKind::OverSource
@@ -330,7 +330,7 @@ impl Gate {
 impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the gate of a step from a native stop holds thread `pid`.
     pub(in crate::backend::linux) fn step_gate_holds(&self, pid: Pid) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             pid == inferior.tgid
                 && inferior.inspectors.records.values().any(|inspector| {
                     let resuming = inspector
@@ -355,7 +355,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: crate::VirtualAddress,
     ) -> crate::Result<bool> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
         let Some((runtime, gate)) =
@@ -412,8 +412,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             _ => return Ok(true),
         };
         if let Some(gate) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
             .and_then(|inspector| inspector.gate.as_mut())
         {
@@ -424,7 +424,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         // a gate that passed leaves. The main thread runs as the execution
         // goes on from there.
         self.sync_step_gates(false)?;
-        if !self.step_gate_holds(self.inferior.as_ref().map_or(pid, |inferior| inferior.tgid)) {
+        if !self.step_gate_holds(
+            self.session
+                .inferior()
+                .map_or(pid, |inferior| inferior.tgid),
+        ) {
             self.queue_module_refresh()?;
         }
         Ok(true)
@@ -435,7 +439,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// gate needs any longer. A thread stopped at a trap removed runs on
     /// from it, its instruction restored.
     pub(super) fn sync_step_gates(&mut self, remove: bool) -> crate::Result<()> {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
         let needed = inferior
@@ -485,7 +489,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Lets the main thread run once no gate holds it, unless a stop is
     /// being made or the execution has ended.
     pub(super) fn release_step_gate(&mut self) -> crate::Result<()> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Ok(());
         };
         let main = inferior.tgid;

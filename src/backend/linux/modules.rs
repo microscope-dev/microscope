@@ -43,14 +43,14 @@ type NewModule = (PathBuf, LoadBias, crate::ModuleId, ModuleImageId);
 
 impl<P: InspectionOps> Controller<P> {
     pub(super) fn loaded_module(&self) -> Result<LoadedModule> {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .map(|inferior| inferior.loaded_module)
             .ok_or(Error::NotRunning)
     }
 
     pub(super) fn loaded_modules(&self) -> Result<LoadedModuleSnapshot> {
-        self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        self.session.inferior().ok_or(Error::NotRunning)?;
         Ok(LoadedModuleSnapshot {
             revision: self.revision,
             modules: self
@@ -146,7 +146,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// moved vDSO is read again; returns whether a breakpoint lost a
     /// location to them.
     pub(super) fn refresh_modules(&mut self) -> Result<bool> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
 
         // The leader may have exited before the rest of its process.
         let pid = inferior.memory_thread();

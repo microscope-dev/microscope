@@ -22,6 +22,7 @@ use super::core_dump::{
 };
 
 use super::core_files::{ModuleFile, ModuleLocator, hex, open_explicit};
+use super::session::Session;
 use super::tls::{self, ProcessServices, TlsModule};
 use super::vdso::{AT_SYSINFO_EHDR, VDSO_NAME, read_memory_image};
 use super::{
@@ -1007,7 +1008,7 @@ impl Controller<CoreTarget> {
                 (pid, thread)
             })
             .collect();
-        self.inferior = Some(Inferior {
+        let inferior = Inferior {
             public_stop: Some(PublicStop::new(
                 allocate_stop_id()?,
                 selected,
@@ -1015,7 +1016,8 @@ impl Controller<CoreTarget> {
                 BTreeMap::new(),
             )),
             ..Inferior::new(InferiorOrigin::PostMortem, tgid, main, trace_threads, None)
-        });
+        };
+        self.session = Session::live(inferior);
 
         // A dump holds no trap of the debugger's to take out of a copy.
         let anonymous: Vec<_> = self
@@ -1029,8 +1031,8 @@ impl Controller<CoreTarget> {
         self.observe_code_copies_with(selected, &anonymous, |_, _| Some(()));
 
         let presentation = self.presentation_for_thread(selected, Some(reason))?;
-        self.inferior
-            .as_mut()
+        self.session
+            .inferior_mut()
             .and_then(|inferior| inferior.public_stop.as_mut())
             .ok_or_else(|| Error::internal("the post-mortem stop exists"))?
             .presentations

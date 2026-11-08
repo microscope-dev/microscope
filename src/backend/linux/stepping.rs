@@ -44,8 +44,8 @@ use super::{
 
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn active_execution(&self) -> Result<ExecutionId> {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .map(|active| active.id)
             .ok_or(Error::NotRunning)
@@ -53,8 +53,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Whether the active step is an advance that `address` ends.
     pub(super) fn is_advance_target(&self, address: VirtualAddress) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.targets.contains(&address))
@@ -80,7 +80,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let owner = BreakpointOwner::Plan(execution);
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let retired = inferior
             .plan_sites
             .get(&execution)
@@ -100,8 +100,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if let Some(sites) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.plan_sites.get_mut(&execution))
         {
             sites.retain(|address| targets.contains(address));
@@ -112,7 +112,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// The state of the active step, if one is active.
     pub(super) fn active_step_mut(&mut self) -> Option<&mut StepStart> {
-        match &mut self.inferior.as_mut()?.active.as_mut()?.kind {
+        match &mut self.session.inferior_mut()?.active.as_mut()?.kind {
             ActiveKind::Step { start, .. } => Some(start),
             _ => None,
         }
@@ -133,7 +133,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let (process_id, execution_id, next_stop_id, presentation) = {
-            let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
             validate_process(inferior, requested_process)?;
             validate_public_stop(inferior, Some(stop_id))?;
             validate_resumable(inferior)?;
@@ -167,7 +167,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             )
         };
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let stop = inferior.public_stop.as_mut().ok_or(Error::NotStopped)?;
         inferior.next_execution = execution_id.get();
         stop.id = next_stop_id;
@@ -197,8 +197,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn start_user_step(&mut self, pid: Pid, kind: StepKind) -> Result<()> {
         let uses_plan_breakpoints = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(
@@ -254,8 +254,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn step_enters_runtime(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.enters_runtime)
@@ -289,7 +289,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let execution = self.active_execution()?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         install_plan_breakpoint(&self.ptrace, inferior, candidate, execution)?;
         if let Some(target) = call_out {
             install_plan_breakpoint(&self.ptrace, inferior, target, execution)?;
@@ -374,8 +374,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// over or out follows the runtime's calls into the program.
     pub(super) fn step_mode(&self, kind: StepKind) -> StepKind {
         let following = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(
                 |active| matches!(&active.kind, ActiveKind::Step { start, .. } if start.following),
@@ -419,8 +419,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let Some((following, frame, inlined, start_module)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, start, .. } if self.runs_step(*owner, pid) => Some((
@@ -453,7 +453,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // The step's ids name code only in the module it began in.
         let inlined = inlined.filter(|_| {
-            self.inferior.as_ref().is_some_and(|inferior| {
+            self.session.inferior().is_some_and(|inferior| {
                 start_module.unwrap_or(inferior.loaded_module).id == module.id
             })
         });
@@ -520,7 +520,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// thread's frames: where the task goes on when a frame returns,
     /// however the code between got there.
     fn frame_return_guards(&self, pid: Pid) -> BTreeSet<VirtualAddress> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return BTreeSet::new();
         };
 
@@ -548,7 +548,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// thread's own stacks, such as a runtime's scheduler, stays on the
     /// thread whatever task it serves.
     pub(super) fn step_task(&self, pid: Pid) -> Option<TaskId> {
-        match self.thread_activity(self.inferior.as_ref()?, pid)? {
+        match self.thread_activity(self.session.inferior()?, pid)? {
             ThreadActivity::Task {
                 task,
                 stack: StackSegment::Task,
@@ -565,7 +565,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return None;
         }
 
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let ActiveKind::Step { owner, .. } = &inferior.active.as_ref()?.kind else {
             return None;
         };
@@ -589,8 +589,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Moves the active step to `pid`, which now runs the step's task.
     pub(super) fn follow_step(&mut self, pid: Pid) {
         if let Some(ActiveKind::Step { owner, .. }) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.active.as_mut())
             .map(|active| &mut active.kind)
             && owner.thread != pid
@@ -604,8 +604,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn thread_is_stopped(&self, pid: Pid) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.threads.get(&pid))
             .is_some_and(|thread| matches!(thread.state, NativeThreadState::Stopped))
     }
@@ -681,8 +681,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// then judges the arrival itself.
     pub(super) fn arrival_left_to_a_lost_trap(&self, pid: Pid) -> Result<bool> {
         let Some(address) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => start.judged_by_trap,
@@ -700,8 +700,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// thread hits that trap, at `address`.
     pub(super) fn forget_trap_judgement(&mut self, pid: Pid, address: VirtualAddress) {
         let owner = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, start, .. } if start.judged_by_trap == Some(address) => {
@@ -723,8 +723,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// traversal's does. Without that evidence it goes on by single steps.
     fn guard_returned_callee(&mut self, pid: Pid) -> Result<()> {
         let plan = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
@@ -777,8 +777,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the frame the active step began in has returned, by what the
     /// step saw: see [`StepStart::returned_to`].
     fn step_frame_returned(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.returned_to.is_some())
@@ -800,8 +800,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let activation = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 // A step over begun in code no debug information describes
@@ -846,8 +846,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// repaired first: this runs once it has stepped off.
     fn retire_returned_plan(&mut self, pid: Pid) -> Result<()> {
         let plan = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } if !start.plan_addresses.is_empty() => {
@@ -905,8 +905,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let start = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => Some(start),
@@ -939,8 +939,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// a hit inside the call, returns to a frame the step has not finished.
     pub(super) fn begin_epilogue_traversal(&mut self, pid: Pid) -> Result<bool> {
         let (execution, already_traversing, start_source, start_module, kind, activation) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
@@ -1013,8 +1013,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // The line the step began on is in its own module; in another, every
         // line is another.
         let main = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .loaded_module;
         let start_source =
@@ -1045,8 +1045,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// slot agree; otherwise the step goes on by single steps.
     pub(super) fn begin_return_traversal(&mut self, pid: Pid) -> Result<bool> {
         let (execution, already_traversing, activation, start_instance, start_physical, start) =
-            self.inferior
-                .as_ref()
+            self.session
+                .inferior()
                 .and_then(|inferior| inferior.active.as_ref())
                 .and_then(|active| match &active.kind {
                     ActiveKind::Step { owner, start, .. } if self.runs_step(*owner, pid) => Some((
@@ -1150,8 +1150,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// reaches any of them, and they would then let the thread run on.
     pub(super) fn retire_epilogue_return_guard(&mut self) -> Result<()> {
         let retirement = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, kind, .. } => start
@@ -1191,8 +1191,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// tail-call guard leave it installed.
     pub(super) fn retire_return_guard(&mut self) -> Result<()> {
         let retirement = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => start
@@ -1254,7 +1254,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the thread stopped at `instruction` before an installed
     /// breakpoint's `int3`, which it has yet to hit.
     fn before_breakpoint(&self, pid: Pid, instruction: VirtualAddress) -> Result<bool> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let hit = inferior
             .threads
             .get(&pid)
@@ -1275,8 +1275,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let registers = self.ptrace.registers(pid)?;
         let start = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => Some(start),
@@ -1406,8 +1406,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Option<bool> {
         let instruction = VirtualAddress::new(registers.rip);
         let stopped_at_breakpoint = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.threads.get(&pid))
             .and_then(|thread| thread.stopped_at_breakpoint);
         if let Some(traversal) = &start.return_traversal {
@@ -1603,7 +1603,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         frame: StackFrameId,
     ) -> Result<StepStart> {
         let _span = crate::span!("step plan");
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let thread = inferior.thread(pid)?;
         if !matches!(thread.state, NativeThreadState::Stopped) {
             return Err(Error::NotStopped);
@@ -1625,7 +1625,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         kind: StepKind,
         presentation: impl FnOnce() -> Result<FramePresentation>,
     ) -> Result<StepStart> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let registers = self.ptrace.registers(pid)?;
         let located = self.located(VirtualAddress::new(registers.rip));
 
@@ -1825,7 +1825,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         instance_id: crate::CodeInstanceId,
         except: Option<&SourceLocation>,
     ) -> Result<BTreeSet<VirtualAddress>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         statements_in(
             inferior.loaded_module,
             &self.main.image,
@@ -1881,7 +1881,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         registers: &libc::user_regs_struct,
         frame: StackFrameId,
     ) -> Result<StepStart> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let resolved = self.resolve_frame(inferior, &StackRoot::of_thread(pid), frame)?;
         let selected = resolved.frame.as_ref().ok_or(Error::AmbiguousInlineFrame)?;
 
@@ -1978,7 +1978,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         native: &libc::user_regs_struct,
     ) -> Result<VirtualAddress> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         self.stack_unwinder(inferior, pid, native)
             .frame_cfa(&innermost_frame(native))
             .map_err(|reason| backend_error(LinuxError::CallerUnavailable(reason)))
@@ -1996,7 +1996,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(None);
         };
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         Ok(inferior
             .loaded_module
             .image_address(address)
@@ -2034,7 +2034,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let view = self.stack_view(pid);
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
 
         // The activation may be on another stack than the thread is now,
         // such as a goroutine's that called C a callback runs below.
@@ -2055,7 +2055,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         native: &libc::user_regs_struct,
     ) -> Result<VirtualAddress> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         match self
             .stack_unwinder(inferior, pid, native)
             .caller(&innermost_frame(native))
@@ -2106,7 +2106,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The program's code that the runtime function a stopped thread is
     /// entering goes on to call, where that is executable.
     fn call_out(&self, pid: Pid, registers: &libc::user_regs_struct) -> Option<VirtualAddress> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let rip = VirtualAddress::new(registers.rip);
         let file = x86_64_registers(registers);
         let target = self.runtimes(inferior).into_iter().find_map(|runtime| {
@@ -2140,14 +2140,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// any function inlined into it there, in whichever loaded module holds
     /// it; `None` when no module does.
     pub(super) fn code_role(&self, address: VirtualAddress) -> Option<CodeRole> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let (image, address) = self.module_holding(inferior, address)?;
         Some(image.code_role(address))
     }
 
     /// Where `address` is in the main executable's image.
     pub(super) fn image_location(&self, address: VirtualAddress) -> Option<ImageLocation> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let image = inferior.loaded_module.image_address(address).ok()?;
         Some(self.main.image.locate(image))
     }
@@ -2156,7 +2156,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// a source step reads code in a shared library as it does in the
     /// main executable.
     fn located(&self, address: VirtualAddress) -> Option<Located<'_>> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         self.loaded_images(inferior).find_map(|(module, image)| {
             let at = module
                 .image_address(address)
@@ -2172,7 +2172,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// The loaded module a step's code is in, and its image.
     fn step_code(&self, start: &StepStart) -> Option<(LoadedModule, &Arc<ModuleImage>)> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let module = start.module.unwrap_or(inferior.loaded_module);
         self.loaded_images(inferior)
             .find(|(loaded, _)| loaded.id == module.id)
@@ -2181,7 +2181,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether `located` is in the module a step's code is in, where the
     /// step's ids mean what they do in `located`.
     fn in_step_module(&self, start: &StepStart, located: &Located<'_>) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             start.module.unwrap_or(inferior.loaded_module).id == located.module.id
         })
     }
@@ -2189,7 +2189,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether a step's code is the main executable's, the only image the
     /// helpers for awaits read.
     pub(super) fn steps_in_main_module(&self, start: &StepStart) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             start
                 .module
                 .is_none_or(|module| module.id == inferior.loaded_module.id)
@@ -2220,8 +2220,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         presentation: &FramePresentation,
     ) -> Result<Option<CodeInstanceId>> {
         let main = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .is_some_and(|inferior| located.module.id == inferior.loaded_module.id);
         if main {
             selected_code_instance(&located.location, presentation)

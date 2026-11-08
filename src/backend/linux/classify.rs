@@ -22,8 +22,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let status = format!("Stopped({pid}, {signal})");
         let siginfo = self.ptrace.signal_metadata(pid);
         let thread = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.threads.get(&pid));
         let expected = thread.map_or(ExpectedStop::None, |thread| thread.expected.clone());
         let starting =
@@ -89,7 +89,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// resets its virtual DR6 only at the next debug exception, so at an
     /// int3, signal, or syscall-step stop it still describes an earlier hit.
     pub(super) fn watch_status(&self, pid: Pid, code: Option<i32>) -> WatchStatus {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return WatchStatus::Absent;
         };
 
@@ -130,8 +130,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut registers = self.ptrace.registers(pid).ok()?;
         let address = VirtualAddress::new(registers.rip.checked_sub(1)?);
         let installed = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.breakpoints.get(&address))
             .is_some_and(|site| site.installed);
         if !installed {
@@ -150,7 +150,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// held another byte. Returns whether the thread was rewound.
     pub(super) fn rewind_removed_trap(&self, pid: Pid) -> bool {
         let rewind = || {
-            let inferior = self.inferior.as_ref()?;
+            let inferior = self.session.inferior()?;
             let mut registers = self.ptrace.registers(pid).ok()?;
             let address = VirtualAddress::new(registers.rip.checked_sub(1)?);
             let original = *inferior.former_sites.get(&address)?;
@@ -181,7 +181,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// was rewound.
     pub(super) fn rewind_carried_trap(&self, pid: Pid) -> bool {
         let rewind = || {
-            let inferior = self.inferior.as_ref()?;
+            let inferior = self.session.inferior()?;
             let mut registers = self.ptrace.registers(pid).ok()?;
             let address = registers.rip.checked_sub(1)?;
             let moved = self.moved_code_now(inferior.memory_thread()).ok()?;

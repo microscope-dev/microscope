@@ -204,7 +204,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         native: &libc::user_regs_struct,
         enclosing: FunctionId,
     ) -> Result<Option<(Activation, VirtualAddress)>> {
-        let inferior = self.inferior.as_ref().ok_or(crate::Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(crate::Error::NotRunning)?;
         let view = self.stack_view(pid);
         let mut provider = self.stack_unwinder(inferior, pid, native);
         let mut context = super::stepping::innermost_frame(native);
@@ -277,7 +277,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         record!("step over follows its loop from the body's return");
 
-        let inferior = self.inferior.as_ref().ok_or(crate::Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(crate::Error::NotRunning)?;
         let mut plan = loops
             .bodies
             .iter()
@@ -434,7 +434,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         instance: crate::CodeInstance<'_>,
         bodies: &BTreeSet<FunctionId>,
     ) -> BTreeSet<VirtualAddress> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return BTreeSet::new();
         };
 
@@ -458,7 +458,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The entries of every out-of-line instance of a function, where a
     /// function breakpoint would stop.
     fn function_entries(&self, function: FunctionId) -> BTreeSet<VirtualAddress> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return BTreeSet::new();
         };
 
@@ -472,7 +472,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn active_step(&self) -> Option<&StepStart> {
-        match &self.inferior.as_ref()?.active.as_ref()?.kind {
+        match &self.session.inferior()?.active.as_ref()?.kind {
             ActiveKind::Step { start, .. } => Some(start),
             _ => None,
         }

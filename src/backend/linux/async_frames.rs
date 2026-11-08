@@ -464,7 +464,7 @@ impl<P: InspectionOps> Controller<P> {
         coroutine: TypeReference,
         at: Option<StackFrameId>,
     ) -> Option<VirtualAddress> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let root = StackRoot::of_thread(pid);
         let stack = self
             .physical_stack(inferior, &root, crate::unwind::DEFAULT_MAX_FRAMES)
@@ -710,7 +710,7 @@ impl<P: InspectionOps> Controller<P> {
             VariableQuery::Global(_) => false,
         };
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let mut runtime = self.frame_runtime(inferior, root, resolved, module);
         let context = variable_context(stop_id, root.context, resolved.id, module, None);
         let mut variables = Vec::new();

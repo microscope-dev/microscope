@@ -62,7 +62,7 @@ impl<P: InspectionOps> Controller<P> {
             return None;
         }
 
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let ActiveKind::Step { start, .. } = &inferior.active.as_ref()?.kind else {
             return None;
         };
@@ -78,8 +78,8 @@ impl<P: InspectionOps> Controller<P> {
     /// no line describes, to where it stops.
     pub(super) fn note_returned_values(&mut self, pid: Pid) {
         let Some(returning) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
@@ -97,8 +97,8 @@ impl<P: InspectionOps> Controller<P> {
         let returned = self.read_returned(pid, returning);
 
         if let Some(ActiveKind::Step { start, .. }) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.active.as_mut())
             .map(|active| &mut active.kind)
         {
@@ -110,7 +110,7 @@ impl<P: InspectionOps> Controller<P> {
     /// returned: at its return address, with its activation's stack just
     /// popped.
     fn read_returned(&self, pid: Pid, returning: Returning) -> Option<Returned> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let registers = self.ptrace.registers(pid).ok()?;
         if VirtualAddress::new(registers.rip) != returning.return_address
             || !returning
@@ -185,7 +185,7 @@ impl<P: InspectionOps> Controller<P> {
             return Ok(Vec::new());
         };
 
-        let inferior = self.inferior.as_ref().ok_or(crate::Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(crate::Error::NotRunning)?;
         let registers = FrameRegisters::Thread(self.ptrace.registers(returned.thread)?);
         let mut runtime = self.thread_runtime(inferior, module, returned.thread, &registers);
         let context = variable_context(stop_id, root.context, frame, module, None);

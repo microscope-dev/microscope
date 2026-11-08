@@ -117,8 +117,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Err("microscope cannot yet assign in JavaScript".into());
         }
         let inferior = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let main = super::super::debug_thread_id(inferior.tgid);
         let received = self
@@ -130,8 +130,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 bound.module.virtual_address(entry).ok()
             });
         let inferior = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .ok_or_else(|| Arc::<str>::from("the process is gone"))?;
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
         inspector.step = match (arming.step, inspector.step.take()) {
@@ -171,8 +171,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// armed with, connecting first when it can.
     pub(super) fn sync_inspector(&mut self, runtime: RuntimeId) {
         let Some(inspectors) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .map(|inferior| &mut inferior.inspectors)
         else {
             return;
@@ -220,8 +220,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         map: &str,
     ) {
         let Some(inspectors) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .map(|inferior| &mut inferior.inspectors)
         else {
             return;
@@ -282,8 +282,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         result: std::result::Result<serde_json::Value, super::super::cdp::CdpError>,
     ) -> crate::Result<()> {
         let Some(inspector) = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
         else {
             return Ok(());
@@ -348,7 +348,7 @@ impl<P: InspectionOps> Controller<P> {
         runtime: RuntimeId,
         number: u64,
     ) -> Option<std::result::Result<(), Arc<str>>> {
-        let inspector = self.inferior.as_ref()?.inspectors.records.get(&runtime)?;
+        let inspector = self.session.inferior()?.inspectors.records.get(&runtime)?;
         Some(inspector.readiness(number))
     }
 }

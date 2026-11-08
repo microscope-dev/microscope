@@ -70,7 +70,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// call: it is inside one, stopped at its entry or at an event, inside
     /// one the kernel will restart, or about to execute `syscall`.
     pub(super) fn steps_into_call(&self, pid: Pid) -> Result<bool> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let thread = inferior.thread(pid)?;
         if thread.syscall.is_some() || thread.inside_call {
             return Ok(true);
@@ -98,7 +98,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// or resumes as it would have. A step that made the call ends at its
     /// exit, where a single step across `syscall` would have.
     pub(super) fn handle_syscall_stop(&mut self, pid: Pid) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let thread = inferior.thread_mut(pid)?;
         thread.state = NativeThreadState::Stopped;
         let in_step = std::mem::take(&mut thread.stepping_call);
@@ -203,7 +203,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A step over a breakpoint's trap that made the call is past the
         // trap, which the stop puts back.
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let thread = inferior.thread_mut(pid)?;
         if let ExpectedStop::BreakpointRepair { address } = thread.expected {
             thread.expected = ExpectedStop::None;
@@ -220,8 +220,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// across `syscall` ends; anything else resumes as it would have.
     fn resume_uncaught(&mut self, pid: Pid, stepping: bool, exit: bool) -> Result<()> {
         let repairing = matches!(
-            self.inferior
-                .as_ref()
+            self.session
+                .inferior()
                 .ok_or(Error::NotRunning)?
                 .thread(pid)?
                 .expected,
@@ -263,12 +263,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 captured,
             };
 
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.thread_mut(pid)?.syscall = Some(entered.clone());
             return Ok(entered);
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(entered) = inferior.thread_mut(pid)?.syscall.take() {
             return Ok(entered);
         }
@@ -292,7 +292,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         phase: ReadAt,
         returned: Option<i64>,
     ) -> Vec<Capture> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return Vec::new();
         };
 

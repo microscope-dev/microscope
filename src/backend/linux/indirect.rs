@@ -69,14 +69,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         module: ModuleId,
         resolver: ImageAddress,
     ) -> Option<ImageAddress> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         inferior.indirect.chosen.get(&(module, resolver)).copied()
     }
 
     /// The resolvers of the indirect functions that enabled breakpoints,
     /// and `adding`, name and whose implementations are unknown.
     fn wanted_resolvers(&self, adding: Option<&BreakpointSpec>) -> BTreeSet<Resolver> {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return BTreeSet::new();
         };
 
@@ -128,7 +128,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// and `adding`, name were resolved to.
     pub(super) fn learn_from_got(&mut self, adding: Option<&BreakpointSpec>) {
         let wanted = self.wanted_resolvers(adding);
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
 
@@ -205,7 +205,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
 
@@ -266,7 +266,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// its call, if `address` is one, and stops every thread to plant the
     /// return, or to break at the implementation the resolver chose.
     pub(super) fn note_resolver(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let indirect = &inferior.indirect;
         if !indirect.entries.contains_key(&address) && !indirect.returns.contains(&address) {
             return Ok(());
@@ -277,7 +277,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(&resolver) = indirect.entries.get(&address) {
             let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
             record!("{pid} calls the resolver at {address}, returning to {returns_to}");
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.indirect.calls.push(Call {
                 thread: pid,
                 resolver,
@@ -294,7 +294,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let call = inferior.indirect.calls.remove(index);
         let (module, resolver) = call.resolver;
         let chosen = self.modules.get(&module).and_then(|defining| {
@@ -306,7 +306,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             registers.rax
         );
         if let Some(implementation) = chosen {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior
                 .indirect
                 .chosen

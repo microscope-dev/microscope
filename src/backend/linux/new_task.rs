@@ -74,7 +74,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// step into a new task watches.
     pub(super) fn task_starters(&self) -> BTreeMap<VirtualAddress, Starter> {
         let mut starters = BTreeMap::new();
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return starters;
         };
 
@@ -101,8 +101,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the task's start and has been handled.
     pub(super) fn reach_new_task(&mut self, pid: Pid, address: VirtualAddress) -> Result<bool> {
         let Some(state) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => start.new_task.clone(),
@@ -185,7 +185,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let returns_to = VirtualAddress::new(self.ptrace.read_word(pid, registers.rsp)?);
         record!("thread {pid} starts a task, returning to {returns_to}");
         let execution = self.active_execution()?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         install_plan_breakpoint(&self.ptrace, inferior, returns_to, execution)?;
 
         let starter = starters[&address];
@@ -228,7 +228,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         starter: Starter,
         registers: &nix::libc::user_regs_struct,
     ) -> std::result::Result<Option<StartedTask>, std::sync::Arc<str>> {
-        let inferior = self.inferior.as_ref().ok_or("the process is gone")?;
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
         self.runtimes(inferior)
             .into_iter()
             .find(|bound| bound.id == starter.runtime)
@@ -269,7 +269,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         record!("the step goes on in task {task}, which begins at {entries:?}");
         let execution = self.active_execution()?;
         self.cleanup_plan_breakpoints(execution)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         for entry in &entries {
             install_plan_breakpoint(&self.ptrace, inferior, *entry, execution)?;
         }
@@ -297,7 +297,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The statements of every copy of `coroutine`'s body inlined into
     /// other code, less the code that resumes it.
     fn new_task_statements(&self, coroutine: TypeReference) -> Result<BTreeSet<VirtualAddress>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let mut statements = BTreeSet::new();
         if coroutine.image != inferior.loaded_module.image {
             return Ok(statements);
@@ -319,8 +319,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn arrive_in_new_task(&mut self, pid: Pid) -> Result<()> {
         record!("the step's new task begins on thread {pid}");
         let (execution, kind) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { kind, .. } => Some((active.id, *kind)),
@@ -356,8 +356,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let kind = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { kind, .. } => Some(*kind),
@@ -373,8 +373,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// such as an advance reaching its location, names itself.
     pub(super) fn requested_step_reason(&self, reason: StopReason) -> StopReason {
         let Some((running, requested)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
@@ -426,8 +426,8 @@ impl<P: InspectionOps> Controller<P> {
     /// Whether the active step went on into the new task it started,
     /// whose stop then reveals inline frames as a step in's does.
     pub(super) fn entered_new_task(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(

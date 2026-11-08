@@ -32,6 +32,7 @@ pub use inspector::InspectorMessage;
 use nix::errno::Errno;
 use nix::libc;
 use nix::unistd::Pid;
+use session::{Orphans, Session, Shutdown};
 use signals::SignalPolicies;
 pub use signals::{Signal, WaitEvent};
 use tokio::sync::{mpsc, watch};
@@ -125,6 +126,7 @@ mod run_control;
 mod runtime_agents;
 mod runtime_steps;
 mod runtimes;
+mod session;
 mod signals;
 #[cfg(any(test, feature = "sim"))]
 pub mod sim_edge;
@@ -1589,7 +1591,10 @@ struct Controller<P: InspectionOps> {
     message_sender: mpsc::Sender<ControllerMessage>,
     events: EventSender,
     ptrace: P,
-    inferior: Option<Inferior>,
+    session: Session,
+
+    /// Set once the session is ending, alongside whichever phase it is in.
+    shutdown: Option<Shutdown>,
     breakpoints: breakpoints::UserBreakpoints,
     next_breakpoint_id: u64,
     next_watchpoint_id: u64,
@@ -1597,27 +1602,6 @@ struct Controller<P: InspectionOps> {
     /// The system-call catchpoints, which outlive any process.
     catchpoints: BTreeMap<crate::CatchpointId, crate::Catchpoint>,
     next_catchpoint_id: u64,
-    launch_reply: Option<Reply<ExecutionId>>,
-    attach_reply: Option<Reply<StopId>>,
-
-    /// How many times the attach in progress found threads it had not
-    /// traced.
-    attach_rescans: u32,
-
-    /// Whether the session is ending: wait events then only advance the kill
-    /// or detach, and the controller exits once the inferior is gone.
-    shutting_down: bool,
-    shutdown_reply: Option<Reply<()>>,
-    agent_cleanup_error: Option<Arc<str>>,
-
-    /// The client waiting for a killed inferior to be gone.
-    kill_reply: Option<Reply<()>>,
-
-    /// Fork children still traced after the inferior ended.
-    orphans: Option<Orphans>,
-
-    /// A launch or attach waiting for those children to be released.
-    deferred_start: Option<Start>,
     signals: SignalPolicies,
 
     /// Which exceptions that runtimes report stop the program.
@@ -1656,22 +1640,6 @@ struct Controller<P: InspectionOps> {
     /// panic at the next status it routes, from [`WAITER_PANIC_AFTER`].
     #[cfg(debug_assertions)]
     waiter_panic_after: Option<String>,
-}
-
-/// Fork children still on their way to their first stop when their parent's
-/// process ended, with the waiter that reports them. Each is scrubbed of the
-/// traps it inherited and released at that stop; the waiter, which would
-/// otherwise poll them forever, is joined once none remains.
-struct Orphans {
-    /// The process that forked them.
-    parent: Pid,
-
-    /// Each child with the traps it may hold.
-    children: BTreeMap<Pid, Vec<(VirtualAddress, u8)>>,
-
-    /// Children that could not be scrubbed, killed and awaiting their exit.
-    killed: BTreeSet<Pid>,
-    waiter: Option<Waiter>,
 }
 
 /// What a shutdown does with a launched process.
@@ -1950,21 +1918,13 @@ impl<P: InspectionOps> Controller<P> {
             message_sender: channels.sender,
             events: channels.events,
             ptrace,
-            inferior: None,
+            session: Session::idle(),
+            shutdown: None,
             breakpoints: breakpoints::UserBreakpoints::default(),
             next_breakpoint_id: 1,
             catchpoints: BTreeMap::new(),
             next_catchpoint_id: 1,
             next_watchpoint_id: 1,
-            launch_reply: None,
-            attach_reply: None,
-            attach_rescans: 0,
-            shutting_down: false,
-            shutdown_reply: None,
-            agent_cleanup_error: None,
-            kill_reply: None,
-            orphans: None,
-            deferred_start: None,
             signals: SignalPolicies::default(),
             exception_stops: crate::ExceptionStops::default(),
             exec_stops: false,
@@ -2046,7 +2006,7 @@ impl<P: InspectionOps> Controller<P> {
 
     /// The earliest deadline of an agent's outstanding acknowledgement.
     fn agent_deadline(&self) -> Option<std::time::Instant> {
-        self.inferior.as_ref().and_then(|inferior| {
+        self.session.inferior().and_then(|inferior| {
             inferior
                 .agents
                 .values()
@@ -2206,8 +2166,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A shutdown, whether requested or begun when an attached process
         // failed, ends the controller once nothing is left to release.
-        let keeps_running = keeps_running
-            && !(self.shutting_down && self.inferior.is_none() && self.orphans.is_none());
+        let keeps_running = keeps_running && !(self.shutdown.is_some() && self.session.is_idle());
         if !keeps_running {
             self.answer_queued_shutdowns();
         }
@@ -2480,20 +2439,24 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
             Request::Shutdown { reply } => {
-                let waiting = self.inferior.is_some() || self.orphans.is_some();
-                if !self.shutting_down {
-                    self.begin_shutdown(Some(reply));
-                } else if !waiting {
-                    let _ = reply.send(Ok(()));
-                } else if self.shutdown_reply.is_none() {
+                let idle = self.session.is_idle();
+                match &mut self.shutdown {
+                    None => self.begin_shutdown(Some(reply)),
+                    Some(_) if idle => {
+                        let _ = reply.send(Ok(()));
+                    }
+
                     // A shutdown the controller began itself, as a failed
                     // attach does, answers the client's when it ends.
-                    self.shutdown_reply = Some(reply);
-                } else {
-                    let _ = reply.send(Err(Error::RequestCancelled));
+                    Some(Shutdown {
+                        reply: waiting @ None,
+                    }) => *waiting = Some(reply),
+                    Some(_) => {
+                        let _ = reply.send(Err(Error::RequestCancelled));
+                    }
                 }
 
-                return self.inferior.is_some() || self.orphans.is_some();
+                return !self.session.is_idle();
             }
             Request::Kill { reply } => self.kill(reply),
             Request::Terminate { reply } => {
@@ -2923,11 +2886,11 @@ impl<P: InspectionOps> Controller<P> {
 
 impl<P: LinuxTraceOps> Controller<P> {
     fn handle_wait(&mut self, status: WaitEvent) -> bool {
-        if self.inferior.is_none() && self.orphans.is_some() {
+        if matches!(self.session, Session::Draining { .. }) {
             return self.handle_orphan_wait(status);
         }
 
-        if self.shutting_down && !self.inspector_cleanup_running() {
+        if self.shutdown.is_some() && !self.inspector_cleanup_running() {
             return self.handle_shutdown_wait(status);
         }
 
@@ -2945,7 +2908,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             && !(is_vanished_tracee(&error)
                 && (self.release_superseded_threads(reported)
                     || self.every_thread_exiting()
-                    || self.kill_reply.is_some()))
+                    || self.session.killing()))
         {
             self.fail_inferior(error);
         }
@@ -2958,7 +2921,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// nothing restored. The failure's handler releases them.
     fn lost_to_sigkill(&self, error: &Error) -> bool {
         is_vanished_tracee(error)
-            && self.inferior.as_ref().is_some_and(|inferior| {
+            && self.session.inferior().is_some_and(|inferior| {
                 inferior.threads.iter().any(|(&pid, thread)| {
                     matches!(thread.state, NativeThreadState::Stopped)
                         && is_superseded(&self.ptrace.signal_metadata(pid))
@@ -2969,7 +2932,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether every live thread passed its exit event, leaving none to
     /// read or write the dying address space through.
     fn every_thread_exiting(&self) -> bool {
-        self.inferior.as_ref().is_some_and(|inferior| {
+        self.session.inferior().is_some_and(|inferior| {
             inferior
                 .threads
                 .values()
@@ -2983,7 +2946,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// ptrace request failing with ESRCH. Each runs on to its exit, which
     /// retires it. Returns whether any was found.
     fn release_superseded_threads(&mut self, handled: Option<Pid>) -> bool {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return false;
         };
 
@@ -3003,7 +2966,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     fn process_wait(&mut self, status: WaitEvent) -> Result<()> {
         let pid = status.pid();
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let known = inferior.threads.contains_key(&pid);
         let retired = inferior.retired_threads.contains(&pid);
 
@@ -3063,8 +3026,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             WaitEvent::PtraceSyscall(pid) => self.handle_syscall_stop(pid),
             WaitEvent::Stopped(pid, signal) => {
                 let initial = self
-                    .inferior
-                    .as_ref()
+                    .session
+                    .inferior()
                     .and_then(|inferior| inferior.threads.get(&pid))
                     .is_some_and(|thread| matches!(thread.expected, ExpectedStop::InitialExec));
                 if initial && signal == Signal::SIGTRAP {
@@ -3090,8 +3053,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let thread = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .thread(pid)?;
         if matches!(thread.expected, ExpectedStop::InitialAttach) {
@@ -3125,7 +3088,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
 impl<P: InspectionOps> Controller<P> {
     fn snapshot(&self) -> StateSnapshot {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return StateSnapshot {
                 revision: self.revision,
                 inferior: InferiorState::NotRunning,
@@ -3206,7 +3169,7 @@ impl<P: InspectionOps> Controller<P> {
     /// The selection a snapshot reports, without copying the breakpoints
     /// and threads that every stopped request would otherwise pay for.
     fn stopped_selection(&self) -> Result<crate::StoppedSelection> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let stop = inferior.public_stop.as_ref().ok_or(Error::NotStopped)?;
         Ok(crate::StoppedSelection {
             process: process_id(inferior.tgid),

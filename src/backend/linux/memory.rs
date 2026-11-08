@@ -39,7 +39,7 @@ impl<P: InspectionOps> Controller<P> {
             .ok_or(Error::AddressOverflow)?;
         let size = usize::try_from(byte_count)
             .map_err(|_| Error::internal("a bounded memory read size fits usize"))?;
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let pid = inferior

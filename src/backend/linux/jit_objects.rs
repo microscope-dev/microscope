@@ -28,7 +28,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn observe_jit_objects(&self, pid: Pid) -> JitObjects {
         let mut observed = Vec::new();
         let mut objects = BTreeMap::new();
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return (observed, objects);
         };
 

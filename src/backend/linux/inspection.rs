@@ -40,7 +40,7 @@ impl<P: InspectionOps> Controller<P> {
     /// The inferior, once `stop_id` is its current stop, `pid` one of its
     /// stopped threads, and its image the one the thread executes.
     pub(super) fn stopped_inferior(&self, stop_id: StopId, pid: Pid) -> Result<&Inferior> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         validate_stopped_thread(inferior, pid)?;
         validate_image_current(inferior)?;
@@ -53,7 +53,7 @@ impl<P: InspectionOps> Controller<P> {
         root: &StackRoot,
         frame: StackFrameId,
     ) -> Result<RegisterSnapshot> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         validate_stopped_thread(inferior, root.reader())?;
         let native = root
@@ -557,7 +557,7 @@ impl<P: InspectionOps> Controller<P> {
             return Err(Error::InvalidGlobalPageLimit(query.limit));
         }
 
-        let running = self.inferior.is_some();
+        let running = self.session.inferior().is_some();
         let mut matches = self
             .modules
             .values()

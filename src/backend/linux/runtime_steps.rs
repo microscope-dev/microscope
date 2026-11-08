@@ -35,7 +35,7 @@ impl<P: InspectionOps> Controller<P> {
         pid: Pid,
         frame: StackFrameId,
     ) -> Option<(RuntimeId, VirtualAddress)> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let root = self
             .stack_root(stop_id, ExecutionContext::Thread(debug_thread_id(pid)))
             .ok()?;
@@ -107,7 +107,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<ExecutionId> {
         // An agent binds a step to its frame where it stopped the thread:
         // from anywhere else, the thread would run on unfollowed first.
-        let agent = self.inferior.as_ref().is_some_and(|inferior| {
+        let agent = self.session.inferior().is_some_and(|inferior| {
             self.runtimes(inferior)
                 .into_iter()
                 .any(|bound| bound.id == runtime && bound.model.agent().is_some())
@@ -119,7 +119,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         self.with_arming_notification(runtime, |controller| {
-            let inferior = controller.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = controller.session.inferior_mut().ok_or(Error::NotRunning)?;
             let number = inferior.next_runtime_step;
             inferior.next_runtime_step = number.saturating_add(1);
             let step = RuntimeStep {
@@ -177,7 +177,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         number: u64,
         incomplete: Option<Arc<str>>,
     ) -> Option<StopReason> {
-        let active = self.inferior.as_ref()?.active.as_ref()?;
+        let active = self.session.inferior()?.active.as_ref()?;
         match active.kind {
             ActiveKind::RuntimeStep {
                 owner,
@@ -210,7 +210,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         number: u64,
         target: VirtualAddress,
     ) -> bool {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return false;
         };
         let Some(active) = inferior.active.as_ref() else {
@@ -235,7 +235,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return false;
         };
 
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return false;
         };
 
@@ -299,7 +299,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if !matches!(kind, StepKind::OverSource | StepKind::Out) {
             return Ok(false);
         }
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(activation) = inferior
             .active
             .as_ref()
@@ -331,7 +331,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// returned into the code of a runtime's own image, as a Node-API
     /// function returns into Node's.
     pub(super) fn returned_into_unlined_code(&self, pid: Pid) -> Result<bool> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(activation) = inferior
             .active
             .as_ref()
@@ -368,7 +368,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         expect(unused_variables, reason = "only recorded")
     )]
     pub(super) fn return_to_runtime(&mut self, pid: Pid) {
-        let Some(inferior) = self.inferior.as_ref() else {
+        let Some(inferior) = self.session.inferior() else {
             return;
         };
         let visible = inferior
@@ -420,7 +420,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         self.with_arming_notification(runtime, |controller| {
-            let Some(inferior) = controller.inferior.as_mut() else {
+            let Some(inferior) = controller.session.inferior_mut() else {
                 return;
             };
             let number = inferior.next_runtime_step;
@@ -445,8 +445,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             if let Some(active) = controller
-                .inferior
-                .as_mut()
+                .session
+                .inferior_mut()
                 .and_then(|inferior| inferior.active.as_mut())
             {
                 active.kind = ActiveKind::RuntimeStep {
@@ -466,7 +466,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         pid: Pid,
         address: VirtualAddress,
     ) -> Option<StepKind> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let active = inferior.active.as_ref()?;
         let ActiveKind::RuntimeStep { owner, kind, .. } = active.kind else {
             return None;
@@ -482,8 +482,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// ends it forms.
     pub(super) fn end_runtime_step(&mut self) {
         let runtime = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match active.kind {
                 ActiveKind::RuntimeStep { runtime, .. } => Some(runtime),
@@ -503,7 +503,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         expect(unused_variables, reason = "only recorded")
     )]
     fn disarm_runtime_step(&mut self, runtime: RuntimeId) {
-        if let Some(inferior) = self.inferior.as_mut() {
+        if let Some(inferior) = self.session.inferior_mut() {
             inferior.runtime_step = None;
         }
 

@@ -186,7 +186,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         kind: StepKind,
         scope: ResumeScope,
     ) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_process(inferior, process_id)?;
         validate_public_stop(inferior, Some(stop_id))?;
         validate_resumable(inferior)?;
@@ -272,7 +272,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &self,
         spec: crate::BreakpointSpec,
     ) -> Result<BTreeSet<VirtualAddress>> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         self.resolve_breakpoint(crate::BreakpointId::new(0), spec, false)?
             .locations
             .iter()
@@ -290,7 +290,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         mut kind: ActiveKind,
         exception: ExceptionDisposition,
     ) -> Result<ExecutionId> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         validate_public_stop(inferior, Some(stop_id))?;
         validate_resumable(inferior)?;
@@ -309,13 +309,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             _ => None,
         };
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         let resume_threads = scoped_threads(inferior, scope)?;
         inferior.next_execution += 1;
         let execution_id = ExecutionId::new(inferior.next_execution);
         self.install_plan(&kind, execution_id)?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         // One that trapped there steps over the trap as any other does; one
         // that has yet to execute the trap arrives there first.
@@ -398,7 +398,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let mut installed = Vec::new();
         let mut failure = None;
         for address in start.plan_sites() {
@@ -419,7 +419,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Err(error);
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let owner = BreakpointOwner::Plan(execution);
         for address in installed.into_iter().rev() {
             if let Err(recovery) =
@@ -437,7 +437,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn restore_unconsumed_signals(&mut self, suppressed: &[(Pid, PendingSignal)]) {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
 
@@ -460,8 +460,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         match result {
             Ok(execution_id) => {
                 let Some(process_id) = self
-                    .inferior
-                    .as_ref()
+                    .session
+                    .inferior()
                     .map(|inferior| process_id(inferior.tgid))
                 else {
                     let _ =
@@ -484,7 +484,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn begin_pause(&mut self, requested_process: ProcessId) -> Result<ExecutionId> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         let execution_id = inferior.active.as_ref().ok_or(Error::AlreadyStopped)?.id;
 
@@ -499,7 +499,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Stops every thread for a client's pause, wherever each is.
     pub(super) fn pause_natively(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(barrier) = inferior.barrier.as_mut() {
             barrier.reason.get_or_insert(StopReason::Pause);
             barrier.paused = true;
@@ -550,8 +550,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn advance_execution(&mut self) -> Result<()> {
         if !self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .repairs
             .is_empty()
@@ -560,7 +560,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let (kind, resume_threads) = {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
             // A thread awaiting a breakpoint that has since been removed will
             // never trap there; resuming it alone would strand its siblings.
@@ -582,8 +582,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A thread re-trapping at a breakpoint after its signal handler runs
         // alone, holding its siblings back until its repair.
         if let Some(pid) = resume_threads.iter().copied().find(|pid| {
-            self.inferior
-                .as_ref()
+            self.session
+                .inferior()
                 .and_then(|inferior| inferior.threads.get(pid))
                 .is_some_and(|thread| thread.awaiting_breakpoint.is_some())
         }) {
@@ -602,8 +602,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 // leader exiting alone is reported only after every other
                 // thread, which run on in the step's scope meanwhile.
                 let exiting = self
-                    .inferior
-                    .as_ref()
+                    .session
+                    .inferior()
                     .and_then(|inferior| inferior.threads.get(&thread))
                     .is_none_or(|stepping| !matches!(stepping.state, NativeThreadState::Stopped));
                 if exiting {
@@ -612,8 +612,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
                 if progress_owed {
                     if let Some(ActiveKind::Step { progress_owed, .. }) = self
-                        .inferior
-                        .as_mut()
+                        .session
+                        .inferior_mut()
                         .and_then(|inferior| inferior.active.as_mut())
                         .map(|active| &mut active.kind)
                     {
@@ -651,7 +651,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn start_next_repair(&mut self) -> Result<()> {
         let next = {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
             // Only a stopped thread steps over a trap. One exiting, or one
             // SIGKILL took out of its stop to run to its exit, as when its
@@ -696,8 +696,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A thread stopped at a breakpoint cannot also hold a pending signal:
         // a signal stop rewinds no PC and repairs nothing.
         if self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .thread(pid)?
             .pending_signal
@@ -709,7 +709,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if remove_site {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             let pid = inferior.memory_thread();
             let group = inferior
                 .repairs
@@ -733,7 +733,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn finish_repair_group(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let group = inferior
             .repairs
             .pop_front()
@@ -751,8 +751,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn resume_awaiting_thread(&mut self, pid: Pid) -> Result<()> {
         let address = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .thread(pid)?
             .awaiting_breakpoint
@@ -766,7 +766,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn continue_thread(&mut self, pid: Pid) -> Result<()> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         if !matches!(inferior.thread(pid)?.state, NativeThreadState::Stopped) {
             return Ok(());
         }
@@ -803,7 +803,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             && !self.catchpoints.is_empty()
             && self.steps_into_call(pid)?;
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let holds = inferior.holds_signals(&expected);
         let thread = inferior.thread_mut(pid)?;
 
@@ -878,7 +878,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         record!("classified {pid} as {stop:?}");
 
         {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.thread_mut(pid)?.state = NativeThreadState::Stopped;
         }
 
@@ -886,8 +886,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             ClassifiedStop::ThreadStart => self.handle_thread_start(pid),
             ClassifiedStop::DebuggerRequested => {
                 let thread = self
-                    .inferior
-                    .as_mut()
+                    .session
+                    .inferior_mut()
                     .ok_or(Error::NotRunning)?
                     .thread_mut(pid)?;
                 thread.reason = None;
@@ -896,8 +896,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             ClassifiedStop::RemovedTrap => {
                 record!("{pid} executed a trap before its site was removed");
-                self.inferior
-                    .as_mut()
+                self.session
+                    .inferior_mut()
                     .ok_or(Error::NotRunning)?
                     .thread_mut(pid)?
                     .reason = None;
@@ -908,8 +908,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             // breakpoints that follow the code are installed where it went.
             ClassifiedStop::CarriedTrap => {
                 record!("{pid} executed a trap carried by moved or copied code");
-                self.inferior
-                    .as_mut()
+                self.session
+                    .inferior_mut()
                     .ok_or(Error::NotRunning)?
                     .thread_mut(pid)?
                     .reason = None;
@@ -936,7 +936,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             // Its exit event or exit status arrives next.
             ClassifiedStop::Superseded => {
-                let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+                let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
                 inferior.thread_mut(pid)?.state = NativeThreadState::Running;
                 Ok(())
             }
@@ -958,7 +958,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // repair reaches a hit that was already counted. It ran alone, so
         // its siblings are stopped.
         let awaited = {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             let thread = inferior.thread_mut(pid)?;
             thread.stopped_at_breakpoint = Some(address);
             thread.trapped_at = Some(address);
@@ -1007,7 +1007,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let step = inferior
             .active
             .as_ref()
@@ -1138,8 +1138,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Whether the active step's thread runs freely until it returns to a
     /// guard.
     fn step_runs_to_guard(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.resume_guard.is_some())
@@ -1189,8 +1189,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         stepping: Option<StepKind>,
     ) -> Result<()> {
         let lifted = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .thread(pid)?
             .stopped_at_breakpoint
@@ -1212,8 +1212,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         watch: BTreeSet<WatchpointId>,
     ) -> Result<()> {
         let expected = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.threads.get_mut(&pid))
             .map(|thread| std::mem::replace(&mut thread.expected, ExpectedStop::None))
             .ok_or(Error::NotRunning)?;
@@ -1251,8 +1251,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// trapped.
     fn handle_watch_stop(&mut self, pid: Pid, owners: BTreeSet<WatchpointId>) -> Result<()> {
         let expected = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .and_then(|inferior| inferior.threads.get_mut(&pid))
             .map(|thread| std::mem::replace(&mut thread.expected, ExpectedStop::None))
             .ok_or(Error::NotRunning)?;
@@ -1266,8 +1266,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.finish_traced_instruction(pid, expected)
             }
             expected => {
-                self.inferior
-                    .as_mut()
+                self.session
+                    .inferior_mut()
                     .ok_or(Error::NotRunning)?
                     .thread_mut(pid)?
                     .expected = expected;
@@ -1286,7 +1286,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         expected: &ExpectedStop,
         owners: BTreeMap<WatchpointId, u64>,
     ) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let ExpectedStop::BreakpointRepair { address } = *expected {
             inferior.finish_current_repair(pid, address)?;
         }
@@ -1308,8 +1308,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn barrier_active(&self) -> bool {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .is_some_and(|inferior| inferior.barrier.is_some())
     }
 
@@ -1323,8 +1323,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<()> {
         match expected {
             ExpectedStop::BreakpointRepair { address } => {
-                self.inferior
-                    .as_mut()
+                self.session
+                    .inferior_mut()
                     .ok_or(Error::NotRunning)?
                     .finish_current_repair(pid, address)?;
                 self.note_step_progress(pid);
@@ -1353,7 +1353,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             print: false,
             pass: true,
         };
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         // The debugger's own request to end the inferior never stops it.
         let terminating = inferior
@@ -1371,7 +1371,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.stop_for_signal(pid, pending);
         }
 
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         if policy.print {
             let _ = self.events.send(DebuggerEvent::SignalReceived {
                 revision: self.revision,
@@ -1387,8 +1387,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .filter(|pending| inferior.holds_signals(&expected) && self.defers(pending.signal))
         {
             record!("hold {} in {pid}", pending.signal);
-            self.inferior
-                .as_mut()
+            self.session
+                .inferior_mut()
                 .ok_or(Error::NotRunning)?
                 .thread_mut(pid)?
                 .held_signal = Some(pending);
@@ -1401,8 +1401,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             ExpectedStop::UserStep { kind } => self.signal_during_step(pid, kind, delivered),
             expected => {
-                self.inferior
-                    .as_mut()
+                self.session
+                    .inferior_mut()
                     .ok_or(Error::NotRunning)?
                     .thread_mut(pid)?
                     .pending_signal = delivered;
@@ -1417,8 +1417,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     fn stop_for_signal(&mut self, pid: Pid, pending: PendingSignal) -> Result<()> {
         let repair_address = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.threads.get(&pid))
             .and_then(|thread| match thread.expected {
                 ExpectedStop::BreakpointRepair { address } => Some(address),
@@ -1426,14 +1426,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         if let Some(address) = repair_address {
             self.restore_active_breakpoints()?;
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             let thread = inferior.thread_mut(pid)?;
             thread.stopped_at_breakpoint = None;
             thread.trapped_at = None;
             thread.awaiting_breakpoint = Some(address);
         }
 
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let thread = inferior.thread_mut(pid)?;
         thread.expected = ExpectedStop::None;
         thread.pending_signal = Some(pending);
@@ -1451,7 +1451,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         delivered: Option<PendingSignal>,
     ) -> Result<()> {
         let barrier = self.barrier_active();
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let Some(pending) = delivered else {
             inferior.thread_mut(pid)?.pending_signal = None;
             if barrier {
@@ -1506,8 +1506,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<()> {
         let barrier = self.barrier_active();
         let Some(pending) = delivered else {
-            self.inferior
-                .as_mut()
+            self.session
+                .inferior_mut()
                 .ok_or(Error::NotRunning)?
                 .thread_mut(pid)?
                 .pending_signal = None;
@@ -1532,8 +1532,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let thread = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .ok_or(Error::NotRunning)?
             .thread_mut(pid)?;
         thread.pending_signal = Some(pending);
@@ -1566,8 +1566,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the site was the guard and has been handled.
     fn reach_resume_guard(&mut self, pid: Pid, address: VirtualAddress) -> Result<bool> {
         let Some((execution, kind, guard, planned)) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
@@ -1614,8 +1614,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // the thread hit that breakpoint, and steps over its trap.
         self.remove_breakpoint_owner(address, BreakpointOwner::Plan(execution))?;
         let trapped = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .ok_or(Error::NotRunning)?
             .thread(pid)?
             .stopped_at_breakpoint
@@ -1645,8 +1645,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn complete_repair(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        self.inferior
-            .as_mut()
+        self.session
+            .inferior_mut()
             .ok_or(Error::NotRunning)?
             .finish_current_repair(pid, address)?;
 
@@ -1656,7 +1656,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn queue_repair(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         debug_assert!(
             !inferior
                 .repairs
@@ -1689,7 +1689,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// the highest-priority reason is published.
     pub(super) fn begin_visible_stop(&mut self, pid: Pid, reason: StopReason) -> Result<()> {
         let reason = self.dropped_step_reason(self.requested_step_reason(reason));
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let thread = inferior.thread_mut(pid)?;
         thread.state = NativeThreadState::Stopped;
         thread.reason = Some(reason.clone());
@@ -1701,7 +1701,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Publishes `reason` from `pid` once every thread is stopped. A barrier
     /// already in progress publishes the most important reason it sees.
     pub(super) fn raise_barrier(&mut self, pid: Pid, reason: StopReason) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         if let Some(barrier) = inferior.barrier.as_mut() {
             if barrier.reason.as_ref().is_none_or(|current| {
                 visible_stop_priority(&reason) > visible_stop_priority(current)
@@ -1721,7 +1721,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.restore_active_breakpoints()?;
 
         {
-            let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             let triggering_thread = inferior
                 .threads
                 .iter()
@@ -1743,7 +1743,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn request_stops(&mut self) -> Result<()> {
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let tgid = inferior.tgid;
         let attached = inferior.origin.seized();
         let running: Vec<_> = inferior
@@ -1787,8 +1787,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// that exited alone, as one a pause asked to stop, has no frame to
     /// present; a stopped thread presents the stop instead.
     fn presenting_thread(&self, triggering_thread: Pid) -> Pid {
-        self.inferior
-            .as_ref()
+        self.session
+            .inferior()
             .filter(|inferior| {
                 inferior
                     .threads
@@ -1812,8 +1812,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// yet to meet the thread there.
     fn apply_pending_edits(&mut self) -> Result<Option<(Pid, VirtualAddress)>> {
         let edits = self
-            .inferior
-            .as_mut()
+            .session
+            .inferior_mut()
             .map(Inferior::take_pending_edits)
             .unwrap_or_default();
         let stepping_hit = if edits.is_empty() {
@@ -1828,8 +1828,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.settle_edited_reasons()?;
         Ok(stepping_hit.filter(|(pid, _)| {
-            self.inferior
-                .as_ref()
+            self.session
+                .inferior()
                 .and_then(|inferior| inferior.threads.get(pid))
                 .is_some_and(|thread| thread.reason.is_none())
         }))
@@ -1838,7 +1838,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// The thread running the active step and the site at which a user
     /// breakpoint's hit stopped it, if one did.
     fn stepping_thread_hit(&self) -> Option<(Pid, VirtualAddress)> {
-        let inferior = self.inferior.as_ref()?;
+        let inferior = self.session.inferior()?;
         let ActiveKind::Step { owner, .. } = inferior.active.as_ref()?.kind else {
             return None;
         };
@@ -1856,7 +1856,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn finish_barrier_if_ready(&mut self) -> Result<()> {
-        let ready = self.inferior.as_ref().is_some_and(|inferior| {
+        let ready = self.session.inferior().is_some_and(|inferior| {
             inferior.barrier.is_some()
                 && inferior
                     .threads
@@ -1875,7 +1875,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // From the last thread stopping to the stop's publication.
         let _span = crate::span!("stop");
-        if self.attach_reply.is_some() {
+        if self.session.attaching() {
             if self.seize_untraced_threads()? {
                 return Ok(());
             }
@@ -1899,8 +1899,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.barrier.as_ref())
             .is_some_and(|barrier| barrier.reason.is_none())
         {
@@ -1908,8 +1908,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if let Some(execution) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.active.as_ref())
             .map(|active| active.id)
         {
@@ -1921,8 +1921,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // An image exec(2) replaced has no loader rendezvous to follow.
         let exec_replaced = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .is_some_and(|inferior| inferior.unfollowed_exec.is_some());
         if !exec_replaced {
             self.refresh_libraries()?;
@@ -1932,8 +1932,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.refresh_thread_names();
 
         let (triggering_thread, reason) = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.barrier.as_ref())
             .and_then(|barrier| Some((barrier.triggering_thread, barrier.reason.clone()?)))
             .ok_or_else(|| Error::internal("ready barrier publishes a reason"))?;
@@ -1952,7 +1952,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let temporaries_removed = self.remove_stopped_temporaries()?;
         self.mark_published_pause(triggering_thread, &reason);
         let stop_id = self.ptrace.allocate_stop_id()?;
-        let inferior = self.inferior.as_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         check_publishable(inferior, stop_id);
 
         for thread in inferior.threads.values_mut() {
@@ -2004,8 +2004,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let watched = match reason {
             StopReason::Watchpoint { ref hits } => hits.first().and_then(|hit| {
                 match self
-                    .inferior
-                    .as_ref()?
+                    .session
+                    .inferior()?
                     .watch
                     .watchpoints
                     .get(&hit.watchpoint)?
@@ -2028,7 +2028,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         self.bump_revision();
 
-        if self.attach_reply.is_some() {
+        if self.session.attaching() {
             let _ = self.events.send(DebuggerEvent::InferiorAttached {
                 revision: self.revision,
                 process_id,
@@ -2051,7 +2051,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.publish_breakpoints_changed();
         }
 
-        if let Some(reply) = self.attach_reply.take() {
+        if let Some(reply) = self.session.take_attach() {
             let _ = reply.send(Ok(stop_id));
         }
 
@@ -2062,7 +2062,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Reads every thread's name, which it may have changed while running.
     pub(super) fn refresh_thread_names(&mut self) {
-        let Some(inferior) = self.inferior.as_mut() else {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
 
@@ -2079,8 +2079,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let expected = self
-            .inferior
-            .as_ref()
+            .session
+            .inferior()
             .and_then(|inferior| inferior.threads.get(&pid))
             .map(|thread| thread.expected.clone())
             .ok_or(Error::NotRunning)?;

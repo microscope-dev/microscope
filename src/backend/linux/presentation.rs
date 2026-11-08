@@ -820,7 +820,7 @@ impl<P: InspectionOps> Controller<P> {
         limit: u32,
         budget: &mut InspectionBudget,
     ) -> Result<ValueChildPage> {
-        let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let root = self.stack_root(reference.stop_id, reference.context)?;
         let frame = self.resolve_frame(inferior, &root, reference.frame)?;
         let scope = self.frame_for(inferior, reference.stop_id, &root, &frame);
