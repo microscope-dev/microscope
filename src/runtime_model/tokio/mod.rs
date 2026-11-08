@@ -613,6 +613,7 @@ impl RuntimeModel for TokioRuntime {
         limit: usize,
         program_only: bool,
     ) -> Partial<TaskPage> {
+        let _span = crate::span!("tokio tasks");
         let mut page = self.partial(TaskPage {
             tasks: Vec::new(),
             next: None,

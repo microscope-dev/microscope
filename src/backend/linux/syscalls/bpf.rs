@@ -1289,6 +1289,7 @@ impl Loaded {
         launch: bool,
         scope: Scope,
     ) -> Result<Self, BpfError> {
+        let _span = crate::span!("syscalls bpf load");
         // Every slot when every call is chosen, numbers no table names
         // among them. Each chosen call has a row of statistics.
         let all = options.calls.is_all();
@@ -1370,7 +1371,10 @@ impl Loaded {
             config.set(0, value, 0).map_err(load_error)?;
         }
 
-        attach(&mut ebpf, &btf, &attachment, &terminal)?;
+        {
+            let _span = crate::span!("syscalls bpf attach");
+            attach(&mut ebpf, &btf, &attachment, &terminal)?;
+        }
 
         let targets =
             HashMap::try_from(ebpf.take_map("TARGETS").ok_or_else(|| missing("TARGETS"))?)

@@ -383,6 +383,7 @@ impl Walker {
         processor: &mut record::Processor,
         kernel: bool,
     ) -> Result<Self, SamplerError> {
+        let _span = crate::span!("record bpf load");
         let (sampler, outputs) = Sampler::load(events, kernel)?;
         processor.interpret(outputs);
         Ok(Self {
@@ -793,7 +794,7 @@ fn drive(
         let mut drained = 0;
         drained_at = std::time::Instant::now();
         {
-            let _zone = microscope_probes::zone!("record drain");
+            let _span = crate::span!("record drain");
             processor.ingest_drained(
                 |blocks| drained = events.drain_blocks(blocks),
                 (!finished).then_some(watermark),
@@ -813,7 +814,6 @@ fn drive(
         }
 
         if let Some(probes) = &mut probes {
-            let _zone = microscope_probes::zone!("record probes");
             if finished {
                 probes.finish(processor, !ended(Duration::ZERO));
             } else {
@@ -927,6 +927,7 @@ fn save_when_due(
         return;
     }
     record!("record: saved, segment due {due}");
+    let _span = crate::span!("record save");
     let capture = if every.is_some() {
         *cut = std::time::Instant::now();
         processor.segment()
@@ -1546,6 +1547,7 @@ impl SyscallTrace {
         calls: &crate::syscalls::CallSet,
         recording: &RecordOptions,
     ) -> Result<Self, String> {
+        let _span = crate::span!("record syscalls start");
         let options = TraceOptions {
             calls: calls.clone(),
             limits: crate::syscalls::captures::Limits::default(),
@@ -1613,6 +1615,7 @@ impl SyscallTrace {
     /// Ends the trace, its program having ended, and merges it with the
     /// samples.
     fn merge(self, samples: &Capture) -> Result<Capture, String> {
+        let _span = crate::span!("record syscalls merge");
         // Whatever the program's last calls sent is in the ring, which the
         // trace drains before it ends; a process the program left running
         // goes on untraced.

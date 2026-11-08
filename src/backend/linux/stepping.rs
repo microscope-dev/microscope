@@ -1602,6 +1602,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         kind: StepKind,
         frame: StackFrameId,
     ) -> Result<StepStart> {
+        let _span = crate::span!("step plan");
         let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
         let thread = inferior.thread(pid)?;
         if !matches!(thread.state, NativeThreadState::Stopped) {

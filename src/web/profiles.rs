@@ -515,7 +515,10 @@ impl Profiles {
             (&base, &base_keys)
         {
             let base_tree = base_keys.aggregate(&resolve_base(&base.profile, base_keys, of_base)?);
-            let diff = diff_trees((&keys, &tree), (base_keys, &base_tree));
+            let diff = {
+                let _span = microscope::span!("web diff tree");
+                diff_trees((&keys, &tree), (base_keys, &base_tree))
+            };
             let mut named = Named::with_base(&keys, base_keys);
             let columns = [&diff.own, &diff.total, &diff.base_own, &diff.base_total];
 
@@ -595,6 +598,7 @@ impl Profiles {
 
         let base_keys = base.profile.keys(granularity);
         let base_costs = base_keys.functions(&resolve_base(&base.profile, &base_keys, &of_base)?);
+        let diff_span = microscope::span!("web diff functions");
         let mut diff = diff_costs((&keys, &costs), (&base_keys, &base_costs));
 
         // Most changed share of the samples first.
@@ -611,6 +615,7 @@ impl Profiles {
         };
 
         diff.sort_by(|a, b| change(b).total_cmp(&change(a)));
+        drop(diff_span);
         let mut named = Named::with_base(&keys, &base_keys);
         let rows = diff
             .iter()
@@ -645,27 +650,38 @@ impl Profiles {
                     entry
                         .inspection
                         .get_or_init(|| {
+                            let _span = microscope::span!("web profile inspect");
                             to_value(&inspect::inspection(&entry.profile, entry.file.clone()))
                         })
                         .clone(),
                     Vec::new(),
                 ))
             }
-            Request::ProfileTree(query) => self.tree(&query),
-            Request::ProfileFunctions(query) => self.functions(&query).map(|answer| json(&answer)),
+            Request::ProfileTree(query) => {
+                let _span = microscope::span!("web profile tree");
+                self.tree(&query)
+            }
+            Request::ProfileFunctions(query) => {
+                let _span = microscope::span!("web profile functions");
+                self.functions(&query).map(|answer| json(&answer))
+            }
             Request::ProfileTimeline(timeline) => {
+                let _span = microscope::span!("web profile timeline");
                 let entry = self.entry(&timeline.query.profile)?;
                 Ok(json(&timeline_of(&entry.profile, &timeline)?))
             }
             Request::ProfileZones(query) => {
+                let _span = microscope::span!("web profile zones");
                 let entry = self.entry(&query.profile)?;
                 Ok(zones(&entry.profile, &query))
             }
             Request::ProfileLines(query) => {
+                let _span = microscope::span!("web profile lines");
                 let entry = self.entry(&query.query.profile)?;
                 Ok(json(&source(&entry.profile, &query)?))
             }
             Request::ProfileCode(query) => {
+                let _span = microscope::span!("web profile code");
                 let entry = self.entry(&query.query.profile)?;
                 Ok(json(&code(&entry.profile, &query)?))
             }
@@ -690,6 +706,7 @@ impl Profiles {
                     ));
                 };
 
+                let _span = microscope::span!("web syscalls");
                 let id = id.to_owned();
                 let entry = self.entry(&id)?;
                 let trace = entry

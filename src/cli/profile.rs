@@ -596,6 +596,7 @@ fn symbolize(args: &SymbolizeArgs) -> Result<()> {
 /// files and debug directories hold, writing a note for each module they
 /// do not.
 pub fn symbolize_here(profile: &mut Profile, out: &mut impl std::io::Write) -> Result<()> {
+    let _span = microscope::span!("report symbolize");
     for module in profile.symbolize(&microscope::DebugFileOptions::default()) {
         if let Err(why) = &module.source {
             writeln!(
@@ -816,6 +817,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
             path.display()
         );
     } else {
+        let _span = microscope::span!("record write");
         profile
             .write(&args.output)
             .with_context(|| format!("writing {}", args.output.display()))?;
@@ -988,8 +990,10 @@ pub(super) fn handle_signals(
 }
 
 fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
-    let read =
-        Profile::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?;
+    let read = {
+        let _span = microscope::span!("report read");
+        Profile::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?
+    };
     let mut profile = read.profile;
 
     if read.truncated {
@@ -1004,6 +1008,7 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     if args.base.is_some() || args.focus.is_some() {
         return selected_report(&profile, args, out);
     }
+    let _span = microscope::span!("report tables");
     ordinary_report(&profile, args, out)
 }
 
@@ -1364,8 +1369,10 @@ fn selected_report(
         .base
         .as_ref()
         .map(|file| -> Result<Profile> {
-            let read =
-                Profile::read(file).with_context(|| format!("reading {}", file.display()))?;
+            let read = {
+                let _span = microscope::span!("report read base");
+                Profile::read(file).with_context(|| format!("reading {}", file.display()))?
+            };
             if read.truncated {
                 writeln!(
                     out,
@@ -1781,6 +1788,7 @@ fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
     reason = "seconds and percentages need no more precision than f64's"
 )]
 fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
+    let _span = microscope::span!("report summary");
     let total = profile.total_weight();
     let program = profile.setting("program").unwrap_or("the program");
     let unit = profile.setting("weight").unwrap_or("nanoseconds");

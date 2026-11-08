@@ -540,6 +540,7 @@ impl Processor {
     /// it, and loaded once.
     pub fn call_sites(&mut self, path: &std::path::Path) -> Option<Sites> {
         use std::os::unix::fs::MetadataExt;
+        let _span = crate::span!("record call sites");
         let data = std::fs::read(path).ok()?;
         let file = object::File::parse(data.as_slice()).ok()?;
         if object::Object::section_by_name(&file, ".interp").is_some() {
@@ -1229,6 +1230,7 @@ impl Processor {
             return image;
         }
 
+        let _span = crate::span!("record image", "{}", file.display());
         let data = crate::image::backing::read_input(file)
             .ok()
             .map(|(data, _)| data);
@@ -2302,7 +2304,7 @@ impl Processor {
     /// The capture so far, every frame symbolized, which goes on growing:
     /// what a live view shows. Records held back stay held back.
     pub fn snapshot(&mut self) -> Capture {
-        let _zone = microscope_probes::zone!("record snapshot");
+        let _span = crate::span!("record snapshot");
         self.symbolize_new();
         let mut builder = self.builder.clone();
         if self.images.iter().any(|image| image.deferred.is_some()) {
@@ -2316,6 +2318,7 @@ impl Processor {
 
     /// The finished capture, every frame symbolized.
     pub fn finish(mut self) -> Capture {
+        let _span = crate::span!("record finish");
         // Everything held back is processed now.
         self.ingest(&[], None);
         if !self.symbols_later {
@@ -2914,6 +2917,7 @@ impl Processor {
         if !self.images.iter().any(|image| image.deferred.is_some()) {
             return;
         }
+        let _span = crate::span!("record enrich");
         let began = self.own_cpu();
         let sampled: BTreeSet<u32> = self
             .builder
@@ -2991,6 +2995,7 @@ impl Processor {
             return;
         }
 
+        let _span = crate::span!("record symbolize");
         let frames: Vec<(u32, u32, u64)> = self
             .builder
             .frames()

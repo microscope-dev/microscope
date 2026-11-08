@@ -94,6 +94,7 @@ impl<W: std::io::Write> Writer<W> {
 
 /// Writes one capture as a whole file.
 pub fn write(capture: &Capture, out: impl std::io::Write) -> std::io::Result<()> {
+    let _span = crate::span!("capture write");
     let chunk = capture
         .seal()
         .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -119,6 +120,7 @@ pub struct Read {
 
 /// Reads a capture file, merging its chunks.
 pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
+    let _span = crate::span!("capture read");
     if bytes.len() < HEADER || bytes[..8] != FILE_MAGIC {
         return Err(FileError::NotACapture);
     }

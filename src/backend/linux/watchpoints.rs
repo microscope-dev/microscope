@@ -647,6 +647,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         }
 
+        let _span = crate::span!("stop watchpoints");
         let mut invalid = BTreeMap::new();
 
         for (&id, record) in &inferior.watch.watchpoints {

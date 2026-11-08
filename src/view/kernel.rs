@@ -109,6 +109,7 @@ impl Kernel {
             ));
         }
 
+        let _span = crate::span!("view kernel compile");
         let mut config = Config::default();
         config
             .compilation_mode(CompilationMode::Eager)

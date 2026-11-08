@@ -930,6 +930,7 @@ impl RuntimeModel for PythonRuntime {
         limit: usize,
         _program_only: bool,
     ) -> Partial<TaskPage> {
+        let _span = crate::span!("python tasks");
         let empty = |gaps| Partial {
             value: TaskPage {
                 tasks: Vec::new(),

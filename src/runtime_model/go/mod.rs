@@ -474,6 +474,7 @@ impl RuntimeModel for GoRuntime {
         limit: usize,
         program_only: bool,
     ) -> Partial<TaskPage> {
+        let _span = crate::span!("go tasks");
         self.page(stop, start, limit, program_only, MIN_SCAN)
     }
 

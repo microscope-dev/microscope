@@ -290,6 +290,7 @@ impl Capture {
         reason = "one check per table keeps every promise the tables make in one place"
     )]
     pub fn validate(&self) -> Result<(), String> {
+        let _span = crate::span!("capture validate");
         if !crate::image::valid_pool(&self.strings, true) {
             return Err("the string pool is not NUL-terminated UTF-8".into());
         }

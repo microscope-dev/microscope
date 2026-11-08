@@ -141,7 +141,12 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
         ("validate.v8", super::v8::validate),
     ];
     let family = |&(name, validate): &(&'static str, Validation)| {
-        let _phase = crate::timings::span(name, None, None);
+        let _phase = crate::timings::span(
+            name,
+            None,
+            None,
+            microscope_probes::zone!("validate family"),
+        );
         validate(image).map_err(malformed)
     };
 

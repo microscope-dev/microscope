@@ -213,6 +213,7 @@ fn code_role(capture: &Capture, kind: KeyKind) -> CodeRole {
 
 impl<'a> Keys<'a> {
     pub(crate) fn new(capture: &'a Capture, granularity: Granularity) -> Self {
+        let _span = crate::span!("analysis keys");
         let mut kinds = Vec::new();
         let mut known: HashMap<KeyKind, u32> = HashMap::default();
         let mut key = |kind: KeyKind| {

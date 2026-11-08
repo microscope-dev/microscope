@@ -94,6 +94,7 @@ pub fn write(
     if let Some(name) = options.focus {
         return focus(current, base, options, name, out);
     }
+    let _span = microscope::span!("report diff");
     let base = base.context("a comparison needs --base FILE")?;
     let keys = current.keys(options.granularity);
     let base_keys = base.keys(options.granularity);
@@ -288,6 +289,7 @@ fn focus(
     name: &str,
     out: &mut impl Write,
 ) -> Result<()> {
+    let _span = microscope::span!("report focus");
     let keys = current.keys(options.granularity);
     // A name that only inlined frames carry is folded away, not missing.
     ensure!(

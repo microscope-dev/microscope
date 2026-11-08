@@ -72,6 +72,7 @@ impl Profile {
             return Vec::new();
         }
 
+        let _span = crate::span!("profile symbolize");
         let search = &DebugFileSearch::new(options);
         let capture = &self.capture;
         let mut builder = CaptureBuilder::new();

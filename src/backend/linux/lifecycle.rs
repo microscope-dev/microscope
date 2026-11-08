@@ -353,6 +353,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &self,
         requested: ProcessId,
     ) -> Result<(Pid, BTreeSet<Pid>, BTreeSet<Pid>, Waiter)> {
+        let _span = crate::span!("attach seize");
         let tgid = self.ptrace.thread_group_id(requested_pid(requested)?)?;
         let (seized, unseized) = self.seize_listed_threads(tgid)?;
         if self

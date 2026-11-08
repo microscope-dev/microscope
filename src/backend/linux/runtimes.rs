@@ -688,6 +688,7 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         // A task suspended in its future waits for what that future does.
+        let phase = crate::span!("tasks awaiting");
         for task in &mut tasks {
             if task.state == TaskState::Blocked
                 && let Some(awaiting) =
@@ -696,6 +697,7 @@ impl<P: InspectionOps> Controller<P> {
                 task.detail = Some(awaiting);
             }
         }
+        drop(phase);
 
         Ok(TaskPage {
             tasks: tasks.into(),

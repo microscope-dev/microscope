@@ -137,7 +137,7 @@ pub fn zone_stats(
     range: (i64, i64),
     threads: Option<&[u32]>,
 ) -> ZoneStats {
-    let _zone = microscope_probes::zone!("analysis zone stats");
+    let _span = crate::span!("analysis zone stats");
     let mut found = Vec::new();
     let mut flagged = 0;
 

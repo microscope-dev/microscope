@@ -390,6 +390,7 @@ impl Snapshotter {
         program: &Path,
         debug_files: &crate::DebugFileOptions,
     ) -> Result<Self, RecordError> {
+        let _span = crate::span!("task snapshot load");
         let program = Program::load(program, debug_files)
             .map_err(|error| RecordError::Program(error.to_string()))?;
         Ok(Self {

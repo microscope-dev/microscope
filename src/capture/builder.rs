@@ -1213,6 +1213,7 @@ impl CaptureBuilder {
     }
 
     fn assemble(self) -> Capture {
+        let _span = crate::span!("capture build");
         let (samples, sample_ranges) = grouped(self.samples);
         let (off_cpu, off_cpu_ranges) = grouped(self.off_cpu);
         let frame_symbols = if self.symbols.is_empty() {

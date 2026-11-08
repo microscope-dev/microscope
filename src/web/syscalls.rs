@@ -73,6 +73,7 @@ pub struct Trace {
 
 impl Trace {
     pub fn of(profile: &Profile) -> Self {
+        let _span = microscope::span!("web syscall trace");
         let recorded = profile.syscalls();
         let (start, end) = profile.span();
         let mut processes = ProcessTree::default();

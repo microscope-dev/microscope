@@ -394,6 +394,7 @@ fn what_to_serve(
 
 /// Serves `path` when it is a profile, returning its id; a program is not.
 fn open_profile(profiles: &profiles::Profiles, path: &std::path::Path) -> Result<Option<String>> {
+    let _span = microscope::span!("web profile open");
     if path.is_dir() {
         let id = profiles
             .add_segments(path)

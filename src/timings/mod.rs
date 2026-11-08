@@ -292,7 +292,18 @@ pub fn mark(name: &'static str) {
 #[must_use = "a span measures until it is dropped"]
 pub struct Span {
     open: bool,
+
+    /// The same span as a zone that another microscope can record. Only
+    /// built with `self-probes`; otherwise it is empty, but still keeps the
+    /// span on its thread, so both builds accept the same code.
+    _zone: Zone,
 }
+
+#[cfg(feature = "self-probes")]
+type Zone = microscope_probes::Zone;
+
+#[cfg(not(feature = "self-probes"))]
+type Zone = microscope_probes::Off;
 
 impl Span {
     /// The identifier work on another thread names as its parent, or `None`
@@ -316,9 +327,15 @@ impl Span {
 /// recording is running. Work that runs on another thread for this span
 /// names it as `parent`.
 #[inline]
-pub fn span(name: &'static str, parent: Option<u64>, label: Option<&dyn Fn() -> String>) -> Span {
+pub fn span(
+    name: &'static str,
+    parent: Option<u64>,
+    label: Option<&dyn Fn() -> String>,
+    zone: Zone,
+) -> Span {
     Span {
         open: enabled() && open_span(name, parent, label),
+        _zone: zone,
     }
 }
 
@@ -540,16 +557,26 @@ fn add_to(counters: &mut Vec<(&'static str, u64)>, name: &'static str, amount: u
 #[doc(hidden)]
 macro_rules! span {
     (parent = $parent:expr, $name:literal) => {
-        $crate::timings::span($name, $parent, None)
+        $crate::timings::span($name, $parent, None, ::microscope_probes::zone!($name))
     };
     (parent = $parent:expr, $name:literal, $($label:tt)+) => {
-        $crate::timings::span($name, $parent, Some(&|| ::std::format!($($label)+)))
+        $crate::timings::span(
+            $name,
+            $parent,
+            Some(&|| ::std::format!($($label)+)),
+            ::microscope_probes::zone!($name),
+        )
     };
     ($name:literal) => {
-        $crate::timings::span($name, None, None)
+        $crate::timings::span($name, None, None, ::microscope_probes::zone!($name))
     };
     ($name:literal, $($label:tt)+) => {
-        $crate::timings::span($name, None, Some(&|| ::std::format!($($label)+)))
+        $crate::timings::span(
+            $name,
+            None,
+            Some(&|| ::std::format!($($label)+)),
+            ::microscope_probes::zone!($name),
+        )
     };
 }
 

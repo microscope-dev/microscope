@@ -93,6 +93,7 @@ fn nothing_is_measured_without_a_recording() {
         "idle",
         None,
         Some(&|| panic!("a label formatted while not recording")),
+        microscope_probes::zone!("idle"),
     );
     assert_eq!(span.id(), None);
     count("idle", 1);

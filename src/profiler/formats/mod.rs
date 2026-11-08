@@ -127,6 +127,7 @@ impl Profile {
         match format {
             Format::Usprof => self.to_bytes(),
             Format::Pprof if trace => {
+                let _span = crate::span!("export pprof");
                 let calls = syscalls::samples(self, syscalls::Weigh::Calls);
                 let time = syscalls::samples(self, syscalls::Weigh::Time);
                 let (calls_keys, time_keys) =
@@ -150,6 +151,7 @@ impl Profile {
                 pprof::export(&values, end - start)
             }
             Format::Pprof => {
+                let _span = crate::span!("export pprof");
                 let keys = self.keys(Granularity::Line);
                 let (kind, unit) = match self.setting("weight").unwrap_or("nanoseconds") {
                     "nanoseconds" => ("cpu", "nanoseconds"),
@@ -166,11 +168,15 @@ impl Profile {
                 pprof::export(&values, end - start)
             }
             Format::Folded => {
+                let _span = crate::span!("export folded");
                 let calls = trace.then(|| syscalls::samples(self, syscalls::Weigh::Calls));
                 let keys = calls.as_ref().unwrap_or(self).keys(Granularity::Function);
                 Ok(folded::export(&keys, &keys.aggregate(&query(view))).into_bytes())
             }
-            Format::Chrome => Ok(chrome::export(self).into_bytes()),
+            Format::Chrome => {
+                let _span = crate::span!("export chrome");
+                Ok(chrome::export(self).into_bytes())
+            }
         }
     }
 

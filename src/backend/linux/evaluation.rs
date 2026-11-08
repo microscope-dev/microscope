@@ -2009,6 +2009,7 @@ impl<P: InspectionOps> Controller<P> {
         let inferior = self.stopped_root(stop_id, root)?;
         let resolved = self.resolve_frame(inferior, root, frame)?;
         let scope = self.frame_for(inferior, stop_id, root, &resolved);
+        let _span = crate::span!("eval expression");
         let program = bind(expression, &scope, mode).map_err(Error::Expression)?;
         let mut budget = InspectionBudget::new(limits);
 
@@ -2071,6 +2072,7 @@ impl<P: InspectionOps> Controller<P> {
         condition: bool,
         reason: &crate::StopReason,
     ) -> Result<Evaluation> {
+        let _span = crate::span!("eval hit");
         let inferior = self.inferior.as_ref().ok_or(Error::NotRunning)?;
 
         // The thread is in the ptrace-stop that reported the hit, which its

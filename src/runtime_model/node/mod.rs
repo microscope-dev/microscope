@@ -756,6 +756,7 @@ impl RuntimeModel for NodeRuntime {
         limit: usize,
         _program_only: bool,
     ) -> Partial<TaskPage> {
+        let _span = crate::span!("node tasks");
         let (all, gaps) = self.all_tasks(stop);
         let start = usize::try_from(start).unwrap_or(usize::MAX);
         let tasks: Vec<_> = all.iter().skip(start).take(limit).cloned().collect();

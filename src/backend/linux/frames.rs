@@ -242,6 +242,7 @@ impl<P: InspectionOps> Controller<P> {
 
     /// A stack's frames, each future one awaits with what it waits for.
     pub(super) fn backtrace(&self, stop_id: StopId, root: &StackRoot) -> Result<Backtrace> {
+        let _span = crate::span!("stack backtrace");
         let inferior = self.stopped_root(stop_id, root)?;
         let mut trace = if let Some(trace) = self.async_backtrace(inferior, root)? {
             trace
@@ -468,6 +469,7 @@ impl<P: InspectionOps> Controller<P> {
         frame: StackFrameId,
         presentation: Option<&FramePresentation>,
     ) -> Result<ResolvedFrame> {
+        let _span = crate::span!("stack frame");
         if let Some(resolved) = self.resolve_async_frame(inferior, root, frame)? {
             return Ok(resolved);
         }

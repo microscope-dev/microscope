@@ -836,9 +836,11 @@ pub fn open_core(
     options: &CoreDumpOptions,
     channels: ControllerChannels,
 ) -> Result<PostMortemSession> {
+    let phase = crate::span!("core open");
     let core = CoreDump::open(&options.core)?;
     let core_path = options.core.canonicalize()?;
     let resolved = resolve_modules(&core, options)?;
+    drop(phase);
     let backings = resolved.backings();
     let resolved_main_path = resolved.main_image.path.clone();
     let ResolvedModules {
