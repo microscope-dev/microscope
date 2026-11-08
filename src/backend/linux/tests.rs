@@ -3940,6 +3940,17 @@ fn the_invariant_check_finds_a_site_no_owner_holds() {
     harness.controller.check_invariants();
 }
 
+/// The invariant check fires on an inferior that is neither running,
+/// stopping, nor stopped.
+#[test]
+#[should_panic(expected = "runs no execution, gathers no stop, and has no stop published")]
+fn the_invariant_check_finds_an_inferior_in_no_run_phase() {
+    let mut harness = watch_harness(1);
+    harness.controller.check_invariants();
+    harness.inferior().public_stop = None;
+    harness.controller.check_invariants();
+}
+
 /// A client's shutdown after one the controller began itself, as a failed
 /// attach does, is answered once the first is done, not begun again.
 #[test]

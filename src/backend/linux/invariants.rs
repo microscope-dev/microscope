@@ -34,9 +34,26 @@ impl<P: InspectionOps> Controller<P> {
         self.check_lifecycle();
         if let Some(inferior) = &self.inferior {
             inferior.check_invariants(self.shutting_down);
+            self.check_run_phase(inferior);
             self.check_watchpoint_ids(inferior);
             self.check_managed(inferior);
         }
+    }
+
+    /// Once launched or attached, and until shutdown, the inferior is
+    /// always running an execution, gathering a stop, or stopped.
+    fn check_run_phase(&self, inferior: &Inferior) {
+        if self.shutting_down || self.launch_reply.is_some() || self.attach_reply.is_some() {
+            return;
+        }
+
+        debug_assert!(
+            inferior.active.is_some()
+                || inferior.barrier.is_some()
+                || inferior.public_stop.is_some(),
+            "inferior {} runs no execution, gathers no stop, and has no stop published",
+            inferior.tgid
+        );
     }
 
     /// Each managed location is owned by enabled breakpoints that list it,
