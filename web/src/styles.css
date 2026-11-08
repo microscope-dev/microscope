@@ -3846,7 +3846,8 @@ textarea.input {
   font: 10px var(--mono);
 }
 
-.zones-body canvas.panning {
+.zones-body.panning,
+.zones-body.panning canvas {
   cursor: grabbing;
 }
 

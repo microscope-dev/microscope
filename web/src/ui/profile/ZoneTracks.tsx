@@ -51,12 +51,14 @@ interface Tip {
  * depth, with the program's messages and frames as ticks above. Zones
  * under three pixels wide fold into one grey block; a click on a block
  * selects its span, which every view then reads. Ctrl and the wheel, or a
- * pinch, zoom about the pointer, and dragging pans.
+ * pinch, zoom about the pointer, and dragging pans, anywhere in the pane
+ * however little of it the tracks fill.
  */
 export function ZoneTracks() {
   const { profile, summary, query, look, setLook } = useProfile();
   const [box, width] = useWidth();
   const canvas = useRef<HTMLCanvasElement>(null);
+  const pane = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip | null>(null);
   const scheme = useShownScheme();
   const [pressed, setPressed] = useState<{
@@ -138,7 +140,7 @@ export function ZoneTracks() {
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   useEffect(() => {
-    const element = canvas.current;
+    const element = pane.current;
     if (!element) {
       return;
     }
@@ -155,7 +157,9 @@ export function ZoneTracks() {
         show(panned(view, event.deltaX * per, now.total));
         return;
       }
-      const at = view[0] + (event.clientX - element.getBoundingClientRect().left) * per;
+      const left = canvas.current?.getBoundingClientRect().left ?? 0;
+      const x = Math.min(Math.max(event.clientX - left, 0), now.plot);
+      const at = view[0] + x * per;
       show(zoomed(view, at, Math.exp(event.deltaY * 0.002), now.total));
     };
     element.addEventListener("wheel", wheel, { passive: false });
@@ -232,12 +236,15 @@ export function ZoneTracks() {
   }, [blocks, laid, marks, plot, height, look.zs, origin, span, scheme]);
 
   const point = useCallback(
-    (event: MouseEvent<HTMLCanvasElement>) => {
-      const bounds = event.currentTarget.getBoundingClientRect();
+    (event: MouseEvent<HTMLElement>) => {
+      const bounds = canvas.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
       const px = event.clientX - bounds.left;
       const py = event.clientY - bounds.top;
       const time = range[0] + (px * span) / Math.max(plot, 1);
       const slack = (2 * span) / Math.max(plot, 1);
+      if (px < 0 || px >= plot) {
+        return { px, py, time, block: null, mark: null };
+      }
       for (const [index, track] of laid.entries()) {
         const first = trackTop(track, index);
         if (py >= first - ROW && py < first) {
@@ -261,17 +268,23 @@ export function ZoneTracks() {
   );
 
   const press = useCallback(
-    (event: PointerEvent<HTMLCanvasElement>) => {
-      if (event.button !== 0) {
+    (event: PointerEvent<HTMLDivElement>) => {
+      const body = event.currentTarget;
+      const bounds = body.getBoundingClientRect();
+      // A press on the pane's scrollbars scrolls it rather than panning.
+      const scrollbar =
+        event.clientX - bounds.left >= body.clientLeft + body.clientWidth ||
+        event.clientY - bounds.top >= body.clientTop + body.clientHeight;
+      if (event.button !== 0 || scrollbar) {
         return;
       }
-      event.currentTarget.setPointerCapture(event.pointerId);
+      body.setPointerCapture(event.pointerId);
       setPressed({ x: event.clientX, view: range, moved: false });
     },
     [range],
   );
   const release = useCallback(
-    (event: PointerEvent<HTMLCanvasElement>) => {
+    (event: PointerEvent<HTMLDivElement>) => {
       const was = pressed;
       setPressed(null);
       if (!was || was.moved) {
@@ -290,7 +303,7 @@ export function ZoneTracks() {
   );
   const cancel = useCallback(() => setPressed(null), []);
   const hover = useCallback(
-    (event: PointerEvent<HTMLCanvasElement>) => {
+    (event: PointerEvent<HTMLDivElement>) => {
       if (pressed) {
         const by = event.clientX - pressed.x;
         if (pressed.moved || Math.abs(by) >= DRAG) {
@@ -322,7 +335,7 @@ export function ZoneTracks() {
   const tipStyle = useMemo(() => (tip ? { left: tip.x, top: tip.y } : undefined), [tip]);
 
   return (
-    <div className="pane grow zones-tracks">
+    <div className="pane grow zones-tracks" ref={pane}>
       <div className="pane-head">
         Zones
         <span className="count">
@@ -334,7 +347,15 @@ export function ZoneTracks() {
       {answer.error ? (
         <div className="empty error">{answer.error.message}</div>
       ) : (
-        <div className={`pane-body zones-body ${answer.current ? "" : "stale"}`} ref={box}>
+        <div
+          className={`pane-body zones-body ${answer.current ? "" : "stale"} ${pressed?.moved ? "panning" : ""}`}
+          ref={box}
+          onPointerDown={press}
+          onPointerUp={release}
+          onPointerCancel={cancel}
+          onPointerMove={hover}
+          onPointerLeave={leave}
+        >
           <Ruler origin={range[0]} span={span} width={plot} />
           {blocks ? null : <div className="empty">Reading zones…</div>}
           <div className="zone-lane">
@@ -351,12 +372,6 @@ export function ZoneTracks() {
               // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
               role="img"
               aria-label={`Zones over ${formatDuration(span)}`}
-              className={pressed?.moved ? "panning" : undefined}
-              onPointerDown={press}
-              onPointerUp={release}
-              onPointerCancel={cancel}
-              onPointerMove={hover}
-              onPointerLeave={leave}
             />
           </div>
           {(answer.data?.plots ?? []).map((series) => (

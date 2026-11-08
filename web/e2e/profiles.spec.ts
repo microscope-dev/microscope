@@ -403,6 +403,25 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   await expect.poll(() => range().start).toBeLessThan(zoomed.start);
   expect(range().end - range().start).toBe(zoomed.end - zoomed.start);
 
+  // The wheel zooms and dragging pans anywhere in the pane, not only over
+  // the tracks, which may fill little of it.
+  const pane = (await page.locator(".zones-tracks").boundingBox()) ?? bounds;
+  const drawn = (await tracks.boundingBox()) ?? bounds;
+  const below = drawn.y + drawn.height + 40;
+  expect(below).toBeLessThan(pane.y + pane.height);
+  const wide = range();
+  await page.mouse.move(drawn.x + drawn.width / 2, below);
+  await page.keyboard.down("Control");
+  await page.mouse.wheel(0, -400);
+  await page.keyboard.up("Control");
+  await expect.poll(() => range().end - range().start).toBeLessThan(wide.end - wide.start);
+  const narrow = range();
+  await page.mouse.down();
+  await page.mouse.move(drawn.x + drawn.width / 2 + 80, below, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => range().start).toBeLessThan(narrow.start);
+  expect(range().end - range().start).toBe(narrow.end - narrow.start);
+
   // Another theme repaints the tracks in its colors.
   await page.emulateMedia({ colorScheme: "light" });
   const painted = () => tracks.evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL());
