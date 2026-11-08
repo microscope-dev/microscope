@@ -348,10 +348,21 @@ impl Client {
     /// to end as a whole: killed from outside, or exiting its group. Such a
     /// process vanishes under requests about it, even from a stop the
     /// debugger published just before it heard of the end, so a request
-    /// may fail however it fails.
+    /// may fail however it fails, except by losing its reply: a controller
+    /// that still runs answers every request.
     fn excuse(&self, process: ProcessId, result: Result<(), Failure>) -> Result<(), Failure> {
         match result {
             Err(failure) if failure.check == "protocol" && self.ending(process) => {
+                // The failure carries only the error's message.
+                if failure.message.contains(&Error::ReplyDropped.to_string())
+                    && !self.handle.has_ended()
+                {
+                    return Err(Failure::debugger(
+                        "lost reply",
+                        format!("while the program ended: {}", failure.message),
+                    ));
+                }
+
                 self.note(format!(
                     "the program is ending, so this may fail: {}",
                     failure.message
@@ -390,8 +401,8 @@ impl Client {
             }
             // A request sent just before the controller exited is dropped
             // unanswered.
-            Err(Error::RequestQueueClosed | Error::RequestCancelled)
-                if self.attached_program_ending() =>
+            Err(Error::RequestQueueClosed | Error::ReplyDropped)
+                if self.attached_program_ending() && self.handle.has_ended() =>
             {
                 self.note("the debugger detached and exited");
                 Ok(None)

@@ -446,6 +446,11 @@ pub enum Error {
     #[error("debugger request was cancelled")]
     RequestCancelled,
 
+    /// The controller dropped the request's reply without answering it,
+    /// as it does only to requests still queued when it ends.
+    #[error("the debugger dropped the request without answering it")]
+    ReplyDropped,
+
     #[error("the view failed: {0}")]
     ViewFailed(Arc<str>),
 

@@ -207,6 +207,10 @@ pub enum Sabotage {
     /// they are, so the debugger places a position-independent program's
     /// addresses a page off.
     ShiftMappings,
+
+    /// The controller drops a client's request, other than a shutdown,
+    /// unanswered while its program is ending.
+    DropRequestsWhileEnding,
 }
 
 impl Default for Settings {
@@ -829,6 +833,18 @@ impl<'a> World<'a> {
             .expect("deliver needs a controller");
         let delivery = controller.take().expect("deliver needs a message");
         let description = delivery.description.clone();
+
+        #[cfg(test)]
+        if self.machine.sabotage == Some(Sabotage::DropRequestsWhileEnding)
+            && delivery.request
+            && !delivery.shutdown
+            && controller
+                .inferior()
+                .is_some_and(|tgid| oracles::ending(&self.machine.kernel.borrow(), tgid))
+        {
+            return Ok(format!("deliver {description} -> dropped"));
+        }
+
         let before = controller.truth();
 
         // A trap whose stop the controller now hears of: each arrival at a

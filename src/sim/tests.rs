@@ -216,6 +216,17 @@ fn fails_with(sabotage: Sabotage, check: &str, message: &str) -> bool {
     })
 }
 
+/// A request the controller drops unanswered fails even while the program
+/// is ending, when the client excuses most failures.
+#[test]
+fn a_reply_dropped_while_ending_fails() {
+    assert!(fails_with(
+        Sabotage::DropRequestsWhileEnding,
+        "lost reply",
+        "dropped the request without answering it"
+    ));
+}
+
 /// A kernel that loses the debugger's writes leaves traps the controller
 /// believes installed missing from memory, which code integrity catches.
 #[test]

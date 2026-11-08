@@ -835,6 +835,10 @@ pub struct Delivery {
     /// The thread a `SIGTRAP` signal-delivery-stop status is about.
     pub trap: Option<Tid>,
 
+    /// Whether the message is a client's request.
+    #[cfg(test)]
+    pub request: bool,
+
     /// Whether the message asks the controller to shut down.
     pub shutdown: bool,
 }
@@ -940,6 +944,8 @@ impl SimController {
             ),
         };
 
+        #[cfg(test)]
+        let request = matches!(message, ControllerMessage::Request(_));
         let shutdown = matches!(
             message,
             ControllerMessage::Request(Request::Shutdown { .. })
@@ -949,6 +955,8 @@ impl SimController {
             message,
             description,
             trap,
+            #[cfg(test)]
+            request,
             shutdown,
         })
     }

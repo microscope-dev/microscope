@@ -2275,6 +2275,12 @@ impl DebuggerHandle {
         self.requests.closed().await;
     }
 
+    /// Whether the controller has ended, as [`Self::ended`] waits for.
+    #[cfg(any(test, feature = "sim"))]
+    pub(crate) fn has_ended(&self) -> bool {
+        self.requests.is_closed()
+    }
+
     async fn wait_for_execution(
         &self,
         events: &mut broadcast::Receiver<DebuggerEvent>,
@@ -2335,7 +2341,7 @@ impl DebuggerHandle {
             .await
             .map_err(|_| Error::RequestQueueClosed)?;
 
-        receive.await.map_err(|_| Error::RequestCancelled)?
+        receive.await.map_err(|_| Error::ReplyDropped)?
     }
 }
 

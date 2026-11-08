@@ -90,7 +90,7 @@ failed edit leaves them in step.
 
 ## When an assertion fires
 
-The controller ends. Pending requests fail with `RequestCancelled`, and
+The controller ends. Pending requests fail with `ReplyDropped`, and
 `shutdown` returns `BackendThreadPanicked`. Clients show both as an internal
 error. Left alone, its process would stay traced by the tracer thread with no
 controller to serve it, and once that thread ended the kernel would release
