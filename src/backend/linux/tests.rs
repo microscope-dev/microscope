@@ -1,3 +1,5 @@
+mod lifecycle;
+
 use crate::debug_info::{VariableContext, VariableRuntime};
 use crate::inspection::InspectionBudget;
 use crate::protocol::{
@@ -4942,6 +4944,7 @@ fn hit_harness(thread_count: i32, hit_condition: &str) -> WatchHarness {
         enabled: true,
         temporary: false,
     });
+    harness.controller.next_breakpoint_id = 2;
     harness.inferior().breakpoints.insert(
         VirtualAddress::new(HIT_SITE),
         BreakpointSite {
