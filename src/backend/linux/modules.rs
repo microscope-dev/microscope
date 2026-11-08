@@ -313,17 +313,37 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let mut new = Vec::new();
 
+        // A file an earlier session loaded keeps its image's id, unless a
+        // module bound whole holds it already: a file mapped twice.
+        let mut bound = self
+            .modules
+            .values()
+            .filter(|module| module.loaded.window.is_none())
+            .map(|module| module.loaded.image)
+            .collect::<BTreeSet<_>>();
+
         for (path, load_bias) in unknown {
             let module_id = crate::ModuleId::new(self.next_module_id);
             self.next_module_id = self
                 .next_module_id
                 .checked_add(1)
                 .ok_or_else(|| backend_error(LinuxError::ModuleIdExhausted))?;
-            let image_id = crate::ModuleImageId::new(self.next_image_id);
-            self.next_image_id = self
-                .next_image_id
-                .checked_add(1)
-                .ok_or_else(|| backend_error(LinuxError::ModuleImageIdExhausted))?;
+            let kept = self
+                .kept
+                .as_ref()
+                .and_then(|kept| kept.image(&path))
+                .filter(|image| !bound.contains(image));
+            let image_id = if let Some(image) = kept {
+                image
+            } else {
+                let image = crate::ModuleImageId::new(self.next_image_id);
+                self.next_image_id = self
+                    .next_image_id
+                    .checked_add(1)
+                    .ok_or_else(|| backend_error(LinuxError::ModuleImageIdExhausted))?;
+                image
+            };
+            bound.insert(image_id);
             new.push((path, load_bias, module_id, image_id));
         }
 
@@ -431,17 +451,35 @@ impl<P: LinuxTraceOps> Controller<P> {
             } else if let Some(data) = jit_objects.remove(path) {
                 let load = crate::debug_info::load_transient_bytes(path, &data, *image);
                 in_memory.insert(index, load);
+            } else if let Some(debug) = self.kept.as_ref().and_then(|kept| kept.debug(path, *image))
+            {
+                in_memory.insert(index, Ok(debug));
             } else {
                 files.push((path.clone(), *image));
             }
         }
 
-        let mut files = if files.is_empty() {
+        // Stamped before they load, so that a file that changes meanwhile
+        // is loaded again next time.
+        let stamps = self.kept.as_ref().map(|_| {
+            files
+                .iter()
+                .map(|(path, _)| crate::backend::KeptModules::stamp(path))
+                .collect::<Vec<_>>()
+        });
+        let loads = if files.is_empty() {
             Vec::new()
         } else {
             self.ptrace.load_modules(&files, &self.debug_files)
+        };
+        if let (Some(kept), Some(stamps)) = (&self.kept, stamps) {
+            for (((path, image), stamp), load) in files.iter().zip(stamps).zip(&loads) {
+                if let (Some(stamp), Ok(debug)) = (stamp, load) {
+                    kept.keep(path, stamp, *image, debug);
+                }
+            }
         }
-        .into_iter();
+        let mut files = loads.into_iter();
 
         (0..new.len())
             .map(|index| {

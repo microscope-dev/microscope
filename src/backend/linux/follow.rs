@@ -354,6 +354,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 identity: self.main.identity,
                 process_start_time: self.ptrace.process_start_time(child),
                 debug_files: self.debug_files.clone(),
+                kept: None,
                 c_library: self.main.c_library,
             },
             DebugInfo {

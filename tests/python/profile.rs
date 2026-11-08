@@ -25,11 +25,11 @@ const PROFILED: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"]
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The snapshots a recording must hold, past its deadline, before it is
-/// released unready, and how long it may wait for them. Each stopped
-/// snapshot's debugger reads every library's debug information again,
-/// which `just stress`, with no image cache and every CPU busy, can make
-/// take most of the deadline; a recording released after one has shown
-/// nothing of the program.
+/// released unready, and how long it may wait for them. The first stopped
+/// snapshot's debugger reads every library's debug information, which
+/// `just stress`, with no image cache and every CPU busy, can make take
+/// most of the deadline; a recording released after one has shown nothing
+/// of the program.
 const ENOUGH_SNAPSHOTS: u64 = 10;
 const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(100);
 

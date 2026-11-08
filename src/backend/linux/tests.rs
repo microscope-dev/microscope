@@ -1846,22 +1846,34 @@ pub(super) fn watch_harness(thread_count: i32) -> WatchHarness {
 /// A harness of `thread_count` threads stopped for a pause in a process of
 /// `image`, the first presenting the stop at 0x10.
 fn watch_harness_of(thread_count: i32, image: &Arc<ModuleImage>) -> WatchHarness {
+    watch_harness_keeping(thread_count, image, None)
+}
+
+/// A harness as [`watch_harness_of`] makes, whose program keeps its
+/// modules' loads in `kept`.
+fn watch_harness_keeping(
+    thread_count: i32,
+    image: &Arc<ModuleImage>,
+    kept: Option<crate::backend::KeptModules>,
+) -> WatchHarness {
     let threads = (0..thread_count)
         .map(|offset| Pid::from_raw(5000 + offset))
         .collect::<Vec<_>>();
     let (sender, receiver) = mpsc::channel(8);
     let (events, event_receiver) = broadcast::channel(256);
+    let mut executable = crate::backend::ExecutableSource {
+        display_path: Arc::new(PathBuf::from("/test/watch")),
+        launch_path: Arc::new(PathBuf::from("/test/watch")),
+        data: sectionless_elf(),
+        identity: FileIdentity { inode: 0 },
+        process_start_time: None,
+        debug_files: crate::debug_info::DebugFileSearch::default(),
+    }
+    .described();
+    executable.kept = kept;
     let mut controller = Controller::new(
         SessionLease::detached(),
-        crate::backend::ExecutableSource {
-            display_path: Arc::new(PathBuf::from("/test/watch")),
-            launch_path: Arc::new(PathBuf::from("/test/watch")),
-            data: sectionless_elf(),
-            identity: FileIdentity { inode: 0 },
-            process_start_time: None,
-            debug_files: crate::debug_info::DebugFileSearch::default(),
-        }
-        .described(),
+        executable,
         DebugInfo {
             image: Arc::clone(image),
             unwind: Arc::new(UnusedUnwindInfo),
@@ -9307,6 +9319,98 @@ fn new_modules_load_together_and_register_in_observation_order() {
         .collect::<Vec<_>>();
     assert_eq!(loads, ["load_modules /lib/libb.so#4 /lib/libd.so#5"]);
     assert_eq!(loaded(&mut harness), [(5, "/lib/libd.so".into())]);
+}
+
+/// A session of a program that keeps its modules takes each file an
+/// earlier session loaded, under the same image, instead of loading it
+/// again; a file that changed since, or failed to load, loads again, and
+/// new images are numbered past every kept one.
+#[test]
+fn a_later_session_takes_the_modules_an_earlier_one_loaded() {
+    let directory =
+        std::env::temp_dir().join(format!("microscope-kept-modules-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = |name: &str| directory.join(name);
+    for name in ["liba.so", "libb.so", "libfail.so"] {
+        std::fs::write(file(name), name).unwrap();
+    }
+
+    let kept = crate::backend::KeptModules::default();
+    let session = |libraries: &[(&str, u64, bool)]| {
+        let mut harness = watch_harness_keeping(1, &virtual_step_image(), Some(kept.clone()));
+        for &(name, bias, loads) in libraries {
+            harness
+                .trace()
+                .libraries
+                .borrow_mut()
+                .insert(file(name), (crate::LoadBias::new(bias), loads));
+        }
+        harness.trace().take_actions();
+        harness.controller.refresh_modules().unwrap();
+        harness.controller.check_invariants();
+        harness
+    };
+    let loads = |harness: &WatchHarness| {
+        harness
+            .trace()
+            .take_actions()
+            .into_iter()
+            .filter_map(|action| {
+                let names = action.strip_prefix("load_modules ")?;
+                Some(names.replace(&format!("{}/", directory.display()), ""))
+            })
+            .collect::<Vec<_>>()
+    };
+    let image_of = |harness: &WatchHarness, name: &str| {
+        harness
+            .controller
+            .modules
+            .values()
+            .find(|module| module.image.path() == file(name))
+            .map(|module| Arc::clone(&module.image))
+    };
+
+    let first = session(&[
+        ("liba.so", 0x7000_0000, true),
+        ("libb.so", 0x7100_0000, true),
+        ("libfail.so", 0x7200_0000, false),
+    ]);
+    assert_eq!(loads(&first), ["liba.so#1 libb.so#2 libfail.so#3"]);
+
+    // libb.so is rewritten, and libd.so is new.
+    std::fs::write(file("libb.so"), "libb.so, rebuilt").unwrap();
+    std::fs::write(file("libd.so"), "libd.so").unwrap();
+    let second = session(&[
+        ("liba.so", 0x7000_0000, true),
+        ("libb.so", 0x7100_0000, true),
+        ("libd.so", 0x7300_0000, true),
+        ("libfail.so", 0x7200_0000, false),
+    ]);
+
+    assert_eq!(loads(&second), ["libb.so#3 libd.so#4 libfail.so#5"]);
+    let (Some(before), Some(after)) = (image_of(&first, "liba.so"), image_of(&second, "liba.so"))
+    else {
+        panic!("liba.so is registered in both sessions");
+    };
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "liba.so's image is taken, not loaded again"
+    );
+    assert_eq!(after.id().get(), 1);
+    assert_eq!(
+        image_of(&second, "libb.so").map(|image| image.id().get()),
+        Some(3)
+    );
+
+    // A third session takes the rebuilt libb.so as the second loaded it.
+    let third = session(&[
+        ("liba.so", 0x7000_0000, true),
+        ("libb.so", 0x7100_0000, true),
+        ("libd.so", 0x7300_0000, true),
+    ]);
+    assert_eq!(loads(&third), Vec::<String>::new());
+
+    std::fs::remove_dir_all(&directory).unwrap();
 }
 
 /// Stepping knows the role of code in any loaded module, not only in the

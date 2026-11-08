@@ -1569,6 +1569,10 @@ struct Controller<P: InspectionOps> {
     /// Where loaded modules' separate debug files are found.
     debug_files: crate::debug_info::DebugFileSearch,
 
+    /// The module loads earlier sessions of the program kept, which this
+    /// one takes instead of loading the same files again, and adds to.
+    kept: Option<crate::backend::KeptModules>,
+
     /// The canonical path and load bias computed for each mapping, so known
     /// modules are not re-read from disk at every stop.
     mapped_modules: BTreeMap<ModuleMapping, (PathBuf, crate::LoadBias)>,
@@ -1910,7 +1914,12 @@ impl<P: InspectionOps> Controller<P> {
             mapped_modules: BTreeMap::new(),
             next_module_id: 1,
             code_copies: std::collections::BTreeMap::new(),
-            next_image_id: 1,
+            // A kept module's image keeps its id, which no other may take.
+            next_image_id: executable
+                .kept
+                .as_ref()
+                .map_or(1, |kept| kept.next_image().max(1)),
+            kept: executable.kept,
             messages: RefCell::new(channels.receiver),
             pending: RefCell::new(VecDeque::new()),
             alarm: RefCell::new(None),

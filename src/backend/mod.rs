@@ -67,6 +67,7 @@ impl ExecutableSource {
             identity: self.identity,
             process_start_time: self.process_start_time,
             debug_files: self.debug_files,
+            kept: None,
         }
     }
 }
@@ -81,8 +82,86 @@ pub struct Executable {
     pub process_start_time: Option<u64>,
     pub debug_files: crate::debug_info::DebugFileSearch,
 
+    /// The modules this executable's sessions loaded, kept for its next
+    /// session, if it keeps them.
+    pub kept: Option<KeptModules>,
+
     /// The C library the executable runs on, whose structures locate TLS.
     c_library: linux::CLibrary,
+}
+
+/// The debug information sessions of one program loaded from module files,
+/// by each file's path, for its next session to take instead of loading it
+/// again while the file is unchanged. Each keeps the image id it was bound
+/// with, which a later session gives the module too.
+#[derive(Clone, Default)]
+pub struct KeptModules(Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, KeptModule>>>);
+
+#[derive(Clone)]
+struct KeptModule {
+    stamp: crate::image::backing::FileStamp,
+    image: crate::ModuleImageId,
+    debug: DebugInfo,
+}
+
+impl KeptModules {
+    fn held(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<PathBuf, KeptModule>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The file at `path` as it is now, to tell a kept load from a stale one.
+    pub(crate) fn stamp(path: &Path) -> Option<crate::image::backing::FileStamp> {
+        fs::metadata(path)
+            .ok()
+            .map(|metadata| crate::image::backing::FileStamp::of(&metadata))
+    }
+
+    /// The image id kept for the file at `path`, while it is the file that
+    /// was loaded.
+    pub(crate) fn image(&self, path: &Path) -> Option<crate::ModuleImageId> {
+        let stamp = Self::stamp(path)?;
+        self.held()
+            .get(path)
+            .filter(|kept| kept.stamp == stamp)
+            .map(|kept| kept.image)
+    }
+
+    /// The debug information kept for `path` under image id `image`.
+    pub(crate) fn debug(&self, path: &Path, image: crate::ModuleImageId) -> Option<DebugInfo> {
+        self.held()
+            .get(path)
+            .filter(|kept| kept.image == image)
+            .map(|kept| kept.debug.clone())
+    }
+
+    /// Keeps a load of the file at `path`, stamped as it was before the
+    /// load began, in place of any earlier one.
+    pub(crate) fn keep(
+        &self,
+        path: &Path,
+        stamp: crate::image::backing::FileStamp,
+        image: crate::ModuleImageId,
+        debug: &DebugInfo,
+    ) {
+        let kept = KeptModule {
+            stamp,
+            image,
+            debug: debug.clone(),
+        };
+        self.held().insert(path.to_owned(), kept);
+    }
+
+    /// The image id after every kept one, which a session numbers its own
+    /// images from.
+    pub(crate) fn next_image(&self) -> u32 {
+        self.held()
+            .values()
+            .map(|kept| kept.image.get().saturating_add(1))
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 pub fn executable_source(path: &Path) -> Result<ExecutableSource> {

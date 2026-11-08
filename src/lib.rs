@@ -552,6 +552,15 @@ impl Program {
         .map_err(|_| Error::internal("reading the program to attach to panicked"))?
     }
 
+    /// Keeps the debug information each session of this program, or of a
+    /// copy of it, loads from module files, so that a later session takes
+    /// it instead of loading a file again while the file is unchanged.
+    #[must_use]
+    pub fn keeping_modules(mut self) -> Self {
+        self.executable.kept = Some(backend::KeptModules::default());
+        self
+    }
+
     fn from_executable_source(executable: backend::ExecutableSource) -> Result<Self> {
         let debug_info = debug_info::load_program(
             &executable.display_path,

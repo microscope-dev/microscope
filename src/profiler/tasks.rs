@@ -384,15 +384,19 @@ fn code_at(
 
 impl Snapshotter {
     /// Reads the debug information of `program`, which process `pid` runs,
-    /// once for every snapshot.
+    /// and of its modules, once for every snapshot.
     pub fn new(
         pid: u32,
         program: &Path,
         debug_files: &crate::DebugFileOptions,
     ) -> Result<Self, RecordError> {
         let _span = crate::span!("task snapshot load");
+        // Each snapshot's debugger takes the modules earlier ones loaded: a
+        // stopped snapshot that loaded them again would hold the program
+        // for as long as that takes, a second for a large library.
         let program = Program::load(program, debug_files)
-            .map_err(|error| RecordError::Program(error.to_string()))?;
+            .map_err(|error| RecordError::Program(error.to_string()))?
+            .keeping_modules();
         Ok(Self {
             pid,
             program,
