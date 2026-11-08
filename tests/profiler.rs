@@ -159,8 +159,26 @@ fn a_function_breakpoint_records_its_exact_callers_in_every_build() {
 
             let recording = record(command(variant, 1), &options).expect("record");
             assert!(recording.status.success());
-            let stacks = recording.profile.stacks();
-            assert_eq!(stacks.len(), 6, "{variant} {copy}: every call is a sample");
+            // Every call is a sample, unless other recordings held the
+            // user's share of locked memory and left this one rings too
+            // small for a burst of deep copies. Then the kernel counts what
+            // it dropped, and the profile says its rings shrank.
+            let profile = &recording.profile;
+            let stacks = profile.stacks();
+            let lost = profile.lost_samples();
+            assert_eq!(
+                profile.counted(),
+                6,
+                "{variant} {copy}: every call is counted"
+            );
+            assert_eq!(
+                stacks.len() as u64 + lost,
+                6,
+                "{variant} {copy}: every call is a sample or counted lost"
+            );
+            if profile.setting("ring warning").is_none() {
+                assert_eq!(lost, 0, "{variant} {copy}: full rings lose no call");
+            }
             for stack in &stacks {
                 let expected = expected(stack);
                 let context = format!("{variant} {copy}: {stack:?}");
