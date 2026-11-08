@@ -347,3 +347,157 @@ fn each_lifecycle_request_is_answered_in_each_phase() {
     ];
     assert_eq!(actual, expected, "\n{}", actual.join("\n"));
 }
+
+/// A session attached to `pid`, which is the test's own process when the
+/// test needs `/proc` to name its program, stopped at the attach.
+fn attached_to(pid: Pid) -> WatchHarness {
+    let mut harness = idle();
+    harness.trace().listed_threads.replace(vec![pid]);
+    let (reply, receiver) = oneshot::channel();
+    send(
+        &mut harness,
+        Request::Attach {
+            process_id: process_id(pid),
+            observe: false,
+            reply,
+        },
+    );
+    let mut attached = reader(receiver);
+    harness.controller.handle_wait(WaitEvent::PtraceEvent(
+        pid,
+        Signal::SIGTRAP,
+        libc::PTRACE_EVENT_STOP,
+    ));
+    assert_eq!(attached(), "ok", "the setup's attach");
+    harness.trace().take_actions();
+    harness.published();
+    harness
+}
+
+/// A group member that executes a program the group only watches leaves
+/// the session at that exec. A kill sent before it is answered then, as
+/// the session ends, rather than left waiting with nothing to answer it.
+#[test]
+fn a_kill_waiting_when_a_member_is_handed_off_at_an_exec_is_answered() {
+    let me = Pid::from_raw(i32::try_from(std::process::id()).expect("pid fits"));
+    let mut harness = attached_to(me);
+    let following = Arc::new(super::follow::Following::new(super::follow::Policy {
+        policy: crate::FollowPolicy {
+            mode: crate::FollowMode::None,
+            ..crate::FollowPolicy::default()
+        },
+        launched: None,
+    }));
+    harness.controller.join_group(super::follow::Membership {
+        following,
+        root: false,
+        parent: None,
+        settings_taken: 0,
+    });
+    harness.start_continue();
+
+    let (_, mut killed) = kill(&mut harness);
+    assert_eq!(killed(), "pending");
+
+    // The exec's event names the thread that executed it.
+    harness.trace().clone.replace(Some((me, me)));
+    assert!(harness.controller.handle_wait(WaitEvent::PtraceEvent(
+        me,
+        Signal::SIGTRAP,
+        libc::PTRACE_EVENT_EXEC
+    )));
+
+    assert!(
+        harness
+            .published()
+            .iter()
+            .any(|event| matches!(event, DebuggerEvent::InferiorDetached { .. })),
+        "the member left the session at its exec"
+    );
+    assert_eq!(killed(), "ok");
+
+    // The session is over, so another can start.
+    let (running, mut launched) = launch(&mut harness);
+    assert!(running);
+    assert_eq!(launched(), "pending");
+}
+
+/// A waiter that cannot be joined at the process's exit does not cost the
+/// exit its event or the kill its answer, and leaves the session idle.
+#[test]
+fn a_waiter_that_fails_at_the_exit_still_publishes_it_and_answers_the_kill() {
+    let mut harness = watch_harness(1);
+    let pid = harness.threads[0];
+    harness.inferior().waiter = Some(Waiter {
+        thread: Some(WaiterThread {
+            stop: Arc::new(AtomicBool::new(false)),
+            // Unwinds without the panic hook, so the test prints nothing.
+            handle: thread::spawn(|| std::panic::resume_unwind(Box::new(()))),
+        }),
+        hub: None,
+    });
+
+    let (_, mut killed) = kill(&mut harness);
+    harness.published();
+    assert!(
+        harness
+            .controller
+            .handle_wait(WaitEvent::Signaled(pid, Signal::SIGKILL, false))
+    );
+
+    assert!(
+        harness
+            .published()
+            .iter()
+            .any(|event| matches!(event, DebuggerEvent::InferiorExited { .. })),
+        "the exit was published"
+    );
+    assert_eq!(killed(), "ok");
+    let (running, mut launched) = launch(&mut harness);
+    assert!(running);
+    assert_eq!(launched(), "pending");
+}
+
+/// What an attach is answered when each time its threads stop, the process
+/// has made another it has not traced, `new_threads` times in all.
+fn attach_with_threads_appearing(new_threads: i32) -> String {
+    let mut harness = idle();
+    let mut listed = vec![ATTACHED];
+    harness.trace().listed_threads.replace(listed.clone());
+    let (_, mut attached) = attach(&mut harness);
+
+    let mut last = ATTACHED;
+    for offset in 1..=new_threads {
+        let thread = Pid::from_raw(ATTACHED.as_raw() + offset);
+        listed.push(thread);
+        harness.trace().listed_threads.replace(listed.clone());
+        harness.controller.handle_wait(WaitEvent::PtraceEvent(
+            last,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        ));
+        if attached() != "pending" {
+            return attached();
+        }
+        last = thread;
+    }
+
+    harness.controller.handle_wait(WaitEvent::PtraceEvent(
+        last,
+        Signal::SIGTRAP,
+        libc::PTRACE_EVENT_STOP,
+    ));
+    attached()
+}
+
+/// An attach seizes threads that appear while it stops the others, up to
+/// a limit, past which it gives up on a thread list that never settles.
+#[test]
+fn an_attach_gives_up_on_threads_that_keep_appearing_past_its_limit() {
+    assert_eq!(attach_with_threads_appearing(0), "ok");
+    assert_eq!(attach_with_threads_appearing(128), "ok");
+    assert_eq!(
+        attach_with_threads_appearing(129),
+        "Backend(AttachThreadsUnstable)"
+    );
+}

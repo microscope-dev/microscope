@@ -1293,6 +1293,47 @@ mod tests {
         }
     }
 
+    /// A process that exits with fork children still due leaves its
+    /// agents' cleanup failure to the shutdown that ends once they are
+    /// released.
+    #[test]
+    fn a_cleanup_failure_reaches_a_shutdown_that_waits_for_fork_children() {
+        let mut harness = watch_harness(1);
+        let child = nix::unistd::Pid::from_raw(6000);
+        let mut installation = awaiting();
+        installation.files = Some(Box::new(Files {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail_exit: true,
+        }));
+        let inferior = harness.controller.session.inferior_mut().expect("inferior");
+        let pid = inferior.tgid;
+        inferior.agents.insert(RuntimeId::new(0), installation);
+        inferior.fork_children.insert(child, Vec::new());
+        harness
+            .controller
+            .handle_terminal(pid, ExitStatus::Code(0))
+            .expect("terminal exit");
+
+        let (reply, mut result) = tokio::sync::oneshot::channel();
+        harness.controller.begin_shutdown(Some(reply));
+        assert!(result.try_recv().is_err(), "the child is not released yet");
+
+        assert!(
+            !harness
+                .controller
+                .handle_wait(super::super::WaitEvent::Stopped(
+                    child,
+                    super::super::Signal::SIGSTOP,
+                )),
+            "the controller ends with the last child released"
+        );
+        let outcome = result.try_recv().expect("shutdown completed");
+        assert!(
+            matches!(&outcome, Err(crate::Error::RuntimeAgent(reason)) if reason.contains("cleanup failure")),
+            "{outcome:?}"
+        );
+    }
+
     #[test]
     fn detach_cancels_a_pending_source_but_preserves_unconfirmed_consumption() {
         for consumed in [false, true] {
