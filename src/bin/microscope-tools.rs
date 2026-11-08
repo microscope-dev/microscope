@@ -126,6 +126,11 @@ enum Tool {
     /// report what tracing cost each call.
     SyscallOverhead(SyscallOverheadArgs),
 
+    /// Record each Python interpreter under the snapshot engine, without
+    /// the image cache and then with it warm, and report how long each
+    /// snapshot held the program paused.
+    SnapshotPause(SnapshotPauseArgs),
+
     /// Single-step PROGRAM to its end and check the stack unwound at each
     /// instruction against the calls it made.
     UnwindOracle {
@@ -202,6 +207,30 @@ struct OverheadArgs {
     /// Fail unless the prod preset costs every workload less than PERCENT.
     #[arg(long, value_name = "PERCENT")]
     check: Option<f64>,
+}
+
+#[derive(clap::Args)]
+struct SnapshotPauseArgs {
+    /// Snapshots of each interpreter.
+    #[arg(long, default_value_t = 30)]
+    snapshots: u64,
+
+    /// Only these interpreters: 3.12, 3.14, 3.14t, 3.15, or standalone-3.14.
+    #[arg(long, value_delimiter = ',')]
+    only: Vec<String>,
+
+    /// Write every run as JSON to FILE.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+
+    /// Compare with the runs a saved report holds.
+    #[arg(long, value_name = "BASE")]
+    compare: Option<PathBuf>,
+
+    /// Measure in this process, with the image cache `--cache` names, and
+    /// print the runs as JSON.
+    #[arg(long, hide = true)]
+    child: bool,
 }
 
 #[derive(clap::Args)]
@@ -396,6 +425,7 @@ fn run(args: Args) -> Result<bool> {
         Tool::BenchSmoke(args) => smoke::run(&args),
         Tool::Overhead(overhead) => run_overhead(&overhead),
         Tool::SyscallOverhead(args) => run_syscall_overhead(&args),
+        Tool::SnapshotPause(pause) => run_snapshot_pause(&pause, args.cache.as_deref()),
         Tool::UnwindOracle {
             program,
             args,
@@ -472,6 +502,121 @@ fn run_overhead(args: &OverheadArgs) -> Result<bool> {
     }
 
     Ok(over.is_empty())
+}
+
+/// Runs of the snapshot pause benchmark, by whether the image cache was
+/// warm.
+#[derive(Serialize, Deserialize)]
+struct SnapshotPauses {
+    uncached: Vec<microscope::tools::snapshot_pause::Run>,
+    cached: Vec<microscope::tools::snapshot_pause::Run>,
+}
+
+fn run_snapshot_pause(args: &SnapshotPauseArgs, cache: Option<&Path>) -> Result<bool> {
+    use microscope::tools::snapshot_pause;
+    if args.child {
+        let options = snapshot_pause::Options {
+            snapshots: args.snapshots,
+            only: args.only.clone(),
+        };
+        let runs = snapshot_pause::measure(&options, |run| {
+            eprintln!(
+                "{} {}: {} snapshots",
+                if cache.is_some() {
+                    "cached"
+                } else {
+                    "uncached"
+                },
+                run.interpreter,
+                run.pauses_us.len()
+            );
+        })?;
+        println!("{}", serde_json::to_string(&runs)?);
+        return Ok(true);
+    }
+
+    // Each mode in a process of its own, since the cache is chosen once
+    // a process. The cached runs follow one that fills the cache.
+    let directory = std::env::temp_dir().join(format!("snapshot-pause-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    let child = |cache: Option<&Path>, snapshots: u64| -> Result<Vec<snapshot_pause::Run>> {
+        let output = Command::new(std::env::current_exe()?)
+            .args(cache.map(|cache| format!("--cache={}", cache.display())))
+            .arg("snapshot-pause")
+            .arg("--child")
+            .arg(format!("--snapshots={snapshots}"))
+            .args((!args.only.is_empty()).then(|| format!("--only={}", args.only.join(","))))
+            .stderr(std::process::Stdio::inherit())
+            .output()?;
+        if !output.status.success() {
+            bail!("a snapshot pause run failed");
+        }
+        Ok(serde_json::from_slice(&output.stdout)?)
+    };
+    let uncached = child(None, args.snapshots)?;
+    child(Some(&directory), 1)?;
+    let cached = child(Some(&directory), args.snapshots);
+    let _ = std::fs::remove_dir_all(&directory);
+    let pauses = SnapshotPauses {
+        uncached,
+        cached: cached?,
+    };
+
+    if let Some(out) = &args.out {
+        std::fs::write(out, serde_json::to_string_pretty(&pauses)?)?;
+    }
+    let base = match &args.compare {
+        Some(path) => Some(serde_json::from_slice::<SnapshotPauses>(&std::fs::read(
+            path,
+        )?)?),
+        None => None,
+    };
+
+    let ms = |us: u64| format!("{}.{}", us / 1000, us % 1000 / 100);
+    let mut table =
+        String::from("cache     interpreter      snapshots   median ms      p90 ms      max ms\n");
+    for (mode, runs, was) in [
+        (
+            "none",
+            &pauses.uncached,
+            base.as_ref().map(|base| &base.uncached),
+        ),
+        (
+            "warm",
+            &pauses.cached,
+            base.as_ref().map(|base| &base.cached),
+        ),
+    ] {
+        let was = was.map(|was| snapshot_pause::summarize(was));
+        for summary in snapshot_pause::summarize(runs) {
+            let before = was
+                .iter()
+                .flatten()
+                .find(|old| old.interpreter == summary.interpreter);
+            let _ = write!(
+                table,
+                "{mode:<9} {:<16} {:>9} {:>11} {:>11} {:>11}",
+                summary.interpreter,
+                summary.snapshots,
+                ms(summary.median_us),
+                ms(summary.p90_us),
+                ms(summary.max_us)
+            );
+            if let Some(before) = before {
+                let _ = write!(
+                    table,
+                    "   (was {} / {} / {})",
+                    ms(before.median_us),
+                    ms(before.p90_us),
+                    ms(before.max_us)
+                );
+            }
+            table.push('\n');
+        }
+    }
+
+    print!("{table}");
+    Ok(true)
 }
 
 fn run_syscall_overhead(args: &SyscallOverheadArgs) -> Result<bool> {

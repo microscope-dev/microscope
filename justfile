@@ -410,6 +410,14 @@ profile-overhead *ARGS: build-test-programs
     cargo build --quiet --release --features tools --bin microscope-tools
     ./scripts/contained.sh ./target/release/microscope-tools overhead "$@"
 
+# Records each Python interpreter under the snapshot engine, without the image
+# cache and then with it warm, and prints how long each snapshot held the
+# program paused. Compare with the recorded baseline with
+# `--compare bench/snapshot-pause.json`, record one with `--out`.
+bench-snapshots *ARGS:
+    cargo build --quiet --release --features tools --bin microscope-tools
+    ./scripts/contained.sh ./target/release/microscope-tools snapshot-pause "$@"
+
 # Times a getppid loop bare, under each syscall-tracing engine, and untraced
 # beside a BPF trace of another program, and prints what each adds a call.
 # The BPF setups start microscope through LAUNCHER. Compare with the recorded

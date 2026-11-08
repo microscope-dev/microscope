@@ -4,6 +4,7 @@
 
 pub mod dump;
 pub mod overhead;
+pub mod snapshot_pause;
 pub mod syscall_overhead;
 pub mod unwind_oracle;
 
