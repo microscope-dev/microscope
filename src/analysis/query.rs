@@ -8,7 +8,8 @@
 //! frames as a stack of their own, and a query by task or label roots each
 //! path at its task or its label's value. A sample's labels are those
 //! open on its thread at its time, joined in one pass over each thread's
-//! samples and label spans, and its task's. Samples are counted per
+//! samples and label spans, and its task's. A zone scope keeps the samples
+//! taken inside its zones, nested ones included, joined the same way. Samples are counted per
 //! distinct stack first, and group, so the work is linear in the samples
 //! selected and the stacks they use.
 
@@ -65,6 +66,103 @@ pub struct Query {
     /// Roots each path, after its transforms and outside any task, at its
     /// label of this key, or at the key's absence.
     pub by_label: Option<String>,
+
+    /// Samples taken inside these zones, on their own thread. Zones are a
+    /// thread's, so a scope selects no waits.
+    pub zones: Option<ZoneScope>,
+}
+
+/// Which zones a query's samples must be inside.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ZoneScope {
+    /// The sites, by row: the zones of every site of one name.
+    pub sites: Vec<u32>,
+
+    /// Zones of lengths in `[shortest, longest]`, in nanoseconds, or of any.
+    pub band: Option<(u64, u64)>,
+
+    /// Zones of lengths outside the band instead: the rest of the sites'.
+    pub outside: bool,
+}
+
+impl ZoneScope {
+    fn holds(&self, start: i64, end: i64) -> bool {
+        let Some((shortest, longest)) = self.band else {
+            return !self.outside;
+        };
+
+        let length = u64::try_from(end - start).unwrap_or(0);
+        (shortest..=longest).contains(&length) != self.outside
+    }
+
+    /// A thread's spans inside the scope's zones, sorted and disjoint: a
+    /// zone nested in another of the scope adds nothing.
+    fn spans(&self, capture: &Capture, thread: u32) -> Vec<(i64, i64)> {
+        let mut spans: Vec<(i64, i64)> = Vec::new();
+        for zones in capture
+            .zone_ranges
+            .iter()
+            .filter(|zones| zones.thread.get() == thread)
+        {
+            let start = zones.start.get() as usize;
+            for zone in &capture.zones[start..start + zones.count.get() as usize] {
+                let (start, end) = (zone.start.get(), zone.end.get());
+                if self.sites.contains(&zone.site.get()) && end > start && self.holds(start, end) {
+                    spans.push((start, end));
+                }
+            }
+        }
+
+        spans.sort_unstable();
+        let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+        for (start, end) in spans {
+            match merged.last_mut() {
+                Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                _ => merged.push((start, end)),
+            }
+        }
+
+        debug_assert!(
+            merged.windows(2).all(|pair| pair[0].1 < pair[1].0),
+            "merged zone spans overlap"
+        );
+        merged
+    }
+}
+
+/// A thread's spans inside a scope's zones, asked of its samples in time
+/// order, and the first that had not ended at the last time asked.
+struct Inside {
+    spans: Vec<(i64, i64)>,
+    next: usize,
+}
+
+impl Inside {
+    fn new(scope: &ZoneScope, capture: &Capture, thread: u32) -> Self {
+        Self {
+            spans: scope.spans(capture, thread),
+            next: 0,
+        }
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    /// Whether `time`, no earlier than the last asked, is in a span.
+    fn holds(&mut self, time: i64) -> bool {
+        while self
+            .spans
+            .get(self.next)
+            .is_some_and(|&(_, end)| end <= time)
+        {
+            self.next += 1;
+        }
+
+        self.spans
+            .get(self.next)
+            .is_some_and(|&(start, _)| start <= time)
+    }
 }
 
 /// How a path's frames are seen.
@@ -304,11 +402,24 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
                 // and have not ended.
                 let spans = keys.spans(thread);
                 let (mut next, mut open) = (0, Vec::new());
+
+                let mut inside = query
+                    .zones
+                    .as_ref()
+                    .map(|scope| Inside::new(scope, capture, thread));
+                if inside.as_ref().is_some_and(Inside::is_empty) {
+                    continue;
+                }
+
                 let samples = capture.thread_samples(range);
                 for sample in &samples[in_range(samples, |sample| sample.time.get(), query.range)] {
                     let (stack, task, time) =
                         (sample.stack.get(), sample.task.get(), sample.time.get());
                     if stack == NONE || !task_kept(task) {
+                        continue;
+                    }
+
+                    if inside.as_mut().is_some_and(|inside| !inside.holds(time)) {
                         continue;
                     }
 
@@ -345,6 +456,10 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
             }
         }
         Source::Waits => {
+            if query.zones.is_some() {
+                return;
+            }
+
             let waits = &capture.task_waits;
             for wait in &waits[in_range(waits, |wait| wait.time.get(), query.range)] {
                 let (stack, task) = (wait.stack.get(), wait.task.get());

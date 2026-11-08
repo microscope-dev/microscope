@@ -49,8 +49,8 @@ pub use zones::{
 
 pub use crate::analysis::{
     CallTree, Cost, Costs, DiffCost, DiffTree, Granularity, KeyKind, Keys, Lanes, Look, OffCpuLane,
-    PlotBin, PlotSeries, Query, Side, Source, Transform, ZoneAt, ZoneBlock, ZoneStats, diff_costs,
-    diff_trees,
+    PlotBin, PlotSeries, Query, Side, Source, Transform, ZoneAt, ZoneBlock, ZoneScope, ZoneStats,
+    diff_costs, diff_trees,
 };
 
 use std::path::{Path, PathBuf};

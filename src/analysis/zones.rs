@@ -116,8 +116,14 @@ pub struct ZoneStats {
     /// each its lowest length and count, the last bucket to `max`.
     pub histogram: Vec<(u64, u64)>,
 
-    /// The longest, longest first.
+    /// The longest in the band, longest first.
     pub longest: Vec<ZoneAt>,
+
+    /// How many are in the band, and their time.
+    pub banded: (u64, u64),
+
+    /// How many are shorter than the length asked about.
+    pub shorter: u64,
 
     /// Each label value's time and count, most time first: for a label's
     /// sites.
@@ -130,12 +136,14 @@ const LONGEST: usize = 10;
 
 /// The spread of the lengths of the zones of `sites` that overlap
 /// `range`, of the threads `threads` selects: those around a span chosen
-/// in it too.
+/// in it too. The longest and `banded` are of those whose lengths are in
+/// `band`, or of all; `shorter` counts those shorter than `rank_of`.
 pub fn zone_stats(
     capture: &Capture,
     sites: &[u32],
-    range: (i64, i64),
-    threads: Option<&[u32]>,
+    (range, threads): ((i64, i64), Option<&[u32]>),
+    band: Option<(u64, u64)>,
+    rank_of: Option<u64>,
 ) -> ZoneStats {
     let _span = crate::span!("analysis zone stats");
     let mut found = Vec::new();
@@ -193,6 +201,21 @@ pub fn zone_stats(
     }
 
     values.sort_by(|a, b| (b.1, a.0).cmp(&(a.1, b.0)));
+    let in_band =
+        |zone: &&ZoneAt| band.is_none_or(|(low, high)| (low..=high).contains(&length(zone)));
+    let banded = found
+        .iter()
+        .filter(in_band)
+        .fold((0, 0), |(count, total), zone| {
+            (count + 1, total + length(zone))
+        });
+    let shorter = rank_of.map_or(0, |of| lengths.partition_point(|&each| each < of) as u64);
+    let longest = found
+        .iter()
+        .filter(in_band)
+        .take(LONGEST)
+        .copied()
+        .collect();
     ZoneStats {
         count: lengths.len() as u64,
         total: lengths.iter().sum(),
@@ -203,7 +226,9 @@ pub fn zone_stats(
         p99: at(0.99),
         max,
         histogram: histogram(&lengths, min, max),
-        longest: found.into_iter().take(LONGEST).collect(),
+        longest,
+        banded,
+        shorter,
         values,
     }
 }

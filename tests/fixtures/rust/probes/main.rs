@@ -90,9 +90,13 @@ fn zones() {
         .name("worker".into())
         .spawn(|| {
             let _zone = zone!("work");
+            // Long enough that samples land in each step.
             for _ in 0..2 {
                 let _step = zone!("step");
-                std::hint::black_box(spin(1000));
+                let until = Instant::now() + Duration::from_millis(20);
+                while Instant::now() < until {
+                    std::hint::black_box(spin(1000));
+                }
             }
         })
         .expect("spawn");

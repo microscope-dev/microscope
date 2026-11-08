@@ -1378,6 +1378,17 @@ proptest! {
         samples_carry_the_open_labels(&spans, &samples, wanted)?;
     }
 
+    #[test]
+    fn a_scope_keeps_the_samples_inside_its_zones_and_nowhere_else(
+        spans in proptest::collection::vec((0..2_u32, 0..100_i64, 0..50_i64, 0..3_u32), 0..12),
+        samples in proptest::collection::vec((0..2_u32, 0..160_i64, 1..5_u64, 0..4_u32), 0..40),
+        band in proptest::option::of((0..40_u64, 0..40_u64)),
+        outside: bool,
+    ) {
+        let band = band.map(|(low, more)| (low, low + more));
+        a_scope_keeps_the_samples_inside_its_zones(&spans, &samples, band, outside)?;
+    }
+
     /// A track's blocks draw every zone in the range once, fold only zones
     /// narrower than the fold, and never overlap in a row; a zone drawn
     /// alone is one that was recorded, below every zone it begins inside,
@@ -1436,6 +1447,116 @@ proptest! {
             }
         }
     }
+}
+
+/// A zone scope keeps a sample once where any zone of its site, in or out
+/// of the band as asked, covers it on its own thread, however the zones
+/// nest; and the stats of the same band count and rank exactly its zones.
+fn a_scope_keeps_the_samples_inside_its_zones(
+    spans: &[(u32, i64, i64, u32)],
+    samples: &[Sample],
+    band: Option<(u64, u64)>,
+    outside: bool,
+) -> Result<(), TestCaseError> {
+    let capture = labeled(spans, samples);
+    let keys = Keys::new(&capture, Granularity::Function);
+    let sites = sites_named(&capture, "route");
+    let in_band =
+        |length: i64| band.is_none_or(|(low, high)| (low..=high).contains(&length.unsigned_abs()));
+
+    let scope = ZoneScope {
+        sites: sites.clone(),
+        band,
+        outside,
+    };
+    let query = Query {
+        zones: Some(scope.clone()),
+        ..Query::default()
+    };
+    let expected: u64 = samples
+        .iter()
+        .filter(|&&(thread, time, _, _)| {
+            spans.iter().any(|&(on, start, length, _)| {
+                on == thread && start <= time && time < start + length && in_band(length) != outside
+            })
+        })
+        .map(|sample| sample.2)
+        .sum();
+    prop_assert_eq!(keys.aggregate(&query).weight, expected);
+
+    let waits = Query {
+        source: Source::Waits,
+        zones: Some(scope),
+        ..Query::default()
+    };
+    prop_assert_eq!(keys.aggregate(&waits).weight, 0);
+
+    let stats = zone_stats(&capture, &sites, ((0, 1_000), None), band, Some(20));
+    let lengths: Vec<i64> = spans.iter().map(|span| span.2).collect();
+    let banded: Vec<i64> = lengths
+        .iter()
+        .copied()
+        .filter(|&length| in_band(length))
+        .collect();
+    prop_assert_eq!(
+        stats.banded,
+        (
+            banded.len() as u64,
+            banded.iter().sum::<i64>().unsigned_abs()
+        )
+    );
+    prop_assert_eq!(
+        stats.shorter,
+        lengths.iter().filter(|&&length| length < 20).count() as u64
+    );
+    prop_assert!(
+        stats
+            .longest
+            .iter()
+            .all(|zone| in_band(zone.end - zone.start))
+    );
+    prop_assert_eq!(stats.longest.len(), banded.len().min(10));
+    Ok(())
+}
+
+/// A zone nested in another of its site adds nothing: the sample inside
+/// both counts once, and a sample of the other thread at the same time
+/// counts not at all.
+#[test]
+fn a_nested_zone_counts_its_samples_once() {
+    let spans = [(0, 10, 50, 0), (0, 20, 10, 1)];
+    let capture = labeled(&spans, &[(0, 25, 3, 0), (1, 25, 7, 0), (0, 70, 11, 0)]);
+    let keys = Keys::new(&capture, Granularity::Function);
+    let scope = |band| ZoneScope {
+        sites: sites_named(&capture, "route"),
+        band,
+        outside: false,
+    };
+    let weight = |band| {
+        keys.aggregate(&Query {
+            zones: Some(scope(band)),
+            ..Query::default()
+        })
+        .weight
+    };
+
+    assert_eq!(weight(None), 3);
+    assert_eq!(weight(Some((10, 10))), 3, "the band holds its edges");
+    assert_eq!(weight(Some((11, 49))), 0);
+
+    let none = ZoneScope {
+        sites: Vec::new(),
+        band: None,
+        outside: false,
+    };
+    assert_eq!(
+        keys.aggregate(&Query {
+            zones: Some(none),
+            ..Query::default()
+        })
+        .weight,
+        0
+    );
 }
 
 /// A series is every site of one name, binned by time: each bin keeps its

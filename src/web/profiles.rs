@@ -14,7 +14,7 @@ use std::time::Duration;
 use microscope::profiler::{
     CodeLine, DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, LineCost, Look, MarkerKind,
     NO_KEY, NO_TASK, Preset, Profile, Query, RecordOptions, SampleSource, Side, Source, Transform,
-    Watch, diff_costs, diff_trees, record_watched,
+    Watch, ZoneScope, diff_costs, diff_trees, record_watched,
 };
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
@@ -493,6 +493,10 @@ impl Profiles {
         of_base.profile.clone_from(&base.profile);
         of_base.range = base.range;
         of_base.base = None;
+        if base.zones.is_some() {
+            of_base.zones.clone_from(&base.zones);
+        }
+
         if base.profile != query.profile {
             of_base.threads = None;
             of_base.tasks = None;
@@ -1034,6 +1038,11 @@ fn resolve_in(
             })
             .collect::<Result<_, _>>()?,
         by_label: query.by_label.clone(),
+        zones: query
+            .zones
+            .as_ref()
+            .map(|scope| zone_scope(profile, scope, base))
+            .transpose()?,
         transforms,
         invert: query.invert,
         look: match query.look {
@@ -1042,6 +1051,37 @@ fn resolve_in(
             ProfileLook::Python => Look::Python,
         },
         by_task: query.by_task,
+    })
+}
+
+/// The zones a query's scope names. A name no site or label has is an
+/// error, except in a diff's base, where it keeps nothing.
+fn zone_scope(
+    profile: &Profile,
+    scope: &protocol::ProfileZoneScope,
+    base: bool,
+) -> Result<ZoneScope, Failure> {
+    let sites = profile.sites_named(&scope.name);
+    if sites.is_empty() && !base {
+        return Err(Failure::new(
+            ErrorKind::Invalid,
+            format!("no zones are named {}", scope.name),
+        ));
+    }
+
+    if let Some([shortest, longest]) = scope.band
+        && shortest > longest
+    {
+        return Err(Failure::new(
+            ErrorKind::Invalid,
+            format!("the band {shortest}..{longest} is empty"),
+        ));
+    }
+
+    Ok(ZoneScope {
+        sites,
+        band: scope.band.map(Into::into),
+        outside: scope.outside,
     })
 }
 
@@ -1414,7 +1454,12 @@ fn zone_stats(
 ) -> protocol::ProfileZoneStats {
     let (start, _) = profile.span();
     let range = absolute(profile, query.range);
-    let stats = profile.zone_stats(&query.name, range, query.threads.as_deref());
+    let stats = profile.zone_stats(
+        &query.name,
+        (range, query.threads.as_deref()),
+        query.band.map(Into::into),
+        query.rank_of,
+    );
     let value = |value: u32| profile.label_value(value).map(str::to_owned);
 
     protocol::ProfileZoneStats {
@@ -1441,6 +1486,8 @@ fn zone_stats(
                 value: value(zone.value),
             })
             .collect(),
+        banded: stats.banded.into(),
+        shorter: stats.shorter,
         values: stats
             .values
             .iter()

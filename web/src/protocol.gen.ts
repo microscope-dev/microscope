@@ -1036,6 +1036,10 @@ invert: boolean,
  */
 look: ProfileLook, granularity: ProfileGranularity, 
 /**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
  * What a tree or functions answer compares itself with.
  */
 base?: ProfileBase | null, };
@@ -1108,6 +1112,10 @@ invert: boolean,
  * How each stack's frames are seen.
  */
 look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
 /**
  * What a tree or functions answer compares itself with.
  */
@@ -1484,6 +1492,10 @@ invert: boolean,
  */
 look: ProfileLook, granularity: ProfileGranularity, 
 /**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
  * What a tree or functions answer compares itself with.
  */
 base?: ProfileBase | null, };
@@ -1557,7 +1569,25 @@ export type ProfileBase = { profile: string,
 /**
  * Nanoseconds from that profile's start, or all of it.
  */
-range?: [number, number] | null, };
+range?: [number, number] | null, 
+/**
+ * Other zones than the query's: the rest of a band's site.
+ */
+zones?: ProfileZoneScope | null, };
+
+export type ProfileZoneScope = { 
+/**
+ * A zone site's name, or a label's key.
+ */
+name: string, 
+/**
+ * Zones of lengths in `[shortest, longest]`, in nanoseconds, or of any.
+ */
+band?: [number, number] | null, 
+/**
+ * The site's zones outside the band instead.
+ */
+outside: boolean, };
 
 export type ProfileBaseWeight = { weight: number, samples: number, };
 
@@ -1586,7 +1616,15 @@ export type ProfileZoneStatsQuery = { profile: string, revision?: number,
 /**
  * A zone site's name, or a label's key.
  */
-name: string, range?: [number, number] | null, threads?: Array<number> | null, };
+name: string, range?: [number, number] | null, threads?: Array<number> | null, 
+/**
+ * The lengths, in nanoseconds, the longest list keeps, or all.
+ */
+band?: [number, number] | null, 
+/**
+ * A length whose rank among the zones to count, in nanoseconds.
+ */
+rankOf?: number | null, };
 
 export type ProfileZoneStats = { count: number, total: number, flagged: number, min: number, median: number, p90: number, p99: number, max: number, 
 /**
@@ -1594,9 +1632,17 @@ export type ProfileZoneStats = { count: number, total: number, flagged: number, 
  */
 histogram: Array<[number, number]>, 
 /**
- * The longest, longest first.
+ * The longest in the band, longest first.
  */
 longest: Array<ProfileZoneAt>, 
+/**
+ * How many are in the band, and their time in nanoseconds.
+ */
+banded: [number, number], 
+/**
+ * How many are shorter than the length ranked.
+ */
+shorter: number, 
 /**
  * For a label: each value's time and count, most time first.
  */

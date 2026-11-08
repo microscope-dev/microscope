@@ -19,8 +19,8 @@ pub mod zones;
 pub use diff::{DiffCost, DiffTree, Side, diff_costs, diff_trees};
 pub use keys::{Granularity, KeyKind, Keys};
 pub use query::{
-    CallTree, Cost, Costs, Lanes, Look, OffCpuLane, Query, Source, Transform, aggregate, density,
-    functions, off_cpu,
+    CallTree, Cost, Costs, Lanes, Look, OffCpuLane, Query, Source, Transform, ZoneScope, aggregate,
+    density, functions, off_cpu,
 };
 
 pub use zones::{

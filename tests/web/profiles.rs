@@ -909,6 +909,8 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         assert!(values.contains(&value), "{values:?}");
     }
 
+    zone_scopes(&mut tab, &id).await;
+
     // A label is a query's filter too: one no sample carries keeps none.
     let filtered = tree(&mut tab, json!({"profile": id, "labels": ["round=9"]})).await;
     assert!(filtered.is_empty());
@@ -916,6 +918,83 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         .with_bytes("profileTree", json!({"profile": id, "labels": ["round"]}))
         .await;
     assert!(failed.is_err());
+}
+
+/// The weight of every sample a tree query keeps.
+async fn kept(tab: &mut Client, query: Value) -> u64 {
+    let (answer, _) = tab
+        .with_bytes("profileTree", query)
+        .await
+        .unwrap_or_else(|error| panic!("a tree: {error:?}"));
+    answer["weight"].as_u64().expect("a weight")
+}
+
+/// A query of a site's zones keeps the samples inside them, on their own
+/// thread, nested ones included; a band narrows them, its outside is the
+/// rest, and a diff's base can be that rest. Names no zone has, and bands
+/// with nothing in them, are errors.
+async fn zone_scopes(tab: &mut Client, id: &str) {
+    let scoped = |zones: Value| json!({"profile": id, "zones": zones});
+
+    let work = kept(tab, scoped(json!({"name": "work"}))).await;
+    let step = kept(tab, scoped(json!({"name": "step"}))).await;
+    let all = kept(tab, json!({"profile": id})).await;
+    assert!(step > 0, "the steps spin long enough to be sampled");
+    assert!(step <= work && work <= all, "{step} <= {work} <= {all}");
+
+    let others: Vec<Value> = tab.ok("profile", json!({"profile": id})).await["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .filter(|thread| thread["name"] != "worker")
+        .map(|thread| thread["row"].clone())
+        .collect();
+    assert!(!others.is_empty());
+    let elsewhere = json!({"profile": id, "zones": {"name": "step"}, "threads": others});
+    assert_eq!(kept(tab, elsewhere).await, 0, "the steps are the worker's");
+
+    let stats = tab
+        .ok(
+            "profileZoneStats",
+            json!({"profile": id, "name": "step", "band": [0, 0], "rankOf": u64::MAX}),
+        )
+        .await;
+    assert_eq!(
+        (&stats["count"], &stats["banded"], &stats["shorter"]),
+        (&json!(2), &json!([0, 0]), &json!(2)),
+        "{stats}"
+    );
+    assert_eq!(stats["longest"], json!([]), "none is in the band");
+
+    let max = stats["max"].as_u64().expect("a length");
+    let everything = json!({"name": "step", "band": [0, max]});
+    let rest = json!({"name": "step", "band": [0, max], "outside": true});
+    assert_eq!(kept(tab, scoped(everything)).await, step);
+    assert_eq!(kept(tab, scoped(rest)).await, 0);
+
+    // The band against the rest of its site: here the rest is all of it.
+    let (answer, _) = tab
+        .with_bytes(
+            "profileTree",
+            json!({"profile": id, "zones": {"name": "step", "band": [0, 0]},
+                   "base": {"profile": id, "zones": {"name": "step"}}}),
+        )
+        .await
+        .expect("a diff");
+    assert_eq!(answer["base"]["weight"], step, "{answer}");
+    assert_eq!(answer["weight"], 0, "{answer}");
+
+    for (zones, why) in [
+        (json!({"name": "nowhere"}), "no zones are named nowhere"),
+        (
+            json!({"name": "step", "band": [5, 4]}),
+            "the band 5..4 is empty",
+        ),
+    ] {
+        let failed = tab.with_bytes("profileTree", scoped(zones)).await;
+        let error = failed.expect_err(why);
+        assert!(format!("{error:?}").contains(why), "{error:?}");
+    }
 }
 
 /// A function's samples are served on its source lines, with the text

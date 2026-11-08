@@ -1066,10 +1066,32 @@ pub struct ProfileQuery {
     #[serde(default)]
     pub granularity: ProfileGranularity,
 
+    /// Samples taken inside one site's zones, nested ones included.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub zones: Option<ProfileZoneScope>,
+
     /// What a tree or functions answer compares itself with.
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
     pub base: Option<ProfileBase>,
+}
+
+/// The zones whose samples a query keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileZoneScope {
+    /// A zone site's name, or a label's key.
+    pub name: String,
+
+    /// Zones of lengths in `[shortest, longest]`, in nanoseconds, or of any.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub band: Option<[u64; 2]>,
+
+    /// The site's zones outside the band instead.
+    #[serde(default)]
+    pub outside: bool,
 }
 
 /// What a diff compares a query with: the same query of another range of
@@ -1083,6 +1105,11 @@ pub struct ProfileBase {
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
     pub range: Option<[i64; 2]>,
+
+    /// Other zones than the query's: the rest of a band's site.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub zones: Option<ProfileZoneScope>,
 }
 
 /// What a diff's base weighs.
@@ -1511,6 +1538,7 @@ pub enum ProfileMarkKind {
 
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileZoneStatsQuery {
     pub profile: String,
 
@@ -1529,6 +1557,16 @@ pub struct ProfileZoneStatsQuery {
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
     pub threads: Option<Vec<u32>>,
+
+    /// The lengths, in nanoseconds, the longest list keeps, or all.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub band: Option<[u64; 2]>,
+
+    /// A length whose rank among the zones to count, in nanoseconds.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub rank_of: Option<u64>,
 }
 
 /// The spread of one site's zone lengths, in nanoseconds.
@@ -1547,8 +1585,14 @@ pub struct ProfileZoneStats {
     /// Buckets of equal ratio: each its lowest length and how many.
     pub histogram: Vec<[u64; 2]>,
 
-    /// The longest, longest first.
+    /// The longest in the band, longest first.
     pub longest: Vec<ProfileZoneAt>,
+
+    /// How many are in the band, and their time in nanoseconds.
+    pub banded: [u64; 2],
+
+    /// How many are shorter than the length ranked.
+    pub shorter: u64,
 
     /// For a label: each value's time and count, most time first.
     pub values: Vec<ProfileLabelValue>,
@@ -3135,6 +3179,7 @@ mod tests {
         ProfileToken::decl,
         ProfileInstruction::decl,
         ProfileBase::decl,
+        ProfileZoneScope::decl,
         ProfileBaseWeight::decl,
         ProfilePlot::decl,
         ProfileMarkKind::decl,

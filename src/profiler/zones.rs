@@ -280,9 +280,21 @@ impl Profile {
     /// The spread of the lengths of the zones a site name, or label key,
     /// names that overlap `range`.
     #[must_use]
-    pub fn zone_stats(&self, name: &str, range: (i64, i64), threads: Option<&[u32]>) -> ZoneStats {
+    pub fn zone_stats(
+        &self,
+        name: &str,
+        of: ((i64, i64), Option<&[u32]>),
+        band: Option<(u64, u64)>,
+        rank_of: Option<u64>,
+    ) -> ZoneStats {
         let sites = crate::analysis::sites_named(&self.capture, name);
-        crate::analysis::zone_stats(&self.capture, &sites, range, threads)
+        crate::analysis::zone_stats(&self.capture, &sites, of, band, rank_of)
+    }
+
+    /// The sites of zones or labels named `name`, by row.
+    #[must_use]
+    pub fn sites_named(&self, name: &str) -> Vec<u32> {
+        crate::analysis::sites_named(&self.capture, name)
     }
 
     /// Each plotted series' values in `range`, of the threads `threads`
