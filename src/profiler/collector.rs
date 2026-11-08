@@ -152,7 +152,6 @@ impl Collector {
     /// Switches on the sites of every module the processor has found
     /// mapped since, then reads every ring.
     pub fn drain(&mut self, processor: &mut Processor) {
-        let _span = crate::span!("probes drain");
         let (executed, found) = processor.found_probes(Pid::new(self.pid));
         if executed {
             self.executed(processor);
@@ -183,6 +182,7 @@ impl Collector {
             if !instance.on {
                 continue;
             }
+            let _span = crate::span!("probes drain");
             if perf::write_memory(self.pid, instance.control + 24, &heartbeat).is_err()
                 || !self.read_instance(processor, index)
             {
