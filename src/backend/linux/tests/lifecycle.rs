@@ -551,3 +551,40 @@ fn a_held_launch_waits_for_every_fork_child_to_be_released() {
     assert_eq!(launched_pid(&harness), Some(LAUNCHED));
     assert_eq!(launched(), "pending", "the launch waits for its first stop");
 }
+
+/// A shutdown detaches an attached program once every thread has stopped,
+/// and passes on a signal a thread stopped for before the interrupt took it.
+#[test]
+fn a_shutdown_detaches_once_every_thread_stops_and_passes_on_their_signals() {
+    let mut harness = watch_harness(2);
+    harness.attached();
+    harness.start_continue();
+    let [first, second] = [harness.threads[0], harness.threads[1]];
+    let (_, mut ended) = shutdown(&mut harness);
+    harness.trace().take_actions();
+
+    harness.controller.handle_wait(WaitEvent::PtraceEvent(
+        first,
+        Signal::SIGTRAP,
+        libc::PTRACE_EVENT_STOP,
+    ));
+    assert_eq!(
+        harness.trace().take_actions(),
+        Vec::<String>::new(),
+        "the second thread still runs"
+    );
+    assert_eq!(ended(), "pending");
+
+    harness.trace().set_siginfo(second, libc::SI_USER, Some(1));
+    harness
+        .controller
+        .handle_wait(WaitEvent::Stopped(second, Signal::SIGUSR1));
+    let actions = harness.trace().take_actions();
+    for expected in [
+        format!("detach {first} None"),
+        format!("detach {second} Some(SIGUSR1)"),
+    ] {
+        assert!(actions.contains(&expected), "{expected} in {actions:#?}");
+    }
+    assert_eq!(ended(), "ok");
+}
