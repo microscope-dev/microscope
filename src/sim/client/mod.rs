@@ -50,6 +50,10 @@ mod stops;
 const MAX_READ: u64 = 64;
 
 /// What the client knows about the program it debugs.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a feature of the run the swarm chose"
+)]
 pub struct Script {
     pub arguments: Vec<String>,
     pub stop_at_entry: bool,
@@ -95,6 +99,10 @@ pub struct Script {
 
     /// Whether the client stops at system calls.
     pub catching: bool,
+
+    /// Whether the client sometimes sends a lifecycle request before the
+    /// last one is answered.
+    pub overlap: bool,
 
     /// The source's lines with a statement row at each image address
     /// binutils list one at: where a line's breakpoint may stop.
@@ -626,10 +634,31 @@ impl Client {
     /// Attaches to the program running untraced, which may have begun to
     /// end before the client asked.
     async fn attach(&self, process: ProcessId) -> Result<(), Failure> {
-        match self.handle.attach_process(process).await {
+        let killed = self.shared.killed.borrow().len();
+        let overlapped = self.overlaps(Mark::KillDuringAttach);
+        let attached = if overlapped {
+            let mut events = self.handle.subscribe();
+            let (attached, kill) =
+                tokio::join!(self.handle.attach_process(process), self.handle.kill());
+            self.judge_kill_while_starting(&attached, kill, killed, held_start(&mut events))?;
+            attached
+        } else {
+            self.handle.attach_process(process).await
+        };
+
+        match attached {
             Ok(stop) => {
                 self.mark(Mark::Attached);
                 self.note(format!("attached to {process} at stop {stop}"));
+            }
+            Err(Error::ReplyDropped) => {
+                return Err(Failure::debugger(
+                    "lost reply",
+                    "the controller dropped the attach without answering it",
+                ));
+            }
+            Err(error) if overlapped && exited_before_first_stop(&error) => {
+                self.note("the kill sent with the attach ended it before its first stop");
             }
             Err(error) if self.ending(process) => {
                 self.note(format!("attaching to an ending program failed: {error}"));
@@ -654,9 +683,28 @@ impl Client {
         };
 
         let killed = self.shared.killed.borrow().len();
+        let overlapped = self.overlaps(Mark::KillDuringLaunch);
+        let launched = if overlapped {
+            let mut events = self.handle.subscribe();
+            let (launched, kill) =
+                tokio::join!(self.handle.launch_with(options), self.handle.kill());
+            self.judge_kill_while_starting(&launched, kill, killed, held_start(&mut events))?;
+            launched
+        } else {
+            self.handle.launch_with(options).await
+        };
 
-        match self.handle.launch_with(options).await {
+        match launched {
             Ok(execution) => self.note(format!("launched as execution {execution}")),
+            Err(Error::ReplyDropped) => {
+                return Err(Failure::debugger(
+                    "lost reply",
+                    "the controller dropped the launch without answering it",
+                ));
+            }
+            Err(error) if overlapped && exited_before_first_stop(&error) => {
+                self.note("the kill sent with the launch ended it before its first stop");
+            }
             // Killed from outside before its first stop, the program never
             // finishes launching.
             Err(error) if self.shared.killed.borrow().len() > killed => {
@@ -666,6 +714,52 @@ impl Client {
         }
 
         Ok(())
+    }
+
+    /// Whether to send this lifecycle request with another, as the swarm
+    /// may ask, marking `mark` if so.
+    fn overlaps(&self, mark: Mark) -> bool {
+        let overlaps = self.script.overlap && self.draw(3) == 0;
+        if overlaps {
+            self.mark(mark);
+        }
+        overlaps
+    }
+
+    /// Judges a kill sent right after a launch or attach, which reaches the
+    /// controller while the start waits for its first stop. A start that
+    /// made a process has the kill answered once the process is gone; one
+    /// that made none, or whose process something outside killed first,
+    /// leaves nothing to kill, as does one `held` while the last program's
+    /// children were released, which the kill reaches before the process
+    /// exists. `killed` is how many processes something outside had killed
+    /// before the start.
+    fn judge_kill_while_starting<T>(
+        &self,
+        started: &crate::Result<T>,
+        kill: crate::Result<()>,
+        killed: usize,
+        held: bool,
+    ) -> Result<(), Failure> {
+        let made_a_process = match started {
+            Ok(_) => true,
+            Err(error) => exited_before_first_stop(error),
+        };
+        match kill {
+            Ok(()) => Ok(()),
+            Err(Error::ReplyDropped) => Err(Failure::debugger(
+                "lost reply",
+                "the controller dropped a kill sent while a start waited for its first stop",
+            )),
+            Err(Error::NotRunning)
+                if !made_a_process || held || self.shared.killed.borrow().len() > killed =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(protocol(format!(
+                "a kill sent while a start waited for its first stop failed: {error}"
+            ))),
+        }
     }
 
     async fn while_running(
@@ -1228,6 +1322,23 @@ impl Client {
 
         // Releasing the program ends any thread's running alone.
         self.observe(Observation::Alone(None));
+        if self.overlaps(Mark::ShutdownOverlapped) {
+            return if self.draw(2) == 0 {
+                self.kill_with_shutdown().await
+            } else {
+                self.shutdown_twice().await
+            };
+        }
+
+        match self.send_shutdown().await? {
+            Some(answer) => judge_shutdown(answer.await),
+            None => Ok(()),
+        }
+    }
+
+    /// Sends a shutdown and returns its reply, or `None` if the debugger
+    /// already detached from its ending program and exited.
+    async fn send_shutdown(&self) -> Result<Option<oneshot::Receiver<crate::Result<()>>>, Failure> {
         let (reply, answer) = oneshot::channel();
         let sent = self
             .handle
@@ -1236,14 +1347,104 @@ impl Client {
             .await;
         if sent.is_err() && self.attached_program_ending() {
             self.note("the debugger detached and exited");
-            return Ok(());
+            return Ok(None);
         }
 
         sent.map_err(|_| protocol("the request queue closed before shutdown"))?;
-
-        answer
-            .await
-            .map_err(|_| protocol("shutdown was never answered"))?
-            .map_err(|error| protocol(format!("shutdown failed: {error}")))
+        Ok(Some(answer))
     }
+
+    /// Kills the program as the session shuts down: the kill is queued
+    /// before the shutdown, so both are answered. Sent the other way, the
+    /// kill may still be queued when the controller ends, which drops it.
+    async fn kill_with_shutdown(&self) -> Result<(), Failure> {
+        self.note("kill with the shutdown");
+        let (reply, kill) = oneshot::channel();
+        let sent = self
+            .handle
+            .requests
+            .send(ControllerMessage::Request(Request::Kill { reply }))
+            .await;
+        if sent.is_err() && self.attached_program_ending() {
+            self.note("the debugger detached and exited");
+            return Ok(());
+        }
+
+        sent.map_err(|_| protocol("the request queue closed before the kill"))?;
+        if let Some(answer) = self.send_shutdown().await? {
+            judge_shutdown(answer.await)?;
+        }
+
+        match kill.await {
+            Ok(Ok(()) | Err(Error::NotRunning)) => Ok(()),
+            Ok(Err(error)) => Err(protocol(format!(
+                "a kill sent with a shutdown failed: {error}"
+            ))),
+            Err(_) => Err(Failure::debugger(
+                "lost reply",
+                "the controller dropped a kill queued before a shutdown",
+            )),
+        }
+    }
+
+    /// Sends two shutdowns, the second queued before the first is
+    /// answered. The first ends the session; the second is refused while
+    /// the first is under way, or answered once the controller ends,
+    /// unless the controller closed its queue first.
+    async fn shutdown_twice(&self) -> Result<(), Failure> {
+        self.note("two shutdowns");
+        let first = self.send_shutdown().await;
+        let second = self.send_shutdown().await;
+        if let Some(answer) = first? {
+            judge_shutdown(answer.await)?;
+        }
+
+        let second = match second {
+            Ok(Some(answer)) => answer.await,
+            // The controller ended and closed its queue before the second
+            // was sent.
+            Ok(None) | Err(_) => return Ok(()),
+        };
+        match second {
+            Ok(Ok(()) | Err(Error::RequestCancelled)) => Ok(()),
+            Ok(Err(error)) => Err(protocol(format!("a second shutdown failed: {error}"))),
+            Err(_) => Err(Failure::debugger(
+                "lost reply",
+                "the controller dropped a second shutdown without answering it",
+            )),
+        }
+    }
+}
+
+/// Whether a start whose events `events` saw was held while the last
+/// program's children were released. A receiver that fell behind cannot
+/// tell, and says so.
+fn held_start(events: &mut broadcast::Receiver<DebuggerEvent>) -> bool {
+    loop {
+        match events.try_recv() {
+            Ok(DebuggerEvent::ChildReleased { .. })
+            | Err(broadcast::error::TryRecvError::Lagged(_)) => return true,
+            Ok(DebuggerEvent::InferiorLaunched { .. } | DebuggerEvent::InferiorAttached { .. })
+            | Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) =>
+            {
+                return false;
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+/// A shutdown's answer, which must be that it succeeded.
+fn judge_shutdown(
+    answer: std::result::Result<crate::Result<()>, oneshot::error::RecvError>,
+) -> Result<(), Failure> {
+    answer
+        .map_err(|_| Failure::debugger("lost reply", "shutdown was never answered"))?
+        .map_err(|error| protocol(format!("shutdown failed: {error}")))
+}
+
+/// Whether a launch or attach failed because its process ended before its
+/// first stop.
+fn exited_before_first_stop(error: &Error) -> bool {
+    error.to_string().contains("exited before its first stop")
 }

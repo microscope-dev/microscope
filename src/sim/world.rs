@@ -219,6 +219,10 @@ pub enum Sabotage {
     /// While no stop is published, a thread the controller holds stopped
     /// runs again behind its back.
     ResumeWhileGathering,
+
+    /// The controller drops a kill unanswered while a launch or attach is
+    /// still waiting for its first stop.
+    DropKillWhileStarting,
 }
 
 impl Default for Settings {
@@ -856,6 +860,17 @@ impl<'a> World<'a> {
             && controller
                 .inferior()
                 .is_some_and(|tgid| oracles::ending(&self.machine.kernel.borrow(), tgid))
+        {
+            return Ok(format!("deliver {description} -> dropped"));
+        }
+
+        #[cfg(test)]
+        if self.machine.sabotage == Some(Sabotage::DropKillWhileStarting)
+            && description == "kill"
+            && {
+                let truth = controller.truth();
+                truth.inferior.is_some() && !truth.established
+            }
         {
             return Ok(format!("deliver {description} -> dropped"));
         }
@@ -1894,6 +1909,7 @@ fn script(
         image: Arc::clone(&variant.image),
         attach,
         catching: swarm.catching,
+        overlap: swarm.overlap,
         statements: statements(program, variant),
         unoptimized_functions: (!variant.facts.optimized).then(|| {
             variant

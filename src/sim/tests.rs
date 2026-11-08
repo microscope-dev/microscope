@@ -227,6 +227,18 @@ fn a_reply_dropped_while_ending_fails() {
     ));
 }
 
+/// A kill the controller drops while a launch or attach waits for its
+/// first stop fails. Only a client that sends a kill before its start is
+/// answered reaches that state.
+#[test]
+fn a_kill_dropped_while_a_start_waits_fails() {
+    assert!(fails_with(
+        Sabotage::DropKillWhileStarting,
+        "lost reply",
+        "dropped a kill sent while a start waited for its first stop"
+    ));
+}
+
 /// A kernel that loses the debugger's writes leaves traps the controller
 /// believes installed missing from memory, which code integrity catches.
 #[test]

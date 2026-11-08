@@ -22,6 +22,10 @@ pub struct Weights {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a feature the swarm turns on or off"
+)]
 pub struct Swarm {
     pub program: usize,
     pub variant: usize,
@@ -73,6 +77,11 @@ pub struct Swarm {
 
     /// Whether the client stops at system calls.
     pub catching: bool,
+
+    /// Whether the client sometimes sends a lifecycle request before the
+    /// last one is answered: a kill with a launch or attach, and a kill or
+    /// a second shutdown with its shutdown.
+    pub overlap: bool,
 }
 
 impl Swarm {
@@ -143,6 +152,7 @@ impl Swarm {
             // Early enough that most attaches find the program still running.
             attach: (pick(&[0, 1]) == 1).then(|| choices.below(Stream::Swarm, 500)),
             catching: choices.below(Stream::Swarm, 3) == 0,
+            overlap: choices.below(Stream::Swarm, 4) == 0,
         }
     }
 }
@@ -152,7 +162,8 @@ impl fmt::Display for Swarm {
         write!(
             formatter,
             "{} preempt={} fault={} burst={} queue={} events={} entry={} requests={} \
-             launches={} early-breakpoints={} debug={:?} watching={} attach={} catching={}",
+             launches={} early-breakpoints={} debug={:?} watching={} attach={} catching={} \
+             overlap={}",
             self.policy,
             self.preempt,
             self.fault
@@ -169,6 +180,7 @@ impl fmt::Display for Swarm {
             self.attach
                 .map_or_else(|| "none".to_owned(), |after| format!("after({after})")),
             self.catching,
+            self.overlap,
         )
     }
 }
@@ -186,6 +198,7 @@ pub enum Simpler {
     NoWatching,
     NoAttach,
     NoCatching,
+    NoOverlap,
 }
 
 impl Simpler {
@@ -200,6 +213,7 @@ impl Simpler {
             Self::NoWatching => swarm.watching = false,
             Self::NoAttach => swarm.attach = None,
             Self::NoCatching => swarm.catching = false,
+            Self::NoOverlap => swarm.overlap = false,
         }
     }
 
@@ -219,6 +233,7 @@ impl Simpler {
             Self::NoWatching,
             Self::NoAttach,
             Self::NoCatching,
+            Self::NoOverlap,
         ];
 
         fewer
@@ -244,6 +259,7 @@ impl fmt::Display for Simpler {
             Self::NoWatching => formatter.write_str("watching=false"),
             Self::NoAttach => formatter.write_str("attach=none"),
             Self::NoCatching => formatter.write_str("catching=false"),
+            Self::NoOverlap => formatter.write_str("overlap=false"),
         }
     }
 }
@@ -261,6 +277,7 @@ impl std::str::FromStr for Simpler {
             "watching=false" => Self::NoWatching,
             "attach=none" => Self::NoAttach,
             "catching=false" => Self::NoCatching,
+            "overlap=false" => Self::NoOverlap,
             _ => text
                 .strip_prefix("requests=")
                 .and_then(|requests| requests.parse().ok())

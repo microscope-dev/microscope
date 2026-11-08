@@ -364,6 +364,15 @@ marks! {
 
     /// The decoder read a call from the model of the tracepoint stream.
     TraceDecoded,
+
+    /// The client sent a kill with a launch, before it was answered.
+    KillDuringLaunch,
+
+    /// The client sent a kill with an attach, before it was answered.
+    KillDuringAttach,
+
+    /// The client sent a kill or a second shutdown with its shutdown.
+    ShutdownOverlapped,
 }
 
 /// How many times a run reached each mark.
