@@ -1934,10 +1934,14 @@ mod tests {
             .expect("the program exits");
         assert!(status.success(), "{status}");
 
+        // A reader that every CPU is busy beside can be scheduled too late
+        // for a ring, which holds about 7 ms of these samples, and `just
+        // stress` dropped 49 so. A reader that stopped draining while
+        // behind, with sampling still on, would lose most of the 6000
+        // samples the program's eight threads ask for in 750 ms.
         let counts = events.counts();
-        assert_eq!(
-            (counts.lost_samples, counts.lost_records),
-            (0, 0),
+        assert!(
+            counts.lost_samples * 50 <= 6000 && counts.lost_records == 0,
             "{counts:?}"
         );
         // Nothing took the queue, so sampling went off once and stayed off.

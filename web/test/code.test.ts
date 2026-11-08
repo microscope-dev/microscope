@@ -244,26 +244,34 @@ describe("inlineTree", () => {
       fc.property(listing, (rows) => {
         const tree = inlineTree(rows);
         const lines = [...tree.lines.values()];
-        const sum = (of: (row: CodeRow) => number) => rows.reduce((all, row) => all + of(row), 0);
-        expect(lines.reduce((all, line) => all + line.own, 0)).toBe(
-          sum((row) => row.instruction.own),
-        );
-        for (const [index, path] of tree.paths.entries()) {
-          expect(path.length).toBe(rows[index]?.instruction.lines.length);
-          // Each step down is a function inlined at the line above.
-          for (const [depth, line] of path.entries()) {
-            expect(line.call.at).toBe(depth === 0 ? null : path[depth - 1]);
-          }
-        }
-        for (const line of lines) {
-          const under = rows.filter((_, index) => tree.paths[index]?.includes(line));
-          expect(line.rows).toEqual(under.map((row) => rows.indexOf(row)));
-          expect(line.inside).toBe(under.reduce((all, row) => all + row.instruction.own, 0));
-          expect(line.total).toBe(under.reduce((all, row) => all + row.instruction.total, 0));
-          // What runs under a line is its own and what was inlined there.
-          const inlined = line.inlined.flatMap((call) => call.lines);
-          expect(line.inside).toBe(line.own + inlined.reduce((all, each) => all + each.inside, 0));
-        }
+        const sum = (of: (row: CodeRow) => number, among = rows) =>
+          among.reduce((all, row) => all + of(row), 0);
+        // One comparison per case: an expect for each line and step made the
+        // 10,000 cases of `just web-props` run into the test timeout.
+        const under = (line: (typeof lines)[number]) =>
+          rows.filter((_, index) => tree.paths[index]?.includes(line));
+        expect({
+          own: lines.reduce((all, line) => all + line.own, 0),
+          paths: tree.paths.map((path) => [
+            path.length,
+            // Each step down is a function inlined at the line above.
+            path.every((line, depth) => line.call.at === (depth === 0 ? null : path[depth - 1])),
+          ]),
+          lines: lines.map((line) => [line.rows, line.inside, line.total, line.inside]),
+        }).toEqual({
+          own: sum((row) => row.instruction.own),
+          paths: tree.paths.map((_, index) => [rows[index]?.instruction.lines.length, true]),
+          lines: lines.map((line) => [
+            under(line).map((row) => rows.indexOf(row)),
+            sum((row) => row.instruction.own, under(line)),
+            sum((row) => row.instruction.total, under(line)),
+            // What runs under a line is its own and what was inlined there.
+            line.own +
+              line.inlined
+                .flatMap((call) => call.lines)
+                .reduce((all, each) => all + each.inside, 0),
+          ]),
+        });
       }),
     );
   });

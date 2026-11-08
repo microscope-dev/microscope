@@ -4,8 +4,9 @@
 //! call sites reported it (`tests/fixtures/node/live.js`); an idle thread
 //! has no frames, and one that runs JavaScript is left out, by its reason.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use microscope::profiler::{
@@ -605,6 +606,12 @@ enum Found {
 /// at the phase's own frame. Calls to churn can have the same pre-entry state;
 /// the fixture reports their callers independently through V8's `CallSites`.
 /// A matching caller alone cannot rule out a missing callee frame.
+///
+/// A thread can also wait in the callee's first frame before it runs a
+/// line: V8 handles an interrupt, as a collection or a deoptimization asks,
+/// at the stack check on a function's entry, and places such a frame at the
+/// function's start (`kFunctionEntryBytecodeOffset`). Its path is a site's,
+/// cut off at a callee at the line that declares it.
 fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
     if sites.iter().any(|site| site == path) {
         return Found::Site;
@@ -617,11 +624,34 @@ fn found(phase: usize, sites: &[Vec<String>], path: &[String]) -> Found {
             || site.last().is_some_and(|frame| frame.starts_with("churn "))
                 && site[..site.len() - 1] == *path
     };
-    if sites.iter().any(calling) {
+    let function = |frame: &str| frame.split_once(' ').map(|(name, _)| name.to_owned());
+    let entering = |site: &Vec<String>| {
+        path.split_last().is_some_and(|(last, outer)| {
+            ENTRIES.contains(last)
+                && site.get(..outer.len()) == Some(outer)
+                && site.get(outer.len()).and_then(|callee| function(callee)) == function(last)
+        })
+    };
+    if sites.iter().any(calling) || sites.iter().any(entering) {
         return Found::Calling;
     }
     Found::Wrong
 }
+
+/// Each function `live-stress.js` declares, as a frame at its entry names
+/// it: `NAME live-stress.js:LINE`, with LINE the line that declares it.
+static ENTRIES: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
+    let source =
+        std::fs::read_to_string(node::fixture("live-stress.js")).expect("read live-stress.js");
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(at, line)| {
+            let (name, _) = line.strip_prefix("function ")?.split_once('(')?;
+            Some(format!("{name} live-stress.js:{}", at + 1))
+        })
+        .collect()
+});
 
 #[test]
 fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
@@ -674,6 +704,44 @@ fn a_read_finds_a_thread_at_its_sites_or_calling_one() {
         ),
         Found::Calling,
         "the captured churn caller, possibly before callee entry"
+    );
+    // As a deoptimizing stress run read it once: a worker of phase 2 that
+    // waited at churn's entry, on the stack check that handles interrupts.
+    let entry = ENTRIES
+        .iter()
+        .find(|frame| frame.starts_with("churn "))
+        .expect("live-stress.js declares churn");
+    let (_, line) = entry.rsplit_once(':').expect("a line");
+    let line: u32 = line.parse().expect("a line number");
+    let reviver = |churn: u32| {
+        path(&[
+            "phase1 live-stress.js:147",
+            "siteReviver live-stress.js:113",
+            &format!("churn live-stress.js:{churn}"),
+        ])
+    };
+    assert_eq!(found(1, &phase1, &reviver(line)), Found::Calling);
+    assert_eq!(
+        found(1, &phase1, &reviver(line + 1)),
+        Found::Wrong,
+        "a line of churn past its entry"
+    );
+    let waiting = |name: &str| {
+        let entry = ENTRIES
+            .iter()
+            .find(|frame| frame.starts_with(&format!("{name} ")))
+            .expect("live-stress.js declares it");
+        path(&["phase1 live-stress.js:147", entry])
+    };
+    assert_eq!(
+        found(1, &phase1, &waiting("siteWait")),
+        Found::Calling,
+        "a site at its entry"
+    );
+    assert_eq!(
+        found(1, &phase1, &waiting("siteSort")),
+        Found::Wrong,
+        "a function the phase's sites do not call there"
     );
     for wrong in [
         path(&[]),

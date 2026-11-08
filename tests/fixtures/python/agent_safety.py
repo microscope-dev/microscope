@@ -231,7 +231,14 @@ elif mode == 'reentry_race':
     assert records == [(1, 42, 0)], records
 elif mode == 'interrupt_race':
     agent.apply(library, 1, (probe,))
-    entered, release = threading.Event(), threading.Event()
+    # Any thread starting a Python function may consume the queued command,
+    # so the main thread waits on bare locks, which start none, until the
+    # worker has taken it: returning from `worker.start()` while the worker
+    # queued once took the interruption on the main thread instead.
+    go, entered = threading.Lock(), threading.Lock()
+    go.acquire()
+    entered.acquire()
+    release = threading.Event()
     main = threading.get_ident()
     original_loads = agent.json.loads
     original_lock = agent.lock
@@ -244,12 +251,13 @@ elif mode == 'interrupt_race':
             selected = kind is KeyboardInterrupt and threading.get_ident() != main
             original_lock.release()
             if selected:
-                entered.set()
+                entered.release()
                 assert release.wait(10), 'release interrupted callback'
     def interrupted(*args, **kwargs):
         raise KeyboardInterrupt('old generation')
     def run():
         try:
+            assert go.acquire(timeout=10), 'the main thread lets the worker go'
             queue(2, (probe,))
             target()
         except KeyboardInterrupt as error:
@@ -259,8 +267,9 @@ elif mode == 'interrupt_race':
     records.clear()
     worker = threading.Thread(target=run)
     worker.start()
+    go.release()
     try:
-        assert entered.wait(10), 'interruption releases the agent lock'
+        assert entered.acquire(timeout=10), 'interruption releases the agent lock'
         agent.apply(library, 3, (probe,))
     finally:
         release.set()

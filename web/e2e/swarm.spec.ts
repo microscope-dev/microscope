@@ -113,7 +113,9 @@ async function check(page: Page, done: string[]): Promise<void> {
 }
 
 test("random commands, keys, and drags leave a working page", async ({ page, microscope }) => {
-  test.setTimeout(Math.max(20_000, STEPS * 300));
+  // A step takes about 190 ms in Firefox alone on jlinux3, and took more
+  // than 300 ms beside the other e2e workers there, so each has 600.
+  test.setTimeout(Math.max(20_000, STEPS * 600));
   const seed = Number(process.env.MICROSCOPE_SWARM_SEED ?? Math.floor(Math.random() * 2 ** 31));
   test.info().annotations.push({ type: "seed", description: String(seed) });
   const next = random(seed);
