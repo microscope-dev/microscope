@@ -2902,13 +2902,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         .then(|| status.pid());
 
         // A ptrace request failing because SIGKILL took its thread out of a
-        // stop is explained by threads that left their stop, by every
-        // thread having reached its exit, or by the debugger's own kill.
+        // stop is explained by threads that left their stop, or by every
+        // thread having reached its exit. The debugger's own kill needs no
+        // excuse of its own: it takes every thread out of its stop, which
+        // the first finds.
         if let Err(error) = self.process_wait(status)
             && !(is_vanished_tracee(&error)
-                && (self.release_superseded_threads(reported)
-                    || self.every_thread_exiting()
-                    || self.session.killing()))
+                && (self.release_superseded_threads(reported) || self.every_thread_exiting()))
         {
             self.fail_inferior(error);
         }

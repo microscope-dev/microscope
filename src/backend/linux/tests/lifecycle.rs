@@ -588,3 +588,40 @@ fn a_shutdown_detaches_once_every_thread_stops_and_passes_on_their_signals() {
     }
     assert_eq!(ended(), "ok");
 }
+
+/// A kill sent with a launch takes the new process out of its exec stop
+/// while the controller handles it, so setting its options fails with
+/// ESRCH. That the process left its stop explains the failure, as it does
+/// any SIGKILL: the launch fails as one whose process exited, the kill
+/// succeeds, and the debugger does not give up on the program and kill it
+/// again.
+#[test]
+fn a_kill_that_overtakes_a_launchs_first_stop_ends_it_in_its_exit() {
+    let mut harness = idle();
+    let (_, mut launched) = launch(&mut harness);
+    let (_, mut killed) = kill(&mut harness);
+    harness.trace().take_actions();
+    *harness.trace().kill_point.borrow_mut() = Some((LAUNCHED, "set_options", 0));
+
+    for status in [
+        WaitEvent::Stopped(LAUNCHED, Signal::SIGTRAP),
+        WaitEvent::Signaled(LAUNCHED, Signal::SIGKILL, false),
+    ] {
+        assert!(harness.controller.handle_wait(status));
+    }
+
+    assert!(
+        harness.trace().kill_point.borrow().is_none(),
+        "the kill landed as the stop was handled"
+    );
+    assert_eq!(
+        launched(),
+        r#"Backend(ExitedBeforeStop(Terminated(ExceptionInfo { code: 9, description: "SIGKILL" })))"#
+    );
+    assert_eq!(killed(), "ok");
+    assert!(harness.controller.session.is_idle());
+    assert!(
+        !harness.trace().took("kill"),
+        "the debugger does not give up on its own kill"
+    );
+}

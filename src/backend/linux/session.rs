@@ -160,10 +160,6 @@ impl Session {
         )
     }
 
-    pub(super) const fn killing(&self) -> bool {
-        matches!(self, Self::Traced(Traced { kill: Some(_), .. }))
-    }
-
     /// Takes the launch's reply, if a launch is starting.
     pub(super) fn take_launch(&mut self) -> Option<Reply<ExecutionId>> {
         let startup = &mut self.traced_mut()?.startup;
