@@ -500,6 +500,11 @@ impl Kernel {
             return Err(Errno::EIO);
         }
 
+        #[cfg(test)]
+        if self.sabotage == Some(Sabotage::LoseStopRequests) {
+            return Ok(());
+        }
+
         if !thread.state.exiting() {
             thread.tracing = Tracing::Seized {
                 tracer: caller,

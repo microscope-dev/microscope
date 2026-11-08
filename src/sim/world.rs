@@ -211,6 +211,14 @@ pub enum Sabotage {
     /// The controller drops a client's request, other than a shutdown,
     /// unanswered while its program is ending.
     DropRequestsWhileEnding,
+
+    /// `PTRACE_INTERRUPT` and the tracer's `tgkill` with SIGSTOP report
+    /// success without asking the thread to stop.
+    LoseStopRequests,
+
+    /// While no stop is published, a thread the controller holds stopped
+    /// runs again behind its back.
+    ResumeWhileGathering,
 }
 
 impl Default for Settings {
@@ -695,26 +703,33 @@ impl<'a> World<'a> {
     }
 
     /// Resumes a stopped thread behind the controller's back while a stop
-    /// is published, under [`Sabotage::ResumeBehindTheController`].
+    /// is published, under [`Sabotage::ResumeBehindTheController`], or one
+    /// it holds stopped while none is, under
+    /// [`Sabotage::ResumeWhileGathering`].
     #[cfg(test)]
     fn sabotage(&self) {
-        if self.machine.sabotage != Some(Sabotage::ResumeBehindTheController)
-            || self
-                .controller()
-                .is_none_or(|controller| controller.public_stop().is_none())
-        {
+        let Some(controller) = self.controller() else {
             return;
-        }
+        };
+
+        let held = match self.machine.sabotage {
+            Some(Sabotage::ResumeBehindTheController) if controller.public_stop().is_some() => None,
+            Some(Sabotage::ResumeWhileGathering) if controller.public_stop().is_none() => {
+                Some(controller.truth().stopped)
+            }
+            _ => return,
+        };
 
         let mut kernel = self.machine.kernel.borrow_mut();
         if let Some(thread) = kernel.threads.values_mut().find(|thread| {
-            matches!(
-                thread.state,
-                State::Stopped {
-                    kind: StopKind::Signal(_),
-                    ..
-                }
-            )
+            held.as_ref().is_none_or(|held| held.contains(&thread.tid))
+                && matches!(
+                    thread.state,
+                    State::Stopped {
+                        kind: StopKind::Signal(_),
+                        ..
+                    }
+                )
         }) {
             thread.state = State::Running;
             thread.report = None;
@@ -1628,6 +1643,10 @@ impl<'a> World<'a> {
                 .map_err(|message| Failure::debugger("site ownership", message))?;
             oracles::all_stop(&kernel, &truth)
                 .map_err(|message| Failure::debugger("all-stop", message))?;
+            oracles::held_stops(&kernel, &truth)
+                .map_err(|message| Failure::debugger("held stops", message))?;
+            oracles::requested_stops(&kernel, &truth)
+                .map_err(|message| Failure::debugger("requested stops", message))?;
             if id == FIRST {
                 oracles::user_breakpoints(
                     &kernel,

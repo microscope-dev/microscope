@@ -797,6 +797,12 @@ pub struct Truth {
     /// The inferior's threads the controller knows.
     pub threads: BTreeSet<Tid>,
 
+    /// The threads the controller holds stopped.
+    pub stopped: BTreeSet<Tid>,
+
+    /// The threads the controller asked to stop and waits to hear stop.
+    pub stop_requested: BTreeSet<Tid>,
+
     /// The user's breakpoints, by identifier.
     pub breakpoints: BTreeMap<u64, UserBreakpoint>,
 
@@ -1079,6 +1085,8 @@ impl SimController {
             established: self.controller.launch_reply.is_none()
                 && self.controller.attach_reply.is_none(),
             threads: inferior.threads.keys().map(|pid| pid.as_raw()).collect(),
+            stopped: threads_in(inferior, super::NativeThreadState::Stopped),
+            stop_requested: threads_in(inferior, super::NativeThreadState::StopRequested),
             reasons: inferior
                 .threads
                 .iter()
@@ -1093,6 +1101,16 @@ impl SimController {
                 .collect(),
         }
     }
+}
+
+/// The inferior's threads the controller holds in `state`.
+fn threads_in(inferior: &super::Inferior, state: super::NativeThreadState) -> BTreeSet<Tid> {
+    inferior
+        .threads
+        .iter()
+        .filter(|(_, thread)| thread.state == state)
+        .map(|(pid, _)| pid.as_raw())
+        .collect()
 }
 
 #[cfg(test)]

@@ -252,6 +252,11 @@ impl Kernel {
             return Err(Errno::ENOSYS);
         }
 
+        #[cfg(test)]
+        if self.sabotage == Some(super::Sabotage::LoseStopRequests) {
+            return Ok(());
+        }
+
         if let Some(process) = self.processes.get_mut(&group) {
             process.shared.remove(SIGCONT);
         }

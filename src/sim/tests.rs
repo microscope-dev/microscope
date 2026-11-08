@@ -251,6 +251,27 @@ fn a_thread_resumed_behind_the_controller_fails_all_stop() {
     );
 }
 
+/// A thread that runs again while the controller holds it stopped, before
+/// any stop is published, fails held stops.
+#[test]
+fn a_thread_resumed_while_gathering_fails_held_stops() {
+    assert_eq!(
+        first_failure_with(Sabotage::ResumeWhileGathering),
+        "held stops"
+    );
+}
+
+/// A kernel that loses the controller's requests to stop leaves it waiting
+/// for stops that never come, which requested stops catches before the
+/// run runs out of things to do.
+#[test]
+fn lost_stop_requests_fail_requested_stops() {
+    assert_eq!(
+        first_failure_with(Sabotage::LoseStopRequests),
+        "requested stops"
+    );
+}
+
 /// A CPU that executes the program's own instruction under a user's trap
 /// lets a hit go unseen, which breakpoint accounting catches.
 #[test]

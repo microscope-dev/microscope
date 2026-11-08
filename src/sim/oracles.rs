@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::corpus::Run;
-use super::kernel::{ExitStatus, Kernel, Parent, State, Tgid, Tid};
+use super::kernel::signals::SIGSTOP;
+use super::kernel::{ExitStatus, Kernel, Parent, State, Tgid, Tid, Tracing};
 use super::loader::Image;
 use crate::backend::sim_edge::Truth;
 
@@ -181,6 +182,64 @@ pub fn all_stop(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
              and {ended:?} ended",
             truth.threads
         ));
+    }
+
+    Ok(())
+}
+
+/// Held stops: every thread the controller holds stopped is in a
+/// ptrace-stop, whether or not a stop is published. A thread the kernel
+/// stopped may still be running in the controller's eyes until it hears
+/// of the stop, so only this direction holds.
+pub fn held_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
+    if truth.inferior.is_none_or(|tgid| ending(kernel, tgid)) {
+        return Ok(());
+    }
+
+    for &tid in &truth.stopped {
+        let state = kernel.threads.get(&tid).map(|thread| thread.state);
+        if !matches!(state, Some(State::Stopped { .. })) {
+            return Err(format!(
+                "the controller holds thread {tid} stopped, but the kernel has it {state:?}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Requested stops: every thread the controller waits to stop has a stop
+/// on its way. It is stopped already, an interrupt or SIGSTOP is pending
+/// for it, or it is exiting or reaped, whose status the controller will
+/// hear of instead.
+pub fn requested_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
+    if truth.inferior.is_none_or(|tgid| ending(kernel, tgid)) {
+        return Ok(());
+    }
+
+    for &tid in &truth.stop_requested {
+        let Some(thread) = kernel.threads.get(&tid) else {
+            continue;
+        };
+
+        let interrupted = matches!(
+            thread.tracing,
+            Tracing::Seized {
+                interrupted: true,
+                ..
+            }
+        );
+        let on_its_way = interrupted
+            || thread.pending.contains(SIGSTOP)
+            || thread.state.exiting()
+            || matches!(thread.state, State::Stopped { .. });
+        if !on_its_way {
+            return Err(format!(
+                "the controller waits for thread {tid} to stop, but the kernel has it {:?} \
+                 with no interrupt or SIGSTOP pending",
+                thread.state
+            ));
+        }
     }
 
     Ok(())
