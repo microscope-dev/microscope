@@ -628,6 +628,7 @@ fn python(keys: &Keys<'_>, path: &mut Vec<u32>) {
 
 /// The call tree of the samples `query` selects.
 pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree {
+    let _zone = microscope_probes::zone!("analysis aggregate");
     let selected = select(capture, keys, query);
     let mut paths = Paths::new(capture, keys, query);
 
@@ -745,6 +746,7 @@ pub struct Costs {
 
 /// What each key costs under `query`.
 pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
+    let _zone = microscope_probes::zone!("analysis functions");
     let selected = select(capture, keys, query);
     let mut paths = Paths::new(capture, keys, query);
     let mut own = vec![0_u64; keys.count()];
@@ -906,6 +908,7 @@ pub fn density(
     buckets: usize,
     lanes: Lanes,
 ) -> Vec<(u32, Vec<u64>)> {
+    let _zone = microscope_probes::zone!("analysis density");
     let Some((start, end)) = query
         .range
         .filter(|(start, end)| end > start && buckets > 0)

@@ -26,6 +26,9 @@ system-alloc = []
 # the totals in the profile's setting `v8 walk times`, for measuring the walk
 # alone (dev/performance.md). The shipping sampler has no clock.
 bpf-walk-timing = []
+# Marks microscope's own recording and analysis phases as zones, so another
+# microscope can record them. Off, every mark compiles to nothing.
+self-probes = ["microscope-probes/enabled"]
 # Developer tools: `microscope-tools` dumps every answer a program's debug
 # information gives, loads programs for benchmarks, and summarizes timings.
 tools = []

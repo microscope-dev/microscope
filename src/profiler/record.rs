@@ -2302,6 +2302,7 @@ impl Processor {
     /// The capture so far, every frame symbolized, which goes on growing:
     /// what a live view shows. Records held back stay held back.
     pub fn snapshot(&mut self) -> Capture {
+        let _zone = microscope_probes::zone!("record snapshot");
         self.symbolize_new();
         let mut builder = self.builder.clone();
         if self.images.iter().any(|image| image.deferred.is_some()) {

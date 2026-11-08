@@ -792,10 +792,13 @@ fn drive(
 
         let mut drained = 0;
         drained_at = std::time::Instant::now();
-        processor.ingest_drained(
-            |blocks| drained = events.drain_blocks(blocks),
-            (!finished).then_some(watermark),
-        );
+        {
+            let _zone = microscope_probes::zone!("record drain");
+            processor.ingest_drained(
+                |blocks| drained = events.drain_blocks(blocks),
+                (!finished).then_some(watermark),
+            );
+        }
         record!("record: drained {drained} bytes, finished {finished}");
         for (start, end) in events.behind(None) {
             processor.gap(start, end, GapReason::Behind);
@@ -810,6 +813,7 @@ fn drive(
         }
 
         if let Some(probes) = &mut probes {
+            let _zone = microscope_probes::zone!("record probes");
             if finished {
                 probes.finish(processor, !ended(Duration::ZERO));
             } else {

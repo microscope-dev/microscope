@@ -232,6 +232,14 @@ microscope can profile itself too: record a recorder with `microscope record
 pointers (`Cargo.toml`), so its stacks unwind whole however deep rayon nests
 its joins; loading debug information costs about 1% more for it.
 
+Build with `--features self-probes` to add microscope's own zones to such a
+recording: its drain loop, snapshots, and analysis queries, beside the samples.
+Without the feature they compile to nothing. A zone marks a phase worth
+reading on its own, not a function: keep them off per-sample and per-item
+paths. The recorder finds a program's static sites tens of milliseconds after
+it starts, so a command that ends sooner, such as a small `report`, records
+none of its zones.
+
 The `system-alloc` feature replaces mimalloc when a heap tool cannot observe
 it. Use the repository recipes so feature flags and profiles match the intended
 measurement.
