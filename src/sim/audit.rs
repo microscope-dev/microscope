@@ -5,7 +5,7 @@
 use tokio::sync::mpsc;
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use super::hits::Published;
@@ -28,6 +28,13 @@ pub struct Auditor {
 
     /// The newest stop published.
     stop: u64,
+
+    /// The newest execution each debugged process began.
+    executions: BTreeMap<Tgid, u64>,
+
+    /// The process whose launch has not yet resumed it past its exec stop,
+    /// which continues the launch's execution instead of beginning one.
+    launching: Option<Tgid>,
 
     /// The processes the session launched or attached to, and those it
     /// said it detached from.
@@ -54,6 +61,8 @@ impl Auditor {
             revision: 0,
             change: 0,
             stop: 0,
+            executions: BTreeMap::new(),
+            launching: None,
             debugged: BTreeSet::new(),
             detached: BTreeSet::new(),
             exited_threads: BTreeSet::new(),
@@ -63,7 +72,8 @@ impl Auditor {
 
     /// Reads the events published since the last action: each state change
     /// announces a new revision, which the events it produced share, so
-    /// revisions never decrease; stop identifiers only increase; and every
+    /// revisions never decrease; stop identifiers only increase, as do a
+    /// process's execution identifiers, which a launch begins; and every
     /// exit the client hears of, of a thread or of the process, is the one
     /// the kernel reported, or, for a leader, the code it passed to `exit`,
     /// and is heard once. It counts the messages hits logged and the
@@ -79,6 +89,7 @@ impl Auditor {
             }
 
             self.revision = revision;
+            self.check_execution(&event)?;
 
             match &event {
                 DebuggerEvent::StateChanged { revision } => {
@@ -229,6 +240,47 @@ impl Auditor {
         Ok(())
     }
 
+    /// Checks that `event` begins an execution with a new identifier. A
+    /// launch's execution goes on past its exec stop, which publishes it
+    /// again; any other repeat is an operation given another's identifier.
+    fn check_execution(&mut self, event: &DebuggerEvent) -> Result<(), Failure> {
+        match *event {
+            DebuggerEvent::InferiorLaunched {
+                process_id,
+                execution_id,
+                ..
+            } => {
+                let tgid = tgid_of(process_id.get());
+                self.executions.insert(tgid, execution_id.get());
+                self.launching = Some(tgid);
+            }
+            DebuggerEvent::InferiorAttached { process_id, .. } => {
+                self.executions.remove(&tgid_of(process_id.get()));
+            }
+            DebuggerEvent::InferiorStopped { .. } => self.launching = None,
+            DebuggerEvent::InferiorContinued {
+                process_id,
+                execution_id,
+                ..
+            } => {
+                let tgid = tgid_of(process_id.get());
+                let resumed_launch = self.launching.take() == Some(tgid);
+                let last = self.executions.insert(tgid, execution_id.get());
+                if let Some(last) = last
+                    && (execution_id.get() < last
+                        || (execution_id.get() == last && !resumed_launch))
+                {
+                    return Err(failure(format!(
+                        "{tgid} began execution {execution_id} after execution {last}"
+                    )));
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     /// Counts a message a hit logged or a condition that failed to evaluate.
     fn count_hit_event(&self, event: &DebuggerEvent) -> Result<(), Failure> {
         let mut published = self.published.borrow_mut();
@@ -300,7 +352,7 @@ fn same_status(kernel: WaitStatus, reported: &crate::ExitStatus) -> bool {
 mod tests {
     use super::*;
     use crate::sim::kernel::{Ended, Parent};
-    use crate::{ExecutionId, ProcessId, ThreadId};
+    use crate::{ExecutionId, ProcessId, StopId, StopReason, ThreadId};
 
     const LEADER: Tid = 1000;
     const WORKER: Tid = 1001;
@@ -321,6 +373,26 @@ mod tests {
             process_id: PROCESS,
             execution_id: None,
             status: crate::ExitStatus::Code(0),
+        }
+    }
+
+    fn continued(revision: u64, execution: u64) -> DebuggerEvent {
+        DebuggerEvent::InferiorContinued {
+            revision,
+            process_id: PROCESS,
+            execution_id: ExecutionId::new(execution),
+            resumed: crate::ResumeScope::Process(PROCESS),
+        }
+    }
+
+    fn stopped(revision: u64, execution: u64) -> DebuggerEvent {
+        DebuggerEvent::InferiorStopped {
+            revision,
+            process_id: PROCESS,
+            execution_id: Some(ExecutionId::new(execution)),
+            stop_id: StopId::new(revision),
+            thread_id: ThreadId::new(1000),
+            reason: StopReason::Entry,
         }
     }
 
@@ -423,5 +495,40 @@ mod tests {
             process_id: PROCESS,
         }])
         .expect("detached");
+    }
+
+    /// Each execution has its own identifier, except that the launch's goes
+    /// on past the exec stop, which publishes it again.
+    #[test]
+    fn each_execution_is_new() {
+        let exits = || [thread_exited(10), inferior_exited(11)];
+        let audit_executions =
+            |events: Vec<DebuggerEvent>| audit(events.into_iter().chain(exits()).collect());
+
+        audit_executions(vec![continued(3, 1), stopped(4, 1), continued(5, 2)])
+            .expect("the launch went on past its exec stop");
+
+        let failure = audit_executions(vec![continued(3, 1), continued(4, 1)])
+            .expect_err("the launch's execution began again");
+        assert!(
+            failure
+                .message
+                .contains("began execution 1 after execution 1"),
+            "{failure}"
+        );
+
+        // An entry stop ends the launch's execution before its exec stop
+        // could resume it.
+        audit_executions(vec![stopped(3, 1), continued(4, 1)])
+            .expect_err("a continue from the entry stop reused the launch's execution");
+
+        audit_executions(vec![
+            continued(3, 1),
+            stopped(4, 1),
+            continued(5, 3),
+            stopped(6, 3),
+            continued(7, 2),
+        ])
+        .expect_err("an execution older than the last");
     }
 }
