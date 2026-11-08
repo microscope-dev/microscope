@@ -275,11 +275,15 @@ impl SyscallCapture {
                 ReadAt::Exit => 1,
             };
 
-            let len = u32::try_from(capture.bytes.len()).unwrap_or(u32::MAX);
+            let bytes = capture
+                .bytes
+                .get(..u32::MAX as usize)
+                .unwrap_or(&*capture.bytes);
+            let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
             self.blob.extend_from_slice(&[capture.arg, when, state, 0]);
             self.blob.extend_from_slice(&wanted.to_le_bytes());
             self.blob.extend_from_slice(&len.to_le_bytes());
-            self.blob.extend_from_slice(&capture.bytes[..len as usize]);
+            self.blob.extend_from_slice(bytes);
         }
 
         let time = |time: Option<u64>| time.map_or(UNSEEN, signed);

@@ -998,7 +998,7 @@ impl<'a> Engine<'a> {
             };
 
             let next = position + length as u64;
-            instructions.push(self.instruction(address, &view.bytes[..length], content));
+            instructions.push(self.instruction(address, &view.bytes, length, content)?);
 
             // A known start inside the range takes precedence over the range
             // end: decoding resumes there rather than ending.
@@ -1060,7 +1060,10 @@ impl<'a> Engine<'a> {
                         })?,
                     }
                 } else {
-                    let target = target_value(&view.bytes, self.decoder.byte_order());
+                    let target =
+                        target_value(&view.bytes, self.decoder.byte_order()).ok_or_else(|| {
+                            Error::internal("an indirect branch loads more than eight bytes")
+                        })?;
                     IndirectTarget::Memory {
                         slot,
                         target: self.source.describe(VirtualAddress::new(target)),
@@ -1079,15 +1082,20 @@ impl<'a> Engine<'a> {
         &self,
         address: VirtualAddress,
         bytes: &[u8],
+        length: usize,
         content: InstructionContent,
-    ) -> DisassembledInstruction {
-        DisassembledInstruction {
+    ) -> Result<DisassembledInstruction> {
+        let bytes = bytes
+            .get(..length)
+            .ok_or_else(|| Error::internal("a decoded instruction is longer than its bytes"))?;
+
+        Ok(DisassembledInstruction {
             address,
             bytes: bytes.into(),
             content,
             location: self.source.describe(address),
             source: self.source.source_location(address),
-        }
+        })
     }
 
     /// Returns up to `length` bytes at `address`, reading aligned chunks so
@@ -1103,7 +1111,10 @@ impl<'a> Engine<'a> {
                 self.chunks.insert(chunk_start, chunk);
             }
 
-            let chunk = &self.chunks[&chunk_start];
+            let chunk = self
+                .chunks
+                .get(&chunk_start)
+                .ok_or_else(|| Error::internal("a chunk read just now is missing"))?;
             let offset = usize::try_from(current - chunk_start)
                 .map_err(|_| Error::internal("a chunk offset is larger than READ_CHUNK"))?;
 
@@ -1134,7 +1145,11 @@ impl<'a> Engine<'a> {
             }
 
             let take = (chunk.bytes.len() - offset).min(length - bytes.len());
-            bytes.extend_from_slice(&chunk.bytes[offset..offset + take]);
+            let taken = chunk
+                .bytes
+                .get(offset..offset + take)
+                .ok_or_else(|| Error::internal("a chunk is shorter than its own length"))?;
+            bytes.extend_from_slice(taken);
             current += take as u64;
         }
 
@@ -1166,17 +1181,19 @@ impl<'a> Engine<'a> {
     }
 }
 
-/// Reads an address of up to eight bytes stored in `byte_order`.
-fn target_value(bytes: &[u8], byte_order: ByteOrder) -> u64 {
+/// Reads an address of up to eight bytes stored in `byte_order`, or
+/// `None` when there are more.
+fn target_value(bytes: &[u8], byte_order: ByteOrder) -> Option<u64> {
     let mut word = [0; 8];
     match byte_order {
         ByteOrder::Little => {
-            word[..bytes.len()].copy_from_slice(bytes);
-            u64::from_le_bytes(word)
+            word.get_mut(..bytes.len())?.copy_from_slice(bytes);
+            Some(u64::from_le_bytes(word))
         }
         ByteOrder::Big => {
-            word[8 - bytes.len()..].copy_from_slice(bytes);
-            u64::from_be_bytes(word)
+            word.get_mut(8_usize.checked_sub(bytes.len())?..)?
+                .copy_from_slice(bytes);
+            Some(u64::from_be_bytes(word))
         }
     }
 }

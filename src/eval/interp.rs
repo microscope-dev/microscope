@@ -724,8 +724,10 @@ impl<M: Machine> Interpreter<'_, M> {
         }
 
         let mut wide = [0_u8; 16];
-        let length = ordered.len().min(16);
-        wide[..length].copy_from_slice(&ordered[..length]);
+        for (slot, byte) in wide.iter_mut().zip(&ordered) {
+            *slot = *byte;
+        }
+
         let raw = u128::from_le_bytes(wide);
         Ok(match category(self.machine, ty) {
             Category::Integer { int: Some(int), .. } => {
@@ -1241,7 +1243,10 @@ impl<M: Machine> Interpreter<'_, M> {
             usize::try_from(end).unwrap_or(usize::MAX),
         );
         Ok(Value::Text(match (computed, stored) {
-            (Some(bytes), _) => bytes[first..last].to_vec(),
+            (Some(bytes), _) => match bytes.get(first..last) {
+                Some(slice) => slice.to_vec(),
+                None => return Self::invariant("a checked slice is inside its text"),
+            },
             (_, Some(stored)) => {
                 let address = stored
                     .address

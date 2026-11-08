@@ -901,10 +901,12 @@ fn function_at(
     let mut group_end = starts.partition_point(|start| start.start.get() <= address);
 
     while group_end > 0 {
-        let start = starts[group_end - 1].start.get();
-        let group_start = starts[..group_end].partition_point(|row| row.start.get() < start);
+        let before = starts.get(..group_end)?;
+        let start = before.last()?.start.get();
+        let group_start = before.partition_point(|row| row.start.get() < start);
 
-        if let Some(found) = starts[group_start..group_end]
+        if let Some(found) = before
+            .get(group_start..)?
             .iter()
             .map(|row| row.function.get())
             .find(|function| contains(*function))
@@ -912,7 +914,8 @@ fn function_at(
             return Some(found);
         }
 
-        if group_start == 0 || starts[group_start - 1].prefix_max_end.get() <= address {
+        let previous = before.get(group_start.checked_sub(1)?)?;
+        if previous.prefix_max_end.get() <= address {
             return None;
         }
 
@@ -944,13 +947,12 @@ impl<'a> FunctionIndex<'a> {
     /// The function holding `address`.
     pub fn function_at(&self, address: ImageAddress) -> Option<&'a Function> {
         let holds = |id: u32| {
-            self.functions[id as usize]
-                .ranges
-                .iter()
-                .any(|range| range.contains(address))
+            self.functions
+                .get(id as usize)
+                .is_some_and(|function| function.ranges.iter().any(|range| range.contains(address)))
         };
 
-        function_at(&self.starts, address, holds).map(|id| &self.functions[id as usize])
+        function_at(&self.starts, address, holds).and_then(|id| self.functions.get(id as usize))
     }
 }
 
@@ -1068,7 +1070,8 @@ fn find(index: &[Keyed], key: u64) -> Option<u32> {
     index
         .binary_search_by_key(&key, |entry| entry.key.get())
         .ok()
-        .map(|found| index[found].value.get())
+        .and_then(|found| index.get(found))
+        .map(|entry| entry.value.get())
 }
 
 impl<'a> VariableView<'a> {
@@ -1092,7 +1095,16 @@ impl<'a> VariableView<'a> {
     }
 
     /// The object `id` names, which must be one of these.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass ids from records and indexes whose validation checks every \
+                  object id, and object validation checks every object's scope"
+    )]
     pub const fn object(self, id: ObjectId) -> Object<'a> {
+        debug_assert!(
+            (id.0 as usize) < self.objects.len(),
+            "an object id is outside its table"
+        );
         let record = &self.objects[id.0 as usize];
         Object {
             view: self,
@@ -1103,7 +1115,15 @@ impl<'a> VariableView<'a> {
     }
 
     /// The function `id` names, which must be one of these.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass ids from indexes whose validation checks every function id"
+    )]
     pub const fn function(self, id: VariableFunctionId) -> VariableFunction<'a> {
+        debug_assert!(
+            (id.0 as usize) < self.functions.len(),
+            "a function id is outside its table"
+        );
         VariableFunction {
             view: self,
             id,
@@ -1137,7 +1157,7 @@ impl<'a> VariableView<'a> {
             .procedures
             .binary_search_by_key(&offset, |procedure| procedure.offset.get())
             .ok()?;
-        let procedure = &self.procedures[found];
+        let procedure = self.procedures.get(found)?;
         Some(self.location(procedure.location_kind, procedure.location))
     }
 
@@ -1185,7 +1205,7 @@ impl<'a> VariableView<'a> {
     }
 
     fn constant(self, id: U32) -> Option<ConstantValue> {
-        let record = &self.constants[id.get() as usize];
+        let record = self.constants.get(id.get() as usize)?;
         let value = u128::from(record.low.get()) | (u128::from(record.high.get()) << 64);
         Some(match record.kind {
             constant_kinds::UNSIGNED => ConstantValue::Unsigned(value),
@@ -1218,6 +1238,10 @@ impl<'a> Object<'a> {
         self.view.strings.get(StrId(self.record.name.get()))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "object validation rejects a kind `VARIABLE_KINDS` lacks"
+    )]
     pub fn kind(self) -> VariableKind {
         VARIABLE_KINDS[usize::from(self.record.kind)]
     }

@@ -34,6 +34,10 @@ const MAX_CODE_SEARCH: u64 = 1 << 20;
 /// first four bytecodes on 12.4, 13.6, and 14.6.
 pub(super) const PREFIXES: [usize; 4] = [1, 2, 1, 2];
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a compile-time check: an index out of bounds fails the build"
+)]
 const _: () = {
     let mut index = 0;
     while index < PREFIXES.len() {

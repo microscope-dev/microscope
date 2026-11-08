@@ -33,11 +33,13 @@ pub struct Entry {
 /// those lines take: a map is written as it is read, so its last line may
 /// be cut short. A line that names no code is skipped.
 pub fn parse(text: &[u8]) -> (Vec<Entry>, usize) {
-    let complete = text
+    let lines = text
         .iter()
         .rposition(|byte| *byte == b'\n')
-        .map_or(0, |last| last + 1);
-    let entries = text[..complete]
+        .and_then(|last| text.get(..=last))
+        .unwrap_or_default();
+    let complete = lines.len();
+    let entries = lines
         .split(|byte| *byte == b'\n')
         .filter_map(entry)
         .collect();

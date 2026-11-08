@@ -507,12 +507,13 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn remove_breakpoint(&mut self, id: BreakpointId) -> Result<Breakpoint> {
-        let index = self
+        let (index, breakpoint) = self
             .breakpoints
             .iter()
-            .position(|breakpoint| breakpoint.id == id)
+            .enumerate()
+            .find(|(_, breakpoint)| breakpoint.id == id)
+            .map(|(index, breakpoint)| (index, breakpoint.clone()))
             .ok_or(Error::BreakpointNotFound(id.get()))?;
-        let breakpoint = self.breakpoints[index].clone();
         if breakpoint.enabled && self.sites_live() {
             let inferior = self
                 .session
@@ -545,12 +546,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         id: BreakpointId,
         enabled: bool,
     ) -> Result<Breakpoint> {
-        let index = self
+        let (index, current) = self
             .breakpoints
             .iter()
-            .position(|breakpoint| breakpoint.id == id)
+            .enumerate()
+            .find(|(_, breakpoint)| breakpoint.id == id)
             .ok_or(Error::BreakpointNotFound(id.get()))?;
-        let current = &self.breakpoints[index];
         if current.enabled == enabled {
             return Ok(self.describe_breakpoint(current));
         }
@@ -582,7 +583,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        self.breakpoints[index] = breakpoint.clone();
+        let listed = self
+            .breakpoints
+            .get_mut(index)
+            .ok_or_else(|| Error::internal("a breakpoint being enabled stays listed"))?;
+        *listed = breakpoint.clone();
         if self.follows_resolvers(&breakpoint.spec) {
             self.sync_resolvers()?;
         }
@@ -1156,8 +1161,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // others, which one read covers.
         let page = |address: VirtualAddress| address.get() / PAGE_BYTES;
 
-        for sites in installed.chunk_by(|(one, _), (other, _)| page(*one) == page(*other)) {
-            let (first, end) = (sites[0].0.get(), sites[sites.len() - 1].0.get() + 1);
+        let pages = installed.chunk_by(|(one, _), (other, _)| page(*one) == page(*other));
+        for (sites, first, end) in pages.filter_map(site_span) {
             let block = usize::try_from(end - first)
                 .ok()
                 .and_then(|size| self.ptrace.read_block(pid, first, size));
@@ -1268,6 +1273,17 @@ impl MovedCode {
 /// The size of the pages [`Controller::reconcile_sites`] reads at once.
 const PAGE_BYTES: u64 = 4096;
 
+/// An installed site's address and the byte its trap replaced.
+type InstalledSite = (VirtualAddress, u8);
+
+/// A run of sites in address order, with the first address and the one
+/// after the last.
+fn site_span(sites: &[InstalledSite]) -> Option<(&[InstalledSite], u64, u64)> {
+    let (first, _) = sites.first()?;
+    let (last, _) = sites.last()?;
+    Some((sites, first.get(), last.get() + 1))
+}
+
 /// The byte at `address`, or `None` where no memory is mapped.
 pub(super) fn memory_byte(
     ptrace: &impl LinuxTraceOps,
@@ -1276,9 +1292,9 @@ pub(super) fn memory_byte(
 ) -> Result<Option<u8>> {
     let (word, offset) = holding_word(address);
     match ptrace.read_memory_word(pid, word) {
-        Ok(word) => Ok(Some(word.to_ne_bytes()[offset])),
+        Ok(word) => Ok(Some(*offset.of(&mut word.to_ne_bytes()))),
         Err(MemoryAccessError::Partial { word, readable }) => {
-            Ok((offset < readable).then(|| word.to_ne_bytes()[offset]))
+            Ok((offset.get() < readable).then(|| *offset.of(&mut word.to_ne_bytes())))
         }
         Err(MemoryAccessError::Inaccessible) => Ok(None),
         Err(MemoryAccessError::Fatal(error)) => Err(error),

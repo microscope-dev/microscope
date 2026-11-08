@@ -17,6 +17,10 @@
 //! field the models read at an anchor, sets a thread's register, futex,
 //! or target id, or names a task set. A word is an anchor and an offset,
 //! a constant the models compare with, or eight bytes as they are.
+#![expect(
+    clippy::indexing_slicing,
+    reason = "a fuzz harness reports a bug by panicking"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

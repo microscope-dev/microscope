@@ -343,11 +343,24 @@ impl<'a> CallView<'a> {
         }
     }
 
-    /// The calling function `function` numbers, which must be one of these.
-    pub const fn function(self, function: u32) -> Calling<'a> {
+    /// The calling function `function` numbers. Validation does not tie
+    /// these to the variables' functions, whose ids callers pass, so one
+    /// missing here describes none of its tail calls.
+    pub fn function(self, function: u32) -> Calling<'a> {
+        const UNDESCRIBED: CallingFunctionRecord = CallingFunctionRecord {
+            name: U32::new(NONE),
+            frame_base: U32::new(0),
+            tail_calls: Span::EMPTY,
+            frame_base_kind: super::variables::value_kinds::NO_FRAME_BASE,
+            flags: 0,
+        };
+
         Calling {
             view: self,
-            record: &self.functions[function as usize],
+            record: self
+                .functions
+                .get(function as usize)
+                .unwrap_or(&UNDESCRIBED),
         }
     }
 
@@ -365,7 +378,9 @@ impl<'a> CallView<'a> {
         let first = self
             .returns
             .partition_point(|entry| entry.key.get() < address.get());
-        self.returns[first..]
+        self.returns
+            .get(first..)
+            .unwrap_or_default()
             .iter()
             .take_while(move |entry| entry.key.get() == address.get())
             .map(|entry| SiteId(entry.value.get()))

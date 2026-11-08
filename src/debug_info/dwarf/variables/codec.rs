@@ -361,12 +361,15 @@ pub(super) fn integer_bytes(
         ));
     }
 
+    let (little, big) = (value.to_le_bytes(), value.to_be_bytes());
     let bytes = match target.byte_order {
-        ByteOrder::Little => value.to_le_bytes()[..size].to_vec(),
-        ByteOrder::Big => value.to_be_bytes()[16 - size..].to_vec(),
+        ByteOrder::Little => little.get(..size),
+        ByteOrder::Big => big.get(16 - size..),
     };
 
-    Ok(bytes.into())
+    bytes.map(Arc::from).ok_or_else(|| {
+        EvaluateError::Malformed("constant value does not fit its scalar type".into())
+    })
 }
 
 pub(super) fn signed_integer_bytes(
@@ -429,8 +432,15 @@ pub(super) fn bytes_to_u64(
 
     let mut word = [0_u8; 8];
     match endian {
-        RunTimeEndian::Little => word[..bytes.len()].copy_from_slice(bytes),
-        RunTimeEndian::Big => word[8 - bytes.len()..].copy_from_slice(bytes),
+        RunTimeEndian::Little => word
+            .iter_mut()
+            .zip(bytes)
+            .for_each(|(to, from)| *to = *from),
+        RunTimeEndian::Big => word
+            .iter_mut()
+            .rev()
+            .zip(bytes.iter().rev())
+            .for_each(|(to, from)| *to = *from),
     }
 
     Ok(match endian {
@@ -545,8 +555,15 @@ pub(super) fn unsigned_value(
     let mut value = [0_u8; 16];
 
     match byte_order {
-        ByteOrder::Little => value[..bytes.len()].copy_from_slice(bytes),
-        ByteOrder::Big => value[16 - bytes.len()..].copy_from_slice(bytes),
+        ByteOrder::Little => value
+            .iter_mut()
+            .zip(bytes)
+            .for_each(|(to, from)| *to = *from),
+        ByteOrder::Big => value
+            .iter_mut()
+            .rev()
+            .zip(bytes.iter().rev())
+            .for_each(|(to, from)| *to = *from),
     }
 
     Ok(match byte_order {

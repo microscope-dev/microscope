@@ -19,6 +19,10 @@ impl Tree {
         self.root
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the parser makes every id from the length of the tree's nodes"
+    )]
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0 as usize]
     }

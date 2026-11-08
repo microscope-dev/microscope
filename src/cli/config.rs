@@ -655,7 +655,11 @@ fn context<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u32; 2], D::Er
 fn sections<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Section>, D::Error> {
     let sections = Vec::<Section>::deserialize(deserializer)?;
     for (index, section) in sections.iter().enumerate() {
-        if sections[..index].contains(section) {
+        if sections
+            .iter()
+            .take(index)
+            .any(|earlier| earlier == section)
+        {
             return Err(de::Error::custom(format!(
                 "{} is listed twice",
                 serde_name(section)
@@ -1411,8 +1415,10 @@ impl File {
                 ));
             }
 
-            if config.launch[..index]
+            if config
+                .launch
                 .iter()
+                .take(index)
                 .any(|earlier| earlier.name == launch.name)
             {
                 return Err(self.error_at(

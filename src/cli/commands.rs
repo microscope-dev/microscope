@@ -729,11 +729,18 @@ impl Cli {
     }
 
     /// Parses and executes one non-empty command line.
+    #[expect(clippy::too_many_lines, reason = "one arm per command")]
     pub(super) async fn execute(&self, line: &str) -> Result<Control> {
         let expanded = self.expand_alias(line);
         let line = expanded.as_deref().unwrap_or(line);
         let (spec, format, rest, arguments) = command_line(line)?;
         let first = arguments.first().copied();
+        let required = |index: usize| {
+            arguments
+                .get(index)
+                .copied()
+                .ok_or_else(|| spec.usage_error())
+        };
         let renderer = self.renderers.stdout;
         let debugger = &self.debugger();
 
@@ -754,9 +761,18 @@ impl Cli {
             Command::Delete => self.delete(&arguments, false, spec).await?,
             Command::Enable => self.set_enabled(&arguments, true, spec).await?,
             Command::Disable => self.set_enabled(&arguments, false, spec).await?,
-            Command::Ignore => self.ignore(arguments[0], arguments[1], spec).await?,
-            Command::Hits => self.hits(arguments[0], arguments[1], spec).await?,
-            Command::Condition => self.condition(arguments[0], &arguments[1..], spec).await?,
+            Command::Ignore => {
+                let (id, count) = (required(0)?, required(1)?);
+                self.ignore(id, count, spec).await?
+            }
+            Command::Hits => {
+                let (id, hits) = (required(0)?, required(1)?);
+                self.hits(id, hits, spec).await?
+            }
+            Command::Condition => {
+                let condition = arguments.get(1..).unwrap_or_default();
+                self.condition(required(0)?, condition, spec).await?
+            }
             Command::Watch => self.watch_stores(&arguments, spec).await?,
             Command::AccessWatch => self.watch(&arguments, WatchAccess::ReadWrite, spec).await?,
             Command::ReadWatch => self.watch(&arguments, WatchAccess::Read, spec).await?,
@@ -789,15 +805,15 @@ impl Cli {
             },
             Command::Next => self.step(StepKind::OverSource).await?,
             Command::Finish => self.step(StepKind::Out).await?,
-            Command::Advance => self.advance(arguments[0], spec).await?,
-            Command::Jump => self.jump(arguments[0], spec).await?,
+            Command::Advance => self.advance(required(0)?, spec).await?,
+            Command::Jump => self.jump(required(0)?, spec).await?,
             Command::Examine => {
-                let address = parse_address(arguments[0])?;
+                let address = parse_address(required(0)?)?;
                 let byte_count = parse_memory_byte_count(arguments.get(1).copied(), spec)?;
                 format::memory_read(&debugger.read_memory(address, byte_count).await?, renderer)
             }
             Command::Disassemble => self.disassemble(first, arguments.get(1).copied()).await?,
-            Command::Address => self.address(arguments[0]).await?,
+            Command::Address => self.address(required(0)?).await?,
             Command::Where => self.location().await?,
             Command::List => {
                 self.source_listing(&self.source_context().await?, true)
@@ -815,9 +831,9 @@ impl Cli {
             }
             Command::Registers => format::registers(&debugger.registers().await?, renderer),
             Command::Threads => format::threads(&debugger.snapshot().await?, renderer),
-            Command::Thread => self.select_thread(arguments[0]).await?,
+            Command::Thread => self.select_thread(required(0)?).await?,
             Command::Processes => self.processes()?,
-            Command::Process => self.process(arguments[0]).await?,
+            Command::Process => self.process(required(0)?).await?,
             Command::Detach => self.detach_member(&arguments, spec).await?,
             Command::Tasks => self.tasks(line, &arguments, spec).await?,
             Command::Task => self.task(line, &arguments).await?,
@@ -867,7 +883,11 @@ impl Cli {
         let renderer = self.renderers.stdout;
         let debugger = &self.debugger();
 
-        Ok(match (arguments[0], arguments.get(1)) {
+        let Some(&topic) = arguments.first() else {
+            return Err(spec.usage_error());
+        };
+
+        Ok(match (topic, arguments.get(1)) {
             ("breakpoints" | "break", None) => self.list_breakpoints().await?,
             ("watchpoints" | "watch", None) => self.list_watchpoints().await?,
             ("catchpoints" | "catch", None) => {
@@ -1901,7 +1921,10 @@ impl Cli {
 
             // Only the selected task's frames are read.
             let traces = self.traced(vec![task], Vec::new()).await?;
-            let (task, trace) = &traces.tasks[0];
+            let (task, trace) = traces
+                .tasks
+                .first()
+                .ok_or_else(|| anyhow!("the selected {name} was not traced"))?;
             let place = format::task_place(task, trace, &traces.images, renderer);
             let line = format::task(task, &place, true, renderer);
 
@@ -2772,8 +2795,13 @@ impl Cli {
             .iter()
             .position(|frame| u64::from(frame.level) == level)
             .ok_or_else(|| anyhow!("the backtrace has no frame {level}"))?;
-        let iterates = trace.loop_iterators()[index];
-        let frame = self.debugger().select_frame(trace.frames[index].id).await?;
+        let (iterates, frame) = trace
+            .loop_iterators()
+            .into_iter()
+            .zip(trace.frames.iter())
+            .nth(index)
+            .ok_or_else(|| anyhow!("the backtrace has no frame {level}"))?;
+        let frame = self.debugger().select_frame(frame.id).await?;
 
         let renderer = self.renderers.stdout;
         let modules = self.debugger().loaded_modules().await?;
@@ -3280,26 +3308,25 @@ pub(super) fn parse_break<'a>(line: &'a str, spec: &CommandSpec) -> Result<Break
         .iter()
         .enumerate()
         .filter(|(_, (_, word))| BREAK_OPTIONS.contains(word))
-        .map(|(index, _)| index)
+        .map(|(index, &(offset, word))| (index, offset, word))
         .collect::<Vec<_>>();
-    let first = starts.first().copied().unwrap_or(words.len());
+    let first = starts.first().map_or(words.len(), |&(index, _, _)| index);
     let mut parsed = BreakLine::default();
 
-    match &words[..first] {
-        [] => {}
-        [(_, location)] => parsed.location = Some(unquoted_location(location)?),
-        [(_, location), (_, hits)] => {
+    match words.get(..first) {
+        Some([]) => {}
+        Some([(_, location)]) => parsed.location = Some(unquoted_location(location)?),
+        Some([(_, location), (_, hits)]) => {
             parsed.location = Some(unquoted_location(location)?);
             parsed.hits = Some(hits);
         }
         _ => return Err(spec.usage_error()),
     }
 
-    for (index, &start) in starts.iter().enumerate() {
-        let (offset, keyword) = words[start];
+    for (index, &(_, offset, keyword)) in starts.iter().enumerate() {
         let end = starts
             .get(index + 1)
-            .map_or(line.len(), |&next| words[next].0);
+            .map_or(line.len(), |&(_, next, _)| next);
         let text = line[offset + keyword.len()..end].trim();
         if text.is_empty() != (keyword == "disabled") {
             return Err(spec.usage_error());
@@ -3590,9 +3617,12 @@ pub fn parse_breakpoint_location(argument: &str) -> Result<Option<BreakpointSpec
 
     let bytes = argument.as_bytes();
     let separator = (0..bytes.len()).rev().find(|&index| {
-        bytes[index] == b':'
+        bytes.get(index) == Some(&b':')
             && bytes.get(index + 1) != Some(&b':')
-            && (index == 0 || bytes[index - 1] != b':')
+            && index
+                .checked_sub(1)
+                .and_then(|previous| bytes.get(previous))
+                != Some(&b':')
     });
     let Some(separator) = separator else {
         return Ok(Some(BreakpointSpec::Function(argument.to_owned())));
@@ -3683,12 +3713,14 @@ impl Cli {
     /// Shows or changes one signal's policy with gdb's actions: `stop`
     /// implies `print`, and `noprint` implies `nostop`.
     async fn handle_signal(&self, arguments: &[&str]) -> Result<String> {
-        let name = arguments[0];
+        let Some((&name, actions)) = arguments.split_first() else {
+            bail!("handle needs a signal");
+        };
         let code =
             microscope::signal_named(name).ok_or_else(|| anyhow!("unknown signal '{name}'"))?;
         let mut policy = self.debugger().signal_policy(code).await?;
 
-        for action in &arguments[1..] {
+        for action in actions {
             apply_signal_action(&mut policy, action)?;
         }
 
@@ -3830,9 +3862,9 @@ impl Cli {
         }
 
         if arguments.first() == Some(&"exec") {
-            let stops = match arguments[1..] {
-                [] | ["on"] => true,
-                ["off"] => false,
+            let stops = match arguments.get(1..) {
+                Some([] | ["on"]) => true,
+                Some(["off"]) => false,
                 _ => return Err(spec.usage_error()),
             };
             self.debugger().set_exec_stops(stops).await?;
@@ -3862,9 +3894,8 @@ impl Cli {
 
                 let stops = match choice {
                     [] => current,
-                    ["on" | "off"] => {
-                        self.set_exception_stop(filter.id, choice[0] == "on")
-                            .await?
+                    [choice @ ("on" | "off")] => {
+                        self.set_exception_stop(filter.id, *choice == "on").await?
                     }
                     _ => return Err(spec.usage_error()),
                 };

@@ -46,8 +46,8 @@ impl SocketAddress {
     /// Parses `bytes`, which hold `length` bytes the call named.
     #[must_use]
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        let family = u16::from_le_bytes(bytes.get(..2)?.try_into().ok()?);
-        let rest = &bytes[2..];
+        let (family, rest) = bytes.split_first_chunk::<2>()?;
+        let family = u16::from_le_bytes(*family);
         let port = |rest: &[u8]| Some(u16::from_be_bytes(rest.get(..2)?.try_into().ok()?));
         let word = |slice: Option<&[u8]>| Some(u32::from_le_bytes(slice?.try_into().ok()?));
 
@@ -96,7 +96,10 @@ impl SocketAddress {
             Self::Inet { address, port } => format!("{address}:{port}"),
             Self::Inet6 { address, port, .. } => format!("[{address}]:{port}"),
             Self::Unix(path) if path.first() == Some(&0) => {
-                format!("@{}", String::from_utf8_lossy(&path[1..]))
+                format!(
+                    "@{}",
+                    String::from_utf8_lossy(path.get(1..).unwrap_or_default())
+                )
             }
             Self::Unix(path) => String::from_utf8_lossy(path).into_owned(),
             Self::Netlink { pid, .. } => format!("{pid}"),
@@ -128,7 +131,7 @@ impl fmt::Display for SocketAddress {
             Self::Unix(path) if path.first() == Some(&0) => write!(
                 f,
                 "{{sa_family=AF_UNIX, sun_path=@{:?}}}",
-                String::from_utf8_lossy(&path[1..])
+                String::from_utf8_lossy(path.get(1..).unwrap_or_default())
             ),
             Self::Unix(path) => write!(
                 f,

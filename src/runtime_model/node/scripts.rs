@@ -47,6 +47,19 @@ struct Source {
     found: Vec<usize>,
 }
 
+impl Source {
+    /// The line ends read `read` found.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass a read that was hashed, and `found` gains an entry with each \
+                  hash, each a length of `ends` no less than the one before"
+    )]
+    fn read_ends(&self, read: usize) -> &[u64] {
+        let from = read.checked_sub(1).map_or(0, |earlier| self.found[earlier]);
+        &self.ends[from..self.found[read]]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScriptProof {
     id: i64,
@@ -208,7 +221,10 @@ impl Table {
         // Lines end at their newline; the line of `offset` is the first whose
         // end is at or past it.
         let line = ends.partition_point(|end| *end < offset);
-        let start = line.checked_sub(1).map_or(0, |previous| ends[previous] + 1);
+        let start = line
+            .checked_sub(1)
+            .and_then(|previous| ends.get(previous))
+            .map_or(0, |end| end + 1);
         let mut column = offset - start;
         if line == 0 {
             let first = reader.smi_field(script, Field::ScriptColumnOffset)?;
@@ -286,7 +302,9 @@ impl Lines {
             let mut words = [0_u8; 8 * ENDS_READ];
             while index < count {
                 let batch = usize::try_from((count - index).min(ENDS_READ as u64)).unwrap_or(0);
-                let words = &mut words[..8 * batch];
+                let words = words
+                    .get_mut(..8 * batch)
+                    .ok_or("a batch of line ends is larger than its buffer")?;
                 reader.bytes_into(address_at(first, index * 8)?, words)?;
                 for word in words.as_chunks::<8>().0 {
                     let end = reader
@@ -340,10 +358,7 @@ impl Lines {
             let ends = match shared {
                 Some(shared) if shared.reads.get(read) == Some(&hash) => {
                     self.same += 1;
-                    let from = read
-                        .checked_sub(1)
-                        .map_or(0, |earlier| shared.found[earlier]);
-                    shared.ends[from..shared.found[read]].to_vec()
+                    shared.read_ends(read).to_vec()
                 }
                 shared => {
                     let ends = scan(&text, consumed, scanned, self.ends.last().copied());

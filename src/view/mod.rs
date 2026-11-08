@@ -482,7 +482,12 @@ fn choose_identity<S: Scope>(
             .collect::<Vec<_>>();
         found.sort_unstable();
         found.dedup();
-        candidates.extend(found.into_iter().map(|index| (&views.views[index], *views)));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`ViewSet::new` makes `by_base` from the indexes of `views`"
+        )]
+        let found = found.into_iter().map(|index| (&views.views[index], *views));
+        candidates.extend(found);
     }
 
     let mut base = None;

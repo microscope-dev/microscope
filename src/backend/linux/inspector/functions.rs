@@ -223,7 +223,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 found(&link.connection, session, isolate, &names, &coverage);
             }
             (Some(Step::Source(functions)), Ok(source)) => {
-                if let Some(text) = source["scriptSource"].as_str() {
+                if let Some(text) = source
+                    .get("scriptSource")
+                    .and_then(serde_json::Value::as_str)
+                {
                     let text = Arc::new(Text::new(text));
                     for function in functions {
                         isolate
@@ -315,15 +318,15 @@ fn found(
             else {
                 continue;
             };
-            let range = &function["ranges"][0];
-            let (Some(start), Some(end)) = (
-                range["startOffset"]
-                    .as_u64()
-                    .and_then(|start| u32::try_from(start).ok()),
-                range["endOffset"]
-                    .as_u64()
-                    .and_then(|end| u32::try_from(end).ok()),
-            ) else {
+            let offset = |name: &str| {
+                function
+                    .get("ranges")
+                    .and_then(|ranges| ranges.get(0))
+                    .and_then(|range| range.get(name))
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|offset| u32::try_from(offset).ok())
+            };
+            let (Some(start), Some(end)) = (offset("startOffset"), offset("endOffset")) else {
                 continue;
             };
             let script = Arc::<str>::from(id);
@@ -466,14 +469,16 @@ fn first_place(
         ))
     };
     let places = places.ok_or_else(refused)?;
-    if places.is_empty()
-        || places
-            .iter()
-            .any(|&offset| offset <= function.start || offset > function.end)
+    let Some(&first) = places.first() else {
+        return Err(refused());
+    };
+    if places
+        .iter()
+        .any(|&offset| offset <= function.start || offset > function.end)
     {
         return Err(refused());
     }
-    text.position(places[0]).ok_or_else(refused)
+    text.position(first).ok_or_else(refused)
 }
 
 impl Isolate {

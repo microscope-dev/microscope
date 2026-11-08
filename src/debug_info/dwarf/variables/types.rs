@@ -182,7 +182,12 @@ impl Bits {
             self.words.resize(word + 1, 0);
         }
 
-        self.words[word] |= 1 << (value % 64);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the words were just grown to hold `word`"
+        )]
+        let bits = &mut self.words[word];
+        *bits |= 1 << (value % 64);
     }
 
     pub(super) fn contains(&self, value: usize) -> bool {
@@ -249,7 +254,7 @@ impl UnitPrepass {
         type_signatures: &TypeSignatures,
         unit_index: usize,
     ) -> Self {
-        let unit = &units[unit_index];
+        let unit = super::unit_at(units, unit_index);
         let mut prepass = Self {
             offsets: Bits::with_length(unit.header.length_including_self()),
             language: None,
@@ -289,6 +294,11 @@ impl UnitPrepass {
             // function's name may live in another unit.
             if is_type_die_tag(die.tag) && !scopes.is_empty() {
                 paths_at.resize(scopes.len() + 1, None);
+
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "`paths_at` was just resized to hold `scopes.len()`"
+                )]
                 let segments = paths_at[scopes.len()].get_or_insert_with(|| {
                     scopes.iter().map(|(_, segment)| segment.clone()).collect()
                 });
@@ -638,6 +648,10 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let context = Arc::make_mut(&mut builder.context);
 
         for (key, index) in scoped_types {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`index` is a position in `lists`, which `paths` holds a path for each of"
+            )]
             let path = &paths[index];
             if !path.is_empty() {
                 context.type_scopes.insert(key, path.clone());
@@ -773,6 +787,15 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         TypeId::new(super::row(self.entries.len()))
     }
 
+    /// The row of a type this arena numbered.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`reserved_id` names the next row, which is pushed before any type refers to it"
+    )]
+    fn entry_mut(&mut self, id: TypeId) -> &mut TypeEntry {
+        &mut self.entries[id.index()]
+    }
+
     /// A built type through the names typedefs give it.
     fn unnamed(&self, mut id: TypeId) -> Option<&TypeInfo> {
         for _ in 0..MAX_TYPE_RESOLUTION_DEPTH {
@@ -848,7 +871,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             }
         };
 
-        self.entries[id.index()] = entry;
+        *self.entry_mut(id) = entry;
 
         id
     }
@@ -1044,7 +1067,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         if slice_layout.is_none()
             && let Some(array) = self.ada_fat_pointer(&entry, key.unit)
         {
-            let array = self.units[key.unit]
+            let array = super::unit_at(self.units, key.unit)
                 .entry(array)
                 .map_err(|_| Arc::<str>::from("an array's record names no array"))?;
             let endian = gimli::Reader::endian(gimli::Section::reader(&self.dwarf.debug_info));
@@ -1545,7 +1568,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
 
         representation.name = Arc::clone(&name);
 
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         let mut enumerators = Vec::new();
         let mut children = self.children(unit_index, entry.offset())?;
 
@@ -1704,7 +1727,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let mut constants = BTreeMap::new();
 
         for (unit_index, found) in found.iter().enumerate() {
-            let unit = &units[unit_index];
+            let unit = super::unit_at(units, unit_index);
             for entry in found {
                 let (Ok(Some(name)), Some(value)) = (
                     copy_name(self.dwarf, unit, entry),
@@ -1827,13 +1850,12 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     /// Makes each typed Go constant's type an enumeration of its constants.
     fn declare_go_named_constants(&mut self, constants: BTreeMap<TypeId, NamedConstantCollection>) {
         for (target, collection) in constants {
-            let index = target.index();
             match collection {
                 NamedConstantCollection::Malformed(reason) => {
-                    self.entries[index] = TypeEntry::Malformed(reason);
+                    *self.entry_mut(target) = TypeEntry::Malformed(reason);
                 }
                 NamedConstantCollection::Limit => {
-                    let TypeEntry::Resolved(info) = &mut self.entries[index] else {
+                    let TypeEntry::Resolved(info) = self.entry_mut(target) else {
                         continue;
                     };
 
@@ -1842,7 +1864,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                     };
                 }
                 NamedConstantCollection::Enumerators(enumerators) if !enumerators.is_empty() => {
-                    let TypeEntry::Resolved(info) = &mut self.entries[index] else {
+                    let TypeEntry::Resolved(info) = self.entry_mut(target) else {
                         continue;
                     };
 
@@ -1888,28 +1910,28 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             ));
         }
 
-        let mut order = (0..pending.len()).collect::<Vec<_>>();
-        order.par_sort_by_key(|index| pending[*index].aggregate);
+        let mut order = pending.iter().zip(&declarations).collect::<Vec<_>>();
+        order.par_sort_by_key(|(metadata, _)| metadata.aggregate);
 
-        for members in
-            order.chunk_by(|left, right| pending[*left].aggregate == pending[*right].aggregate)
-        {
-            let record = pending[members[0]].aggregate;
-            if let Some(Err(reason)) = members
-                .iter()
-                .map(|index| &declarations[*index])
-                .find(|declaration| declaration.is_err())
+        for members in order.chunk_by(|(left, _), (right, _)| left.aggregate == right.aggregate) {
+            let Some((first, _)) = members.first() else {
+                continue;
+            };
+
+            let record = first.aggregate;
+            if let Some((_, Err(reason))) =
+                members.iter().find(|(_, declaration)| declaration.is_err())
             {
-                self.entries[record.index()] = TypeEntry::Malformed(Arc::clone(reason));
+                *self.entry_mut(record) = TypeEntry::Malformed(Arc::clone(reason));
                 continue;
             }
 
             if let Some(TypeEntry::Resolved(info)) = self.entries.get_mut(record.index()) {
                 declare_members(
                     &mut info.kind,
-                    members.iter().map(|index| {
-                        let declaration = declarations[*index].as_ref().ok().cloned().flatten();
-                        (pending[*index].member, declaration)
+                    members.iter().map(|(metadata, declaration)| {
+                        let declaration = declaration.as_ref().ok().cloned().flatten();
+                        (metadata.member, declaration)
                     }),
                 );
             }
@@ -2075,7 +2097,8 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     fn reject_inline_storage_cycles(&mut self) {
         let description: Arc<str> = "type graph contains an inline-storage cycle".into();
         for node in inline_storage_cycle_nodes(self.entries.flat()) {
-            self.entries[node] = TypeEntry::Malformed(Arc::clone(&description));
+            *self.entry_mut(TypeId::new(super::row(node))) =
+                TypeEntry::Malformed(Arc::clone(&description));
         }
     }
 
@@ -2469,14 +2492,14 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return None;
         }
 
-        let payload_index = members
-            .iter()
-            .position(|member| member.name.as_deref() == Some("payload"))?;
-        let tag_index = members
-            .iter()
-            .position(|member| member.name.as_deref() == Some("tag"))?;
-        let payload = &members[payload_index];
-        let tag = &members[tag_index];
+        let named = |name: &str| {
+            members
+                .iter()
+                .enumerate()
+                .find(|(_, member)| member.name.as_deref() == Some(name))
+        };
+        let (payload_index, payload) = named("payload")?;
+        let (tag_index, tag) = named("tag")?;
         let payload_info = self.entries.get(payload.type_ref.id.index())?;
         let tag_info = self.entries.get(tag.type_ref.id.index())?;
         let (
@@ -2661,23 +2684,23 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return None;
         }
 
-        let payload_index = members
-            .iter()
-            .position(|member| member.name.as_deref() == Some("payload"))?;
+        let named = |name: &str| {
+            members
+                .iter()
+                .enumerate()
+                .find(|(_, member)| member.name.as_deref() == Some(name))
+        };
+        let (payload_index, payload) = named("payload")?;
         let optional_payload = zig_optional_payload_name(name);
         let error_union_types = zig_error_union_type_names(name);
         let (discriminant_index, variants, duplicate_discriminant_member) =
             if let Some(expected_payload) = optional_payload {
-                if self.target_name(members[payload_index].type_ref).as_ref() != expected_payload {
+                if self.target_name(payload.type_ref).as_ref() != expected_payload {
                     return None;
                 }
 
-                let some_index = members
-                    .iter()
-                    .position(|member| member.name.as_deref() == Some("some"))?;
-                let some_type = self
-                    .resolved_integer_base(members[some_index].type_ref.id)
-                    .ok()?;
+                let (some_index, some) = named("some")?;
+                let some_type = self.resolved_integer_base(some.type_ref.id).ok()?;
                 if some_type.byte_size != 1
                     || !matches!(
                         some_type.encoding,
@@ -2704,25 +2727,20 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                             selection: VariantSelection::Selectors(Arc::from([
                                 VariantSelector::Value(IntegerValue::Unsigned(1)),
                             ])),
-                            members: Arc::from([members[payload_index].clone()]),
+                            members: Arc::from([payload.clone()]),
                         },
                     ],
                     false,
                 )
             } else if let Some((expected_error, expected_payload)) = error_union_types {
-                let error_index = members
-                    .iter()
-                    .position(|member| member.name.as_deref() == Some("error"))?;
-                if self.target_name(members[error_index].type_ref).as_ref() != expected_error
-                    || self.target_name(members[payload_index].type_ref).as_ref()
-                        != expected_payload
+                let (error_index, error) = named("error")?;
+                if self.target_name(error.type_ref).as_ref() != expected_error
+                    || self.target_name(payload.type_ref).as_ref() != expected_payload
                 {
                     return None;
                 }
 
-                let error_type = self
-                    .resolved_integer_base(members[error_index].type_ref.id)
-                    .ok()?;
+                let error_type = self.resolved_integer_base(error.type_ref.id).ok()?;
                 if matches!(
                     error_type.encoding,
                     BaseTypeEncoding::Signed
@@ -2741,12 +2759,12 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                             selection: VariantSelection::Selectors(Arc::from([
                                 VariantSelector::Value(IntegerValue::Unsigned(0)),
                             ])),
-                            members: Arc::from([members[payload_index].clone()]),
+                            members: Arc::from([payload.clone()]),
                         },
                         Variant {
                             name: Some("error".into()),
                             selection: VariantSelection::Default,
-                            members: Arc::from([members[error_index].clone()]),
+                            members: Arc::from([error.clone()]),
                         },
                     ],
                     true,
@@ -2754,6 +2772,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             } else {
                 return None;
             };
+        let discriminant_member = members.get(discriminant_index)?.clone();
         if let Err(reason) = validate_variant_selections(&variants) {
             return Some(Err(reason));
         }
@@ -2847,9 +2866,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             storage: VariantStorageKind::Struct,
             common_members: Arc::from([]),
             bases: Arc::from([]),
-            discriminant: Box::new(VariantDiscriminant::Stored(
-                members[discriminant_index].clone(),
-            )),
+            discriminant: Box::new(VariantDiscriminant::Stored(discriminant_member)),
             variants: variants.into(),
             incomplete: false,
         }))
@@ -2881,7 +2898,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         let name = string_with_origins(
             self.dwarf,
             units,
-            &units[unit_index],
+            super::unit_at(units, unit_index),
             child,
             &chain,
             gimli::DW_AT_name,
@@ -2976,7 +2993,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return Ok(());
         };
 
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         let expression = copy_expression(
             self.dwarf,
             &mut self.pool.lock().unwrap_or_else(PoisonError::into_inner),
@@ -3183,7 +3200,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         .map(|id| self.resolved_integer_base(id))
         .transpose()?;
 
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         let mut variants = Vec::new();
         let mut variant_entries = self.children(unit_index, part.offset())?;
 
@@ -3584,10 +3601,10 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return None;
         }
 
-        let tag_index = members
+        let (tag_index, tag) = members
             .iter()
-            .position(|member| member.name.as_deref() == Some("tag"))?;
-        let tag = &members[tag_index];
+            .enumerate()
+            .find(|(_, member)| member.name.as_deref() == Some("tag"))?;
         let TypeKind::Base(base) = &self.unnamed(tag.type_ref.id)?.kind else {
             return None;
         };
@@ -3662,7 +3679,9 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
 
         for (position, path) in paths {
-            self.record_member_declarations[position].member = path;
+            if let Some(metadata) = self.record_member_declarations.get_mut(position) {
+                metadata.member = path;
+            }
         }
 
         let mut variants = variants
@@ -3826,7 +3845,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
             return None;
         }
 
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         let mut children = self.children(unit_index, entry.offset()).ok()?;
         let mut members = Vec::new();
 
@@ -4111,7 +4130,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         array: TypeId,
         expressions: Vec<(DynamicAggregateChild, gimli::Expression<Reader<'data>>)>,
     ) -> std::result::Result<(), Arc<str>> {
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         for (child, expression) in expressions {
             let expression = copy_expression(
                 self.dwarf,
@@ -4213,7 +4232,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         unit_index: usize,
         subrange: &gimli::DebuggingInformationEntry<Reader<'data>>,
     ) -> (u8, bool) {
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         let word = (unit.encoding().address_size, true);
         let Some(gimli::AttributeValue::UnitRef(offset)) = subrange.attr_value(gimli::DW_AT_type)
         else {
@@ -4251,7 +4270,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
                 signed,
             })),
             gimli::AttributeValue::UnitRef(offset) => {
-                let unit = &self.units[unit_index];
+                let unit = super::unit_at(self.units, unit_index);
                 let referenced = unit
                     .entry(offset)
                     .map_err(|_| "array bound refers to no entry")?;
@@ -4294,7 +4313,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     ) -> Built {
         if let Some(length) = entry.attr(gimli::DW_AT_string_length) {
             let name = explicit_name.unwrap_or_else(|| Arc::from("character(len=:)"));
-            let unit = &self.units[unit_index];
+            let unit = super::unit_at(self.units, unit_index);
             let length = match length.value() {
                 gimli::AttributeValue::Exprloc(expression) => SubrangeBound::Stored {
                     expression,
@@ -4416,7 +4435,7 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
     ) -> Built {
         let name = explicit_name.unwrap_or_else(|| Arc::from("<slice>"));
         let byte_size = explicit_size.ok_or("slice descriptor has no byte size")?;
-        let unit = &self.units[unit_index];
+        let unit = super::unit_at(self.units, unit_index);
         let address_size = u64::from(unit.encoding().address_size);
         let field_names = layout.members();
         let word_size = address_size;
@@ -4466,14 +4485,17 @@ impl<'a, 'data> TypeArenaBuilder<'a, 'data> {
         }
 
         let words = layout.words();
-        let element = self.slice_element(layout, fields[usize::from(words.data)].2)?;
+        let field = |word| {
+            fields
+                .get(usize::from(word))
+                .map(|(_, _, field_type)| *field_type)
+                .ok_or("slice descriptor layout names a word past its members")
+        };
+        let element = self.slice_element(layout, field(words.data)?)?;
         let counts = [Some(words.length), words.capacity];
 
-        for (_, _, field_type) in counts
-            .into_iter()
-            .flatten()
-            .map(|word| &fields[usize::from(word)])
-        {
+        for word in counts.into_iter().flatten() {
+            let field_type = &field(word)?;
             // Odin names its integers, as `int`, by typedefs.
             let valid = matches!(self.unnamed(field_type.id), Some(TypeInfo {
                 kind: TypeKind::Base(BaseType {
@@ -4515,7 +4537,7 @@ impl TypeArenaBuilder<'_, '_> {
         data: TypeReference,
     ) -> std::result::Result<TypeReference, Arc<str>> {
         if let SliceLayout::RustBytes(bytes) = layout {
-            let array = self.units[bytes.unit]
+            let array = super::unit_at(self.units, bytes.unit)
                 .entry(gimli::UnitOffset(bytes.offset))
                 .map_err(malformed)?;
             return self
@@ -5096,8 +5118,9 @@ fn declare_members(
             AggregateMemberPath::Direct(member) => {
                 if let Some(members) = &mut direct
                     && member < members.len()
+                    && let Some(target) = Arc::make_mut(members).get_mut(member)
                 {
-                    Arc::make_mut(members)[member].declaration = declaration;
+                    target.declaration = declaration;
                 }
             }
             AggregateMemberPath::Discriminant => {
@@ -5112,9 +5135,10 @@ fn declare_members(
                     && variants
                         .get(variant)
                         .is_some_and(|variant| member < variant.members.len())
+                    && let Some(arm) = Arc::make_mut(variants).get_mut(variant)
+                    && let Some(target) = Arc::make_mut(&mut arm.members).get_mut(member)
                 {
-                    let members = &mut Arc::make_mut(variants)[variant].members;
-                    Arc::make_mut(members)[member].declaration = declaration;
+                    target.declaration = declaration;
                 }
             }
         }
@@ -5505,7 +5529,12 @@ pub(super) fn propagate_wrapper_sizes(types: &mut [TypeEntry]) {
             continue;
         };
 
-        for dependent in std::mem::take(&mut dependents[target]) {
+        let waiting = dependents
+            .get_mut(target)
+            .map(std::mem::take)
+            .unwrap_or_default();
+
+        for dependent in waiting {
             let Some(TypeEntry::Resolved(info)) = types.get_mut(dependent) else {
                 continue;
             };
@@ -5518,6 +5547,11 @@ pub(super) fn propagate_wrapper_sizes(types: &mut [TypeEntry]) {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "every node is below `types.len()`, since the edges keep only targets below it, \
+              and `visited` and `assigned` hold that many"
+)]
 pub(super) fn inline_storage_cycle_nodes(types: &[TypeEntry]) -> Vec<usize> {
     // The edges are kept flat, each node's after the one before: a vector
     // of their own for each node, and another of predecessors, allocated
@@ -5610,6 +5644,10 @@ struct Edges {
 }
 
 impl Edges {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`ends` holds where each node's targets end, in order, within `targets`"
+    )]
     fn of(&self, node: usize) -> &[usize] {
         let start = node.checked_sub(1).map_or(0, |before| self.ends[before]);
         &self.targets[start..self.ends[node]]
@@ -5617,6 +5655,11 @@ impl Edges {
 
     /// The same graph with every edge turned around, each node's
     /// predecessors in the order their edges were added.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every target is a node, below `ends.len()`, and the counted predecessors fill \
+                  `targets`"
+    )]
     fn reversed(&self) -> Self {
         let mut ends = vec![0; self.ends.len()];
         for target in &self.targets {

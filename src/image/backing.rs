@@ -57,10 +57,18 @@ impl AlignedBytes {
         Some(aligned)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`zeroed`, the only constructor, allocates blocks for at least `length` bytes"
+    )]
     pub fn as_bytes(&self) -> &[u8] {
         &self.blocks.as_bytes()[..self.length]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`zeroed`, the only constructor, allocates blocks for at least `length` bytes"
+    )]
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
         &mut self.blocks.as_mut_bytes()[..self.length]
     }
@@ -295,8 +303,8 @@ fn read_stream<B: AsMut<[u8]>>(
 /// read.
 fn read_fully(file: &mut std::fs::File, buffer: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
-    while filled < buffer.len() {
-        match file.read(&mut buffer[filled..]) {
+    while let Some(rest) = buffer.get_mut(filled..).filter(|rest| !rest.is_empty()) {
+        match file.read(rest) {
             Ok(0) => break,
             Ok(count) => filled += count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}

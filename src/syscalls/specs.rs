@@ -1053,7 +1053,7 @@ struct Known {
 
 fn known(id: SyscallId) -> Option<Known> {
     let index = super::table::index(id)?;
-    BY_CALL[id.abi as usize].get(index).copied()
+    id.abi.of(&BY_CALL).get(index).copied()
 }
 
 /// The spec of a call, when its arguments are known under its ABI.

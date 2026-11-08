@@ -247,8 +247,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         // async function it is inlined into, out to the one that runs, but
         // none of a combinator's around it, such as `select!`'s.
         let mut statements = self.body_statements(instance).ok()?;
-        let awaiters = chain.instances[..depth]
+        let awaiters = chain
+            .instances
             .iter()
+            .take(depth)
             .copied()
             .chain(location.physical_instance)
             .filter(|outer| {
@@ -402,18 +404,28 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let stack = self.async_stack(inferior, &root)?.ok_or_else(parked)?;
         let level = frame.get() as usize;
-        let selected = (level..stack.futures.len())
-            .find(|&index| matches!(stack.futures[index].kind, AsyncFrameKind::Coroutine { .. }))
+        let (selected, selected_future) = stack
+            .futures
+            .iter()
+            .enumerate()
+            .skip(level)
+            .find(|(_, future)| matches!(future.kind, AsyncFrameKind::Coroutine { .. }))
             .ok_or_else(|| {
                 Error::FrameStepUnsupported("the task's frames hold no async function".into())
             })?;
-        if stack.futures[selected].ty.image != inferior.loaded_module.image {
+        if selected_future.ty.image != inferior.loaded_module.image {
             return Err(Error::FrameStepUnsupported(
                 "the async function is in a library, whose awaits steps do not follow".into(),
             ));
         }
 
-        let own = self.named_by_body(&stack.futures[selected]);
+        let own = self.named_by_body(selected_future);
+        let source = stack
+            .frames
+            .get(selected)
+            .ok_or_else(|| Error::internal("an async stack has a frame for each future"))?
+            .source
+            .clone();
 
         // The function may run out of line in one place and be inlined in
         // another, as an optimized build may make of a function some code
@@ -444,7 +456,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let awaiting = AwaitStep {
             future,
             inlined,
-            source: stack.frames[selected].source.clone(),
+            source,
             waiting,
             drop_glue,
             inlined_drops,
@@ -515,10 +527,10 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A coroutine's function may have a copy in each unit that uses
         // it, and any copy may be the one that runs, or is inlined.
-        let functions_of = |index: usize| {
+        let functions_of = |future: &futures::AsyncFrame| {
             self.main
                 .image
-                .coroutine_functions(stack.futures[index].ty.id)
+                .coroutine_functions(future.ty.id)
                 .iter()
                 .map(|function| function.id())
                 .collect::<Vec<_>>()
@@ -534,10 +546,18 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // The innermost future out from the selected one whose function
         // runs out of line, which the inlined bodies run in.
-        let (running, physical) = (selected + 1..stack.futures.len())
-            .filter(|&index| matches!(stack.futures[index].kind, AsyncFrameKind::Coroutine { .. }))
-            .map(|index| (index, out_of_line(&functions_of(index))))
-            .find(|(_, physical)| !physical.is_empty())
+        let selected_future = stack
+            .futures
+            .get(selected)
+            .ok_or_else(|| Error::internal("a selected async frame has a future"))?;
+        let (running, running_future, physical) = stack
+            .futures
+            .iter()
+            .enumerate()
+            .skip(selected + 1)
+            .filter(|(_, future)| matches!(future.kind, AsyncFrameKind::Coroutine { .. }))
+            .map(|(index, future)| (index, future, out_of_line(&functions_of(future))))
+            .find(|(_, _, physical)| !physical.is_empty())
             .ok_or_else(unknown)?;
         let inlined_in = |functions: &[FunctionId]| {
             functions
@@ -555,7 +575,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .collect::<BTreeSet<_>>()
         };
 
-        let selected_functions = functions_of(selected);
+        let selected_functions = functions_of(selected_future);
         let function = *selected_functions.first().ok_or_else(unknown)?;
         let instances = inlined_in(&selected_functions);
         let mut statements = BTreeSet::new();
@@ -564,15 +584,29 @@ impl<P: LinuxTraceOps> Controller<P> {
             statements.extend(self.body_statements(*instance)?);
         }
 
-        for index in selected + 1..=running {
-            let Some(line) = &stack.frames[index].source else {
+        // The zip below must reach the running frame.
+        if stack.frames.len() <= running {
+            return Err(Error::internal(
+                "an async stack has a frame for each future",
+            ));
+        }
+
+        let outward = stack
+            .frames
+            .iter()
+            .zip(&stack.futures)
+            .enumerate()
+            .take(running + 1)
+            .skip(selected + 1);
+        for (index, (frame, future)) in outward {
+            let Some(line) = &frame.source else {
                 continue;
             };
 
             let outers = if index == running {
                 physical.iter().map(|instance| instance.id()).collect()
             } else {
-                inlined_in(&functions_of(index))
+                inlined_in(&functions_of(future))
             };
 
             for instance in outers {
@@ -586,9 +620,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         Ok((
-            self.named_by_body(&stack.futures[selected]),
+            self.named_by_body(selected_future),
             Some(Inlined {
-                poll: self.named_by_body(&stack.futures[running]),
+                poll: self.named_by_body(running_future),
                 own: true,
                 function,
                 instances,
@@ -629,7 +663,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             frame: None,
             code,
             scope: FrameScope::Function,
-            registers: stack.registers(0),
+            registers: stack.registers(0)?,
             cfa: self.frame_cfa(pid, &modules, code, &innermost.registers),
             activation: 0,
             below_stack_pointer: self.below_stack_pointer(inferior, &root, innermost),
@@ -1310,7 +1344,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     == Some(crate::CodeRole::Dispatch)
             })
             .unwrap_or(stack.frames.len());
-        stack.frames[..dispatch].iter().all(|frame| {
+        stack.frames.iter().take(dispatch).all(|frame| {
             self.image_location(frame.context.instruction)
                 .and_then(|location| location.physical_instance)
                 .and_then(|instance| self.main.image.code_instance(instance))
@@ -1536,15 +1570,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Reentry::Outside;
         };
 
-        let Some(depth) = chain
+        let Some((depth, &instance)) = chain
             .instances
             .iter()
-            .position(|instance| inlined.instances.contains(instance))
+            .enumerate()
+            .find(|(_, instance)| inlined.instances.contains(instance))
         else {
             return Reentry::Outside;
         };
 
-        let instance = chain.instances[depth];
         let moved = super::frames::source_for_code_instance(&self.main.image, &location, instance)
             .is_some_and(|line| super::frames::source_line_changed(source, Some(&line)));
         Reentry::Body((

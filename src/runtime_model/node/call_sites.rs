@@ -902,11 +902,11 @@ impl<'r> Frame<'r> {
         } else if name.is_empty() {
             // The name V8 inferred, as `o.foo` for `o.foo = function () {}`,
             // past its last dot.
-            let inferred: Units = names::inferred_name(reader, self.shared, scope)?
+            let mut inferred: Units = names::inferred_name(reader, self.shared, scope)?
                 .encode_utf16()
                 .collect();
             name = match inferred.iter().rposition(|unit| *unit == u16::from(b'.')) {
-                Some(dot) => inferred[dot + 1..].to_vec(),
+                Some(dot) => inferred.split_off(dot + 1),
                 None => inferred,
             };
         }
@@ -1150,13 +1150,17 @@ fn line_start(
     let units = sources.prefix(reader, source, wanted.cast_unsigned())?;
     let (mut line, mut start) = (0, 0);
     for (at, pair) in (0_i64..).zip(
-        units.windows(2).map(|pair| (pair[0], pair[1])).chain(
-            // The source's last unit ends a line as if a NUL followed it.
-            units
-                .last()
-                .filter(|_| wanted == length)
-                .map(|last| (*last, 0)),
-        ),
+        units
+            .iter()
+            .copied()
+            .zip(units.iter().copied().skip(1))
+            .chain(
+                // The source's last unit ends a line as if a NUL followed it.
+                units
+                    .last()
+                    .filter(|_| wanted == length)
+                    .map(|last| (*last, 0)),
+            ),
     ) {
         if at >= position {
             break;
@@ -1213,7 +1217,7 @@ impl Sources {
         let wanted = usize::try_from(wanted).map_err(|_| "a source is too long")?;
         Ok(std::cell::Ref::map(self.0.borrow(), |kept| {
             kept.get(&source.0)
-                .map_or(&[][..], |units| &units[..wanted.min(units.len())])
+                .map_or(&[][..], |units| units.get(..wanted).unwrap_or(units))
         }))
     }
 }
@@ -1643,9 +1647,10 @@ fn ends_with_method_name(subject: &[u16], pattern: &[u16]) -> bool {
     if subject == pattern {
         return true;
     }
-    subject.len() > pattern.len()
-        && subject.ends_with(pattern)
-        && [u16::from(b'.'), u16::from(b' ')].contains(&subject[subject.len() - pattern.len() - 1])
+    subject
+        .strip_suffix(pattern)
+        .and_then(<[u16]>::last)
+        .is_some_and(|unit| [u16::from(b'.'), u16::from(b' ')].contains(unit))
 }
 
 /// `String::IsIdentifier` for Latin-1 names, with `$`, `_`, and `\` allowed

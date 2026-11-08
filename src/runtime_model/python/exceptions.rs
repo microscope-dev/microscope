@@ -75,12 +75,14 @@ pub fn read(stop: &dyn RuntimeStop, address: u64) -> Result<RuntimeException, Ar
             format!("the Python agent's exception record at {address:#x} is unreadable").into(),
         );
     }
-    let word = |index: usize| {
-        let mut bytes = [0; 8];
-        bytes.copy_from_slice(&record[index * 8..index * 8 + 8]);
-        u64::from_le_bytes(bytes)
+    let &[object, text, length] = record.as_chunks::<8>().0 else {
+        return Err("the Python agent's exception record is malformed".into());
     };
-    let (object, text, length) = (word(0), word(1), word(2));
+    let (object, text, length) = (
+        u64::from_le_bytes(object),
+        u64::from_le_bytes(text),
+        u64::from_le_bytes(length),
+    );
     if object == 0 || text == 0 || length > MAX_MESSAGE {
         return Err("the Python agent's exception record is malformed".into());
     }

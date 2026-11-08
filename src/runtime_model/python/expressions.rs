@@ -1166,7 +1166,9 @@ fn siphash13((k0, k1): (u64, u64), bytes: &[u8]) -> u64 {
     }
 
     let mut last = [0; 8];
-    last[..tail.len()].copy_from_slice(tail);
+    for (last, byte) in last.iter_mut().zip(tail) {
+        *last = *byte;
+    }
     let last = u64::from_le_bytes(last) | ((bytes.len() as u64) << 56);
     v[3] ^= last;
     round(&mut v);

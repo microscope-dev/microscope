@@ -99,9 +99,10 @@ impl TextReader<'_> {
             bytes.extend_from_slice(&chunk);
 
             if nul_terminated
-                && let Some(position) = bytes[first..]
-                    .chunks_exact(width)
-                    .position(|unit| unit.iter().all(|byte| *byte == 0))
+                && let Some(position) = bytes.get(first..).and_then(|tail| {
+                    tail.chunks_exact(width)
+                        .position(|unit| unit.iter().all(|byte| *byte == 0))
+                })
             {
                 bytes.truncate(first + position * width);
                 return (bytes, true, None);
@@ -177,7 +178,9 @@ impl TextReader<'_> {
             } => {
                 let first = start.checked_add(usize::try_from(offset).ok()?)?;
                 let last = first.checked_add(size)?;
-                (last <= *end).then(|| Ok(raw[first..last].to_vec()))
+                raw.get(first..last)
+                    .filter(|_| last <= *end)
+                    .map(|bytes| Ok(bytes.to_vec()))
             }
             ValueStorage::ImplicitPointer { .. } => None,
             ValueStorage::Composite(_) => {
@@ -282,9 +285,9 @@ impl DwarfVariableInfo {
                 _,
             ) if dimensions.len() == 1 && self.character_width(*element).is_some() => {
                 let width = self.character_width(*element)?;
-                let count = usize::try_from(dimensions[0].count).ok()?;
+                let count = usize::try_from(dimensions.first()?.count).ok()?;
                 let shown = count.min(TextSummary::MAX_BYTES);
-                let bytes = match reader.storage_bytes(storage, 0, shown.checked_mul(width)?)? {
+                let mut bytes = match reader.storage_bytes(storage, 0, shown.checked_mul(width)?)? {
                     Ok(bytes) => bytes,
                     Err(stopped) => return Some(stopped.summary(None)),
                 };
@@ -297,10 +300,11 @@ impl DwarfVariableInfo {
                 // A NUL inside the array ends the C string it holds, which
                 // the array's bytes past it are not part of.
                 let extent = terminated.map(|units| ((units + 1) * width) as u64);
+                bytes.truncate(end);
                 Some(TextSummary {
                     extent,
                     ..text(
-                        bytes[..end].to_vec(),
+                        bytes,
                         width,
                         self.target.byte_order,
                         if terminated.is_none() && count > TextSummary::MAX_BYTES {
@@ -518,9 +522,9 @@ impl DwarfVariableInfo {
         });
         if c_characters
             && text.completion == TextCompletion::Complete
-            && text.bytes.last() == Some(&0)
+            && let Some((0, rest)) = text.bytes.split_last()
         {
-            text.bytes = text.bytes[..text.bytes.len() - 1].into();
+            text.bytes = rest.into();
         }
 
         text

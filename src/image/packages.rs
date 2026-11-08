@@ -124,7 +124,10 @@ impl<'a> PackageView<'a> {
                     .cmp(path.as_bytes())
             })
             .ok()?;
-        Some(self.strings.get(StrId(self.packages[index].name.get())))
+        Some(
+            self.strings
+                .get(StrId(self.packages.get(index)?.name.get())),
+        )
     }
 
     /// The path of the package defining `function`, and the function's
@@ -183,7 +186,11 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         || locals.len() != named
         || !locals.iter().all(|entry| {
             let function = entry.value.get() as usize;
-            !std::mem::replace(&mut seen[function], true) && records[function].local == entry.name
+            seen.get_mut(function)
+                .is_some_and(|seen| !std::mem::replace(seen, true))
+                && records
+                    .get(function)
+                    .is_some_and(|record| record.local == entry.name)
         })
     {
         return Err("the local name index disagrees".into());

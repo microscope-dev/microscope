@@ -63,7 +63,9 @@ pub fn spawn(read: OwnedFd, category: &'static str, client: Client) -> std::io::
         let mut buffer = vec![0; CHUNK];
         loop {
             let read = receiver.read(&mut buffer).await.unwrap_or(0);
-            pending.extend_from_slice(&buffer[..read]);
+            #[expect(clippy::indexing_slicing, reason = "a read fills at most its buffer")]
+            let filled = &buffer[..read];
+            pending.extend_from_slice(filled);
             let text = decode(&mut pending, read == 0);
 
             // Replacement characters can make the text longer than the bytes.
@@ -123,7 +125,12 @@ pub fn decode(bytes: &mut Vec<u8>, end: bool) -> String {
                 match error.error_len() {
                     Some(length) => {
                         text.push(char::REPLACEMENT_CHARACTER);
-                        rest = &after[length..];
+                        #[expect(
+                            clippy::indexing_slicing,
+                            reason = "error_len counts bytes of after"
+                        )]
+                        let next = &after[length..];
+                        rest = next;
                     }
                     None if end => {
                         text.push(char::REPLACEMENT_CHARACTER);

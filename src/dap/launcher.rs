@@ -36,7 +36,10 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
     let error = launch(&args);
     eprintln!(
         "microscope: cannot run {}: {error}",
-        args.command[0].to_string_lossy()
+        args.command
+            .first()
+            .map_or(std::borrow::Cow::Borrowed("the program"), |program| program
+                .to_string_lossy())
     );
 
     // The shell's status for a command that could not be executed.
@@ -60,9 +63,10 @@ fn launch(args: &LauncherArgs) -> io::Error {
                 let _ = personality::set(persona | Persona::ADDR_NO_RANDOMIZE);
             }
 
-            Command::new(&args.command[0])
-                .args(&args.command[1..])
-                .exec()
+            let Some((program, arguments)) = args.command.split_first() else {
+                return io::Error::other("no program was given");
+            };
+            Command::new(program).args(arguments).exec()
         }
         Ok(_) => io::Error::other("the debugger stopped before it could debug it"),
         Err(error) => error,

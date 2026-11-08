@@ -74,7 +74,12 @@ impl SyscallStats {
                 self.log2_ns.resize(BUCKETS, 0);
             }
 
-            self.log2_ns[bucket(duration)] += 1;
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "bucket() < BUCKETS <= log2_ns.len()"
+            )]
+            let count = &mut self.log2_ns[bucket(duration)];
+            *count += 1;
         }
 
         self.bytes = self.bytes.saturating_add(bytes);

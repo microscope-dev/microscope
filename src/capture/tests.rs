@@ -472,6 +472,57 @@ fn validation_rejects_every_out_of_bounds_reference() {
     assert!(broken.validate().is_err(), "an unterminated string pool");
 }
 
+/// The recorder always writes a thread's process, a mapping's process, a
+/// zone range's thread, and a wait's task, so a file without one is
+/// damaged. Readers index by them, and once panicked on such a file.
+#[test]
+fn validation_rejects_a_missing_owner_the_recorder_always_writes() {
+    let mut builder = CaptureBuilder::new();
+    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+    let process = builder.process(Pid::new(1), 0);
+    let site = builder.site("work", "app.rs", 1, NONE, 1);
+    builder.zone(
+        thread,
+        Zone {
+            start: 1.into(),
+            end: 2.into(),
+            site: site.into(),
+            flags: 0.into(),
+            value: NONE.into(),
+            reserved: 0.into(),
+        },
+    );
+    builder.mapping(Mapping {
+        process: process.into(),
+        module: NONE.into(),
+        start: 0x1000.into(),
+        end: 0x2000.into(),
+        file_offset: 0.into(),
+        bias: 0.into(),
+        time: 0.into(),
+    });
+    let task = builder.task("goroutine", 1, 0);
+    builder.task_wait(task, 3, 1, NONE, "parked");
+    let valid = builder.finish();
+    assert_eq!(valid.validate(), Ok(()));
+
+    let mut broken = valid.clone();
+    broken.threads[0].process = NONE.into();
+    assert!(broken.validate().is_err(), "a thread of no process");
+
+    let mut broken = valid.clone();
+    broken.mappings[0].process = NONE.into();
+    assert!(broken.validate().is_err(), "a mapping of no process");
+
+    let mut broken = valid.clone();
+    broken.zone_ranges[0].thread = NONE.into();
+    assert!(broken.validate().is_err(), "a zone range of no thread");
+
+    let mut broken = valid;
+    broken.task_waits[0].task = NONE.into();
+    assert!(broken.validate().is_err(), "a wait of no task");
+}
+
 /// A tid reused at the moment its earlier thread ended names that thread
 /// still, as an event then may be either's; one reused a moment later is a
 /// thread of its own. A recording cut there and merged again agrees, as

@@ -480,7 +480,11 @@ impl Walk<'_> {
         }
 
         let children = self.children(children, path).await?;
-        let mut payload = children[children.len().saturating_sub(members)..].to_vec();
+        let mut payload = children
+            .iter()
+            .skip(children.len().saturating_sub(members))
+            .cloned()
+            .collect::<Vec<_>>();
 
         // A Rust variant's one member is a structure named for the variant,
         // which holds the variant's fields as stored.
@@ -885,7 +889,7 @@ fn number_bytes(kind: NumberKind, scalar: &ScalarValue, bytes: &mut Vec<u8>) {
     };
 
     let size = number_size(kind);
-    bytes.extend_from_slice(&integer.to_le_bytes()[..size]);
+    bytes.extend(integer.to_le_bytes().into_iter().take(size));
 }
 
 /// Whether a type is a character wider than a byte, which reaches a

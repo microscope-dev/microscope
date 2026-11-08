@@ -80,7 +80,10 @@ impl Profile {
         let mut found = Vec::with_capacity(modules.len());
 
         for (number, module) in modules.into_iter().enumerate() {
-            let row = &capture.modules[module as usize];
+            // unsymbolized_modules keeps only modules the capture has.
+            let Some(row) = capture.modules.get(module as usize) else {
+                continue;
+            };
             let path = capture.string(row.path.get()).to_owned();
             let build_id = (row.build_id.get() != NONE).then(|| capture.string(row.build_id.get()));
             let id = ModuleImageId::new(u32::try_from(number).unwrap_or(u32::MAX));

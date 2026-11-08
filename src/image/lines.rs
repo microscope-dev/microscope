@@ -441,13 +441,20 @@ impl LineTables {
             .flat_map(|(run, sequence)| {
                 let first = run.first.get();
                 (first..first + run.rows.get())
-                    .filter(|index| is_public(&self.rows[*index as usize]))
+                    .filter(|index| {
+                        let index = *index as usize;
+                        index < self.addresses.len() && self.rows.get(index).is_some_and(is_public)
+                    })
                     .map(move |index| (index, sequence))
             })
             .collect::<Vec<_>>();
 
         // Stable, so rows at one address keep line-program order.
-        order.sort_by_key(|(index, _)| self.addresses[*index as usize].address.get());
+        order.sort_by_key(|(index, _)| {
+            self.addresses
+                .get(*index as usize)
+                .map(|address| address.address.get())
+        });
         let mut reach = 0;
         let reaches = order
             .iter()
@@ -466,11 +473,23 @@ impl LineTables {
     /// Where sequence `sequence`'s code ends: at its last row, which ends
     /// it, or nowhere for one whose rows were given without such a row.
     fn sequence_end(&self, sequence: u32) -> u64 {
-        let run = &self.sequences[sequence as usize];
+        let run = self.sequences.get(sequence as usize);
+        debug_assert!(
+            run.is_some(),
+            "sequence {sequence} is not one of {}",
+            self.sequences.len()
+        );
+        let Some(run) = run else {
+            return 0;
+        };
+
         let last = (run.first.get() + run.rows.get()).checked_sub(1);
-        last.map(|last| last as usize)
-            .filter(|last| self.rows[*last].flags & row_flags::END_SEQUENCE != 0)
-            .map_or(u64::MAX, |last| self.addresses[last].address.get())
+        last.and_then(|last| {
+            let last = last as usize;
+            Some((self.rows.get(last)?, self.addresses.get(last)?))
+        })
+        .filter(|(row, _)| row.flags & row_flags::END_SEQUENCE != 0)
+        .map_or(u64::MAX, |(_, address)| address.address.get())
     }
 
     /// Every line range, decoded, in order.
@@ -501,10 +520,19 @@ pub struct StatementsByAddress<'a> {
 }
 
 impl StatementsByAddress<'_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`statements_by_address` keeps in `order` only rows that `addresses` holds"
+    )]
     fn address(&self, (index, _): (u32, u32)) -> ImageAddress {
         ImageAddress::new(self.tables.addresses[index as usize].address.get())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`statements_by_address` pairs each row of `order` with the index of the \
+                  sequence it enumerated the row from"
+    )]
     fn row(&self, (index, sequence): (u32, u32)) -> StatementRow {
         let tables = self.tables;
         let row = decode_row(
@@ -522,21 +550,18 @@ impl StatementsByAddress<'_> {
     /// has no line. Code between sequences, or past them, has no line: the
     /// row before it describes other code.
     pub fn line_at(&self, address: ImageAddress) -> Option<crate::LineNumber> {
-        let mut at = self
+        let end = self
             .order
             .partition_point(|at| self.address(*at) <= address);
-        while at > 0 {
-            at -= 1;
-            if self.reaches[at] <= address.get() {
+        let before = self.order.get(..end).unwrap_or_default();
+        for (&at, &reach) in before.iter().zip(&self.reaches).rev() {
+            if reach <= address.get() {
                 return None;
             }
 
-            let (_, sequence) = self.order[at];
+            let (_, sequence) = at;
             if address.get() < self.tables.sequence_end(sequence) {
-                return self
-                    .row(self.order[at])
-                    .location
-                    .map(|location| location.line);
+                return self.row(at).location.map(|location| location.line);
             }
         }
 
@@ -554,7 +579,9 @@ impl StatementsByAddress<'_> {
         let end = self
             .order
             .partition_point(|at| self.address(*at) < range.end);
-        self.order[start..end.max(start)]
+        self.order
+            .get(start..end.max(start))
+            .unwrap_or_default()
             .iter()
             .map(|at| self.row(*at))
     }
@@ -574,24 +601,38 @@ pub(super) const fn is_public(row: &LineRow) -> bool {
 
 /// The line of row `index` of the given tables, as [`decode_row`] finds
 /// it, without reading the rest of the row.
-pub(super) fn row_line(rows: &[LineRow], extras: &[LineExtra], index: usize) -> u64 {
-    let row = &rows[index];
+pub(super) fn row_line(rows: &[LineRow], extras: &[LineExtra], index: usize) -> Option<u64> {
+    let row = rows.get(index)?;
     if row.line.get() != WIDE_LINE || row.flags & row_flags::EXTRA == 0 {
-        return u64::from(row.line.get());
+        return Some(u64::from(row.line.get()));
     }
 
-    extras
+    let extra = extras
         .binary_search_by_key(&index, |extra| extra.row.get() as usize)
-        .map_or_else(|_| u64::from(WIDE_LINE), |found| extras[found].line.get())
+        .ok()
+        .and_then(|found| extras.get(found));
+    Some(extra.map_or_else(|| u64::from(WIDE_LINE), |extra| extra.line.get()))
 }
 
 /// Row `index` of the given tables.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "callers pass rows the builder made or validation checked: validation checks \
+              every index's, range's, and sequence's rows, and that rows and addresses are \
+              equal in number"
+)]
 pub(super) fn decode_row(
     addresses: &[RowAddress],
     rows: &[LineRow],
     extras: &[LineExtra],
     index: usize,
 ) -> Row {
+    debug_assert!(
+        index < rows.len() && index < addresses.len(),
+        "row {index} is outside tables of {} rows and {} addresses",
+        rows.len(),
+        addresses.len()
+    );
     let row = &rows[index];
     let flags = row.flags;
     let extra = (flags & row_flags::EXTRA != 0)
@@ -600,7 +641,7 @@ pub(super) fn decode_row(
 
             // Validation pairs every flagged row with an extra.
             debug_assert!(found.is_ok(), "row {index} is flagged, but has no extra");
-            found.ok().map(|found| &extras[found])
+            found.ok().and_then(|found| extras.get(found))
         })
         .flatten();
     let line = match (row.line.get(), extra) {
@@ -735,7 +776,10 @@ pub(super) fn build_indexes(tables: &LineTables) -> LineIndexes {
     statements.par_sort_unstable_by_key(|key| (key.file.get(), key.line.get(), key.row.get()));
     boundaries.par_sort_unstable_by_key(|boundary| {
         (
-            tables.addresses[boundary.row.get() as usize].address.get(),
+            tables
+                .addresses
+                .get(boundary.row.get() as usize)
+                .map(|address| address.address.get()),
             boundary.row.get(),
         )
     });
@@ -932,19 +976,29 @@ impl<'a> LineView<'a> {
     }
 
     /// Row `index` as a public statement row.
-    fn statement_row(self, at: u32) -> StatementRow {
+    fn statement_row(self, at: u32) -> Option<StatementRow> {
         let sequence = self
             .sequences
             .partition_point(|sequence| sequence.first.get() <= at)
-            - 1;
-        let ordinal = at - self.sequences[sequence].first.get();
-        let sequence = u32::try_from(sequence);
+            .checked_sub(1);
+        let first = sequence.and_then(|sequence| self.sequences.get(sequence));
+        debug_assert!(
+            first.is_some(),
+            "validation checked the sequences cover row {at} from row 0"
+        );
+
+        let ordinal = at - first?.first.get();
+        let sequence = u32::try_from(sequence?);
         debug_assert!(
             sequence.is_ok(),
             "validation bounds the sequences below u32"
         );
 
-        statement_row(&self.row(at as usize), sequence.unwrap_or(NONE), ordinal)
+        Some(statement_row(
+            &self.row(at as usize),
+            sequence.unwrap_or(NONE),
+            ordinal,
+        ))
     }
 
     /// Every public statement row, in order.
@@ -957,9 +1011,14 @@ impl<'a> LineView<'a> {
         self,
         mut indexes: Vec<usize>,
     ) -> impl Iterator<Item = crate::model::LineEntry> + 'a {
-        indexes.sort_unstable_by_key(|index| self.ranges[*index].row.get());
+        indexes.sort_unstable_by_key(|index| self.ranges.get(*index).map(|range| range.row.get()));
         indexes.into_iter().filter_map(move |index| {
-            line_entry(self.addresses, self.rows, self.extras, &self.ranges[index])
+            line_entry(
+                self.addresses,
+                self.rows,
+                self.extras,
+                self.ranges.get(index)?,
+            )
         })
     }
 
@@ -979,7 +1038,10 @@ impl<'a> LineView<'a> {
         let mut first = None::<&LineRange>;
         while index > 0 {
             index -= 1;
-            let range = &self.ranges[index];
+            let Some(range) = self.ranges.get(index) else {
+                break;
+            };
+
             if range.prefix_max_end.get() <= address {
                 break;
             }
@@ -1023,15 +1085,20 @@ impl<'a> LineView<'a> {
         address: ImageAddress,
     ) -> impl Iterator<Item = StatementRow> + 'a {
         let address = address.get();
-        let at =
-            |boundary: &ControlBoundary| self.addresses[boundary.row.get() as usize].address.get();
+        let at = |boundary: &ControlBoundary| {
+            self.addresses
+                .get(boundary.row.get() as usize)
+                .map(|row| row.address.get())
+        };
         let first = self
             .boundaries
-            .partition_point(|boundary| at(boundary) < address);
-        self.boundaries[first..]
+            .partition_point(|boundary| at(boundary) < Some(address));
+        self.boundaries
+            .get(first..)
+            .unwrap_or_default()
             .iter()
-            .take_while(move |boundary| at(boundary) == address)
-            .map(move |boundary| self.statement_row(boundary.row.get()))
+            .take_while(move |boundary| at(boundary) == Some(address))
+            .filter_map(move |boundary| self.statement_row(boundary.row.get()))
     }
 
     /// The statement keys of `file` with lines in `lines`, in (line, row)
@@ -1049,10 +1116,17 @@ impl<'a> LineView<'a> {
         let end = self
             .statements
             .partition_point(|entry| order(entry) <= key(*lines.end()));
-        &self.statements[start..end.max(start)]
+        self.statements
+            .get(start..end.max(start))
+            .unwrap_or_default()
     }
 
-    /// The address of row `index`.
+    /// The address of row `index`, a row an index names.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass the rows of statement keys and boundaries, which validation \
+                  checks name rows, and rows and addresses are equal in number"
+    )]
     pub const fn address(self, index: u32) -> ImageAddress {
         ImageAddress::new(self.addresses[index as usize].address.get())
     }

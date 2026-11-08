@@ -44,12 +44,12 @@ pub fn escape(units: &[u16], single: bool) -> String {
         let escaped = match unit {
             0x27 if !single => None,
             0xd800..=0xdbff => {
-                if units
+                if let Some(&next) = units
                     .get(i + 1)
-                    .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+                    .filter(|next| (0xdc00..=0xdfff).contains(*next))
                 {
                     kept.push(unit);
-                    kept.push(units[i + 1]);
+                    kept.push(next);
                     i += 2;
                     continue;
                 }

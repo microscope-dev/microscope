@@ -99,6 +99,10 @@ enum DwarfError {
     #[error("DWARF reference cycle")]
     ReferenceCycle,
 
+    /// A fact about the loader's own tables did not hold: a bug.
+    #[error("internal error loading DWARF: {0}")]
+    Internal(&'static str),
+
     #[error("malformed variable type metadata: {0}")]
     MalformedVariable(Arc<str>),
 
@@ -208,10 +212,12 @@ fn elf_headers_end(data: &[u8]) -> Option<u64> {
 
     let field = |at: usize, size: usize| -> Option<u64> {
         let bytes = data.get(at..at + size)?;
-        Some((0..size).fold(0, |value, index| {
-            let byte = bytes[if little { size - 1 - index } else { index }];
-            value << 8 | u64::from(byte)
-        }))
+        let push = |value: u64, byte: &u8| value << 8 | u64::from(*byte);
+        Some(if little {
+            bytes.iter().rev().fold(0, push)
+        } else {
+            bytes.iter().fold(0, push)
+        })
     };
 
     let table = |offset: usize, entry: usize| -> Option<u64> {
@@ -423,30 +429,31 @@ impl<'data> Units<'data> {
                     .is_some_and(|start| start.0 <= offset.0)
             });
             let index = after.checked_sub(1)?;
-            let header = &headers[index];
+            let header = *headers.get(index)?;
             let start = header.debug_info_offset()?.0;
-            (offset.0 - start < header.length_including_self()).then_some(index)
+            (offset.0 - start < header.length_including_self()).then_some((index, header))
         };
 
         let mut outward = first_error(units.par_iter().map(outward_references).collect())?;
         let mut reached = vec![false; headers.len()];
         let mut wave = Vec::new();
-        let mut reach =
-            |references: &[Outward], within_supplementary: bool, wave: &mut Vec<usize>| {
-                for reference in references {
-                    let offset = match *reference {
-                        Outward::Supplementary(offset) => offset,
-                        Outward::Own(offset) if within_supplementary => offset,
-                        Outward::Own(_) => continue,
-                    };
+        let mut reach = |references: &[Outward], within_supplementary: bool, wave: &mut Vec<_>| {
+            for reference in references {
+                let offset = match *reference {
+                    Outward::Supplementary(offset) => offset,
+                    Outward::Own(offset) if within_supplementary => offset,
+                    Outward::Own(_) => continue,
+                };
 
-                    if let Some(index) = header_at(offset)
-                        && !std::mem::replace(&mut reached[index], true)
-                    {
-                        wave.push(index);
-                    }
+                if let Some((index, header)) = header_at(offset)
+                    && reached
+                        .get_mut(index)
+                        .is_some_and(|seen| !std::mem::replace(seen, true))
+                {
+                    wave.push((index, header));
                 }
-            };
+            }
+        };
 
         for references in &outward {
             reach(references, false, &mut wave);
@@ -458,8 +465,8 @@ impl<'data> Units<'data> {
             let loaded = first_error(
                 std::mem::take(&mut wave)
                     .into_par_iter()
-                    .map(|index| {
-                        let unit = supplementary.unit(headers[index])?;
+                    .map(|(index, header)| {
+                        let unit = supplementary.unit(header)?;
                         let references = outward_references(&unit)?;
                         Ok::<_, DwarfError>((index, unit, references))
                     })
@@ -498,24 +505,23 @@ impl<'data> Units<'data> {
     /// The units of a file followed by those of its supplementary file,
     /// which begin at `first_supplementary`.
     fn catalog(units: Vec<gimli::Unit<Reader<'data>>>, first_supplementary: usize) -> Self {
-        let starts_of = |units: &[gimli::Unit<Reader<'data>>], first: usize| {
+        let starts_of = |supplementary: bool| {
             let mut starts = units
                 .iter()
                 .enumerate()
+                .filter(|(index, _)| (*index >= first_supplementary) == supplementary)
                 // A split unit's offsets are its `.dwo` file's, and neither
                 // it nor its skeleton is named from another unit.
                 .filter(|(_, unit)| unit.dwo_id.is_none())
-                .filter_map(|(index, unit)| {
-                    Some((unit.header.debug_info_offset()?.0, first + index))
-                })
+                .filter_map(|(index, unit)| Some((unit.header.debug_info_offset()?.0, index)))
                 .collect::<Vec<_>>();
             starts.sort_unstable();
             starts
         };
 
         Self {
-            starts: starts_of(&units[..first_supplementary], 0),
-            supplementary_starts: starts_of(&units[first_supplementary..], first_supplementary),
+            starts: starts_of(false),
+            supplementary_starts: starts_of(true),
             units,
             first_supplementary,
             inherited_languages: Vec::new(),
@@ -528,8 +534,18 @@ impl<'data> Units<'data> {
     /// when they agree. Units take them in rounds outward from
     /// the units that have their own, each from referrers settled in
     /// earlier rounds.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every index is a unit's: below `count`, the length of each table here"
+    )]
     fn inherit(&mut self, outward: &[Vec<Outward>]) {
         let count = self.units.len();
+        debug_assert_eq!(
+            outward.len(),
+            count,
+            "the outward references are of {} units, but the catalog has {count}",
+            outward.len(),
+        );
         let mut referrers = vec![Vec::new(); count];
         for (referrer, references) in outward.iter().enumerate() {
             for &reference in references {
@@ -630,11 +646,18 @@ impl<'data> Units<'data> {
 
         let after = starts.partition_point(|(start, _)| *start <= offset.0);
         let (_, unit) = *starts.get(after.checked_sub(1)?)?;
-        let within = offset.to_unit_offset(&self.units[unit].header)?;
+        let within = offset.to_unit_offset(&self.units.get(unit)?.header)?;
         Some(DieKey {
             unit,
             offset: within.0,
         })
+    }
+
+    /// The unit at `index`, which the catalog numbered itself.
+    fn unit(&self, index: usize) -> std::result::Result<&gimli::Unit<Reader<'data>>, DwarfError> {
+        self.units
+            .get(index)
+            .ok_or(DwarfError::Internal("a unit index is outside the catalog"))
     }
 
     /// Whether the unit at `index` is the supplementary file's.
@@ -645,6 +668,10 @@ impl<'data> Units<'data> {
     /// Each unit's group, named by its first unit: units whose DIEs refer
     /// to one another's, directly or through other units, share one, so a
     /// unit reaches only its group's DIEs.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`parents` has one entry per unit, and holds only unit indexes"
+    )]
     fn groups(&self) -> std::result::Result<Vec<usize>, DwarfError> {
         let outward = first_error(self.units.par_iter().map(outward_references).collect())?;
         let mut parents = (0..self.units.len()).collect::<Vec<_>>();
@@ -691,7 +718,7 @@ impl<'data> Units<'data> {
         }
 
         gimli::UnitOffset(key.offset)
-            .to_debug_info_offset(&self.units[key.unit].header)
+            .to_debug_info_offset(&self.units.get(key.unit)?.header)
             .map(|offset| offset.0 as u64)
     }
 }
@@ -1465,7 +1492,12 @@ fn load_image(
             .iter()
             .map(|path| files.intern(path.clone()))
             .collect::<Vec<_>>();
-        line_tables.append(&tables, |file| ids[file.index()])?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the unit's rows name only its own files, which `ids` maps one to one"
+        )]
+        let id = |file: crate::SourceFileId| ids[file.index()];
+        line_tables.append(&tables, id)?;
     }
 
     crate::count!("line_rows", line_tables.rows.len());
@@ -1602,9 +1634,13 @@ fn load_image(
         if let Some(function) = function_metadata
             .code_instances
             .get(instance.index())
-            .map(|instance| instance.function)
+            .and_then(|instance| {
+                function_metadata
+                    .functions
+                    .get_mut(instance.function.index())
+            })
         {
-            function_metadata.functions[function.index()].generics = generics;
+            function.generics = generics;
         }
     }
 
@@ -1616,9 +1652,13 @@ fn load_image(
             && let Some(function) = function_metadata
                 .code_instances
                 .get(instance.index())
-                .map(|instance| instance.function)
+                .and_then(|instance| {
+                    function_metadata
+                        .functions
+                        .get_mut(instance.function.index())
+                })
         {
-            function_metadata.functions[function.index()].coroutine = Some(*ty);
+            function.coroutine = Some(*ty);
         }
     }
 
@@ -3438,6 +3478,10 @@ impl<V> DieMap<V> {
     }
 
     /// The map of `unit`, made with those between it and the others.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the maps were just extended to hold `index`"
+    )]
     fn unit_mut(&mut self, unit: usize) -> &mut HashMap<usize, V> {
         if self.units.is_empty() {
             self.first = unit;
@@ -3585,6 +3629,11 @@ struct FunctionMetadata {
     body_futures: Vec<(FunctionId, Arc<str>)>,
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each definition is an index into `raw`, from `definition_of`, and each table \
+              indexed by one is `raw.len()` long"
+)]
 fn load_function_metadata<'data>(
     dwarf: &DwarfSet<'data>,
     catalog: &UnitCatalog<'data>,
@@ -3727,7 +3776,10 @@ fn body_futures(
                 .as_deref()
                 .zip(origin.namespace.as_deref())
                 .and_then(|(name, namespace)| super::coroutines::body_future(name, namespace))?;
-            Some((function_ids[*definition]?, Arc::from(future)))
+            Some((
+                function_ids.get(*definition).copied().flatten()?,
+                Arc::from(future),
+            ))
         })
         .collect()
 }
@@ -3735,12 +3787,25 @@ fn body_futures(
 /// Each function DIE with code as an instance, numbered in DIE order, of
 /// its definition's function; and the instance each such DIE is. Code of a
 /// definition with no name is no instance, and keeps its symbol's.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "definitions and function indexes are into `raw`, and each table indexed by one \
+              is `raw.len()` long"
+)]
 fn code_instances(
     raw: &RawFunctions,
     definitions: &[usize],
     function_ids: &[Option<FunctionId>],
     nameless: &[bool],
 ) -> std::result::Result<(Vec<CodeInstanceInfo>, DieMap<CodeInstanceId>), DwarfError> {
+    debug_assert!(
+        nameless.len() == raw.len() && function_ids.len() == raw.len(),
+        "{} functions, but {} nameless flags and {} function ids",
+        raw.len(),
+        nameless.len(),
+        function_ids.len(),
+    );
+
     // Which DIEs are instances is found in parallel, and only their
     // numbering in turn: reading each of Chrome's 53 million DIEs on one
     // thread took seconds.
@@ -3905,10 +3970,11 @@ fn link_bodies_by_name(
     types: &[crate::TypeNode],
     coroutines: &BTreeMap<crate::TypeId, std::result::Result<crate::CoroutineInfo, Arc<str>>>,
 ) {
-    if body_futures
-        .iter()
-        .all(|(function, _)| functions[function.index()].coroutine.is_some())
-    {
+    if body_futures.iter().all(|(function, _)| {
+        functions
+            .get(function.index())
+            .is_none_or(|function| function.coroutine.is_some())
+    }) {
         return;
     }
 
@@ -3932,7 +3998,9 @@ fn link_bodies_by_name(
     }
 
     for (function, future) in body_futures {
-        let function = &mut functions[function.index()];
+        let Some(function) = functions.get_mut(function.index()) else {
+            continue;
+        };
         if function.coroutine.is_none()
             && let Some(ty) = named.get(&**future).and_then(|types| types.first())
         {
@@ -4008,10 +4076,12 @@ fn assign_go_function_roles(
                 continue;
             };
 
-            facts[instance.function.index()] = table
-                .function_containing(entry)
-                .filter(|function| function.entry == entry)
-                .map(|function| function.facts);
+            if let Some(facts) = facts.get_mut(instance.function.index()) {
+                *facts = table
+                    .function_containing(entry)
+                    .filter(|function| function.entry == entry)
+                    .map(|function| function.facts);
+            }
         }
     }
 
@@ -4082,7 +4152,7 @@ impl RawFunctions {
                 unit.binary_search_by_key(&key.offset, |function| function.key.offset)
                     .ok()
             })
-            .map(|index| self.starts[key.unit] + index)
+            .and_then(|index| Some(self.starts.get(key.unit)? + index))
             .ok_or(DwarfError::ReferencedFunctionMissing {
                 unit: key.unit,
                 offset: key.offset,
@@ -4093,7 +4163,13 @@ impl RawFunctions {
 impl std::ops::Index<usize> for RawFunctions {
     type Output = RawFunction;
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers index below `len()`, and `starts` begins at 0 and has one more entry \
+                  than `units`"
+    )]
     fn index(&self, index: usize) -> &RawFunction {
+        debug_assert!(index < self.len(), "function {index} of {}", self.len());
         let unit = self.starts.partition_point(|start| *start <= index) - 1;
         &self.units[unit][index - self.starts[unit]]
     }
@@ -4107,11 +4183,13 @@ fn collect_function_dies<'data>(
     files: &mut Files,
 ) -> std::result::Result<(RawFunctions, Futures), DwarfError> {
     let batches = first_error(
-        (0..catalog.units.len())
-            .into_par_iter()
-            .map(|unit| {
-                collect_unit_functions(dwarf, catalog, unit)
-                    .map_err(|error| error.within(|| describe_unit(&catalog.units[unit])))
+        catalog
+            .units
+            .par_iter()
+            .enumerate()
+            .map(|(index, unit)| {
+                collect_unit_functions(dwarf, catalog, index)
+                    .map_err(|error| error.within(|| describe_unit(unit)))
             })
             .collect(),
     )?;
@@ -4132,6 +4210,10 @@ fn collect_function_dies<'data>(
         renumbered.push((batch.functions, ids));
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a unit's functions name only its own files, which `ids` maps one to one"
+    )]
     let units = renumbered
         .into_par_iter()
         .map(|(mut functions, ids)| {
@@ -4158,7 +4240,7 @@ fn collect_unit_functions<'data>(
     unit_index: usize,
 ) -> std::result::Result<UnitFunctions, DwarfError> {
     let units = &catalog.units;
-    let unit = &units[unit_index];
+    let unit = units.unit(unit_index)?;
     let mut batch = UnitFunctions::default();
     if is_type_unit(unit) {
         return Ok(batch);
@@ -4218,6 +4300,10 @@ fn collect_unit_functions<'data>(
 
         // A namespace's children are within its path; an unnamed one's
         // within none.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "namespace indexes are positions this walk pushed to `paths`, which only grows"
+        )]
         let inner = if entry.tag() == gimli::DW_TAG_namespace {
             string_attribute(dwarf, unit, entry, gimli::DW_AT_name)?.map(|name| {
                 paths.push(match namespace {
@@ -4231,6 +4317,10 @@ fn collect_unit_functions<'data>(
         };
 
         levels.push((if kind.is_some() { Some(key) } else { parent }, inner));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "namespace indexes are positions this walk pushed to `paths`, which only grows"
+        )]
         let namespace = namespace.map(|index| &paths[index]);
         if language == SourceLanguage::Rust
             && let Some(function) = future_of(dwarf, unit, entry, namespace.map(|path| &**path))?
@@ -4265,7 +4355,7 @@ fn raw_function<'data>(
     files: &mut UnitFiles,
 ) -> std::result::Result<RawFunction, DwarfError> {
     let units = &catalog.units;
-    let unit = &units[key.unit];
+    let unit = units.unit(key.unit)?;
     Ok(RawFunction {
         key,
         language,
@@ -4356,7 +4446,7 @@ fn unit_language(
     units: &Units<'_>,
     unit_index: usize,
 ) -> std::result::Result<SourceLanguage, DwarfError> {
-    let unit = &units[unit_index];
+    let unit = units.unit(unit_index)?;
     let mut entries = unit.entries();
     let Some(root) = entries.next_dfs()? else {
         return Ok(SourceLanguage::Unknown);
@@ -4487,7 +4577,7 @@ fn containing_instance(
 ) -> Option<CodeInstanceId> {
     while let Some(current) = key {
         let index = raw.at(current).ok()?;
-        if let Some(instance) = instances[index] {
+        if let Some(instance) = *instances.get(index)? {
             return Some(instance);
         }
 
@@ -4788,7 +4878,7 @@ impl super::dispatch::DispatchImage for ObjectCode<'_, '_> {
     fn code(&self, address: u64, length: usize) -> Option<&[u8]> {
         let (data, at) = self.section_bytes(address, &[object::SectionKind::Text])?;
         let bytes = data.get(at..)?;
-        Some(&bytes[..bytes.len().min(length)])
+        bytes.get(..bytes.len().min(length))
     }
 
     fn data(&self, address: u64, length: usize) -> Option<&[u8]> {
@@ -4821,7 +4911,9 @@ fn decode_resume_points(
     let image = ObjectCode(object);
     let mut decoded = Vec::new();
     for instance in instances.iter_mut() {
-        let function = &functions[instance.function.index()];
+        let Some(function) = functions.get(instance.function.index()) else {
+            continue;
+        };
         let Some(Ok(coroutine)) = function.coroutine.and_then(|ty| coroutines.get(&ty)) else {
             continue;
         };

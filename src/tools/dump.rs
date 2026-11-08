@@ -206,7 +206,7 @@ impl Names {
         let type_keys = crate::type_identity::TypeIndex::build(
             nodes.first().map(|node| node.reference().image),
             nodes.len(),
-            |index| match nodes[index] {
+            |index| match *nodes.get(index)? {
                 TypeNode::Resolved(info) => Some(info),
                 TypeNode::Malformed { .. } => None,
             },
@@ -472,6 +472,10 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
+    )]
     fn functions(&mut self) -> std::io::Result<()> {
         let image = self.image;
         let names = self.names;
@@ -502,6 +506,10 @@ impl<'a> Dumper<'a> {
         self.sorted(lines)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
+    )]
     fn instance(&self, instance: crate::CodeInstance<'_>) -> String {
         let names = self.names;
         let mut text = format!(
@@ -533,6 +541,10 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
+    )]
     fn types(&mut self) -> std::io::Result<()> {
         let image = self.image;
         let names = self.names;
@@ -668,6 +680,10 @@ impl<'a> Dumper<'a> {
         addresses
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
+    )]
     fn addresses(&mut self) -> std::io::Result<()> {
         let image = self.image;
         let names = self.names;
@@ -772,6 +788,10 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
+    )]
     fn breakpoints(&mut self) -> std::io::Result<()> {
         let image = self.image;
         let names = self.names;
@@ -827,6 +847,10 @@ impl<'a> Dumper<'a> {
     #[expect(
         clippy::too_many_lines,
         reason = "every kind of name, one after another"
+    )]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
     )]
     fn names(&mut self) -> std::io::Result<()> {
         let image = self.image;
@@ -963,6 +987,10 @@ impl<'a> Dumper<'a> {
         self.sorted(lines)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "names holds one entry for each row of this image's tables, which the ids index"
+    )]
     fn variables(&mut self, per_instance: usize) -> std::io::Result<()> {
         let image = self.image;
         let names = self.names;
@@ -998,15 +1026,14 @@ impl<'a> Dumper<'a> {
                 }
             }
 
-            let rows = instance.ranges().next().map_or(&[][..], |range| {
-                let rows = statements.as_slice();
-                let first = rows.partition_point(|row| row.address < range.start);
-                let rest = &rows[first.min(rows.len())..];
-                let count = rest.partition_point(|row| row.address < range.end);
-                &rest[..count]
+            let rows = instance.ranges().next().into_iter().flat_map(|range| {
+                let first = statements.partition_point(|row| row.address < range.start);
+                statements
+                    .iter()
+                    .skip(first)
+                    .take_while(move |row| row.address < range.end)
             });
             let mut statement_addresses = rows
-                .iter()
                 .filter(|row| row.flags.is_statement())
                 .map(|row| row.address.get())
                 .collect::<Vec<_>>();

@@ -42,6 +42,23 @@ impl Abi {
         Self::ALL.into_iter().find(|abi| abi.suffix() == suffix)
     }
 
+    /// The ABI's entry in a table with one per ABI, in [`Abi::ALL`]'s order.
+    pub(super) const fn of<T>(self, table: &[T; 3]) -> &T {
+        match self {
+            Self::X86_64 => &table[0],
+            Self::X86_32 => &table[1],
+            Self::X32 => &table[2],
+        }
+    }
+
+    pub(super) const fn of_mut<T>(self, table: &mut [T; 3]) -> &mut T {
+        match self {
+            Self::X86_64 => &mut table[0],
+            Self::X86_32 => &mut table[1],
+            Self::X32 => &mut table[2],
+        }
+    }
+
     /// Bytes in a pointer or `long` under the ABI.
     #[must_use]
     pub const fn word_bytes(self) -> u8 {

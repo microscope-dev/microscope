@@ -227,12 +227,12 @@ impl<'a, S: Scope> Binder<'a, S> {
                 return self.node(Op::Constant(Constant::Text(path)), Ty::Text, span);
             }
             _ => {
-                let index = name
+                let argument = name
                     .strip_prefix("arg")
                     .and_then(|index| index.parse::<usize>().ok())
-                    .filter(|&index| index < 6)
+                    .and_then(|index| call.args.get(index).copied())
                     .ok_or_else(|| unsupported("a call has six arguments"))?;
-                (Integer::Exact(Exact::from(call.args[index])), Ty::Exact)
+                (Integer::Exact(Exact::from(argument)), Ty::Exact)
             }
         };
 
@@ -611,10 +611,24 @@ impl<'a, S: Scope> Binder<'a, S> {
         })
     }
 
+    /// Where the first `count` segments of a path are.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`splits` yields counts from one to the number of segments"
+    )]
+    fn prefix_span(path: &Path, count: usize) -> Span {
+        debug_assert!(
+            (1..=path.segments.len()).contains(&count),
+            "a prefix of {count} segments of a path of {}",
+            path.segments.len(),
+        );
+        path.segments[0].span.to(path.segments[count - 1].span)
+    }
+
     /// Whether a path names a value, possibly through members.
     fn names_value(scope: &S, path: &Path) -> Result<bool, ExpressionError> {
         for count in Self::splits(path) {
-            let span = path.segments[0].span.to(path.segments[count - 1].span);
+            let span = Self::prefix_span(path, count);
             match scope
                 .lookup(&Self::prefix_text(path, count), path.global)
                 .map_err(|refusal| Self::refused(span, refusal))?
@@ -630,7 +644,7 @@ impl<'a, S: Scope> Binder<'a, S> {
     fn name(&mut self, path: &Path, span: Span) -> BindResult<S> {
         for count in Self::splits(path) {
             let name = Self::prefix_text(path, count);
-            let name_span = path.segments[0].span.to(path.segments[count - 1].span);
+            let name_span = Self::prefix_span(path, count);
             let found = self
                 .scope
                 .lookup(&name, path.global)
@@ -671,8 +685,8 @@ impl<'a, S: Scope> Binder<'a, S> {
                 Lookup::Dynamic(object) => self.node(Op::Object(object), Ty::Dynamic, name_span)?,
             };
 
-            for segment in &path.segments[count..] {
-                let member_span = path.segments[0].span.to(segment.span);
+            for segment in path.segments.iter().skip(count) {
+                let member_span = name_span.to(segment.span);
                 node = self.member(
                     node,
                     &Field::Named(segment.name.clone()),
@@ -1340,11 +1354,13 @@ impl<'a, S: Scope> Binder<'a, S> {
         if !matches!(
             error.kind,
             ErrorKind::UnknownName | ErrorKind::AmbiguousName
-        ) || path.segments.len() != 1
-            || path.global
-        {
+        ) {
             return bound;
         }
+
+        let ([segment], false) = (path.segments.as_slice(), path.global) else {
+            return bound;
+        };
 
         let Category::Integer {
             enumerators: Some(enumerators),
@@ -1358,7 +1374,7 @@ impl<'a, S: Scope> Binder<'a, S> {
             return bound;
         };
 
-        let name = &path.segments[0].name;
+        let name = &segment.name;
         let Some(found) = enumerators
             .iter()
             .find(|enumerator| enumerator.name.as_ref() == name)
@@ -1438,11 +1454,11 @@ impl<'a, S: Scope> Binder<'a, S> {
             return Ok(None);
         };
 
-        if path.segments.len() != 1 || path.global {
+        let ([segment], false) = (path.segments.as_slice(), path.global) else {
             return Ok(None);
-        }
+        };
 
-        let variant = path.segments[0].name.clone();
+        let variant = segment.name.clone();
         if let Err(error) = self.bind(name) {
             if !matches!(
                 error.kind,
@@ -2448,7 +2464,7 @@ impl<'a, S: Scope> Binder<'a, S> {
         chain.reverse();
         let mut node = self.bind(current)?;
         let mut pending = chain.as_slice();
-        while let [(first, span), ..] = pending {
+        while let [(first, span), later @ ..] = pending {
             node = self.settle(node)?;
             let category = self.category(&node.ty);
             match category {
@@ -2456,11 +2472,11 @@ impl<'a, S: Scope> Binder<'a, S> {
                 // type when it runs says.
                 Category::Dynamic if node.is_place() => {
                     node = self.dynamic_index(node, *first, *span)?;
-                    pending = &pending[1..];
+                    pending = later;
                 }
                 Category::Pointer(target) if !self.represents(&node.ty) => {
                     node = self.pointer_index(node, target, *first, *span)?;
-                    pending = &pending[1..];
+                    pending = later;
                 }
 
                 // A record has no indexing of its own, nor has a value its
@@ -2485,7 +2501,7 @@ impl<'a, S: Scope> Binder<'a, S> {
                     // A value a view presents as a map is indexed by key.
                     if !native && let Ok(planned) = self.scope.plan(from, StepKind::Entry) {
                         node = self.entry(node, planned, *first, *span)?;
-                        pending = &pending[1..];
+                        pending = later;
                         continue;
                     }
 

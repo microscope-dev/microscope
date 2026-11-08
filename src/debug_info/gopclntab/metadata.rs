@@ -101,7 +101,10 @@ impl Described {
 
     fn contains(&self, address: u64) -> bool {
         let after = self.0.partition_point(|(start, _)| *start <= address);
-        after > 0 && address < self.0[after - 1].1
+        after
+            .checked_sub(1)
+            .and_then(|last| self.0.get(last))
+            .is_some_and(|(_, end)| address < *end)
     }
 }
 
@@ -353,20 +356,20 @@ impl Builder<'_, '_> {
         let mut instances = BTreeMap::<i32, CodeInstanceId>::new();
 
         // Parents first, so each instance names its parent's.
-        let mut pending = entries.keys().copied().collect::<Vec<_>>();
+        let mut pending = entries.iter().collect::<Vec<_>>();
 
         while !pending.is_empty() {
             let before = pending.len();
             let mut deferred = Vec::new();
 
-            for index in pending {
-                let (ranges, parent) = &entries[&index];
+            for item in pending {
+                let (&index, (ranges, parent)) = item;
                 let parent_instance = if *parent < 0 {
                     physical
                 } else if let Some(instance) = instances.get(parent) {
                     *instance
                 } else {
-                    deferred.push(index);
+                    deferred.push(item);
                     continue;
                 };
 
@@ -442,8 +445,9 @@ const MAX_INLINE_DEPTH: usize = 256;
 /// The value of the run containing an address, or -1 outside every run.
 fn value_at(runs: &[PcRun], address: u64) -> i32 {
     let after = runs.partition_point(|run| run.start <= address);
-    runs[..after]
-        .last()
+    after
+        .checked_sub(1)
+        .and_then(|last| runs.get(last))
         .filter(|run| address < run.end)
         .map_or(-1, |run| run.value)
 }

@@ -620,11 +620,13 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
         return false;
     }
 
-    let line_end = text[end..]
-        .iter()
-        .position(|&byte| byte == b'\n')
-        .map_or(text.len(), |offset| end + offset);
-    let rest = &text[end..line_end];
+    let Some(after_word) = text.get(end..) else {
+        return false;
+    };
+    let rest = after_word
+        .split(|&byte| byte == b'\n')
+        .next()
+        .unwrap_or(after_word);
     let after = rest.trim_ascii_start();
 
     if word == "type" {
@@ -633,7 +635,10 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
             .iter()
             .take_while(|&&byte| is_identifier(byte))
             .count();
-        let tail = after[name..].trim_ascii_start();
+        let Some((_, tail)) = after.split_at_checked(name) else {
+            return false;
+        };
+        let tail = tail.trim_ascii_start();
         return after.len() < rest.len()
             && name > 0
             && (tail.starts_with(b"[") || tail.starts_with(b"=") && !tail.starts_with(b"=="));
@@ -659,7 +664,8 @@ fn python_soft_keyword_holds(text: &[u8], word: &str, end: usize, line_start: bo
         }
     }
 
-    rest[..code].trim_ascii_end().ends_with(b":")
+    rest.get(..code)
+        .is_some_and(|code| code.trim_ascii_end().ends_with(b":"))
 }
 
 /// The prefixes a Python string may begin with, in any case.
@@ -850,18 +856,21 @@ pub fn lex(text: &str, language: Language) -> Vec<Vec<Span>> {
 }
 
 /// The highlighted tokens of `text`, in order, by byte range.
+#[expect(clippy::too_many_lines, reason = "one branch per kind of token")]
 fn tokens(text: &[u8], language: Language) -> Vec<Span> {
     let at = |index: usize| text.get(index).copied().unwrap_or(0);
-    let starts = |index: usize, prefix: &[u8]| text[index.min(text.len())..].starts_with(prefix);
+    let starts = |index: usize, prefix: &[u8]| {
+        text.get(index..)
+            .is_some_and(|rest| rest.starts_with(prefix))
+    };
     let mut tokens = Vec::new();
     let mut index = 0;
 
     // Whether only whitespace precedes `index` on its line.
     let mut line_start = true;
 
-    while index < text.len() {
-        let byte = text[index];
-        let previous_is_identifier = index > 0 && is_identifier(text[index - 1]);
+    while let Some(&byte) = text.get(index) {
+        let previous_is_identifier = index > 0 && is_identifier(at(index - 1));
         let start = index;
         let block = language
             .block_comments()
@@ -924,7 +933,8 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
                 index += 1;
             }
 
-            let word = std::str::from_utf8(&text[start..index]).unwrap_or_default();
+            let word = std::str::from_utf8(text.get(start..index).unwrap_or_default());
+            let word = word.unwrap_or_default();
             let keyword = if language.ignores_case() {
                 language
                     .keywords()
@@ -957,7 +967,7 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
             tokens.push((start..index, kind));
         }
 
-        line_start = match text[index - 1] {
+        line_start = match index.checked_sub(1).map_or(0, at) {
             b'\n' => true,
             b' ' | b'\t' => line_start,
             _ => false,
@@ -969,9 +979,8 @@ fn tokens(text: &[u8], language: Language) -> Vec<Span> {
 
 /// The index of the first `byte` at or after `from`, or the end.
 fn memchr(text: &[u8], from: usize, byte: u8) -> usize {
-    text[from.min(text.len())..]
-        .iter()
-        .position(|candidate| *candidate == byte)
+    text.get(from..)
+        .and_then(|rest| rest.iter().position(|candidate| *candidate == byte))
         .map_or(text.len(), |offset| from + offset)
 }
 
@@ -980,11 +989,11 @@ fn memchr(text: &[u8], from: usize, byte: u8) -> usize {
 fn block_comment_end(text: &[u8], start: usize, open: &[u8], close: &[u8], nests: bool) -> usize {
     let mut depth = 0;
     let mut index = start;
-    while index < text.len() {
-        if text[index..].starts_with(open) && (nests || depth == 0) {
+    while let Some(rest) = text.get(index..).filter(|rest| !rest.is_empty()) {
+        if rest.starts_with(open) && (nests || depth == 0) {
             depth += 1;
             index += open.len();
-        } else if text[index..].starts_with(close) {
+        } else if rest.starts_with(close) {
             depth -= 1;
             index += close.len();
             if depth == 0 {
@@ -1001,6 +1010,10 @@ fn block_comment_end(text: &[u8], start: usize, open: &[u8], close: &[u8], nests
 /// Where a string or character quoted by `quote` from `start` ends, after
 /// its closing quote. Only Rust's strings continue past a line's end
 /// without an escaped newline.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the loop holds index below text.len()"
+)]
 const fn quoted_end(text: &[u8], start: usize, quote: u8, spans_lines: bool) -> usize {
     let mut index = start + 1;
     while index < text.len() {
@@ -1019,16 +1032,17 @@ const fn quoted_end(text: &[u8], start: usize, quote: u8, spans_lines: bool) -> 
 /// prefix and a quote begin there. A string quoted once ends with its line
 /// unless a backslash escapes the newline, which Python continues.
 fn python_string_end(text: &[u8], start: usize) -> Option<usize> {
-    let quote_index = PYTHON_STRING_PREFIXES.iter().find_map(|prefix| {
+    let (quote_index, quote, prefix) = PYTHON_STRING_PREFIXES.iter().find_map(|prefix| {
         let end = start + prefix.len();
         let quote = *text.get(end)?;
-        (matches!(quote, b'"' | b'\'') && text.get(start..end)?.eq_ignore_ascii_case(prefix))
-            .then_some(end)
+        let found = text.get(start..end)?;
+        (matches!(quote, b'"' | b'\'') && found.eq_ignore_ascii_case(prefix))
+            .then_some((end, quote, found))
     })?;
 
-    let quote = text[quote_index];
-    let triple = text[quote_index..].starts_with(&[quote; 3]);
-    let prefix = &text[start..quote_index];
+    let triple = text
+        .get(quote_index..)
+        .is_some_and(|quoted| quoted.starts_with(&[quote; 3]));
     if prefix
         .iter()
         .any(|byte| matches!(byte, b'f' | b'F' | b't' | b'T'))
@@ -1062,16 +1076,18 @@ fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) 
     let mut index = start + closing.len();
     let mut open: Vec<Open> = Vec::new();
 
-    while index < text.len() {
-        let byte = text[index];
-
+    while let Some(&byte) = text.get(index) {
         match open.last() {
             None | Some(Open::Spec) => {
                 if byte == b'\\' && !raw {
                     index += 2;
                     continue;
                 }
-                if open.is_empty() && text[index..].starts_with(closing) {
+                if open.is_empty()
+                    && text
+                        .get(index..)
+                        .is_some_and(|rest| rest.starts_with(closing))
+                {
                     return index + closing.len();
                 }
                 if byte == b'\n' && !triple {
@@ -1089,7 +1105,11 @@ fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) 
             }
             Some(&top) => {
                 // An expression, whose strings end none of this one.
-                if let Some(end) = (!is_identifier(text[index - 1]))
+                let after_identifier = index
+                    .checked_sub(1)
+                    .and_then(|previous| text.get(previous))
+                    .is_some_and(|&previous| is_identifier(previous));
+                if let Some(end) = (!after_identifier)
                     .then(|| python_string_end(text, index))
                     .flatten()
                 {
@@ -1121,10 +1141,10 @@ fn formatted_end(text: &[u8], start: usize, quote: u8, triple: bool, raw: bool) 
 fn triple_quoted_end(text: &[u8], start: usize, quote: u8) -> usize {
     let closing = [quote; 3];
     let mut index = start + 3;
-    while index < text.len() {
-        if text[index] == b'\\' {
+    while let Some(rest) = text.get(index..).filter(|rest| !rest.is_empty()) {
+        if rest.starts_with(b"\\") {
             index += 2;
-        } else if text[index..].starts_with(&closing) {
+        } else if rest.starts_with(&closing) {
             return index + 3;
         } else {
             index += 1;
@@ -1139,8 +1159,8 @@ fn triple_quoted_end(text: &[u8], start: usize, quote: u8) -> usize {
 /// its line.
 fn doubled_end(text: &[u8], start: usize, quote: u8) -> usize {
     let mut index = start + 1;
-    while index < text.len() {
-        match text[index] {
+    while let Some(&byte) = text.get(index) {
+        match byte {
             b'\n' => return index,
             byte if byte == quote && text.get(index + 1) == Some(&quote) => index += 2,
             byte if byte == quote => return index + 1,
@@ -1157,7 +1177,10 @@ fn character_end(text: &[u8], start: usize, language: Language) -> Option<usize>
     if language == Language::Ada {
         // One character between quotes, and not after a name, whose quote
         // begins an attribute.
-        let after_name = start > 0 && (is_identifier(text[start - 1]) || text[start - 1] == b')');
+        let after_name = start
+            .checked_sub(1)
+            .and_then(|previous| text.get(previous))
+            .is_some_and(|&previous| is_identifier(previous) || previous == b')');
         return (!after_name && text.get(start + 2) == Some(&b'\'')).then_some(start + 3);
     }
 
@@ -1200,7 +1223,8 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
             }
 
             index += 1;
-            let hashes = text[index..]
+            let hashes = text
+                .get(index..)?
                 .iter()
                 .take_while(|byte| **byte == b'#')
                 .count();
@@ -1214,17 +1238,19 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
             find(text, index + 1, &closing).map(|end| end + closing.len())
         }
         Language::Cpp => {
+            let rest = text.get(start..)?;
             let prefix = ["u8R\"", "uR\"", "UR\"", "LR\"", "R\""]
                 .into_iter()
-                .find(|prefix| text[start..].starts_with(prefix.as_bytes()))?;
+                .find(|prefix| rest.starts_with(prefix.as_bytes()))?;
             let open = start + prefix.len();
             let delimiter_end = open
-                + text[open..]
+                + text
+                    .get(open..)?
                     .iter()
                     .take(17)
                     .position(|byte| *byte == b'(')?;
             let mut closing = vec![b')'];
-            closing.extend_from_slice(&text[open..delimiter_end]);
+            closing.extend_from_slice(text.get(open..delimiter_end)?);
             closing.push(b'"');
 
             Some(
@@ -1232,13 +1258,23 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
                     .map_or(text.len(), |end| end + closing.len()),
             )
         }
-        Language::D | Language::Nim if text[start..].starts_with(b"r\"") => {
+        Language::D | Language::Nim
+            if text
+                .get(start..)
+                .is_some_and(|rest| rest.starts_with(b"r\"")) =>
+        {
             Some(find(text, start + 2, b"\"").map_or(text.len(), |end| end + 1))
         }
-        Language::Nim if text[start..].starts_with(b"\"\"\"") => {
+        Language::Nim
+            if text
+                .get(start..)
+                .is_some_and(|rest| rest.starts_with(b"\"\"\"")) =>
+        {
             // It ends at the last of the quotes that close it.
             let close = find(text, start + 3, b"\"\"\"").map_or(text.len(), |end| end + 3);
-            let extra = text[close.min(text.len())..]
+            let extra = text
+                .get(close..)
+                .unwrap_or_default()
                 .iter()
                 .take_while(|byte| **byte == b'"')
                 .count();
@@ -1251,7 +1287,8 @@ fn raw_string_end(text: &[u8], start: usize, language: Language) -> Option<usize
 
 /// The index at or after `from` where `needle` begins, if it does.
 fn find(text: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
-    text[from.min(text.len())..]
+    text.get(from..)
+        .unwrap_or_default()
         .windows(needle.len())
         .position(|window| window == needle)
         .map(|offset| from + offset)
@@ -1261,12 +1298,17 @@ fn find(text: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 /// exponent, and a point followed by a digit, so that a range `0..5` is
 /// two numbers.
 fn number_end(text: &[u8], start: usize) -> usize {
-    let hexadecimal = text[start..].starts_with(b"0x") || text[start..].starts_with(b"0X");
+    let hexadecimal = text
+        .get(start..)
+        .is_some_and(|rest| rest.starts_with(b"0x") || rest.starts_with(b"0X"));
     let mut index = start;
-    while index < text.len() {
-        let byte = text[index];
-        let exponent_sign =
-            matches!(byte, b'+' | b'-') && !hexadecimal && matches!(text[index - 1], b'e' | b'E');
+    while let Some(&byte) = text.get(index) {
+        let exponent_sign = matches!(byte, b'+' | b'-')
+            && !hexadecimal
+            && matches!(
+                index.checked_sub(1).and_then(|previous| text.get(previous)),
+                Some(b'e' | b'E')
+            );
         let point = byte == b'.' && text.get(index + 1).is_some_and(u8::is_ascii_digit);
         if is_identifier(byte)
             || byte == b'\'' && text.get(index + 1).is_some_and(u8::is_ascii_digit)

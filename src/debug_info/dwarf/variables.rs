@@ -112,6 +112,16 @@ fn row(index: usize) -> u32 {
     row.unwrap_or(u32::MAX)
 }
 
+/// The unit at `index` of `units`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "unit indices come from enumerating `units` or from `DieKey`s that `Units` resolved, \
+              so each names one of its units"
+)]
+fn unit_at<'u, 'data>(units: &'u Units<'data>, index: usize) -> &'u gimli::Unit<Reader<'data>> {
+    &units[index]
+}
+
 const fn malformed_reason(
     kind: VariableMalformedKind,
     description: Arc<str>,
@@ -289,10 +299,17 @@ fn declared_file<'data>(
     files: &mut Files,
 ) -> Option<SourceFileId> {
     let chain = origin_chain(units, unit_index, entry).ok()?;
-    declaration_with_origins(dwarf, units, &units[unit_index], entry, &chain, files)
-        .ok()
-        .flatten()
-        .map(|declaration| declaration.file)
+    declaration_with_origins(
+        dwarf,
+        units,
+        unit_at(units, unit_index),
+        entry,
+        &chain,
+        files,
+    )
+    .ok()
+    .flatten()
+    .map(|declaration| declaration.file)
 }
 
 /// Each Go lexical block's code fused with its nested blocks' and inlined
@@ -489,7 +506,7 @@ pub(super) fn load_variable_info<'data>(
     for function in &mut functions {
         function
             .objects
-            .sort_by_key(|index| variable_order_key(&objects[*index as usize]));
+            .sort_by_key(|index| objects.get(*index as usize).map(variable_order_key));
     }
 
     drop(phase);
@@ -570,6 +587,11 @@ pub(super) fn load_variable_info<'data>(
 
             // The body's future is what the parameter points to.
             if let Some(object) = object {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "an unnamed parameter's object is the index the walk pushed it at, \
+                              which `absorb_walked` renumbers with the objects"
+                )]
                 let future = &mut objects[object];
                 future.name = "$future".into();
                 future.type_info = TypeResolution::Resolved(coroutine);
@@ -733,14 +755,21 @@ fn walk_unit<'data>(
         names,
     } = walked;
     let units = &catalog.units;
-    let unit = &units[unit_index];
+    let unit = unit_at(units, unit_index);
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`languages` holds one language for each of `units`"
+    )]
+    let unit_language = languages[unit_index];
+
     calls.begin_unit();
-    let go = languages[unit_index] == Some(gimli::DW_LANG_Go);
-    let fortran = source_language(languages[unit_index], None) == SourceLanguage::Fortran;
-    let d = languages[unit_index] == Some(gimli::DW_LANG_D);
+    let go = unit_language == Some(gimli::DW_LANG_Go);
+    let fortran = source_language(unit_language, None) == SourceLanguage::Fortran;
+    let d = unit_language == Some(gimli::DW_LANG_D);
     let nim = types.produced_language(unit_index) == Some(SourceLanguage::Nim);
-    let ada = source_language(languages[unit_index], None) == SourceLanguage::Ada;
-    let rust = languages[unit_index] == Some(gimli::DW_LANG_Rust);
+    let ada = source_language(unit_language, None) == SourceLanguage::Ada;
+    let rust = unit_language == Some(gimli::DW_LANG_Rust);
 
     // Go names the register ABI its x86-64 code calls with among the
     // flags of each unit's producer, as `go1.27.1; -N -l regabi`.
@@ -755,7 +784,7 @@ fn walk_unit<'data>(
     // Other languages' x86-64 code returns as the System V convention
     // says, or, for the languages that leave theirs unspecified, as it
     // for scalars.
-    let language = source_language(languages[unit_index], types.produced_language(unit_index));
+    let language = source_language(unit_language, types.produced_language(unit_index));
     let system_v = target.architecture == crate::Architecture::X86_64
         && matches!(
             language,
@@ -1148,6 +1177,10 @@ fn walk_unit<'data>(
 
             // One capture it cannot describe leaves them all unknown,
             // rather than the closure seeming to capture less.
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "a scope's function is the index the walk pushed it at"
+            )]
             let captures = &mut functions[scope.function].captures;
 
             match capture {
@@ -1380,7 +1413,13 @@ fn walk_unit<'data>(
                 types
                     .budget
                     .charge("data objects", size_of::<DataObject>())?;
-                functions[scope.function].objects.push(row(objects.len()));
+
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "a scope's function is the index the walk pushed it at"
+                )]
+                let owner = &mut functions[scope.function];
+                owner.objects.push(row(objects.len()));
                 objects.push(DataObject {
                     debug_info_offset: debug_info_offset(units, unit_index, entry),
                     kind,
@@ -1568,9 +1607,13 @@ fn add_abstract_only_variables<'data>(
             .types
             .budget
             .charge("data objects", size_of::<DataObject>())?;
-        targets.functions[routine.scope.function]
-            .objects
-            .push(row(targets.objects.len()));
+
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "a scope's function is the index the walk pushed it at"
+        )]
+        let owner = &mut targets.functions[routine.scope.function];
+        owner.objects.push(row(targets.objects.len()));
         targets.objects.push(DataObject {
             debug_info_offset: None,
             kind,
@@ -1696,10 +1739,9 @@ fn nim_name(name: &str, kind: VariableKind) -> Option<&str> {
         && base
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && !base
-            .as_bytes()
-            .windows(2)
-            .any(|pair| pair[0] == b'_' && (pair[1] == b'_' || pair[1].is_ascii_digit()));
+        && !base.as_bytes().windows(2).any(
+            |pair| matches!(pair, [b'_', second] if *second == b'_' || second.is_ascii_digit()),
+        );
     (plain && !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
         .then_some(base)
 }
@@ -1762,7 +1804,7 @@ fn rust_vtable<'data>(
     }
 
     let vtable_type = types.reference(unit_index, entry.attr_value(gimli::DW_AT_type))?;
-    let vtable_entry = types.units[vtable_type.unit]
+    let vtable_entry = unit_at(types.units, vtable_type.unit)
         .entry(gimli::UnitOffset(vtable_type.offset))
         .ok()?;
     let concrete = types.reference(
@@ -2275,7 +2317,7 @@ pub(super) fn fuzz_expression(data: &[u8]) {
         .unit(&location::EvaluationUnit::default())
         .and_then(|unit| {
             pool.expression(
-                &data[..data.len().min(MAX_EVALUATION_MEMORY_BYTES)],
+                data.get(..MAX_EVALUATION_MEMORY_BYTES).unwrap_or(data),
                 unit,
                 encoding,
                 &[],

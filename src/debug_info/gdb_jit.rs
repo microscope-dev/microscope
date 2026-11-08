@@ -215,9 +215,14 @@ pub fn outline(size: u64, mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>) -
     const HEADER: usize = 64;
     let mut outline = size.to_le_bytes().to_vec();
     let header = read(0, HEADER)?;
-    let half = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
+    let half = |at: usize| {
+        header
+            .get(at..at + 2)
+            .and_then(|half| <[u8; 2]>::try_from(half).ok())
+            .map(u16::from_le_bytes)
+    };
     let sections = word(&header, 0x28)?;
-    let length = usize::from(half(0x3a)) * usize::from(half(0x3c));
+    let length = usize::from(half(0x3a)?) * usize::from(half(0x3c)?);
     if sections.checked_add(length as u64)? > size {
         return None;
     }

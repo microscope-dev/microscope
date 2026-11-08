@@ -6,6 +6,7 @@
     not(test),
     deny(
         clippy::expect_used,
+        clippy::indexing_slicing,
         clippy::panic,
         clippy::todo,
         clippy::unimplemented,

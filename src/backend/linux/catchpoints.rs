@@ -342,7 +342,10 @@ impl<P: LinuxTraceOps> captures::Memory for StopMemory<'_, P> {
             buffer.len(),
         )
         .map_err(std::io::Error::other)?;
-        buffer[..read.bytes.len()].copy_from_slice(&read.bytes);
+        buffer
+            .get_mut(..read.bytes.len())
+            .ok_or_else(|| std::io::Error::other("a memory read returned more than it was asked"))?
+            .copy_from_slice(&read.bytes);
         Ok(read.bytes.len())
     }
 }

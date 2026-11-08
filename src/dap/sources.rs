@@ -299,6 +299,10 @@ impl Session {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the module is a JSON object built here, and indexing an object by key inserts"
+)]
 pub(super) fn module_json(record: &LoadedModuleRecord, image: Option<&ModuleImage>) -> Value {
     let mut module = json!({
         "id": record.module.id.get().to_string(),

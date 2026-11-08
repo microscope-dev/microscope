@@ -125,6 +125,10 @@ impl<T: Clone> Rows<T> {
 impl<T> std::ops::Index<usize> for Rows<T> {
     type Output = T;
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "like a `Vec`'s, this index is for rows its caller added; `Self::get` is for others"
+    )]
     fn index(&self, index: usize) -> &T {
         index
             .checked_sub(self.base.len())
@@ -133,6 +137,11 @@ impl<T> std::ops::Index<usize> for Rows<T> {
 }
 
 impl<T: Clone> std::ops::IndexMut<usize> for Rows<T> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "like a `Vec`'s, this index is for rows its caller added; `Self::get_mut` is for \
+                  others"
+    )]
     fn index_mut(&mut self, index: usize) -> &mut T {
         match index.checked_sub(self.base.len()) {
             None => &mut Arc::make_mut(&mut self.base)[index],

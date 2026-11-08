@@ -2902,18 +2902,27 @@ impl TextSummary {
         byte_order: ByteOrder,
         completion: TextCompletion,
     ) -> Self {
+        debug_assert!(
+            matches!(width, 2 | 4),
+            "text units are 2 or 4 bytes wide, not {width}",
+        );
         let units = raw.chunks_exact(width).map(|unit| {
             let mut word = [0_u8; 4];
-            match byte_order {
-                ByteOrder::Little => {
-                    word[..unit.len()].copy_from_slice(unit);
-                    u32::from_le_bytes(word)
-                }
-                ByteOrder::Big => {
-                    word[4 - unit.len()..].copy_from_slice(unit);
-                    u32::from_be_bytes(word)
-                }
-            }
+            let (bytes, from_bytes): (_, fn([u8; 4]) -> u32) = match byte_order {
+                ByteOrder::Little => (word.get_mut(..unit.len()), u32::from_le_bytes),
+                ByteOrder::Big => (
+                    4_usize
+                        .checked_sub(unit.len())
+                        .and_then(|start| word.get_mut(start..)),
+                    u32::from_be_bytes,
+                ),
+            };
+            let Some(bytes) = bytes else {
+                return 0xfffd;
+            };
+
+            bytes.copy_from_slice(unit);
+            from_bytes(word)
         });
         let characters: Box<dyn Iterator<Item = char>> = if width == 2 {
             Box::new(
@@ -5050,7 +5059,7 @@ impl Backtrace {
                 && enclosing == function.id
             {
                 open.pop();
-                for iterator in &mut iterators[start..index] {
+                for iterator in iterators.iter_mut().take(index).skip(start) {
                     *iterator = Some(frame.level);
                 }
             }

@@ -269,7 +269,7 @@ fn prune(runs: &Path, keep: usize) -> io::Result<()> {
         .collect::<Vec<_>>();
     recordings.sort();
     let excess = recordings.len().saturating_sub(keep);
-    for path in &recordings[..excess] {
+    for path in recordings.iter().take(excess) {
         // Another run may be pruning the same file.
         let _ = fs::remove_file(path);
     }

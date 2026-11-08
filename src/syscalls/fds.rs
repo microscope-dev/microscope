@@ -604,9 +604,9 @@ impl FdTable {
                 };
 
                 if let Some(capture) = event.capture(arg)
-                    && capture.bytes.len() >= 8
+                    && let Some(pair) = capture.bytes.first_chunk::<8>()
                 {
-                    for half in capture.bytes[..8].as_chunks::<4>().0 {
+                    for half in pair.as_chunks::<4>().0 {
                         let number = i64::from(i32::from_le_bytes(*half));
                         let (text, kind) = if name == "socketpair" {
                             (

@@ -91,6 +91,10 @@ opcodes! {
     MatchPreviousTranslation = "MATCH_PREVIOUS_TRANSLATION",
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "evaluated at compile time, where an index out of bounds fails the build"
+)]
 const _: () = {
     let mut at = 0;
     while at < generated::TRANSLATIONS.len() {

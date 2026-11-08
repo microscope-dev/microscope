@@ -178,8 +178,12 @@ fn texts(
         return whole(left_bytes, right_bytes);
     }
 
-    let shared = left_bytes.len().min(right_bytes.len());
-    if equality && left_bytes[..shared] != right_bytes[..shared] {
+    if equality
+        && left_bytes
+            .iter()
+            .zip(right_bytes)
+            .any(|(left, right)| left != right)
+    {
         return Ok(Ordering::Less);
     }
 

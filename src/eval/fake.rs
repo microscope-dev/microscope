@@ -11,6 +11,10 @@
     clippy::unreachable,
     reason = "a test double reports misuse by panicking"
 )]
+#![expect(
+    clippy::indexing_slicing,
+    reason = "a test double reports misuse by panicking"
+)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

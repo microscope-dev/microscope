@@ -234,8 +234,8 @@ impl Session {
             threads.push(json!({"id": self.thread_ids.id(context)?, "name": name}));
         }
 
-        if omitted > 0 {
-            let noun = format!("more {}", tasks[0].noun);
+        if let Some(task) = tasks.first().filter(|_| omitted > 0) {
+            let noun = format!("more {}", task.noun);
             threads.push(json!({
                 "id": self.thread_ids.placeholder()?,
                 "name": format!(
@@ -314,6 +314,10 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each frame's labels and hints, in order"
+    )]
     pub(super) async fn stack_trace(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<StackTraceArguments>(arguments, "stackTrace arguments")?;
         let stop = self.current_stop()?;
@@ -332,7 +336,7 @@ impl Session {
         let switches = trace
             .frames
             .windows(2)
-            .any(|pair| pair[0].segment != pair[1].segment);
+            .any(|pair| matches!(pair, [a, b] if a.segment != b.segment));
         let mut entries = Vec::with_capacity(trace.frames.len() + 2);
         let mut segment = None;
         let iterators = trace.loop_iterators();
@@ -396,24 +400,31 @@ impl Session {
             // focuses the first frame with any source, so there they have
             // none, as where an agent's or an interpreter's frames are
             // above the program's.
-            if context == stop.context && frame.id < stop.selected && body["source"].is_object() {
+            if context == stop.context
+                && frame.id < stop.selected
+                && let Some(object) = body.as_object_mut()
+                && let Some(source) = object.get_mut("source").and_then(Value::as_object_mut)
+            {
                 if FOCUSED_REGARDLESS.contains(&stop.told) {
-                    if let Some(body) = body.as_object_mut() {
-                        body.remove("source");
-                    }
+                    object.remove("source");
                 } else {
-                    body["source"]["presentationHint"] = "deemphasize".into();
+                    source.insert("presentationHint".into(), "deemphasize".into());
                 }
             }
 
             // An iterator recedes behind the loop whose body it runs.
-            if let Some(level) = iterates {
-                body["name"] = format!(
+            if let Some(level) = iterates
+                && let Some(object) = body.as_object_mut()
+            {
+                let name = format!(
                     "{} [iterator of #{level}'s loop]",
-                    body["name"].as_str().unwrap_or_default()
-                )
-                .into();
-                body["presentationHint"] = "subtle".into();
+                    object
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                );
+                object.insert("name".into(), name.into());
+                object.insert("presentationHint".into(), "subtle".into());
             }
 
             self.decorate(
@@ -433,6 +444,10 @@ impl Session {
         Ok(json!({"stackFrames": frames, "totalFrames": total}))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     async fn stack_frame(
         &mut self,
         stop: microscope::StopId,
@@ -584,6 +599,10 @@ impl Session {
         body["name"] = name.into();
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     pub(super) async fn scopes(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<ScopesArguments>(arguments, "scopes arguments")?;
         let context = self.frame_context(arguments.frame_id)?;
@@ -1041,6 +1060,10 @@ impl Session {
     /// Where a location reference leads: where a variable is declared, or
     /// where the function a pointer enters is declared, or else the line
     /// of its first instruction.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     pub(super) fn locations(&self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<LocationsArguments>(arguments, "locations arguments")?;
         let reference = arguments.location_reference;
@@ -1091,6 +1114,10 @@ impl Session {
         Ok(body)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     pub(super) fn exception_info(&self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<ExceptionInfoArguments>(arguments, "exceptionInfo arguments")?;
         let stop = self.current_stop()?;
@@ -1189,15 +1216,21 @@ impl Session {
 
         // A register's row shows its bytes, as the registers list does.
         if register
-            && let Some(value) = set["value"]
-                .as_str()
+            && let Some(object) = set.as_object_mut()
+            && let Some(value) = object
+                .get("value")
+                .and_then(Value::as_str)
                 .and_then(|value| value.parse::<u64>().ok())
         {
-            let bits = set["type"]
-                .as_str()
+            let bits = object
+                .get("type")
+                .and_then(Value::as_str)
                 .and_then(|kind| kind.strip_prefix('u')?.parse::<usize>().ok())
                 .unwrap_or(64);
-            set["value"] = format!("{value:#0width$x}", width = bits / 4 + 2).into();
+            object.insert(
+                "value".into(),
+                format!("{value:#0width$x}", width = bits / 4 + 2).into(),
+            );
         }
 
         Ok(set)

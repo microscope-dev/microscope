@@ -244,15 +244,22 @@ fn indirect(
         return None;
     }
 
+    debug_assert!(
+        instruction.len() <= bytes.len(),
+        "a {}-byte instruction was decoded from {} bytes",
+        instruction.len(),
+        bytes.len(),
+    );
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the instruction was decoded from the start of `bytes`"
+    )]
+    let encoded = &bytes[..instruction.len()];
+
     // In 64-bit mode Intel processors ignore an operand-size prefix on a near
     // branch, while AMD processors narrow its target to 16 bits.
-    let amd = iced_x86::Decoder::with_ip(
-        64,
-        &bytes[..instruction.len()],
-        instruction.ip(),
-        DecoderOptions::AMD,
-    )
-    .decode();
+    let amd =
+        iced_x86::Decoder::with_ip(64, encoded, instruction.ip(), DecoderOptions::AMD).decode();
     if amd.code() != instruction.code() {
         return Some(RawIndirect::Unsupported);
     }

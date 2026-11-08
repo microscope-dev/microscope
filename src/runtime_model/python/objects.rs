@@ -153,8 +153,10 @@ impl<'a> Reader<'a> {
         while (text.len() as u64) < MAX_C_STRING {
             let length = CHUNK - at.get() % CHUNK;
             let chunk = self.bytes(at, length)?;
-            if let Some(end) = chunk.iter().position(|byte| *byte == 0) {
-                text.extend_from_slice(&chunk[..end]);
+            if let Some((head, _)) = (chunk.iter().position(|byte| *byte == 0))
+                .and_then(|end| chunk.split_at_checked(end))
+            {
+                text.extend_from_slice(head);
                 return String::from_utf8(text)
                     .map(Arc::from)
                     .map_err(|_| malformed(address, "C string"));

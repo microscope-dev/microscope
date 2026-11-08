@@ -160,9 +160,10 @@ fn arguments_match(
 fn path_matches(pattern: &[&Segment], path: &[&str]) -> bool {
     match pattern.split_first() {
         None => path.is_empty(),
-        Some((Segment::AnyRun, rest)) => {
-            (0..=path.len()).any(|skipped| path_matches(rest, &path[skipped..]))
-        }
+        Some((Segment::AnyRun, rest)) => std::iter::successors(Some(path), |suffix| {
+            suffix.split_first().map(|(_, after)| after)
+        })
+        .any(|suffix| path_matches(rest, suffix)),
         Some((Segment::Name(name), rest)) => path
             .split_first()
             .is_some_and(|(first, remaining)| first == name && path_matches(rest, remaining)),

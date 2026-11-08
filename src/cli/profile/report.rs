@@ -148,6 +148,10 @@ fn total(before: u64, after: u64, unit: &str, out: &mut impl Write) -> Result<()
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a tree has one entry per node in each column, and its links name its own nodes"
+)]
 fn compared_tree(
     (keys, tree): (&Keys<'_>, &CallTree),
     (base_keys, base_tree): (&Keys<'_>, &CallTree),
@@ -227,7 +231,10 @@ fn resolve(keys: &Keys<'_>, name: &str, base: bool) -> Result<u32> {
             named.len()
         );
     }
-    Ok(named[0])
+    named
+        .first()
+        .copied()
+        .context("a name neither missing nor ambiguous names one key")
 }
 
 struct Butterfly {
@@ -237,6 +244,10 @@ struct Butterfly {
     callees: Costs,
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a tree has one entry per node in each column, and its links name its own nodes"
+)]
 fn butterfly(keys: &Keys<'_>, query: &Query, key: u32) -> Butterfly {
     let costs = keys.functions(query);
     let cost = costs.rows.iter().find(|cost| cost.key == key);
@@ -402,20 +413,21 @@ fn focused_tree(
     } else {
         writeln!(out, "{:>18} {:>18}  function", "total", "own")?;
     }
-    for node in 0..tree.len() {
-        if percent(tree.total[node], tree.weight) < options.min_percent {
+    let nodes = tree
+        .total
+        .iter()
+        .zip(&tree.own)
+        .zip(&tree.depth)
+        .zip(&tree.key);
+    for (((&total, &own), &depth), &key) in nodes {
+        if percent(total, tree.weight) < options.min_percent {
             continue;
         }
-        write!(out, "{:>18}", weight(tree.total[node].into(), unit, false))?;
+        write!(out, "{:>18}", weight(total.into(), unit, false))?;
         if !options.invert {
-            write!(out, " {:>18}", weight(tree.own[node].into(), unit, false))?;
+            write!(out, " {:>18}", weight(own.into(), unit, false))?;
         }
-        writeln!(
-            out,
-            "  {}{}",
-            "  ".repeat(tree.depth[node] as usize),
-            keys.name(tree.key[node])
-        )?;
+        writeln!(out, "  {}{}", "  ".repeat(depth as usize), keys.name(key))?;
     }
     Ok(())
 }
@@ -523,7 +535,7 @@ fn table(
         .enumerate()
         .map(|(column, heading)| {
             rows.iter()
-                .map(|(cells, _)| cells[column].len())
+                .map(|(cells, _)| cells.get(column).map_or(0, String::len))
                 .fold(heading.len(), usize::max)
         })
         .collect();
@@ -560,6 +572,10 @@ fn percent(value: u64, total: u64) -> f64 {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a tree has one entry per node in each column, and its links name its own nodes"
+)]
 fn tree_order(tree: &DiffTree) -> Vec<usize> {
     let mut children = vec![Vec::new(); tree.len() + 1];
     for (node, &parent) in tree.parent.iter().enumerate() {

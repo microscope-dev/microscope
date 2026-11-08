@@ -247,7 +247,11 @@ impl PythonLaunch {
         loop {
             match (&self.channel).read(&mut buffer) {
                 Ok(0) => break,
-                Ok(read) => unread.extend_from_slice(&buffer[..read]),
+                Ok(read) => unread.extend_from_slice(
+                    buffer
+                        .get(..read)
+                        .ok_or_else(|| problem("a read returned more than its buffer holds"))?,
+                ),
                 Err(error) if error.raw_os_error() == Some(Errno::EAGAIN as i32) => break,
                 Err(error) => return Err(problem(error)),
             }

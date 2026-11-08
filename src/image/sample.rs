@@ -2,6 +2,7 @@
 //! change to see what validation makes of it.
 #![allow(
     clippy::expect_used,
+    clippy::indexing_slicing,
     clippy::unwrap_used,
     reason = "tests and the fuzz harness build the sample"
 )]

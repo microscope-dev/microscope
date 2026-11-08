@@ -169,16 +169,16 @@ impl Collector {
         let heartbeat = monotonic().to_le_bytes();
 
         for index in 0..self.instances.len() {
-            if self.instances[index].defines {
+            if self.at(index).defines {
                 self.define(processor, index);
             }
-            if !self.instances[index].on && self.wants_on(index) {
+            if !self.at(index).on && self.wants_on(index) {
                 self.switch_on(index);
             }
             if self.gone {
                 return;
             }
-            let instance = &self.instances[index];
+            let instance = self.at(index);
             if !instance.on {
                 continue;
             }
@@ -286,7 +286,11 @@ impl Collector {
 
         self.instances.push(instance);
         let index = self.instances.len() - 1;
-        if self.instances[index].defines {
+        if self
+            .instances
+            .last()
+            .is_some_and(|instance| instance.defines)
+        {
             self.define(processor, index);
         }
         if self.wants_on(index) {
@@ -298,7 +302,7 @@ impl Collector {
     /// it selects is known, or, recording every site, once the module may
     /// define one, which is then on from its definition.
     fn wants_on(&self, index: usize) -> bool {
-        let instance = &self.instances[index];
+        let instance = self.at(index);
         !self.finishing
             && (!instance.states.is_empty()
                 || (instance.defines && self.selection == ProbeSelection::All))
@@ -308,10 +312,10 @@ impl Collector {
     /// read, and switches on those the recording selects; once its
     /// control block is on, at once.
     fn define(&mut self, processor: &mut Processor, index: usize) {
-        let control = self.instances[index].control;
+        let control = self.at(index).control;
         let mut block = [0; abi::CONTROL_SIZE];
         let table = match perf::read_memory(self.pid, control, &mut block) {
-            Ok(read) => probes::control(&block[..read]).map_or(0, |block| block.sites),
+            Ok(read) => probes::control(filled(&block, read)).map_or(0, |block| block.sites),
             Err(error) => {
                 self.gone |= gone(&error);
                 return;
@@ -323,7 +327,7 @@ impl Collector {
 
         let mut header = [0; abi::SITES_HEADER];
         let count = match perf::read_memory(self.pid, table, &mut header) {
-            Ok(read) => probes::runtime_sites(&header[..read]),
+            Ok(read) => probes::runtime_sites(filled(&header, read)),
             Err(error) => {
                 self.gone |= gone(&error);
                 return;
@@ -336,22 +340,22 @@ impl Collector {
             #[cfg_attr(not(debug_assertions), expect(unused_variables))]
             Err(problem) => {
                 // Read once: a table that breaks the ABI stays broken.
-                record!("probes: module {}: {problem}", self.instances[index].module);
+                record!("probes: module {}: {problem}", self.at(index).module);
                 processor
                     .builder()
                     .count(AccountKind::ProbeMalformed as u32, 1);
-                self.instances[index].defines = false;
+                instance_mut(&mut self.instances, index).defines = false;
                 return;
             }
         };
 
         let most = u32::try_from(abi::MOST_RUNTIME_SITES).unwrap_or(u32::MAX);
-        if count >= most && !self.instances[index].full {
-            self.instances[index].full = true;
+        if count >= most && !self.at(index).full {
+            instance_mut(&mut self.instances, index).full = true;
             let text = format!(
                 "{}: the program defined all {most} of its run-time sites, so the sites \
                  it defines after them record nothing",
-                self.instances[index].path
+                self.at(index).path
             );
             processor.probe_problem(&text);
         }
@@ -371,13 +375,13 @@ impl Collector {
 
         let mut switched = Vec::new();
 
-        while self.instances[index].defined < count {
-            let site = self.instances[index].defined;
-            self.instances[index].defined += 1;
+        while self.at(index).defined < count {
+            let site = self.at(index).defined;
+            instance_mut(&mut self.instances, index).defined += 1;
             let mut record = [0; abi::RUNTIME_SITE_SIZE];
             let address = probes::runtime_site_address(table, site);
             let read = match perf::read_memory(pid, address, &mut record) {
-                Ok(read) => probes::runtime_site(table, site, &record[..read], text),
+                Ok(read) => probes::runtime_site(table, site, filled(&record, read), text),
                 // A process that has gone broke nothing.
                 Err(error) if gone(&error) => {
                     self.gone = true;
@@ -396,7 +400,7 @@ impl Collector {
                 #[cfg_attr(not(debug_assertions), expect(unused_variables))]
                 Err(problem) => {
                     // Its records name a key no site has, and are counted.
-                    record!("probes: module {}: {problem}", self.instances[index].module);
+                    record!("probes: module {}: {problem}", self.at(index).module);
                     processor
                         .builder()
                         .count(AccountKind::ProbeMalformed as u32, 1);
@@ -404,7 +408,7 @@ impl Collector {
                 }
             };
 
-            let instance = &mut self.instances[index];
+            let instance = instance_mut(&mut self.instances, index);
             let row = processor.probe_site(instance.module, &site);
             instance.sites.insert(site.key, row);
             if self.selection.selects(&site.name) {
@@ -413,7 +417,7 @@ impl Collector {
             }
         }
 
-        if self.instances[index].on
+        if self.at(index).on
             && !self.finishing
             && !switched
                 .iter()
@@ -426,7 +430,7 @@ impl Collector {
     /// Switches a module's sites on: the rings its threads already have are
     /// read from where they are now.
     fn switch_on(&mut self, index: usize) {
-        let control = self.instances[index].control;
+        let control = self.at(index).control;
         let Some(registry) = self.registry(control) else {
             self.gone = true;
             return;
@@ -474,7 +478,7 @@ impl Collector {
             abi::ENABLED
         };
 
-        let instance = &mut self.instances[index];
+        let instance = instance_mut(&mut self.instances, index);
         instance.dropped = if armed { 0 } else { registry.0.dropped };
         instance.rings = rings;
         let on = writes
@@ -501,12 +505,15 @@ impl Collector {
         self.buffer
             .resize(abi::CONTROL_SIZE + abi::MOST_RINGS * 8, 0);
         let read =
-            perf::read_memory(self.pid, control, &mut self.buffer[..abi::CONTROL_SIZE]).ok()?;
-        let block = probes::control(&self.buffer[..read]).ok()?;
+            perf::read_memory(self.pid, control, self.buffer.get_mut(..abi::CONTROL_SIZE)?).ok()?;
+        let block = probes::control(self.buffer.get(..read)?).ok()?;
         let length = block.rings as usize * 8;
-        let slots = &mut self.buffer[abi::CONTROL_SIZE..abi::CONTROL_SIZE + length];
+        let slots = self
+            .buffer
+            .get_mut(abi::CONTROL_SIZE..abi::CONTROL_SIZE + length)?;
         let read = perf::read_memory(self.pid, control + abi::CONTROL_SIZE as u64, slots).ok()?;
-        let rings = slots[..read]
+        let rings = slots
+            .get(..read)?
             .as_chunks::<8>()
             .0
             .iter()
@@ -521,7 +528,7 @@ impl Collector {
     fn header(&self, address: u64) -> Result<Option<RingHeader>, Gone> {
         let mut bytes = [0; abi::RING_HEADER];
         match perf::read_memory(self.pid, address, &mut bytes) {
-            Ok(read) => Ok(probes::ring_header(&bytes[..read]).ok()),
+            Ok(read) => Ok(probes::ring_header(filled(&bytes, read)).ok()),
             Err(error) if gone(&error) => Err(Gone),
             Err(_) => Ok(None),
         }
@@ -529,12 +536,12 @@ impl Collector {
 
     /// Reads every ring of one instance: whether the process could be read.
     fn read_instance(&mut self, processor: &mut Processor, index: usize) -> bool {
-        let control = self.instances[index].control;
+        let control = self.at(index).control;
         let Some((block, rings)) = self.registry(control) else {
             return false;
         };
 
-        let instance = &mut self.instances[index];
+        let instance = instance_mut(&mut self.instances, index);
         if block.enable == 0 && !self.finishing {
             // Only the program clears it while microscope reads, once it
             // has gone too long without a read. The next drain switches
@@ -558,7 +565,7 @@ impl Collector {
             }
         }
 
-        let instance = &mut self.instances[index];
+        let instance = instance_mut(&mut self.instances, index);
         let dropped = block.dropped.saturating_sub(instance.dropped);
         instance.dropped = instance.dropped.max(block.dropped);
         processor
@@ -589,7 +596,10 @@ impl Collector {
             return;
         };
 
-        let ring = self.instances[index].rings.entry(address).or_default();
+        let ring = instance_mut(&mut self.instances, index)
+            .rings
+            .entry(address)
+            .or_default();
         let Some(header) = header else {
             if !std::mem::replace(&mut ring.broken, true) {
                 processor
@@ -632,11 +642,11 @@ impl Collector {
                 continue;
             }
 
-            match perf::read_memory(
-                pid,
-                base + slots.start as u64,
-                &mut records[copied..copied + length],
-            ) {
+            // A miss leaves the copy short, which is counted as malformed.
+            let Some(into) = records.get_mut(copied..copied + length) else {
+                continue;
+            };
+            match perf::read_memory(pid, base + slots.start as u64, into) {
                 Ok(read) if read == length => copied += length,
                 Err(error) if gone(&error) => {
                     self.buffer = records;
@@ -655,7 +665,10 @@ impl Collector {
         let skipped = first.min(span.end) - span.start;
         overwritten += skipped;
         let skip = probes::record_bytes(skipped);
-        let ring = self.instances[index].rings.entry(address).or_default();
+        let ring = instance_mut(&mut self.instances, index)
+            .rings
+            .entry(address)
+            .or_default();
         ring.tail = span.end;
         ring.before |= overwritten > 0;
 
@@ -668,14 +681,17 @@ impl Collector {
                 .builder()
                 .count(AccountKind::ProbeOverwritten as u32, overwritten);
             self.decoder.clear();
-            self.decoder.decode(&records[skip..]);
+            self.decoder.decode(records.get(skip..).unwrap_or_default());
             self.apply(processor, index, address, header);
         }
 
         self.buffer = records;
         if header.state == abi::RING_RETIRED {
             let _ = perf::write_memory(pid, address + 12, &abi::RING_FREE.to_le_bytes());
-            if let Some(ring) = self.instances[index].rings.get_mut(&address) {
+            if let Some(ring) = instance_mut(&mut self.instances, index)
+                .rings
+                .get_mut(&address)
+            {
                 if let Some((_, thread)) = ring.thread.take() {
                     processor.probe_thread_ended(thread);
                 }
@@ -691,7 +707,7 @@ impl Collector {
     /// counts a site before it records one, so a read of the definitions
     /// after the ring's finds every site the ring's records name.
     fn apply(&mut self, processor: &mut Processor, index: usize, address: u64, header: RingHeader) {
-        let instance = &self.instances[index];
+        let instance = self.at(index);
         if instance.defines
             && self
                 .decoder
@@ -708,7 +724,7 @@ impl Collector {
         builder.count(AccountKind::ProbeOverwritten as u32, decoder.orphaned);
         (decoder.malformed, decoder.orphaned) = (0, 0);
         let mut unknown = 0;
-        let instance = &mut self.instances[index];
+        let instance = instance_mut(&mut self.instances, index);
         let ring = instance.rings.entry(address).or_default();
 
         for decoded in &decoder.events {
@@ -756,6 +772,40 @@ impl Collector {
             decoder.events.len() as u64 - unknown,
         );
     }
+
+    /// Instance `index`.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "indexes come from 0..len() or the last push, and no caller removes instances"
+    )]
+    fn at(&self, index: usize) -> &Instance {
+        debug_assert!(
+            index < self.instances.len(),
+            "instance {index} of {}",
+            self.instances.len()
+        );
+        &self.instances[index]
+    }
+}
+
+/// Instance `index`, as [`Collector::at`] finds it.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indexes come from 0..len() or the last push, and no caller removes instances"
+)]
+fn instance_mut(instances: &mut [Instance], index: usize) -> &mut Instance {
+    debug_assert!(
+        index < instances.len(),
+        "instance {index} of {}",
+        instances.len()
+    );
+    &mut instances[index]
+}
+
+/// The `read` bytes a read of memory filled of `bytes`: none if it says
+/// more, which the parsers then refuse.
+fn filled(bytes: &[u8], read: usize) -> &[u8] {
+    bytes.get(..read).unwrap_or_default()
 }
 
 /// The process has gone: its memory can no longer be read.

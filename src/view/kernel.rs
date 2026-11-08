@@ -516,7 +516,17 @@ impl Run {
             )));
         }
 
-        self.memory.data_mut(&mut self.store)[start..start + size].copy_from_slice(&bytes);
+        let Some(destination) = self
+            .memory
+            .data_mut(&mut self.store)
+            .get_mut(start..start + size)
+        else {
+            return Err(RunError::Kernel(format!(
+                "it read into {length} bytes at {buffer:#x}, past its memory"
+            )));
+        };
+
+        destination.copy_from_slice(&bytes);
         if let Some((recording, _)) = &mut self.recording {
             recording.events.push(Event::Read { address, bytes });
         }

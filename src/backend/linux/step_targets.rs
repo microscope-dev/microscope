@@ -89,14 +89,14 @@ impl<P: InspectionOps> Controller<P> {
                 usize::try_from(length).map_err(|_| Error::AddressOverflow)?,
             )?;
             let mut offset = 0;
-            while offset < read.bytes.len() {
+            while let Some(rest) = read.bytes.get(offset..).filter(|rest| !rest.is_empty()) {
                 let address = start.get() + offset as u64;
                 let RawDecode::Instruction {
                     length,
                     flow,
                     references,
                     ..
-                } = decoder.decode(address, &read.bytes[offset..], None)
+                } = decoder.decode(address, rest, None)
                 else {
                     break;
                 };

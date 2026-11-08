@@ -111,14 +111,14 @@ impl ModuleIndex {
         let (owners, infos): (Vec<Mapped>, Vec<_>) = pieces
             .iter()
             .filter_map(|piece| {
-                let info = images[piece.image].info.as_ref()?;
+                let info = images.get(piece.image)?.info.as_ref()?;
                 Some((*piece, (Arc::clone(&info.image), Arc::clone(&info.unwind))))
             })
             .unzip();
         let spans = spans(owners.iter().map(|owner| {
-            let range = images[owner.image]
-                .info
-                .as_ref()
+            let range = images
+                .get(owner.image)
+                .and_then(|image| image.info.as_ref())
                 .map(|info| info.image.address_range());
             (owner.loaded, range)
         }));
@@ -134,7 +134,9 @@ impl ModuleIndex {
             })
             .collect();
         by_start.sort_unstable_by_key(|span| span.start);
-        let apart = by_start.windows(2).all(|pair| pair[0].last < pair[1].start);
+        let apart = by_start
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if a.last < b.start));
         debug_assert!(apart, "pieces overlap: {pieces:?}");
 
         Self {
@@ -154,7 +156,16 @@ impl ModuleIndex {
 }
 
 impl Modules for ModuleIndex {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "infos and owners are unzipped from one list, and callers pass an index module_at found"
+    )]
     fn module(&self, index: usize) -> UnwindModule<'_> {
+        debug_assert!(
+            index < self.owners.len(),
+            "module {index} of {}",
+            self.owners.len()
+        );
         let (image, unwind) = &self.infos[index];
         UnwindModule {
             loaded: self.owners[index].loaded,
@@ -165,7 +176,7 @@ impl Modules for ModuleIndex {
 
     fn module_at(&self, address: VirtualAddress) -> Option<(usize, ImageAddress)> {
         let owner = span_at(&self.spans, address.get(), &self.last_span)?.owner;
-        let image_address = self.owners[owner].loaded.load_bias.unload(address);
+        let image_address = self.owners.get(owner)?.loaded.load_bias.unload(address);
         debug_assert!(image_address.is_some(), "a span lies below its bias");
         Some((owner, image_address?))
     }
@@ -225,8 +236,7 @@ fn spans(
     let mut open = std::collections::BTreeSet::new();
     let mut closing = std::collections::BinaryHeap::new();
     let mut next = 0;
-    for pair in ends.windows(2) {
-        let (start, end) = (pair[0], pair[1]);
+    for (&start, &end) in ends.iter().zip(ends.iter().skip(1)) {
         while let Some(&(range_start, range_end, owner)) = ranges.get(next)
             && range_start <= start
         {

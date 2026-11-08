@@ -181,7 +181,7 @@ impl CaptureBuilder {
         let ended = self.ended_processes.get(&pid).into_iter().flatten();
         if let Some(&process) = ended
             .rev()
-            .find(|&&row| covers(&self.processes[row as usize], time))
+            .find(|&&row| covers(own(&self.processes, row), time))
         {
             return process;
         }
@@ -200,18 +200,18 @@ impl CaptureBuilder {
     /// Names a process, as when it execs.
     pub fn process_name(&mut self, process: u32, name: &str) {
         let name = self.string(name);
-        self.processes[process as usize].name = name.into();
+        own_mut(&mut self.processes, process).name = name.into();
     }
 
     /// Ends process `pid` and its threads at `time`.
     pub fn process_exit(&mut self, pid: Pid, time: i64) {
         if let Some(process) = self.live_processes.remove(&pid) {
-            self.processes[process as usize].end = time.into();
+            own_mut(&mut self.processes, process).end = time.into();
             self.ended_processes.entry(pid).or_default().push(process);
             let ended: Vec<Tid> = self
                 .live_threads
                 .iter()
-                .filter(|(_, thread)| self.threads[**thread as usize].process.get() == process)
+                .filter(|(_, thread)| own(&self.threads, **thread).process.get() == process)
                 .map(|(tid, _)| *tid)
                 .collect();
 
@@ -225,12 +225,8 @@ impl CaptureBuilder {
     /// seen.
     pub fn thread(&mut self, pid: Pid, tid: Tid, time: i64) -> u32 {
         if let Some(&thread) = self.live_threads.get(&tid) {
-            let thread_record = &mut self.threads[thread as usize];
-            if self.processes[thread_record.process.get() as usize]
-                .pid
-                .get()
-                == pid.get()
-            {
+            let thread_record = own_mut(&mut self.threads, thread);
+            if own(&self.processes, thread_record.process.get()).pid.get() == pid.get() {
                 if thread_record.end.get() < time {
                     thread_record.end = time.into();
                 }
@@ -243,17 +239,18 @@ impl CaptureBuilder {
 
         let ended = self.ended_threads.get(&tid).into_iter().flatten();
         if let Some(&thread) = ended.rev().find(|&&row| {
-            let thread = &self.threads[row as usize];
+            let thread = own(&self.threads, row);
             thread.start.get() <= time
                 && time <= thread.end.get()
-                && self.processes[thread.process.get() as usize].pid.get() == pid.get()
+                && own(&self.processes, thread.process.get()).pid.get() == pid.get()
         }) {
             return thread;
         }
 
         let process = self.process(pid, time);
-        if self.processes[process as usize].end.get() < time {
-            self.processes[process as usize].end = time.into();
+        let record = own_mut(&mut self.processes, process);
+        if record.end.get() < time {
+            record.end = time.into();
         }
 
         let thread = index(self.threads.len());
@@ -274,7 +271,7 @@ impl CaptureBuilder {
     /// Names a thread.
     pub fn thread_name(&mut self, thread: u32, name: &str) {
         let name = self.string(name);
-        self.threads[thread as usize].name = name.into();
+        own_mut(&mut self.threads, thread).name = name.into();
     }
 
     /// Gives a thread without a name the name of the live thread `from`,
@@ -283,9 +280,10 @@ impl CaptureBuilder {
         let Some(&maker) = self.live_threads.get(&from) else {
             return;
         };
-        let name = self.threads[maker as usize].name;
-        if self.threads[thread as usize].name.get() == NONE {
-            self.threads[thread as usize].name = name;
+        let name = own(&self.threads, maker).name;
+        let thread = own_mut(&mut self.threads, thread);
+        if thread.name.get() == NONE {
+            thread.name = name;
         }
     }
 
@@ -293,7 +291,7 @@ impl CaptureBuilder {
     pub fn thread_exit(&mut self, tid: Tid, time: i64) {
         if let Some(thread) = self.live_threads.remove(&tid) {
             self.ended_threads.entry(tid).or_default().push(thread);
-            let thread = &mut self.threads[thread as usize];
+            let thread = own_mut(&mut self.threads, thread);
             if thread.end.get() < time {
                 thread.end = time.into();
             }
@@ -448,7 +446,7 @@ impl CaptureBuilder {
             "a sample of thread {thread} at {time} has task {task}, not among the {} tasks",
             self.tasks.len()
         );
-        self.samples[thread as usize].push(Sample {
+        own_mut(&mut self.samples, thread).push(Sample {
             time: time.into(),
             weight: weight.into(),
             stack: stack.into(),
@@ -462,7 +460,7 @@ impl CaptureBuilder {
     pub fn claim(&mut self, thread: u32, time: i64, task: u32) -> u64 {
         let mut claimed = 0;
 
-        for sample in self.samples[thread as usize].iter_mut().rev() {
+        for sample in own_mut(&mut self.samples, thread).iter_mut().rev() {
             let at = sample.time.get();
             if at < time {
                 break;
@@ -480,7 +478,7 @@ impl CaptureBuilder {
     /// Records that a thread spent `duration` nanoseconds off its CPU from
     /// `time`, preempted or blocked.
     pub fn off_cpu(&mut self, thread: u32, time: i64, duration: u64, preempted: bool) {
-        self.off_cpu[thread as usize].push(OffCpu {
+        own_mut(&mut self.off_cpu, thread).push(OffCpu {
             time: time.into(),
             duration: duration.into(),
             preempted: preempted.into(),
@@ -617,7 +615,7 @@ impl CaptureBuilder {
     pub fn task(&mut self, runtime: &str, number: u64, time: i64) -> u32 {
         let runtime = self.string(runtime);
         if let Some(&task) = self.task_index.get(&(runtime, number)) {
-            let record = &mut self.tasks[task as usize];
+            let record = own_mut(&mut self.tasks, task);
             if record.last_seen.get() < time {
                 record.last_seen = time.into();
             }
@@ -641,7 +639,7 @@ impl CaptureBuilder {
     /// Sets a task's root frame and labels, each unless `NONE`.
     pub fn describe_task(&mut self, task: u32, root: u32, labels: Option<&str>) {
         let labels = self.optional(labels);
-        let record = &mut self.tasks[task as usize];
+        let record = own_mut(&mut self.tasks, task);
         if root != NONE {
             record.root = root.into();
         }
@@ -767,6 +765,11 @@ impl CaptureBuilder {
 
     /// Keeps the calls and notes of the times `keep` keeps, and only their
     /// bytes, each note still among the calls it came between.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a note counts at most the calls, which `kept_before` has one more entry \
+                  than, and the builder's own calls and notes keep bytes in its blobs"
+    )]
     fn forget_syscalls(&mut self, keep: impl Fn(i64) -> bool) {
         let mut kept_before = Vec::with_capacity(self.syscalls.len() + 1);
         kept_before.push(0);
@@ -945,13 +948,13 @@ impl CaptureBuilder {
                 index(self.processes.len() - 1)
             };
 
-            let existing = &mut self.processes[index as usize];
+            let existing = own_mut(&mut self.processes, index);
             existing.end = existing.end.get().max(process.end.get()).into();
             map.processes.push(index);
         }
 
         for thread in &capture.threads {
-            let process = map.processes[thread.process.get() as usize];
+            let process = Remap::get(&map.processes, thread.process.get());
             let found = self.threads.iter().position(|existing| {
                 existing.process.get() == process
                     && existing.tid == thread.tid
@@ -974,7 +977,7 @@ impl CaptureBuilder {
                 index(self.threads.len() - 1)
             };
 
-            let existing = &mut self.threads[index as usize];
+            let existing = own_mut(&mut self.threads, index);
             existing.end = existing.end.get().max(thread.end.get()).into();
             if existing.name.get() == NONE {
                 existing.name = name.into();
@@ -985,7 +988,7 @@ impl CaptureBuilder {
 
         for mapping in &capture.mappings {
             self.mappings.push(Mapping {
-                process: map.processes[mapping.process.get() as usize].into(),
+                process: Remap::get(&map.processes, mapping.process.get()).into(),
                 module: map.module(mapping.module.get()).into(),
                 ..*mapping
             });
@@ -1008,7 +1011,7 @@ impl CaptureBuilder {
                 .push(self.frame(kind, module, address, frame.role));
         }
 
-        for (frame, &new) in map.frames.iter().enumerate() {
+        for ((frame, &new), record) in map.frames.iter().enumerate().zip(&capture.frames) {
             let symbolized = capture
                 .frame_symbols
                 .get(frame)
@@ -1017,12 +1020,12 @@ impl CaptureBuilder {
                 continue;
             }
 
-            let module = map.module(capture.frames[frame].module.get());
+            let module = map.module(record.module.get());
             let start = index(self.lines.len());
             let lines = capture.frame_lines(index(frame));
 
             for line in lines {
-                let function = &capture.functions[line.function.get() as usize];
+                let function = capture.function(line.function.get());
                 let name = self.copy_string(capture, function.name.get());
                 let declared = self.copy_string(capture, function.file.get());
                 let function =
@@ -1040,7 +1043,7 @@ impl CaptureBuilder {
 
         for stack in &capture.stacks {
             let parent = Remap::get(&map.stacks, stack.parent.get());
-            let frame = map.frames[stack.frame.get() as usize];
+            let frame = Remap::get(&map.frames, stack.frame.get());
             let stack = self.child(parent, frame);
             map.stacks.push(stack);
         }
@@ -1061,7 +1064,7 @@ impl CaptureBuilder {
             // Snapshots find a task's labels with no root frame.
             let root = match task.root.get() {
                 NONE => NONE,
-                root => map.frames[root as usize],
+                root => Remap::get(&map.frames, root),
             };
 
             let labels = (task.labels.get() != NONE).then(|| capture.string(task.labels.get()));
@@ -1078,13 +1081,14 @@ impl CaptureBuilder {
         };
 
         for range in &capture.sample_ranges {
-            let thread = map.threads[range.thread.get() as usize] as usize;
-            self.samples[thread].extend(capture.thread_samples(range).iter().map(sample));
+            let thread = Remap::get(&map.threads, range.thread.get());
+            own_mut(&mut self.samples, thread)
+                .extend(capture.thread_samples(range).iter().map(sample));
         }
 
         for range in &capture.off_cpu_ranges {
-            let thread = map.threads[range.thread.get() as usize] as usize;
-            self.off_cpu[thread].extend_from_slice(capture.thread_off_cpu(range));
+            let thread = Remap::get(&map.threads, range.thread.get());
+            own_mut(&mut self.off_cpu, thread).extend_from_slice(capture.thread_off_cpu(range));
         }
 
         for account in &capture.accounting {
@@ -1095,16 +1099,11 @@ impl CaptureBuilder {
         // they were recorded come again in that order: of two of one span,
         // the one that holds the other comes later.
         for range in capture.zone_ranges.iter().rev() {
-            let thread = map.threads[range.thread.get() as usize];
-            let start = range.start.get() as usize;
-
-            for zone in capture.zones[start..start + range.count.get() as usize]
-                .iter()
-                .rev()
-            {
+            let thread = Remap::get(&map.threads, range.thread.get());
+            for zone in capture.range_zones(range).iter().rev() {
                 let value = self.copy_string(capture, zone.value.get());
                 let zone = Zone {
-                    site: map.sites[zone.site.get() as usize].into(),
+                    site: Remap::get(&map.sites, zone.site.get()).into(),
                     value: value.into(),
                     ..*zone
                 };
@@ -1133,7 +1132,7 @@ impl CaptureBuilder {
 
         for wait in &capture.task_waits {
             let state = capture.string(wait.state.get());
-            let task = map.tasks[wait.task.get() as usize];
+            let task = Remap::get(&map.tasks, wait.task.get());
             let stack = Remap::get(&map.stacks, wait.stack.get());
             self.task_wait(task, wait.time.get(), wait.weight.get(), stack, state);
         }
@@ -1144,13 +1143,7 @@ impl CaptureBuilder {
 
     fn absorb_syscalls(&mut self, capture: &Capture, map: &Remap) {
         let calls = index(self.syscalls.len());
-        let bytes = |start: u32, len: u32| {
-            if start == NONE {
-                &[][..]
-            } else {
-                &capture.syscall_blobs[start as usize..(start + len) as usize]
-            }
-        };
+        let bytes = |start: u32, len: u32| capture.blob(start, len);
 
         for call in &capture.syscalls {
             let row = Syscall {
@@ -1177,8 +1170,7 @@ impl CaptureBuilder {
         }
 
         for stat in &capture.syscall_stats {
-            let start = stat.errnos.get() as usize;
-            let errnos = &capture.syscall_errnos[start..start + stat.errno_count.get() as usize];
+            let errnos = capture.stat_errnos(stat);
             let row = SyscallStat {
                 process: Remap::get(&map.processes, stat.process.get()).into(),
                 ..*stat
@@ -1343,11 +1335,11 @@ fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
         let depth = open.len();
         open.push(zone.end.get());
 
-        if depth == depths.len() {
-            depths.push(Vec::new());
+        // A zone is at most one deeper than any before it.
+        match depths.get_mut(depth) {
+            Some(depth) => depth.push(zone),
+            None => depths.push(vec![zone]),
         }
-
-        depths[depth].push(zone);
     }
 
     depths
@@ -1366,6 +1358,26 @@ fn index(position: usize) -> u32 {
     index.unwrap_or(u32::MAX)
 }
 
+/// A row by an id the builder handed out.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the builder hands out ids only of rows it pushed, and never removes \
+              a process, thread, or task, or a thread's sample and interval lists"
+)]
+const fn own<T>(rows: &[T], id: u32) -> &T {
+    &rows[id as usize]
+}
+
+/// A row by an id the builder handed out, to change.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the builder hands out ids only of rows it pushed, and never removes \
+              a process, thread, or task, or a thread's sample and interval lists"
+)]
+const fn own_mut<T>(rows: &mut [T], id: u32) -> &mut T {
+    &mut rows[id as usize]
+}
+
 /// Where each of another capture's rows landed in this one.
 #[derive(Debug, Default)]
 pub struct Remap {
@@ -1380,6 +1392,11 @@ pub struct Remap {
 
 impl Remap {
     /// The new index of `id` in `table`, keeping [`NONE`].
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each table has an entry per row of the capture it remaps, and `validate` \
+                  checks every id but `NONE` that the absorb passes"
+    )]
     const fn get(table: &[u32], id: u32) -> u32 {
         if id == NONE { NONE } else { table[id as usize] }
     }

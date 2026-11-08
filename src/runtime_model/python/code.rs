@@ -135,10 +135,10 @@ impl CodeTable {
         }
 
         if let Some(&id) = self.index.get(&address)
-            && self.rows[id.index()].proof == proof
+            && self.row(id).proof == proof
         {
             debug_assert_eq!(
-                self.rows[id.index()].address,
+                self.row(id).address,
                 address,
                 "the index finds row {id} at {address:#x}, which is not its"
             );
@@ -239,6 +239,11 @@ impl CodeTable {
         Ok(id)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a row id is one `code` returned: the table is cleared only inside `code`, \
+                  before it pushes the row, and callers use an id before calling it again"
+    )]
     pub(super) fn row(&self, id: CodeId) -> &CodeRecord {
         &self.rows[id.index()]
     }
@@ -254,6 +259,11 @@ impl CodeTable {
 
     /// The locals of the code object in row `id`, in the order its frames
     /// keep them.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a row's span of locals was taken as it was pushed, and `locals` only grows \
+                  until it is cleared with the rows"
+    )]
     pub(super) fn locals(&self, id: CodeId) -> &[Local] {
         &self.locals[self.row(id).locals.range()]
     }
@@ -275,11 +285,22 @@ impl CodeTable {
         }
 
         let name = self.intern(reader.string(qualname)?)?;
-        self.rows[id.index()].function = Some((function, qualname, name));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "a row id is one `code` returned: the table is cleared only inside `code`, \
+                  before it pushes the row, and callers use an id before calling it again"
+        )]
+        let row = &mut self.rows[id.index()];
+        row.function = Some((function, qualname, name));
         self.check_row(id.index());
         Ok(Arc::clone(self.name(name)))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a name id is one `intern` pushed, held by a row, and `names` is cleared only \
+                  with the rows"
+    )]
     pub(super) fn name(&self, id: NameId) -> &Arc<str> {
         &self.names[id.index()]
     }
@@ -292,11 +313,13 @@ impl CodeTable {
         offset: u64,
     ) -> Result<Option<i64>, linetable::Malformed> {
         let row = self.row(id);
-        linetable::line_at(
-            &self.lines[row.lines.range()],
-            i64::from(row.first_line),
-            offset,
-        )
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "a row's span of lines was taken as it was pushed, and `lines` only grows \
+                      until it is cleared with the rows"
+        )]
+        let lines = &self.lines[row.lines.range()];
+        linetable::line_at(lines, i64::from(row.first_line), offset)
     }
 
     /// Panics unless every span lies within its pool, every name id names

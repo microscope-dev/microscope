@@ -24,6 +24,10 @@ const MAX_INSTRUCTIONS: i64 = 16 * 1024;
 const PAGE_SIZE: u64 = 4096;
 
 impl Session {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     pub(super) async fn read_memory(&self, arguments: Value) -> Result<Value, ErrorBody> {
         let arguments = parse::<ReadMemoryArguments>(arguments, "readMemory arguments")?;
         self.current_stop()?;
@@ -483,13 +487,17 @@ fn unbase64(text: &str) -> Option<Vec<u8>> {
                 Some(word | u32::from(value(*digit)?) << (18 - 6 * index))
             })?;
         let decoded = word.to_be_bytes();
-        bytes.extend_from_slice(&decoded[1..chunk.len()]);
+        bytes.extend_from_slice(decoded.get(1..chunk.len())?);
     }
 
     Some(bytes)
 }
 
 /// Encodes bytes as standard base64 with padding.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each index is masked to six bits, which index the 64-letter alphabet"
+)]
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);

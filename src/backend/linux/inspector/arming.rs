@@ -94,7 +94,9 @@ impl Inspector {
                 let script = inspector_protocol::script_path(url);
                 let parts = script.split('/').collect::<Vec<_>>();
                 let start = depth.map_or(0, |depth| parts.len().saturating_sub(depth));
-                parts[start..].join("/")
+                #[expect(clippy::indexing_slicing, reason = "start <= parts.len()")]
+                let named = &parts[start..];
+                named.join("/")
             })
             .collect::<std::collections::BTreeSet<_>>();
         crate::suggest::did_you_mean(path, loaded.iter().map(String::as_str)).map_or_else(
@@ -307,15 +309,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return Ok(());
             }
             for (number, site) in &mut isolate.sites {
-                let Some(index) = site.placements.iter().position(|placement| {
+                let Some((index, placement)) = site.placements.iter_mut().enumerate().find(|(_, placement)| {
                     matches!(placement.state, SiteState::Requested(request) | SiteState::Withdrawn(request) if request == id)
                 }) else {
                     continue;
                 };
-                let placement = &mut site.placements[index];
                 if matches!(placement.state, SiteState::Withdrawn(_)) {
                     if let (Some(connection), Ok(set)) = (connection, &result)
-                        && let Some(breakpoint) = set["breakpointId"].as_str()
+                        && let Some(breakpoint) =
+                            set.get("breakpointId").and_then(serde_json::Value::as_str)
                     {
                         remove(connection, session, breakpoint);
                     }
@@ -586,15 +588,22 @@ fn answer(
 ) {
     match result {
         Ok(set) => {
-            placement.id = set["breakpointId"].as_str().map(Arc::from);
-            let actual = &set["actualLocation"];
-            placement.actual = actual["lineNumber"]
-                .as_u64()
-                .zip(actual["columnNumber"].as_u64());
+            placement.id = set
+                .get("breakpointId")
+                .and_then(serde_json::Value::as_str)
+                .map(Arc::from);
+            placement.actual = set
+                .pointer("/actualLocation/lineNumber")
+                .and_then(serde_json::Value::as_u64)
+                .zip(
+                    set.pointer("/actualLocation/columnNumber")
+                        .and_then(serde_json::Value::as_u64),
+                );
             // `setBreakpoint` answers its one location, and
             // `setBreakpointByUrl` all it found.
-            let placed = set["locations"]
-                .as_array()
+            let placed = set
+                .get("locations")
+                .and_then(serde_json::Value::as_array)
                 .is_some_and(|locations| !locations.is_empty())
                 || set.get("actualLocation").is_some();
             placement.state = if placed {
@@ -625,7 +634,9 @@ pub(super) fn awaits_mapped<'a>(
     mut placements: impl Iterator<Item = &'a Placement>,
     pause: &serde_json::Value,
 ) -> bool {
-    let script = pause["callFrames"][0]["location"]["scriptId"].as_str();
+    let script = pause
+        .pointer("/callFrames/0/location/scriptId")
+        .and_then(serde_json::Value::as_str);
     placements.any(|placement| {
         matches!(placement.state, SiteState::Requested(_))
             && placement

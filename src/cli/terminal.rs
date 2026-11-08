@@ -237,15 +237,19 @@ impl Palette {
             ThemeName::Light => Self::LIGHT,
         };
 
-        for (index, role) in Role::ALL.iter().enumerate() {
+        for (style, role) in palette.0.iter_mut().zip(Role::ALL.iter()) {
             if let Some(spec) = overrides.get(*role) {
-                palette.0[index] = spec.style;
+                *style = spec.style;
             }
         }
 
         palette
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the palette holds one style per role, in Role's order"
+    )]
     const fn style(&self, role: Role) -> Style {
         self.0[role as usize]
     }

@@ -516,12 +516,17 @@ fn names_type<'t>(
     };
 
     let length = path().count();
-    if length > identity.path.len()
-        || !identity.path[identity.path.len() - length..]
-            .iter()
-            .zip(path())
-            .all(|(have, want)| have.as_ref() == *want)
-    {
+    let tail_matches = identity
+        .path
+        .len()
+        .checked_sub(length)
+        .and_then(|start| identity.path.get(start..))
+        .is_some_and(|tail| {
+            tail.iter()
+                .zip(path())
+                .all(|(have, want)| have.as_ref() == *want)
+        });
+    if !tail_matches {
         return false;
     }
 
@@ -848,6 +853,10 @@ pub fn canonical_keys<'a>(
 /// A type's identity as one string: its identity when it has one, and
 /// otherwise its shape over its targets' keys. A type in an anonymous
 /// namespace is its unit's own, so its key is its own too.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "memo and visiting are resized to hold index before either is indexed"
+)]
 fn canonical_key<'a>(
     index: usize,
     info: &impl Fn(usize) -> Option<&'a TypeInfo>,

@@ -491,7 +491,7 @@ impl Error {
 /// Names the mapped locations tried for a missing source file, which follow
 /// the recorded path itself.
 fn missing_source_detail(path: &std::path::Path, tried: &[PathBuf]) -> String {
-    let mapped = &tried[..tried.len().saturating_sub(1)];
+    let mapped = tried.split_last().map_or(&[][..], |(_, mapped)| mapped);
     let mut detail = if mapped.is_empty() {
         String::new()
     } else {

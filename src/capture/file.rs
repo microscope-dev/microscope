@@ -121,7 +121,7 @@ pub struct Read {
 /// Reads a capture file, merging its chunks.
 pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     let _span = crate::span!("capture read");
-    if bytes.len() < HEADER || bytes[..8] != FILE_MAGIC {
+    if bytes.len() < HEADER || bytes.first_chunk::<8>() != Some(&FILE_MAGIC) {
         return Err(FileError::NotACapture);
     }
 
@@ -183,23 +183,26 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
 /// The chunks the index lists, if the file ends with a whole one.
 fn index(bytes: &[u8]) -> Option<Vec<(u64, u64)>> {
     let end = bytes.len().checked_sub(16)?;
-    if bytes[end + 8..] != END_MAGIC {
+    let (length, magic) = bytes.get(end..)?.split_first_chunk::<8>()?;
+    if magic != END_MAGIC {
         return None;
     }
 
-    let length = usize::try_from(u64::from_le_bytes(bytes[end..end + 8].try_into().ok()?)).ok()?;
+    let length = usize::try_from(u64::from_le_bytes(*length)).ok()?;
     let start = end.checked_sub(length)?;
     let index = bytes.get(start..end)?;
-    if index.len() < 12 || index[..8] != INDEX_MAGIC {
+    let (magic, rest) = index.split_first_chunk::<8>()?;
+    let (count, entries) = rest.split_first_chunk::<4>()?;
+    if *magic != INDEX_MAGIC {
         return None;
     }
 
-    let count = u32::from_le_bytes(index[8..12].try_into().ok()?) as usize;
+    let count = u32::from_le_bytes(*count) as usize;
     if index.len() != 12 + 16 * count {
         return None;
     }
 
-    let spans: Vec<(u64, u64)> = index[12..]
+    let spans: Vec<(u64, u64)> = entries
         .as_chunks::<16>()
         .0
         .iter()

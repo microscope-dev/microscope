@@ -110,9 +110,8 @@ pub(super) fn parse_discriminant_list(
 
     let mut cursor = 0_usize;
     let mut selectors = Vec::new();
-    while cursor < bytes.len() {
+    while let Some(&descriptor) = bytes.get(cursor) {
         budget.consume()?;
-        let descriptor = bytes[cursor];
         cursor += 1;
         let low = read_discriminant_leb128(bytes, &mut cursor, representation)?;
         let selector = match descriptor {
@@ -216,8 +215,8 @@ pub(super) fn validate_variant_selections(
         compare_integer_values(left.0, right.0).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    for pair in ranges.windows(2) {
-        if !compare_integer_values(pair[0].1, pair[1].0)?.is_lt() {
+    for (left, right) in ranges.iter().zip(ranges.iter().skip(1)) {
+        if !compare_integer_values(left.1, right.0)?.is_lt() {
             return Err("variant discriminator selectors overlap".into());
         }
     }

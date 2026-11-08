@@ -198,7 +198,7 @@ impl<'g> Ctx<'g> {
             );
             debug_assert!(
                 ranges.windows(2).all(|pair| {
-                    pair[0].offset + pair[0].length * pair[0].repeats <= pair[1].offset
+                    matches!(pair, [a, b] if a.offset + a.length * a.repeats <= b.offset)
                 }),
                 "two repeats of the {} frames overlap",
                 frames.len(),
@@ -312,11 +312,11 @@ fn remove_key(keys: &mut Vec<Listed<'_>>, name: &str) {
 
 /// `/^([A-Z][a-z_ A-Z0-9[\]()-]+)(?::|\n {4}at)/`'s group.
 fn leading_name(stack: &str) -> Option<&str> {
-    let bytes = stack.as_bytes();
-    if !bytes.first()?.is_ascii_uppercase() {
+    let (first, rest) = stack.as_bytes().split_first()?;
+    if !first.is_ascii_uppercase() {
         return None;
     }
-    let run = bytes[1..]
+    let run = rest
         .iter()
         .take_while(|b| b.is_ascii_alphanumeric() || b"_ []()-".contains(*b))
         .count();
@@ -344,17 +344,17 @@ fn whole_error_name(stack: &str) -> Option<&str> {
     reason = "the run in `b` starts at `position`, the run in `a` at `i`"
 )]
 fn identical_sequence_range(a: &[String], b: &[&str]) -> (usize, usize) {
-    for i in 0..a.len().saturating_sub(3) {
-        let Some(position) = b.iter().position(|line| *line == a[i]) else {
+    for (i, first) in a.iter().enumerate().take(a.len().saturating_sub(3)) {
+        let Some(position) = b.iter().position(|line| line == first) else {
             continue;
         };
         let rest = b.len() - position;
         if rest > 3 {
-            let mut length = 1;
-            let max_length = (a.len() - i).min(rest);
-            while max_length > length && a[i + length] == b[position + length] {
-                length += 1;
-            }
+            let length = 1
+                + (a.iter().skip(i + 1))
+                    .zip(b.iter().skip(position + 1))
+                    .take_while(|(a, b)| *a == **b)
+                    .count();
             if length > 3 {
                 debug_assert!(
                     i + length <= a.len(),
@@ -390,7 +390,10 @@ fn duplicate_frame_ranges(frames: &[String]) -> Vec<Repeat> {
 
     let mut i = 0;
     while i < frames.len().saturating_sub(MINIMUM) {
-        let Some(at) = positions.get(frames[i].as_str()) else {
+        let Some(at) = frames
+            .get(i)
+            .and_then(|frame| positions.get(frame.as_str()))
+        else {
             i += 1;
             continue;
         };
@@ -414,7 +417,7 @@ fn duplicate_frame_ranges(frames: &[String]) -> Vec<Repeat> {
             // found along the way as fallbacks.
             let mut steps: Vec<usize> = Vec::new();
             let mut gcd = 0;
-            for p in &at[current..] {
+            for p in at.iter().skip(current) {
                 let mut distance = p - i;
                 while distance != 0 {
                     let remainder = gcd % distance;
@@ -441,7 +444,11 @@ fn duplicate_frame_ranges(frames: &[String]) -> Vec<Repeat> {
         let mut next_start = i + range;
         loop {
             let equal = (0..range)
-                .take_while(|j| frames.get(next_start + j) == Some(&frames[i + j]))
+                .take_while(|j| {
+                    frames
+                        .get(i + j)
+                        .is_some_and(|frame| frames.get(next_start + j) == Some(frame))
+                })
                 .count();
             if equal != range {
                 let Some(step) = extra_steps.as_mut().and_then(Vec::pop) else {

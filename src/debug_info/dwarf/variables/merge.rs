@@ -41,10 +41,18 @@ pub(super) struct Pooled {
 }
 
 impl Pooled {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a unit's expressions are in its own pool, which `absorb` maps entry by entry"
+    )]
     pub(super) fn expression(&self, id: ExpressionId) -> ExpressionId {
         self.expressions[id.0 as usize]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a unit's lists are in its own pool, which `absorb` maps entry by entry"
+    )]
     pub(super) fn list(&self, id: LocationListId) -> LocationListId {
         self.lists[id.0 as usize]
     }
@@ -71,6 +79,10 @@ struct Renumbered<'r> {
 }
 
 impl Renumbered<'_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`absorb` numbers each of a unit's own types in `ids` before it renumbers any"
+    )]
     fn id(&self, id: TypeId) -> TypeId {
         id.index()
             .checked_sub(self.base)
@@ -228,6 +240,16 @@ struct Cut {
     foreign: bool,
 }
 
+/// The unit a search of the cuts found; none past the last cut.
+fn owner(units: &mut [UnitTypes], index: usize) -> Option<&mut UnitTypes> {
+    let unit = units.get_mut(index);
+    debug_assert!(
+        unit.is_some(),
+        "a cut search found unit {index}, past the last"
+    );
+    unit
+}
+
 impl TypeArenaBuilder<'_, '_> {
     /// What this arena, split from another, built past their base for each
     /// unit whose walk ended at `cuts`, in order. `None` if a DIE taken for
@@ -250,29 +272,27 @@ impl TypeArenaBuilder<'_, '_> {
             made.filter(|id| (start..end).contains(&id.index()))
         };
 
+        let starts = std::iter::once(base).chain(cuts.iter().map(|cut| cut.end));
         let mut units = cuts
             .iter()
-            .enumerate()
-            .map(|(index, cut)| {
-                let start = index.checked_sub(1).map_or(base, |before| cuts[before].end);
-                UnitTypes {
-                    start: start - base,
-                    entries: Vec::new(),
-                    by_die: DieMap::default(),
-                    explicit_names: Bits::default(),
-                    identity_parts: Vec::new(),
-                    go_identity_parts: HashMap::default(),
-                    go_dict_indices: HashMap::default(),
-                    passed_by_value: HashMap::default(),
-                    pending_arguments: Vec::new(),
-                    record_member_declarations: Vec::new(),
-                    dynamic_record_layouts: HashMap::default(),
-                    void_type: made(self.void_type, start, cut.end),
-                    character_type: made(self.character_type, start, cut.end),
-                    limit_type: made(self.limit_type, start, cut.end),
-                    budget: cut.budget.clone(),
-                    foreign: cut.foreign,
-                }
+            .zip(starts)
+            .map(|(cut, start)| UnitTypes {
+                start: start - base,
+                entries: Vec::new(),
+                by_die: DieMap::default(),
+                explicit_names: Bits::default(),
+                identity_parts: Vec::new(),
+                go_identity_parts: HashMap::default(),
+                go_dict_indices: HashMap::default(),
+                passed_by_value: HashMap::default(),
+                pending_arguments: Vec::new(),
+                record_member_declarations: Vec::new(),
+                dynamic_record_layouts: HashMap::default(),
+                void_type: made(self.void_type, start, cut.end),
+                character_type: made(self.character_type, start, cut.end),
+                limit_type: made(self.limit_type, start, cut.end),
+                budget: cut.budget.clone(),
+                foreign: cut.foreign,
             })
             .collect::<Vec<_>>();
         let mut entries = self.entries.into_own();
@@ -295,9 +315,8 @@ impl TypeArenaBuilder<'_, '_> {
                 return None;
             };
 
-            units[cuts.partition_point(|cut| cut.aliases <= position)]
-                .by_die
-                .insert(key, id);
+            let unit = cuts.partition_point(|cut| cut.aliases <= position);
+            owner(&mut units, unit)?.by_die.insert(key, id);
         }
 
         for (key, id) in by_die.into_entries() {
@@ -306,11 +325,12 @@ impl TypeArenaBuilder<'_, '_> {
                 "a walk's own DIE names type {}, below the shared {base}",
                 id.index()
             );
-            units[unit_of(id.index())].by_die.insert(key, id);
+            let unit = owner(&mut units, unit_of(id.index()))?;
+            unit.by_die.insert(key, id);
         }
 
         for id in self.explicit_names.into_own().iter() {
-            units[unit_of(id)].explicit_names.insert(id);
+            owner(&mut units, unit_of(id))?.explicit_names.insert(id);
         }
 
         let identity_start = self.identity_parts.base_len();
@@ -318,40 +338,42 @@ impl TypeArenaBuilder<'_, '_> {
         for (own, parts) in self.identity_parts.into_own().into_iter().enumerate() {
             if let Some(parts) = parts {
                 let id = identity_start + own;
-                units[unit_of(id)].identity_parts.push((id, parts));
+                let unit = owner(&mut units, unit_of(id))?;
+                unit.identity_parts.push((id, parts));
             }
         }
 
         for (id, parts) in self.go_identity_parts.into_own() {
-            units[unit_of(id.index())]
+            owner(&mut units, unit_of(id.index()))?
                 .go_identity_parts
                 .insert(id, parts);
         }
 
         for (id, index) in self.go_dict_indices.into_own() {
-            units[unit_of(id.index())].go_dict_indices.insert(id, index);
+            let unit = owner(&mut units, unit_of(id.index()))?;
+            unit.go_dict_indices.insert(id, index);
         }
 
         for (id, by_value) in self.passed_by_value.into_own() {
-            units[unit_of(id.index())]
+            owner(&mut units, unit_of(id.index()))?
                 .passed_by_value
                 .insert(id, by_value);
         }
 
         for pending in self.pending_arguments {
-            units[unit_of(pending.entry)]
+            owner(&mut units, unit_of(pending.entry))?
                 .pending_arguments
                 .push(pending);
         }
 
         for declaration in self.record_member_declarations {
-            units[unit_of(declaration.aggregate.index())]
+            owner(&mut units, unit_of(declaration.aggregate.index()))?
                 .record_member_declarations
                 .push(declaration);
         }
 
         for (key, expression) in self.dynamic_record_layouts {
-            units[unit_of(key.aggregate.index())]
+            owner(&mut units, unit_of(key.aggregate.index()))?
                 .dynamic_record_layouts
                 .insert(key, expression);
         }
@@ -456,7 +478,7 @@ impl TypeArenaBuilder<'_, '_> {
             let id = type_id(id)?;
             let index = renumbered.id(id).index();
             self.identity_parts.resize_with(index + 1, || None);
-            self.identity_parts[index] = Some(parts);
+            *self.identity_parts.get_mut(index)? = Some(parts);
         }
 
         for (id, mut parts) in unit.go_identity_parts {
@@ -516,7 +538,10 @@ fn absorb_walked(
     let objects = into.objects.len();
     let functions = into.functions.len();
     let order = into.order;
-    let file = |location: &mut SourceLocation| location.file = files[location.file.index()];
+    let file = |location: &mut SourceLocation| {
+        location.file = *files.get(location.file.index())?;
+        Some(())
+    };
 
     for mut object in unit.objects.drain(..) {
         types.resolution(&mut object.type_info);
@@ -528,11 +553,11 @@ fn absorb_walked(
         }
 
         if let Some(declaration) = &mut object.declaration {
-            file(declaration);
+            file(declaration)?;
         }
 
         if let Some(declaration) = &mut object.go_declaration {
-            file(&mut declaration.location);
+            file(&mut declaration.location)?;
         }
 
         pooled.value(&mut object.value);
@@ -786,7 +811,7 @@ pub(super) fn walk_units_apart<'data>(
     // Claiming in order needs each group named by its first unit.
     for (unit, &group) in groups.iter().enumerate() {
         debug_assert!(
-            group <= unit && groups[group] == group,
+            group <= unit && groups.get(group) == Some(&group),
             "unit {unit}'s group {group} is not named by the group's first unit"
         );
     }
@@ -795,7 +820,11 @@ pub(super) fn walk_units_apart<'data>(
     let mut members = vec![Vec::new(); units.len()];
 
     for (unit, group) in groups.iter().enumerate() {
-        members[*group].push(unit);
+        let Some(group) = members.get_mut(*group) else {
+            return false;
+        };
+
+        group.push(unit);
     }
 
     crate::count!(
@@ -857,7 +886,11 @@ fn walk_group<'data>(
         .map(|_| Mutex::new(LocationsBuilder::default()))
         .collect::<Vec<_>>();
     let die_buffers = DieBuffers::default();
-    let mut types = frozen.split(home, &pools[0], &die_buffers);
+    let Some(first_pool) = pools.first() else {
+        return Vec::new();
+    };
+
+    let mut types = frozen.split(home, first_pool, &die_buffers);
     let mut walks = Vec::with_capacity(units.len());
     let mut cuts = Vec::with_capacity(units.len());
 
@@ -929,7 +962,7 @@ fn walk_group<'data>(
 fn check_cut_order(cuts: &[Cut]) {
     debug_assert!(
         cuts.windows(2)
-            .all(|pair| pair[0].end <= pair[1].end && pair[0].aliases <= pair[1].aliases),
+            .all(|pair| matches!(pair, [first, second] if first.end <= second.end && first.aliases <= second.aliases)),
         "a unit's walk ends before the walk of the unit before it"
     );
 }

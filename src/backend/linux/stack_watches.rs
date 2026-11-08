@@ -486,7 +486,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut plan = inferior.watch.plan.clone();
         let mut moved = BTreeMap::new();
         for (id, address) in placed {
-            let record = &inferior.watch.watchpoints[&id];
+            let record = inferior
+                .watch
+                .watchpoints
+                .get(&id)
+                .ok_or_else(|| Error::internal("a stack watch being placed is recorded"))?;
             plan = plan.without_watchpoint(id);
             let Some(address) = address else {
                 continue;

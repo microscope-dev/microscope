@@ -43,6 +43,10 @@ const _: () = assert!(
     "the table's offsets begin past the cookie, the version word, and the flag word"
 );
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a const block fails the build on an index out of bounds"
+)]
 const _: () = {
     let mut at = 0;
     while at < layouts::GENERATED.len() {
@@ -542,7 +546,7 @@ fn validated(
     if owners
         .iter()
         .enumerate()
-        .any(|(at, owner)| owners[..at].contains(owner))
+        .any(|(at, owner)| owners.iter().take(at).any(|before| before == owner))
     {
         return Err(format!("CPython {version}'s frame owners {owners:?} repeat").into());
     }
@@ -578,6 +582,10 @@ const fn structure_size(field: Field) -> Option<Field> {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a const block fails the build on an index out of bounds"
+)]
 const _: () = {
     let mut at = 0;
     while at < Field::ALL.len() {

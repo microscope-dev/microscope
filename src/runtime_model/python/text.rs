@@ -10,6 +10,10 @@ use std::fmt::Write as _;
 #[path = "printable.gen.rs"]
 mod printable;
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a compile-time check: an index out of bounds fails the build"
+)]
 const _: () = {
     let escaped = &printable::ESCAPED;
     let mut index = 0;

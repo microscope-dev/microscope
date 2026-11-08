@@ -170,8 +170,10 @@ impl DwarfVariableInfo {
         for (index, &result) in results.iter().enumerate() {
             // So does where each result is on every one before it.
             let Some(ty) = type_of(result) else {
-                let missing =
-                    Self::all_missing(&results[index..], &unknown_type("result", result))?;
+                let missing = Self::all_missing(
+                    results.get(index..).unwrap_or_default(),
+                    &unknown_type("result", result),
+                )?;
                 returned.extend(missing);
                 break;
             };
@@ -546,9 +548,9 @@ impl DwarfVariableInfo {
         });
         if leaves.is_empty()
             || leaves.len() > 2
-            || leaves
-                .windows(2)
-                .any(|pair| pair[0].offset + pair[0].size > pair[1].offset)
+            || leaves.windows(2).any(
+                |pair| matches!(pair, [first, second] if first.offset + first.size > second.offset),
+            )
         {
             return Err(Unassigned::Unspecified);
         }

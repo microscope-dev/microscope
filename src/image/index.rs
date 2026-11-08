@@ -69,7 +69,7 @@ pub fn containing(intervals: &[Interval], address: ImageAddress) -> impl Iterato
     std::iter::from_fn(move || {
         while index > 0 {
             index -= 1;
-            let interval = &intervals[index];
+            let interval = intervals.get(index)?;
             if interval.prefix_max_end.get() <= address {
                 return None;
             }
@@ -152,9 +152,12 @@ pub fn named<'a>(
 ) -> impl Iterator<Item = u32> + 'a {
     let wanted = hash(name.as_bytes());
     let first = names.partition_point(|entry| entry.hash.get() < wanted);
-    let end = first + names[first..].partition_point(|entry| entry.hash.get() == wanted);
+    let rest = names.get(first..).unwrap_or_default();
+    let matching = rest
+        .get(..rest.partition_point(|entry| entry.hash.get() == wanted))
+        .unwrap_or_default();
     let name = name.as_bytes().to_vec();
-    names[first..end]
+    matching
         .iter()
         .filter(move |entry| strings.bytes(StrId(entry.name.get())) == name)
         .map(|entry| entry.value.get())

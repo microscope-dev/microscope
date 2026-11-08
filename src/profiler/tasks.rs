@@ -1287,7 +1287,7 @@ impl crate::unwind::MemoryReader for LivePages<'_> {
         for (index, byte) in word.iter_mut().enumerate() {
             let at = address + index as u64;
             let page = at & !(PAGE as u64 - 1);
-            *byte = self.page(page)?[usize::try_from(at - page).ok()?];
+            *byte = *self.page(page)?.get(usize::try_from(at - page).ok()?)?;
         }
 
         Some(u64::from_le_bytes(word))

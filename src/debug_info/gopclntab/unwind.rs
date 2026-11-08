@@ -75,7 +75,7 @@ impl GoUnwind {
         let address = address.get();
         let after = functions.partition_point(|function| function.entry <= address);
         let index = after.checked_sub(1)?;
-        let function = &functions[index];
+        let function = functions.get(index)?;
 
         (function.contains(address) && function.is_go()).then_some((index, function))
     }

@@ -6,6 +6,10 @@ const MAX_SUGGESTIONS: usize = 3;
 
 /// The edit distance between two strings, by characters, counting a swap
 /// of neighbors as one edit, or `None` once it exceeds `bound`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "rows hold right.len() + 1 cells, and row and column stay within 1..=len"
+)]
 fn distance(left: &str, right: &str, bound: usize) -> Option<usize> {
     let (left, right) = (
         left.chars().collect::<Vec<_>>(),

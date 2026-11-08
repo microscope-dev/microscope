@@ -48,6 +48,10 @@ macro_rules! entries {
             }
         }
 
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "evaluated at compile time, where an index out of bounds fails the build"
+        )]
         const _: () = {
             let mut at = 0;
             while at < $kind::ALL.len() {
@@ -610,6 +614,10 @@ impl PythonLayout {
     /// The field's offset, or its structure's size; `None` when the
     /// version does not have it.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub const fn field(&self, field: Field) -> Option<u64> {
         match self.offsets[field.index()] {
             ABSENT => None,
@@ -618,11 +626,19 @@ impl PythonLayout {
     }
 
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub const fn constant(&self, constant: Constant) -> u8 {
         self.constants[constant.index()]
     }
 
     /// Sets a field, or leaves it absent when its offset does not fit.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub fn set_field(&mut self, field: Field, offset: u64) {
         self.offsets[field.index()] = u32::try_from(offset)
             .ok()
@@ -635,6 +651,10 @@ impl PythonLayout {
         );
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub const fn set_constant(&mut self, constant: Constant, value: u8) {
         self.constants[constant.index()] = value;
     }

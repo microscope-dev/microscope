@@ -149,6 +149,10 @@ impl Values {
         Ok(values)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`of` and `run`, which make every `Values`, fail unless `length` fits `values`"
+    )]
     fn as_slice(&self) -> &[i64] {
         &self.values[..self.length]
     }
@@ -161,6 +165,10 @@ const _: () = check(super::slices::TRANSLATED);
 /// jump goes forward within its function, which ends in a return or
 /// `UNREACHABLE()`, and every call passes and takes as many values as its
 /// callee takes and returns.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`const _` runs this at compile time, where an index out of bounds fails the build"
+)]
 const fn check(translated: &[Translated]) {
     let mut at = 0;
     while at < translated.len() {
@@ -204,6 +212,11 @@ const fn check(translated: &[Translated]) {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "only `check`, which `const _` runs at compile time, calls this, so an index out \
+              of bounds fails the build"
+)]
 const fn check_function(functions: &[Function], function: &Function) {
     assert!(
         function.parameters <= function.registers,
@@ -294,6 +307,11 @@ const fn check_function(functions: &[Function], function: &Function) {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "only `check`, which `const _` runs at compile time, calls this, so an index out \
+              of bounds fails the build"
+)]
 const fn check_call(
     functions: &[Function],
     callee: u16,
@@ -337,6 +355,11 @@ const fn check_call(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "only `check`, which `const _` runs at compile time, calls this, so an index out \
+              of bounds fails the build"
+)]
 const fn check_registers(to: Register, reads: &[Operand], registers: u8) {
     assert!(
         to < registers,
@@ -361,6 +384,11 @@ const fn operand(operand: Operand, registers: u8) -> bool {
 }
 
 /// Whether every return of `function` gives `count` values.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "only `check`, which `const _` runs at compile time, calls this, so an index out \
+              of bounds fails the build"
+)]
 const fn returns(function: &Function, count: usize) -> bool {
     let mut pc = 0;
     while pc < function.ops.len() {
@@ -434,7 +462,7 @@ impl Interpreter<'_, '_> {
 
         let base = self.stack.len();
         self.stack.resize(base + usize::from(function.registers), 0);
-        self.stack[base..]
+        self.frame_mut(base)
             .get_mut(..arguments.len())
             .ok_or_else(|| format!("{} has too few registers", function.name))?
             .copy_from_slice(arguments);
@@ -460,14 +488,14 @@ impl Interpreter<'_, '_> {
                     condition,
                     then,
                     otherwise,
-                } => jump(if get(&self.stack[base..], condition)? != 0 {
+                } => jump(if get(self.frame(base), condition)? != 0 {
                     then
                 } else {
                     otherwise
                 })?,
                 Op::Goto(target) => jump(target)?,
                 Op::Return(values) => {
-                    let returned = Values::of(&self.stack[base..], values)?;
+                    let returned = Values::of(self.frame(base), values)?;
                     debug_assert_eq!(
                         self.stack.len(),
                         base + usize::from(function.registers),
@@ -486,7 +514,7 @@ impl Interpreter<'_, '_> {
                     arguments,
                     results,
                 } => {
-                    let values = Values::of(&self.stack[base..], arguments)?;
+                    let values = Values::of(self.frame(base), arguments)?;
                     let returned = self.call(callee, values, depth + 1)?;
                     debug_assert_eq!(
                         self.stack.len(),
@@ -499,7 +527,7 @@ impl Interpreter<'_, '_> {
                     }
 
                     for (&register, &value) in results.iter().zip(returned.as_slice()) {
-                        set(&mut self.stack[base..], register, value)?;
+                        set(self.frame_mut(base), register, value)?;
                     }
                     next
                 }
@@ -514,7 +542,7 @@ impl Interpreter<'_, '_> {
 
     /// Runs an op that computes one register of the frame at `base`.
     fn step(&mut self, op: Op, base: usize) -> Result<(), String> {
-        let registers = &self.stack[base..];
+        let registers = self.frame(base);
         let (to, value) = match op {
             Op::Set(to, from) => (to, get(registers, from)?),
             Op::Binary(binary, to, left, right) => (
@@ -565,7 +593,17 @@ impl Interpreter<'_, '_> {
             }
         };
 
-        set(&mut self.stack[base..], to, value)
+        set(self.frame_mut(base), to, value)
+    }
+
+    /// The registers of the frame at `base`: none past the stack's end,
+    /// so that reading one fails.
+    fn frame(&self, base: usize) -> &[i64] {
+        self.stack.get(base..).unwrap_or_default()
+    }
+
+    fn frame_mut(&mut self, base: usize) -> &mut [i64] {
+        self.stack.get_mut(base..).unwrap_or_default()
     }
 
     fn word(&mut self, offset: u64) -> Result<u64, String> {

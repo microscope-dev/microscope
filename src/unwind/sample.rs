@@ -204,7 +204,10 @@ fn sampled_frames<M: Modules + ?Sized>(
         modules,
         rules,
         frames,
-        (&sample.chain[link..], links.get(link..).unwrap_or_default()),
+        (
+            sample.chain.get(link..).unwrap_or_default(),
+            links.get(link..).unwrap_or_default(),
+        ),
         limit,
     ) {
         StackEnd::Truncated(Truncation::ChainEnded, module)
@@ -474,7 +477,7 @@ fn splice<M: Modules + ?Sized>(
         match memory.read_u64(VirtualAddress::new(current.wrapping_add(8))) {
             // A link whose return address is in the copy must agree with
             // the kernel's, or the two walks part.
-            Some(return_address) if return_address != sample.chain[links.len()] => break,
+            Some(return_address) if sample.chain.get(links.len()) != Some(&return_address) => break,
             _ => {}
         }
 
@@ -486,9 +489,7 @@ fn splice<M: Modules + ?Sized>(
             .iter()
             .position(|link| Some(*link) == frame.frame_pointer)?;
         let caller = position + 1;
-        if caller >= sample.chain.len() {
-            return None;
-        }
+        let chained = *sample.chain.get(caller)?;
 
         let module = modules.module(frame.module?);
         if rules.rule(&module, frame.address) != FramePointerRule::Kept {
@@ -498,7 +499,7 @@ fn splice<M: Modules + ?Sized>(
         // Where call-frame information found the caller too, both must
         // name the same one.
         if let Some(next) = unwound.get(index + 1)
-            && next.address.get().wrapping_add(1) != sample.chain[caller]
+            && next.address.get().wrapping_add(1) != chained
         {
             return None;
         }

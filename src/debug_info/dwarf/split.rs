@@ -276,7 +276,10 @@ pub(super) fn with_split_units<'data>(
 
     let mut split = Vec::with_capacity(read.len());
     for (index, unit, range, dwo) in read {
-        units[index] = unit;
+        // `read` kept only the indexes `units.get` found.
+        if let Some(slot) = units.get_mut(index) {
+            *slot = unit;
+        }
         split.push((range, dwo));
     }
     split.sort_unstable_by_key(|(range, _)| range.start);

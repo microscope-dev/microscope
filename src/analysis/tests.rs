@@ -1634,6 +1634,28 @@ fn a_plot_keeps_each_bins_extremes_and_counts_what_it_cannot_draw() {
     );
 }
 
+/// Validation lets a plot be of no site, which is a series of no name.
+#[test]
+fn a_plot_of_no_site_is_read() {
+    let mut capture = labeled(&[(0, 0, 10, 1)], &[(0, 5, 1, UNNAMED)]);
+    capture.plots.push(crate::capture::records::Plot {
+        time: 5.into(),
+        value: 1.0_f64.to_bits().into(),
+        site: NONE.into(),
+        thread: NONE.into(),
+    });
+    assert_eq!(capture.validate(), Ok(()));
+
+    let series = plot_series(&capture, (0, 10), None, 1);
+    assert_eq!(
+        series
+            .iter()
+            .map(|series| (series.name, series.values))
+            .collect::<Vec<_>>(),
+        [(NONE, 1)]
+    );
+}
+
 /// The functions diffs' stacks choose from: a name and its module. Two
 /// names are each two functions, of two modules, as views name them alike.
 const NAMED: [(&str, &str); 6] = [

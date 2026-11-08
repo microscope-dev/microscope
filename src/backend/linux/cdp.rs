@@ -215,7 +215,10 @@ impl Connection {
             let hop = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
             let params = json!({"sessionId": &**session_id, "message": text});
             text = json!({"id": hop, "method": SEND_TO_WORKER, "params": params}).to_string();
-            hops.push((hop, Session(session.0[..depth].into())));
+            hops.push((
+                hop,
+                Session(session.0.iter().take(depth).cloned().collect()),
+            ));
         }
 
         let outgoing = Outgoing {
@@ -493,7 +496,12 @@ impl Transport {
                 params,
             } => {
                 let detached = (method.as_ref() == "NodeWorker.detachedFromWorker")
-                    .then(|| params["sessionId"].as_str().map(|id| session.worker(id)))
+                    .then(|| {
+                        params
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .map(|id| session.worker(id))
+                    })
                     .flatten();
                 self.deliver(Incoming::Event {
                     session,

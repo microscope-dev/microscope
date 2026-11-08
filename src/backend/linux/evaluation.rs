@@ -913,11 +913,12 @@ impl<P: InspectionOps> Scope for Frame<'_, P> {
         };
 
         let registers = self.registers()?;
-        let number = registers
+        let (number, value) = registers
             .registers
             .iter()
-            .position(|value| value.register.name.as_ref() == name)?;
-        let width = u8::try_from(registers.registers[number].register.bits.min(128)).ok()?;
+            .enumerate()
+            .find(|(_, value)| value.register.name.as_ref() == name)?;
+        let width = u8::try_from(value.register.bits.min(128)).ok()?;
 
         Some(Register {
             number: u16::try_from(number).ok()?,
@@ -1591,7 +1592,14 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
                 VariableUnavailableReason::RegisterUnavailable("registers".into()),
             ))
         })?;
-        let value = &snapshot.registers[usize::from(register.number)];
+        let value = snapshot
+            .registers
+            .get(usize::from(register.number))
+            .ok_or_else(|| {
+                Stop::missing(VariableState::Unavailable(
+                    VariableUnavailableReason::RegisterUnavailable("registers".into()),
+                ))
+            })?;
         let Some(bytes) = &value.bytes else {
             let reason = if matches!(self.frame.resolved.registers, FrameRegisters::Discarded) {
                 VariableUnavailableReason::CallFrameUnavailable(
@@ -1606,7 +1614,9 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
 
         let mut wide = [0_u8; 16];
         let length = bytes.len().min(16);
-        wide[..length].copy_from_slice(&bytes[..length]);
+        for (to, from) in wide.iter_mut().zip(bytes.iter()) {
+            *to = *from;
+        }
 
         Ok(match self.frame.byte_order() {
             ByteOrder::Little => u128::from_le_bytes(wide),
@@ -1664,7 +1674,11 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
         type_info: TypeInfo,
     ) -> std::result::Result<InspectedValue, Stop> {
         let size = usize::from(self.pointer_size());
-        let mut raw = address.to_le_bytes()[..size].to_vec();
+        let mut raw = address
+            .to_le_bytes()
+            .into_iter()
+            .take(size)
+            .collect::<Vec<_>>();
         if self.byte_order() == ByteOrder::Big {
             raw.reverse();
         }

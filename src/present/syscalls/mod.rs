@@ -604,6 +604,10 @@ fn argument(
     style: &Style,
     context: Context<'_>,
 ) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "spec parsing keeps argument numbers below six, the length of args"
+    )]
     let word = event.args[index];
 
     // -X raw changes only names: numbers, sizes, and NULL print as ever.
@@ -841,7 +845,7 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64, style: &Style) {
 
 /// Escapes bytes as strace quotes them.
 fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, style: &Style) {
-    let shown = limit.map_or(bytes, |limit| &bytes[..bytes.len().min(limit)]);
+    let shown = limit.map_or(bytes, |limit| bytes.get(..limit).unwrap_or(bytes));
     let mut text = String::with_capacity(shown.len() + 2);
     text.push('"');
     let all_hex = style.hex == Hex::All
@@ -995,6 +999,10 @@ fn memory(
     style: &Style,
     context: Context<'_>,
 ) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "spec parsing keeps argument numbers below six, the length of args"
+    )]
     let word = event.args[index];
     #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
     let capture = event.capture(index as u8);
@@ -1020,13 +1028,16 @@ fn memory(
                     .outcome
                     .raw()
                     .map_or(0, |value| usize::try_from(value).unwrap_or(0)),
-                Count::Arg(arg) => {
-                    usize::try_from(event.args[usize::from(arg)]).unwrap_or(usize::MAX)
-                }
+                Count::Arg(arg) => event
+                    .args
+                    .get(usize::from(arg))
+                    .map_or(usize::MAX, |&count| {
+                        usize::try_from(count).unwrap_or(usize::MAX)
+                    }),
                 Count::PointedBy(_) | Count::One => capture.bytes.len(),
             };
 
-            let shown = &capture.bytes[..capture.bytes.len().min(length)];
+            let shown = capture.bytes.get(..length).unwrap_or(&capture.bytes);
             let truncated =
                 matches!(capture.state, CaptureState::Truncated { .. }) || shown.len() < length;
 
@@ -1052,7 +1063,10 @@ fn memory(
         MemKind::Struct(structure) => {
             let elements = match count {
                 Count::One | Count::PointedBy(_) => 1,
-                Count::Arg(arg) => usize::try_from(event.args[usize::from(arg)]).unwrap_or(0),
+                Count::Arg(arg) => event
+                    .args
+                    .get(usize::from(arg))
+                    .map_or(0, |&count| usize::try_from(count).unwrap_or(0)),
                 Count::Return => event
                     .outcome
                     .raw()

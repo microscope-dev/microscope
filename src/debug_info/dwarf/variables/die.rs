@@ -182,7 +182,12 @@ pub(super) fn string_with_origins(
     }
 
     for (origin_unit, origin) in chain {
-        if let Some(value) = string_attribute(dwarf, &units[*origin_unit], origin, attribute)? {
+        if let Some(value) = string_attribute(
+            dwarf,
+            super::unit_at(units, *origin_unit),
+            origin,
+            attribute,
+        )? {
             return Ok(Some(value));
         }
     }
@@ -461,13 +466,12 @@ fn declared_with<'a, 'data, F>(
     // decl_line, and decl_column comes from the first DIE in the chain that
     // supplies it. decl_file indexes the line program of the unit that owns
     // the DIE supplying it.
-    let dies = || {
-        std::iter::once((unit, entry)).chain(
-            chain
-                .iter()
-                .map(|(origin_unit, origin_entry)| (&units[*origin_unit], origin_entry)),
-        )
-    };
+    let dies =
+        || {
+            std::iter::once((unit, entry)).chain(chain.iter().map(|(origin_unit, origin_entry)| {
+                (super::unit_at(units, *origin_unit), origin_entry)
+            }))
+        };
 
     let found = dies().find_map(|(unit, entry)| {
         entry

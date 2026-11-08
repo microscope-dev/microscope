@@ -19,9 +19,10 @@ pub struct Iovec<'a> {
 pub fn push_iovec(blob: &mut Vec<u8>, base: u64, len: u64, bytes: &[u8]) {
     blob.extend_from_slice(&base.to_le_bytes());
     blob.extend_from_slice(&len.to_le_bytes());
+    let bytes = bytes.get(..u32::MAX as usize).unwrap_or(bytes);
     let count = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
     blob.extend_from_slice(&count.to_le_bytes());
-    blob.extend_from_slice(&bytes[..count as usize]);
+    blob.extend_from_slice(bytes);
 }
 
 /// The elements of an iovec capture, stopping at the first malformed one.
@@ -29,16 +30,16 @@ pub fn push_iovec(blob: &mut Vec<u8>, base: u64, len: u64, bytes: &[u8]) {
 pub fn iovecs(mut blob: &[u8]) -> Vec<Iovec<'_>> {
     let mut elements = Vec::new();
 
-    while blob.len() >= 20 {
-        let base = u64::from_le_bytes(blob[..8].try_into().unwrap_or_default());
-        let len = u64::from_le_bytes(blob[8..16].try_into().unwrap_or_default());
-        let count = u32::from_le_bytes(blob[16..20].try_into().unwrap_or_default()) as usize;
-        let Some(bytes) = blob.get(20..20 + count) else {
+    while let Some((header, rest)) = blob.split_first_chunk::<20>() {
+        let base = u64::from_le_bytes(header[..8].try_into().unwrap_or_default());
+        let len = u64::from_le_bytes(header[8..16].try_into().unwrap_or_default());
+        let count = u32::from_le_bytes(header[16..].try_into().unwrap_or_default()) as usize;
+        let Some((bytes, after)) = rest.split_at_checked(count) else {
             break;
         };
 
         elements.push(Iovec { base, len, bytes });
-        blob = &blob[20 + count..];
+        blob = after;
     }
 
     elements
@@ -49,11 +50,8 @@ pub fn start_strings(blob: &mut Vec<u8>, count: Option<u32>) {
 }
 
 pub fn push_string(blob: &mut Vec<u8>, string: &[u8]) {
-    let end = string
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(string.len());
-    blob.extend_from_slice(&string[..end]);
+    let string = string.split(|&byte| byte == 0).next().unwrap_or(string);
+    blob.extend_from_slice(string);
     blob.push(0);
 }
 
@@ -61,12 +59,11 @@ pub fn push_string(blob: &mut Vec<u8>, string: &[u8]) {
 /// elements read.
 #[must_use]
 pub fn strings(blob: &[u8]) -> (Option<u32>, Vec<&[u8]>) {
-    let Some(header) = blob.get(..4) else {
+    let Some((header, rest)) = blob.split_first_chunk::<4>() else {
         return (None, Vec::new());
     };
 
-    let count = u32::from_le_bytes(header.try_into().unwrap_or_default());
-    let rest = &blob[4..];
+    let count = u32::from_le_bytes(*header);
     if rest.is_empty() {
         return ((count != u32::MAX).then_some(count), Vec::new());
     }

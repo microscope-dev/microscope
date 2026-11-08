@@ -128,11 +128,14 @@ pub(in crate::debug_info) fn held_ranges(
             };
 
             for point in points.points.iter() {
-                for object in function
-                    .objects
-                    .iter()
-                    .map(|id| &variables.objects[*id as usize])
-                {
+                for &id in &function.objects {
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "the variables were just built from DWARF, and a function's \
+                                  objects index its variables' objects"
+                    )]
+                    let object = &variables.objects[id as usize];
+
                     // Go, whose locals are visible only past their declaration,
                     // has no coroutines.
                     let (Some(offset), None, None, None) = (

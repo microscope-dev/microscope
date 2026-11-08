@@ -57,7 +57,9 @@ impl<'a> Reader<'a> {
     }
 
     fn starts_with(&self, prefix: &[u8]) -> bool {
-        self.text[self.at..].starts_with(prefix)
+        self.text
+            .get(self.at..)
+            .is_some_and(|rest| rest.starts_with(prefix))
     }
 
     /// Runs `read` one level deeper, failing past the limit.
@@ -160,7 +162,8 @@ impl<'a> Reader<'a> {
 
                 probe
                     .back_reference()
-                    .is_some_and(|target| self.text[target].is_ascii_digit())
+                    .and_then(|target| self.text.get(target))
+                    .is_some_and(u8::is_ascii_digit)
             }
             _ => false,
         }
@@ -446,7 +449,7 @@ impl<'a> Reader<'a> {
             byte if call_convention(byte) => reader.function(),
             b'Q' => {
                 let target = reader.back_reference()?;
-                reader.text[target].is_ascii_alphabetic().then_some(())
+                reader.text.get(target)?.is_ascii_alphabetic().then_some(())
             }
             b'z' => {
                 reader.at += 1;

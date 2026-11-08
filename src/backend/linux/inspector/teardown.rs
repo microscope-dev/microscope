@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nix::unistd::Pid;
+use serde_json::Value;
 
 use super::{InspectorMessage, PauseRequest, send};
 use crate::backend::linux::cdp::{Incoming, RequestId, Session};
@@ -158,15 +159,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             })
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
-        if owned.is_empty() {
-            return Ok(false);
-        }
-        if owned.len() != 1 {
-            return Err(Error::RuntimeAgent(
-                "cannot close multiple created Node inspectors safely".into(),
-            ));
-        }
-        let runtime = owned[0];
+        let runtime = match owned.as_slice() {
+            [] => return Ok(false),
+            [runtime] => *runtime,
+            _ => {
+                return Err(Error::RuntimeAgent(
+                    "cannot close multiple created Node inspectors safely".into(),
+                ));
+            }
+        };
         let bound = self
             .runtimes(inferior)
             .into_iter()
@@ -659,7 +660,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                             serde_json::json!({}),
                         );
                     } else if method.as_ref() == inspector_protocol::WORKER_ATTACHED
-                        && let Some(id) = params["sessionId"].as_str()
+                        && let Some(id) = params.get("sessionId").and_then(Value::as_str)
                     {
                         let worker = session.worker(id);
                         let _ = send(

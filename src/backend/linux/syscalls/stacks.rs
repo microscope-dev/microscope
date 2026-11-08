@@ -497,7 +497,10 @@ impl Stacks {
             };
             // The innermost frame, and one a signal interrupted, are at
             // their instruction, not after a call.
-            let after_call = index != 0 && frames[index - 1].role != CodeRole::SignalTrampoline;
+            let after_call = index
+                .checked_sub(1)
+                .and_then(|inner| frames.get(inner))
+                .is_some_and(|inner| inner.role != CodeRole::SignalTrampoline);
             let instruction = if after_call {
                 VirtualAddress::new(frame.address.get().wrapping_add(1))
             } else {
@@ -978,6 +981,10 @@ impl Stacks {
                 }
             };
 
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "CallStack::frames yields only indices below addresses.len()"
+            )]
             let address = stack.addresses[index];
             let code = if index == 0 {
                 address
@@ -1163,6 +1170,10 @@ impl Stacks {
             let id = ModuleId::new(self.next_module);
             self.next_module += 1;
             let mapped = if let Some((source, image_start, length)) = copy {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "a source's key is its module's index, and modules only grow"
+                )]
                 let source = &modules[source];
                 let image_end = ImageAddress::new(image_start.get().saturating_add(length));
                 Mapped {
@@ -1278,7 +1289,10 @@ fn stack(frames: &[SampledFrame], end: StackEnd) -> CallStack {
         .map(|(index, frame)| {
             let interrupted = index == 0
                 || frame.role == CodeRole::SignalTrampoline
-                || frames[index - 1].role == CodeRole::SignalTrampoline;
+                || index
+                    .checked_sub(1)
+                    .and_then(|inner| frames.get(inner))
+                    .is_some_and(|inner| inner.role == CodeRole::SignalTrampoline);
             if interrupted {
                 frame.address.get()
             } else {
@@ -1318,9 +1332,11 @@ fn activations(
         .filter(|&index| {
             let inner = index
                 .checked_sub(1)
-                .and_then(|inner| names[inner].as_deref());
-            names[index]
-                .as_deref()
+                .and_then(|inner| names.get(inner))
+                .and_then(Option::as_deref);
+            names
+                .get(index)
+                .and_then(Option::as_deref)
                 .is_some_and(|name| model.activation(name, inner))
         })
         .collect()

@@ -130,12 +130,10 @@ fn frame_at(bytes: &[u8], start: u64, address: u64) -> Option<CodeFrame> {
         let Some(from) = (at + 1).checked_sub(length) else {
             return false;
         };
-        let mut decoder = Decoder::with_ip(
-            64,
-            &bytes[from..=at],
-            start + from as u64,
-            DecoderOptions::NONE,
-        );
+        let Some(window) = bytes.get(from..=at) else {
+            return false;
+        };
+        let mut decoder = Decoder::with_ip(64, window, start + from as u64, DecoderOptions::NONE);
         let instruction = decoder.decode();
         !instruction.is_invalid()
             && matches!(

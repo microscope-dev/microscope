@@ -160,15 +160,17 @@ pub async fn disassemble(
 /// which a runtime's frame drives, show before it but call nothing. A
 /// suspended task's frame resumes at its instruction, if it has one.
 fn executing(frames: &[microscope::StackFrame], index: usize) -> Option<VirtualAddress> {
-    let activation = frames[index..]
+    let activation = frames
+        .get(index..)?
         .iter()
         .position(|frame| frame.kind != FrameKind::Inline)
         .map_or(index, |offset| index + offset);
-    let frame = &frames[activation];
+    let frame = frames.get(activation)?;
     let exact = frame.kind == FrameKind::Signal
         || frame.kind.is_suspended()
-        || frames[..activation]
+        || frames
             .iter()
+            .take(activation)
             .all(|frame| frame.kind == FrameKind::Inline || !frame.kind.has_registers());
     let instruction = frame.instruction?;
 

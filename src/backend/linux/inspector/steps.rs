@@ -67,7 +67,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return false;
         };
-        let location = &params["callFrames"][0]["location"];
+        let location = params
+            .pointer("/callFrames/0/location")
+            .unwrap_or(&serde_json::Value::Null);
         let top = location["scriptId"]
             .as_str()
             .and_then(|id| inspector.isolates.get(session)?.scripts.get(id).cloned());
@@ -115,7 +117,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             // An exception caught in code steps pass through is that
             // code's own business, as Node's module loader's are.
             (Some("exception" | "promiseRejection"), step)
-                if params["data"]["uncaught"] != true =>
+                if params.pointer("/data/uncaught") != Some(&serde_json::Value::Bool(true)) =>
             {
                 step.map_or(inspector_protocol::RESUME, |step| step.command)
             }

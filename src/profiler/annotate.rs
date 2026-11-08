@@ -170,14 +170,12 @@ impl Profile {
                     function,
                     file,
                     line,
-                } if capture.string(capture.functions[function as usize].name.get()) == name => {
-                    Some(LineCost {
-                        file: (file != NONE).then(|| capture.string(file).to_owned()),
-                        line,
-                        own: cost.own,
-                        total: cost.total,
-                    })
-                }
+                } if super::function_name(capture, function) == name => Some(LineCost {
+                    file: (file != NONE).then(|| capture.string(file).to_owned()),
+                    line,
+                    own: cost.own,
+                    total: cost.total,
+                }),
                 _ => None,
             })
             .collect();
@@ -198,8 +196,7 @@ impl Profile {
         let capture = &self.capture;
 
         let costs = keys.functions(&selection(query));
-        let function_name =
-            |function: u32| capture.string(capture.functions[function as usize].name.get());
+        let function_name = |function: u32| super::function_name(capture, function);
         let frames: Vec<(u32, u64, u64)> = costs
             .rows
             .iter()
@@ -250,7 +247,10 @@ impl Profile {
                 continue;
             }
 
-            let frame = &capture.frames[frame as usize];
+            // Address keys come from the capture's frames.
+            let Some(frame) = capture.frames.get(frame as usize) else {
+                continue;
+            };
             let weights = sampled
                 .entry(frame.module.get())
                 .or_default()
@@ -268,7 +268,9 @@ impl Profile {
             return Err(format!("{name}'s samples ran code outside every module"));
         }
 
-        let record = &capture.modules[module as usize];
+        let record = capture.modules.get(module as usize).ok_or_else(|| {
+            format!("{name}'s samples name module {module}, which the profile lacks")
+        })?;
         let path = capture.string(record.path.get()).to_owned();
         if record.digest == [0; 16] {
             return Err(format!(
@@ -305,10 +307,7 @@ impl Profile {
             };
             let named = capture.frame_lines(index).last().map_or_else(
                 || format!("{:#x}", frame.address.get()) == name,
-                |line| {
-                    capture.string(capture.functions[line.function.get() as usize].name.get())
-                        == name
-                },
+                |line| super::function_name(capture, line.function.get()) == name,
             );
             if !named {
                 continue;
@@ -348,7 +347,7 @@ fn decode(
     symbols.dedup_by_key(|symbol| symbol.address());
     let named = |address: u64| {
         let index = symbols.partition_point(|symbol| symbol.address() <= address);
-        let symbol = symbols[..index].last()?;
+        let symbol = symbols.get(..index)?.last()?;
         let offset = address - symbol.address();
         (offset < symbol.size()).then_some(())?;
         let name = symbol.name().ok()?;
@@ -398,7 +397,7 @@ fn decode(
                 tokens,
                 references,
                 ..
-            } = decoder.decode(address, &code[offset..], None)
+            } = decoder.decode(address, code.get(offset..).unwrap_or_default(), None)
             else {
                 block.stopped = Some(format!("the bytes at {address:#x} are no instruction"));
                 break;

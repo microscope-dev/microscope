@@ -153,7 +153,10 @@ fn coroutine<'a>(
             .len()
             .checked_sub(captures.len())
             .ok_or_else(|| format!("state {value} holds fewer members than the captures"))?;
-        if state.saved[tail..]
+        let Some((held, tail_members)) = state.saved.split_at_checked(tail) else {
+            return Err(format!("state {value} holds fewer members than the captures").into());
+        };
+        if tail_members
             .iter()
             .zip(captures.iter())
             .any(|(held, captured)| held.name != captured.name)
@@ -161,7 +164,7 @@ fn coroutine<'a>(
             return Err(format!("state {value} does not end with the captures").into());
         }
 
-        state.saved = state.saved[..tail].into();
+        state.saved = held.into();
     }
 
     let mut numbers = states.iter().map(|state| state.value).collect::<Vec<_>>();

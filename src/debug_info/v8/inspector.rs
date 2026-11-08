@@ -257,21 +257,27 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         let Some(session) = constructor_shape(object, at, SESSION) else {
             continue;
         };
+        // The template fixes the instruction count, so these are all there.
+        let allocation = session.get(1)?;
+        let empty_branch = session.get(7)?;
+        let vtable_load = session.get(11)?;
+        let atomic_branch = session.get(19)?;
+        let cold_branch = session.get(24)?;
         debug_assert_eq!(
-            session[1].flow_control(),
+            allocation.flow_control(),
             FlowControl::Call,
             "the session constructor's allocation at image address {at:#x} is not a call"
         );
-        for branch in [7, 19, 24] {
+        for (branch, instruction) in [(7, empty_branch), (19, atomic_branch), (24, cold_branch)] {
             debug_assert_eq!(
-                session[branch].flow_control(),
+                instruction.flow_control(),
                 FlowControl::ConditionalBranch,
                 "the session constructor's instruction {branch} at image address {at:#x} is \
                  not a conditional branch"
             );
         }
         debug_assert!(
-            session[11].is_ip_rel_memory_operand(),
+            vtable_load.is_ip_rel_memory_operand(),
             "the session constructor's vtable address at image address {at:#x} is not \
              RIP-relative"
         );
@@ -290,15 +296,16 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
             "the session constructor at image address {at:#x} does not end in a return"
         );
         if session.last()?.next_ip() > end
-            || !plt_symbol(object, session[1].near_branch_target(), "_Znwm")
+            || !plt_symbol(object, allocation.near_branch_target(), "_Znwm")
         {
             return None;
         }
-        let empty_at = session[7].near_branch_target();
+        let empty_at = empty_branch.near_branch_target();
         let empty = constructor_shape(object, empty_at, SESSION_EMPTY)?;
-        let vtable = session[11].ip_rel_memory_address();
+        let empty_load = empty.first()?;
+        let vtable = vtable_load.ip_rel_memory_address();
         debug_assert!(
-            empty[0].is_ip_rel_memory_operand(),
+            empty_load.is_ip_rel_memory_operand(),
             "the empty session's vtable load at image address {empty_at:#x} is not RIP-relative"
         );
         debug_assert_eq!(
@@ -308,28 +315,28 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
         );
         if empty_at < start
             || empty.last()?.next_ip() > end
-            || empty[0].ip_rel_memory_address() != vtable
+            || empty_load.ip_rel_memory_address() != vtable
             || empty.last()?.near_branch_target() != at.checked_add(0x8e)?
-            || !cold_trap(object, session[24].near_branch_target())
+            || !cold_trap(object, cold_branch.near_branch_target())
         {
             return None;
         }
         // The atomic weak-count path rejoins the same overflow check and publication.
         let atomic = constructor_shape(
             object,
-            session[19].near_branch_target(),
+            atomic_branch.near_branch_target(),
             &[
                 0xb8, 1, 0, 0, 0, 0xf0, 0x41, 0x0f, 0xc1, 0x44, 0x24, 0x0c, 0xe9, 0x1c, 0xfc, 0xff,
                 0xff,
             ],
         )?;
+        let atomic_at = atomic.first()?.ip();
         debug_assert_eq!(
             atomic.last().map(Instruction::flow_control),
             Some(FlowControl::UnconditionalBranch),
-            "the atomic weak-count path at image address {:#x} does not end in a jump",
-            atomic[0].ip()
+            "the atomic weak-count path at image address {atomic_at:#x} does not end in a jump",
         );
-        if atomic[0].ip() < start
+        if atomic_at < start
             || atomic.last()?.next_ip() > end
             || atomic.last()?.near_branch_target() != at.checked_add(0x6f)?
         {
@@ -352,8 +359,8 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
                 continue;
             }
             let target = branch.near_branch_target();
-            if target == atomic[0].ip() && branch.ip() != session[19].ip()
-                || target > atomic[0].ip() && target < atomic.last()?.next_ip()
+            if target == atomic_at && branch.ip() != atomic_branch.ip()
+                || target > atomic_at && target < atomic.last()?.next_ip()
             {
                 return None;
             }
@@ -371,7 +378,7 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
             if target > start && target < start.checked_add(0x35)? {
                 return None;
             }
-            if target == empty_at && branch.ip() != session[7].ip() {
+            if target == empty_at && branch.ip() != empty_branch.ip() {
                 return None;
             }
             if target == at.checked_add(0x6f)? && branch.ip() != atomic.last()?.ip() {
@@ -415,8 +422,9 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
                 0xd7, 0xb1, 0xff,
             ],
         )?;
+        let destructor_call = delete.get(4)?;
         debug_assert_eq!(
-            delete[4].flow_control(),
+            destructor_call.flow_control(),
             FlowControl::Call,
             "the deleting destructor at image address {deleting:#x} does not call the \
              destructor"
@@ -426,7 +434,7 @@ fn dispatch_from_connect(object: &object::File<'_>) -> Option<crate::ImageAddres
             Some(FlowControl::UnconditionalBranch),
             "the deleting destructor at image address {deleting:#x} does not end in a jump"
         );
-        if delete[4].near_branch_target() != destructor
+        if destructor_call.near_branch_target() != destructor
             || !plt_symbol(object, delete.last()?.near_branch_target(), "_ZdlPvm")
         {
             return None;

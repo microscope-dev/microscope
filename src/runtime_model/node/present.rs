@@ -459,7 +459,12 @@ fn typed_number(
 ) -> InterpretedSlot {
     let size = usize::try_from(kind.size()).unwrap_or(8);
     let mut bytes = [0; 8];
-    if let Err(problem) = reader.bytes_into(at, &mut bytes[..size]) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a number kind is at most eight bytes"
+    )]
+    let read = &mut bytes[..size];
+    if let Err(problem) = reader.bytes_into(at, read) {
         return InterpretedSlot::Unreadable(problem);
     }
     let bits = u64::from_le_bytes(bytes);

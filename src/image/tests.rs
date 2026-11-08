@@ -3216,6 +3216,19 @@ fn calls_read_back_as_they_were_encoded() {
     assert_eq!(returning(0x2000), [0; 0]);
 }
 
+/// Callers number calling functions by the variables' functions, which
+/// validation does not tie to them, so a cached image may lack one.
+#[test]
+fn a_calling_function_the_image_lacks_describes_no_tail_calls() {
+    use super::calls::CallView;
+
+    let image = Builder::new(TARGET).seal(Limits::default()).unwrap();
+    let function = CallView::new(&image).function(0);
+    assert!(!function.tail_calls_described());
+    assert_eq!(function.tail_calls().len(), 0);
+    assert_eq!(function.name(), None);
+}
+
 #[test]
 #[expect(clippy::too_many_lines, reason = "one check for each field and query")]
 fn validation_rejects_calls_that_disagree() {

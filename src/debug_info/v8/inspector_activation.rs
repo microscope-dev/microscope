@@ -293,8 +293,11 @@ fn argument(
         "instruction {call} of {} whose argument is read is not a call",
         instructions.len()
     );
+    let (Some(before), Some(called)) = (instructions.get(..call), instructions.get(call)) else {
+        return Err(UNSUPPORTED.into());
+    };
     let mut factory = iced_x86::InstructionInfoFactory::new();
-    for instruction in instructions[..call].iter().rev().take(64) {
+    for instruction in before.iter().rev().take(64) {
         if !matches!(instruction.flow_control(), FlowControl::Next) {
             return Err("Node's inspector activation argument crosses control flow".into());
         }
@@ -320,7 +323,7 @@ fn argument(
                 branch.flow_control(),
                 FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch
             ) && branch.near_branch_target() > instruction.ip()
-                && branch.near_branch_target() <= instructions[call].ip()
+                && branch.near_branch_target() <= called.ip()
         }) {
             return Err("Node's inspector activation argument can be bypassed".into());
         }
@@ -404,8 +407,11 @@ fn prove_writer(
     let reached = reachable(instructions);
     let mut appended = false;
     for window in instructions.windows(6) {
-        let address = window[0].ip();
-        if window[5].next_ip().checked_sub(address) != u64::try_from(APPEND.len()).ok() {
+        let [first, _, _, _, _, last] = window else {
+            continue;
+        };
+        let address = first.ip();
+        if last.next_ip().checked_sub(address) != u64::try_from(APPEND.len()).ok() {
             continue;
         }
         let Ok(candidate) = text(object, address, APPEND.len()) else {
@@ -414,17 +420,20 @@ fn prove_writer(
         let Ok(append) = shape(candidate, address, APPEND, false) else {
             continue;
         };
-        for load in [0, 1, 5] {
+        let [first, second, _, _, _, sixth, ..] = append.as_slice() else {
+            continue;
+        };
+        for (load, instruction) in [(0, first), (1, second), (5, sixth)] {
             debug_assert!(
-                append[load].is_ip_rel_memory_operand(),
+                instruction.is_ip_rel_memory_operand(),
                 "the registry append's instruction {load} at image address {address:#x} is not \
                  RIP-relative"
             );
         }
         if !reached.contains(&address)
-            || append[0].ip_rel_memory_address() != registry.checked_add(8).ok_or(UNSUPPORTED)?
-            || append[1].ip_rel_memory_address() != registry.checked_add(16).ok_or(UNSUPPORTED)?
-            || append[5].ip_rel_memory_address() != registry.checked_add(8).ok_or(UNSUPPORTED)?
+            || first.ip_rel_memory_address() != registry.checked_add(8).ok_or(UNSUPPORTED)?
+            || second.ip_rel_memory_address() != registry.checked_add(16).ok_or(UNSUPPORTED)?
+            || sixth.ip_rel_memory_address() != registry.checked_add(8).ok_or(UNSUPPORTED)?
             || appended
         {
             return Err("Node's inspector registry reader and writer disagree".into());
@@ -483,19 +492,22 @@ fn fallback(object: &object::File<'_>) -> Result<(ImageAddress, bool, ImageAddre
         HANDLER,
         true,
     )?;
+    let [load, post, ..] = wake.as_slice() else {
+        return Err(UNSUPPORTED.into());
+    };
     debug_assert!(
-        wake[0].is_ip_rel_memory_operand(),
+        load.is_ip_rel_memory_operand(),
         "the signal handler's semaphore load at image address {handler:#x} is not RIP-relative"
     );
     debug_assert_eq!(
-        wake[1].op0_kind(),
+        post.op0_kind(),
         OpKind::NearBranch64,
         "the signal handler at image address {handler:#x} does not end in a near jump"
     );
-    if !calls(object, &wake[1], "uv_sem_post") {
+    if !calls(object, post, "uv_sem_post") {
         return Err(UNSUPPORTED.into());
     }
-    let semaphore = wake[0].ip_rel_memory_address();
+    let semaphore = load.ip_rel_memory_address();
     writable(object, semaphore, 8)?;
     let body = shape(
         text(object, watchdog, WATCHDOG.len())?,

@@ -261,7 +261,7 @@ impl Cursor {
 
 impl TokioRuntime {
     fn bind(image: Arc<dyn RuntimeImage + Send + Sync>) -> Self {
-        let (major, minor) = VERIFIED[VERIFIED.len() - 1];
+        let [.., (major, minor)] = VERIFIED;
         let caveat = match image
             .source_path_ending(VERSIONED_SOURCE)
             .as_deref()

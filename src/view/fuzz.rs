@@ -3,6 +3,10 @@
 //! presentation ends in a value or a typed problem within its budget, never
 //! panics, and allocates only what its limits allow.
 #![allow(clippy::panic, reason = "a fuzz harness reports a bug by panicking")]
+#![expect(
+    clippy::indexing_slicing,
+    reason = "a fuzz harness reports a bug by panicking"
+)]
 
 #[cfg(feature = "fuzzing")]
 use super::run::{Child, Failure, children, element_place, length, present};

@@ -969,35 +969,36 @@ pub fn captures(mut bytes: &[u8]) -> Option<Vec<crate::syscalls::Capture>> {
     let mut captures = Vec::new();
 
     while !bytes.is_empty() {
-        let (head, rest) = bytes.split_first_chunk::<12>()?;
-        let word =
-            |at: usize| u32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]);
-        let len = word(8) as usize;
-        if rest.len() < len {
-            return None;
-        }
+        let (fields, rest) = bytes.split_first_chunk::<4>()?;
+        let (wanted, rest) = rest.split_first_chunk::<4>()?;
+        let (len, rest) = rest.split_first_chunk::<4>()?;
+        let [arg, when, state, _] = *fields;
+        let len = u32::from_le_bytes(*len) as usize;
+        let (held, rest) = rest.split_at_checked(len)?;
 
-        let state = match head[2] {
+        let state = match state {
             0 => CaptureState::Complete,
-            1 => CaptureState::Truncated { wanted: word(4) },
+            1 => CaptureState::Truncated {
+                wanted: u32::from_le_bytes(*wanted),
+            },
             2 => CaptureState::Unreadable,
             3 => CaptureState::NotRequested,
             _ => return None,
         };
 
-        let when = match head[1] {
+        let when = match when {
             0 => ReadAt::Entry,
             1 => ReadAt::Exit,
             _ => return None,
         };
 
         captures.push(Capture {
-            arg: head[0],
+            arg,
             when,
             state,
-            bytes: rest[..len].into(),
+            bytes: held.into(),
         });
-        bytes = &rest[len..];
+        bytes = rest;
     }
 
     Some(captures)

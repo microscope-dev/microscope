@@ -52,6 +52,11 @@ impl<'g, W, A: Add<W>> InOrder<'g, W, A> {
     /// the units added.
     pub fn new(order: &'g [usize], members: &'g [Vec<usize>], adder: A, ahead: usize) -> Self {
         debug_assert!(ahead > 0, "a walk window of no units waits forever");
+        debug_assert!(
+            order.iter().all(|&group| group < members.len()),
+            "a group in the order is past the {} groups",
+            members.len(),
+        );
         Self {
             order,
             members,
@@ -74,6 +79,11 @@ impl<'g, W, A: Add<W>> InOrder<'g, W, A> {
         let _unwinding = AbandonOnUnwind(self);
         while let Some(&group) = self.order.get(self.claimed.fetch_add(1, Ordering::Relaxed)) {
             self.window.enter(group, &self.abandoned);
+
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`order` names groups `members` lists, which `Self::new` asserts"
+            )]
             let units = &self.members[group];
             let walks = if self.abandoned.load(Ordering::Relaxed) {
                 units.iter().map(|&unit| (unit, None)).collect()

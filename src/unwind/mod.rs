@@ -27,7 +27,8 @@ pub fn unwind_module_for<'a>(
     modules: &[UnwindModule<'a>],
     address: VirtualAddress,
 ) -> Option<(UnwindModule<'a>, ImageAddress)> {
-    unwind_module_at(modules, address).map(|(index, image_address)| (modules[index], image_address))
+    unwind_module_at(modules, address)
+        .and_then(|(index, image_address)| Some((*modules.get(index)?, image_address)))
 }
 
 /// The modules a stack unwinds through, each known by its index.
@@ -41,7 +42,12 @@ pub trait Modules {
 }
 
 impl Modules for [UnwindModule<'_>] {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass an index that module_at found in this slice"
+    )]
     fn module(&self, index: usize) -> UnwindModule<'_> {
+        debug_assert!(index < self.len(), "module {index} of {}", self.len());
         self[index]
     }
 
@@ -167,6 +173,10 @@ impl DwarfRegister {
 
     /// The registers `numbers` name, in order.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "at < N, the length of both arrays; a const fn cannot use iterators"
+    )]
     pub const fn each<const N: usize>(numbers: [u16; N]) -> [Self; N] {
         let mut registers = [Self(0); N];
         let mut at = 0;
@@ -261,21 +271,22 @@ impl RegisterFile {
 
     pub fn get(&self, register: DwarfRegister) -> Option<u64> {
         let number = usize::from(register.0);
-        if number < DENSE_REGISTERS {
-            return (self.known & (1 << number) != 0).then(|| self.values[number]);
+        if let Some(value) = self.values.get(number) {
+            return (self.known & (1 << number) != 0).then_some(*value);
         }
 
         self.others
             .binary_search_by_key(&register, |(other, _)| *other)
             .ok()
-            .map(|at| self.others[at].1)
+            .and_then(|at| self.others.get(at))
+            .map(|(_, value)| *value)
     }
 
     pub fn set(&mut self, register: DwarfRegister, value: u64) {
         let number = usize::from(register.0);
-        if number < DENSE_REGISTERS {
+        if let Some(slot) = self.values.get_mut(number) {
             self.known |= 1 << number;
-            self.values[number] = value;
+            *slot = value;
             return;
         }
 
@@ -283,16 +294,20 @@ impl RegisterFile {
             .others
             .binary_search_by_key(&register, |(other, _)| *other)
         {
-            Ok(at) => self.others[at].1 = value,
+            Ok(at) => {
+                if let Some(other) = self.others.get_mut(at) {
+                    other.1 = value;
+                }
+            }
             Err(at) => self.others.insert(at, (register, value)),
         }
     }
 
     pub fn remove(&mut self, register: DwarfRegister) {
         let number = usize::from(register.0);
-        if number < DENSE_REGISTERS {
+        if let Some(slot) = self.values.get_mut(number) {
             self.known &= !(1 << number);
-            self.values[number] = 0;
+            *slot = 0;
             return;
         }
 
@@ -316,11 +331,13 @@ impl RegisterFile {
 
     /// Every known register and its value, by number.
     pub fn iter(&self) -> impl Iterator<Item = (DwarfRegister, u64)> + '_ {
-        (0..DENSE_REGISTERS)
-            .filter(|number| self.known & (1 << number) != 0)
-            .map(|number| {
+        self.values
+            .iter()
+            .enumerate()
+            .filter(|(number, _)| self.known & (1 << number) != 0)
+            .map(|(number, value)| {
                 #[expect(clippy::cast_possible_truncation, reason = "below 64")]
-                (DwarfRegister(number as u16), self.values[number])
+                (DwarfRegister(number as u16), *value)
             })
             .chain(self.others.iter().copied())
     }

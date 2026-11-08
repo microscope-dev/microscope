@@ -419,11 +419,24 @@ impl TaintedRegisters {
     }
 
     fn contains(&self, register: Register) -> bool {
-        self.registers[..self.len].contains(&register)
+        self.registers
+            .iter()
+            .take(self.len)
+            .any(|held| *held == register)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "14 incoming registers plus one per prologue instruction, at most \
+                  MAX_PROLOGUE_INSTRUCTIONS, fit the array"
+    )]
     fn insert(&mut self, register: Register) {
         if !self.contains(register) {
+            debug_assert!(
+                self.len < self.registers.len(),
+                "tainting {register:?} with all {} slots held",
+                self.len,
+            );
             self.registers[self.len] = register;
             self.len += 1;
         }

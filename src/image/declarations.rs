@@ -154,7 +154,7 @@ impl<'a> DeclarationView<'a> {
             .constants
             .binary_search_by(|record| self.name(record).cmp(name))
             .ok()?;
-        Some(value(&self.constants[found]))
+        Some(value(self.constants.get(found)?))
     }
 
     /// Every integer constant, by name.
@@ -171,7 +171,7 @@ impl<'a> DeclarationView<'a> {
             .vtables
             .binary_search_by_key(&address.get(), |record| record.address.get())
             .ok()?;
-        Some(TypeId::new(self.vtables[found].ty.get()))
+        Some(TypeId::new(self.vtables.get(found)?.ty.get()))
     }
 
     /// Every vtable, by address.
@@ -227,7 +227,9 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         .collect::<Vec<_>>();
     producers.sort_unstable();
     if !producers.iter().all(|id| strings.contains(StrId(*id)))
-        || producers.windows(2).any(|pair| pair[0] == pair[1])
+        || producers
+            .windows(2)
+            .any(|pair| matches!(pair, [a, b] if a == b))
     {
         return Err("a producer is malformed".into());
     }

@@ -32,7 +32,12 @@ pub struct SyscallInfo {
 
 pub fn syscall_info(pid: Pid) -> Result<SyscallInfo, Errno> {
     let buffer = super::super::sys::syscall_info(pid)?;
-    let word = |at: usize| u64::from_le_bytes(buffer[at..at + 8].try_into().unwrap_or_default());
+    let word = |at: usize| {
+        buffer
+            .get(at..at + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map_or(0, u64::from_le_bytes)
+    };
     let mut args = [0; 6];
     for (index, arg) in args.iter_mut().enumerate() {
         *arg = word(32 + index * 8);

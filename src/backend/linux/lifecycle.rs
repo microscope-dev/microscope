@@ -1226,11 +1226,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             // Only a trap is ours to remove. A site removed before the fork,
             // or whose memory was remapped since, such as an unloaded
             // library's, holds code the child must keep.
-            if bytes[offset] != BREAKPOINT_OPCODE {
+            let byte = offset.of(&mut bytes);
+            if *byte != BREAKPOINT_OPCODE {
                 continue;
             }
 
-            bytes[offset] = original_byte;
+            *byte = original_byte;
             cleaned = self
                 .ptrace
                 .write_word(child, word_address, u64::from_ne_bytes(bytes));

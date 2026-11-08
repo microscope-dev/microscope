@@ -475,21 +475,22 @@ pub(super) fn adjacent_strides(
 ) -> Result<Vec<i64>, EvaluateError> {
     let mut span =
         i64::try_from(element_size).map_err(|_| VariableUnavailableReason::EvaluationLimit)?;
-    let mut order = (0..bounds.len()).collect::<Vec<_>>();
-    if ordering == ArrayOrdering::RowMajor {
-        order.reverse();
-    }
-
     let mut adjacent = vec![0; bounds.len()];
+    let dimensions = adjacent.iter_mut().zip(strides.iter().zip(bounds));
+    let order: Box<dyn Iterator<Item = _>> = if ordering == ArrayOrdering::RowMajor {
+        Box::new(dimensions.rev())
+    } else {
+        Box::new(dimensions)
+    };
 
-    for (position, &index) in order.iter().enumerate() {
-        adjacent[index] = strides[index].unwrap_or(span);
-        span = match bounds[index].1 {
+    for (position, (adjacent, (stride, (_, count)))) in order.enumerate() {
+        *adjacent = stride.unwrap_or(span);
+        span = match *count {
             Some(count) => i64::try_from(count)
                 .ok()
-                .and_then(|count| adjacent[index].checked_mul(count))
+                .and_then(|count| adjacent.checked_mul(count))
                 .ok_or(VariableUnavailableReason::EvaluationLimit)?,
-            None if position + 1 == order.len() => 0,
+            None if position + 1 == bounds.len() => 0,
             None => return Err(crate::UnsupportedVariableFeature::TypeRepresentation.into()),
         };
     }
@@ -501,9 +502,10 @@ pub(super) fn adjacent_strides(
 fn integer(bytes: &[u8], byte_size: u8, signed: bool, byte_order: crate::ByteOrder) -> i128 {
     let size = usize::from(byte_size).min(bytes.len()).min(16);
     let bytes = match byte_order {
-        crate::ByteOrder::Little => &bytes[..size],
-        crate::ByteOrder::Big => &bytes[bytes.len() - size..],
+        crate::ByteOrder::Little => bytes.get(..size),
+        crate::ByteOrder::Big => bytes.get(bytes.len() - size..),
     };
+    let bytes = bytes.unwrap_or_default();
 
     let raw = unsigned_value(bytes, byte_order).unwrap_or(0);
     let bits = size * 8;

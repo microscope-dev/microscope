@@ -117,16 +117,16 @@ impl Profile {
         let mut zones = Vec::with_capacity(capture.zones.len());
 
         for range in &capture.zone_ranges {
-            let thread = &capture.threads[range.thread.get() as usize];
-            let pid = capture.processes[thread.process.get() as usize].pid.get();
-            let start = range.start.get() as usize;
+            let thread = capture.thread(range.thread.get());
+            let pid = capture.process(thread.process.get()).pid.get();
+            let tid = thread.tid.get();
 
-            for zone in &capture.zones[start..start + range.count.get() as usize] {
+            for zone in capture.range_zones(range) {
                 let value = zone.value.get();
                 let site = capture.sites.get(zone.site.get() as usize);
                 zones.push(ProfileZone {
                     pid,
-                    tid: thread.tid.get(),
+                    tid,
                     depth: range.depth.get(),
                     name: self.site_name(zone.site.get()),
                     value: (value != NONE).then(|| capture.string(value).to_owned()),
@@ -175,9 +175,8 @@ impl Profile {
                     ProgramMarker {
                         kind,
                         thread: thread.map(|_| marker.thread.get()),
-                        pid: thread.map_or(0, |thread| {
-                            capture.processes[thread.process.get() as usize].pid.get()
-                        }),
+                        pid: thread
+                            .map_or(0, |thread| capture.process(thread.process.get()).pid.get()),
                         tid: thread.map_or(0, |thread| thread.tid.get()),
                         time: marker.time.get(),
                         name: self.site_name(marker.site.get()),
@@ -235,7 +234,7 @@ impl Profile {
         let mut sites: Vec<ZoneSite> = Vec::new();
 
         for zone in &capture.zones {
-            let site = &capture.sites[zone.site.get() as usize];
+            let site = capture.site(zone.site.get());
             let name = capture.string(site.name.get());
             let label = site.kind == microscope_probes::abi::SITE_LABEL;
             let position = sites
@@ -254,7 +253,9 @@ impl Profile {
                 });
 
             let length = u64::try_from(zone.end.get() - zone.start.get()).unwrap_or(0);
-            let entry = &mut sites[position];
+            let Some(entry) = sites.get_mut(position) else {
+                continue;
+            };
             entry.count += 1;
             entry.total += length;
             entry.longest = entry.longest.max(length);

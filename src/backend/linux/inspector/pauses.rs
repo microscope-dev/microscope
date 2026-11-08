@@ -176,8 +176,10 @@ impl PausedFrame {
             .retain(|(at, given, ..)| (*at, &**given) != (scope, name));
         self.given
             .push((scope, name.into(), argument.clone(), value.clone()));
-        let chain = self.reported["scopeChain"]
-            .as_array()
+        let chain = self
+            .reported
+            .get("scopeChain")
+            .and_then(serde_json::Value::as_array)
             .map_or(&[][..], Vec::as_slice);
         let Some(position) = listed_scopes(chain)
             .iter()
@@ -196,12 +198,16 @@ impl PausedFrame {
     /// The frame's variables in declaration order, or why they are not
     /// known.
     fn locals(&self) -> crate::runtime_model::ReportedLocals {
-        let chain = self.reported["scopeChain"]
-            .as_array()
+        let chain = self
+            .reported
+            .get("scopeChain")
+            .and_then(serde_json::Value::as_array)
             .map_or(&[][..], Vec::as_slice);
         let mut locals = Vec::new();
         for (scope, index) in self.scopes.iter().zip(listed_scopes(chain)) {
-            let block = chain[index]["type"] == "block";
+            let block = chain
+                .get(index)
+                .is_some_and(|listed| listed["type"] == "block");
             match scope {
                 Some(Ok(scope)) => locals.extend(
                     scope
@@ -350,7 +356,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         params: &serde_json::Value,
     ) -> Option<(bool, Vec<u64>)> {
         let isolate = self.isolate_mut(runtime, session)?;
-        let location = &params["callFrames"][0]["location"];
+        let location = params
+            .pointer("/callFrames/0/location")
+            .unwrap_or(&serde_json::Value::Null);
         let sentinel = isolate
             .sentinel
             .as_ref()
@@ -1023,13 +1031,14 @@ fn listed_scopes(chain: &[serde_json::Value]) -> Vec<usize> {
         .iter()
         .position(|scope| scope["type"] == "local")
         .unwrap_or(chain.len());
-    (local..chain.len().min(local + 1))
-        .chain(
-            (0..local)
-                .rev()
-                .filter(|&index| chain[index]["type"] == "block"),
-        )
-        .collect()
+    let blocks = chain
+        .iter()
+        .enumerate()
+        .take(local)
+        .rev()
+        .filter(|(_, scope)| scope["type"] == "block")
+        .map(|(index, _)| index);
+    (local..chain.len().min(local + 1)).chain(blocks).collect()
 }
 
 /// The frame `frame` of a pause, the `index`th, whose scopes' variables
@@ -1050,8 +1059,9 @@ fn list_frame(
         .into_iter()
         .filter_map(|index| chain.get(index))
     {
-        let sent = scope["object"]["objectId"]
-            .as_str()
+        let sent = scope
+            .pointer("/object/objectId")
+            .and_then(serde_json::Value::as_str)
             .ok_or_else(|| Arc::<str>::from("V8 gave the scope no object"))
             .and_then(|object| {
                 connection
@@ -1077,13 +1087,18 @@ fn list_frame(
     }
     PausedFrame {
         reported: frame.clone(),
-        path: frame["location"]["scriptId"]
-            .as_str()
+        path: frame
+            .pointer("/location/scriptId")
+            .and_then(serde_json::Value::as_str)
             .and_then(|id| scripts.get(id))
             .map(|url| Arc::from(inspector_protocol::script_path(url).as_ref())),
-        line: frame["location"]["lineNumber"].as_u64().unwrap_or(u64::MAX),
-        column: frame["location"]["columnNumber"]
-            .as_u64()
+        line: frame
+            .pointer("/location/lineNumber")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(u64::MAX),
+        column: frame
+            .pointer("/location/columnNumber")
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(u64::MAX),
         scopes,
         given: Vec::new(),

@@ -80,7 +80,11 @@ impl<P: InspectionOps> Controller<P> {
                 )
             })
             .collect();
-        let main_load_bias = self.modules[&self.main.id].loaded.load_bias;
+        // The main module is registered from launch or attach on.
+        let Some(main) = self.modules.get(&self.main.id) else {
+            return;
+        };
+        let main_load_bias = main.loaded.load_bias;
         let tls_modules = self
             .main
             .c_library

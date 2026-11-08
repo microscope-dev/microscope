@@ -621,13 +621,15 @@ pub(super) fn saved_registers(
                 )
                 .into());
             }
-            let width = WIDTHS[scale];
+            let width = *WIDTHS.get(scale).ok_or("an unknown operand scale")?;
             let operand = opcode + 1 + 2 * width;
             let field = bytes
                 .get(operand..operand + width)
                 .ok_or("the SuspendGenerator's operands end its bytecode")?;
             let mut word = [0; 4];
-            word[..width].copy_from_slice(field);
+            word.get_mut(..width)
+                .ok_or("an operand is wider than four bytes")?
+                .copy_from_slice(field);
             return Ok(u32::from_le_bytes(word));
         }
         let size = usize::from(

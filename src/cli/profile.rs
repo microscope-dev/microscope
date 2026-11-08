@@ -802,8 +802,10 @@ fn record(args: &RecordArgs) -> Result<i32> {
         let attachment = microscope::profiler::record_attached(pid, &options, &mut watch)?;
         (attachment.profile, 0)
     } else {
-        let mut command = Command::new(&args.command[0]);
-        command.args(&args.command[1..]);
+        let (program, arguments) = (args.command.split_first())
+            .ok_or_else(|| anyhow::anyhow!("profile needs a program to record, or --pid"))?;
+        let mut command = Command::new(program);
+        command.args(arguments);
         let recording = microscope::profiler::record_watched(command, &options, &mut watch)?;
         (recording.profile, recording.status.code().unwrap_or(1))
     };
@@ -1016,6 +1018,10 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
     clippy::cast_precision_loss,
     reason = "seconds and percentages need no more precision than f64's"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the tree and the flat report, one after the other"
+)]
 fn ordinary_report(
     profile: &Profile,
     args: &ReportArgs,
@@ -1070,6 +1076,10 @@ fn ordinary_report(
             invert: args.invert,
             ..query
         });
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "a tree has one entry per node in each column"
+        )]
         let tree: Vec<microscope::profiler::CallNode> = (0..tree.len())
             .map(|node| microscope::profiler::CallNode {
                 parent: (tree.parent[node] != microscope::profiler::NO_KEY)
@@ -1079,20 +1089,24 @@ fn ordinary_report(
                 total: tree.total[node],
             })
             .collect();
-        let mut depth = vec![0_usize; tree.len()];
 
         // Each node with its children after it, depth first.
         let mut children: Vec<Vec<usize>> = vec![Vec::new(); tree.len()];
         let mut roots = Vec::new();
         for (index, node) in tree.iter().enumerate() {
-            match node.parent {
-                Some(parent) => children[parent].push(index),
+            match node.parent.and_then(|parent| children.get_mut(parent)) {
+                Some(siblings) => siblings.push(index),
                 None => roots.push(index),
             }
         }
 
         let by_total = |nodes: &mut Vec<usize>| {
-            nodes.sort_by(|a, b| tree[*b].total.cmp(&tree[*a].total).then(a.cmp(b)));
+            nodes.sort_by_key(|&node| {
+                (
+                    std::cmp::Reverse(tree.get(node).map(|node| node.total)),
+                    node,
+                )
+            });
         };
 
         for list in &mut children {
@@ -1101,10 +1115,13 @@ fn ordinary_report(
 
         by_total(&mut roots);
 
-        let mut pending: Vec<usize> = roots.into_iter().rev().collect();
+        let mut pending: Vec<(usize, usize)> =
+            roots.into_iter().rev().map(|root| (root, 0)).collect();
 
-        while let Some(index) = pending.pop() {
-            let node = &tree[index];
+        while let Some((index, depth)) = pending.pop() {
+            let Some(node) = tree.get(index) else {
+                continue;
+            };
             if percent(node.total) < args.min_percent {
                 continue;
             }
@@ -1121,10 +1138,9 @@ fn ordinary_report(
                     percent(node.own)
                 )?;
             }
-            writeln!(out, "  {}{}", "  ".repeat(depth[index]), node.name)?;
-            for &child in children[index].iter().rev() {
-                depth[child] = depth[index] + 1;
-                pending.push(child);
+            writeln!(out, "  {}{}", "  ".repeat(depth), node.name)?;
+            if let Some(children) = children.get(index) {
+                pending.extend(children.iter().rev().map(|&child| (child, depth + 1)));
             }
         }
     } else {
@@ -2063,7 +2079,7 @@ fn runtime_labels(
 
     let mut rows: Vec<_> = rows.into_iter().collect();
     rows.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
-    let shown = &rows[..rows.len().min(limit)];
+    let shown = rows.get(..limit).unwrap_or(&rows);
     let width = shown
         .iter()
         .map(|((_, _, text), _)| text.len())
@@ -2141,7 +2157,7 @@ fn messages(
     let mut said = profile.program_markers();
     said.sort_by_key(|marker| marker.time);
     if !said.is_empty() {
-        let shown = &said[..said.len().min(limit)];
+        let shown = said.get(..limit).unwrap_or(&said);
         let rows: Vec<(String, &str)> = shown
             .iter()
             .map(|marker| (names.thread(marker.pid, marker.tid), marker.name.as_str()))

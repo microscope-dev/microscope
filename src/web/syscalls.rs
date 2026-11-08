@@ -356,13 +356,14 @@ fn site<'a>(profile: &Profile, sites: &'a mut HashMap<u32, String>, row: u32) ->
 /// it from, as the descriptor it makes will be known.
 fn named_path(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
     let path = filter::paths(call).into_iter().next()?;
-    let dirfd = specs::spec(call.call)
-        .and_then(|spec| {
-            spec.args
-                .iter()
-                .position(|arg| matches!(arg, specs::Arg::DirFd))
-        })
-        .map_or(AT_FDCWD, |index| filter::fd_value(call.args[index]));
+    let dirfd = match specs::spec(call.call).and_then(|spec| {
+        spec.args
+            .iter()
+            .position(|arg| matches!(arg, specs::Arg::DirFd))
+    }) {
+        Some(index) => filter::fd_value(*call.args.get(index)?),
+        None => AT_FDCWD,
+    };
 
     Some(fds.resolve(call.process, dirfd, &path))
 }
@@ -376,7 +377,7 @@ fn target(call: &SyscallEvent, fds: &FdTable) -> Option<String> {
             .args
             .iter()
             .position(|arg| matches!(arg, specs::Arg::Fd))?;
-        let fd = filter::fd_value(call.args[index]);
+        let fd = filter::fd_value(*call.args.get(index)?);
         Some(fds.describe(call.process, fd).map_or_else(
             || fd.to_string(),
             |description| description.text.to_string(),
@@ -428,6 +429,7 @@ fn row(key: String, name: String, stats: &SyscallStats) -> SyscallRow {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per grouping")]
 fn summary(
     profile: &Profile,
     trace: &Trace,
@@ -435,6 +437,10 @@ fn summary(
 ) -> Result<SyscallSummary, Failure> {
     let selection = Selection::new(trace, &query.query)?;
     let mut sites: HashMap<u32, String> = HashMap::new();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "calls passes the indices of trace's own events"
+    )]
     let mut group = |index: usize, call: &SyscallEvent, fds: &FdTable| -> (String, String) {
         match query.group {
             SyscallGroup::Path => {
@@ -569,6 +575,10 @@ impl Slices {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
+)]
 fn rate(trace: &Trace, query: &SyscallRateQuery) -> Result<SyscallRate, Failure> {
     let selection = Selection::new(trace, &query.query)?;
     let slices = Slices::new(selection.span(trace), query.buckets);
@@ -618,6 +628,10 @@ fn rate(trace: &Trace, query: &SyscallRateQuery) -> Result<SyscallRate, Failure>
     })
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
+)]
 fn heatmap(trace: &Trace, query: &SyscallHeatmapQuery) -> Result<SyscallHeatmap, Failure> {
     let selection = Selection::new(trace, &query.query)?;
     let slices = Slices::new(selection.span(trace), query.buckets);
@@ -638,6 +652,10 @@ fn heatmap(trace: &Trace, query: &SyscallHeatmapQuery) -> Result<SyscallHeatmap,
     })
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "bucket returns one below BUCKETS, and calls passes the indices of trace's own events"
+)]
 fn detail(
     profile: &Profile,
     trace: &Trace,
@@ -835,7 +853,7 @@ fn call(
 
     // The descriptors as the call found them, and as it left them.
     let mut fds = FdTable::default();
-    for event in &trace.events[..index] {
+    for event in trace.events.iter().take(index) {
         match &event.event {
             TraceEvent::Call(call) => fds.apply_call(call),
             other => fds.apply(other),
@@ -908,6 +926,10 @@ fn call(
     })
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
+)]
 fn lanes(trace: &Trace, query: &SyscallLanesQuery) -> Result<SyscallLanes, Failure> {
     let selection = Selection {
         overlapping: true,

@@ -57,8 +57,10 @@ const fn table_id(index: usize) -> u32 {
     index as u32
 }
 
-fn general_descriptor(index: usize) -> RegisterDescriptor {
-    let (_, name, role) = GENERAL_REGISTERS[index];
+type GeneralRegister = (DwarfRegister, &'static str, Option<RegisterRole>);
+
+/// The descriptor of `register`, the `index`th of [`GENERAL_REGISTERS`].
+fn general_descriptor(index: usize, &(_, name, role): &GeneralRegister) -> RegisterDescriptor {
     RegisterDescriptor {
         id: RegisterId::new(table_id(index)),
         name: name.into(),
@@ -67,10 +69,12 @@ fn general_descriptor(index: usize) -> RegisterDescriptor {
     }
 }
 
-fn general_index(dwarf: DwarfRegister) -> Option<usize> {
+fn general_descriptor_of(dwarf: DwarfRegister) -> Option<RegisterDescriptor> {
     GENERAL_REGISTERS
         .iter()
-        .position(|(number, ..)| *number == dwarf)
+        .enumerate()
+        .find(|(_, (number, ..))| *number == dwarf)
+        .map(|(index, register)| general_descriptor(index, register))
 }
 
 /// The segment, thread-pointer, and system-call registers, after the
@@ -153,10 +157,14 @@ pub(super) fn x86_64_general_variable_register(
     registers: &libc::user_regs_struct,
     dwarf: DwarfRegister,
 ) -> Option<VariableRegister> {
-    let index = general_index(dwarf)?;
+    let (index, (register, value)) = GENERAL_REGISTERS
+        .iter()
+        .zip(general_values(registers))
+        .enumerate()
+        .find(|(_, ((number, ..), _))| *number == dwarf)?;
     Some(VariableRegister {
-        descriptor: general_descriptor(index),
-        bytes: Arc::from(general_values(registers)[index].to_le_bytes()),
+        descriptor: general_descriptor(index, register),
+        bytes: Arc::from(value.to_le_bytes()),
     })
 }
 
@@ -166,8 +174,7 @@ pub(super) fn x86_64_caller_variable_register(
     registers: &RegisterFile,
     dwarf: DwarfRegister,
 ) -> Result<VariableRegister, VariableRuntimeError> {
-    if let Some(index) = general_index(dwarf) {
-        let descriptor = general_descriptor(index);
+    if let Some(descriptor) = general_descriptor_of(dwarf) {
         return match registers.get(dwarf) {
             Some(value) => Ok(VariableRegister {
                 descriptor,
@@ -254,8 +261,16 @@ pub(super) fn x86_64_xmm_variable_register(
     registers: &Fxsave,
     dwarf: DwarfRegister,
 ) -> VariableRegister {
+    debug_assert!(
+        (17..=32).contains(&dwarf.number()),
+        "DWARF register {dwarf} is not an SSE register"
+    );
     let index = usize::from(dwarf.number() - 17);
     let start = FXSAVE_XMM_OFFSET + index * 16;
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass xmm0 through xmm15, which end at byte 416 of 512"
+    )]
     let bytes = registers[start..start + 16].to_vec();
     VariableRegister {
         descriptor: RegisterDescriptor {
@@ -275,8 +290,17 @@ pub(super) fn x86_64_x87_variable_register(
     registers: &Fxsave,
     dwarf: DwarfRegister,
 ) -> VariableRegister {
+    debug_assert!(
+        (33..=40).contains(&dwarf.number()),
+        "DWARF register {dwarf} is not an x87 register"
+    );
     let index = usize::from(dwarf.number() - 33);
     let start = FXSAVE_X87_OFFSET + index * 16;
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass st0 through st7, which end at byte 154 of 512"
+    )]
+    let bytes = registers[start..start + 10].to_vec();
     VariableRegister {
         descriptor: RegisterDescriptor {
             id: RegisterId::new(43 + u32::from(dwarf.number() - 33)),
@@ -284,8 +308,22 @@ pub(super) fn x86_64_x87_variable_register(
             bits: 80,
             role: None,
         },
-        bytes: registers[start..start + 10].to_vec().into(),
+        bytes: bytes.into(),
     }
+}
+
+/// The low `bits` of `value`, little-endian, for a register of the tables
+/// above, whose widths are whole bytes of at most 64 bits.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "register tables hold widths of 16 or 64 bits"
+)]
+fn low_bytes(value: u64, bits: u16) -> Arc<[u8]> {
+    debug_assert!(
+        bits.is_multiple_of(8) && bits <= 64,
+        "a register is {bits} bits wide"
+    );
+    Arc::from(&value.to_le_bytes()[..usize::from(bits / 8)])
 }
 
 /// Describes a frame's general registers: the thread's own for the
@@ -302,19 +340,24 @@ pub(super) fn x86_64_register_snapshot(
     native: Option<&libc::user_regs_struct>,
     caller: Option<&RegisterFile>,
 ) -> RegisterSnapshot {
-    let general = native.map(general_values);
-    let registers = (0..GENERAL_REGISTERS.len())
-        .map(|index| RegisterValue {
-            register: general_descriptor(index),
+    let general = native.map_or([None; GENERAL_REGISTERS.len()], |native| {
+        general_values(native).map(Some)
+    });
+    let special = native.map_or([None; SPECIAL_REGISTERS.len()], |native| {
+        special_values(native).map(Some)
+    });
+    let registers = GENERAL_REGISTERS
+        .iter()
+        .zip(general)
+        .enumerate()
+        .map(|(index, (register, value))| RegisterValue {
+            register: general_descriptor(index, register),
             bytes: caller
-                .map_or_else(
-                    || general.map(|values| values[index]),
-                    |file| file.get(GENERAL_REGISTERS[index].0),
-                )
+                .map_or(value, |file| file.get(register.0))
                 .map(|value| Arc::from(value.to_le_bytes())),
         })
-        .chain(SPECIAL_REGISTERS.into_iter().enumerate().map(
-            |(offset, (name, bits, every_frame))| {
+        .chain(SPECIAL_REGISTERS.into_iter().zip(special).enumerate().map(
+            |(offset, ((name, bits, every_frame), value))| {
                 RegisterValue {
                     register: RegisterDescriptor {
                         id: RegisterId::new(18 + table_id(offset)),
@@ -322,12 +365,9 @@ pub(super) fn x86_64_register_snapshot(
                         bits,
                         role: None,
                     },
-                    bytes: native
+                    bytes: value
                         .filter(|_| caller.is_none() || every_frame)
-                        .map(|native| {
-                            let value = special_values(native)[offset];
-                            Arc::from(&value.to_le_bytes()[..usize::from(bits / 8)])
-                        }),
+                        .map(|value| low_bytes(value, bits)),
                 }
             },
         ))

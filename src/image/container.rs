@@ -64,9 +64,11 @@ pub fn structure<F: Format, const N: usize>(
         .checked_sub(size_of::<Trailer>())
         .filter(|start| *start >= size_of::<Header>())
         .ok_or(ImageError::Truncated)?;
-    let trailer =
-        Trailer::ref_from_bytes(&bytes[trailer_start..]).map_err(|_| ImageError::Truncated)?;
-    if trailer.checksum.get() != twox_hash::XxHash3_64::oneshot(&bytes[..trailer_start]) {
+    let (body, trailer) = bytes
+        .split_at_checked(trailer_start)
+        .ok_or(ImageError::Truncated)?;
+    let trailer = Trailer::ref_from_bytes(trailer).map_err(|_| ImageError::Truncated)?;
+    if trailer.checksum.get() != twox_hash::XxHash3_64::oneshot(body) {
         return Err(ImageError::Checksum);
     }
 
@@ -133,8 +135,10 @@ fn check_directory<F: Format, const N: usize>(
         return Err(ImageError::Truncated);
     }
 
-    let entries = <[DirectoryEntry]>::ref_from_bytes(&bytes[size_of::<Header>()..directory_end])
-        .map_err(|_| ImageError::Truncated)?;
+    let entries = bytes
+        .get(size_of::<Header>()..directory_end)
+        .and_then(|directory| <[DirectoryEntry]>::ref_from_bytes(directory).ok())
+        .ok_or(ImageError::Truncated)?;
     let mut tables = [None; N];
     let mut previous_kind = None;
     let mut previous_end = directory_end;
@@ -173,21 +177,26 @@ fn check_directory<F: Format, const N: usize>(
             return Err(malformed(format!("{kind:?} is misplaced")));
         }
 
-        if bytes[previous_end..offset].iter().any(|byte| *byte != 0) {
+        let padding = bytes
+            .get(previous_end..offset)
+            .ok_or(ImageError::Truncated)?;
+        if padding.iter().any(|byte| *byte != 0) {
             return Err(malformed("padding between tables is not zero"));
         }
 
         previous_end = end;
-        tables[F::index(kind)] = Some(Placed {
+        let slot = tables.get_mut(F::index(kind));
+        debug_assert!(slot.is_some(), "{kind:?}'s index is below {N}");
+        *slot.ok_or_else(|| malformed(format!("{kind:?} has no slot")))? = Some(Placed {
             offset,
             length: end - offset,
         });
     }
 
-    if bytes[previous_end..trailer_start]
-        .iter()
-        .any(|byte| *byte != 0)
-    {
+    let padding = bytes
+        .get(previous_end..trailer_start)
+        .ok_or(ImageError::Truncated)?;
+    if padding.iter().any(|byte| *byte != 0) {
         return Err(malformed("padding before the trailer is not zero"));
     }
 
@@ -294,19 +303,20 @@ impl<'a, F: Format> Tables<'a, F> {
         let header = header::<F>(target, length, entries.len())?;
         let mut bytes = AlignedBytes::zeroed(length).ok_or(ImageError::TooLarge)?;
         let buffer = bytes.as_mut_bytes();
-        buffer[..directory_start].copy_from_slice(header.as_bytes());
-        buffer[directory_start..directory_start + directory_length]
-            .copy_from_slice(entries.as_bytes());
+        copy_at(buffer, 0, header.as_bytes());
+        copy_at(buffer, directory_start, entries.as_bytes());
 
         // Each table is freed once copied, so the tables and the image
         // are not all held at once.
         for ((_, _, _, table), start) in self.tables.into_iter().zip(offsets) {
-            let rows = table.bytes();
-            buffer[start..start + rows.len()].copy_from_slice(rows);
+            copy_at(buffer, start, table.bytes());
         }
 
-        let checksum = twox_hash::XxHash3_64::oneshot(&buffer[..offset]);
-        buffer[offset..].copy_from_slice(
+        let (body, trailer) = buffer
+            .split_at_mut_checked(offset)
+            .ok_or(ImageError::TooLarge)?;
+        let checksum = twox_hash::XxHash3_64::oneshot(body);
+        trailer.copy_from_slice(
             Trailer {
                 checksum: checksum.into(),
             }
@@ -315,6 +325,23 @@ impl<'a, F: Format> Tables<'a, F> {
 
         Ok(bytes)
     }
+}
+
+/// Copies `source` into `buffer` from `start`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`Tables::seal` sizes the buffer from the offsets and lengths it copies at"
+)]
+fn copy_at(buffer: &mut [u8], start: usize, source: &[u8]) {
+    debug_assert!(
+        start
+            .checked_add(source.len())
+            .is_some_and(|end| end <= buffer.len()),
+        "{} bytes at {start} overrun a {}-byte image",
+        source.len(),
+        buffer.len()
+    );
+    buffer[start..start + source.len()].copy_from_slice(source);
 }
 
 /// A new image's header.

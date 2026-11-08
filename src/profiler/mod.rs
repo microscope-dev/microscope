@@ -672,11 +672,11 @@ impl Profile {
         let capture = &self.capture;
         let mut threads = std::collections::BTreeMap::<u32, ProfileThread>::new();
         let new = |row: u32| {
-            let thread = &capture.threads[row as usize];
+            let thread = capture.thread(row);
             ProfileThread {
                 row,
                 process: thread.process.get(),
-                pid: capture.processes[thread.process.get() as usize].pid.get(),
+                pid: capture.process(thread.process.get()).pid.get(),
                 tid: thread.tid.get(),
                 name: Some(capture.string(thread.name.get()))
                     .filter(|name| !name.is_empty())
@@ -813,12 +813,15 @@ impl Profile {
             ..query(view)
         });
 
-        (0..tree.len())
-            .map(|node| CallNode {
-                parent: (tree.parent[node] != NONE).then_some(tree.parent[node] as usize),
-                name: keys.name(tree.key[node]),
-                own: tree.own[node],
-                total: tree.total[node],
+        tree.parent
+            .iter()
+            .zip(&tree.key)
+            .zip(tree.own.iter().zip(&tree.total))
+            .map(|((&parent, &key), (&own, &total))| CallNode {
+                parent: (parent != NONE).then_some(parent as usize),
+                name: keys.name(key),
+                own,
+                total,
             })
             .collect()
     }
@@ -962,15 +965,14 @@ impl Profile {
         let mut intervals = Vec::with_capacity(capture.off_cpu.len());
 
         for range in &capture.off_cpu_ranges {
-            let thread = &capture.threads[range.thread.get() as usize];
-            let pid = capture.processes[thread.process.get() as usize].pid.get();
+            let (pid, tid) = ids_of(capture, range.thread.get());
             intervals.extend(
                 capture
                     .thread_off_cpu(range)
                     .iter()
                     .map(|interval| OffCpuInterval {
                         pid,
-                        tid: thread.tid.get(),
+                        tid,
                         time: interval.time.get(),
                         duration: interval.duration.get(),
                         preempted: interval.preempted != 0,
@@ -988,9 +990,7 @@ impl Profile {
         let mut stacks = Vec::with_capacity(capture.samples.len());
 
         for range in &capture.sample_ranges {
-            let thread = &capture.threads[range.thread.get() as usize];
-            let tid = thread.tid.get();
-            let pid = capture.processes[thread.process.get() as usize].pid.get();
+            let (pid, tid) = ids_of(capture, range.thread.get());
             for sample in capture.thread_samples(range) {
                 let (functions, ending) = self.names(sample.stack.get());
                 let task = capture
@@ -1020,7 +1020,7 @@ impl Profile {
             .task_waits
             .iter()
             .map(|wait| {
-                let task = &capture.tasks[wait.task.get() as usize];
+                let task = capture.task(wait.task.get());
                 let (functions, ending) = self.names(wait.stack.get());
                 TaskWaitStack {
                     noun: capture.string(task.runtime.get()).to_owned(),
@@ -1128,7 +1128,7 @@ impl Profile {
         let mut functions = Vec::new();
         let mut ending = StackEnding::Complete;
         for frame in capture.stack_frames(stack) {
-            let record = &capture.frames[frame as usize];
+            let record = capture.frame(frame);
             if record.kind == FrameKind::Truncated as u8 {
                 let reason = Truncation::from_number(record.address.get())
                     .map_or("unknown", Truncation::describe);
@@ -1142,8 +1142,7 @@ impl Profile {
             }
 
             for line in lines {
-                let function = &capture.functions[line.function.get() as usize];
-                functions.push(capture.string(function.name.get()).to_owned());
+                functions.push(function_name(capture, line.function.get()).to_owned());
             }
         }
 
@@ -1152,15 +1151,13 @@ impl Profile {
 
     /// A frame without symbols, as `module+0xoffset`.
     fn address_name(&self, frame: u32) -> String {
-        let record = &self.capture.frames[frame as usize];
+        let record = self.capture.frame(frame);
         let module = record.module.get();
         if module == NONE {
             return format!("{:#x}", record.address.get());
         }
 
-        let path = self
-            .capture
-            .string(self.capture.modules[module as usize].path.get());
+        let path = self.capture.string(self.capture.module(module).path.get());
         let name = Path::new(path)
             .file_name()
             .map_or_else(|| path.into(), |name| name.to_string_lossy());
@@ -1175,7 +1172,11 @@ impl Profile {
         let capture = &self.capture;
 
         for mapping in &capture.mappings {
-            let path = capture.string(capture.modules[mapping.module.get() as usize].path.get());
+            // A mapping may name no module.
+            let Some(module) = capture.modules.get(mapping.module.get() as usize) else {
+                continue;
+            };
+            let path = capture.string(module.path.get());
             if program.as_deref() == Some(Path::new(path)) && mapping.bias.get() != expected.get() {
                 return Err(RecordError::Misplaced {
                     expected: expected.get(),
@@ -1186,6 +1187,27 @@ impl Profile {
 
         Ok(())
     }
+}
+
+/// The name of function row `function`, as a line or a line key names it.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Capture::validate checks every line's function, and line keys come from lines"
+)]
+fn function_name(capture: &Capture, function: u32) -> &str {
+    debug_assert!(
+        (function as usize) < capture.functions.len(),
+        "function {function} of {}",
+        capture.functions.len(),
+    );
+    capture.string(capture.functions[function as usize].name.get())
+}
+
+/// The pid and tid of thread row `thread`, which `Capture::validate`
+/// checked.
+fn ids_of(capture: &Capture, thread: u32) -> (u32, u32) {
+    let row = capture.thread(thread);
+    (capture.process(row.process.get()).pid.get(), row.tid.get())
 }
 
 /// The setting that holds the command line of the process of row
@@ -1229,7 +1251,9 @@ pub fn encode_cmdline(cmdline: &[u8]) -> String {
         return "[]".to_owned();
     };
     encode_arguments(
-        cmdline[..=last]
+        cmdline
+            .get(..=last)
+            .unwrap_or_default()
             .split(|byte| *byte == 0)
             .map(std::ffi::OsStr::from_bytes),
     )

@@ -63,9 +63,17 @@ impl<'data> ScopeTable<'data> {
     fn get(&self, key: DieKey) -> Option<u32> {
         let unit = self.units.get(key.unit)?;
         let index = unit.offsets.binary_search(&key.offset).ok()?;
-        Some(unit.scopes[index]).filter(|scope| (*scope as usize) < self.scopes.len())
+        unit.scopes
+            .get(index)
+            .copied()
+            .filter(|scope| (*scope as usize) < self.scopes.len())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "scope indices come from `Self::add`, from `Self::get`, which checks them, or \
+                  from a scope's parent, which was added before it"
+    )]
     fn scope(&self, index: u32) -> &GlobalScope<'data> {
         &self.scopes[index as usize]
     }
@@ -207,7 +215,7 @@ pub(super) fn load_globals<'data>(
         .collect::<Vec<_>>();
 
     for (unit_index, (found, error)) in found.into_iter().enumerate() {
-        let unit = &units[unit_index];
+        let unit = super::unit_at(units, unit_index);
         for (key, current_scope, entry) in found {
             let entry = &entry;
 
@@ -329,12 +337,22 @@ pub(super) fn load_globals<'data>(
             if let DefinitionResolution::Existing(existing_global) =
                 definitions.resolve(&identities, globals.len())
             {
-                let existing_object = globals[existing_global].object;
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "`definitions` holds only candidates that were pushed to `globals`"
+                )]
+                let existing = &mut globals[existing_global];
+                let existing_object = existing.object;
 
-                if value_rank(&object.value) > value_rank(&objects[existing_object as usize].value)
-                {
-                    objects[existing_object as usize] = object;
-                    globals[existing_global] = Global {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "a global's object is the index it was pushed to `objects` at"
+                )]
+                let previous = &mut objects[existing_object as usize];
+
+                if value_rank(&object.value) > value_rank(&previous.value) {
+                    *previous = object;
+                    *existing = Global {
                         object: existing_object,
                         ..info
                     };
@@ -378,6 +396,12 @@ fn unit_scopes<'data>(
             let depth = usize::try_from(die.depth).map_err(|_| DwarfError::InvalidEntryDepth)?;
             scopes.truncate(depth);
             let parent = scopes.last().copied().unwrap_or(0);
+
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`scopes` holds only indices of scopes pushed to `table`, and `table` \
+                          begins with the root, 0"
+            )]
             let parent_scope = &table[parent as usize];
 
             let scope = match die.tag {
@@ -451,7 +475,7 @@ fn unit_globals<'data>(
     table: &ScopeTable<'data>,
     unit_index: usize,
 ) -> (Vec<FoundGlobal<'data>>, Option<DwarfError>) {
-    let unit = &units[unit_index];
+    let unit = super::unit_at(units, unit_index);
     let mut found = Vec::new();
     if is_type_unit(unit) {
         return (found, None);

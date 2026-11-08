@@ -414,18 +414,21 @@ impl GoTable {
         release: Option<GoRelease>,
     ) -> Result<Self> {
         check_magic(&data)?;
-        if data.len() < HEADER_SIZE {
+        let Some(&[.., pad_low, pad_high, quantum, pointer_size]) = data
+            .first_chunk::<8>()
+            .filter(|_| data.len() >= HEADER_SIZE)
+        else {
             return Err(PclntabError::Truncated("the header"));
-        }
+        };
 
-        let quantum = u32::from(data[6]);
-        if data[4] != 0 || data[5] != 0 || !matches!(quantum, 1 | 2 | 4) {
+        let quantum = u32::from(quantum);
+        if pad_low != 0 || pad_high != 0 || !matches!(quantum, 1 | 2 | 4) {
             return Err(malformed(
                 "the header's padding or instruction size is invalid",
             ));
         }
 
-        if data[7] != 8 {
+        if pointer_size != 8 {
             return Err(PclntabError::UnsupportedRelease(
                 "a toolchain for 32-bit pointers",
             ));
@@ -441,7 +444,11 @@ impl GoTable {
 
         // Each table follows the previous one, in this order.
         let offsets = [word(3)?, word(4)?, word(5)?, word(6)?, word(7)?, data.len()];
-        if offsets[0] < HEADER_SIZE || offsets.windows(2).any(|pair| pair[0] > pair[1]) {
+        if offsets[0] < HEADER_SIZE
+            || offsets
+                .windows(2)
+                .any(|pair| matches!(pair, [before, after] if before > after))
+        {
             return Err(malformed("the header's table offsets are out of order"));
         }
 
@@ -474,10 +481,25 @@ impl GoTable {
         Ok(table)
     }
 
+    /// The bytes of one of the tables the header names.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`parse` checked that the tables lie in order within the data"
+    )]
+    fn table(&self, range: &Range<usize>) -> &[u8] {
+        debug_assert!(
+            range.start <= range.end && range.end <= self.data.len(),
+            "a table at {range:?} is outside the {} bytes of data",
+            self.data.len(),
+        );
+
+        &self.data[range.clone()]
+    }
+
     /// Decodes the function table: `nfunc` pairs of a text offset and a
     /// `_func` offset, then the offset where the last function ends.
     fn decode_functions(&self, nfunc: usize, text: u64) -> Result<Vec<GoFunction>> {
-        let pclntable = &self.data[self.pclntable.clone()];
+        let pclntable = self.table(&self.pclntable);
         if nfunc
             .checked_mul(8)
             .and_then(|size| size.checked_add(4))
@@ -527,6 +549,7 @@ impl GoTable {
         let fixed = record
             .checked_add(FUNC_SIZE)
             .and_then(|end| pclntable.get(record..end))
+            .and_then(|fixed| <&[u8; FUNC_SIZE]>::try_from(fixed).ok())
             .ok_or(PclntabError::Truncated("a function record"))?;
         let field = |index: usize| {
             read_u32(fixed, 4 * index).ok_or(PclntabError::Truncated("a function record"))
@@ -611,22 +634,25 @@ impl GoTable {
         let after = self
             .functions
             .partition_point(|function| function.entry <= address);
-        self.functions[..after]
-            .last()
+        after
+            .checked_sub(1)
+            .and_then(|last| self.functions.get(last))
             .filter(|function| function.contains(address))
     }
 
     /// A NUL-terminated string at `offset` within `table`.
     fn string(&self, table: &Range<usize>, offset: usize) -> Result<Arc<str>> {
-        let bytes = self.data[table.clone()]
+        let bytes = self
+            .table(table)
             .get(offset..)
             .ok_or_else(|| malformed("a string is outside its table"))?;
-        let length = bytes
-            .iter()
-            .position(|byte| *byte == 0)
+        let string = bytes
+            .split(|byte| *byte == 0)
+            .next()
+            .filter(|string| string.len() < bytes.len())
             .ok_or(PclntabError::Truncated("a string"))?;
 
-        Ok(String::from_utf8_lossy(&bytes[..length]).into())
+        Ok(String::from_utf8_lossy(string).into())
     }
 
     /// The function's name, as Go spells it.
@@ -658,7 +684,7 @@ impl GoTable {
         }
 
         Some(PcRuns {
-            data: self.data[self.pctab.clone()].get(table.0 as usize..)?,
+            data: self.table(&self.pctab).get(table.0 as usize..)?,
             offset: 0,
             pc: function.entry,
             entry: function.entry,
@@ -767,7 +793,7 @@ impl GoTable {
             .checked_add(index)
             .and_then(|slot| usize::try_from(slot).ok())
             .and_then(|slot| slot.checked_mul(4))
-            .and_then(|offset| read_u32(&self.data[self.cutab.clone()], offset))
+            .and_then(|offset| read_u32(self.table(&self.cutab), offset))
             .ok_or_else(|| malformed("a file index is outside the compile-unit table"))?;
         if slot == u32::MAX {
             return Ok(None);
@@ -885,6 +911,7 @@ impl GoTable {
             .and_then(|index| index.checked_mul(INLINED_CALL_SIZE))
             .and_then(|offset| offset.checked_add(gofunc)?.checked_add(tree as usize))
             .and_then(|start| self.data.get(start..start.checked_add(INLINED_CALL_SIZE)?))
+            .and_then(|record| <&[u8; INLINED_CALL_SIZE]>::try_from(record).ok())
             .ok_or(PclntabError::Truncated("an inline tree"))?;
         let field = |index: usize| {
             read_u32(record, 4 * index).ok_or(PclntabError::Truncated("an inline tree"))
@@ -948,11 +975,15 @@ impl GoTable {
         };
 
         let runs = clipped(runs, function)?;
-        let Some(first) = runs.iter().position(|run| run.value != 0) else {
+        let Some((pushed, after)) = runs
+            .iter()
+            .position(|run| run.value != 0)
+            .and_then(|first| runs.get(first..))
+            .and_then(<[PcRun]>::split_first)
+        else {
             return Ok(Prologue::default());
         };
 
-        let pushed = &runs[first];
         let saved = pushed.value == 8
             && pushed.start > function.entry
             && code(pushed.start - 1, 1) == Some(&[0x55][..])
@@ -963,7 +994,7 @@ impl GoTable {
 
         let assembly = function.facts.assembly;
         let saved_until = if assembly {
-            runs[first..]
+            after
                 .iter()
                 .find(|run| run.value == 0)
                 .map_or(function.end, |run| run.start)
@@ -972,7 +1003,7 @@ impl GoTable {
         };
 
         let framed = pushed.start + 3;
-        let allocates_locals = runs.get(first + 1).is_some_and(|locals| {
+        let allocates_locals = after.first().is_some_and(|locals| {
             locals.start == pushed.end
                 && locals.value > 8
                 && locals
@@ -1128,8 +1159,8 @@ fn find_table<'data>(object: &object::File<'data>) -> Result<Option<FoundTable<'
         let start = section.address();
 
         for offset in (aligned_offset(start)..data.len()).step_by(8) {
-            let candidate = &data[offset..];
-            if let Some(address) = start.checked_add(offset as u64)
+            if let Some(candidate) = data.get(offset..)
+                && let Some(address) = start.checked_add(offset as u64)
                 && plausible_header(candidate)
             {
                 return Ok(Some(FoundTable {
@@ -1155,7 +1186,7 @@ fn plausible_header(data: &[u8]) -> bool {
     if read_u32(data, 0) != Some(GO120_MAGIC)
         || data
             .get(4..8)
-            .is_none_or(|bytes| bytes[..2] != [0, 0] || bytes[3] != 8)
+            .is_none_or(|bytes| !matches!(bytes, [0, 0, _, 8]))
     {
         return false;
     }
@@ -1164,9 +1195,11 @@ fn plausible_header(data: &[u8]) -> bool {
         .map(|index| read_u64(data, 8 + 8 * index))
         .collect::<Option<Vec<_>>>();
     words.is_some_and(|words| {
-        words[0] >= HEADER_SIZE as u64
-            && words.windows(2).all(|pair| pair[0] <= pair[1])
-            && words[4] <= data.len() as u64
+        matches!(words.as_slice(), [first, .., last]
+            if *first >= HEADER_SIZE as u64 && *last <= data.len() as u64)
+            && words
+                .windows(2)
+                .all(|pair| matches!(pair, [before, after] if before <= after))
     })
 }
 
@@ -1343,8 +1376,10 @@ pub fn fuzz(data: &[u8]) {
     let mut bytes = data.to_vec();
 
     // Most inputs should reach past the magic number.
-    if bytes.len() >= 8 && bytes[0] & 1 == 0 {
-        bytes[..8].copy_from_slice(&[0xf1, 0xff, 0xff, 0xff, 0, 0, 1, 8]);
+    if let Some(head) = bytes.first_chunk_mut::<8>()
+        && head[0] & 1 == 0
+    {
+        *head = [0xf1, 0xff, 0xff, 0xff, 0, 0, 1, 8];
     }
 
     let gofunc = bytes

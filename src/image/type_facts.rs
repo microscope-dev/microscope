@@ -245,7 +245,8 @@ fn fact(facts: &[TypeFactRecord], ty: TypeId) -> Option<u64> {
     facts
         .binary_search_by_key(&ty.get(), |fact| fact.ty.get())
         .ok()
-        .map(|found| facts[found].value.get())
+        .and_then(|found| facts.get(found))
+        .map(|fact| fact.value.get())
 }
 
 impl<'a> TypeFactsView<'a> {
@@ -278,7 +279,8 @@ impl<'a> TypeFactsView<'a> {
         self.complex
             .binary_search_by(|part| key(part).cmp(&(name, size)))
             .ok()
-            .map(|found| TypeId::new(self.complex[found].ty.get()))
+            .and_then(|found| self.complex.get(found))
+            .map(|part| TypeId::new(part.ty.get()))
     }
 
     /// The expression finding `child` of the aggregate `aggregate`.
@@ -295,7 +297,8 @@ impl<'a> TypeFactsView<'a> {
                 )
             })
             .ok()
-            .map(|found| ExpressionId(self.layouts[found].expression.get()))
+            .and_then(|found| self.layouts.get(found))
+            .map(|layout| ExpressionId(layout.expression.get()))
     }
 }
 

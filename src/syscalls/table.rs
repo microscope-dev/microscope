@@ -35,26 +35,25 @@ const _: () = {
         "the x32 entry table is out of order"
     );
 
-    let mut index = 1;
-    while index < entries::X86_32.len() {
-        assert!(
-            entries::X86_32[index - 1].0 < entries::X86_32[index].0,
-            "the x86-32 entry table is out of order"
-        );
-        index += 1;
+    let mut rest = entries::X86_32;
+    while let [first, tail @ ..] = rest {
+        if let [second, ..] = tail {
+            assert!(first.0 < second.0, "the x86-32 entry table is out of order");
+        }
+        rest = tail;
     }
 };
 
 /// Whether a table's numbers strictly ascend.
-const fn ascending(table: &[(u32, &str)]) -> bool {
-    let mut index = 1;
-
-    while index < table.len() {
-        if table[index - 1].0 >= table[index].0 {
+const fn ascending(mut table: &[(u32, &str)]) -> bool {
+    while let [first, rest @ ..] = table {
+        if let [second, ..] = rest
+            && first.0 >= second.0
+        {
             return false;
         }
 
-        index += 1;
+        table = rest;
     }
 
     true
@@ -66,7 +65,8 @@ pub(super) fn kernel_function(id: SyscallId) -> Option<String> {
         table
             .binary_search_by_key(&id.number, |&(number, _)| number)
             .ok()
-            .map(|index| table[index].1)
+            .and_then(|index| table.get(index))
+            .map(|&(_, entry)| entry)
     };
 
     match id.abi {
@@ -77,8 +77,8 @@ pub(super) fn kernel_function(id: SyscallId) -> Option<String> {
         Abi::X86_32 => entries::X86_32
             .binary_search_by_key(&id.number, |&(number, _, _)| number)
             .ok()
-            .map(|index| {
-                let (_, entry, compat) = entries::X86_32[index];
+            .and_then(|index| entries::X86_32.get(index))
+            .map(|&(_, entry, compat)| {
                 format!("__ia32_{}", if compat.is_empty() { entry } else { compat })
             }),
     }
@@ -98,7 +98,9 @@ pub const fn calls(abi: Abi) -> &'static [(u32, &'static str)] {
 pub const X32_SYSCALL_BIT: u32 = 0x4000_0000;
 
 pub(super) fn name(id: SyscallId) -> Option<&'static str> {
-    index(id).map(|index| calls(id.abi)[index].1)
+    index(id)
+        .and_then(|index| calls(id.abi).get(index))
+        .map(|&(_, name)| name)
 }
 
 /// Where its ABI's table lists a call.

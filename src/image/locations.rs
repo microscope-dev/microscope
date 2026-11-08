@@ -400,11 +400,16 @@ impl LocationsBuilder {
                     procedure.list.get() == NONE || (procedure.list.get() as usize) < lists.len()
                 }) {
                     let expression = tables.expression(ExpressionId(index(expressions.len())?));
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "the check above found every list the expression names pooled"
+                    )]
+                    let pooled = |list: LocationListId| lists[list.0 as usize];
                     procedures.clear();
                     procedures.extend(
-                        expression.procedures().map(|(offset, list)| {
-                            (offset, list.map(|list| lists[list.0 as usize]))
-                        }),
+                        expression
+                            .procedures()
+                            .map(|(offset, list)| (offset, list.map(pooled))),
                     );
                     let addresses = expression.addresses().collect::<Vec<_>>();
                     expressions.push(self.expression(
@@ -419,10 +424,16 @@ impl LocationsBuilder {
             }
 
             let list = tables.list(LocationListId(index(lists.len())?));
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "a builder pools a list only after every expression it names, and \
+                          those are pooled here first"
+            )]
+            let pooled = |expression: Expression<'_>| expressions[expression.id().0 as usize];
             entries.clear();
             entries.extend(
                 list.entries()
-                    .map(|(range, expression)| (range, expressions[expression.id().0 as usize])),
+                    .map(|(range, expression)| (range, pooled(expression))),
             );
             lists.push(self.list(&entries)?);
         }
@@ -486,7 +497,16 @@ impl<'a> LocationTables<'a> {
     }
 
     /// The expression `id` names, which must be one of these.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass ids from records whose validation checks every expression id \
+                  against this table"
+    )]
     pub const fn expression(self, id: ExpressionId) -> Expression<'a> {
+        debug_assert!(
+            (id.0 as usize) < self.expressions.len(),
+            "an expression id is outside its table"
+        );
         Expression {
             tables: self,
             id,
@@ -495,7 +515,18 @@ impl<'a> LocationTables<'a> {
     }
 
     /// The list `id` names, which must be one of these.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers pass ids from records whose validation checks every list id against \
+                  this table"
+    )]
     pub fn list(self, id: LocationListId) -> LocationList<'a> {
+        debug_assert!(
+            (id.0 as usize) < self.lists.len(),
+            "list {} is not one of {}",
+            id.0,
+            self.lists.len()
+        );
         let record = &self.lists[id.0 as usize];
         LocationList {
             tables: self,
@@ -522,7 +553,8 @@ impl<'a> LocationTables<'a> {
         let found = types
             .binary_search_by_key(&offset, |record| record.offset.get())
             .ok()?;
-        Some(VALUE_TYPES[usize::from(types[found].value_type) - 1])
+        let code = usize::from(types.get(found)?.value_type);
+        VALUE_TYPES.get(code.checked_sub(1)?).copied()
     }
 }
 
@@ -540,6 +572,10 @@ impl<'a> Expression<'a> {
     }
 
     /// Its operations.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "expression validation checks every record's bytes lie within the pool"
+    )]
     pub fn bytes(self) -> &'a [u8] {
         let start = self.record.bytes.get() as usize;
         &self.tables.bytes[start..start + self.record.length.get() as usize]
@@ -604,7 +640,7 @@ impl<'a> Expression<'a> {
         let found = records
             .binary_search_by_key(&index, |record| record.index.get())
             .ok()?;
-        Some(records[found].address.get())
+        Some(records.get(found)?.address.get())
     }
 
     /// The procedure at `offset` it calls, when it calls one there.
@@ -613,7 +649,7 @@ impl<'a> Expression<'a> {
         let found = records
             .binary_search_by_key(&offset, |record| record.offset.get())
             .ok()?;
-        Some(match records[found].list.get() {
+        Some(match records.get(found)?.list.get() {
             NONE => Procedure::Unlocated,
             list => Procedure::Located(self.tables.list(LocationListId(list))),
         })

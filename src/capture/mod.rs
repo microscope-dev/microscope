@@ -149,6 +149,97 @@ impl Capture {
         })
     }
 
+    /// One depth's zones of a thread, in time order.
+    pub fn range_zones(&self, range: &ZoneRange) -> &[Zone] {
+        rows(&self.zones, range.start.get(), range.count.get())
+    }
+
+    /// The bytes a call or note keeps at `start`; empty for [`NONE`].
+    pub fn blob(&self, start: u32, len: u32) -> &[u8] {
+        if start == NONE {
+            return &[];
+        }
+
+        rows(&self.syscall_blobs, start, len)
+    }
+
+    /// The errnos a statistics row counts.
+    pub fn stat_errnos(&self, stat: &SyscallStat) -> &[SyscallErrno] {
+        rows(
+            &self.syscall_errnos,
+            stat.errnos.get(),
+            stat.errno_count.get(),
+        )
+    }
+
+    /// A frame by an id `validate` checked: a stack's, or a task's root
+    /// other than [`NONE`].
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` checks every stack's frame and task's root against the frames"
+    )]
+    pub fn frame(&self, frame: u32) -> &Frame {
+        &self.frames[frame as usize]
+    }
+
+    /// A function by an id `validate` checked: a line's.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` checks every line's function against the functions"
+    )]
+    pub fn function(&self, function: u32) -> &Function {
+        &self.functions[function as usize]
+    }
+
+    /// A module by an id `validate` checked, other than [`NONE`]: a
+    /// frame's, function's, site's, or mapping's.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` checks every module id but `NONE` against the modules"
+    )]
+    pub fn module(&self, module: u32) -> &Module {
+        &self.modules[module as usize]
+    }
+
+    /// A site by an id `validate` checked: a zone's, or a plot's or
+    /// marker's other than [`NONE`].
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` checks every site id but `NONE` against the sites"
+    )]
+    pub fn site(&self, site: u32) -> &Site {
+        &self.sites[site as usize]
+    }
+
+    /// A thread by an id `validate` checked: a sample range's, off-CPU
+    /// range's, or zone range's.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` requires every sample, off-CPU, and zone range's thread to be a row"
+    )]
+    pub fn thread(&self, thread: u32) -> &Thread {
+        &self.threads[thread as usize]
+    }
+
+    /// A process by an id `validate` checked: a thread's or a mapping's.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` requires every thread's and mapping's process to be a row"
+    )]
+    pub fn process(&self, process: u32) -> &Process {
+        &self.processes[process as usize]
+    }
+
+    /// A task by an id `validate` checked: a wait's, or a sample's other
+    /// than [`NONE`].
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate` checks every task id but `NONE` against the tasks"
+    )]
+    pub fn task(&self, task: u32) -> &Task {
+        &self.tasks[task as usize]
+    }
+
     /// Frames from a stack node to its root, innermost first.
     pub fn stack_frames(&self, mut stack: u32) -> impl Iterator<Item = u32> + '_ {
         std::iter::from_fn(move || {
@@ -241,42 +332,44 @@ impl Capture {
     /// Reads one chunk, validating it completely.
     pub fn from_chunk(bytes: &[u8]) -> Result<Self, ImageError> {
         let placed = container::structure::<CaptureFormat, { CaptureTable::COUNT }>(bytes, LIMITS)?;
-        let table = |kind: CaptureTable| {
-            placed[kind.index()].map_or(&[][..], |placed| {
-                &bytes[placed.offset..placed.offset + placed.length]
-            })
+        let table = |kind: CaptureTable| match placed.get(kind.index()) {
+            Some(Some(placed)) => bytes
+                .get(placed.offset..placed.offset + placed.length)
+                .ok_or(ImageError::Truncated),
+            Some(None) => Ok(&[][..]),
+            None => Err(ImageError::Layout),
         };
 
         let capture = Self {
-            strings: table(CaptureTable::Strings).to_vec(),
-            settings: rows_of(table(CaptureTable::Settings))?,
-            modules: rows_of(table(CaptureTable::Modules))?,
-            processes: rows_of(table(CaptureTable::Processes))?,
-            threads: rows_of(table(CaptureTable::Threads))?,
-            mappings: rows_of(table(CaptureTable::Mappings))?,
-            frames: rows_of(table(CaptureTable::Frames))?,
-            stacks: rows_of(table(CaptureTable::Stacks))?,
-            samples: rows_of(table(CaptureTable::Samples))?,
-            sample_ranges: rows_of(table(CaptureTable::SampleRanges))?,
-            frame_symbols: rows_of(table(CaptureTable::FrameSymbols))?,
-            lines: rows_of(table(CaptureTable::Lines))?,
-            functions: rows_of(table(CaptureTable::Functions))?,
-            accounting: rows_of(table(CaptureTable::Accounting))?,
-            off_cpu: rows_of(table(CaptureTable::OffCpu))?,
-            off_cpu_ranges: rows_of(table(CaptureTable::OffCpuRanges))?,
-            sites: rows_of(table(CaptureTable::Sites))?,
-            zones: rows_of(table(CaptureTable::Zones))?,
-            zone_ranges: rows_of(table(CaptureTable::ZoneRanges))?,
-            plots: rows_of(table(CaptureTable::Plots))?,
-            markers: rows_of(table(CaptureTable::Markers))?,
-            tasks: rows_of(table(CaptureTable::Tasks))?,
-            task_waits: rows_of(table(CaptureTable::TaskWaits))?,
-            gaps: rows_of(table(CaptureTable::Gaps))?,
-            syscalls: rows_of(table(CaptureTable::Syscalls))?,
-            syscall_blobs: table(CaptureTable::SyscallBlobs).to_vec(),
-            syscall_notes: rows_of(table(CaptureTable::SyscallNotes))?,
-            syscall_stats: rows_of(table(CaptureTable::SyscallStats))?,
-            syscall_errnos: rows_of(table(CaptureTable::SyscallErrnos))?,
+            strings: table(CaptureTable::Strings)?.to_vec(),
+            settings: rows_of(table(CaptureTable::Settings)?)?,
+            modules: rows_of(table(CaptureTable::Modules)?)?,
+            processes: rows_of(table(CaptureTable::Processes)?)?,
+            threads: rows_of(table(CaptureTable::Threads)?)?,
+            mappings: rows_of(table(CaptureTable::Mappings)?)?,
+            frames: rows_of(table(CaptureTable::Frames)?)?,
+            stacks: rows_of(table(CaptureTable::Stacks)?)?,
+            samples: rows_of(table(CaptureTable::Samples)?)?,
+            sample_ranges: rows_of(table(CaptureTable::SampleRanges)?)?,
+            frame_symbols: rows_of(table(CaptureTable::FrameSymbols)?)?,
+            lines: rows_of(table(CaptureTable::Lines)?)?,
+            functions: rows_of(table(CaptureTable::Functions)?)?,
+            accounting: rows_of(table(CaptureTable::Accounting)?)?,
+            off_cpu: rows_of(table(CaptureTable::OffCpu)?)?,
+            off_cpu_ranges: rows_of(table(CaptureTable::OffCpuRanges)?)?,
+            sites: rows_of(table(CaptureTable::Sites)?)?,
+            zones: rows_of(table(CaptureTable::Zones)?)?,
+            zone_ranges: rows_of(table(CaptureTable::ZoneRanges)?)?,
+            plots: rows_of(table(CaptureTable::Plots)?)?,
+            markers: rows_of(table(CaptureTable::Markers)?)?,
+            tasks: rows_of(table(CaptureTable::Tasks)?)?,
+            task_waits: rows_of(table(CaptureTable::TaskWaits)?)?,
+            gaps: rows_of(table(CaptureTable::Gaps)?)?,
+            syscalls: rows_of(table(CaptureTable::Syscalls)?)?,
+            syscall_blobs: table(CaptureTable::SyscallBlobs)?.to_vec(),
+            syscall_notes: rows_of(table(CaptureTable::SyscallNotes)?)?,
+            syscall_stats: rows_of(table(CaptureTable::SyscallStats)?)?,
+            syscall_errnos: rows_of(table(CaptureTable::SyscallErrnos)?)?,
         };
 
         capture.validate().map_err(ImageError::Malformed)?;
@@ -311,6 +404,15 @@ impl Capture {
             }
         };
 
+        // The recorder always writes these, so `NONE` is damage.
+        let required = |id: u32, len: usize, what: &str| {
+            if (id as usize) < len {
+                Ok(())
+            } else {
+                Err(format!("{what} {id} is out of bounds"))
+            }
+        };
+
         for setting in &self.settings {
             string(setting.key.get(), "a setting")?;
             string(setting.value.get(), "a setting's value")?;
@@ -327,7 +429,7 @@ impl Capture {
 
         for thread in &self.threads {
             string(thread.name.get(), "a thread")?;
-            index(
+            required(
                 thread.process.get(),
                 self.processes.len(),
                 "a thread's process",
@@ -335,7 +437,7 @@ impl Capture {
         }
 
         for mapping in &self.mappings {
-            index(
+            required(
                 mapping.process.get(),
                 self.processes.len(),
                 "a mapping's process",
@@ -375,41 +477,11 @@ impl Capture {
             }
         }
 
-        // Rows grouped by thread, which `time` gives the time of.
-        let grouped =
-            |ranges: &[ThreadRange], rows: usize, time: &dyn Fn(usize) -> i64, what: &str| {
-                let mut next = 0;
-                for range in ranges {
-                    index(range.thread.get(), self.threads.len(), what)?;
-                    if range.thread.get() == NONE || range.start.get() != next {
-                        return Err(format!("{what} ranges do not tile their table"));
-                    }
-
-                    next = range
-                        .start
-                        .get()
-                        .checked_add(range.count.get())
-                        .ok_or_else(|| format!("{what} range overflows"))?;
-                    if next as usize > rows {
-                        return Err(format!("{what} range is out of bounds"));
-                    }
-
-                    let group = range.start.get() as usize..next as usize;
-                    if group.clone().skip(1).any(|row| time(row - 1) > time(row)) {
-                        return Err(format!("{what} are out of time order"));
-                    }
-                }
-
-                if next as usize != rows {
-                    return Err(format!("{what} ranges do not cover their table"));
-                }
-
-                Ok(())
-            };
         grouped(
             &self.sample_ranges,
-            self.samples.len(),
-            &|row| self.samples[row].time.get(),
+            &self.samples,
+            self.threads.len(),
+            |sample| sample.time.get(),
             "samples",
         )?;
 
@@ -433,8 +505,9 @@ impl Capture {
 
         grouped(
             &self.off_cpu_ranges,
-            self.off_cpu.len(),
-            &|row| self.off_cpu[row].time.get(),
+            &self.off_cpu,
+            self.threads.len(),
+            |interval| interval.time.get(),
             "off-CPU intervals",
         )?;
 
@@ -484,7 +557,7 @@ impl Capture {
         let mut next = 0;
 
         for range in &self.zone_ranges {
-            index(
+            required(
                 range.thread.get(),
                 self.threads.len(),
                 "a zone range's thread",
@@ -504,7 +577,7 @@ impl Capture {
                 .ok_or("a zone range is out of bounds")?;
             if group
                 .windows(2)
-                .any(|pair| pair[0].end.get() > pair[1].start.get())
+                .any(|pair| matches!(pair, [a, b] if a.end.get() > b.start.get()))
             {
                 return Err("zones of one depth overlap or are out of order".into());
             }
@@ -552,7 +625,7 @@ impl Capture {
         }
 
         for wait in &self.task_waits {
-            index(wait.task.get(), self.tasks.len(), "a wait's task")?;
+            required(wait.task.get(), self.tasks.len(), "a wait's task")?;
             index(wait.stack.get(), self.stacks.len(), "a wait's stack")?;
             string(wait.state.get(), "a wait's state")?;
         }
@@ -570,7 +643,7 @@ impl Capture {
         if self
             .gaps
             .windows(2)
-            .any(|pair| pair[1].start.get() < pair[0].end.get())
+            .any(|pair| matches!(pair, [a, b] if b.start.get() < a.end.get()))
         {
             return Err("gaps overlap or are out of time order".into());
         }
@@ -603,13 +676,14 @@ impl Capture {
             index(call.stack.get(), self.stacks.len(), "a call's stack")?;
             blob(call.captures.get(), call.captures_len.get(), "a call's")?;
             let start = call.captures.get() as usize;
-            if start != NONE as usize
-                && records::captures(
-                    &self.syscall_blobs[start..start + call.captures_len.get() as usize],
-                )
-                .is_none()
-            {
-                return Err("a call's captured bytes are malformed".into());
+            if start != NONE as usize {
+                let bytes = self
+                    .syscall_blobs
+                    .get(start..start + call.captures_len.get() as usize)
+                    .ok_or("a call's bytes are out of bounds")?;
+                if records::captures(bytes).is_none() {
+                    return Err("a call's captured bytes are malformed".into());
+                }
             }
 
             if call.abi > 2 || CallOutcome::from_number(call.outcome).is_none() {
@@ -659,6 +733,52 @@ impl Capture {
     }
 }
 
+/// Checks rows grouped by thread, which `time` gives the time of.
+fn grouped<T>(
+    ranges: &[ThreadRange],
+    rows: &[T],
+    threads: usize,
+    time: impl Fn(&T) -> i64,
+    what: &str,
+) -> Result<(), String> {
+    let mut next = 0;
+    for range in ranges {
+        let thread = range.thread.get();
+        if thread != NONE && thread as usize >= threads {
+            return Err(format!("{what} {thread} is out of bounds"));
+        }
+
+        if thread == NONE || range.start.get() != next {
+            return Err(format!("{what} ranges do not tile their table"));
+        }
+
+        next = range
+            .start
+            .get()
+            .checked_add(range.count.get())
+            .ok_or_else(|| format!("{what} range overflows"))?;
+        let group = rows
+            .get(range.start.get() as usize..next as usize)
+            .ok_or_else(|| format!("{what} range is out of bounds"))?;
+        if group
+            .windows(2)
+            .any(|pair| matches!(pair, [a, b] if time(a) > time(b)))
+        {
+            return Err(format!("{what} are out of time order"));
+        }
+    }
+
+    if next as usize != rows.len() {
+        return Err(format!("{what} ranges do not cover their table"));
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`validate` checks every range the accessors pass against its table"
+)]
 fn rows<T>(rows: &[T], start: u32, count: u32) -> &[T] {
     let start = start as usize;
     &rows[start..start + count as usize]

@@ -65,7 +65,11 @@ impl Batches {
         // The roomiest emptied block, so that one a small copy left small is
         // not grown again by the next large one.
         let emptied = &mut self.blocks.emptied;
-        let roomiest = (0..emptied.len()).max_by_key(|&at| emptied[at].capacity());
+        let roomiest = emptied
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, block)| block.capacity())
+            .map(|(at, _)| at);
         let mut block = roomiest.map_or_else(Vec::new, |at| emptied.swap_remove(at));
         block.clear();
         block.extend_from_slice(bytes);

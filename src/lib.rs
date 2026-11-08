@@ -4,6 +4,7 @@
     not(test),
     deny(
         clippy::expect_used,
+        clippy::indexing_slicing,
         clippy::panic,
         clippy::todo,
         clippy::unimplemented,
@@ -1761,7 +1762,9 @@ impl DebuggerHandle {
             .saturating_add(1)
             .min(all_lines.len());
 
-        let lines = all_lines[start..end]
+        let lines = all_lines
+            .get(start..end)
+            .ok_or_else(|| Error::internal("the source window lies within the file"))?
             .iter()
             .enumerate()
             .map(|(offset, text)| {

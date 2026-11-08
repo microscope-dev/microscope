@@ -1017,6 +1017,11 @@ impl<'g> Ctx<'g> {
         clippy::cast_sign_loss,
         reason = "inspect.js computes the columns in doubles from small counts"
     )]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a row's cells are below `output_length`, which `output` and `data_len` cover, \
+                  and a column is below `columns`, which `max_line_length` has"
+    )]
     fn group_array_elements(&mut self, output: Vec<String>, value: Option<&Object>) -> Vec<String> {
         const SEPARATOR_SPACE: usize = 2;
         let mut total_length = 0;
@@ -1027,7 +1032,7 @@ impl<'g> Ctx<'g> {
             output_length -= 1;
         }
         let mut data_len = Vec::with_capacity(output_length);
-        for entry in &output[..output_length] {
+        for entry in output.iter().take(output_length) {
             let (width, exact) = string_width(entry);
             self.approximate |= !exact;
             data_len.push(width);
@@ -1113,20 +1118,18 @@ impl<'g> Ctx<'g> {
                     self.approximate = true;
                     return false;
                 }
-                match array
-                    .elements
+                let element = (array.elements)
                     .binary_search_by_key(&index, |element| element.index)
-                {
-                    Ok(position) => match &array.elements[position].slot {
-                        Slot::Data(Value::Number(_) | Value::BigInt(_)) => true,
-                        Slot::Data(_) => false,
-                        Slot::Accessor { getter, .. } => {
-                            // Node calls the getter.
-                            self.approximate |= *getter;
-                            false
-                        }
-                    },
-                    Err(_) => false,
+                    .ok()
+                    .and_then(|position| array.elements.get(position));
+                match element.map(|element| &element.slot) {
+                    Some(Slot::Data(Value::Number(_) | Value::BigInt(_))) => true,
+                    Some(Slot::Data(_)) | None => false,
+                    Some(Slot::Accessor { getter, .. }) => {
+                        // Node calls the getter.
+                        self.approximate |= *getter;
+                        false
+                    }
                 }
             }
             _ => false,
@@ -1280,7 +1283,9 @@ impl ElementType {
             self.name(),
         );
         let mut raw = [0u8; 8];
-        raw[..bytes.len().min(8)].copy_from_slice(&bytes[..bytes.len().min(8)]);
+        for (raw, byte) in raw.iter_mut().zip(bytes) {
+            *raw = *byte;
+        }
         let [b0, b1, b2, b3, ..] = raw;
         let half = [b0, b1];
         let word = [b0, b1, b2, b3];

@@ -94,6 +94,10 @@ const UV_REQUEST_TYPES: [&str; 11] = [
     "random",
 ];
 const UV_FS: u32 = 6;
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a compile-time check: an index out of bounds fails the build"
+)]
 const _: () = assert!(matches!(UV_REQUEST_TYPES[UV_FS as usize].as_bytes(), b"fs"));
 const _: () = assert!((UV_HANDLE_CLOSING | UV_HANDLE_ACTIVE | UV_HANDLE_REF).count_ones() == 3);
 const _: () = assert!(WORKER_SHIFT < POOL_JOB.trailing_zeros());
@@ -292,7 +296,7 @@ pub(super) fn listed(
     // mean memory the walk misread.
     if tasks
         .windows(2)
-        .any(|pair| pair[0].number == pair[1].number)
+        .any(|pair| matches!(pair, [a, b] if a.number == b.number))
     {
         gaps.push("two of Node's tasks have one async id, so the list was misread".into());
         tasks.dedup_by_key(|task| task.number);

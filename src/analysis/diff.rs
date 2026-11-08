@@ -45,6 +45,10 @@ impl DiffTree {
 }
 
 /// A tree's children of `node`, or its roots for [`NONE`].
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`aggregate` lays a tree out with each node's subtree ending within it"
+)]
 fn children(tree: &CallTree, node: u32) -> Vec<u32> {
     let (mut at, end) = match node {
         NONE => (0, index(tree.len())),
@@ -77,6 +81,10 @@ struct Pair {
 /// by its module and place, where the other tree has it, and the rest in
 /// order, the first of each tree's left, then the second.
 #[must_use]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a pair's nodes are of the trees `pairs` read, and a merged node's parent precedes it"
+)]
 pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree)) -> DiffTree {
     let mut names = Names::default();
     let mut out = DiffTree::default();
@@ -126,6 +134,10 @@ pub fn diff_trees(current: (&Keys<'_>, &CallTree), base: (&Keys<'_>, &CallTree))
 }
 
 /// The merged children of a node of each tree, current's first.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`children` gives nodes of each tree, and `pair` positions within `theirs`"
+)]
 fn pairs(
     names: &mut Names,
     current: (&Keys<'_>, &CallTree),
@@ -191,6 +203,10 @@ struct Names {
 }
 
 impl Names {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`children` gives nodes of the tree"
+    )]
     fn of(
         &mut self,
         side: Side,
@@ -211,9 +227,15 @@ impl Names {
 /// each of `ours` is paired with, and which of `theirs` are paired.
 fn pair(ours: &[(String, String)], theirs: &[(String, String)]) -> (Vec<Option<usize>>, Vec<bool>) {
     let mut taken = vec![false; theirs.len()];
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`left` holds positions within `theirs`, which `taken` has an entry for each of"
+    )]
     let mut by = |matched: &mut [Option<usize>], name: fn(&(String, String)) -> &str| {
         let mut left: BTreeMap<&str, VecDeque<usize>> = BTreeMap::new();
-        for (at, theirs) in theirs.iter().enumerate().filter(|(at, _)| !taken[*at]) {
+        for (at, (theirs, _)) in
+            (theirs.iter().zip(&taken).enumerate()).filter(|(_, (_, taken))| !**taken)
+        {
             left.entry(name(theirs)).or_default().push_back(at);
         }
 
@@ -262,6 +284,10 @@ pub fn diff_costs(current: (&Keys<'_>, &Costs), base: (&Keys<'_>, &Costs)) -> Ve
 
     let mut rows = Vec::with_capacity(current.1.rows.len() + base.1.rows.len());
     for (cost, matched) in current.1.rows.iter().zip(matched) {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`pair` gives positions within the base's rows"
+        )]
         let matched = matched.map(|row| base.1.rows[row]);
         rows.push(DiffCost {
             key: cost.key,

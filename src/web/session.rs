@@ -2097,7 +2097,9 @@ impl Session {
 
             loop {
                 let read = receiver.read(&mut buffer).await.unwrap_or(0);
-                pending.extend_from_slice(&buffer[..read]);
+                #[expect(clippy::indexing_slicing, reason = "a read fills at most its buffer")]
+                let filled = &buffer[..read];
+                pending.extend_from_slice(filled);
                 outlet.publish(stream, &output::decode(&mut pending, read == 0));
                 if read == 0 {
                     return;

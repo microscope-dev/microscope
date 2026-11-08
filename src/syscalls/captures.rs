@@ -114,7 +114,8 @@ fn string(memory: &mut dyn Memory, address: u64, limit: usize) -> (Vec<u8>, Capt
 
         chunk.truncate(read);
         if let Some(end) = chunk.iter().position(|&byte| byte == 0) {
-            out.extend_from_slice(&chunk[..end]);
+            chunk.truncate(end);
+            out.extend_from_slice(&chunk);
             return (out, CaptureState::Complete);
         }
 
@@ -139,7 +140,7 @@ fn string(memory: &mut dyn Memory, address: u64, limit: usize) -> (Vec<u8>, Capt
 
 fn word(memory: &mut dyn Memory, address: u64, size: usize) -> Option<u64> {
     let mut buffer = [0; 8];
-    let read = memory.read(address, &mut buffer[..size]).ok()?;
+    let read = memory.read(address, buffer.get_mut(..size)?).ok()?;
     (read == size).then(|| u64::from_le_bytes(buffer))
 }
 
@@ -387,6 +388,16 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
     copies
 }
 
+/// Argument `number` of a call, as a copy from [`copies`] names it.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "specs::parse rejects a seventh argument and argument numbers past five"
+)]
+fn arg(args: &[u64; 6], number: u8) -> u64 {
+    debug_assert!(number < 6, "a call spec names argument {number}");
+    args[usize::from(number)]
+}
+
 /// Copies the arguments a call reads at `phase`. At exit, `outcome` says
 /// how the call ended, which output arguments depend on: a failed call
 /// wrote nothing.
@@ -408,7 +419,7 @@ pub fn capture(
     let mut captured = Vec::new();
 
     for copy in copies(call, limits, verbose) {
-        let address = args[usize::from(copy.arg)];
+        let address = arg(args, copy.arg);
         if copy.when != phase || address == 0 {
             continue;
         }
@@ -420,9 +431,9 @@ pub fn capture(
 
         let length = match copy.count {
             Count::One => 1,
-            Count::Arg(n) => as_count(args[usize::from(n)] & 0xffff_ffff_ffff),
+            Count::Arg(n) => as_count(arg(args, n) & 0xffff_ffff_ffff),
             Count::Return => result(),
-            Count::PointedBy(n) => word(memory, args[usize::from(n)], 4).map_or(0, as_count),
+            Count::PointedBy(n) => word(memory, arg(args, n), 4).map_or(0, as_count),
         };
 
         let limit = copy.limit as usize;

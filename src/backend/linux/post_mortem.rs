@@ -126,12 +126,12 @@ pub(super) fn read_word(
         Ok(()) => Ok(u64::from_le_bytes(bytes)),
         Err(CoreMemoryError::Unavailable) => {
             let mut readable = 0;
-            while readable < bytes.len() {
+            for byte in &mut bytes {
                 let Some(current) = address.checked_add(readable as u64) else {
                     break;
                 };
 
-                match memory.read(current, &mut bytes[readable..=readable]) {
+                match memory.read(current, std::slice::from_mut(byte)) {
                     Ok(()) => readable += 1,
                     Err(CoreMemoryError::Unavailable) => break,
                     Err(CoreMemoryError::Io(error)) => {
@@ -140,7 +140,9 @@ pub(super) fn read_word(
                 }
             }
 
-            bytes[readable..].fill(0);
+            for byte in bytes.iter_mut().skip(readable) {
+                *byte = 0;
+            }
 
             if readable == 0 {
                 Err(MemoryAccessError::Inaccessible)
@@ -854,7 +856,11 @@ pub fn open_core(
     } = resolved;
 
     let process = core.process.clone();
-    let exception = core_exception(&core.threads[0]);
+    let first_thread = core
+        .threads
+        .first()
+        .ok_or_else(|| Error::InvalidCoreDump("the core dump has no threads".to_owned()))?;
+    let exception = core_exception(first_thread);
     let info = Arc::new(CoreDumpInfo {
         path: Arc::new(core_path),
         process_id: ProcessId::new(u64::from(process.pid)),
@@ -964,7 +970,9 @@ impl Controller<CoreTarget> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let selected = threads[0];
+        let selected = *threads
+            .first()
+            .ok_or_else(|| Error::InvalidCoreDump("the core dump has no threads".to_owned()))?;
 
         // Loader link maps locate each module's TLS block. A dump that lost the
         // loader's state leaves the TLS they name explicitly unavailable instead

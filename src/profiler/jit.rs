@@ -544,7 +544,7 @@ impl Jit {
                 let mut code = vec![0; usize::try_from(length).unwrap_or(0)];
                 perf::read_memory(pid, entry.start, &mut code)
                     .ok()
-                    .map(|read| Arc::from(&code[..read.min(code.len())]))
+                    .and_then(|read| code.get(..read.min(code.len())).map(Arc::from))
             } else {
                 unread += 1;
                 None

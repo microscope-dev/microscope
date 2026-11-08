@@ -675,11 +675,18 @@ impl<P: LinuxTraceOps> Controller<P> {
             .collect::<Result<BTreeMap<_, _>>>()?;
         let invalidated = invalid
             .iter()
-            .map(|(id, reason)| InvalidatedWatchpoint {
-                watchpoint: inferior.watch.watchpoints[id].watchpoint.clone(),
-                reason: *reason,
+            .map(|(id, reason)| {
+                let record = inferior
+                    .watch
+                    .watchpoints
+                    .get(id)
+                    .ok_or_else(|| Error::internal("an invalidated watchpoint is recorded"))?;
+                Ok(InvalidatedWatchpoint {
+                    watchpoint: record.watchpoint.clone(),
+                    reason: *reason,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 

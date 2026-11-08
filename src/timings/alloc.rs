@@ -131,7 +131,7 @@ impl Drop for Release {
                 cell.set(counts);
 
                 // Publishes the slot's counts to its next owner.
-                CLAIMED[index].store(false, Ordering::Release);
+                slot_at(index).1.store(false, Ordering::Release);
             }
         });
     }
@@ -175,6 +175,16 @@ pub const SLOTS: usize = if cfg!(miri) { 16 } else { 256 };
 static COUNTS: [Slot; SLOTS] = [const { Slot::new() }; SLOTS];
 static CLAIMED: [AtomicBool; SLOTS] = [const { AtomicBool::new(false) }; SLOTS];
 static SHARED: Slot = Slot::new();
+
+/// The counts and claim flag of slot `index`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "every index is a position in CLAIMED, which is as long as COUNTS"
+)]
+fn slot_at(index: usize) -> (&'static Slot, &'static AtomicBool) {
+    debug_assert!(index < SLOTS, "slot index past SLOTS");
+    (&COUNTS[index], &CLAIMED[index])
+}
 
 /// How many threads have found every slot taken.
 static SHARING: AtomicU64 = AtomicU64::new(0);
@@ -254,7 +264,7 @@ pub fn thread_counts() -> Option<(Allocated, i64)> {
         SlotUse::Unassigned => Some((Allocated::default(), 0)),
         SlotUse::Shared => None,
         SlotUse::Own { index, base } => {
-            let stored = COUNTS[index].load();
+            let stored = slot_at(index).0.load();
             let allocated = Allocated {
                 blocks: stored.blocks.wrapping_sub(base.blocks),
                 bytes: stored.bytes.wrapping_sub(base.bytes),
@@ -296,7 +306,7 @@ fn count(bytes: i64, new_block: bool) {
         match counts.slot {
             SlotUse::Own { index, base } => {
                 // Only this thread writes its slot.
-                let slot = &COUNTS[index];
+                let slot = slot_at(index).0;
                 slot.blocks.store(
                     base.blocks.wrapping_add(counts.allocated.blocks),
                     Ordering::Relaxed,
@@ -368,7 +378,7 @@ fn claim(cell: &Cell<ThreadCounts>) {
     // What the thread counted so far is already in the shared slot, so the
     // base leaves it out of this one.
     let mut counts = cell.get();
-    let found = COUNTS[index].load();
+    let found = slot_at(index).0.load();
     let base = Stored {
         blocks: found.blocks.wrapping_sub(counts.allocated.blocks),
         bytes: found.bytes.wrapping_sub(counts.allocated.bytes),

@@ -156,7 +156,10 @@ impl Glibc<'_> {
         let address = field.address(base, index)?;
         let mut bytes = [0; 8];
         let width = (field.bits / 8) as usize;
-        self.read(address, &mut bytes[..width])?;
+        let value = bytes
+            .get_mut(..width)
+            .ok_or_else(|| failed(format!("{} is wider than a word", field.name)))?;
+        self.read(address, value)?;
         Ok(u64::from_le_bytes(bytes))
     }
 
@@ -455,7 +458,8 @@ pub(super) fn fuzz(data: &[u8]) {
 
     impl Memory<'_> {
         fn place(&self, index: usize) -> Option<u64> {
-            let place = u16::from_le_bytes([self.header[index * 2], self.header[index * 2 + 1]]);
+            let place = self.header.get(index * 2..index * 2 + 2)?;
+            let place = u16::from_le_bytes(place.try_into().ok()?);
             (place != u16::MAX).then(|| BASE + u64::from(place))
         }
     }

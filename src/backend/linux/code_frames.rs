@@ -179,8 +179,11 @@ fn rewrite(
     let mut index = 0;
     let old = expanded.trace.frames.to_vec();
 
-    while index < old.len() {
-        let origin = expanded.origins[index];
+    while let Some(frame) = old.get(index) {
+        let origin = *expanded
+            .origins
+            .get(index)
+            .ok_or_else(|| Error::internal("every logical frame has an origin"))?;
         let description = next
             .peek()
             .filter(|(activation, ..)| {
@@ -188,7 +191,7 @@ fn rewrite(
             })
             .map(|(_, runtime, description)| (*runtime, description));
         let Some((runtime, description)) = description else {
-            frames.push(old[index].clone());
+            frames.push(frame.clone());
             origins.push(origin);
             index += 1;
             continue;
@@ -197,15 +200,21 @@ fn rewrite(
 
         // The activation's own frames: its function and any the image's
         // debug information inlined into it, the physical frame last.
-        let end = (index..old.len())
-            .find(|&at| !matches!(old[at].kind, FrameKind::Inline))
-            .filter(|&end| expanded.origins[end] == origin)
-            .ok_or_else(|| Error::internal("an activation's frames end in its physical frame"))?;
+        let missing = || Error::internal("an activation's frames end in its physical frame");
+        let end = old
+            .iter()
+            .enumerate()
+            .skip(index)
+            .find(|(_, frame)| !matches!(frame.kind, FrameKind::Inline))
+            .map(|(end, _)| end)
+            .filter(|&end| expanded.origins.get(end) == Some(&origin))
+            .ok_or_else(missing)?;
+        let activation = old.get(index..=end).ok_or_else(missing)?;
         let first = frames.len();
         if let Some(awaiting) = &description.awaiting {
             expanded.awaiting.push((first, runtime, awaiting.clone()));
         }
-        push_described(&mut frames, &old[index..=end], description);
+        push_described(&mut frames, activation, description);
         let count = frames.len() - first;
         origins.extend((0..count).map(|at| FrameOrigin {
             activation: origin.activation,

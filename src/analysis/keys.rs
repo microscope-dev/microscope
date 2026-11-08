@@ -98,12 +98,12 @@ pub struct Keys<'a> {
 /// V8's code, makes its functions again under a new module of one path.
 fn canonical_functions(capture: &Capture) -> Vec<u32> {
     let mut first = HashMap::default();
-    (0..index(capture.functions.len()))
-        .map(|function| {
-            let record = &capture.functions[function as usize];
+    (0..)
+        .zip(&capture.functions)
+        .map(|(function, record)| {
             let path = match record.module.get() {
                 NONE => NONE,
-                module => capture.modules[module as usize].path.get(),
+                module => capture.module(module).path.get(),
             };
             let identity = (
                 record.name.get(),
@@ -127,7 +127,7 @@ fn frame_keys(
     key: &mut impl FnMut(KeyKind) -> u32,
     flat: &mut Vec<u32>,
 ) {
-    let record = &capture.frames[frame as usize];
+    let record = capture.frame(frame);
     if record.kind == FrameKind::Truncated as u8 {
         let reason = Truncation::from_number(record.address.get()).map_or(0, |reason| reason as u8);
         flat.push(key(KeyKind::Truncation {
@@ -156,6 +156,10 @@ fn frame_keys(
     let by_line =
         granularity == Granularity::Line || (granularity == Granularity::Address && named);
     for line in lines {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`canonical` has an entry per function, and `validate` checks a line's"
+        )]
         let function = canonical[line.function.get() as usize];
         flat.push(key(if by_line {
             KeyKind::Line {
@@ -182,6 +186,11 @@ fn short_file(file: &str) -> &str {
 
 /// Whether each of `keys` keys is of an interpreted frame, given each
 /// frame's keys, which frame `i`'s are `flat[starts[i]..starts[i + 1]]`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`Keys::new` gives `starts` an entry per frame and one past, each within \
+              `flat`, whose keys are all below `keys`"
+)]
 fn interpreted(capture: &Capture, starts: &[u32], flat: &[u32], keys: usize) -> Vec<bool> {
     let mut interpreted = vec![false; keys];
     for (frame, record) in capture.frames.iter().enumerate() {
@@ -199,9 +208,9 @@ fn interpreted(capture: &Capture, starts: &[u32], flat: &[u32], keys: usize) -> 
 fn code_role(capture: &Capture, kind: KeyKind) -> CodeRole {
     let number = match kind {
         KeyKind::Function { function } | KeyKind::Line { function, .. } => {
-            capture.functions[function as usize].role
+            capture.function(function).role
         }
-        KeyKind::Address { frame } => capture.frames[frame as usize].role,
+        KeyKind::Address { frame } => capture.frame(frame).role,
         KeyKind::Truncation { .. }
         | KeyKind::Task { .. }
         | KeyKind::Group { .. }
@@ -238,7 +247,7 @@ impl<'a> Keys<'a> {
 
         // A task is rooted by function, whatever the granularity.
         let mut tasks = vec![NONE; kinds.len()];
-        for (code, kind) in kinds.clone().into_iter().enumerate() {
+        for (slot, kind) in tasks.iter_mut().zip(kinds.clone()) {
             let task = match kind {
                 KeyKind::Function { function } | KeyKind::Line { function, .. } => KeyKind::Task {
                     function,
@@ -256,7 +265,7 @@ impl<'a> Keys<'a> {
                 }
             };
 
-            tasks[code] = *known.entry(task).or_insert_with(|| {
+            *slot = *known.entry(task).or_insert_with(|| {
                 kinds.push(task);
                 roles.push(CodeRole::Ordinary);
                 index(kinds.len() - 1)
@@ -306,6 +315,12 @@ impl<'a> Keys<'a> {
         &self.labels
     }
 
+    /// A label by its row.
+    #[expect(clippy::indexing_slicing, reason = "label rows are rows of `labels`")]
+    pub(crate) fn label_of(&self, label: u32) -> Label<'a> {
+        self.labels[label as usize]
+    }
+
     /// The row of a label, if any span or task has it, or for `None`, if
     /// any has its key.
     #[must_use]
@@ -320,7 +335,8 @@ impl<'a> Keys<'a> {
         self.label_roots
             .get(label as usize)
             .copied()
-            .unwrap_or(self.label_roots[self.label_roots.len() - 1])
+            .or_else(|| self.label_roots.last().copied())
+            .unwrap_or(NONE)
     }
 
     /// A thread's label spans, by start: start, end, and label.
@@ -348,18 +364,24 @@ impl<'a> Keys<'a> {
 
     /// A frame's keys, innermost first.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`starts` has an entry per frame of the capture and one past, each within `flat`"
+    )]
     pub fn frame(&self, frame: u32) -> &[u32] {
         let frame = frame as usize;
         &self.flat[self.starts[frame] as usize..self.starts[frame + 1] as usize]
     }
 
     #[must_use]
+    #[expect(clippy::indexing_slicing, reason = "keys are rows of `kinds`")]
     pub fn kind(&self, key: u32) -> KeyKind {
         self.kinds[key as usize]
     }
 
     /// The role of a key's code.
     #[must_use]
+    #[expect(clippy::indexing_slicing, reason = "`roles` has an entry per key")]
     pub fn role(&self, key: u32) -> CodeRole {
         self.roles[key as usize]
     }
@@ -372,6 +394,7 @@ impl<'a> Keys<'a> {
 
     /// The root of a task whose outermost code of its own is `key`'s.
     #[must_use]
+    #[expect(clippy::indexing_slicing, reason = "`tasks` has an entry per key")]
     pub fn task(&self, key: u32) -> Option<u32> {
         Some(self.tasks[key as usize]).filter(|task| *task != NONE)
     }
@@ -383,7 +406,8 @@ impl<'a> Keys<'a> {
         self.groups
             .get(task as usize)
             .copied()
-            .unwrap_or(self.groups[self.groups.len() - 1])
+            .or_else(|| self.groups.last().copied())
+            .unwrap_or(NONE)
     }
 
     /// The key of `kind`, if any frame has it.
@@ -539,7 +563,7 @@ impl<'a> Keys<'a> {
             }
             KeyKind::Group { task: NONE } => "[no task known]".to_owned(),
             KeyKind::Group { task } => {
-                let task = &capture.tasks[task as usize];
+                let task = capture.task(task);
                 let name = format!(
                     "{} {}",
                     capture.string(task.runtime.get()),
@@ -554,7 +578,7 @@ impl<'a> Keys<'a> {
                 }
             }
             KeyKind::Label { label: NONE } => "[no such label]".to_owned(),
-            KeyKind::Label { label } => match self.labels[label as usize] {
+            KeyKind::Label { label } => match self.label_of(label) {
                 (key, Some(value)) => format!("{key}={value}"),
                 (key, None) => format!("[no {key}]"),
             },
@@ -575,7 +599,7 @@ impl<'a> Keys<'a> {
     /// native function keeps its name, even an empty one.
     fn function_name(&self, function: u32) -> Cow<'a, str> {
         let capture = self.capture;
-        let record = &capture.functions[function as usize];
+        let record = capture.function(function);
         let name = capture.string(record.name.get());
         if !name.is_empty() || record.module.get() != NONE {
             return Cow::Borrowed(name);
@@ -598,11 +622,11 @@ impl<'a> Keys<'a> {
         let (file, line) = match self.kind(key) {
             KeyKind::Line { file, line, .. } => (file, line),
             KeyKind::Function { function } => {
-                let function = &capture.functions[function as usize];
+                let function = capture.function(function);
                 (function.file.get(), function.line.get())
             }
             KeyKind::Task { function, .. } if function != NONE => {
-                let function = &capture.functions[function as usize];
+                let function = capture.function(function);
                 (function.file.get(), function.line.get())
             }
 
@@ -628,9 +652,9 @@ impl<'a> Keys<'a> {
             | KeyKind::Task {
                 function,
                 frame: NONE,
-            } => capture.functions[function as usize].module.get(),
+            } => capture.function(function).module.get(),
             KeyKind::Address { frame } | KeyKind::Task { frame, .. } => {
-                capture.frames[frame as usize].module.get()
+                capture.frame(frame).module.get()
             }
             KeyKind::Truncation { module, .. } => module,
             KeyKind::Group { .. } | KeyKind::Label { .. } => NONE,
@@ -640,7 +664,7 @@ impl<'a> Keys<'a> {
     }
 
     fn address_name(&self, frame: u32) -> String {
-        let record = &self.capture.frames[frame as usize];
+        let record = self.capture.frame(frame);
         let address = record.address.get();
         self.module_name(record.module.get()).map_or_else(
             || format!("{address:#x}"),
@@ -651,7 +675,7 @@ impl<'a> Keys<'a> {
     fn module_name(&self, module: u32) -> Option<&'a str> {
         let capture = self.capture;
         (module != NONE).then(|| {
-            let path = capture.string(capture.modules[module as usize].path.get());
+            let path = capture.string(capture.module(module).path.get());
             path.rsplit('/').next().unwrap_or(path)
         })
     }
@@ -688,9 +712,8 @@ fn labels(capture: &Capture) -> Found<'_> {
     };
 
     for range in &capture.zone_ranges {
-        let start = range.start.get() as usize;
-        for zone in &capture.zones[start..start + range.count.get() as usize] {
-            let site = &capture.sites[zone.site.get() as usize];
+        for zone in capture.range_zones(range) {
+            let site = capture.site(zone.site.get());
             if site.kind != microscope_probes::abi::SITE_LABEL {
                 continue;
             }
@@ -700,11 +723,11 @@ fn labels(capture: &Capture) -> Found<'_> {
                 capture.string(zone.value.get()),
             );
             let label = row(&mut found, key, value);
-            found.spans[range.thread.get() as usize].push((
-                zone.start.get(),
-                zone.end.get(),
-                label,
-            ));
+
+            // Capture::validate checked every zone range's thread.
+            if let Some(spans) = found.spans.get_mut(range.thread.get() as usize) {
+                spans.push((zone.start.get(), zone.end.get(), label));
+            }
         }
     }
 
@@ -714,18 +737,20 @@ fn labels(capture: &Capture) -> Found<'_> {
         spans.sort_by_key(|&(start, end, _)| (start, std::cmp::Reverse(end)));
     }
 
-    for (task, record) in capture.tasks.iter().enumerate() {
+    let mut tasks = std::mem::take(&mut found.tasks);
+    for (labels, record) in tasks.iter_mut().zip(&capture.tasks) {
         if record.labels.get() == NONE {
             continue;
         }
 
         for line in capture.string(record.labels.get()).lines() {
             if let Some((key, value)) = line.split_once('=') {
-                let label = row(&mut found, key, value);
-                found.tasks[task].push(label);
+                labels.push(row(&mut found, key, value));
             }
         }
     }
+
+    found.tasks = tasks;
 
     found
 }

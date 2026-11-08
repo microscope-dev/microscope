@@ -269,6 +269,10 @@ impl Origins {
     }
 
     /// The address links use.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "new always adds the address itself to hosts"
+    )]
     pub fn primary(&self) -> &str {
         &self.hosts[0]
     }

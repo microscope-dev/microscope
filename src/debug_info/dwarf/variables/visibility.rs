@@ -150,8 +150,7 @@ pub(super) fn segments(
         cuts.sort_unstable();
         cuts.dedup();
 
-        for segment in cuts.windows(2) {
-            let (start, end) = (segment[0], segment[1]);
+        for (&start, &end) in cuts.iter().zip(cuts.iter().skip(1)) {
             if !visible(start) {
                 continue;
             }

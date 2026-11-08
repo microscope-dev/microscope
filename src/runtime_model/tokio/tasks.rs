@@ -72,8 +72,7 @@ impl TokioRuntime {
             let list_id = |runtime| self.list(stop, runtime).ok().map(|list| list.id);
             for (index, &runtime) in census.runtimes.iter().enumerate().skip(first) {
                 if let Some(id) = list_id(runtime)
-                    && census.runtimes[..index]
-                        .iter()
+                    && (census.runtimes.iter().take(index))
                         .any(|&earlier| list_id(earlier) == Some(id))
                 {
                     page.gaps.push(

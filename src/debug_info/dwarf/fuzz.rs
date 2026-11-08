@@ -8,6 +8,11 @@
 //! reaches far past the parsers' first checks. What the program leaves
 //! after its end byte flips bytes of the file it wrote.
 
+#![expect(
+    clippy::indexing_slicing,
+    reason = "a fuzz harness reports a bug by panicking"
+)]
+
 use gimli::write::{
     Address, AttributeValue, CallFrameInstruction, CommonInformationEntry, DebugFrame,
     DebugInfoRef, Dwarf, EhFrame, EndianVec, Expression, FileId, FrameDescriptionEntry, FrameTable,

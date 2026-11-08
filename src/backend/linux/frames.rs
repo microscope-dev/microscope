@@ -498,7 +498,10 @@ impl<P: InspectionOps> Controller<P> {
             && let Some(presentation) = presentation
             && let PresentedFrame::Ambiguous(_) = presentation.frame
         {
-            let innermost = &stack.frames[0];
+            let innermost = stack
+                .frames
+                .first()
+                .ok_or_else(|| Error::internal("an unwound stack has its innermost frame"))?;
             let code = unwind_module_for(&modules, innermost.context.instruction)
                 .map(|(module, address)| (module.loaded.id, address));
             return Ok(ResolvedFrame {
@@ -507,7 +510,9 @@ impl<P: InspectionOps> Controller<P> {
                 frame: None,
                 code,
                 scope: FrameScope::Unavailable,
-                registers: stack.registers(0),
+                registers: stack
+                    .registers(0)
+                    .ok_or_else(|| Error::internal("an unwound stack has its innermost frame"))?,
                 cfa: self.frame_cfa(root.reader(), &modules, code, &innermost.registers),
                 activation: 0,
                 below_stack_pointer: self.below_stack_pointer(inferior, root, innermost),
@@ -539,24 +544,37 @@ impl<P: InspectionOps> Controller<P> {
             });
         };
 
-        let FrameOrigin { activation, source } = expanded.origins[level];
+        let FrameOrigin { activation, source } = *expanded
+            .origins
+            .get(level)
+            .ok_or_else(|| Error::internal("every logical frame has an origin"))?;
         let jump = match source {
             FrameSource::Activation | FrameSource::Described { .. } => None,
             FrameSource::TailCall(module, address) => Some((module, address)),
             FrameSource::Future(future) => {
-                return Ok(self.suspended_frame(frame, selected, &expanded.futures[future]));
+                let future = expanded
+                    .futures
+                    .get(future)
+                    .ok_or_else(|| Error::internal("a future frame names a walked future"))?;
+                return Ok(self.suspended_frame(frame, selected, future));
             }
             FrameSource::Interpreted(index) => {
+                let interpreted = expanded.interpreted.get(index).ok_or_else(|| {
+                    Error::internal("an interpreted frame names a read interpreted frame")
+                })?;
                 return Ok(super::interpreted::resolved(
                     frame,
                     selected,
                     activation,
-                    &expanded.interpreted[index],
+                    interpreted,
                 ));
             }
         };
 
-        let physical = &stack.frames[activation];
+        let physical = stack
+            .frames
+            .get(activation)
+            .ok_or_else(|| Error::internal("a frame origin names an unwound activation"))?;
         let code = jump.or_else(|| {
             stack
                 .lookup_address(activation)
@@ -610,7 +628,9 @@ impl<P: InspectionOps> Controller<P> {
             frame: Some(selected),
             code,
             scope,
-            registers: stack.registers(activation),
+            registers: stack
+                .registers(activation)
+                .ok_or_else(|| Error::internal("a frame origin names an unwound activation"))?,
             cfa: self.frame_cfa(root.reader(), modules, code, &physical.registers),
             activation,
             below_stack_pointer: self.below_stack_pointer(inferior, root, physical),
@@ -867,11 +887,12 @@ pub(super) fn make_presentation(
         .checked_sub(visible)
         .ok_or(Error::LocationUnavailable)?;
     let hidden_inline_frames = u32::try_from(hidden).map_err(|_| Error::LocationUnavailable)?;
-    let frame = visible
-        .checked_sub(1)
-        .map_or(PresentedFrame::Physical, |index| {
-            PresentedFrame::Inline(inline_chain[index])
-        });
+    let frame = match visible.checked_sub(1) {
+        None => PresentedFrame::Physical,
+        Some(index) => {
+            PresentedFrame::Inline(*inline_chain.get(index).ok_or(Error::LocationUnavailable)?)
+        }
+    };
 
     Ok(FramePresentation {
         instruction,
@@ -899,8 +920,9 @@ pub(super) fn default_inline_visible_count(
             // `next`, `finish`, and instruction stops remain in its parent.
             // A loop body is its enclosing function's own code, so any stop
             // where one begins shows it.
-            inline_chain[index..]
+            inline_chain
                 .iter()
+                .skip(index)
                 .position(|instance| is_loop_body(module_image, *instance))
                 .map_or_else(
                     || index + usize::from(reveal_new_inline),
@@ -1234,7 +1256,7 @@ fn expand_inline_backtrace(
             }
         }
 
-        for frame in &mut frames[first..] {
+        for frame in frames.iter_mut().skip(first) {
             frame.segment = physical.segment;
         }
     }
@@ -1270,7 +1292,11 @@ fn expand_activation<'a>(
     presentation: Option<&FramePresentation>,
     frames: &mut Vec<StackFrame>,
 ) -> Result<Option<(UnwindModule<'a>, ImageAddress)>> {
-    let context = &stack.frames[activation].context;
+    let context = &stack
+        .frames
+        .get(activation)
+        .ok_or_else(|| Error::internal("an expanded activation was unwound"))?
+        .context;
     let kind = if context.signal_frame {
         FrameKind::Signal
     } else {
@@ -1287,8 +1313,12 @@ fn expand_activation<'a>(
 
     // The stop presentation describes the main image only; innermost
     // frames in other modules show their complete inline chain.
-    let presentation =
-        presentation.filter(|_| activation == 0 && frame_module.loaded.id == modules[0].loaded.id);
+    let presentation = presentation.filter(|_| {
+        activation == 0
+            && modules
+                .first()
+                .is_some_and(|main| main.loaded.id == frame_module.loaded.id)
+    });
     push_code_frames(
         frames,
         kind,
@@ -1331,7 +1361,11 @@ fn push_code_frames(
 
         let mut source = visible_source(module_image, &location, &chain.instances, visible);
 
-        for &instance_id in chain.instances[..visible].iter().rev() {
+        let shown = chain
+            .instances
+            .get(..visible)
+            .ok_or_else(|| Error::internal("a presentation shows part of its inline chain"))?;
+        for &instance_id in shown.iter().rev() {
             let instance = module_image
                 .code_instance(instance_id)
                 .ok_or_else(|| Error::internal("inline chain references a known instance"))?;
@@ -1423,14 +1457,17 @@ impl PhysicalStack {
     /// or the byte before it when that is a return address.
     pub(super) fn lookup_address(&self, activation: usize) -> Option<VirtualAddress> {
         let caller = activation != 0 || self.after_call;
-        frame_lookup_address(u32::from(caller), &self.frames[activation].context)
+        frame_lookup_address(u32::from(caller), &self.frames.get(activation)?.context)
     }
 
-    /// The registers an activation's values are read from.
-    pub(super) fn registers(&self, activation: usize) -> FrameRegisters {
+    /// The registers an activation's values are read from, if it was unwound.
+    pub(super) fn registers(&self, activation: usize) -> Option<FrameRegisters> {
         match self.native {
-            Some(native) if activation == 0 => FrameRegisters::Thread(native),
-            _ => FrameRegisters::Caller(self.frames[activation].registers.clone()),
+            Some(native) if activation == 0 => Some(FrameRegisters::Thread(native)),
+            _ => self
+                .frames
+                .get(activation)
+                .map(|frame| FrameRegisters::Caller(frame.registers.clone())),
         }
     }
 }

@@ -302,7 +302,10 @@ fn typed_element(
         return Ok(Some(Handle::Double(address).handle()));
     }
     let mut bytes = [0u8; 8];
-    reader.bytes_into(address, &mut bytes[..usize::try_from(size).unwrap_or(8)])?;
+    let read = bytes
+        .get_mut(..usize::try_from(size).unwrap_or(8))
+        .ok_or("a typed array element is wider than eight bytes")?;
+    reader.bytes_into(address, read)?;
     let [b0, b1, b2, b3, ..] = bytes;
     let integer = match element {
         E::Int8 => i64::from(i8::from_le_bytes([b0])),
@@ -411,7 +414,7 @@ pub(super) fn operand(
             // wrong. A cut may split a pair at the end.
             let whole = match completion {
                 TextCompletion::Complete => units.as_slice(),
-                _ => &units[..units.len().saturating_sub(1)],
+                _ => units.split_last().map_or(&[][..], |(_, rest)| rest),
             };
             if char::decode_utf16(whole.iter().copied()).any(|unit| unit.is_err()) {
                 return Err(

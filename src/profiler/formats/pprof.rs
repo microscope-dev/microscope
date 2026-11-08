@@ -237,7 +237,10 @@ fn weighing(raw: &Raw<'_>, builder: &mut CaptureBuilder) -> Result<Weighing, Str
         .or_else(|| raw.types.len().checked_sub(1))
         .ok_or_else(|| "it has no sample types".to_owned())?;
 
-    let (name, unit) = raw.types[chosen];
+    let (name, unit) = *raw
+        .types
+        .get(chosen)
+        .ok_or_else(|| "it has no sample types".to_owned())?;
     let (name, unit) = (raw.string(name)?, raw.string(unit)?);
     let (weight, scale) = match unit {
         "nanoseconds" => ("nanoseconds", 1),
@@ -460,16 +463,18 @@ pub fn export(values: &[Values<'_>], duration: i64) -> std::io::Result<Vec<u8>> 
     for (index, value) in values.iter().enumerate() {
         let tree = value.tree;
         let mut of_key: BTreeMap<u32, u64> = BTreeMap::new();
-        for node in 0..tree.len() {
-            if tree.own[node] == 0 {
+        for (node, &own) in tree.own.iter().enumerate() {
+            if own == 0 {
                 continue;
             }
 
             path.clear();
             let mut at = u32::try_from(node).unwrap_or(NONE);
 
-            while at != NONE {
-                let key = tree.key[at as usize];
+            while at != NONE
+                && let Some((&key, &parent)) =
+                    tree.key.get(at as usize).zip(tree.parent.get(at as usize))
+            {
                 let next = locations.len() as u64 + 1;
                 let location = *of_key.entry(key).or_insert_with(|| {
                     *locations
@@ -501,12 +506,15 @@ pub fn export(values: &[Values<'_>], duration: i64) -> std::io::Result<Vec<u8>> 
                 });
 
                 path.push(location);
-                at = tree.parent[at as usize];
+                at = parent;
             }
 
-            samples
+            let weights = samples
                 .entry(path.clone())
-                .or_insert_with(|| vec![0; values.len()])[index] += tree.own[node];
+                .or_insert_with(|| vec![0; values.len()]);
+            if let Some(weight) = weights.get_mut(index) {
+                *weight += own;
+            }
         }
     }
 
@@ -537,7 +545,7 @@ fn located(capture: &Capture, keys: &Keys<'_>, key: u32) -> (String, String, u32
         line,
     } = keys.kind(key)
     {
-        let name = capture.string(capture.functions[function as usize].name.get());
+        let name = crate::profiler::function_name(capture, function);
         let file = if file == NONE {
             ""
         } else {

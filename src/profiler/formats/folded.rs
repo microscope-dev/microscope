@@ -80,12 +80,15 @@ pub fn export(keys: &Keys<'_>, tree: &CallTree) -> String {
     let mut path = Vec::new();
     let mut out = String::new();
 
-    for node in (0..tree.len()).filter(|&node| tree.own[node] > 0) {
+    for (node, own) in tree.own.iter().enumerate().filter(|(_, own)| **own > 0) {
         path.clear();
         let mut at = u32::try_from(node).unwrap_or(NONE);
-        while at != NONE {
-            path.push(tree.key[at as usize]);
-            at = tree.parent[at as usize];
+        while at != NONE
+            && let Some((&key, &parent)) =
+                tree.key.get(at as usize).zip(tree.parent.get(at as usize))
+        {
+            path.push(key);
+            at = parent;
         }
 
         for (position, key) in path.iter().rev().enumerate() {
@@ -100,7 +103,7 @@ pub fn export(keys: &Keys<'_>, tree: &CallTree) -> String {
         }
 
         out.push(' ');
-        out.push_str(&tree.own[node].to_string());
+        out.push_str(&own.to_string());
         out.push('\n');
     }
 

@@ -294,12 +294,14 @@ impl CoreDump {
         self.threads.iter().find(|thread| thread.tid == tid)
     }
 
-    fn segment_index(&self, address: u64) -> Option<usize> {
+    fn segment(&self, address: u64) -> Option<&CoreSegment> {
         let index = self
             .segments
             .partition_point(|segment| segment.start <= address)
             .checked_sub(1)?;
-        (address < self.segments[index].end).then_some(index)
+        self.segments
+            .get(index)
+            .filter(|segment| address < segment.end)
     }
 
     fn next_segment_start(&self, address: u64) -> u64 {
@@ -314,7 +316,7 @@ impl CoreDump {
     /// Returns the core-file offset and contiguous length of saved bytes at
     /// `address`, if the dump saved that address.
     fn saved_run(&self, address: u64) -> Option<(u64, u64)> {
-        let segment = self.segments[self.segment_index(address)?];
+        let segment = self.segment(address)?;
         let offset = address - segment.start;
         (offset < segment.saved).then(|| (segment.file_offset + offset, segment.saved - offset))
     }
@@ -322,8 +324,7 @@ impl CoreDump {
     /// Whether the producer saved `address` but truncation lost it. Only the
     /// dumped process held those bytes; no file may stand in for them.
     fn truncated(&self, address: u64) -> bool {
-        self.segment_index(address).is_some_and(|index| {
-            let segment = &self.segments[index];
+        self.segment(address).is_some_and(|segment| {
             let offset = address - segment.start;
             segment.saved <= offset && offset < segment.recorded
         })
@@ -347,8 +348,13 @@ impl CoreDump {
             let count = usize::try_from(run)
                 .unwrap_or(usize::MAX)
                 .min(buffer.len() - done);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "done < buffer.len() and count <= buffer.len() - done"
+            )]
+            let chunk = &mut buffer[done..done + count];
             self.source
-                .read_exact_at(&mut buffer[done..done + count], offset)
+                .read_exact_at(chunk, offset)
                 .map_err(CoreMemoryError::Io)?;
             done += count;
         }
@@ -439,10 +445,14 @@ fn parse<'data, R: ReadRef<'data>>(data: R, len: u64) -> Result<Metadata, CoreEr
     }
 
     segments.sort_by_key(|segment| segment.start);
-    if let Some(pair) = segments.windows(2).find(|pair| pair[0].end > pair[1].start) {
+    if let Some((first, second)) = segments
+        .iter()
+        .zip(segments.iter().skip(1))
+        .find(|(first, second)| first.end > second.start)
+    {
         return Err(invalid(format!(
             "load segments at {:#x} and {:#x} overlap",
-            pair[0].start, pair[1].start
+            first.start, second.start
         )));
     }
 
@@ -567,11 +577,8 @@ fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, CoreError> {
 }
 
 fn c_string(bytes: &[u8]) -> Arc<str> {
-    let end = bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into()
+    let text = bytes.split(|&byte| byte == 0).next().unwrap_or(bytes);
+    String::from_utf8_lossy(text).into()
 }
 
 fn parse_prstatus(bytes: &[u8]) -> Result<CoreThread, CoreError> {
@@ -693,10 +700,16 @@ fn parse_prpsinfo(bytes: &[u8]) -> Result<CoreProcess, CoreError> {
         .ok()
         .filter(|pid| *pid != 0)
         .ok_or_else(|| invalid("NT_PRPSINFO names an invalid process identifier"))?;
+    let field = |range| {
+        bytes
+            .get(range)
+            .map(c_string)
+            .ok_or_else(|| invalid("NT_PRPSINFO is malformed"))
+    };
     Ok(CoreProcess {
         pid,
-        name: c_string(&bytes[PRPSINFO_NAME]),
-        arguments: c_string(&bytes[PRPSINFO_ARGUMENTS]).trim_end().into(),
+        name: field(PRPSINFO_NAME)?,
+        arguments: field(PRPSINFO_ARGUMENTS)?.trim_end().into(),
     })
 }
 
@@ -738,7 +751,9 @@ fn parse_files(bytes: &[u8]) -> Result<Vec<CoreFileMapping>, CoreError> {
         .ok_or_else(malformed)?;
 
     // Every path is NUL-terminated; a table cut short is malformed.
-    let mut names = bytes[names_start..]
+    let mut names = bytes
+        .get(names_start..)
+        .ok_or_else(malformed)?
         .split_inclusive(|&byte| byte == 0)
         .map(|name| name.strip_suffix(&[0]));
     let mut files = Vec::with_capacity(count);
@@ -781,8 +796,20 @@ pub(super) struct ImageMappings {
 }
 
 impl ImageMappings {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every instance is built from its mapping at file offset zero and only grows"
+    )]
+    fn first(&self) -> &CoreFileMapping {
+        debug_assert!(
+            !self.mappings.is_empty(),
+            "an image instance has no mappings"
+        );
+        &self.mappings[0]
+    }
+
     pub(super) fn start(&self) -> u64 {
-        self.mappings[0].start
+        self.first().start
     }
 
     pub(super) fn contains(&self, address: u64) -> bool {
@@ -810,8 +837,8 @@ pub(super) fn image_mappings(files: &[CoreFileMapping]) -> Vec<ImageMappings> {
                 path,
                 mappings: vec![mapping],
             });
-        } else if let Some(&index) = latest.get(&path) {
-            images[index].mappings.push(mapping);
+        } else if let Some(image) = latest.get(&path).and_then(|&index| images.get_mut(index)) {
+            image.mappings.push(mapping);
         }
     }
 
@@ -921,7 +948,7 @@ pub(super) fn recorded_build_id(
     core: &CoreDump,
     image: &ImageMappings,
 ) -> Result<Option<Vec<u8>>, CoreError> {
-    let first = &image.mappings[0];
+    let first = image.first();
     let Some((offset, run)) = core.saved_run(first.start) else {
         return Ok(None);
     };
@@ -1380,12 +1407,18 @@ impl CoreMemory {
             let current = address
                 .checked_add(done as u64)
                 .ok_or(CoreMemoryError::Unavailable)?;
-            let remaining = buffer.len() - done;
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the loop runs while done < buffer.len()"
+            )]
+            let rest = &mut buffer[done..];
             let count = if let Some((offset, run)) = self.core.saved_run(current) {
-                let count = usize::try_from(run).unwrap_or(usize::MAX).min(remaining);
+                let count = usize::try_from(run).unwrap_or(usize::MAX).min(rest.len());
+                #[expect(clippy::indexing_slicing, reason = "count <= rest.len()")]
+                let chunk = &mut rest[..count];
                 self.core
                     .source
-                    .read_exact_at(&mut buffer[done..done + count], offset)
+                    .read_exact_at(chunk, offset)
                     .map_err(CoreMemoryError::Io)?;
                 count
             } else if self.core.truncated(current) {
@@ -1393,7 +1426,7 @@ impl CoreMemory {
             } else {
                 // Unsaved bytes end where the next saved segment begins.
                 let limit = self.core.next_segment_start(current) - current;
-                self.read_backing(current, &mut buffer[done..], limit)?
+                self.read_backing(current, rest, limit)?
             };
 
             done += count;
@@ -1413,7 +1446,10 @@ impl CoreMemory {
             .partition_point(|backing| backing.start <= address)
             .checked_sub(1)
             .ok_or(CoreMemoryError::Unavailable)?;
-        let backing = &self.backings[index];
+        let backing = self
+            .backings
+            .get(index)
+            .ok_or(CoreMemoryError::Unavailable)?;
         if address >= backing.end {
             return Err(CoreMemoryError::Unavailable);
         }
@@ -1431,7 +1467,9 @@ impl CoreMemory {
             .checked_add(count)
             .and_then(|end| backing.data.get(offset..end))
             .ok_or(CoreMemoryError::Unavailable)?;
-        buffer[..count].copy_from_slice(source);
+        #[expect(clippy::indexing_slicing, reason = "count <= buffer.len()")]
+        let target = &mut buffer[..count];
+        target.copy_from_slice(source);
         Ok(count)
     }
 }

@@ -278,7 +278,12 @@ impl Lines<'_> {
                 .checked_add(count)
                 .filter(|end| *end <= self.rows.len())
                 .ok_or_else(|| malformed("a sequence runs past the rows"))?;
-            if self.rows[first..next - 1]
+            let (_, inner) = self
+                .rows
+                .get(first..next)
+                .and_then(<[LineRow]>::split_last)
+                .ok_or_else(|| malformed("a sequence runs past the rows"))?;
+            if inner
                 .iter()
                 .any(|row| row.flags & row_flags::END_SEQUENCE != 0)
             {
@@ -343,7 +348,7 @@ impl Lines<'_> {
             self.rows.get(at).is_some_and(|row| {
                 indexed(row)
                     && row.file == key.file
-                    && lines::row_line(self.rows, self.extras, at) == key.line.get()
+                    && lines::row_line(self.rows, self.extras, at) == Some(key.line.get())
             })
         };
         let all = if self.parallel {

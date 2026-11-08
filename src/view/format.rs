@@ -169,7 +169,7 @@ pub fn utf8_text(text: &TextSummary) -> Option<TextSummary> {
     let valid = match std::str::from_utf8(&text.bytes) {
         Ok(valid) => valid,
         Err(error) if !complete && error.error_len().is_none() => {
-            std::str::from_utf8(&text.bytes[..error.valid_up_to()]).ok()?
+            std::str::from_utf8(text.bytes.get(..error.valid_up_to())?).ok()?
         }
         Err(_) => return None,
     };

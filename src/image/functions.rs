@@ -235,6 +235,25 @@ const EVIDENCE: [BoundaryEvidence; 5] = [
     BoundaryEvidence::SectionStart,
     BoundaryEvidence::RangeEnd,
 ];
+
+/// The provenance a validated entry's code names.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "function validation rejects every entry whose provenance `PROVENANCES` lacks"
+)]
+fn provenance(code: u8) -> EntryProvenance {
+    PROVENANCES[usize::from(code)]
+}
+
+/// The evidence a validated instruction start's code names.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "function validation rejects every start whose evidence `EVIDENCE` lacks"
+)]
+fn evidence(code: u8) -> BoundaryEvidence {
+    EVIDENCE[usize::from(code)]
+}
+
 const LANGUAGES: [SourceLanguage; 15] = [
     SourceLanguage::C,
     SourceLanguage::Cpp,
@@ -269,7 +288,16 @@ pub(super) fn language_code(language: SourceLanguage) -> Option<(u8, u16)> {
 }
 
 /// The language [`language_code`] encodes, once validated.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "function, variable, and type identity validation reject every code \
+              `valid_language` refuses"
+)]
 pub(super) fn language_of(code: u8, other: u16) -> SourceLanguage {
+    debug_assert!(
+        valid_language(code, other),
+        "language {code} ({other}) names no language"
+    );
     match code {
         OTHER_LANGUAGE => SourceLanguage::Other(other),
         code => LANGUAGES[usize::from(code)],
@@ -391,7 +419,9 @@ fn add_functions(
         // The function's instances are the run that starts here, and are
         // counted in turn: a binary search of the rest for each of Chrome's
         // 14 million functions missed the cache on most probes.
-        let instance_count = by_function[first_instance..]
+        let instance_count = by_function
+            .get(first_instance..)
+            .unwrap_or_default()
             .iter()
             .take_while(|(owner, _)| *owner == function.id.get())
             .count();
@@ -495,8 +525,13 @@ fn recommended_entries(
     let mut prologues = vec![Vec::new(); instances.len()];
     for address in prologue_ends {
         for id in index::containing(code_ranges, *address) {
-            let entries = &mut prologues[id as usize];
-            if matches!(instances[id as usize].kind, CodeInstanceKind::OutOfLine)
+            let (Some(entries), Some(instance)) =
+                (prologues.get_mut(id as usize), instances.get(id as usize))
+            else {
+                continue;
+            };
+
+            if matches!(instance.kind, CodeInstanceKind::OutOfLine)
                 && !entries
                     .iter()
                     .any(|entry: &BreakpointEntry| entry.address == *address)
@@ -649,13 +684,15 @@ impl<'a> FunctionView<'a> {
         let first = self
             .starts
             .partition_point(|start| start.address.get() < range.start.get());
-        self.starts[first..]
+        self.starts
+            .get(first..)
+            .unwrap_or_default()
             .iter()
             .take_while(move |start| start.address.get() < range.end.get())
             .map(|start| {
                 (
                     ImageAddress::new(start.address.get()),
-                    EVIDENCE[usize::from(start.evidence)],
+                    evidence(start.evidence),
                 )
             })
     }
@@ -893,7 +930,7 @@ impl<'a> CodeInstance<'a> {
             .iter()
             .map(|entry| BreakpointEntry {
                 address: ImageAddress::new(entry.address.get()),
-                provenance: PROVENANCES[usize::from(entry.provenance)],
+                provenance: provenance(entry.provenance),
             })
     }
 
@@ -983,9 +1020,13 @@ fn validate_functions(image: &Image) -> Result<(), String> {
     if names.len() != functions.len() + aliases
         || !index::valid_names(&strings, names, functions.len())
         || !names.iter().all(|entry| {
-            let function = &functions[entry.value.get() as usize];
-            function.name == entry.name
-                || (main(function) && strings.bytes(StrId(entry.name.get())) == MAIN.as_bytes())
+            functions
+                .get(entry.value.get() as usize)
+                .is_some_and(|function| {
+                    function.name == entry.name
+                        || (main(function)
+                            && strings.bytes(StrId(entry.name.get())) == MAIN.as_bytes())
+                })
         })
     {
         return Err("the function name index disagrees with the functions".into());
@@ -1005,8 +1046,9 @@ fn distinct_ranges(ranges: &[RangeRecord]) -> usize {
             .iter()
             .enumerate()
             .filter(|(index, range)| {
-                !ranges[..*index]
+                !ranges
                     .iter()
+                    .take(*index)
                     .any(|earlier| key(earlier) == key(range))
             })
             .count();
@@ -1077,9 +1119,13 @@ fn validate_instances(image: &Image) -> Result<(), String> {
     // range, most of the time a cached image took to validate.
     if !index::valid_intervals(code_ranges, instances.len())
         || !code_ranges.iter().all(|interval| {
-            own(&instances[interval.value.get() as usize])
-                .iter()
-                .any(|range| range.start == interval.start && range.end == interval.end)
+            instances
+                .get(interval.value.get() as usize)
+                .is_some_and(|instance| {
+                    own(instance)
+                        .iter()
+                        .any(|range| range.start == interval.start && range.end == interval.end)
+                })
         })
         || instances
             .iter()

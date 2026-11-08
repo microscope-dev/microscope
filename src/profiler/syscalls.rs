@@ -127,7 +127,7 @@ impl Profile {
                 .threads
                 .get(thread as usize)
                 .map_or((Tid::new(0), Pid::new(0)), |row| {
-                    let pid = capture.processes[row.process.get() as usize].pid.get();
+                    let pid = capture.process(row.process.get()).pid.get();
                     (Tid::new(row.tid.get()), Pid::new(pid))
                 })
         };
@@ -139,13 +139,7 @@ impl Profile {
                 .map_or(Pid::new(0), |row| Pid::new(row.pid.get()))
         };
 
-        let blob = |start: u32, len: u32| -> &[u8] {
-            if start == NONE {
-                &[]
-            } else {
-                &capture.syscall_blobs[start as usize..(start + len) as usize]
-            }
-        };
+        let blob = |start: u32, len: u32| capture.blob(start, len);
 
         let stack = |row: u32| (row != NONE).then_some(row);
         let mut events = Vec::with_capacity(capture.syscalls.len() + capture.syscall_notes.len());
@@ -253,8 +247,7 @@ impl Profile {
         let mut counted = Folded::default();
 
         for row in &capture.syscall_stats {
-            let start = row.errnos.get() as usize;
-            let errnos = &capture.syscall_errnos[start..start + row.errno_count.get() as usize];
+            let errnos = capture.stat_errnos(row);
             let stats = SyscallStats {
                 calls: row.calls.get(),
                 errors: row.errors.get(),
@@ -416,11 +409,11 @@ impl Profile {
         let names: Vec<String> = capture
             .stack_frames(row)
             .filter(|&frame| {
-                let record = &capture.frames[frame as usize];
+                let record = capture.frame(frame);
                 let module = record.module.get();
                 record.kind != FrameKind::Truncated as u8
                     && (module == NONE || {
-                        let path = capture.string(capture.modules[module as usize].path.get());
+                        let path = capture.string(capture.module(module).path.get());
                         let name = path.rsplit('/').next().unwrap_or(path);
                         !C_LIBRARY.iter().any(|prefix| name.starts_with(prefix))
                     })
@@ -432,10 +425,7 @@ impl Profile {
                 }
                 lines
                     .iter()
-                    .map(|line| {
-                        let function = &capture.functions[line.function.get() as usize];
-                        capture.string(function.name.get()).to_owned()
-                    })
+                    .map(|line| super::function_name(capture, line.function.get()).to_owned())
                     .collect()
             })
             .collect();
@@ -465,8 +455,7 @@ impl Profile {
                     ))
             })?;
             Some(SyscallPlace {
-                function: capture
-                    .string(capture.functions[line.function.get() as usize].name.get()),
+                function: super::function_name(capture, line.function.get()),
                 file: capture.string(line.file.get()),
                 line: line.number.get(),
             })

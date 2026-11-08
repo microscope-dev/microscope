@@ -138,7 +138,16 @@ impl Expression {
 
     /// The reading where ambiguity `i` is a cast exactly when bit `i` of
     /// `casts` is set.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the parser makes `1 << ambiguities` readings, and callers choose one"
+    )]
     pub fn reading(&self, casts: usize) -> Result<&Tree, &ExpressionError> {
+        debug_assert!(
+            casts < self.parsed.readings.len(),
+            "reading {casts} of {}",
+            self.parsed.readings.len(),
+        );
         self.parsed.readings[casts].as_ref()
     }
 

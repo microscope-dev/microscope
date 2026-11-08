@@ -109,7 +109,7 @@ pub fn dump(event: &SyscallEvent) -> Vec<String> {
 /// Dumps the first `length` bytes of a buffer of which `bytes` were
 /// captured.
 fn buffer(lines: &mut Vec<String>, bytes: &[u8], length: usize) {
-    let shown = &bytes[..bytes.len().min(length)];
+    let shown = bytes.get(..length).unwrap_or(bytes);
     for (row, chunk) in shown.chunks(16).enumerate() {
         let mut line = format!(" | {:05x}  ", row * 16);
         for column in 0..16 {

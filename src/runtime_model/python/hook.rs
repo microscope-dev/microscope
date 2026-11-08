@@ -63,6 +63,10 @@ const _: () = assert!(
     clippy::too_many_lines,
     reason = "one fixed ELF layout keeps offsets auditable together"
 )]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "every offset is a constant of the fixed layout, inside the buffer it allocates"
+)]
 pub fn library() -> Vec<u8> {
     let mut elf = vec![0; DYNAMIC_OFFSET + DYNAMIC_SIZE];
     elf[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");

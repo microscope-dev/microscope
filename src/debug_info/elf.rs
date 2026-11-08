@@ -1361,9 +1361,11 @@ pub(super) fn fuzz(data: &[u8]) {
 
     assert!(
         table.symbols.windows(2).all(|pair| {
-            let left = (pair[0].address, &pair[0].name);
-            let right = (pair[1].address, &pair[1].name);
-            left < right || (left == right && pair[0].name.contains(char::REPLACEMENT_CHARACTER))
+            matches!(pair, [first, second] if {
+                let left = (first.address, &first.name);
+                let right = (second.address, &second.name);
+                left < right || (left == right && first.name.contains(char::REPLACEMENT_CHARACTER))
+            })
         }),
         "the catalog is ordered and only lossily spelled names repeat"
     );
@@ -1496,6 +1498,10 @@ fn assert_description(image: &crate::ModuleImage, symbols: &[SymbolInfo], addres
 /// section, and each following six-byte record defines a symbol or a
 /// call-frame entry from a small pool of colliding names.
 #[cfg(any(test, feature = "fuzzing"))]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a fuzz harness reports a bug by panicking"
+)]
 fn fuzz_object(data: &[u8]) -> (Vec<u8>, Vec<AddressRange<ImageAddress>>) {
     use object::write;
 

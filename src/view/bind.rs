@@ -535,8 +535,11 @@ impl<S: Scope> Scope for ViewScope<'_, S> {
         }
 
         let named = |names: &[(String, Ty, bool)], object: fn(usize) -> Self::Object| {
-            let index = names.iter().rposition(|(named, ..)| named == name)?;
-            let (_, ty, place) = &names[index];
+            let (index, (_, ty, place)) = names
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (named, ..))| named == name)?;
             Some(match (place, ty) {
                 (true, Ty::Program(reference)) => Lookup::Object {
                     object: object(index),
@@ -923,7 +926,7 @@ fn is_part_path(path: &str) -> bool {
             let end = rest
                 .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
                 .unwrap_or(rest.len());
-            if end == 0 || rest.as_bytes()[0].is_ascii_digit() {
+            if end == 0 || rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
                 return false;
             }
 

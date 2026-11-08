@@ -104,8 +104,7 @@ impl ZoneScope {
             .iter()
             .filter(|zones| zones.thread.get() == thread)
         {
-            let start = zones.start.get() as usize;
-            for zone in &capture.zones[start..start + zones.count.get() as usize] {
+            for zone in capture.range_zones(zones) {
                 let (start, end) = (zone.start.get(), zone.end.get());
                 if self.sites.contains(&zone.site.get()) && end > start && self.holds(start, end) {
                     spans.push((start, end));
@@ -123,7 +122,9 @@ impl ZoneScope {
         }
 
         debug_assert!(
-            merged.windows(2).all(|pair| pair[0].1 < pair[1].0),
+            merged
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.1 < b.0)),
             "merged zone spans overlap"
         );
         merged
@@ -245,6 +246,10 @@ impl CallTree {
     /// Panics if the tree is not laid out depth first, each node's subtree
     /// ending inside its caller's, with each total its own weight and its
     /// children's.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`aggregate` gives every column an entry per node, and a node's caller precedes it"
+    )]
     fn check_invariants(&self) {
         let mut children = vec![0_u64; self.len()];
         let mut roots = 0_u64;
@@ -365,7 +370,7 @@ impl<'a> LabelQuery<'a> {
                 .carried
                 .iter()
                 .copied()
-                .rfind(|&label| keys.labels()[label as usize].0 == by)
+                .rfind(|&label| keys.label_of(label).0 == by)
                 .or_else(|| keys.label(by, None));
             keys.label_key(label.unwrap_or(NONE))
         }))
@@ -412,7 +417,7 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
                 }
 
                 let samples = capture.thread_samples(range);
-                for sample in &samples[in_range(samples, |sample| sample.time.get(), query.range)] {
+                for sample in in_range(samples, |sample| sample.time.get(), query.range) {
                     let (stack, task, time) =
                         (sample.stack.get(), sample.task.get(), sample.time.get());
                     if stack == NONE || !task_kept(task) {
@@ -461,7 +466,7 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
             }
 
             let waits = &capture.task_waits;
-            for wait in &waits[in_range(waits, |wait| wait.time.get(), query.range)] {
+            for wait in in_range(waits, |wait| wait.time.get(), query.range) {
                 let (stack, task) = (wait.stack.get(), wait.task.get());
                 if stack == NONE || !task_kept(task) {
                     continue;
@@ -532,10 +537,15 @@ fn select(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
 
     let mut weights = vec![0_u64; capture.stacks.len()];
     let mut counts = vec![0_u32; capture.stacks.len()];
-    each(capture, keys, query, |selected| {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`each` passes only stacks other than `NONE`, which `validate` checks"
+    )]
+    let tally = |selected: Selected| {
         weights[selected.stack as usize] += selected.weight;
         counts[selected.stack as usize] += 1;
-    });
+    };
+    each(capture, keys, query, tally);
     weights
         .into_iter()
         .zip(counts)
@@ -551,19 +561,19 @@ fn select(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
         .collect()
 }
 
-/// The positions of a time-ordered run's rows in `range`.
-fn in_range<T>(
-    rows: &[T],
-    time: impl Fn(&T) -> i64,
-    range: Option<(i64, i64)>,
-) -> std::ops::Range<usize> {
+/// A time-ordered run's rows in `range`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`partition_point` returns at most the length"
+)]
+fn in_range<T>(rows: &[T], time: impl Fn(&T) -> i64, range: Option<(i64, i64)>) -> &[T] {
     let Some((start, end)) = range else {
-        return 0..rows.len();
+        return rows;
     };
 
     let first = rows.partition_point(|row| time(row) < start);
     let last = rows.partition_point(|row| time(row) < end);
-    first..last.max(first)
+    &rows[first..last.max(first)]
 }
 
 /// Turns stacks into transformed paths.
@@ -580,6 +590,11 @@ struct Paths<'a> {
 /// Cuts each cycle out of `path`, from its first element: a key already
 /// kept cuts the kept path back to it. `on_path` is scratch of `keys`
 /// entries, each [`NONE`] before and after.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "every key on the path is below `keys`, which `on_path` covers, and a \
+              position on it is below `kept`, which never passes `at`"
+)]
 fn erase_cycles(path: &mut Vec<u32>, on_path: &mut Vec<u32>, keys: usize) {
     if on_path.len() < keys {
         on_path.resize(keys, NONE);
@@ -717,8 +732,12 @@ fn logical(keys: &Keys<'_>, path: &mut Vec<u32>) {
             )
         };
 
-        if let Some(root) = path[..dispatch].iter().rposition(|key| !machinery(key))
-            && let Some(task) = keys.task(path[root])
+        if let Some((root, &key)) = path
+            .iter()
+            .enumerate()
+            .take(dispatch)
+            .rfind(|(_, key)| !machinery(key))
+            && let Some(task) = keys.task(key)
         {
             path.splice(root + 1..dispatch, [task]);
         }
@@ -742,6 +761,10 @@ fn python(keys: &Keys<'_>, path: &mut Vec<u32>) {
 }
 
 /// The call tree of the samples `query` selects.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "nodes index the columns built beside them, and a node's parent precedes it"
+)]
 pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree {
     let _span = crate::span!("analysis aggregate");
     let selected = select(capture, keys, query);
@@ -860,6 +883,10 @@ pub struct Costs {
 }
 
 /// What each key costs under `query`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a path holds only keys of `keys`, which the columns have an entry for each of"
+)]
 pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
     let _span = crate::span!("analysis functions");
     let selected = select(capture, keys, query);
@@ -895,13 +922,10 @@ pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
         }
     }
 
-    let mut costs: Vec<Cost> = (0..keys.count())
-        .filter(|&key| total[key] > 0)
-        .map(|key| Cost {
-            key: index(key),
-            own: own[key],
-            total: total[key],
-        })
+    let mut costs: Vec<Cost> = (0..)
+        .zip(own.into_iter().zip(total))
+        .filter(|(_, (_, total))| *total > 0)
+        .map(|(key, (own, total))| Cost { key, own, total })
         .collect();
 
     for cost in &costs {
@@ -981,13 +1005,16 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
             };
 
             let offset = u128::try_from(from - start).unwrap_or(0);
-            let mut slice = usize::try_from(offset * count / span)
+            let first = usize::try_from(offset * count / span)
                 .unwrap_or(0)
                 .min(buckets - 1);
-            while slice < buckets && edge(slice) < to {
+            for (slice, total) in totals.iter_mut().enumerate().skip(first) {
+                if edge(slice) >= to {
+                    break;
+                }
+
                 let overlap = to.min(edge(slice + 1)) - from.max(edge(slice));
-                totals[slice] += u64::try_from(overlap).unwrap_or(0);
-                slice += 1;
+                *total += u64::try_from(overlap).unwrap_or(0);
             }
 
             any = true;
@@ -1046,7 +1073,12 @@ pub fn density(
 
     let mut slices: Vec<Option<Vec<u64>>> = vec![None; count];
 
-    each(capture, keys, query, |selected| {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a lane is a task `validate` checked, the last for none, or a sample's thread, \
+                  which `validate` checks too, and a bucket is capped below `buckets`"
+    )]
+    let tally = |selected: Selected| {
         let task = if query.by_task { selected.task } else { NONE };
         let keep = *kept
             .entry((selected.stack, task, selected.label))
@@ -1065,7 +1097,8 @@ pub fn density(
         let bucket = usize::try_from(offset * buckets as u128 / span).unwrap_or(0);
         slices[lane].get_or_insert_with(|| vec![0; buckets])[bucket.min(buckets - 1)] +=
             selected.weight;
-    });
+    };
+    each(capture, keys, query, tally);
 
     slices
         .into_iter()

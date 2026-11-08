@@ -98,6 +98,10 @@ impl BuiltTypes {
             .iter()
             .zip(&mut kept)
             .map(|(class, kept)| {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "classes are numbered densely from 0, so each is below the type count"
+                )]
                 let slot = &mut new_of_class[*class as usize];
                 if *slot == u32::MAX {
                     *slot = retained;
@@ -250,19 +254,20 @@ impl BuiltTypes {
     fn restore_references(&mut self, mergeable: &[bool], offsets: &[usize], edges: &[u32]) {
         self.entries
             .par_iter_mut()
+            .zip(mergeable)
             .enumerate()
-            .for_each(|(index, entry)| {
+            .for_each(|(index, (entry, mergeable))| {
                 let TypeEntry::Resolved(info) = entry else {
                     return;
                 };
 
-                if !mergeable[index] {
+                if !mergeable {
                     return;
                 }
 
                 info.reference.id = TypeId::new(super::row(index));
                 let image = info.reference.image;
-                let mut original = edges[offsets[index]..offsets[index + 1]].iter();
+                let mut original = references(offsets, edges, index).iter();
 
                 map_references(info, &mut |zeroed| {
                     let id = original.next();
@@ -286,12 +291,13 @@ impl BuiltTypes {
         // An indexed collect splits alike however the work is stolen.
         let entries = std::mem::take(&mut self.entries)
             .into_par_iter()
-            .enumerate()
-            .map(|(index, mut entry)| {
-                kept[index].then(|| {
+            .zip(kept)
+            .zip(&remap.ids)
+            .map(|((mut entry, kept), id)| {
+                kept.then(|| {
                     if let TypeEntry::Resolved(info) = &mut entry {
                         map_references(info, &mut |reference| remap.reference(reference));
-                        info.reference.id = remap.ids[index];
+                        info.reference.id = *id;
                     }
 
                     entry
@@ -349,6 +355,17 @@ struct Signatures<'a> {
     edges: &'a [u32],
 }
 
+/// The references of type `index`, as [`BuiltTypes::zero_references`]
+/// lists them.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`zero_references` lists a 0 and then where each type's references end, so the \
+              offsets of every type and the one after it are in `edges`"
+)]
+fn references<'e>(offsets: &[usize], edges: &'e [u32], index: usize) -> &'e [u32] {
+    &edges[offsets[index]..offsets[index + 1]]
+}
+
 /// Whether a type belongs to its unit alone, as one in an anonymous
 /// namespace does.
 fn local(info: &TypeInfo) -> bool {
@@ -392,8 +409,10 @@ fn refine<H: std::hash::BuildHasher + Clone + Sync>(
     // types move in each. The partition each round reaches, and so the
     // round refinement settles in, is that of splitting every class in
     // every round.
-    let mut dirty = (0..members.ranges.len())
-        .filter(|class| members.ranges[*class].len() > 1)
+    let mut dirty = (0..)
+        .zip(&members.ranges)
+        .filter(|(_, range)| range.len() > 1)
+        .map(|(class, _)| class)
         .collect::<Vec<_>>();
     let mut flagged = Vec::new();
 
@@ -419,14 +438,27 @@ fn refine<H: std::hash::BuildHasher + Clone + Sync>(
         flagged.resize(members.ranges.len(), false);
         dirty.clear();
         for referrer in moved.iter().flat_map(|moved| referrers.of(*moved)) {
-            let class = classes[*referrer as usize] as usize;
-            if !std::mem::replace(&mut flagged[class], true) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "referrers are types, and `flagged` was just sized to every class"
+            )]
+            let (class, flag) = {
+                let class = classes[*referrer as usize] as usize;
+                (class, &mut flagged[class])
+            };
+
+            if !std::mem::replace(flag, true) {
                 dirty.push(class);
             }
         }
 
         for class in &dirty {
-            flagged[*class] = false;
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "each dirty class was flagged above"
+            )]
+            let flag = &mut flagged[*class];
+            *flag = false;
         }
     }
 
@@ -478,15 +510,22 @@ fn split<H: std::hash::BuildHasher + Clone>(
     keys.clear();
     ends.clear();
     for member in group {
-        let member = *member as usize;
-        keys.extend(
-            edges[offsets[member]..offsets[member + 1]]
-                .iter()
-                .map(|target| classes[*target as usize]),
-        );
+        for target in references(offsets, edges, *member as usize) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`zero_references` lists only references below the type count"
+            )]
+            let class = classes[*target as usize];
+            keys.push(class);
+        }
+
         ends.push(keys.len());
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`ends` holds where each member's keys end, one per member, within `keys`"
+    )]
     let key =
         |member: usize| &keys[member.checked_sub(1).map_or(0, |last| ends[last])..ends[member]];
     groups.clear();
@@ -533,6 +572,11 @@ struct Members {
 }
 
 impl Members {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`sizes` and `ranges` hold every class up to the largest, and each class's \
+                  range ends within the `order` of every type"
+    )]
     fn new(classes: &[u32]) -> Self {
         let distinct = classes
             .iter()
@@ -561,6 +605,10 @@ impl Members {
         Self { order, ranges }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "classes come from `classes`, whose members `ranges` locates in `order`"
+    )]
     fn of(&self, class: usize) -> &[u32] {
         &self.order[self.ranges[class].clone()]
     }
@@ -568,6 +616,11 @@ impl Members {
     /// Splits `class` into `groups`, its members' groups in order: the
     /// first group keeps the class, and each other becomes a new one.
     /// Records the members that moved.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`groups` numbers the class's members densely from 0, so `starts` holds each \
+                  group, and its members fill the class's range of `order`"
+    )]
     fn split(&mut self, class: usize, groups: &[u32], classes: &mut [u32], moved: &mut Vec<u32>) {
         let range = self.ranges[class].clone();
 
@@ -624,6 +677,11 @@ struct Referrers {
 }
 
 impl Referrers {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every edge is below `count`, so `starts` and `cursor` hold one more than it, \
+                  and the counted referrers fill `referrers`"
+    )]
     fn new(count: usize, offsets: &[usize], edges: &[u32]) -> Self {
         let mut starts = vec![0_usize; count + 1];
         for edge in edges {
@@ -637,7 +695,7 @@ impl Referrers {
         let mut cursor = starts.clone();
         let mut referrers = vec![0_u32; edges.len()];
         for referrer in 0..count {
-            for edge in &edges[offsets[referrer]..offsets[referrer + 1]] {
+            for edge in references(offsets, edges, referrer) {
                 referrers[cursor[*edge as usize]] = super::row(referrer);
                 cursor[*edge as usize] += 1;
             }
@@ -649,6 +707,10 @@ impl Referrers {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "targets are types, which `offsets` holds one past"
+    )]
     fn of(&self, target: u32) -> &[u32] {
         let target = target as usize;
         &self.referrers[self.offsets[target]..self.offsets[target + 1]]
@@ -656,6 +718,10 @@ impl Referrers {
 }
 
 /// `classes` renumbered in order of each class's first member.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "classes are numbered densely from 0, so each is below the type count"
+)]
 fn numbered_by_first_appearance(classes: &[u32]) -> Vec<u32> {
     let mut numbers = vec![u32::MAX; classes.len()];
     let mut next = 0;
@@ -693,7 +759,9 @@ fn classify<H: std::hash::BuildHasher + Sync>(
     let equal = candidates
         .par_iter()
         .enumerate()
-        .map(|(index, candidate)| *candidate == index || fields[*candidate] == fields[index])
+        .map(|(index, candidate)| {
+            *candidate == index || fields.get(*candidate) == fields.get(index)
+        })
         .collect::<Vec<_>>();
 
     // A type unequal to the first of its hash equals only types that are
@@ -706,11 +774,12 @@ fn classify<H: std::hash::BuildHasher + Sync>(
         next - 1
     };
 
-    for (index, candidate) in candidates.iter().enumerate() {
-        let class = match &fields[index] {
+    for (index, ((candidate, own), equal)) in candidates.iter().zip(fields).zip(&equal).enumerate()
+    {
+        let class = match own {
             None => fresh(),
             Some(_) if *candidate == index => fresh(),
-            Some(_) if equal[index] => classes[*candidate],
+            Some(_) if *equal => classes.get(*candidate).copied().unwrap_or_else(&mut fresh),
             Some(own) => *collided.entry(own).or_insert_with(&mut fresh),
         };
 

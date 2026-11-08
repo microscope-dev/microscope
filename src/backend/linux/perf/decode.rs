@@ -297,11 +297,10 @@ pub fn next_with_period<'a>(
     let kind = u32::from_le_bytes([k0, k1, k2, k3]);
     let misc = u16::from_le_bytes([m0, m1]);
     let size = usize::from(u16::from_le_bytes([s0, s1]));
-    if size < 8 || size > bytes.len() {
+    let Some(body) = bytes.get(8..size) else {
         return Some(Err(Malformed));
-    }
+    };
 
-    let body = &bytes[8..size];
     Some(decode(kind, misc, body, outputs, period).map(|record| (record, size)))
 }
 
@@ -346,10 +345,7 @@ fn decode<'a>(
 
             let (protection, _flags) = fields.pair()?;
             let path = fields.bytes;
-            let path = &path[..path
-                .iter()
-                .position(|byte| *byte == 0)
-                .unwrap_or(path.len())];
+            let path = path.split(|byte| *byte == 0).next().unwrap_or(path);
 
             Record::Mmap(Mmap {
                 pid: Pid::new(pid),
@@ -365,10 +361,7 @@ fn decode<'a>(
         RECORD_COMM => {
             let (pid, tid) = fields.pair()?;
             let name = fields.bytes;
-            let name = &name[..name
-                .iter()
-                .position(|byte| *byte == 0)
-                .unwrap_or(name.len())];
+            let name = name.split(|byte| *byte == 0).next().unwrap_or(name);
 
             Record::Comm {
                 pid: Pid::new(pid),
@@ -477,11 +470,11 @@ pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec
     let mut rest = bytes;
     while let Some(header) = rest.first_chunk::<8>() {
         let size = usize::from(u16::from_le_bytes([header[6], header[7]]));
-        let Some(record) = rest.get(..size).filter(|_| size >= 8) else {
+        let Some((record, after)) = rest.split_at_checked(size).filter(|_| size >= 8) else {
             break;
         };
 
-        rest = &rest[size..];
+        rest = after;
         let kind = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         let short = (kind == RECORD_SAMPLE)
             .then(|| short_sample(record, sampling, keep))
@@ -491,17 +484,23 @@ pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec
             // the kernel filled.
             let used = field(record, end - 8).map_or(0, u64::from_le_bytes);
             let length = stack + 8 + keep + 8 + (record.len() - end);
-            let Ok(length) = u16::try_from(length) else {
+            let pieces = (
+                u16::try_from(length).ok(),
+                record.get(8..stack),
+                record.get(stack + 8..stack + 8 + keep),
+                record.get(end..),
+            );
+            let (Some(length), Some(fields), Some(kept), Some(after_stack)) = pieces else {
                 out.extend_from_slice(record);
                 continue;
             };
             out.extend_from_slice(&header[..6]);
             out.extend_from_slice(&length.to_le_bytes());
-            out.extend_from_slice(&record[8..stack]);
+            out.extend_from_slice(fields);
             out.extend_from_slice(&(keep as u64).to_le_bytes());
-            out.extend_from_slice(&record[stack + 8..stack + 8 + keep]);
+            out.extend_from_slice(kept);
             out.extend_from_slice(&used.min(keep as u64).to_le_bytes());
-            out.extend_from_slice(&record[end..]);
+            out.extend_from_slice(after_stack);
             shortened += 1;
         } else {
             out.extend_from_slice(record);
@@ -560,7 +559,7 @@ fn decode_output(body: &[u8]) -> Result<Record<'_>, Malformed> {
 pub fn fuzz(data: &[u8]) {
     let mut offset = 0;
 
-    while let Some(Ok((record, length))) = next_of(&data[offset..], &[7]) {
+    while let Some(Ok((record, length))) = data.get(offset..).and_then(|rest| next_of(rest, &[7])) {
         if let Record::Sample(sample) = record {
             let _ = sample.user_chain().count() + sample.registers.iter().count();
         }

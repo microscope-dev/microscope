@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use super::index;
 use crate::capture::Capture;
 use crate::capture::records::NONE;
 
@@ -47,14 +46,18 @@ pub fn zone_blocks(
             continue;
         }
 
-        let start = zones.start.get() as usize;
-        let row = &capture.zones[start..start + zones.count.get() as usize];
+        let row = capture.range_zones(zones);
 
         // One depth's zones do not overlap, so their ends are in order too.
         let first = row.partition_point(|zone| zone.end.get() <= range.0);
         let last = row.partition_point(|zone| zone.start.get() < range.1);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`partition_point` returns at most the length"
+        )]
+        let row = &row[first..last.max(first)];
         let mut run: Option<ZoneBlock> = None;
-        for zone in &row[first..last.max(first)] {
+        for zone in row {
             let block = ZoneBlock {
                 thread,
                 depth: zones.depth.get(),
@@ -155,8 +158,7 @@ pub fn zone_stats(
             continue;
         }
 
-        let start = zones.start.get() as usize;
-        for zone in &capture.zones[start..start + zones.count.get() as usize] {
+        for zone in capture.range_zones(zones) {
             let end = zone.end.get();
             if sites.contains(&zone.site.get()) && range.0 <= end && zone.start.get() < range.1 {
                 flagged += u64::from(zone.flags.get() != 0);
@@ -178,6 +180,10 @@ pub fn zone_stats(
     };
 
     // The length below which `share` of them are.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`lengths` is not empty, and the rank is clamped to its length"
+    )]
     let at = |share: f64| {
         #[expect(
             clippy::cast_possible_truncation,
@@ -240,6 +246,10 @@ pub fn zone_stats(
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     reason = "bucket edges are approximate by nature"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "`buckets` has `BUCKETS` entries, and a bucket stays below that"
 )]
 fn histogram(lengths: &[u64], min: u64, max: u64) -> Vec<(u64, u64)> {
     if min == max {
@@ -315,7 +325,14 @@ pub fn plot_series(
             .filter(|plot| threads.is_none_or(|threads| threads.contains(&plot.thread.get())))
     };
 
-    let name_of = |site: u32| capture.sites[site as usize].name.get();
+    // A plot of no site is of no name.
+    let name_of = |site: u32| {
+        if site == NONE {
+            NONE
+        } else {
+            capture.site(site).name.get()
+        }
+    };
 
     // By name: the last drawable value before the range, and whether any
     // value follows it.
@@ -336,7 +353,7 @@ pub fn plot_series(
     let mut values: Vec<(&str, u32, i64, f64)> = chosen()
         .filter(|plot| (range.0..range.1).contains(&plot.time.get()))
         .map(|plot| {
-            let name = capture.sites[plot.site.get() as usize].name.get();
+            let name = name_of(plot.site.get());
             let value = f64::from_bits(plot.value.get());
             (capture.string(name), name, plot.time.get(), value)
         })
@@ -414,8 +431,9 @@ pub fn plot_series(
 
 /// The sites `name` names, of zones or labels.
 pub fn sites_named(capture: &Capture, name: &str) -> Vec<u32> {
-    (0..capture.sites.len())
-        .filter(|&site| capture.string(capture.sites[site].name.get()) == name)
-        .map(index)
+    (0..)
+        .zip(&capture.sites)
+        .filter(|(_, site)| capture.string(site.name.get()) == name)
+        .map(|(row, _)| row)
         .collect()
 }

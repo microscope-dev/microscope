@@ -275,8 +275,8 @@ impl Cli {
                     );
                 }
                 GroupEvent::GroupExited => {
-                    let status = match &group.handle.members()[0].state {
-                        MemberState::Exited(status) => status.clone(),
+                    let status = match group.handle.members().first().map(|member| &member.state) {
+                        Some(MemberState::Exited(status)) => status.clone(),
                         _ => ExitStatus::Code(0),
                     };
                     break (1, StopReason::Exited(status));

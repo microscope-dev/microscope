@@ -664,7 +664,7 @@ fn pretty(
             return;
         }
 
-        let after = flat_width(&docs[index + 1..]) + trailing;
+        let after = flat_width(docs.get(index + 1..).unwrap_or_default()) + trailing;
 
         match doc {
             Doc::Text(text) => {
@@ -1152,7 +1152,9 @@ pub fn watched_bytes(
         return "<unreadable>".to_owned();
     };
 
+    #[expect(clippy::indexing_slicing, reason = "callers pass at most 16 bytes")]
     let little_endian = |bytes: &[u8]| {
+        debug_assert!(bytes.len() <= 16, "{} bytes do not fit a u128", bytes.len());
         let mut word = [0_u8; 16];
         word[..bytes.len()].copy_from_slice(bytes);
         u128::from_le_bytes(word)
@@ -1171,7 +1173,7 @@ pub fn watched_bytes(
                 value.to_string()
             }
         }
-        (Some(WatchedScalar::Boolean), 1) => (bytes[0] != 0).to_string(),
+        (Some(WatchedScalar::Boolean), 1) => bytes.iter().any(|&byte| byte != 0).to_string(),
         (Some(WatchedScalar::Float), 4) => bytes.first_chunk::<4>().map_or_else(
             || register_bytes(bytes, ByteOrder::Little),
             |chunk| {

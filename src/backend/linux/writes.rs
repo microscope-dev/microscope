@@ -173,7 +173,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         let slot = super::registers::x86_64_register_slot(&mut registers, register)
             .ok_or_else(|| backend_error(LinuxError::UnsupportedRegisterWrite))?;
         let mut value = slot.to_le_bytes();
-        value[..bytes.len().min(8)].copy_from_slice(&bytes[..bytes.len().min(8)]);
+        for (to, from) in value.iter_mut().zip(bytes) {
+            *to = *from;
+        }
         *slot = u64::from_le_bytes(value);
 
         if super::registers::is_program_counter(register) {

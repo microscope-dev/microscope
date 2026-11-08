@@ -264,8 +264,10 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
 
     /// The position of clause `depth`'s variable.
     fn base(&self, depth: usize) -> usize {
-        self.scan.clauses[..depth]
+        self.scan
+            .clauses
             .iter()
+            .take(depth)
             .map(BoundClause::width)
             .sum()
     }
@@ -336,7 +338,11 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
     ) -> Result<(), Failure> {
         self.values.clear();
         for depth in 0..self.cursor.levels.len() {
-            self.cursor.variables[depth].push(&mut self.values);
+            let Some(variable) = self.cursor.variables.get(depth) else {
+                return Err(internal("a checkpoint has a value for each level"));
+            };
+
+            variable.push(&mut self.values);
             if !self.items(depth, machine)? {
                 return Err(internal(
                     "a checkpoint's values no longer pass their filters",
@@ -355,7 +361,11 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
         depth: usize,
         machine: &mut ViewMachine<'_, M>,
     ) -> Result<bool, Failure> {
-        for item in &self.scan.clauses[depth].items {
+        let Some(clause) = self.scan.clauses.get(depth) else {
+            return Err(internal("a scan has a clause at each depth it runs"));
+        };
+
+        for item in &clause.items {
             machine.set_variables(&self.values);
             match item {
                 BoundItem::Filter(filter) => {
@@ -436,7 +446,11 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
         self.values.truncate(base);
         machine.set_variables(&self.values);
         let mut run = None;
-        let level = match &self.scan.clauses[depth].generator {
+        let Some(clause) = self.scan.clauses.get(depth) else {
+            return Err(internal("a scan has a clause at each depth it runs"));
+        };
+
+        let level = match &clause.generator {
             BoundGenerator::Range(length) => Level::Range {
                 next: 0,
                 end: super::run::count(length, machine, "range's length")?,
@@ -492,12 +506,15 @@ impl<'b, St, P: Clone> Scanner<'b, St, P> {
         );
         let position = self.cursor.position;
         let outer = &mut self.values;
-        let visited = &mut self.visited[depth];
+        let (Some(visited), Some(level), Some(clause)) = (
+            self.visited.get_mut(depth),
+            self.cursor.levels.get_mut(depth),
+            self.scan.clauses.get(depth),
+        ) else {
+            return Err(internal("a started level has a clause and a visited set"));
+        };
 
-        match (
-            &mut self.cursor.levels[depth],
-            &self.scan.clauses[depth].generator,
-        ) {
+        match (level, &clause.generator) {
             (Level::Range { next, end }, _) => {
                 if next < end {
                     let value = *next;

@@ -507,8 +507,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             let mut bytes = word.to_ne_bytes();
-            if bytes[offset] == BREAKPOINT_OPCODE {
-                bytes[offset] = original;
+            let byte = offset.of(&mut bytes);
+            if *byte == BREAKPOINT_OPCODE {
+                *byte = original;
                 let _ = self
                     .ptrace
                     .write_word(pid, word_address, u64::from_ne_bytes(bytes));

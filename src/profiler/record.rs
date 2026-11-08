@@ -150,6 +150,37 @@ enum DebugLoading {
     AfterCollection,
 }
 
+/// Image `index`. The recorder only pushes images, and every index it
+/// keeps is one it pushed.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "images are only pushed, and every index kept is one pushed"
+)]
+fn image_of(images: &[Image], index: usize) -> &Image {
+    debug_assert!(index < images.len(), "image {index} of {}", images.len());
+    &images[index]
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "images are only pushed, and every index kept is one pushed"
+)]
+fn image_of_mut(images: &mut [Image], index: usize) -> &mut Image {
+    debug_assert!(index < images.len(), "image {index} of {}", images.len());
+    &mut images[index]
+}
+
+/// Record `index` of a drain's records. The drain keeps only indexes of
+/// records it already pushed.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a drain keeps only indexes of records it already pushed"
+)]
+fn record_at(records: &[RecordAt], index: usize) -> RecordAt {
+    debug_assert!(index < records.len(), "record {index} of {}", records.len());
+    records[index]
+}
+
 /// A module file the recording mapped, loaded once for every mapping.
 struct Image {
     /// `None` when its debug information could not be read: its frames
@@ -549,7 +580,7 @@ impl Processor {
 
         let inode = std::fs::metadata(path).ok()?.ino();
         let image = self.image(path.to_owned(), path, Some(inode));
-        let info = self.images[image].info.as_ref()?;
+        let info = image_of(&self.images, image).info.as_ref()?;
         let sites = call_sites(&data, &info.image, info.unwind.as_ref());
         let function = sites.first_not_kept.and_then(|address| {
             info.image
@@ -575,7 +606,7 @@ impl Processor {
         use std::os::unix::fs::MetadataExt;
         let inode = std::fs::metadata(path).ok()?.ino();
         let image = self.image(path.to_owned(), path, Some(inode));
-        interpreted::v8_layout_before(self.images[image].info.as_ref()?)
+        interpreted::v8_layout_before(image_of(&self.images, image).info.as_ref()?)
     }
 
     /// Drops the samples at the instruction at `address` that `branch`
@@ -794,9 +825,10 @@ impl Processor {
         }
 
         order.sort_unstable();
+        let record = |index| record_at(&records, index);
         for &(time, index) in &order {
-            let at = records[index];
-            let pair = pairs.get(&index).map(|&(key, pair)| (key, records[pair]));
+            let at = record(index);
+            let pair = pairs.get(&index).map(|&(key, pair)| (key, record(pair)));
             if watermark.is_some_and(|watermark| time > watermark) {
                 // A held-back sample keeps its frames before it.
                 self.held.extend(pair.map(|(_, pair)| pair));
@@ -870,7 +902,7 @@ impl Processor {
             if watermark.is_some_and(|watermark| {
                 time.saturating_add(interpreted::PAIRING_SLACK) > watermark
             }) {
-                self.held.push(records[index]);
+                self.held.push(record_at(records, index));
             } else if let Some(interpreted) = &mut self.interpreted {
                 interpreted.dropped((tid, cpu, time));
             }
@@ -1113,7 +1145,7 @@ impl Processor {
         let state = self.processes.entry(mmap.pid).or_default();
         let images = &self.images;
         let replaces_module = state.mapped.iter().any(|mapped| {
-            let image = &images[mapped.image];
+            let image = image_of(images, mapped.image);
             mapped.start < end && mmap.start < mapped.end && !image.anonymous && !image.generated
         });
 
@@ -1145,7 +1177,7 @@ impl Processor {
                 let carries_v8 = state
                     .mapped
                     .iter()
-                    .any(|mapped| self.images[mapped.image].v8);
+                    .any(|mapped| image_of(&self.images, mapped.image).v8);
                 if carries_v8 {
                     self.v8_code(mmap.pid, mmap.time, mmap.start..end);
                 } else {
@@ -1155,11 +1187,11 @@ impl Processor {
             return;
         };
 
-        if let Some(table) = &self.images[image].probes
+        if let Some(table) = &image_of(&self.images, image).probes
             && self.probes_mapped.insert((mmap.pid, image))
         {
             let found = Found {
-                module: self.images[image].module,
+                module: image_of(&self.images, image).module,
                 path: String::from_utf8_lossy(mmap.path).into(),
                 bias,
                 table: Arc::clone(table),
@@ -1170,7 +1202,7 @@ impl Processor {
 
         let loaded = LoadedModule {
             id: ModuleId::new(self.next_module),
-            image: self.images[image].id,
+            image: image_of(&self.images, image).id,
             load_bias: bias,
             window: None,
         };
@@ -1185,7 +1217,7 @@ impl Processor {
         });
         self.builder.mapping(Mapping {
             process: process.into(),
-            module: self.images[image].module.into(),
+            module: image_of(&self.images, image).module.into(),
             start: mmap.start.into(),
             end: end.into(),
             file_offset: mmap.file_offset.into(),
@@ -1194,7 +1226,7 @@ impl Processor {
         });
 
         let state = self.processes.entry(mmap.pid).or_default();
-        let is_v8 = self.images[image].v8;
+        let is_v8 = image_of(&self.images, image).v8;
         // V8's code is unwound by its convention, and its perf map read
         // only for names (see `perf_map_module`).
         state.jit.names_only |= is_v8;
@@ -1343,12 +1375,14 @@ impl Processor {
             .processes
             .get(&pid)
             .map_or(&[], |process| &process.mapped);
-        let carries_v8 = held.iter().any(|mapped| self.images[mapped.image].v8);
+        let carries_v8 = held
+            .iter()
+            .any(|mapped| image_of(&self.images, mapped.image).v8);
         if carries_v8 {
             let generated: Vec<std::ops::Range<u64>> = held
                 .iter()
                 .filter(|mapped| {
-                    self.images[mapped.image].generated
+                    image_of(&self.images, mapped.image).generated
                         && mapped.start < stale.end
                         && stale.start < mapped.end
                 })
@@ -1437,7 +1471,7 @@ impl Processor {
             .enumerate()
             .filter(|(_, mapped)| mapped.loaded.window.is_none())
             .filter_map(|(index, mapped)| {
-                let image = &self.images[mapped.image];
+                let image = image_of(&self.images, mapped.image);
                 let info = image.info.as_ref().filter(|_| image.v8)?;
                 Some((index, mapped, image, info))
             })
@@ -1485,7 +1519,7 @@ impl Processor {
             return;
         };
 
-        self.images[source.image].copied = Some((
+        image_of_mut(&mut self.images, source.image).copied = Some((
             image_start,
             ImageAddress::new(image_start.get().saturating_add(length)),
         ));
@@ -1501,7 +1535,7 @@ impl Processor {
             }),
         };
         self.next_module += 1;
-        let module = self.images[source.image].module;
+        let module = image_of(&self.images, source.image).module;
         let process = self.builder.process(pid, time.cast_signed());
         let held = self.processes.entry(pid).or_default().mapped.edit();
         uncover(held, code.start, end);
@@ -1688,7 +1722,7 @@ impl Processor {
         let descriptors = || {
             let descriptors: BTreeSet<u64> = mapped
                 .iter()
-                .filter_map(|mapped| Some((mapped, images[mapped.image].info.as_ref()?)))
+                .filter_map(|mapped| Some((mapped, image_of(images, mapped.image).info.as_ref()?)))
                 .flat_map(|(mapped, info)| {
                     info.image
                         .symbols_named(gdb_jit::DESCRIPTOR)
@@ -1705,7 +1739,7 @@ impl Processor {
         // that the program made after the module was made.
         let unnamed = addresses.iter().copied().filter(|&address| {
             mapped.piece_at(address).is_none_or(|mapped| {
-                let image = &images[mapped.image];
+                let image = image_of(images, mapped.image);
                 (image.generated || image.anonymous)
                     && !image.info.as_ref().is_some_and(|info| {
                         info.image.symbolize(ImageAddress::new(address)).is_some()
@@ -2033,7 +2067,9 @@ impl Processor {
         let truncation = match end {
             StackEnd::Truncated(reason, module) => Some((
                 reason,
-                module.map_or(NONE, |module| self.images[owners[module].image].module),
+                module
+                    .and_then(|module| owners.get(module))
+                    .map_or(NONE, |owner| image_of(&self.images, owner.image).module),
             )),
             StackEnd::Complete => marker.map(|marker| (marker, NONE)),
         };
@@ -2118,16 +2154,14 @@ impl Processor {
     /// whether it is an activation of an interpreter's loop.
     fn activations(&self, pid: Pid, named: &[NamedFrame], native: &mut Vec<(u32, bool)>) {
         native.clear();
-        native.extend((0..named.len()).map(|index| {
-            let inner = index
-                .checked_sub(1)
-                .and_then(|inner| named[inner].1.as_deref());
-            let activation = named[index].1.as_deref().is_some_and(|name| {
+        let inners = std::iter::once(None).chain(named.iter().map(|(_, name)| name.as_deref()));
+        native.extend(named.iter().zip(inners).map(|((frame, name), inner)| {
+            let activation = name.as_deref().is_some_and(|name| {
                 self.interpreted
                     .as_ref()
                     .is_some_and(|found| found.activation(pid, name, inner))
             });
-            (named[index].0, activation)
+            (*frame, activation)
         }));
     }
 
@@ -2146,13 +2180,13 @@ impl Processor {
         for frame in frames {
             let owner = frame
                 .module
-                .map(|module| owners[module])
+                .and_then(|module| owners.get(module).copied())
                 .filter(|owner| self.names(owner, frame.address.get()));
             let key = owner.map_or_else(
                 || (NONE, frame.address.get()),
                 |owner| {
                     (
-                        self.images[owner.image].module,
+                        image_of(&self.images, owner.image).module,
                         owner.loaded.load_bias.wrapping_unload(frame.address).get(),
                     )
                 },
@@ -2162,7 +2196,8 @@ impl Processor {
             // of V8's name its functions where it has them.
             let generated = frame
                 .module
-                .is_some_and(|module| self.images[owners[module].image].generated);
+                .and_then(|module| owners.get(module))
+                .is_some_and(|owner| image_of(&self.images, owner.image).generated);
             let role = if generated {
                 role_number(CodeRole::Interpreter)
             } else if owner.is_some() {
@@ -2178,7 +2213,7 @@ impl Processor {
             let name = owner
                 .filter(|_| frame.role == CodeRole::Interpreter)
                 .and_then(|owner| {
-                    let info = self.images[owner.image].info.as_ref()?;
+                    let info = image_of(&self.images, owner.image).info.as_ref()?;
                     let address = owner.loaded.load_bias.wrapping_unload(frame.address);
                     Some(info.image.symbolize(address)?.name)
                 });
@@ -2510,7 +2545,13 @@ impl Processor {
         let mut from = start;
         let mut pieces = Vec::new();
 
-        for &(covered, until) in &self.gaps[first..last] {
+        debug_assert!(first <= last, "gaps {first}..{last} for {start}..{end}");
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the gaps are sorted and apart, so first <= last <= len"
+        )]
+        let covering = &self.gaps[first..last];
+        for &(covered, until) in covering {
             if from < covered {
                 pieces.push((from, covered));
             }
@@ -2527,13 +2568,15 @@ impl Processor {
                 .gap(start.cast_signed(), end.cast_signed(), reason);
         }
 
-        let mut merged = self.gaps[first..last].to_vec();
+        let mut merged = covering.to_vec();
         merged.extend_from_slice(&pieces);
         merged.sort_unstable();
         self.gaps.splice(first..last, merged);
         self.gaps_end = self.gaps_end.max(end);
         debug_assert!(
-            self.gaps.windows(2).all(|pair| pair[0].1 <= pair[1].0),
+            self.gaps
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.1 <= b.0)),
             "the gaps overlap after adding {start}..{end}"
         );
     }
@@ -2561,12 +2604,12 @@ impl Processor {
             return;
         }
 
-        let Some(owner) = leaf.module.map(|module| owners[module]) else {
+        let Some(owner) = leaf.module.and_then(|module| owners.get(module)) else {
             return;
         };
 
         let address = owner.loaded.load_bias.wrapping_unload(leaf.address);
-        let register = self.images[owner.image]
+        let register = image_of(&self.images, owner.image)
             .info
             .as_ref()
             .and_then(|info| info.unwind.task_register(address));
@@ -2841,7 +2884,7 @@ impl Processor {
         // knows, as V8's: it keeps it.
         let (module, address, role) = owner.map_or((NONE, address, role), |owner| {
             (
-                self.images[owner.image].module,
+                image_of(&self.images, owner.image).module,
                 owner
                     .loaded
                     .load_bias
@@ -2856,7 +2899,7 @@ impl Processor {
     /// Whether a frame at `address` is one of `owner`'s module: anywhere in
     /// a file's, and only in a function it names in anonymous code's.
     fn names(&self, owner: &Mapped, address: u64) -> bool {
-        let image = &self.images[owner.image];
+        let image = image_of(&self.images, owner.image);
         !image.anonymous
             || image
                 .info
@@ -3022,7 +3065,7 @@ impl Processor {
         for (frame, module, address) in frames {
             let Some(info) = images
                 .get(&module)
-                .and_then(|&image| self.images[image].info.as_ref())
+                .and_then(|&image| image_of(&self.images, image).info.as_ref())
             else {
                 continue;
             };

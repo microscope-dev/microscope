@@ -83,20 +83,24 @@ fn whole(
         Location::Address { address } => Ok(ValueStorage::Memory(VirtualAddress::new(*address))),
         Location::Register { register } => {
             let register = runtime.register((*register).into())?;
-            if register.bytes.len() < size {
+            let raw = match endian {
+                RunTimeEndian::Little => register.bytes.get(..size),
+                RunTimeEndian::Big => register
+                    .bytes
+                    .len()
+                    .checked_sub(size)
+                    .and_then(|start| register.bytes.get(start..)),
+            };
+
+            let Some(raw) = raw else {
                 return Err(EvaluateError::Malformed(
                     "register value is shorter than the scalar type".into(),
                 ));
-            }
-
-            let raw = match endian {
-                RunTimeEndian::Little => Arc::from(&register.bytes[..size]),
-                RunTimeEndian::Big => Arc::from(&register.bytes[register.bytes.len() - size..]),
             };
 
             Ok(bytes(
                 VariableValueSource::Register(register.descriptor),
-                raw,
+                Arc::from(raw),
             ))
         }
         Location::Value { value } => Ok(bytes(
@@ -114,16 +118,13 @@ fn whole(
         Location::Bytes { value } => {
             // Like a piece of one, an implicit value must cover the object.
             let raw = implicit_bytes(value)?;
-            if raw.len() < size {
+            let Some(raw) = raw.get(..size) else {
                 return Err(EvaluateError::Malformed(
                     "implicit value is shorter than its object".into(),
                 ));
-            }
+            };
 
-            Ok(bytes(
-                VariableValueSource::Constant,
-                Arc::from(&raw[..size]),
-            ))
+            Ok(bytes(VariableValueSource::Constant, Arc::from(raw)))
         }
         Location::ImplicitPointer { value, byte_offset } => Ok(ValueStorage::ImplicitPointer {
             debug_info_offset: u64::try_from(value.0)

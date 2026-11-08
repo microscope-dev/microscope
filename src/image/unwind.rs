@@ -342,7 +342,8 @@ impl<'a> FdeLookup<'a> {
         let end = self
             .entries
             .partition_point(|interval| interval.start.get() <= address);
-        self.entries[..end]
+        self.entries
+            .get(..end)?
             .iter()
             .rev()
             .find(|interval| interval.value.get() == offset && address < interval.end.get())

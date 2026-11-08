@@ -140,8 +140,8 @@ fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
         message,
     };
 
-    while position < bytes.len() {
-        if bytes[position] == 0 {
+    while let Some(&byte) = bytes.get(position) {
+        if byte == 0 {
             position += 1;
             continue;
         }
@@ -154,14 +154,14 @@ fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
             break;
         }
 
-        let Some(header) = bytes.get(position..position + 6) else {
+        let Some(&[kind, format, ref length @ ..]) =
+            bytes.get(position..).and_then(<[u8]>::first_chunk::<6>)
+        else {
             errors.push(error(index, "the record's header is cut short".to_owned()));
             break;
         };
 
-        let kind = header[0];
-        let format = header[1];
-        let length = u32::from_le_bytes([header[2], header[3], header[4], header[5]]);
+        let length = u32::from_le_bytes(*length);
         let start = position + 6;
         let Some(payload) = usize::try_from(length)
             .ok()

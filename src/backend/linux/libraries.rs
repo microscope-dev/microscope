@@ -101,7 +101,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     #[must_use = "publish changed locations after arming them"]
     fn reresolve_breakpoints(&mut self, mut changed: bool) -> Result<bool> {
         for index in 0..self.breakpoints.len() {
-            let breakpoint = &self.breakpoints[index];
+            let Some(breakpoint) = self.breakpoints.get(index) else {
+                break;
+            };
 
             // A disabled breakpoint is resolved again when it is enabled.
             if !breakpoint.enabled || matches!(breakpoint.spec, BreakpointSpec::Address(_)) {
@@ -117,10 +119,11 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             let id = breakpoint.id;
             let owner = BreakpointOwner::User(id);
-            let previous = std::mem::replace(
-                &mut self.breakpoints[index].locations,
-                Arc::clone(&resolved),
-            );
+            let listed = self
+                .breakpoints
+                .get_mut(index)
+                .ok_or_else(|| Error::internal("a re-resolved breakpoint stays listed"))?;
+            let previous = std::mem::replace(&mut listed.locations, Arc::clone(&resolved));
             changed = true;
             let Some(inferior) = self.session.inferior_mut() else {
                 continue;

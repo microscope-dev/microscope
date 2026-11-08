@@ -116,11 +116,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             NewTask::Watching(starters) | NewTask::Starting { starters, .. }
                 if starters.contains_key(&address) =>
             {
-                let starter = starters[&address];
+                let starter = *starters
+                    .get(&address)
+                    .ok_or_else(|| Error::internal("a starter the guard found is listed"))?;
                 if starter.names_at_entry {
                     self.start_at_entry(pid, address, starter)?;
                 } else {
-                    self.enter_starter(pid, address, starters)?;
+                    self.enter_starter(pid, address, starter, starters)?;
                 }
             }
 
@@ -179,6 +181,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         &mut self,
         pid: Pid,
         address: VirtualAddress,
+        starter: Starter,
         starters: BTreeMap<VirtualAddress, Starter>,
     ) -> Result<()> {
         let registers = self.ptrace.registers(pid)?;
@@ -187,8 +190,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         let execution = self.active_execution()?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         install_plan_breakpoint(&self.ptrace, inferior, returns_to, execution)?;
-
-        let starter = starters[&address];
 
         if let Some(start) = self.active_step_mut() {
             start.new_task = Some(NewTask::Starting {

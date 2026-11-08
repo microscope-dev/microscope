@@ -58,11 +58,10 @@ impl HoldingNumbers {
             !held.holders.is_empty()
         });
 
-        let mut order: Vec<usize> = (0..seen.len()).collect();
-        order.sort_by_key(|&index| (seen[index].thread, seen[index].runtime));
+        let mut order: Vec<(usize, &Sighting)> = seen.iter().enumerate().collect();
+        order.sort_by_key(|(_, sighting)| (sighting.thread, sighting.runtime));
         let mut numbers = vec![None; seen.len()];
-        for index in order {
-            let sighting = seen[index];
+        for (index, &sighting) in order {
             let Some((kind, identity)) = sighting.holding else {
                 continue;
             };

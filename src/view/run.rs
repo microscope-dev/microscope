@@ -180,7 +180,10 @@ impl<'m, M: Machine> ViewMachine<'m, M> {
             .get(index)
             .ok_or_else(|| unsupported("no such `let`"))?;
         let value = interp::value(program, self)?;
-        self.values[index] = Some(value.clone());
+        if let Some(slot) = self.values.get_mut(index) {
+            *slot = Some(value.clone());
+        }
+
         Ok(value)
     }
 }
@@ -611,7 +614,13 @@ fn declared_length<M: Machine>(
         return Ok(declared);
     }
 
-    let super::bind::BoundGenerator::Range(length) = &scan.clauses[0].generator else {
+    let [
+        super::bind::BoundClause {
+            generator: super::bind::BoundGenerator::Range(length),
+            ..
+        },
+    ] = scan.clauses.as_slice()
+    else {
         return Err(internal("random access is one range"));
     };
 
@@ -839,8 +848,12 @@ impl<'b, St, P: Clone> Walk<'b, St, P> {
                 let mut values = vec![Var::Integer(i128::from(index)).value()];
                 machine.set_variables(&values);
 
+                let [clause] = scan.clauses.as_slice() else {
+                    return Err(internal("random access is one range"));
+                };
+
                 // A random-access clause has only `let`s after its range.
-                for item in &scan.clauses[0].items {
+                for item in &clause.items {
                     if let super::bind::BoundItem::Let(program) = item {
                         values.push(interp::value(program, machine)?);
                         machine.set_variables(&values);
@@ -1338,7 +1351,12 @@ where
         return Ok(None);
     };
 
-    if !scan.random_access() || !scan.clauses[0].items.is_empty() {
+    if !scan.random_access()
+        || scan
+            .clauses
+            .first()
+            .is_none_or(|clause| !clause.items.is_empty())
+    {
         return Ok(None);
     }
 
@@ -1641,8 +1659,9 @@ fn read_units<M: Machine>(
         let first = bytes.len() - bytes.len() % width;
         bytes.extend_from_slice(&chunk);
         if length.is_none()
-            && let Some(position) = bytes[first..]
+            && let Some(position) = bytes
                 .chunks_exact(width)
+                .skip(first / width)
                 .position(|unit| unit.iter().all(|byte| *byte == 0))
         {
             bytes.truncate(first + position * width);
@@ -1942,7 +1961,7 @@ fn read_bytes<M: Machine>(
         if length.is_none()
             && let Some(position) = chunk.iter().position(|byte| *byte == 0)
         {
-            bytes.extend_from_slice(&chunk[..position]);
+            bytes.extend(chunk.iter().take(position));
             return Ok(TextSummary {
                 extent: None,
                 bytes: bytes.into(),

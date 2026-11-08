@@ -474,7 +474,11 @@ impl Presenter<'_> {
                 .iter()
                 .copied()
                 .filter(|index| {
-                    bound.is_some() && storage(&snapshot.variables[*index].state) == bound
+                    bound.is_some()
+                        && snapshot
+                            .variables
+                            .get(*index)
+                            .is_some_and(|variable| storage(&variable.state) == bound)
                 })
                 .collect::<Vec<_>>();
 

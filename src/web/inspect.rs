@@ -252,6 +252,10 @@ pub async fn sources(images: &Images, python: Option<Project>) -> SourceFiles {
 /// Functions whose names hold `query`, ASCII case aside: whole names first,
 /// then those it begins, holds, or holds the letters of in order, and
 /// shorter names before longer ones.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "keep is at most candidates.len(), and each candidate's module numbers one of images"
+)]
 pub async fn functions(images: &Images, query: &FunctionQuery) -> Result<Functions, Failure> {
     let wanted = query.query.trim().to_ascii_lowercase();
     let limit = query.limit.map_or(50, |limit| limit.min(200)) as usize;

@@ -81,6 +81,10 @@ pub(super) const fn size(element: ElementType) -> u64 {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a compile-time check: an index out of bounds fails the build"
+)]
 const _: () = {
     use ElementType as E;
     let all = [

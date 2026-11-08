@@ -661,6 +661,15 @@ const fn is_word_continue(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+/// Whether the byte before `index` continues a word.
+fn follows_word(bytes: &[u8], index: usize) -> bool {
+    index
+        .checked_sub(1)
+        .and_then(|before| bytes.get(before))
+        .copied()
+        .is_some_and(is_word_continue)
+}
+
 impl<'a> Parser<'a> {
     fn new(source: &'a Arc<str>, text: &'a str) -> Self {
         let lines = std::iter::once(0)
@@ -684,7 +693,12 @@ impl<'a> Parser<'a> {
     /// The line and column of a byte offset, from one.
     fn location(&self, offset: usize) -> (u32, u32) {
         let line = self.lines.partition_point(|&start| start <= offset);
-        let start = self.lines[line.saturating_sub(1)];
+        // The first line starts at 0, so `line` is at least one.
+        let start = line
+            .checked_sub(1)
+            .and_then(|index| self.lines.get(index))
+            .copied()
+            .unwrap_or(0);
         let column = self
             .text
             .get(start..offset)
@@ -857,7 +871,11 @@ impl<'a> Parser<'a> {
         // The view the cursor is at, or in, is skipped first.
         self.position += self.rest().chars().next().map_or(1, char::len_utf8);
         while !self.at_end() {
-            let line_start = self.position == 0 || self.text.as_bytes()[self.position - 1] == b'\n';
+            let line_start = self
+                .position
+                .checked_sub(1)
+                .and_then(|before| self.text.as_bytes().get(before))
+                .is_none_or(|&byte| byte == b'\n');
             if line_start && matches!(self.peek_word(), Some("view" | "extend")) {
                 return true;
             }
@@ -1914,7 +1932,7 @@ impl<'a> Parser<'a> {
                 b')' => depth -= 1,
                 byte if depth == 0
                     && is_word_start(byte)
-                    && (index == 0 || !is_word_continue(bytes[index - 1]))
+                    && !follows_word(bytes, index)
                     && (self.text[index..].starts_with("or")
                         || self.text[index..].starts_with("of"))
                     && !bytes.get(index + 2).copied().is_some_and(is_word_continue) =>
@@ -2003,11 +2021,10 @@ impl<'a> Parser<'a> {
                 b')' | b']' => depth -= 1,
                 b'=' if depth == 0 && bytes.get(index + 1) == Some(&b'>') => return end,
                 b'\n' if depth == 0 && self.statement_ends_before(index + 1) => return end,
-                byte if is_word_start(byte)
-                    && (index == 0 || !is_word_continue(bytes[index - 1])) =>
-                {
-                    let length = bytes[index..]
+                byte if is_word_start(byte) && !follows_word(bytes, index) => {
+                    let length = bytes
                         .iter()
+                        .skip(index)
                         .take_while(|byte| is_word_continue(**byte))
                         .count();
                     let word = &self.text[index..index + length];
@@ -2098,8 +2115,8 @@ fn blank_comments(text: &str) -> Option<String> {
     let mut out = String::with_capacity(text.len());
     let mut index = 0;
 
-    while index < bytes.len() {
-        match bytes[index] {
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
             quote @ (b'"' | b'\'') => {
                 let end = skip_literal(text, index, quote).min(text.len());
                 out.push_str(&text[index..end]);
@@ -2192,16 +2209,15 @@ fn parse_argument(text: &str, depth: usize) -> Result<ArgumentPattern, String> {
 /// Splits `a::b<x, y>` into `a::b` and its arguments, in `<>`, `()`, or
 /// `[]`.
 fn split_arguments(text: &str) -> Result<(&str, Option<Vec<&str>>), String> {
-    let Some(open) = outside_backticks(text)
-        .find(|(_, character)| matches!(character, '<' | '(' | '['))
-        .map(|(index, _)| index)
+    let Some((open, opening)) =
+        outside_backticks(text).find(|(_, character)| matches!(character, '<' | '(' | '['))
     else {
         return Ok((text, None));
     };
 
-    let close = match text.as_bytes()[open] {
-        b'<' => '>',
-        b'(' => ')',
+    let close = match opening {
+        '<' => '>',
+        '(' => ')',
         _ => ']',
     };
 

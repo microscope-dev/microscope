@@ -122,7 +122,17 @@ impl<T> Span<T> {
 
     /// The span's rows of `table`, which validation checked hold them.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "views call this only on spans of validated records, and each family's \
+                  validation checks its spans with `within` against the table they name"
+    )]
     pub fn rows(self, table: &[T]) -> &[T] {
+        debug_assert!(
+            self.within(table.len()),
+            "{self:?} lies outside a table of {} rows",
+            table.len()
+        );
         &table[self.range()]
     }
 }
@@ -222,7 +232,7 @@ impl Image {
 
     /// The rows of `T`'s table: empty when the image has none.
     pub fn table<T: Record>(&self) -> &[T] {
-        let Some(placed) = self.tables[T::KIND.index()] else {
+        let Some(placed) = self.placed(T::KIND) else {
             return &[];
         };
 
@@ -237,11 +247,20 @@ impl Image {
             T::NAME,
             "{kind:?} holds another record"
         );
-        let Some(placed) = self.tables[kind.index()] else {
+        let Some(placed) = self.placed(kind) else {
             return &[];
         };
 
         self.rows(placed)
+    }
+
+    /// Where the table of `kind` is, if the image has one.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`TableKind::index` is below `TableKind::COUNT` for every kind"
+    )]
+    const fn placed(&self, kind: TableKind) -> Option<Placed> {
+        self.tables[kind.index()]
     }
 
     fn rows<T: FromBytes + Immutable + KnownLayout>(&self, placed: Placed) -> &[T] {
@@ -264,9 +283,17 @@ impl Image {
 
     /// The bytes of a byte table, such as the string pool.
     pub fn bytes(&self, kind: TableKind) -> &[u8] {
-        self.tables[kind.index()].map_or(&[], |placed| {
-            &self.bytes[placed.offset..placed.offset + placed.length]
-        })
+        let Some(placed) = self.placed(kind) else {
+            return &[];
+        };
+
+        let bytes = self.bytes.get(placed.offset..placed.offset + placed.length);
+        debug_assert!(
+            bytes.is_some(),
+            "validation checked every table lies within the image"
+        );
+
+        bytes.unwrap_or_default()
     }
 }
 

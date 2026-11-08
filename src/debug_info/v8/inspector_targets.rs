@@ -111,8 +111,11 @@ fn source(object: &object::File<'_>) -> Option<(ImageAddress, u64)> {
         loads.push(instruction.memory_displacement64());
         if loads.len() == 2 {
             loads.sort_unstable();
-            return (loads[0] <= 4096 && loads[0].checked_add(8) == Some(loads[1]))
-                .then(|| (ImageAddress::new(body[0].ip()), loads[0]));
+            let (&[low, high], Some(first)) = (loads.as_slice(), body.first()) else {
+                return None;
+            };
+            return (low <= 4096 && low.checked_add(8) == Some(high))
+                .then(|| (ImageAddress::new(first.ip()), low));
         }
     }
     None

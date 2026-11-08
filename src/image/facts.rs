@@ -362,7 +362,7 @@ impl<'a> FactsView<'a> {
                     .cmp(name.as_bytes())
             })
             .ok()?;
-        Some(self.place(&self.thread_locals[index]))
+        Some(self.place(self.thread_locals.get(index)?))
     }
 
     fn place(self, record: &ThreadLocalRecord) -> Result<ThreadLocal, Arc<str>> {

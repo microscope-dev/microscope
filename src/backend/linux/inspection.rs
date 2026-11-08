@@ -598,7 +598,11 @@ impl<P: InspectionOps> Controller<P> {
         let end = start
             .saturating_add(query.limit as usize)
             .min(matches.len());
-        let variables = matches[start..end].to_vec().into();
+        let variables = matches
+            .get(start..end)
+            .ok_or_else(|| Error::internal("a page of globals lies within the matches"))?
+            .to_vec()
+            .into();
 
         Ok(GlobalVariablePage {
             revision: self.revision,

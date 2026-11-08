@@ -137,7 +137,13 @@ pub(super) fn copy_data_object_value_with_origins(
     }
 
     for (origin_unit, origin) in chain {
-        let value = copy_data_object_value(dwarf, pool, *origin_unit, &units[*origin_unit], origin);
+        let value = copy_data_object_value(
+            dwarf,
+            pool,
+            *origin_unit,
+            super::unit_at(units, *origin_unit),
+            origin,
+        );
         if !matches!(value, Metadata::Absent(_)) {
             return value;
         }
@@ -405,7 +411,7 @@ fn evaluation_unit(
     units: &Units<'_>,
     index: usize,
 ) -> std::result::Result<EvaluationUnit, DwarfError> {
-    let unit = &units[index];
+    let unit = super::unit_at(units, index);
     let mut recorded = EvaluationUnit {
         // The supplementary file's units lie in another section, which
         // the file's expressions never name.

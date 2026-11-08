@@ -412,7 +412,9 @@ fn open_profile(profiles: &profiles::Profiles, path: &std::path::Path) -> Result
     let read = std::fs::File::open(path)
         .and_then(|mut file| std::io::Read::read(&mut file, &mut magic))
         .unwrap_or(0);
-    if microscope::profiler::Format::of_file(path, &magic[..read]).is_none() {
+    #[expect(clippy::indexing_slicing, reason = "a read fills at most its buffer")]
+    let magic = &magic[..read];
+    if microscope::profiler::Format::of_file(path, magic).is_none() {
         return Ok(None);
     }
 

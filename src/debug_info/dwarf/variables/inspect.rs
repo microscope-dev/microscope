@@ -124,8 +124,10 @@ fn one_subobject(paths: &[Vec<MemberHop>]) -> Option<&[MemberHop]> {
     // A path's subobject: from its last virtual base onward, or all of it.
     let key = |path: &[MemberHop]| {
         let start = path.iter().rposition(|hop| hop.virtual_base);
-        let tail = &path[start.unwrap_or(0)..];
-        let base = start.map(|start| path[start].member.type_ref.id);
+        let tail = path.get(start.unwrap_or(0)..).unwrap_or_default();
+        let base = start
+            .and_then(|start| path.get(start))
+            .map(|hop| hop.member.type_ref.id);
         (
             base,
             tail.iter()
@@ -318,7 +320,7 @@ pub(super) fn array_source_indices(dimensions: &[ArrayDimension], index: u64) ->
     let mut indices = vec![0_i128; dimensions.len()];
     let mut remaining = index;
 
-    for (dimension_index, dimension) in dimensions.iter().enumerate().rev() {
+    for (source_index, dimension) in indices.iter_mut().zip(dimensions).rev() {
         if dimension.count == 0 {
             return Err(Error::debug_info(DwarfError::MalformedVariable(
                 "a non-empty array page has a zero-sized dimension".into(),
@@ -327,7 +329,7 @@ pub(super) fn array_source_indices(dimensions: &[ArrayDimension], index: u64) ->
 
         let relative = remaining % dimension.count;
         remaining /= dimension.count;
-        indices[dimension_index] = dimension
+        *source_index = dimension
             .lower_bound
             .checked_add(i128::from(relative))
             .ok_or_else(|| {
@@ -1441,16 +1443,17 @@ impl DwarfVariableInfo {
             usize::try_from(byte_size).map_err(|_| VariableUnavailableReason::EvaluationLimit)?;
         let (source, raw) = storage::read(storage, size, runtime, budget)?;
         let word = |index: u8| {
-            let index = usize::from(index);
-            unsigned_value(
-                &raw[index * pointer_bytes..(index + 1) * pointer_bytes],
-                self.target.byte_order,
-            )
-            .map_err(|reason| Arc::<str>::from(reason.to_string()))
-            .and_then(|value| {
-                u64::try_from(value)
-                    .map_err(|_| Arc::<str>::from("slice word exceeds target address width"))
-            })
+            let start = usize::from(index) * pointer_bytes;
+            raw.get(start..start + pointer_bytes)
+                .ok_or_else(|| Arc::<str>::from("slice word is past its descriptor"))
+                .and_then(|word| {
+                    unsigned_value(word, self.target.byte_order)
+                        .map_err(|reason| Arc::<str>::from(reason.to_string()))
+                })
+                .and_then(|value| {
+                    u64::try_from(value)
+                        .map_err(|_| Arc::<str>::from("slice word exceeds target address width"))
+                })
         };
 
         let address = word(words.data)
@@ -1704,7 +1707,10 @@ impl DwarfVariableInfo {
         let byte_size = usize::try_from(base.byte_size)
             .map_err(|_| VariableUnavailableReason::EvaluationLimit)?;
         let full = value.to_le_bytes();
-        let mut raw = full[..byte_size].to_vec();
+        let mut raw = full
+            .get(..byte_size)
+            .ok_or_else(|| EvaluateError::Malformed("bit-field storage exceeds 16 bytes".into()))?
+            .to_vec();
 
         if self.target.byte_order == ByteOrder::Big {
             raw.reverse();
@@ -2995,14 +3001,18 @@ impl DwarfVariableInfo {
                 bases,
                 variants,
                 ..
-            } => Some((
-                *aggregate,
-                &bases[..],
-                &common_members[..],
-                reference
+            } => {
+                let variant = reference
                     .active_variant
-                    .map(|active| (active, &variants[active].members[..])),
-            )),
+                    .map(|active| {
+                        variants
+                            .get(active)
+                            .map(|variant| (active, &variant.members[..]))
+                            .ok_or_else(|| Error::internal("the active variant is past the arms"))
+                    })
+                    .transpose()?;
+                Some((*aggregate, &bases[..], &common_members[..], variant))
+            }
             _ => complex_parts
                 .as_ref()
                 .map(|parts| (reference.target_type, &[][..], &parts[..], None)),
@@ -3074,9 +3084,15 @@ impl DwarfVariableInfo {
                         };
 
                         let member = index - members.len();
+                        let Some(variant_member) = variant_members.get(member) else {
+                            return Err(Error::internal(
+                                "child index is past its variant's members",
+                            ));
+                        };
+
                         (
                             DynamicAggregateChild::VariantMember { variant, member },
-                            &variant_members[member],
+                            variant_member,
                         )
                     };
 

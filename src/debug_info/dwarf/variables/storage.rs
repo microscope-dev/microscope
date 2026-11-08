@@ -160,15 +160,16 @@ pub(super) fn read(
         ValueStorage::Bytes {
             raw, start, end, ..
         } => {
-            let selected_end = start
+            let selected = start
                 .checked_add(size)
                 .filter(|selected_end| *selected_end <= *end)
+                .and_then(|selected_end| raw.get(*start..selected_end))
                 .ok_or_else(|| {
                     EvaluateError::Malformed(
                         "selected value extends beyond its containing storage".into(),
                     )
                 })?;
-            Ok((source(storage), Arc::from(&raw[*start..selected_end])))
+            Ok((source(storage), Arc::from(selected)))
         }
         ValueStorage::ImplicitPointer { .. } => Err(EvaluateError::Malformed(
             "an unresolved implicit pointer cannot be read".into(),
@@ -207,7 +208,13 @@ pub(super) fn read_bits(
             .ok_or(VariableUnavailableReason::EvaluationLimit)?;
         let raw = read_composite(composite, start, bit_size, runtime, budget)?;
         let mut wide = [0; 16];
-        wide[..raw.len()].copy_from_slice(&raw);
+        let Some(low) = wide.get_mut(..raw.len()) else {
+            return Err(EvaluateError::Fatal(
+                "a bit-field read more than 16 bytes".into(),
+            ));
+        };
+
+        low.copy_from_slice(&raw);
         return Ok(u128::from_le_bytes(wide));
     }
 
@@ -388,17 +395,25 @@ fn copy_bits(
 ) -> Result<(), EvaluateError> {
     let index =
         |bit: u64| usize::try_from(bit / 8).map_err(|_| VariableUnavailableReason::EvaluationLimit);
+    let outside = || EvaluateError::Malformed("a piece's bits lie outside its storage".into());
 
     if from.is_multiple_of(8) && to.is_multiple_of(8) && size.is_multiple_of(8) {
         let (from, to, length) = (index(from)?, index(to)?, index(size)?);
-        destination[to..to + length].copy_from_slice(&source[from..from + length]);
+        let bytes = source.get(from..from + length).ok_or_else(outside)?;
+        destination
+            .get_mut(to..to + length)
+            .ok_or_else(outside)?
+            .copy_from_slice(bytes);
         return Ok(());
     }
 
     for bit in 0..size {
         let (source_bit, destination_bit) = (from + bit, to + bit);
-        let value = (source[index(source_bit)?] >> (source_bit % 8)) & 1;
-        destination[index(destination_bit)?] |= value << (destination_bit % 8);
+        let source_byte = source.get(index(source_bit)?).ok_or_else(outside)?;
+        let destination_byte = destination
+            .get_mut(index(destination_bit)?)
+            .ok_or_else(outside)?;
+        *destination_byte |= ((source_byte >> (source_bit % 8)) & 1) << (destination_bit % 8);
     }
 
     Ok(())

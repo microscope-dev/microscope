@@ -285,9 +285,11 @@ impl Placement {
             PROGRAM_CORES
         );
         let (program_cores, rest) = cores.split_at(PROGRAM_CORES);
+        let first = program_cores
+            .first()
+            .context("the workloads need at least one core")?;
         let cache = cpu_list(&format!(
-            "/sys/devices/system/cpu/cpu{}/cache/index3/shared_cpu_list",
-            program_cores[0]
+            "/sys/devices/system/cpu/cpu{first}/cache/index3/shared_cpu_list"
         ));
         let near: Vec<usize> = rest
             .iter()

@@ -3,7 +3,7 @@
 //! bytes each of its tables takes.
 
 use super::{ARGUMENTS, Profile, arguments_setting};
-use crate::capture::records::{AccountKind, CaptureTable, FrameKind, NONE};
+use crate::capture::records::{AccountKind, CaptureTable, FrameKind};
 
 /// How many equal slices of the span samples are counted in.
 pub const TIME_BINS: usize = 60;
@@ -85,9 +85,11 @@ impl Profile {
     pub fn inspect(&self) -> Inspection {
         let capture = &self.capture;
 
-        let processes: Vec<_> = (0..capture.processes.len())
-            .map(|row| {
-                let process = &capture.processes[row];
+        let processes: Vec<_> = capture
+            .processes
+            .iter()
+            .enumerate()
+            .map(|(row, process)| {
                 let row = u32::try_from(row).unwrap_or(u32::MAX);
                 InspectedProcess {
                     pid: process.pid.get(),
@@ -189,12 +191,10 @@ impl Profile {
         let capture = &self.capture;
         let mut depth = Vec::with_capacity(capture.stacks.len());
         for (index, node) in capture.stacks.iter().enumerate() {
-            let parent = node.parent.get() as usize;
-            let above = if node.parent.get() == NONE || parent >= index {
-                0
-            } else {
-                depth[parent]
-            };
+            // depth holds every node before this one, so a parent at or
+            // after it, or NONE, is not found.
+            debug_assert_eq!(depth.len(), index, "depths of stack nodes before {index}");
+            let above = depth.get(node.parent.get() as usize).copied().unwrap_or(0);
             let marker = capture
                 .frames
                 .get(node.frame.get() as usize)
@@ -208,7 +208,9 @@ impl Profile {
             if counts.len() <= frames {
                 counts.resize(frames + 1, 0);
             }
-            counts[frames] += 1;
+            if let Some(count) = counts.get_mut(frames) {
+                *count += 1;
+            }
         }
         counts
     }
@@ -239,7 +241,9 @@ impl Profile {
         for sample in samples {
             let offset = i128::from(sample.time.get()) - i128::from(start);
             let bin = usize::try_from(offset * TIME_BINS as i128 / width).unwrap_or(0);
-            bins[bin.min(TIME_BINS - 1)] += 1;
+            if let Some(count) = bins.get_mut(bin.min(TIME_BINS - 1)) {
+                *count += 1;
+            }
         }
         bins
     }
@@ -283,7 +287,7 @@ const fn table_name(kind: CaptureTable) -> &'static str {
 mod tests {
     use super::*;
     use crate::capture::builder::CaptureBuilder;
-    use crate::capture::records::Truncation;
+    use crate::capture::records::{NONE, Truncation};
     use crate::model::{Pid, Tid};
     use crate::profiler::{command_setting, encode_cmdline};
 

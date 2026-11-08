@@ -294,15 +294,15 @@ enum Next {
 impl<'a> Run<'a> {
     fn new(image: &'a dyn DispatchImage, member: StateMember, value: u64) -> Self {
         let mut registers = [UNKNOWN; 16];
-        if let Some(rdi) = index(Register::RDI) {
-            registers[rdi] = Cell {
+        if let Some(rdi) = index(Register::RDI).and_then(|rdi| registers.get_mut(rdi)) {
+            *rdi = Cell {
                 value: Value::Object(0),
                 state: false,
             };
         }
 
-        if let Some(rsp) = index(Register::RSP) {
-            registers[rsp] = Cell {
+        if let Some(rsp) = index(Register::RSP).and_then(|rsp| registers.get_mut(rsp)) {
+            *rsp = Cell {
                 value: Value::Stack(0),
                 state: false,
             };
@@ -585,11 +585,14 @@ impl<'a> Run<'a> {
     }
 
     fn register(&self, register: Register) -> Cell {
-        index(register).map_or(UNKNOWN, |index| self.registers[index])
+        index(register)
+            .and_then(|index| self.registers.get(index))
+            .copied()
+            .unwrap_or(UNKNOWN)
     }
 
     fn adjust_stack(&mut self, by: i64) -> Option<i64> {
-        let slot = &mut self.registers[index(Register::RSP)?];
+        let slot = self.registers.get_mut(index(Register::RSP)?)?;
         let Value::Stack(at) = slot.value else {
             return None;
         };
@@ -715,7 +718,10 @@ impl<'a> Run<'a> {
                 };
 
                 let mut word = [0_u8; 8];
-                word[..size].copy_from_slice(bytes);
+                let Some(low) = word.get_mut(..bytes.len()).filter(|_| bytes.len() == size) else {
+                    return UNKNOWN;
+                };
+                low.copy_from_slice(bytes);
                 let mut number = u64::from_le_bytes(word);
                 if sign && size < 8 && number >> (size * 8 - 1) & 1 == 1 {
                     number |= !mask(size * 8);
@@ -736,11 +742,12 @@ impl<'a> Run<'a> {
         match instruction.op_kind(operand) {
             OpKind::Register => {
                 let register = instruction.op_register(operand);
-                let Some(slot) = index(register) else {
+                let Some(slot) = index(register).and_then(|slot| self.registers.get_mut(slot))
+                else {
                     return Next::Stop("a write to a register the model does not know");
                 };
 
-                self.registers[slot] = match (register.size(), cell.value) {
+                *slot = match (register.size(), cell.value) {
                     (8, _) => cell,
                     (4, Value::Number(number)) => Cell {
                         value: Value::Number(number & mask(32)),
@@ -881,7 +888,7 @@ pub fn fuzz(data: &[u8]) {
         fn code(&self, address: u64, length: usize) -> Option<&[u8]> {
             let at = usize::try_from(address.checked_sub(0x1000)?).ok()?;
             let bytes = self.1.get(at..)?;
-            Some(&bytes[..bytes.len().min(length)])
+            bytes.get(..bytes.len().min(length))
         }
 
         fn data(&self, address: u64, length: usize) -> Option<&[u8]> {
@@ -894,9 +901,11 @@ pub fn fuzz(data: &[u8]) {
         return;
     };
 
-    let split = rest.len() / 2;
-    let image = Bytes(&rest[..split], &rest[split..]);
-    let code = rest.len() - split;
+    let Some((data, code)) = rest.split_at_checked(rest.len() / 2) else {
+        return;
+    };
+    let image = Bytes(data, code);
+    let code = code.len();
     let ranges = [AddressRange {
         start: ImageAddress::new(0x1000),
         end: ImageAddress::new(0x1000 + code as u64),

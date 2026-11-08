@@ -7,6 +7,7 @@
     not(test),
     deny(
         clippy::expect_used,
+        clippy::indexing_slicing,
         clippy::panic,
         clippy::todo,
         clippy::unimplemented,
@@ -660,6 +661,10 @@ fn heap_text(path: &Path, rows: usize) -> Result<String> {
         totals[3] += site.gbk;
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers name one of the four totals"
+    )]
     let sum = |index: usize| sites.values().map(|totals| totals[index]).sum::<u64>();
     let mut text = format!(
         "total {:.0} MB in {:.2} M blocks; at peak {:.0} MB in {:.2} M blocks\n",
@@ -898,12 +903,8 @@ fn provenance() -> Provenance {
 }
 
 fn median(values: &mut [f64]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-
     values.sort_by(f64::total_cmp);
-    values[values.len() / 2]
+    values.get(values.len() / 2).copied().unwrap_or(0.0)
 }
 
 fn load_once(program: &Path, jobs: usize, instructions: bool) -> Result<Measured> {
@@ -997,7 +998,9 @@ fn run_bench(args: &BenchArgs, sweep: &[usize]) -> Result<bool> {
         };
 
         eprintln!();
-        let first = &measured[0];
+        let first = measured
+            .first()
+            .context("each program is measured at least once")?;
         let mut wall = measured
             .iter()
             .map(|load| load.report.summary.wall_ms)

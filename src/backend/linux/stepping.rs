@@ -2305,7 +2305,7 @@ fn runs_for_runtime(
             let inner = current
                 .and_then(|current| chain.instances.iter().position(|id| *id == current))
                 .unwrap_or(0);
-            &chain.instances[..inner]
+            chain.instances.get(..inner).unwrap_or_default()
         }
         _ => &[],
     };

@@ -48,6 +48,16 @@ pub struct SiteRecord {
     pub state: u64,
 }
 
+/// The `N` bytes at `offset` of `bytes`. Every caller checks the length
+/// first, so the zeros past the end are never read.
+fn field<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+    bytes
+        .get(offset..)
+        .and_then(<[u8]>::first_chunk)
+        .copied()
+        .unwrap_or([0; N])
+}
+
 /// The longest name or file a site may have.
 const MOST_NAME: u32 = abi::MOST_SITE_TEXT;
 
@@ -88,8 +98,8 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
     };
 
     let text = |at: u64, record: &[u8], what: &str| -> Result<String, String> {
-        let offset = i32::from_le_bytes(record[..4].try_into().unwrap_or_default());
-        let length = u32::from_le_bytes(record[4..8].try_into().unwrap_or_default());
+        let offset = i32::from_le_bytes(field(record, 0));
+        let length = u32::from_le_bytes(field(record, 4));
         if length > MOST_NAME {
             return Err(format!("a site's {what} is too long"));
         }
@@ -109,9 +119,7 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
 
     for (index, record) in records.iter().enumerate() {
         let at = sites.address() + (index * abi::SITE_SIZE) as u64;
-        let field = |offset: usize| {
-            u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap_or_default())
-        };
+        let field = |offset: usize| u32::from_le_bytes(field(record, offset));
 
         if record[0] != abi::SITE_VERSION {
             return Err(format!(
@@ -148,11 +156,11 @@ pub fn table(file: &object::File<'_>) -> Result<Option<Table>, String> {
 /// The ABI version of the control block `block`: 1, without run-time
 /// sites, or 2.
 fn version(block: &[u8]) -> Result<u16, String> {
-    if block.len() < abi::CONTROL_SIZE || block[..8] != abi::MAGIC {
+    if block.len() < abi::CONTROL_SIZE || block.first_chunk() != Some(&abi::MAGIC) {
         return Err("its control block is not one".into());
     }
 
-    let version = u16::from_le_bytes([block[8], block[9]]);
+    let version = u16::from_le_bytes(field(block, 8));
     if !(1..=abi::ABI).contains(&version) {
         return Err(format!(
             "its probes are ABI version {version}, which this microscope does not read"
@@ -175,15 +183,13 @@ fn static_key(version: u16, offset: i64) -> Option<u32> {
 /// How many run-time sites the table whose header is `bytes` counts.
 pub fn runtime_sites(bytes: &[u8]) -> Result<u32, &'static str> {
     if bytes.len() < abi::SITES_HEADER
-        || bytes[..4] != abi::SITES_MAGIC.to_le_bytes()
-        || bytes[4] != abi::SITES_VERSION
+        || bytes.first_chunk() != Some(&abi::SITES_MAGIC.to_le_bytes())
+        || bytes.get(4) != Some(&abi::SITES_VERSION)
     {
         return Err("the run-time sites are not a table this microscope reads");
     }
 
-    let word = |offset: usize| {
-        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default())
-    };
+    let word = |offset: usize| u32::from_le_bytes(field(bytes, offset));
     let most = u32::try_from(abi::MOST_RUNTIME_SITES).unwrap_or(u32::MAX);
     Ok(word(12).min(word(8)).min(most))
 }
@@ -205,17 +211,13 @@ pub fn runtime_site(
         return Err("a run-time site is cut short".into());
     }
 
-    let kind = record[0];
+    let [kind] = field(record, 0);
     if !(abi::SITE_ZONE..=abi::SITE_TRIGGER).contains(&kind) {
         return Err(format!("a run-time site has unknown kind {kind}"));
     }
 
-    let word = |offset: usize| {
-        u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap_or_default())
-    };
-    let long = |offset: usize| {
-        u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap_or_default())
-    };
+    let word = |offset: usize| u32::from_le_bytes(field(record, offset));
+    let long = |offset: usize| u64::from_le_bytes(field(record, offset));
     let mut read = |address: u64, length: u32, what: &str| -> Result<String, String> {
         if length > MOST_NAME {
             return Err(format!("a run-time site's {what} is too long"));
@@ -259,21 +261,19 @@ pub struct Control {
 
 /// Reads a control block's first [`abi::CONTROL_SIZE`] bytes.
 pub fn control(bytes: &[u8]) -> Result<Control, &'static str> {
-    if bytes.len() < abi::CONTROL_SIZE || bytes[..8] != abi::MAGIC {
+    if bytes.len() < abi::CONTROL_SIZE || bytes.first_chunk() != Some(&abi::MAGIC) {
         return Err("the control block is not one");
     }
 
-    let word = |offset: usize| {
-        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default())
-    };
+    let word = |offset: usize| u32::from_le_bytes(field(bytes, offset));
 
     let capacity = word(40);
     Ok(Control {
         rings: word(20)
             .min(capacity)
             .min(u32::try_from(abi::MOST_RINGS).unwrap_or(u32::MAX)),
-        sites: u64::from_le_bytes(bytes[56..64].try_into().unwrap_or_default()),
-        dropped: u64::from_le_bytes(bytes[32..40].try_into().unwrap_or_default()),
+        sites: u64::from_le_bytes(field(bytes, 56)),
+        dropped: u64::from_le_bytes(field(bytes, 32)),
         exiting: word(44) != 0,
         enable: word(12),
         armed: word(12) != 0 && word(52) == 0,
@@ -306,19 +306,15 @@ pub fn ring_header(bytes: &[u8]) -> Result<RingHeader, &'static str> {
         return Err("a ring's header is cut short");
     }
 
-    let word = |offset: usize| {
-        u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap_or_default())
-    };
+    let word = |offset: usize| u32::from_le_bytes(field(bytes, offset));
 
-    let long = |offset: usize| {
-        u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap_or_default())
-    };
+    let long = |offset: usize| u64::from_le_bytes(field(bytes, offset));
 
-    if word(0) != abi::RING_MAGIC || bytes[4] != abi::RING_VERSION {
+    if word(0) != abi::RING_MAGIC || bytes.get(4) != Some(&abi::RING_VERSION) {
         return Err("a ring is not one");
     }
 
-    let size = bytes[5];
+    let [size] = field(bytes, 5);
     if !(abi::LEAST_RING_SIZE..=abi::MOST_RING_SIZE).contains(&u32::from(size)) {
         return Err("a ring has an unknown size");
     }
@@ -330,7 +326,8 @@ pub fn ring_header(bytes: &[u8]) -> Result<RingHeader, &'static str> {
 
     // A thread sets its ring's clock as it takes the ring, so only a ring
     // whose records are read has one.
-    let clock = u16::from(bytes[6]);
+    let [clock] = field(bytes, 6);
+    let clock = u16::from(clock);
     if matches!(state, abi::RING_ACTIVE | abi::RING_RETIRED)
         && clock != abi::CLOCK_MONOTONIC
         && clock != abi::CLOCK_TSC
@@ -469,7 +466,9 @@ impl Decoder {
                 }
             };
 
-            let continued = records[index..]
+            let continued = records
+                .get(index..)
+                .unwrap_or_default()
                 .iter()
                 .take(more)
                 .take_while(|record| kind(record) == abi::CONTINUED)
@@ -482,19 +481,23 @@ impl Decoder {
             }
 
             let start = self.text.len();
-            for record in &records[index..index + more] {
+            // continued == more, so these records are there.
+            for record in records.get(index..index + more).unwrap_or_default() {
                 self.text.extend_from_slice(&record[..12]);
                 self.text.extend_from_slice(&record[13..]);
             }
 
             index += more;
             if event.kind == abi::PLOT {
-                event.value =
-                    f64::from_le_bytes(self.text[start..start + 8].try_into().unwrap_or_default());
+                event.value = f64::from_le_bytes(field(&self.text, start));
                 self.text.truncate(start);
             } else if more > 0 {
                 self.text.truncate(start + argument as usize);
-                if std::str::from_utf8(&self.text[start..]).is_err() {
+                if self
+                    .text
+                    .get(start..)
+                    .is_none_or(|text| std::str::from_utf8(text).is_err())
+                {
                     self.text.truncate(start);
                     self.malformed += 1 + more as u64;
                     continue;
@@ -509,7 +512,10 @@ impl Decoder {
 
     /// An event's text.
     pub fn text(&self, event: &Decoded) -> &str {
-        std::str::from_utf8(&self.text[event.text.clone()]).unwrap_or_default()
+        self.text
+            .get(event.text.clone())
+            .and_then(|text| std::str::from_utf8(text).ok())
+            .unwrap_or_default()
     }
 }
 

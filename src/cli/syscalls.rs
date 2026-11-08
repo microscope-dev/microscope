@@ -758,8 +758,11 @@ fn plan(args: &SyscallsArgs) -> Result<Plan> {
     }
 
     let target = if launching {
-        let mut command = Command::new(&args.command[0]);
-        command.args(&args.command[1..]);
+        let Some((program, arguments)) = args.command.split_first() else {
+            bail!("syscalls needs a program to trace");
+        };
+        let mut command = Command::new(program);
+        command.args(arguments);
         Some(Target::Launch(command))
     } else if !attached.is_empty() {
         Some(Target::Attach(attached.clone()))
@@ -1343,6 +1346,10 @@ const PAIRS: &[u8; 200] = b"0001020304050607080910111213141516171819\
     8081828384858687888990919293949596979899";
 
 /// Writes `"key":value,`, given `"key":`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "an i64 has at most 19 digits, so at stays within digits, and pair is below 200"
+)]
 fn json_number(out: &mut Vec<u8>, key: &[u8], value: i64) {
     out.extend_from_slice(key);
     if value < 0 {
@@ -1394,6 +1401,10 @@ fn program_settings(command: &[std::ffi::OsString]) -> [(&'static str, String); 
 }
 
 /// Writes a JSON string as `serde_json` does.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "start is at most index, both within bytes, and a nibble indexes HEX"
+)]
 fn json_string(out: &mut Vec<u8>, text: &str) {
     out.push(b'"');
     let bytes = text.as_bytes();
@@ -1987,7 +1998,10 @@ impl Printer {
         let frames = stacks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .frames(process, &stack.addresses[..natives]);
+            .frames(
+                process,
+                stack.addresses.get(..natives).unwrap_or(&stack.addresses),
+            );
         let mut lines: Vec<String> = shown
             .iter()
             .filter_map(|frame| {

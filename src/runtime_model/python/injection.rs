@@ -236,8 +236,9 @@ fn control_ranges(reader: &Reader<'_>) -> Result<[std::ops::Range<u64>; 3], Agen
         return Err("CPython's PEP 768 fields exceed its thread state".into());
     }
     if ranges.iter().enumerate().any(|(at, range)| {
-        ranges[..at]
+        ranges
             .iter()
+            .take(at)
             .any(|other| range.start < other.end && other.start < range.end)
     }) {
         return Err("CPython's PEP 768 control fields overlap".into());

@@ -259,6 +259,10 @@ impl Decode<'_, '_> {
     /// Prints `elements` structures from `bytes`, or the address when the
     /// bytes do not cover one.
     pub fn structure(mut self, structure: Struct, bytes: &[u8], elements: usize, truncated: bool) {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "spec parsing keeps argument numbers below six, the length of args"
+        )]
         let word = self.event.args[self.index];
         let reader = Bytes(bytes);
 
@@ -501,17 +505,17 @@ impl Decode<'_, '_> {
             }
             Struct::Utsname => {
                 let field = |at: usize| {
-                    let raw = &b.0[at..at + 65];
-                    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
-                    format!("{:?}", String::from_utf8_lossy(&raw[..end]))
+                    let raw = b.0.get(at..at + 65)?;
+                    let text = raw.split(|&c| c == 0).next().unwrap_or(raw);
+                    Some(format!("{:?}", String::from_utf8_lossy(text)))
                 };
 
                 self.punct("{");
                 self.field("sysname");
-                self.out.push(Kind::String, field(0));
+                self.out.push(Kind::String, field(0)?);
                 self.punct(", ");
                 self.field("nodename");
-                self.out.push(Kind::String, field(65));
+                self.out.push(Kind::String, field(65)?);
                 if self.style.verbose {
                     for (name, at) in [
                         ("release", 130),
@@ -521,7 +525,7 @@ impl Decode<'_, '_> {
                     ] {
                         self.punct(", ");
                         self.field(name);
-                        self.out.push(Kind::String, field(at));
+                        self.out.push(Kind::String, field(at)?);
                     }
                 } else {
                     self.more();
@@ -574,7 +578,7 @@ impl Decode<'_, '_> {
 
                 self.punct(", ");
                 self.field("sa_mask");
-                self.constant(sigset(&b.0[24..32]));
+                self.constant(sigset(b.0.get(24..32)?));
                 self.punct(", ");
                 self.field("sa_flags");
                 self.constant(bits(SA_FLAGS, flags));
@@ -613,12 +617,12 @@ impl Decode<'_, '_> {
                     Some(Arg::Mem {
                         count: Count::Arg(arg),
                         ..
-                    }) => usize::try_from(self.event.args[usize::from(arg)] & 0xffff_ffff)
+                    }) => usize::try_from(*self.event.args.get(usize::from(arg))? & 0xffff_ffff)
                         .unwrap_or(0),
                     _ => b.0.len(),
                 };
 
-                let address = SocketAddress::parse(&b.0[..b.0.len().min(length)])?;
+                let address = SocketAddress::parse(b.0.get(..length).unwrap_or(b.0))?;
                 self.constant(address.to_string());
             }
             Struct::WaitStatus => {
@@ -757,7 +761,7 @@ impl Decode<'_, '_> {
             self.field("iov_base");
             let length = usize::try_from(iovec.len).unwrap_or(usize::MAX).min(budget);
             budget -= length;
-            let shown = &iovec.bytes[..iovec.bytes.len().min(length)];
+            let shown = iovec.bytes.get(..length).unwrap_or(iovec.bytes);
             super::quote(
                 self.out,
                 shown,
@@ -804,7 +808,7 @@ impl Decode<'_, '_> {
                     at += usize::from(length);
                 }
 
-                self.address(self.event.args[self.index]);
+                self.address(*self.event.args.get(self.index)?);
                 self.out
                     .push(Kind::Comment, format!(" /* {count} entries */"));
                 return Some(());
@@ -814,7 +818,10 @@ impl Decode<'_, '_> {
                     .unwrap_or(0)
                     .min(b.0.len() * 8);
                 let set: Vec<String> = (0..limit)
-                    .filter(|&fd| b.0[fd / 8] & (1 << (fd % 8)) != 0)
+                    .filter(|&fd| {
+                        b.0.get(fd / 8)
+                            .is_some_and(|byte| byte & (1 << (fd % 8)) != 0)
+                    })
                     .map(|fd| fd.to_string())
                     .collect();
                 self.punct("[");

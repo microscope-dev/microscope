@@ -17,6 +17,10 @@
 //!   [`markers`] in their sources.
 //! - [`report`]: traces, fingerprints, and failures, and [`shrink`], which
 //!   makes a failing run smaller.
+#![expect(
+    clippy::indexing_slicing,
+    reason = "the simulator is a test harness and reports a bug by panicking"
+)]
 
 mod audit;
 mod catches;

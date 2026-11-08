@@ -139,8 +139,8 @@ fn bind(
         .filter(|local| !own.contains(&*local.name))
         .collect::<Vec<_>>();
     let room = register_count.saturating_sub(first) as usize;
-    if locals.len() > room {
-        return Err(mismatch(&locals[room].name));
+    if let Some(extra) = locals.get(room) {
+        return Err(mismatch(&extra.name));
     }
     binding.registers.resize(first as usize, None);
     for (index, local) in locals.iter().enumerate() {

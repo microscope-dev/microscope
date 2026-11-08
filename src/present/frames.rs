@@ -132,6 +132,10 @@ pub fn language(frame: &StackFrame) -> Option<(&'static str, &'static str)> {
 
 /// Which of a backtrace's frames its folds hide, by index, with the
 /// `selected` frame shown.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "folds returns ranges within the frames it is given"
+)]
 pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
     let mut folded = vec![false; trace.frames.len()];
     for run in folds(trace, trace.frames.len(), selected) {
@@ -149,18 +153,27 @@ pub fn folded_frames(trace: &Backtrace, selected: u32) -> Vec<bool> {
 /// the thread rather than the task's. Where the stack stopped, unless an
 /// interpreter's machinery beyond which another frame is selected, and the
 /// `selected` frame, are always shown.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "dispatch was found in frames, and the loop holds start and end within it"
+)]
 pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Range<usize>> {
-    let frames = &trace.frames[..shown];
+    let frames = trace.frames.get(..shown).unwrap_or(&trace.frames);
 
     // A frame that drives a future is shown with it, or with why it is not,
     // and so is every async caller suspended in await.
     let mut kept = trace
         .frames
         .windows(2)
-        .filter(|pair| {
-            pair[0].segment == StackSegment::Future && pair[1].segment != StackSegment::Future
+        .filter_map(|pair| match pair {
+            [future, caller]
+                if future.segment == StackSegment::Future
+                    && caller.segment != StackSegment::Future =>
+            {
+                Some(caller.level)
+            }
+            _ => None,
         })
-        .map(|pair| pair[1].level)
         .chain(trace.unfollowed.iter().map(|future| future.driver.get()))
         .chain(
             frames
@@ -173,8 +186,10 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
 
     let dispatch = frames
         .iter()
-        .position(|frame| frame.role == CodeRole::Dispatch)
-        .filter(|at| frames[*at].level >= selected);
+        .enumerate()
+        .find(|(_, frame)| frame.role == CodeRole::Dispatch)
+        .filter(|(_, frame)| frame.level >= selected)
+        .map(|(at, _)| at);
     let Some(dispatch) = dispatch else {
         return machinery_runs(frames, &kept);
     };
@@ -213,6 +228,10 @@ pub fn folds(trace: &Backtrace, shown: usize, selected: u32) -> Vec<std::ops::Ra
 }
 
 /// The runs [`folds`] folds by role alone.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "start stays below frames.len(), and end at most it"
+)]
 fn machinery_runs(frames: &[StackFrame], kept: &BTreeSet<u32>) -> Vec<std::ops::Range<usize>> {
     let runtime = |frame: &StackFrame| {
         matches!(

@@ -50,13 +50,15 @@ impl CallSet {
         let mut bits: [Vec<u64>; 3] = Default::default();
 
         for id in &self.calls {
-            let words = &mut bits[id.abi as usize];
+            let words = id.abi.of_mut(&mut bits);
             let word = (id.number / 64) as usize;
             if words.len() <= word {
                 words.resize(word + 1, 0);
             }
 
-            words[word] |= 1 << (id.number % 64);
+            #[expect(clippy::indexing_slicing, reason = "the words reach past `word`")]
+            let slot = &mut words[word];
+            *slot |= 1 << (id.number % 64);
         }
 
         self.bits = bits;
@@ -64,7 +66,8 @@ impl CallSet {
 
     #[must_use]
     pub fn contains(&self, id: SyscallId) -> bool {
-        self.bits[id.abi as usize]
+        id.abi
+            .of(&self.bits)
             .get((id.number / 64) as usize)
             .is_some_and(|word| word & (1 << (id.number % 64)) != 0)
     }
@@ -513,9 +516,9 @@ pub fn descriptors(event: &SyscallEvent) -> impl Iterator<Item = i64> + '_ {
     let spec = specs::spec(event.call);
     let arguments = spec
         .into_iter()
-        .flat_map(|spec| spec.args.iter().enumerate())
-        .filter(|(_, arg)| matches!(arg, specs::Arg::Fd | specs::Arg::DirFd))
-        .map(|(index, _)| fd_value(event.args[index]))
+        .flat_map(|spec| spec.args.iter().zip(event.args))
+        .filter(|(arg, _)| matches!(arg, specs::Arg::Fd | specs::Arg::DirFd))
+        .map(|(_, value)| fd_value(value))
         .filter(|&fd| fd >= 0);
 
     let result = spec

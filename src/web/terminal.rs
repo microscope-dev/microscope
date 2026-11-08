@@ -98,8 +98,15 @@ impl Keys {
         let mut keys = original.clone();
         keys.local_flags
             .remove(LocalFlags::ICANON | LocalFlags::ECHO);
-        keys.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
-        keys.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+        for (index, value) in [
+            (SpecialCharacterIndices::VMIN, 1),
+            (SpecialCharacterIndices::VTIME, 0),
+        ] {
+            *keys
+                .control_chars
+                .get_mut(index as usize)
+                .ok_or_else(|| io::Error::other(format!("the terminal has no {index:?}")))? = value;
+        }
         termios::tcsetattr(io::stdin(), SetArg::TCSANOW, &keys)?;
 
         std::thread::spawn(move || {

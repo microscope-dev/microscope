@@ -605,6 +605,20 @@ const ACCESSIBILITY: [Accessibility; 3] = [
     Accessibility::Protected,
     Accessibility::Private,
 ];
+/// The entry of `table` a validated record's `code` names.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "type validation checks every code against the table it indexes"
+)]
+fn decoded<T: Copy>(table: &[T], code: u8) -> T {
+    debug_assert!(
+        usize::from(code) < table.len(),
+        "code {code} is outside a table of {}",
+        table.len()
+    );
+    table[usize::from(code)]
+}
+
 const ORIGINS: [ArgumentOrigin; 3] = [
     ArgumentOrigin::Dwarf,
     ArgumentOrigin::ParsedName,
@@ -1170,17 +1184,19 @@ pub fn add_to(
     let mut runtime_types = Vec::<RuntimeTypeRecord>::new();
     let mut base_keys = Vec::new();
 
-    for (index, node) in types.nodes.iter().enumerate() {
+    // The encoder adds one record for each node, and validation checks
+    // the indexes built here against them.
+    for ((index, node), record) in types.nodes.iter().enumerate().zip(&encoder.types) {
         let TypeNode::Resolved(info) = node else {
             continue;
         };
 
         let id = number(index)?;
-        let record = &encoder.types[index];
         names.push((&*info.name, StrId(record.name.get()), id));
-        if let Some(identity) = &info.identity {
-            let base = encoder.identities[record.identity.get() as usize].base;
-            bases.push((&*identity.base, StrId(base.get()), id));
+        if let Some(identity) = &info.identity
+            && let Some(encoded) = encoder.identities.get(record.identity.get() as usize)
+        {
+            bases.push((&*identity.base, StrId(encoded.base.get()), id));
             if let Some(key) = crate::eval::types::c_type_key_of_name(&identity.base)
                 && key != identity.base.as_ref()
             {
@@ -1202,7 +1218,8 @@ pub fn add_to(
         {
             let first = record.parts.first() as usize;
             let mut seen = foldhash::HashSet::default();
-            for (enumerator, encoded) in listed.iter().zip(&encoder.enumerators[first..]) {
+            let rows = encoder.enumerators.get(first..).unwrap_or_default();
+            for (enumerator, encoded) in listed.iter().zip(rows) {
                 if seen.insert(&enumerator.name) {
                     enumerators.push((&*enumerator.name, StrId(encoded.name.get()), id));
                 }
@@ -1329,7 +1346,7 @@ impl<'a> TypeView<'a> {
             .runtime_types
             .binary_search_by_key(&offset, |record| record.offset.get())
             .ok()?;
-        Some(TypeId::new(self.runtime_types[index].ty.get()))
+        Some(TypeId::new(self.runtime_types.get(index)?.ty.get()))
     }
 
     /// Every Go runtime type descriptor offset, with the first type it
@@ -1391,9 +1408,10 @@ impl<'a> TypeView<'a> {
             name: self.text(record.name),
             byte_size: has(record, type_flags::SIZED).then(|| record.byte_size.get()),
             kind,
-            identity: (record.identity.get() != NONE).then(|| {
-                Arc::new(self.identity(image, &self.identities[record.identity.get() as usize]))
-            }),
+            identity: (record.identity.get() != NONE)
+                .then(|| self.identities.get(record.identity.get() as usize))
+                .flatten()
+                .map(|identity| Arc::new(self.identity(image, identity))),
         }))
     }
 
@@ -1408,7 +1426,7 @@ impl<'a> TypeView<'a> {
         BaseType {
             name: self.text(record.text),
             base_name: self.text(record.base_name),
-            encoding: ENCODINGS[usize::from(record.detail)],
+            encoding: decoded(&ENCODINGS, record.detail),
             byte_size: record.value.get(),
             bit_size: has(record, type_flags::BIT_SIZED).then(|| record.bit_size.get()),
         }
@@ -1422,7 +1440,7 @@ impl<'a> TypeView<'a> {
                 id: TypeId::new(member.ty.get()),
             },
             layout: member_layout(member.layout, member.offset.get(), member.bit_size.get()),
-            accessibility: ACCESSIBILITY[usize::from(member.accessibility)],
+            accessibility: decoded(&ACCESSIBILITY, member.accessibility),
             artificial: member.flags & member_flags::ARTIFICIAL != 0,
             embedded: member.flags & member_flags::EMBEDDED != 0,
             declaration: member.declaration.get(),
@@ -1448,7 +1466,7 @@ impl<'a> TypeView<'a> {
                     id: TypeId::new(base.ty.get()),
                 },
                 layout: member_layout(base.layout, base.offset.get(), base.bit_size.get()),
-                accessibility: ACCESSIBILITY[usize::from(base.accessibility)],
+                accessibility: decoded(&ACCESSIBILITY, base.accessibility),
                 virtuality: if base.virtual_base == 0 {
                     BaseClassVirtuality::None
                 } else {
@@ -1459,6 +1477,11 @@ impl<'a> TypeView<'a> {
     }
 
     #[expect(clippy::too_many_lines, reason = "one arm for each kind of type")]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`validate_types` checks each kind's parts, and a stored discriminant, follow \
+                  the last type's to the end of the tables they name"
+    )]
     fn kind(self, image: ModuleImageId, record: &TypeRecord) -> Option<TypeKind> {
         let target = Self::reference(image, record.target);
         let required = || target;
@@ -1488,7 +1511,7 @@ impl<'a> TypeView<'a> {
                 address_class: record.value.get(),
             },
             kinds::REFERENCE => TypeKind::Reference {
-                kind: REFERENCES[usize::from(record.detail)],
+                kind: decoded(&REFERENCES, record.detail),
                 target: required()?,
                 address_class: record.value.get(),
             },
@@ -1501,7 +1524,7 @@ impl<'a> TypeView<'a> {
                         count: dimension.count.get(),
                     })
                     .collect(),
-                ordering: ORDERINGS[usize::from(record.detail)],
+                ordering: decoded(&ORDERINGS, record.detail),
             },
             kinds::RUNTIME_ARRAY => TypeKind::RuntimeArray {
                 element: required()?,
@@ -1509,7 +1532,7 @@ impl<'a> TypeView<'a> {
                     .iter()
                     .map(|dimension| dimension.dimension())
                     .collect::<Option<_>>()?,
-                ordering: ORDERINGS[usize::from(record.detail)],
+                ordering: decoded(&ORDERINGS, record.detail),
             },
             kinds::SLICE => TypeKind::Slice {
                 element: required()?,
@@ -1517,7 +1540,7 @@ impl<'a> TypeView<'a> {
                 text: has(record, type_flags::TEXT),
             },
             kinds::RECORD => TypeKind::Record {
-                kind: RECORDS[usize::from(record.detail)],
+                kind: decoded(&RECORDS, record.detail),
                 members: self.members(image, record.parts.cast()),
                 bases: self.bases(image, record),
                 incomplete,
@@ -1568,7 +1591,7 @@ impl<'a> TypeView<'a> {
                 };
 
                 TypeKind::Variant {
-                    storage: STORAGE[usize::from(record.detail)],
+                    storage: decoded(&STORAGE, record.detail),
                     common_members: self.members(image, record.parts.cast()),
                     bases: self.bases(image, record),
                     discriminant: Box::new(discriminant),
@@ -1577,12 +1600,12 @@ impl<'a> TypeView<'a> {
                 }
             }
             kinds::MODIFIED => TypeKind::Modified {
-                modifier: MODIFIERS[usize::from(record.detail)],
+                modifier: decoded(&MODIFIERS, record.detail),
                 target: required()?,
             },
             kinds::NAMED => TypeKind::Named {
                 target,
-                relationship: RELATIONSHIPS[usize::from(record.detail)],
+                relationship: decoded(&RELATIONSHIPS, record.detail),
             },
             kinds::UNSPECIFIED => TypeKind::Unspecified,
             kinds::FUNCTION => TypeKind::Function,
@@ -1632,7 +1655,7 @@ impl<'a> TypeView<'a> {
                 })
                 .collect(),
             pack: (record.pack.get() != NONE).then(|| record.pack.get() as usize),
-            origin: ORIGINS[usize::from(record.origin)],
+            origin: decoded(&ORIGINS, record.origin),
             go: (record.flags & identity_flags::GO != 0).then(|| GoTypeAttributes {
                 kind: GoKind::from_abi(record.go_kind),
                 runtime_type: (record.flags & identity_flags::RUNTIME_TYPE != 0)
@@ -1892,9 +1915,13 @@ fn validate_types(image: &Image) -> Result<(), String> {
                     && only(f::SIZED)
                     && valid_type(record.target, count)
                     && record.parts.within(runtime_dimensions.len())
-                    && runtime_dimensions[record.parts.range()]
-                        .iter()
-                        .all(|dimension| dimension.dimension().is_some())
+                    && runtime_dimensions
+                        .get(record.parts.range())
+                        .is_some_and(|dimensions| {
+                            dimensions
+                                .iter()
+                                .all(|dimension| dimension.dimension().is_some())
+                        })
                     && follows(&mut cursors.runtime_dimensions, record.parts)
                     && no_bases
                     && no_variants
@@ -2185,7 +2212,9 @@ fn distinct_entries(strings: Strings<'_>, entries: &[NameEntry]) -> bool {
                     .map(|entry| strings.bytes(StrId(entry.name.get())))
                     .collect::<Vec<_>>();
                 texts.sort_unstable();
-                texts.windows(2).all(|pair| pair[0] != pair[1])
+                texts
+                    .windows(2)
+                    .all(|pair| matches!(pair, [a, b] if a != b))
             }
         })
 }
@@ -2196,7 +2225,11 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     let types = image.table::<TypeRecord>();
     let identities = image.table::<IdentityRecord>();
     let enumerators = image.table::<EnumeratorRecord>();
-    let resolved = |entry: &NameEntry| types[entry.value.get() as usize].kind != kinds::MALFORMED;
+    let resolved = |entry: &NameEntry| {
+        types
+            .get(entry.value.get() as usize)
+            .is_some_and(|record| record.kind != kinds::MALFORMED && record.name == entry.name)
+    };
     let names = image.shared::<NameEntry>(TableKind::TypeNames);
 
     if !index::valid_names(&strings, names, types.len())
@@ -2205,9 +2238,7 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
                 .iter()
                 .filter(|record| record.kind != kinds::MALFORMED)
                 .count()
-        || !names
-            .iter()
-            .all(|entry| resolved(entry) && types[entry.value.get() as usize].name == entry.name)
+        || !names.iter().all(resolved)
     {
         return Err("the type name index disagrees with the types".into());
     }
@@ -2223,7 +2254,10 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
         let key = if record.kind == kinds::MALFORMED || record.identity.get() == NONE {
             None
         } else {
-            let base = strings.get(StrId(identities[record.identity.get() as usize].base.get()));
+            let identity = identities
+                .get(record.identity.get() as usize)
+                .ok_or("a type names no identity")?;
+            let base = strings.get(StrId(identity.base.get()));
             let key = crate::eval::types::c_type_key_of_name(base).filter(|key| key != base);
             expected += 1 + usize::from(key.is_some());
             Some((base, key))
@@ -2234,8 +2268,8 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
 
     let names_its_type = |entry: &NameEntry| {
         let name = strings.get(StrId(entry.name.get()));
-        keys[entry.value.get() as usize]
-            .as_ref()
+        keys.get(entry.value.get() as usize)
+            .and_then(Option::as_ref)
             .is_some_and(|(base, key)| *base == name || key.as_deref() == Some(name))
     };
 
@@ -2270,27 +2304,29 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
     let mut expected = 0;
     let mut listed = vec![Vec::new(); types.len()];
 
-    for (index, record) in types.iter().enumerate() {
+    for (record, listed) in types.iter().zip(&mut listed) {
         if record.kind != kinds::ENUMERATION {
             continue;
         }
 
-        let mut names = enumerators[record.parts.range()]
+        let mut names = enumerators
+            .get(record.parts.range())
+            .ok_or("an enumeration's enumerators are missing")?
             .iter()
             .map(|enumerator| enumerator.name.get())
             .collect::<Vec<_>>();
         names.sort_unstable();
         names.dedup();
         expected += names.len();
-        listed[index] = names;
+        *listed = names;
     }
 
     if !index::valid_names(&strings, enumerator_names, types.len())
         || enumerator_names.len() != expected
         || !enumerator_names.iter().all(|entry| {
-            listed[entry.value.get() as usize]
-                .binary_search(&entry.name.get())
-                .is_ok()
+            listed
+                .get(entry.value.get() as usize)
+                .is_some_and(|names| names.binary_search(&entry.name.get()).is_ok())
         })
         || !distinct_entries(strings, enumerator_names)
     {
@@ -2306,7 +2342,9 @@ fn validate_indexes(image: &Image) -> Result<(), String> {
             continue;
         }
 
-        let identity = &identities[record.identity.get() as usize];
+        let identity = identities
+            .get(record.identity.get() as usize)
+            .ok_or("a type names no identity")?;
         if identity.flags & identity_flags::RUNTIME_TYPE != 0 {
             first.entry(identity.runtime_type.get()).or_insert(index);
         }

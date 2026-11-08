@@ -472,7 +472,12 @@ pub fn call_spec(call: SyscallId, options: &TraceOptions) -> RawCallSpec {
             Count::PointedBy(n) => (3, n),
         };
 
-        spec.args[usize::from(copy.arg)] = RawArgCopy {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "specs::parse rejects a seventh argument, so copies name arguments 0 to 5"
+        )]
+        let slot = &mut spec.args[usize::from(copy.arg)];
+        *slot = RawArgCopy {
             kind: match copy.kind {
                 CopyKind::Path => 1,
                 CopyKind::String => 2,
@@ -650,8 +655,12 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
         }
         RECORD_SIGNAL => {
             let raw: RawSignalRecord = read(bytes)?;
-            let word =
-                |at: usize| i32::from_le_bytes(raw.info[at..at + 4].try_into().unwrap_or_default());
+            let word = |at: usize| {
+                raw.info
+                    .get(at..at + 4)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map_or(0, i32::from_le_bytes)
+            };
             let code = (raw.flags & SIGNAL_INFO_LOST == 0).then(|| word(8));
 
             // Processes send with SI_USER, SI_QUEUE, SI_TKILL, and the like.
@@ -663,7 +672,9 @@ pub fn decode(bytes: &[u8]) -> Result<Record, DecodeError> {
             // The rest of a siginfo holds no field of any kind of signal.
             let info = code.map(|_| {
                 let mut info = [0_u8; 128];
-                info[..raw.info.len()].copy_from_slice(&raw.info);
+                for (to, from) in info.iter_mut().zip(raw.info) {
+                    *to = from;
+                }
                 Arc::from(&info[..])
             });
             Ok(Record::Event(TraceEvent::Signal {
@@ -705,9 +716,12 @@ fn stack_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> 
     let copy = bytes
         .get(chain_end..chain_end + raw.copied as usize)
         .ok_or(DecodeError::Short(bytes.len()))?;
-    #[expect(clippy::cast_possible_truncation, reason = "seventeen registers")]
-    let registers =
-        std::array::from_fn(|index| (DwarfRegister::new(index as u16), raw.regs[index]));
+    let mut number = 0;
+    let registers = raw.regs.map(|value| {
+        let register = (DwarfRegister::new(number), value);
+        number += 1;
+        register
+    });
     Ok(Record::Stack(SampledStack {
         thread: Tid::new(header.tid),
         process: Pid::new(header.tgid),
@@ -2430,7 +2444,8 @@ impl Reader<'_> {
         // The records that change a process's modules.
         let mut records = Vec::new();
         let mut offset = 0;
-        while let Some(Ok((record, length))) = perf::decode::next(&self.perf[offset..]) {
+        while let Some(Ok((record, length))) = self.perf.get(offset..).and_then(perf::decode::next)
+        {
             let changes = match record {
                 perf::decode::Record::Mmap(mmap) => mmap.executable,
                 perf::decode::Record::Comm { exec, .. } => exec,
@@ -2456,7 +2471,7 @@ impl Reader<'_> {
         // read again.
         let mut fresh = Vec::new();
         for (_, offset) in records {
-            match perf::decode::next(&self.perf[offset..]) {
+            match self.perf.get(offset..).and_then(perf::decode::next) {
                 Some(Ok((perf::decode::Record::Mmap(mmap), _))) if mmap.executable => {
                     stacks.mapped(&mmap);
                 }

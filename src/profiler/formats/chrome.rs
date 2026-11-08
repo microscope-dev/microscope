@@ -54,8 +54,10 @@ pub fn export(profile: &Profile) -> String {
         .filter(|(flag, _)| zone.flags & flag != 0)
         .map(|(_, said)| said)
         .collect();
-        if !unseen.is_empty() {
-            event["args"] = json!({"unseen": unseen});
+        if !unseen.is_empty()
+            && let Some(event) = event.as_object_mut()
+        {
+            event.insert("args".to_owned(), json!({"unseen": unseen}));
         }
 
         events.push(event);
@@ -73,8 +75,10 @@ pub fn export(profile: &Profile) -> String {
             "pid": marker.pid, "tid": marker.tid,
             "ts": micros(marker.time),
         });
-        if let Some(text) = marker.text {
-            event["args"] = json!({"text": text});
+        if let Some(text) = marker.text
+            && let Some(event) = event.as_object_mut()
+        {
+            event.insert("args".to_owned(), json!({"text": text}));
         }
 
         events.push(event);
@@ -91,12 +95,13 @@ pub fn export(profile: &Profile) -> String {
         };
 
         let mut args = json!({"result": call.outcome.raw()});
-        if let Some(row) = recorded.stack {
-            args["site"] = json!(
-                sites
-                    .entry(row)
-                    .or_insert_with(|| profile.syscall_site_name(row))
-            );
+        if let Some(row) = recorded.stack
+            && let Some(args) = args.as_object_mut()
+        {
+            let site = sites
+                .entry(row)
+                .or_insert_with(|| profile.syscall_site_name(row));
+            args.insert("site".to_owned(), json!(site));
         }
 
         let (entered, exited) = (micros(entered.cast_signed()), micros(exited.cast_signed()));

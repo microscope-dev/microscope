@@ -141,6 +141,10 @@ pub fn builtins(version: V8Version) -> Result<(u32, Numbers), std::sync::Arc<str
         })
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "evaluated at compile time, where an index out of bounds fails the build"
+)]
 const _: () = {
     let mut at = 0;
     while at < bytecodes::BYTECODE_SIZES.len() {
@@ -289,6 +293,10 @@ macro_rules! entries {
             "a layout's entries outnumber their u16 discriminants",
         );
 
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "evaluated at compile time, where an index out of bounds fails the build"
+        )]
         const _: () = {
             let mut at = 0;
             while at < $kind::COUNT {
@@ -1851,6 +1859,10 @@ impl Default for V8Layout {
 impl V8Layout {
     /// The field's offset; `None` when the version does not have it.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub const fn field(&self, field: Field) -> Option<u64> {
         match self.offsets[field.index()] {
             ABSENT => None,
@@ -1860,6 +1872,10 @@ impl V8Layout {
 
     /// The constant's value; `None` when the version does not have it.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub const fn constant(&self, constant: Constant) -> Option<i64> {
         match self.constants[constant.index()] {
             ABSENT_CONSTANT => None,
@@ -1868,6 +1884,10 @@ impl V8Layout {
     }
 
     /// Sets a field, or leaves it absent when its offset does not fit.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub fn set_field(&mut self, field: Field, offset: u64) {
         self.offsets[field.index()] = u32::try_from(offset)
             .ok()
@@ -1876,6 +1896,10 @@ impl V8Layout {
     }
 
     /// Sets a constant; `i64::MIN` reads back as absent.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "an entry's index is its place in `ALL`, which `COUNT` is the length of"
+    )]
     pub const fn set_constant(&mut self, constant: Constant, value: i64) {
         self.constants[constant.index()] = value;
     }
@@ -2459,7 +2483,14 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         }
     }
 
-    let mut target_sites = [14, 16, 17, 18, 19].map(|index| record.inspector[index].get());
+    let inspector = &record.inspector;
+    let mut target_sites = [
+        inspector[14].get(),
+        inspector[16].get(),
+        inspector[17].get(),
+        inspector[18].get(),
+        inspector[19].get(),
+    ];
     target_sites.sort_unstable();
     if record.inspector[1].get() > 1
         || (record.inspector[8].get() == 0) != (record.inspector[9].get() == 0)
@@ -2470,7 +2501,9 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
         || (record.inspector_problem.get() == NONE
             && (record.inspector[15].get() > 4096
                 || target_sites[0] == 0
-                || target_sites.windows(2).any(|pair| pair[0] == pair[1])))
+                || target_sites
+                    .windows(2)
+                    .any(|pair| matches!(pair, [a, b] if a == b))))
         || (record.inspector_problem.get() != NONE
             && record.inspector.iter().any(|value| value.get() != 0))
     {

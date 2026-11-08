@@ -144,7 +144,12 @@ pub(super) fn role_code(role: CodeRole) -> Option<u8> {
 }
 
 /// The code role a number names; validation checked it names one.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "symbol and function validation reject every role that fails `valid_role`"
+)]
 pub(super) fn role(code: u8) -> CodeRole {
+    debug_assert!(valid_role(code), "role {code} names no role");
     ROLES[usize::from(code)]
 }
 
@@ -215,7 +220,9 @@ fn add_symbols(
     let mut records = Vec::with_capacity(symbols.len());
     let mut names = Vec::with_capacity(symbols.len());
 
-    for (index, symbol) in symbols.iter().enumerate() {
+    for ((symbol, &extent_rank), &storage_rank) in
+        symbols.iter().zip(&extent_ranks).zip(&storage_ranks)
+    {
         let name = strings.push(&symbol.name).ok_or(BadName)?;
         names.push((&*symbol.name, name, symbol.id.get()));
         let mut flags = 0;
@@ -243,8 +250,8 @@ fn add_symbols(
             name: name.0.into(),
             address: symbol.address.get().into(),
             end: end.get().into(),
-            extent_rank: extent_ranks[index].into(),
-            storage_rank: storage_ranks[index].into(),
+            extent_rank: extent_rank.into(),
+            storage_rank: storage_rank.into(),
             kind: code_of(&SYMBOL_KINDS, &symbol.kind).ok_or(BadName)?,
             binding: code_of(&BINDINGS, &symbol.binding).ok_or(BadName)?,
             role: role_code(symbol.role).ok_or(BadName)?,
@@ -361,7 +368,9 @@ fn ranks<K: Ord>(symbols: &[SymbolInfo], key: impl Fn(&SymbolInfo) -> Option<K>)
     keyed.sort_unstable();
     let mut ranks = vec![NONE; symbols.len()];
     for (rank, (_, index)) in (0u32..).zip(keyed) {
-        ranks[index] = rank;
+        if let Some(slot) = ranks.get_mut(index) {
+            *slot = rank;
+        }
     }
 
     ranks
@@ -409,12 +418,20 @@ impl<'a> Symbol<'a> {
 
     /// What the symbol names.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "symbol validation rejects a kind `SYMBOL_KINDS` does not hold"
+    )]
     pub fn kind(self) -> SymbolKind {
         SYMBOL_KINDS[usize::from(self.record.kind)]
     }
 
     /// The symbol's linkage visibility.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "symbol validation rejects a binding `BINDINGS` does not hold"
+    )]
     pub fn binding(self) -> SymbolBinding {
         BINDINGS[usize::from(self.record.binding)]
     }
@@ -716,7 +733,10 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
         index::valid_intervals(intervals, symbols.len())
             && intervals.len() == symbols.iter().filter(|symbol| flag(symbol)).count()
             && intervals.iter().all(|interval| {
-                let symbol = &symbols[interval.value.get() as usize];
+                let Some(symbol) = symbols.get(interval.value.get() as usize) else {
+                    return false;
+                };
+
                 let end = if symbol.address == symbol.end {
                     symbol.end.get().checked_add(1)
                 } else {
@@ -742,9 +762,11 @@ fn validate_symbols(image: &Image) -> Result<(), String> {
     let names = image.shared::<NameEntry>(TableKind::SymbolNames);
     if names.len() != symbols.len()
         || !index::valid_names(&strings, names, symbols.len())
-        || !names
-            .iter()
-            .all(|entry| symbols[entry.value.get() as usize].name == entry.name)
+        || !names.iter().all(|entry| {
+            symbols
+                .get(entry.value.get() as usize)
+                .is_some_and(|symbol| symbol.name == entry.name)
+        })
     {
         return Err("the symbol name index disagrees with the symbols".into());
     }
@@ -767,8 +789,11 @@ fn validate_sections(image: &Image) -> Result<(), String> {
     if ranges.len() != sections.len()
         || !index::valid_intervals(ranges, sections.len())
         || !ranges.iter().all(|interval| {
-            let section = &sections[interval.value.get() as usize];
-            interval.start == section.start && interval.end == section.end
+            sections
+                .get(interval.value.get() as usize)
+                .is_some_and(|section| {
+                    interval.start == section.start && interval.end == section.end
+                })
         })
     {
         return Err("the section index disagrees with the sections".into());

@@ -282,18 +282,21 @@ impl Session {
         let mut previous = std::mem::take(&mut self.data.entries).into_iter();
 
         while let Some(mut entry) = previous.next() {
-            let index = (0..wanted.len()).find(|index| {
-                let (breakpoint, access) = &wanted[*index];
-                breakpoint.data_id == entry.data_id
-                    && access.as_ref() == Ok(&entry.access)
-                    && !kept.contains_key(index)
-            });
+            let found = wanted
+                .iter()
+                .enumerate()
+                .find(|&(index, (breakpoint, access))| {
+                    breakpoint.data_id == entry.data_id
+                        && access.as_ref() == Ok(&entry.access)
+                        && !kept.contains_key(&index)
+                })
+                .map(|(index, (breakpoint, _))| (index, *breakpoint));
             let Ok(watchpoint) = entry.watchpoint else {
                 continue;
             };
 
-            let options = index.map(|index| {
-                let conditions = Conditions::of(wanted[index].0);
+            let options = found.map(|(index, breakpoint)| {
+                let conditions = Conditions::of(breakpoint);
                 let options = conditions.options();
                 (index, conditions, options)
             });

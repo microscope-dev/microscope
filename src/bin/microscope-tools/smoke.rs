@@ -82,11 +82,15 @@ fn check_inputs(budgets: &Budgets, report: &Report) -> Result<()> {
         report.workloads.keys().collect::<Vec<_>>()
     );
     for (name, usage) in &report.workloads {
+        let expected = budgets
+            .workloads
+            .get(name)
+            .with_context(|| format!("the budgets have no workload {name}"))?;
         ensure!(
-            usage.sha256 == budgets.workloads[name].sha256,
+            usage.sha256 == expected.sha256,
             "input/configuration mismatch: {name} SHA-256 is {}, expected {}; review the corpus build, not the resource budgets",
             usage.sha256,
-            budgets.workloads[name].sha256
+            expected.sha256
         );
     }
     Ok(())
@@ -95,7 +99,10 @@ fn check_inputs(budgets: &Budgets, report: &Report) -> Result<()> {
 fn check(budgets: &Budgets, report: &Report) -> Result<()> {
     check_inputs(budgets, report)?;
     for (name, usage) in &report.workloads {
-        let budget = &budgets.workloads[name];
+        let budget = budgets
+            .workloads
+            .get(name)
+            .with_context(|| format!("the budgets have no workload {name}"))?;
         for (metric, actual, limit) in [
             ("allocations", usage.allocations, budget.allocations),
             (

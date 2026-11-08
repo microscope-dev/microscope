@@ -250,6 +250,10 @@ impl Generated {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a const block fails the build on an index out of bounds"
+)]
 const _: () = {
     let mut at = 1;
     while at < layouts::GENERATED.len() {
@@ -428,6 +432,10 @@ const CHECKED_FIELDS: &[(Field, &str)] = &[
     (Field::AccessorPairSetter, "AccessorPair__setter"),
 ];
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a const block fails the build on an index out of bounds"
+)]
 const _: () = {
     let mut at = 0;
     while at < CHECKED_FIELDS.len() {
@@ -552,11 +560,13 @@ fn exports(object: &object::File<'_>) -> Exports {
             {
                 exports.values.insert(name.to_owned(), value);
             }
-        } else if let Some(at) = VERSION.iter().position(|own| *own == name)
-            && exports.version[at].is_none()
+        } else if let Some(slot) = VERSION
+            .iter()
+            .zip(exports.version.iter_mut())
+            .find_map(|(own, slot)| (*own == name).then_some(slot))
+            && slot.is_none()
         {
-            exports.version[at] =
-                int_value(object, &symbol).and_then(|value| u32::try_from(value).ok());
+            *slot = int_value(object, &symbol).and_then(|value| u32::try_from(value).ok());
         }
     }
 

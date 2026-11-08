@@ -572,15 +572,18 @@ fn evaluation_value(
         ));
     };
 
-    if bytes.len() < size {
+    let bytes = match endian {
+        RunTimeEndian::Little => bytes.get(..size),
+        RunTimeEndian::Big => bytes
+            .len()
+            .checked_sub(size)
+            .and_then(|start| bytes.get(start..)),
+    };
+
+    let Some(bytes) = bytes else {
         return Err(EvaluateError::Malformed(
             "register or memory value is shorter than its DWARF type".into(),
         ));
-    }
-
-    let bytes = match endian {
-        RunTimeEndian::Little => &bytes[..size],
-        RunTimeEndian::Big => &bytes[bytes.len() - size..],
     };
 
     Value::parse(value_type, gimli::EndianSlice::new(bytes, endian))

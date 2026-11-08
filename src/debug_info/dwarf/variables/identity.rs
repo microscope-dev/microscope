@@ -394,7 +394,12 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
             self.identity_parts.resize_with(id.index() + 1, || None);
         }
 
-        self.identity_parts[id.index()] = Some(IdentityParts {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`identity_parts` was just resized to hold `id`"
+        )]
+        let parts = &mut self.identity_parts[id.index()];
+        *parts = Some(IdentityParts {
             die,
             template,
             pack,
@@ -438,12 +443,12 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
                         .flatten()
                 });
                 let slot = match name.as_deref() {
-                    Some(D_KEY) => 0,
-                    Some(D_VALUE) => 1,
+                    Some(D_KEY) => &mut associative[0],
+                    Some(D_VALUE) => &mut associative[1],
                     _ => continue,
                 };
 
-                associative[slot] = self.target(child, unit_index).ok().flatten();
+                *slot = self.target(child, unit_index).ok().flatten();
             } else if child.tag() == gimli::DW_TAG_GNU_template_parameter_pack {
                 pack = pack.or(Some(arguments.len()));
                 let Ok(mut parameters) = self.children(unit_index, child.offset()) else {
@@ -850,17 +855,24 @@ impl<'data> TypeArenaBuilder<'_, 'data> {
         }
 
         let seq = members(info, ["len", "p"])?;
+        let [_, p] = &*seq else {
+            return None;
+        };
+
         let TypeKind::Pointer {
             target: Some(content),
             ..
-        } = resolved(seq[1].type_ref)?.kind
+        } = resolved(p.type_ref)?.kind
         else {
             return None;
         };
 
         let content = members(resolved(content)?, ["cap", "data"])?;
+        let [_, data] = &*content else {
+            return None;
+        };
 
-        match &resolved(content[1].type_ref)?.kind {
+        match &resolved(data.type_ref)?.kind {
             TypeKind::RuntimeArray {
                 element,
                 dimensions,
@@ -1025,12 +1037,17 @@ pub(super) fn resolve_parsed_arguments(
 
         let mut arguments = identity.arguments.to_vec();
         for position in &pending.positions {
-            let TypeArgument::Unknown(text) = &arguments[*position] else {
+            let Some(TypeArgument::Unknown(text)) = arguments.get(*position) else {
                 continue;
             };
 
-            if let Some(found) = &answers[spellings[&(Arc::clone(text), pending.language)]] {
-                arguments[*position] = found.clone();
+            let found = spellings
+                .get(&(Arc::clone(text), pending.language))
+                .and_then(|spelling| answers.get(*spelling))
+                .and_then(Option::as_ref);
+
+            if let (Some(found), Some(argument)) = (found, arguments.get_mut(*position)) {
+                *argument = found.clone();
             }
         }
 
@@ -1098,7 +1115,12 @@ impl<'a> Alike<'a> {
                 members.resize_with(class + 1, Vec::new);
             }
 
-            members[class].push(TypeId::new(super::row(index)));
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`members` was just resized to hold `class`"
+            )]
+            let class_members = &mut members[class];
+            class_members.push(TypeId::new(super::row(index)));
         }
 
         Self { classes, members }
@@ -1107,18 +1129,24 @@ impl<'a> Alike<'a> {
     /// Whether names are matched against the type `index` numbers: the
     /// first of its class.
     fn searchable(&self, index: usize) -> bool {
-        self.classes
-            .is_none_or(|classes| self.members[classes[index] as usize][0].index() == index)
+        self.classes.is_none_or(|classes| {
+            classes
+                .get(index)
+                .and_then(|class| self.members.get(*class as usize))
+                .and_then(|members| members.first())
+                .is_some_and(|first| first.index() == index)
+        })
     }
 
     /// The types alike to `reference`, itself among them.
     fn members(&self, reference: TypeReference) -> Vec<TypeReference> {
         self.classes
             .and_then(|classes| classes.get(reference.id.index()))
+            .and_then(|class| self.members.get(*class as usize))
             .map_or_else(
                 || vec![reference],
-                |class| {
-                    self.members[*class as usize]
+                |members| {
+                    members
                         .iter()
                         .map(|id| TypeReference {
                             image: reference.image,

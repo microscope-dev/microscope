@@ -147,7 +147,7 @@ impl CallSiteBuilder {
         function: usize,
         depth: usize,
     ) {
-        let unit = &units[unit_index];
+        let unit = super::unit_at(units, unit_index);
         let mut site = calls::CallSite {
             function: super::row(function),
             return_address: None,
@@ -175,9 +175,14 @@ impl CallSiteBuilder {
                 site.return_address = return_address.filter(|_| !tail);
                 if tail {
                     site.jump = tail_jump(call, return_address);
-                    self.functions[function]
-                        .tail_calls
-                        .push(super::row(self.sites.len()));
+
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "`function` is the index `Self::function` gave the walk's \
+                                  enclosing function, which it pushed"
+                    )]
+                    let caller = &mut self.functions[function];
+                    caller.tail_calls.push(super::row(self.sites.len()));
                 }
             }
             Err(error) => site.malformed = Some(error.to_string().into()),
@@ -205,6 +210,10 @@ impl CallSiteBuilder {
             return;
         }
 
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`open` holds the index of a site `Self::site` pushed"
+        )]
         let (site, _) = &mut self.sites[site];
 
         match site_parameter(dwarf, pool, units, unit_index, entry) {
@@ -309,11 +318,17 @@ impl CallSiteBuilder {
         let function_at = |address: ImageAddress| {
             code.binary_search_by_key(&address, |(start, _)| *start)
                 .ok()
-                .map(|position| super::row(code[position].1))
+                .and_then(|position| code.get(position))
+                .map(|(_, function)| super::row(*function))
         };
 
         for function in &self.functions {
             for &site in &function.tail_calls {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "a function's tail calls are indices of sites this builder pushed, \
+                              which `Self::absorb` renumbers with the sites"
+                )]
                 let (site, _) = &mut self.sites[site as usize];
                 site.enters = match &site.target {
                     SiteTarget::Code(address) => function_at(*address),
@@ -448,7 +463,7 @@ fn site_parameter(
     unit_index: usize,
     entry: &gimli::DebuggingInformationEntry<Reader<'_>>,
 ) -> Result<SiteParameter, DwarfError> {
-    let unit = &units[unit_index];
+    let unit = super::unit_at(units, unit_index);
     let mut expression =
         |attributes: [gimli::DwAt; 2]| -> Result<Option<ExpressionId>, DwarfError> {
             attributes
@@ -506,9 +521,14 @@ fn linkage_name<'data>(
         gimli::DW_AT_MIPS_linkage_name,
         gimli::DW_AT_name,
     ] {
-        if let Some(name) =
-            string_with_origins(dwarf, units, &units[unit_index], entry, &chain, attribute)?
-        {
+        if let Some(name) = string_with_origins(
+            dwarf,
+            units,
+            super::unit_at(units, unit_index),
+            entry,
+            &chain,
+            attribute,
+        )? {
             return Ok(Some(name));
         }
     }
@@ -630,7 +650,7 @@ fn tail_path(view: CallView<'_>, from: u32, to: u32) -> Result<Vec<SiteId>, Vari
     let mut chains = HashMap::<u32, u64>::new();
     let mut active = HashSet::new();
     count_chains(view, from, to, &leads, &mut chains, &mut active)?;
-    if chains[&from] != 1 {
+    if chains.get(&from) != Some(&1) {
         return Err(unavailable(EntryValueUnavailableReason::TailCalls));
     }
 

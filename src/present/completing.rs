@@ -94,19 +94,14 @@ fn base_start(text: &str) -> Option<usize> {
                 at = opening(bytes, at - 1, b'(', b')')?;
 
                 // A length or size reads as one operand with its name.
-                while at > 0 && is_name(char::from(bytes[at - 1])) {
-                    at -= 1;
-                }
+                at -= name_length(bytes.get(..at)?);
             }
             b'`' => {
                 at = text[..at - 1].rfind('`')?;
             }
             byte if is_name(char::from(*byte)) => {
-                while at > 0 && is_name(char::from(bytes[at - 1])) {
-                    at -= 1;
-                }
-
-                if at > 0 && bytes[at - 1] == b'$' {
+                at -= name_length(bytes.get(..at)?);
+                if at.checked_sub(1).and_then(|previous| bytes.get(previous)) == Some(&b'$') {
                     at -= 1;
                 }
             }
@@ -117,9 +112,15 @@ fn base_start(text: &str) -> Option<usize> {
             return None;
         }
 
-        match JOINERS.iter().find(|joiner| bytes[..at].ends_with(joiner)) {
+        let before = bytes.get(..at)?;
+        match JOINERS.iter().find(|joiner| before.ends_with(joiner)) {
             // `::name` names the outermost scope.
-            Some(&b"::") if at == 2 || !is_name(char::from(bytes[at - 3])) => {
+            Some(&b"::")
+                if at
+                    .checked_sub(3)
+                    .and_then(|previous| bytes.get(previous))
+                    .is_none_or(|&previous| !is_name(char::from(previous))) =>
+            {
                 return Some(at - 2);
             }
             Some(joiner) => at -= joiner.len(),
@@ -128,13 +129,22 @@ fn base_start(text: &str) -> Option<usize> {
     }
 }
 
+/// The length of the name that ends `bytes`.
+fn name_length(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rev()
+        .take_while(|&&byte| is_name(char::from(byte)))
+        .count()
+}
+
 /// The index of the bracket that opens the group closing at `close`.
 fn opening(bytes: &[u8], close: usize, open: u8, shut: u8) -> Option<usize> {
     let mut depth = 0_usize;
-    for index in (0..=close).rev() {
-        if bytes[index] == shut {
+    for (index, &byte) in bytes.get(..=close)?.iter().enumerate().rev() {
+        if byte == shut {
             depth += 1;
-        } else if bytes[index] == open {
+        } else if byte == open {
             depth -= 1;
             if depth == 0 {
                 return Some(index);

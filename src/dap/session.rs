@@ -1290,6 +1290,10 @@ impl Session {
 
     /// Announces a started process: the `process` event, its output, its
     /// modules, and its threads. Returns the state it started in.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     async fn announce_process(
         &mut self,
         method: &'static str,
@@ -1998,6 +2002,10 @@ impl Session {
     }
 
     /// Reports a stop to the client.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     async fn stopped(
         &mut self,
         stop: StopId,
@@ -2615,6 +2623,10 @@ impl Session {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the body is a JSON object built here, and indexing an object by key inserts"
+    )]
     fn breakpoint_json(&self, group: &Group, entry: &Entry) -> Value {
         let mut body = json!({"id": entry.id});
         let (message, reason) = match &entry.state {
@@ -2715,7 +2727,10 @@ impl Session {
         }
 
         for code in microscope::signal_codes() {
-            let mut policy = target.default_policies[&code];
+            let mut policy = *target
+                .default_policies
+                .get(&code)
+                .ok_or_else(|| ErrorBody::new(format!("signal {code} has no default policy")))?;
             policy.stop = self.exceptions.stops(code);
             policy.print |= policy.stop;
 
@@ -2787,8 +2802,9 @@ impl Session {
         let components = client.components().collect::<Vec<_>>();
 
         for kept in (1..=components.len()).rev() {
-            let suffix = components[components.len() - kept..]
+            let suffix = components
                 .iter()
+                .skip(components.len() - kept)
                 .collect::<PathBuf>();
             let mut matches = image
                 .source_files()

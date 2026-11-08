@@ -186,7 +186,8 @@ fn listed_scopes(frame: &Value) -> Vec<(usize, Arc<str>)> {
         .enumerate()
         .filter(|(_, scope)| !matches!(scope["type"].as_str(), Some("global" | "with")))
         .filter_map(|(index, scope)| {
-            Some((index, Arc::from(scope["object"]["objectId"].as_str()?)))
+            let object = scope.pointer("/object/objectId")?.as_str()?;
+            Some((index, Arc::from(object)))
         })
         .collect()
 }

@@ -348,7 +348,9 @@ fn bytecode_handlers(image: &(dyn RuntimeImage + Send + Sync)) -> Vec<AddressRan
         }
     }
     debug_assert!(
-        merged.windows(2).all(|pair| pair[0].end < pair[1].start),
+        merged
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if a.end < b.start)),
         "the bytecode handlers' {} ranges are not sorted and apart",
         merged.len()
     );

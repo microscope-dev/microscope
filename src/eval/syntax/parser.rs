@@ -179,8 +179,12 @@ pub type Readings = Vec<Result<Tree, ExpressionError>>;
 pub fn parse(text: &str, dialect: Dialect) -> Result<(Vec<Ambiguity>, Readings), ExpressionError> {
     let tokens = lex(text)?;
     let starts = ambiguities(&tokens);
-    if starts.len() > MAX_AMBIGUITIES {
-        let span = tokens[starts[MAX_AMBIGUITIES]].span;
+    if let Some(&start) = starts.get(MAX_AMBIGUITIES) {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "an ambiguity starts at one of the tokens"
+        )]
+        let span = tokens[start].span;
         return Err(ExpressionError::new(
             ErrorKind::Limit,
             span,
@@ -197,7 +201,7 @@ pub fn parse(text: &str, dialect: Dialect) -> Result<(Vec<Ambiguity>, Readings),
         let close = parser.peek_span();
         ambiguity_list.push(Ambiguity {
             name,
-            span: tokens[start].span.to(close),
+            span: parser.token(start).span.to(close),
         });
     }
 
@@ -334,16 +338,36 @@ impl<'tokens> Parser<'tokens> {
         Ok(tree)
     }
 
+    /// The token at `index`, or the end token for any index past it.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`lex` ends the tokens with an end token, so they are never empty"
+    )]
+    fn token(&self, index: usize) -> &Token {
+        debug_assert!(
+            matches!(
+                self.tokens.last(),
+                Some(Token {
+                    kind: TokenKind::End,
+                    ..
+                })
+            ),
+            "the {} tokens do not end with an end token",
+            self.tokens.len(),
+        );
+        &self.tokens[index.min(self.tokens.len() - 1)]
+    }
+
     fn peek(&self) -> &TokenKind {
-        &self.tokens[self.position.min(self.tokens.len() - 1)].kind
+        &self.token(self.position).kind
     }
 
     fn peek_at(&self, offset: usize) -> &TokenKind {
-        &self.tokens[(self.position + offset).min(self.tokens.len() - 1)].kind
+        &self.token(self.position + offset).kind
     }
 
     fn peek_span(&self) -> Span {
-        self.tokens[self.position.min(self.tokens.len() - 1)].span
+        self.token(self.position).span
     }
 
     fn peek_punct(&self) -> Option<Punct> {
@@ -360,8 +384,8 @@ impl<'tokens> Parser<'tokens> {
         }
     }
 
-    const fn previous_span(&self) -> Span {
-        self.tokens[self.position.saturating_sub(1)].span
+    fn previous_span(&self) -> Span {
+        self.token(self.position.saturating_sub(1)).span
     }
 
     fn advance(&mut self) -> Span {
@@ -413,6 +437,10 @@ impl<'tokens> Parser<'tokens> {
         Ok(id)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`push` makes every id from the length of `nodes`"
+    )]
     fn span(&self, id: NodeId) -> Span {
         self.nodes[id.0 as usize].span
     }
@@ -704,7 +732,12 @@ impl<'tokens> Parser<'tokens> {
         }
 
         let close = self.expect(Punct::CloseParen, "to close `(`")?;
-        self.nodes[inner.0 as usize].span = open.to(close);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`push` makes every id from the length of `nodes`"
+        )]
+        let node = &mut self.nodes[inner.0 as usize];
+        node.span = open.to(close);
         Ok(inner)
     }
 

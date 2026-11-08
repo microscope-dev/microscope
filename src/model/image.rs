@@ -185,7 +185,7 @@ impl<T: Copy + Ord> RangeIndex<T> {
         std::iter::from_fn(move || {
             while index > 0 {
                 index -= 1;
-                let entry = &self.entries[index];
+                let entry = self.entries.get(index)?;
                 if entry.prefix_max_end <= address {
                     return None;
                 }
@@ -487,10 +487,11 @@ fn encode_strings_before_types<'a>(
 /// defined in several units is.
 fn type_classes(types: &[TypeNode]) -> std::result::Result<Vec<u32>, SealError> {
     // Only the keys are read, so the names are not indexed.
-    let keys = crate::type_identity::canonical_keys(types.len(), |index| match &types[index] {
-        TypeNode::Resolved(info) => Some(info),
-        TypeNode::Malformed { .. } => None,
-    });
+    let keys =
+        crate::type_identity::canonical_keys(types.len(), |index| match types.get(index)? {
+            TypeNode::Resolved(info) => Some(info),
+            TypeNode::Malformed { .. } => None,
+        });
 
     // There are no more classes than types, so each numbers below them.
     u32::try_from(keys.len()).map_err(|_| crate::image::types::TooMany)?;

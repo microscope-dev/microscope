@@ -130,7 +130,9 @@ impl Reaped {
             let late = Instant::now() >= deadline;
             let mut watched = self.lock();
             let position = watched.iter().position(|known| known.pid == pid);
-            let status = position.and_then(|position| watched[position].status);
+            let status = position
+                .and_then(|position| watched.get(position))
+                .and_then(|known| known.status);
             if status.is_some() || late {
                 if let Some(position) = position {
                     watched.swap_remove(position);

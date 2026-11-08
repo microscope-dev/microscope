@@ -587,11 +587,12 @@ impl Table {
         let columns = self.headings.len();
 
         // A last column every row leaves empty is not shown.
-        let shown = if self
-            .rows
-            .iter()
-            .all(|(cells, _)| cells[columns - 1].is_empty())
-        {
+        let shown = if self.rows.iter().all(|(cells, _)| {
+            columns
+                .checked_sub(1)
+                .and_then(|last| cells.get(last))
+                .is_none_or(String::is_empty)
+        }) {
             columns - 1
         } else {
             columns
@@ -601,22 +602,24 @@ impl Table {
             .map(|column| {
                 self.rows
                     .iter()
-                    .map(|(cells, _)| visible_width(&cells[column]))
-                    .chain([self.headings[column].len()])
+                    .filter_map(|(cells, _)| cells.get(column))
+                    .map(|cell| visible_width(cell))
+                    .chain(self.headings.get(column).map(String::len))
                     .max()
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
 
-        let indent = widths[..beneath]
+        let indent = widths
             .iter()
+            .take(beneath)
             .map(|width| width + 2)
             .sum::<usize>();
 
         let line = |cells: &[String]| {
             let mut line = String::new();
-            for (column, cell) in cells.iter().take(shown).enumerate() {
-                let padding = " ".repeat(widths[column] - visible_width(cell));
+            for (column, (cell, width)) in cells.iter().zip(&widths).enumerate() {
+                let padding = " ".repeat(width - visible_width(cell));
                 if column > 0 {
                     line.push_str("  ");
                 }
@@ -2269,7 +2272,7 @@ pub fn backtrace(
     let switches = trace
         .frames
         .windows(2)
-        .any(|pair| pair[0].segment != pair[1].segment);
+        .any(|pair| matches!(pair, [a, b] if a.segment != b.segment));
     let mut segment = None;
     let iterators = trace.loop_iterators();
     let folded = if raw {
@@ -2304,11 +2307,15 @@ pub fn backtrace(
         }
     };
 
-    for (index, (frame, iterates)) in trace.frames[..shown].iter().zip(iterators).enumerate() {
+    for (index, (frame, iterates)) in trace.frames.iter().take(shown).zip(iterators).enumerate() {
         if let Some(run) = folded.iter().find(|run| run.contains(&index)) {
             if run.start == index {
                 label(&mut lines, frame);
                 note(&mut lines, run.clone());
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "folds returns runs of two or more of the shown frames"
+                )]
                 let (first, last) = (&trace.frames[run.start], &trace.frames[run.end - 1]);
                 lines.push(
                     renderer
@@ -2865,6 +2872,10 @@ fn bound_type_lines(
         groups.entry(view.to_string()).or_default().push(views);
     }
     for (view, types) in groups {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "each group holds the type that made it"
+        )]
         let example = renderer.paint(Role::Type, &types[0].type_info.name);
         if types.len() == 1 {
             lines.push(format!("  {example} by {view}"));
@@ -2953,14 +2964,19 @@ fn refused_type_lines(
                 );
                 previous = Some(category);
             }
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "each group holds the type that made it"
+            )]
+            let example = &types[0];
             lines.push(format!(
                 "    {} {}; example: {} in {}",
                 types.len(),
                 if types.len() == 1 { "type" } else { "types" },
-                renderer.paint(Role::Type, &types[0].type_info.name),
-                types[0].module.display()
+                renderer.paint(Role::Type, &example.type_info.name),
+                example.module.display()
             ));
-            lines.extend(candidate_lines(&types[0].candidates, "      "));
+            lines.extend(candidate_lines(&example.candidates, "      "));
         }
     }
 

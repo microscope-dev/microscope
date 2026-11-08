@@ -462,7 +462,7 @@ impl StopMemory {
         let copy = |held: &[u8], into: &mut [u8]| {
             let held = held.get(offset..)?;
             let copied = held.len().min(into.len());
-            into[..copied].copy_from_slice(&held[..copied]);
+            into.get_mut(..copied)?.copy_from_slice(held.get(..copied)?);
             Some(copied)
         };
 
@@ -2135,11 +2135,13 @@ impl InterpretedStacks {
 
         for (index, thread) in self.threads.iter().enumerate() {
             debug_assert!(
-                index == 0
-                    || (
-                        self.threads[index - 1].thread,
-                        self.threads[index - 1].interpreter
-                    ) <= (thread.thread, thread.interpreter),
+                index
+                    .checked_sub(1)
+                    .and_then(|previous| self.threads.get(previous))
+                    .is_none_or(|previous| {
+                        (previous.thread, previous.interpreter)
+                            <= (thread.thread, thread.interpreter)
+                    }),
                 "thread {index} is out of order"
             );
             debug_assert_eq!(

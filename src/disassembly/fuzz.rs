@@ -5,6 +5,10 @@
     clippy::panic,
     reason = "a fuzz harness reports a bug by panicking"
 )]
+#![expect(
+    clippy::indexing_slicing,
+    reason = "a fuzz harness reports a bug by panicking"
+)]
 
 use super::fake::FakeSource;
 use super::{

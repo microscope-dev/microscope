@@ -1136,9 +1136,16 @@ impl Values<'_, '_> {
         }
 
         let end = range.end.min(dict.length);
+        let (Ok(start), Ok(end)) = (usize::try_from(range.start.min(end)), usize::try_from(end))
+        else {
+            return Err(malformed(dict.object, "dict"));
+        };
 
-        for position in range.start.min(end)..end {
-            let index = u64::from(order[usize::try_from(position).unwrap_or(usize::MAX)]);
+        for &slot in order
+            .get(start..end)
+            .ok_or_else(|| malformed(dict.object, "dict"))?
+        {
+            let index = u64::from(slot);
             let entry = self.entry(dict, index)?;
             if entry.key == VirtualAddress::new(0) || entry.value == VirtualAddress::new(0) {
                 return Err(malformed(dict.object, "dict"));
@@ -1481,8 +1488,8 @@ impl Values<'_, '_> {
     ) -> String {
         let shown = length.min(SUMMARY_ITEMS);
         let (mut texts, whole) = match items {
-            Ok(items) => self.until_spent(items.len(), summary, |index, summary| {
-                self.item_text(items[index], depth + 1, summary)
+            Ok(items) => self.until_spent(&items, summary, |item, summary| {
+                self.item_text(item, depth + 1, summary)
             }),
             Err(problem) => {
                 note(summary, problem.to_string());
@@ -1529,8 +1536,7 @@ impl Values<'_, '_> {
         depth: usize,
         summary: &mut Summary,
     ) -> String {
-        let (mut texts, whole) = self.until_spent(pairs.len(), summary, |index, summary| {
-            let (key, value) = pairs[index];
+        let (mut texts, whole) = self.until_spent(pairs, summary, |(key, value), summary| {
             let key = self.item_text(key, depth + 1, summary);
             let value = self.item_text(value, depth + 1, summary);
             format!("{key}: {value}")
@@ -1576,8 +1582,8 @@ impl Values<'_, '_> {
             Ok(())
         });
 
-        let (mut texts, whole) = self.until_spent(items.len(), summary, |index, summary| {
-            self.item_text(items[index], depth + 1, summary)
+        let (mut texts, whole) = self.until_spent(&items, summary, |item, summary| {
+            self.item_text(item, depth + 1, summary)
         });
         if let Err(problem) = read {
             note(summary, problem.to_string());
@@ -1646,15 +1652,15 @@ impl Values<'_, '_> {
     /// The texts of the first of `count` items, each from `text`, until
     /// the budget is spent, and whether it lasted for every item. An item
     /// whose reads spent it is left out, since its text is not whole.
-    fn until_spent(
+    fn until_spent<T: Copy>(
         &self,
-        count: usize,
+        items: &[T],
         summary: &mut Summary,
-        mut text: impl FnMut(usize, &mut Summary) -> String,
+        mut text: impl FnMut(T, &mut Summary) -> String,
     ) -> (Vec<String>, bool) {
-        let mut texts = Vec::with_capacity(count);
-        for index in 0..count {
-            let item = text(index, summary);
+        let mut texts = Vec::with_capacity(items.len());
+        for &item in items {
+            let item = text(item, summary);
             if self.budget.exhaustion().is_some() {
                 return (texts, false);
             }

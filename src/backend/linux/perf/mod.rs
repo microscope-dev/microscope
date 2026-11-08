@@ -176,6 +176,10 @@ impl Queue {
     /// The block to append up to `room` bytes to without its growing, so
     /// that no record spans two blocks and none is copied twice: the last,
     /// if it has the room, else a fresh one of `block` bytes.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a block is pushed when there is none, so the last exists"
+    )]
     fn room(&mut self, room: usize, block: usize) -> &mut Vec<u8> {
         debug_assert!(room <= block, "{room} bytes do not fit a block of {block}");
         if self
@@ -1629,6 +1633,7 @@ pub fn read_memory_each(pid: u32, reads: &mut [(crate::VirtualAddress, &mut [u8]
     let mut next = 0;
     while next < reads.len() {
         let end = reads.len().min(next + MOST);
+        #[expect(clippy::indexing_slicing, reason = "next < end <= reads.len()")]
         let batch = &mut reads[next..end];
         let remote: Option<Vec<nix::sys::uio::RemoteIoVec>> = batch
             .iter()
@@ -1664,7 +1669,9 @@ pub fn read_memory_each(pid: u32, reads: &mut [(crate::VirtualAddress, &mut [u8]
             left -= bytes.len();
             whole += 1;
         }
-        filled[next..next + whole].fill(true);
+        for slot in filled.iter_mut().skip(next).take(whole) {
+            *slot = true;
+        }
         next += whole;
         // The buffer that ended the run, unless the call took all it was
         // given.

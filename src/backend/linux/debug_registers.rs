@@ -401,8 +401,9 @@ pub fn fuzz(data: &[u8]) {
         match kind % 3 {
             0 => {
                 let mut address = [0_u8; 8];
-                let available = rest.len().min(7);
-                address[..available].copy_from_slice(&rest[..available]);
+                for (to, from) in address.iter_mut().zip(rest.iter().take(7)) {
+                    *to = *from;
+                }
                 let address = u64::from_le_bytes(address) % (USER_ADDRESS_LIMIT + 64);
                 let length = u64::from(rest.get(7).copied().unwrap_or(1)) % 40;
                 let access = if kind & 0x80 == 0 {

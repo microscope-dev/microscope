@@ -114,14 +114,19 @@ impl CodeFrames {
             .into_iter()
             .map(|(start, (end, frame))| (start, end, frame))
             .collect();
-        let alone = |at: usize| {
-            let (start, end, _) = found[at];
+        let alone = |at: usize, (start, end, _): &(u64, u64, CodeFrame)| {
             at.checked_sub(1)
-                .is_none_or(|before| found[before].1 <= start)
-                && found.get(at + 1).is_none_or(|after| end <= after.0)
+                .and_then(|before| found.get(before))
+                .is_none_or(|before| before.1 <= *start)
+                && found.get(at + 1).is_none_or(|after| *end <= after.0)
         };
         let mut runs: Vec<(u64, u64, CodeFrame)> = Vec::new();
-        for (start, end, frame) in (0..found.len()).filter(|&at| alone(at)).map(|at| found[at]) {
+        for &(start, end, frame) in found
+            .iter()
+            .enumerate()
+            .filter(|(at, run)| alone(*at, run))
+            .map(|(_, run)| run)
+        {
             match runs.last_mut() {
                 Some(last) if last.1 == start && last.2 == frame => last.1 = end,
                 _ => runs.push((start, end, frame)),
@@ -696,7 +701,9 @@ pub(in crate::debug_info) fn runtime_frames(
             }
         }
     }
-    frames[first..].sort_unstable_by_key(|(range, _)| range.start);
+    if let Some(added) = frames.get_mut(first..) {
+        added.sort_unstable_by_key(|(range, _)| range.start);
+    }
 }
 
 /// The canonical frame address of `frame`, with `registers` its own.

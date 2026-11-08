@@ -205,7 +205,7 @@ impl<'a> ResumeView<'a> {
             .records
             .binary_search_by_key(&instance.get(), |record| record.instance.get())
             .ok()?;
-        let record = &self.records[found];
+        let record = self.records.get(found)?;
         if record.malformed.get() != NONE {
             return Some(Err(self.strings.get(StrId(record.malformed.get())).into()));
         }
@@ -264,7 +264,7 @@ impl<'a> ResumeView<'a> {
                 (held.offset.get(), held.state.get())
             })
             .ok()?;
-        let held = &self.held[found];
+        let held = self.held.get(found)?;
         Some(self.ranges(held.ranges))
     }
 }

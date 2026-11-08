@@ -841,7 +841,9 @@ impl<P: InspectionOps> Controller<P> {
                 let page = self.value_children_with_budget(
                     inner,
                     &crate::ValueChildQuery {
-                        offset: picked[position],
+                        offset: *picked
+                            .get(position)
+                            .ok_or_else(|| Error::internal("a view picks each of its elements"))?,
                         limit: 1,
                     },
                     budget,
@@ -1359,6 +1361,15 @@ fn coroutine_summary(
 /// Children one value lends another, and how many.
 type Lent = (Arc<ValueChildrenReference>, u64);
 
+/// The last `count` of `items`, or all of them when there are fewer.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "saturating_sub keeps the start within the slice"
+)]
+fn trailing<T>(items: &[T], count: usize) -> &[T] {
+    &items[items.len().saturating_sub(count)..]
+}
+
 /// The children a value lends the value it stands for, and how many: a
 /// presented value's elements and fields, but not its `[raw]`, which is
 /// its own; or the members of one no view presents.
@@ -1825,7 +1836,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             .as_ref()
             .map(|identity| identity.language);
         let children = self.children_of(&raw)?;
-        let members = &children[children.len().saturating_sub(variant.members.len())..];
+        let members = trailing(&children, variant.members.len());
         let name = variant
             .name
             .clone()
@@ -2334,7 +2345,7 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
 
         let (variant, raw) = (Arc::clone(variant), Arc::clone(raw));
         let children = self.children_of(&raw)?;
-        let [record] = &children[children.len().saturating_sub(variant.members.len())..] else {
+        let [record] = trailing(&children, variant.members.len()) else {
             return Ok(None);
         };
 
@@ -2358,8 +2369,9 @@ impl<'a, P: InspectionOps> StopMachine<'a, '_, P> {
             fields.len().saturating_sub(coroutine.captures.len())
         };
 
-        let kept = fields[..held]
+        let kept = fields
             .iter()
+            .take(held)
             .enumerate()
             .filter(|(_, field)| member_name(field).is_some_and(|name| !name.starts_with("__")))
             .collect::<Vec<_>>();

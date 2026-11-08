@@ -90,12 +90,12 @@ impl Modules {
         let mut seen = std::collections::HashSet::new();
         for line in maps.lines() {
             let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 5 {
+            let [range, _, offset, _, _, ..] = fields.as_slice() else {
                 continue;
-            }
+            };
             let (Some((start, end)), offset) = (
-                fields[0].split_once('-'),
-                u64::from_str_radix(fields[2], 16).unwrap_or(1),
+                range.split_once('-'),
+                u64::from_str_radix(offset, 16).unwrap_or(1),
             ) else {
                 continue;
             };
@@ -207,11 +207,11 @@ impl MemoryReader for Live<'_> {
 
 /// Names `address` by its module's file and symbol.
 fn name(modules: &[UnwindModule<'_>], address: u64) -> String {
-    let Some((index, image_address)) = unwind_module_at(modules, VirtualAddress::new(address))
+    let Some((module, image_address)) = unwind_module_at(modules, VirtualAddress::new(address))
+        .and_then(|(index, image_address)| Some((modules.get(index)?, image_address)))
     else {
         return format!("{address:#x}");
     };
-    let module = &modules[index];
     let file = module
         .image
         .path_arc()
@@ -416,9 +416,10 @@ pub fn run(options: &Options) -> Result<String> {
         if options.replay_only {
             if steps.is_multiple_of(options.keep_every.max(1)) {
                 let copied = memory.read_at(&mut stack, rsp).unwrap_or(0);
+                let copied = stack.get(..copied).context("a read fits its buffer")?;
                 kept.push(Kept {
                     registers: live_registers.clone(),
-                    stack: stack[..copied].to_vec(),
+                    stack: copied.to_vec(),
                     chain: kernel_chain(&memory, rip, registers.rbp),
                 });
             }
@@ -430,58 +431,63 @@ pub fn run(options: &Options) -> Result<String> {
                 &mut Live(&memory),
                 LIMIT,
             );
-            tallies[0].elapsed += started.elapsed();
-            let mut results = vec![(frames, end)];
+            let mut results = vec![(frames, end, started.elapsed())];
 
             let copied = if deepest > 0 {
                 memory.read_at(&mut stack, rsp).unwrap_or_default()
             } else {
                 0
             };
+            let copied = stack.get(..copied).context("a read fits its buffer")?;
             let chain = kernel_chain(&memory, rip, registers.rbp);
-            for (index, bytes) in options.copies.iter().enumerate() {
+            for (bytes, rules) in options.copies.iter().zip(&mut rules) {
                 let started = Instant::now();
-                let result = unwind_sample(
+                let (frames, end) = unwind_sample(
                     modules_now.as_slice(),
-                    &mut rules[index],
+                    rules,
                     SampledState {
                         registers: &live_registers,
-                        stack: &stack[..copied.min(*bytes)],
+                        stack: copied.get(..*bytes).unwrap_or(copied),
                         chain: &chain,
                     },
                     LIMIT,
                 );
-                tallies[index + 1].elapsed += started.elapsed();
-                results.push(result);
+                results.push((frames, end, started.elapsed()));
             }
 
-            for (index, bytes) in options.copies.iter().enumerate() {
+            for bytes in &options.copies {
                 let started = Instant::now();
-                let result = unwind_memory(
+                let (frames, end) = unwind_memory(
                     modules_now.as_slice(),
                     &live_registers,
-                    &mut CopiedStack(rsp, &stack[..copied.min(*bytes)]),
+                    &mut CopiedStack(rsp, copied.get(..*bytes).unwrap_or(copied)),
                     LIMIT,
                 );
-                tallies[index + 1 + options.copies.len()].elapsed += started.elapsed();
-                results.push(result);
+                results.push((frames, end, started.elapsed()));
             }
 
             if options.keep_every > 0 && steps.is_multiple_of(options.keep_every) {
                 kept.push(Kept {
                     registers: live_registers.clone(),
-                    stack: stack[..copied].to_vec(),
+                    stack: copied.to_vec(),
                     chain: chain.clone(),
                 });
             }
 
-            for ((tally, (frames, end)), path) in tallies.iter_mut().zip(&results).zip(&paths) {
+            for ((tally, (frames, end, elapsed)), path) in
+                tallies.iter_mut().zip(&results).zip(&paths)
+            {
+                tally.elapsed += *elapsed;
                 let got: Vec<u64> = frames.iter().map(|frame| frame.address.get()).collect();
                 let (verdict, common) = judge(&truth, &got, *end);
                 tally.frames += got.len() as u64;
                 tally.true_frames += truth.len() as u64;
                 *tally.verdicts.entry(verdict.clone()).or_default() += 1;
                 if verdict != Verdict::Exact {
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "a wrong verdict means common < truth.len()"
+                    )]
                     let at = match &verdict {
                         Verdict::Wrong => truth[common.saturating_sub(1)],
                         _ => got.last().copied().unwrap_or(rip),
@@ -530,12 +536,10 @@ pub fn run(options: &Options) -> Result<String> {
         let (is_call, is_syscall, next) = *instructions.entry(rip).or_insert_with(|| {
             let mut bytes = [0; 16];
             let length = memory.read_at(&mut bytes, rip).unwrap_or(0);
-            let mut decoder = iced_x86::Decoder::with_ip(
-                64,
-                &bytes[..length],
-                rip,
-                iced_x86::DecoderOptions::NONE,
-            );
+            #[expect(clippy::indexing_slicing, reason = "a read fits its buffer")]
+            let read = &bytes[..length];
+            let mut decoder =
+                iced_x86::Decoder::with_ip(64, read, rip, iced_x86::DecoderOptions::NONE);
             let instruction = decoder.decode();
             (
                 instruction.flow_control() == iced_x86::FlowControl::Call
@@ -671,7 +675,7 @@ pub fn run(options: &Options) -> Result<String> {
                             rules,
                             SampledState {
                                 registers: &sample.registers,
-                                stack: &sample.stack[..sample.stack.len().min(*bytes)],
+                                stack: sample.stack.get(..*bytes).unwrap_or(&sample.stack),
                                 chain: &sample.chain,
                             },
                             LIMIT,
@@ -687,12 +691,17 @@ pub fn run(options: &Options) -> Result<String> {
                 .sqrt();
                 let mut sorted = per_sample.clone();
                 sorted.sort_by(f64::total_cmp);
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "rounds > 0, so every replay timed at least one round"
+                )]
+                let median = sorted[sorted.len() / 2];
                 let _ = writeln!(
                     report,
                     "  sample {bytes} {}: mean {mean:.0} ns/sample ±{:.0} (95% CI), median {:.0}, {:.1} frames/sample, {:.1} ns/frame",
                     if warm { "warm" } else { "cold" },
                     1.96 * deviation / n.sqrt(),
-                    sorted[sorted.len() / 2],
+                    median,
                     frames as f64 / kept.len() as f64,
                     mean * kept.len() as f64 / frames.max(1) as f64,
                 );

@@ -204,7 +204,10 @@ pub(super) fn read_logical_memory_with(
         {
             let offset = site_address.get() - current;
             if site.installed {
-                word[offset_within(offset)?] = site.original_byte;
+                let byte = word
+                    .get_mut(offset_within(offset)?)
+                    .ok_or_else(|| Error::internal("a site in a word's range is in the word"))?;
+                *byte = site.original_byte;
             }
         }
 
@@ -215,7 +218,10 @@ pub(super) fn read_logical_memory_with(
         if selected_start < selected_end {
             let start = offset_within(selected_start - current)?;
             let stop = offset_within(selected_end - current)?;
-            bytes.extend_from_slice(&word[start..stop]);
+            let selected = word
+                .get(start..stop)
+                .ok_or_else(|| Error::internal("a read's selection lies in its word"))?;
+            bytes.extend_from_slice(selected);
         }
 
         if readable < word_size && readable_end < end {
@@ -441,8 +447,28 @@ pub(super) fn remove_site_owner(
 /// The aligned word that holds the byte at `address`, and the byte's
 /// offset in it. A word at the address itself can reach into the next
 /// page, which may be unmapped; an aligned one never leaves its page.
-pub(super) const fn holding_word(address: u64) -> (u64, usize) {
-    (address & !7, (address & 7) as usize)
+pub(super) const fn holding_word(address: u64) -> (u64, WordByte) {
+    (address & !7, WordByte((address & 7) as usize))
+}
+
+/// A byte's offset in the aligned word that holds it, below eight.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct WordByte(usize);
+
+impl WordByte {
+    pub(super) const fn get(self) -> usize {
+        self.0
+    }
+
+    /// The byte in a word's native-order bytes.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "holding_word masks offsets below eight"
+    )]
+    pub(super) fn of(self, bytes: &mut [u8; 8]) -> &mut u8 {
+        debug_assert!(self.0 < 8, "byte {} of a word", self.0);
+        &mut bytes[self.0]
+    }
 }
 
 /// Replaces the byte at `address` with `byte`, through the word that holds
@@ -455,8 +481,7 @@ pub(super) fn patch_byte(
 ) -> Result<u8> {
     let (word, offset) = holding_word(address.get());
     let mut bytes = read_word(word)?.to_ne_bytes();
-    let original = bytes[offset];
-    bytes[offset] = byte;
+    let original = std::mem::replace(offset.of(&mut bytes), byte);
     write_word(word, u64::from_ne_bytes(bytes))?;
     Ok(original)
 }

@@ -161,7 +161,11 @@ impl<P: InspectionOps> Controller<P> {
             });
         };
 
-        Ok(Some(self.suspended_frame(id, frame, &stack.futures[level])))
+        let future = stack
+            .futures
+            .get(level)
+            .ok_or_else(|| Error::internal("an async stack has a future for each frame"))?;
+        Ok(Some(self.suspended_frame(id, frame, future)))
     }
 
     /// Each frame of a future a chain awaits with what it waits for: the
@@ -361,8 +365,9 @@ impl<P: InspectionOps> Controller<P> {
         let mut shown = BTreeSet::new();
         let mut unread = None;
         let mut lost = Vec::new();
-        for (index, frame) in expanded.trace.frames.iter().enumerate() {
-            let activation = expanded.origins[index].activation;
+        let origins = expanded.trace.frames.iter().zip(&expanded.origins);
+        for (index, (frame, &origin)) in origins.enumerate() {
+            let activation = origin.activation;
             for driven in placement.placed.remove(&index).unwrap_or_default() {
                 spliced.push_interpreted(driven, frame.segment, activation);
             }
@@ -413,7 +418,7 @@ impl<P: InspectionOps> Controller<P> {
             }
 
             spliced.frames.push(frame.clone());
-            spliced.origins.push(expanded.origins[index]);
+            spliced.origins.push(origin);
         }
 
         if shown.is_empty() {
@@ -499,11 +504,14 @@ impl<P: InspectionOps> Controller<P> {
             Some(at) => frames
                 .iter()
                 .position(|frame| frame.id == at)
-                .filter(|&body| runs(&frames[body]) == Some(coroutine.id))?,
+                .filter(|&body| frames.get(body).and_then(runs) == Some(coroutine.id))?,
             None => frames
                 .iter()
-                .position(|frame| runs(frame) == Some(coroutine.id))
-                .filter(|&body| expanded.origins[body].activation == 0)?,
+                .zip(&expanded.origins)
+                .enumerate()
+                .find(|(_, (frame, _))| runs(frame) == Some(coroutine.id))
+                .filter(|(_, (_, origin))| origin.activation == 0)
+                .map(|(body, _)| body)?,
         };
 
         // The frames out to the driver that run coroutines, outermost
@@ -511,8 +519,7 @@ impl<P: InspectionOps> Controller<P> {
         let runtimes = self.runtimes(inferior);
         let mut bodies = Vec::new();
         let mut driver = None;
-        for index in body..frames.len() {
-            let frame = &frames[index];
+        for (index, frame) in frames.iter().enumerate().skip(body) {
             let inner = index.checked_sub(1).and_then(|inner| frames.get(inner));
             // A task's poller holds the task's future, and a driver such
             // as `block_on` holds a future no task does; either is where
@@ -553,8 +560,9 @@ impl<P: InspectionOps> Controller<P> {
         // line is at, which its future does not yet store if it has not
         // suspended there before.
         bodies.reverse();
-        let lines: Vec<_> = bodies[..bodies.len().saturating_sub(1)]
+        let lines: Vec<_> = bodies
             .iter()
+            .take(bodies.len().saturating_sub(1))
             .map(|(_, source)| source.clone())
             .collect();
         let chain = self.with_module_stop(inferior, &module.loaded, root.reader(), |stop| {
@@ -824,7 +832,7 @@ impl Spliced {
             return;
         };
 
-        for frame in &mut self.frames[..agent] {
+        for frame in self.frames.iter_mut().take(agent) {
             if matches!(frame.role, CodeRole::Ordinary | CodeRole::Wrapper) {
                 frame.role = CodeRole::Interpreter;
             }

@@ -537,10 +537,10 @@ pub fn standard_library(path: &Path) -> bool {
         })
         .collect::<Vec<_>>();
     parts.iter().enumerate().any(|(at, part)| {
-        let toolchain = match at.checked_sub(3).map(|start| &parts[start..at]) {
+        let toolchain = match at.checked_sub(3).and_then(|start| parts.get(start..at)) {
             Some([_, "rustc", commit]) => commit.len() == 40,
             Some(["rustlib", "src", "rust"]) => true,
-            _ => at == 2 && parts[0] == "rustc" && parts[1].len() == 40,
+            _ => at == 2 && matches!(parts.as_slice(), ["rustc", commit, ..] if commit.len() == 40),
         };
         *part == "library"
             && toolchain
