@@ -1,4 +1,5 @@
 mod lifecycle;
+mod session_model;
 
 use crate::debug_info::{VariableContext, VariableRuntime};
 use crate::inspection::InspectionBudget;
@@ -1072,9 +1073,8 @@ impl FakeTrace {
         *word = (*word & !0xff) | u64::from(byte);
     }
 
-    /// Fails a request of a thread SIGKILL took out of its stop, which this
-    /// request may be the one to do.
-    fn reach(&self, pid: Pid, request: &'static str) -> Result<()> {
+    /// Fails `request` if it is the one [`Self::fail_point`] names.
+    fn fail_at(&self, request: &'static str) -> Result<()> {
         let mut failing = self.fail_point.borrow_mut();
         if let Some((name, remaining, error)) = failing.as_mut()
             && *name == request
@@ -1086,7 +1086,13 @@ impl FakeTrace {
             }
             *remaining -= 1;
         }
-        drop(failing);
+        Ok(())
+    }
+
+    /// Fails a request of a thread SIGKILL took out of its stop, which this
+    /// request may be the one to do.
+    fn reach(&self, pid: Pid, request: &'static str) -> Result<()> {
+        self.fail_at(request)?;
 
         let mut point = self.kill_point.borrow_mut();
         if let Some((target, name, remaining)) = point.as_mut()
@@ -1258,6 +1264,7 @@ impl LinuxTraceOps for FakeTrace {
     }
 
     fn kill(&self, pid: Pid, signal: Signal) -> Result<()> {
+        self.fail_at("kill")?;
         self.record(format!("kill {pid} {signal}"));
         Ok(())
     }

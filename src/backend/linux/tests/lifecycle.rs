@@ -20,9 +20,9 @@ fn answer<T>(receiver: &mut oneshot::Receiver<Result<T>>) -> String {
 }
 
 /// A reply, whatever it answers with, which says the same once answered.
-type Reader = Box<dyn FnMut() -> String>;
+pub(super) type Reader = Box<dyn FnMut() -> String>;
 
-fn reader<T: 'static>(mut receiver: oneshot::Receiver<Result<T>>) -> Reader {
+pub(super) fn reader<T: 'static>(mut receiver: oneshot::Receiver<Result<T>>) -> Reader {
     let mut answered: Option<String> = None;
     Box::new(move || {
         if let Some(said) = &answered {
@@ -39,13 +39,13 @@ fn reader<T: 'static>(mut receiver: oneshot::Receiver<Result<T>>) -> Reader {
 
 /// Sends `request` and returns whether the controller keeps running, with
 /// the request's reply.
-fn send(harness: &mut WatchHarness, request: Request) -> bool {
+pub(super) fn send(harness: &mut WatchHarness, request: Request) -> bool {
     harness
         .controller
         .handle_message(ControllerMessage::Request(request))
 }
 
-fn launch(harness: &mut WatchHarness) -> (bool, Reader) {
+pub(super) fn launch(harness: &mut WatchHarness) -> (bool, Reader) {
     let (reply, receiver) = oneshot::channel();
     let running = send(
         harness,
@@ -57,7 +57,7 @@ fn launch(harness: &mut WatchHarness) -> (bool, Reader) {
     (running, reader(receiver))
 }
 
-fn attach(harness: &mut WatchHarness) -> (bool, Reader) {
+pub(super) fn attach(harness: &mut WatchHarness) -> (bool, Reader) {
     let (reply, receiver) = oneshot::channel();
     harness.trace().listed_threads.replace(vec![ATTACHED]);
     let running = send(
@@ -71,26 +71,26 @@ fn attach(harness: &mut WatchHarness) -> (bool, Reader) {
     (running, reader(receiver))
 }
 
-fn kill(harness: &mut WatchHarness) -> (bool, Reader) {
+pub(super) fn kill(harness: &mut WatchHarness) -> (bool, Reader) {
     let (reply, receiver) = oneshot::channel();
     let running = send(harness, Request::Kill { reply });
     (running, reader(receiver))
 }
 
-fn shutdown(harness: &mut WatchHarness) -> (bool, Reader) {
+pub(super) fn shutdown(harness: &mut WatchHarness) -> (bool, Reader) {
     let (reply, receiver) = oneshot::channel();
     let running = send(harness, Request::Shutdown { reply });
     (running, reader(receiver))
 }
 
 /// The process an attach takes: the harness's own threads are 5000 on.
-const ATTACHED: Pid = Pid::from_raw(4000);
+pub(super) const ATTACHED: Pid = Pid::from_raw(4000);
 
 /// The process a launch spawns, as the fake spawns it.
-const LAUNCHED: Pid = Pid::from_raw(7000);
+pub(super) const LAUNCHED: Pid = Pid::from_raw(7000);
 
 /// A fork child the program leaves behind.
-const CHILD: Pid = Pid::from_raw(6000);
+pub(super) const CHILD: Pid = Pid::from_raw(6000);
 
 /// A harness in one phase, with the replies the phase is waiting to give
 /// and the wait status that ends it.
@@ -101,7 +101,7 @@ struct Phase {
 }
 
 /// A launched program stopped at a published stop, killed and gone.
-fn idle() -> WatchHarness {
+pub(super) fn idle() -> WatchHarness {
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
     let (_, mut killed) = kill(&mut harness);
