@@ -1700,11 +1700,13 @@ impl Processor {
             descriptors.into_iter().collect()
         };
 
-        // Code V8 generated is anonymous code too, which the map may name.
+        // Code V8 generated is anonymous code too, which the map may name,
+        // and so is a module the map made: the map may name code there
+        // that the program made after the module was made.
         let unnamed = addresses.iter().copied().filter(|&address| {
             mapped.piece_at(address).is_none_or(|mapped| {
                 let image = &images[mapped.image];
-                image.generated
+                (image.generated || image.anonymous)
                     && !image.info.as_ref().is_some_and(|info| {
                         info.image.symbolize(ImageAddress::new(address)).is_some()
                     })
