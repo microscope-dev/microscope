@@ -108,9 +108,8 @@ test("a profile is explored, and its address opens the same view", async ({
   await expect(page.getByTestId("details").getByText(/total/u)).toBeVisible();
   expect((await search.boundingBox())?.width).toBe(searchWidth);
 
-  // Dragging across the timeline selects a range, which a chip names.
-  const lanes = page.getByTestId("timeline").getByRole("img");
-  const area = await lanes.boundingBox();
+  // Dragging across the timeline's ruler selects a range, which a chip names.
+  const area = await page.getByTestId("ruler").locator(".ruler-marks").boundingBox();
   if (!area) {
     throw new Error("the timeline has no box");
   }
@@ -348,7 +347,7 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   await expect(tree.filter({ hasText: "main.spin" }).first()).toBeVisible();
 });
 
-test("a program's zones show in tracks, and Find Zone measures one and filters by a label", async ({
+test("a program's zones show under its threads, and the Zones pane picks which samples the views read", async ({
   page,
   microscope,
 }, info) => {
@@ -361,88 +360,147 @@ test("a program's zones show in tracks, and Find Zone measures one and filters b
   const served = await microscope.start([file]);
   await join(page, served.link);
   await expect(page.getByTestId("accounting")).toContainText(/Probe events[\d,]+, lost 0/u);
-  await showView(page, "Zones");
-  await expect(page).toHaveURL(/view=zones/u);
-  await expect(page.getByRole("img", { name: /^Zones over/u })).toBeVisible();
+  const lanes = page.getByRole("img", { name: /^Samples, zones, and time off CPU/u });
+  await expect(lanes).toBeVisible();
   await expect(page.getByRole("img", { name: "Plot round, 3 values from 0 – 2" })).toBeVisible();
-
-  // A site's zones, measured; its longest selects its span.
-  const find = page.getByTestId("find-zone");
-  await find.getByRole("button", { name: "outer", exact: true }).click();
-  await expect(page).toHaveURL(/zs=outer/u);
-  const stats = page.getByTestId("zone-stats");
-  await expect(stats.locator("dd").first()).toHaveText("3");
-  await stats.getByRole("listitem").first().getByRole("button").click();
-  await expect(page).toHaveURL(/range=\d+-\d+/u);
-
-  // Ctrl and the wheel zoom about the pointer, dragging pans, and the
-  // ruler names the times in view.
-  const tracks = page.getByRole("img", { name: /^Zones over/u });
-  const range = () => {
-    const [start = 0, end = 0] = (new URL(page.url()).searchParams.get("range") ?? "")
-      .split("-")
-      .map(Number);
-    return { start, end };
-  };
-  const selected = range();
-  const bounds = (await tracks.boundingBox()) ?? { x: 0, y: 0, width: 0, height: 0 };
-  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 4);
-  await page.keyboard.down("Control");
-  await page.mouse.wheel(0, 400);
-  await page.keyboard.up("Control");
-  await expect
-    .poll(() => range().end - range().start)
-    .toBeGreaterThan(selected.end - selected.start);
+  const pane = page.getByTestId("zones-pane");
+  await expect(pane).toBeVisible();
+  // The flame graph stays beside the zones; there is no Zones view.
+  await expect(page.getByRole("img", { name: /flame graph/iu }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Options" }).click();
   await expect(
-    page.getByTestId("zones").getByRole("img", { name: "Time", exact: true }),
-  ).toContainText(/\d s|ms|µs/u);
-  const zoomed = range();
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + bounds.width / 2 + 80, bounds.y + 4, { steps: 4 });
-  await page.mouse.up();
-  await expect.poll(() => range().start).toBeLessThan(zoomed.start);
-  expect(range().end - range().start).toBe(zoomed.end - zoomed.start);
+    page.getByRole("combobox", { name: "View" }).locator("option", { hasText: "Zones" }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // An old link to the Zones view opens the flame graph.
+  const old = new URL(page.url());
+  old.searchParams.set("view", "zones");
+  await page.goto(old.href);
+  await page.goto(old.href);
+  await expect(pane).toBeVisible();
+  await expect(page).not.toHaveURL(/view=/u);
 
-  // The wheel zooms and dragging pans anywhere in the pane, not only over
-  // the tracks, which may fill little of it.
-  const pane = (await page.locator(".zones-tracks").boundingBox()) ?? bounds;
-  const drawn = (await tracks.boundingBox()) ?? bounds;
-  const below = drawn.y + drawn.height + 40;
-  expect(below).toBeLessThan(pane.y + pane.height);
-  const wide = range();
-  await page.mouse.move(drawn.x + drawn.width / 2, below);
+  const look = () => new URL(page.url()).searchParams;
+
+  // A site's zones, measured, and its samples alone.
+  await pane.getByRole("button", { name: "step", exact: true }).click();
+  await expect(page).toHaveURL(/zs=step/u);
+  const stats = page.getByTestId("zone-stats");
+  await expect(stats.locator("dd").first()).toHaveText("2");
+  await pane.getByRole("button", { name: "Inside every one" }).click();
+  await expect(page).toHaveURL(/zf=all/u);
+  await expect(page.getByRole("button", { name: "Remove inside step" })).toBeVisible();
+
+  // A band from the histogram; then only its zones' samples, then a diff
+  // of them against the site's others.
+  await stats.getByRole("img", { name: /^Lengths of step/u }).click({ position: { x: 2, y: 30 } });
+  await expect(page).toHaveURL(/zb=\d+-\d+/u);
+  await expect(page.getByTestId("zone-band")).toContainText(/of 2/u);
+  await pane.getByRole("button", { name: "Inside the band" }).click();
+  await expect(page).toHaveURL(/zf=band/u);
+  await expect(page.getByRole("button", { name: /^Remove inside step .* – /u })).toBeVisible();
+  await pane.getByRole("button", { name: "Compare the band with the rest" }).click();
+  await expect(page).toHaveURL(/bz=rest/u);
+  await expect(page.getByRole("button", { name: /^Remove step .* vs the rest$/u })).toBeVisible();
+  // The band and the rest hold different numbers of zones, so the diff
+  // can compare each side's share instead.
+  await page.getByRole("button", { name: "share", exact: true }).click();
+  await expect(page).toHaveURL(/dm=share/u);
+
+  // One of the longest: the views read its span, and the threads are as
+  // they were. Escape lets go of it, then the band, then the site.
+  await stats.getByRole("listitem").first().getByRole("button").first().click();
+  await expect(page).toHaveURL(/zi=\d+(%3A|:)\d+-\d+/u);
+  expect(look().get("th")).toBeNull();
+  await expect(page.getByTestId("zone-rank")).toContainText("of 2");
+  await page.keyboard.press("Escape");
+  await expect(page).not.toHaveURL(/zi=/u);
+  await page.keyboard.press("Escape");
+  await expect(page).not.toHaveURL(/zb=|bz=|zf=band/u);
+  await expect(page).toHaveURL(/zs=step/u);
+  await page.keyboard.press("Escape");
+  await expect(page).not.toHaveURL(/zs=/u);
+
+  // Ctrl and the wheel zoom anywhere in the lanes, their names too, and
+  // dragging pans; neither changes the range the views read.
+  const ruler = page.getByTestId("ruler");
+  const end = () => ruler.locator(".ruler-marks > span.last").textContent();
+  const whole = await end();
+  const names = (await page.locator(".lane-names").boundingBox()) ?? { x: 0, y: 0, width: 0 };
+  const drawn = (await lanes.boundingBox()) ?? { x: 0, y: 0, width: 0, height: 0 };
+  await page.mouse.move(names.x + names.width / 2, names.y + 6);
   await page.keyboard.down("Control");
   await page.mouse.wheel(0, -400);
   await page.keyboard.up("Control");
-  await expect.poll(() => range().end - range().start).toBeLessThan(wide.end - wide.start);
-  const narrow = range();
+  await expect.poll(end).not.toBe(whole);
+  const zoomed = await end();
+  await page.mouse.move(drawn.x + drawn.width / 2, drawn.y + 4);
   await page.mouse.down();
-  await page.mouse.move(drawn.x + drawn.width / 2 + 80, below, { steps: 4 });
+  // Zoomed in at the start, so a drag to the left shows later times.
+  await page.mouse.move(drawn.x + drawn.width / 2 - 120, drawn.y + 4, { steps: 4 });
   await page.mouse.up();
-  await expect.poll(() => range().start).toBeLessThan(narrow.start);
-  expect(range().end - range().start).toBe(narrow.end - narrow.start);
+  await expect.poll(end).not.toBe(zoomed);
+  expect(look().get("range")).toBeNull();
+  expect(look().get("zi")).toBeNull();
 
-  // Another theme repaints the tracks in its colors.
+  // Dragging on the ruler selects a range.
+  const marks = (await ruler.boundingBox()) ?? drawn;
+  await page.mouse.move(drawn.x + 10, marks.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(drawn.x + drawn.width / 2, marks.y + 8, { steps: 4 });
+  await page.mouse.up();
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
+
+  // Another theme repaints the lanes in its colors.
   await page.emulateMedia({ colorScheme: "light" });
-  const painted = () => tracks.evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL());
+  const painted = () => lanes.evaluate((canvas) => (canvas as HTMLCanvasElement).toDataURL());
   const before = await painted();
   await menu(page, "View", "Theme: dark");
   await expect.poll(painted).not.toBe(before);
-  await stats.getByRole("listitem").first().getByRole("button").click();
+  await page.getByRole("button", { name: /^Remove .* – /u }).click();
 
-  // A label's values are filters of every view: in that span, the round
-  // around it.
-  await find.getByRole("button", { name: "round", exact: true }).click();
+  // A label's values are filters of every view.
+  await pane.getByRole("button", { name: "round", exact: true }).click();
   const value = stats.getByRole("button", { name: /^round=\d$/u });
-  await expect(value).toHaveCount(1);
-  const round = (await value.textContent()) ?? "";
-  await value.click();
+  await expect(value).toHaveCount(3);
+  const round = (await value.first().textContent()) ?? "";
+  await value.first().click();
   await expect(page).toHaveURL(new RegExp(`lb=${encodeURIComponent(round)}`, "u"));
   await expect(page.getByRole("button", { name: `Remove ${round}` })).toBeVisible();
   await stats.getByRole("button", { name: "By round" }).click();
   await expect(page).toHaveURL(/bl=round/u);
-  await page.getByRole("button", { name: "Options" }).click();
-  await expect(page.getByRole("combobox", { name: "Root by label" })).toHaveValue("round");
+
+  // The pane closes, and opens again from the toolbar.
+  await pane.getByRole("button", { name: "Close the Zones pane" }).click();
+  await expect(pane).toBeHidden();
+  await page.getByRole("button", { name: "Zones", exact: true }).click();
+  await expect(pane).toBeVisible();
+});
+
+test("a recording without zones has no Zones pane, and its lanes ask for none", async ({
+  page,
+  microscope,
+}, info) => {
+  const file = info.outputPath("plain.usprof");
+  execFileSync(
+    path.join(root, "target", "debug", "microscope"),
+    ["record", "-o", file, "--", fixture("profile-stacks-gcc-o0"), "20000000"],
+    { stdio: "ignore" },
+  );
+  const served = await microscope.start([file]);
+  await join(page, served.link);
+  await expect(page.getByRole("img", { name: /^Samples and time off CPU/u })).toBeVisible();
+  await expect(page.getByTestId("zones-pane")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Zones", exact: true })).toHaveCount(0);
+  // A link naming a site this recording lacks keeps nothing it cannot read.
+  const address = new URL(page.url());
+  address.searchParams.set("zs", "nowhere");
+  address.searchParams.set("zf", "all");
+  await page.goto(address.href);
+  await page.goto(address.href);
+  await expect(page.getByText("no zones are named nowhere")).toBeVisible();
+  await page.getByRole("button", { name: "Remove inside nowhere" }).click();
+  await expect(page.getByText("no zones are named nowhere")).toBeHidden();
 });
 
 test("a Go program's own pprof profile opens in its unit, without a timeline", async ({
@@ -497,10 +555,9 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await join(page, served.link);
 
   // The selected range becomes the base, and nothing changed against it.
-  const lanes = page.getByTestId("timeline").getByRole("img");
-  const area = await lanes.boundingBox();
+  const area = await page.getByTestId("ruler").locator(".ruler-marks").boundingBox();
   if (!area) {
-    throw new Error("the timeline has no box");
+    throw new Error("the timeline has no ruler");
   }
   await page.mouse.move(area.x + 1, area.y + 4);
   await page.mouse.down();

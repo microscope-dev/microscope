@@ -447,7 +447,7 @@ function Samples({
             filled
           >
             <div className="details-ticks">
-              {timeTicks(summary.duration, CHART_WIDTH).map(({ at, label }) => (
+              {timeTicks([0, summary.duration], CHART_WIDTH).map(({ at, label }) => (
                 <Tick key={label} at={at} label={label} />
               ))}
             </div>

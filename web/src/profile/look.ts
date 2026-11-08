@@ -6,13 +6,14 @@ import type {
   ProfileGranularity,
   ProfileQuery,
   ProfileTransform,
+  ProfileZoneScope,
   SyscallGroup,
   SyscallQuery,
   TransformOp,
 } from "../protocol";
 import type { DiffMode } from "./paint";
 
-export type ProfileView = "flame" | "tree" | "functions" | "zones" | "syscalls";
+export type ProfileView = "flame" | "tree" | "functions" | "syscalls";
 
 /** The Syscalls view's tabs; the summary when absent. */
 export type SyscallTab = "log" | "files" | "network" | "processes";
@@ -35,8 +36,19 @@ export interface ProfileLook {
   lb?: string[];
   /** Each path rooted at its label of this key. */
   bl?: string;
-  /** The zone site, or label key, the zones view finds. */
+  /** The zone site, or label key, the Zones pane measures and the lanes
+   * light up. */
   zs?: string;
+  /** Of the site's zones, those of lengths `LO-HI` in nanoseconds. */
+  zb?: string;
+  /** Samples inside every zone of the site, or of the band; the range's
+   * samples alone when absent. */
+  zf?: "all" | "band";
+  /** One zone, `THREAD:START-END`, whose span the views read instead of
+   * the range and the site's zones. */
+  zi?: string;
+  /** A diff of the band against the rest of the site's zones. */
+  bz?: "rest";
   /** Timeline lanes of tasks rather than threads. */
   lanes?: "tasks";
   /** Transforms in order, each `OP:NAME`. */
@@ -78,7 +90,7 @@ export interface ProfileLook {
   sl?: string;
 }
 
-const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "zones", "syscalls"];
+const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "syscalls"];
 const SYSCALL_GROUPS: ReadonlySet<string> = new Set(["class", "process", "thread", "path", "site"]);
 const SYSCALL_TABS: ReadonlySet<string> = new Set(["log", "files", "network", "processes"]);
 const GRANULARITIES: ReadonlySet<string> = new Set(["physical", "line", "address"]);
@@ -130,6 +142,23 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
     if (value) {
       look[key] = value;
     }
+  }
+  if (look.zs) {
+    const zb = text("zb");
+    if (zb && parseBand(zb)) {
+      look.zb = zb;
+    }
+    const zf = text("zf");
+    if (zf === "all" || (zf === "band" && look.zb)) {
+      look.zf = zf;
+    }
+    if (text("bz") === "rest" && look.zb) {
+      look.bz = "rest";
+    }
+  }
+  const zi = text("zi");
+  if (zi && parseInstance(zi)) {
+    look.zi = zi;
   }
   if (text("lanes") === "tasks") {
     look.lanes = "tasks";
@@ -226,6 +255,73 @@ export function parseRange(text: string): [number, number] | null {
   return end > start ? [start, end] : null;
 }
 
+/** Parses `LO-HI`, a band of whole nanoseconds, which may be one length. */
+export function parseBand(text: string): [number, number] | null {
+  const match = /^(\d{1,16})-(\d{1,16})$/u.exec(text);
+  if (!match) {
+    return null;
+  }
+  const low = Number(match[1]);
+  const high = Number(match[2]);
+  return low <= high ? [low, high] : null;
+}
+
+export function formatBand([low, high]: readonly [number, number]): string {
+  assert(low <= high, `band ${low}..${high} is reversed`);
+  return `${Math.round(low)}-${Math.round(high)}`;
+}
+
+/** One zone: its thread's row and its span. */
+export interface Instance {
+  thread: number;
+  span: [number, number];
+}
+
+/** Parses `THREAD:START-END`. */
+export function parseInstance(text: string): Instance | null {
+  const at = text.indexOf(":");
+  const span = parseRange(text.slice(at + 1));
+  return at > 0 && /^\d{1,10}$/u.test(text.slice(0, at)) && span
+    ? { thread: Number(text.slice(0, at)), span }
+    : null;
+}
+
+export function formatInstance({ thread, span }: Instance): string {
+  return `${thread}:${formatRange(span)}`;
+}
+
+/** The look with one zone selected, or none: it never changes the threads
+ * the views read. */
+export function withInstance(look: ProfileLook, instance: Instance | null): ProfileLook {
+  return withLook(look, "zi", instance ? formatInstance(instance) : undefined);
+}
+
+/** The look with its most specific zone selection cleared: the zone, else
+ * the band, else the site; the same look if it has none. */
+export function cleared(look: ProfileLook): ProfileLook {
+  if (look.zi) {
+    return withInstance(look, null);
+  }
+  const { zb, zf, bz: _bz, zs: _zs, ...rest } = look;
+  if (zb) {
+    return { ...rest, ...(look.zs ? { zs: look.zs } : {}), ...(zf === "all" ? { zf } : {}) };
+  }
+  return look.zs ? rest : look;
+}
+
+/** The zones a look's samples must be inside, if any. */
+export function scopeOf(look: ProfileLook): ProfileZoneScope | null {
+  // Zones are a thread's, never a wait's; an instance stands in for them.
+  if (!look.zs || look.zi || look.src === "waits") {
+    return null;
+  }
+  const band = look.zb ? parseBand(look.zb) : null;
+  if (band && (look.zf === "band" || look.bz === "rest")) {
+    return { name: look.zs, band, outside: false };
+  }
+  return look.zf === "all" ? { name: look.zs, band: null, outside: false } : null;
+}
+
 /** What a diff's change column compares: cost, unless the look asks for
  * shares. */
 export function diffModeOf(look: { dm?: "share" | undefined }): DiffMode {
@@ -235,6 +331,11 @@ export function diffModeOf(look: { dm?: "share" | undefined }): DiffMode {
 /** The look's time range, if it selects one. */
 export function rangeOf(look: { range?: string | undefined }): [number, number] | null {
   return look.range ? parseRange(look.range) : null;
+}
+
+/** The span the views read: the zone selected, else the range. */
+export function spanOf(look: ProfileLook): [number, number] | null {
+  return (look.zi ? parseInstance(look.zi)?.span : null) ?? rangeOf(look);
 }
 
 export function formatRange([start, end]: [number, number]): string {
@@ -262,10 +363,14 @@ function formatTransform(transform: ProfileTransform): string {
 
 /** The query a look asks of `profile`. */
 export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
-  const range = rangeOf(look);
+  const range = spanOf(look);
+  const zones = scopeOf(look);
   const baseRange = look.br ? parseRange(look.br) : null;
-  const base =
-    look.bp || baseRange
+  // The rest of the band's site, over the same range.
+  const rest = look.bz === "rest" && zones?.band ? { ...zones, outside: true } : null;
+  const base = rest
+    ? { profile, ...(range ? { range } : {}), zones: rest }
+    : look.bp || baseRange
       ? { profile: look.bp ?? profile, ...(baseRange ? { range: baseRange } : {}) }
       : null;
   return {
@@ -284,6 +389,7 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
     invert: look.invert === "1",
     look: look.native === "1" ? "native" : look.py === "1" ? "python" : "logical",
     granularity: look.by ?? "function",
+    ...(zones ? { zones } : {}),
     ...(base ? { base } : {}),
   };
 }

@@ -12,14 +12,20 @@ import {
   shellQuote,
 } from "../src/profile/inspect";
 import {
+  cleared,
   type ProfileLook,
+  parseBand,
+  parseInstance,
   parseRange,
   parseTransform,
   queryOf,
   rangeOf,
+  scopeOf,
+  spanOf,
   transformed,
   untransformed,
   validateProfileLook,
+  withInstance,
 } from "../src/profile/look";
 import {
   changeFill,
@@ -48,15 +54,20 @@ import {
   revealed,
 } from "../src/profile/tree";
 import {
+  bandOf,
   blockAt,
+  bucketSpans,
   decodeZones,
   describeFlags,
+  indexBlocks,
+  laneAt,
+  layLanes,
+  nesting,
   panned,
   plotPath,
   threadName,
   ticks,
   timeTicks,
-  tracks,
   zoomed,
 } from "../src/profile/zones";
 import type { ProfileKey, ProfileTree, ServerMessage } from "../src/protocol";
@@ -391,7 +402,7 @@ describe("a real server's call trees", () => {
 });
 
 describe("a zones answer", () => {
-  it("decodes its columns into a track per thread, a row per depth", () => {
+  it("decodes its columns, and finds the block at a time in each thread's row", () => {
     // [start, end, thread, depth, name, count, flags]
     const blocks: number[][] = [
       [0, 100, 4, 0, 0, 1, 0],
@@ -417,18 +428,97 @@ describe("a zones answer", () => {
     );
     expect([...zones.zones]).toEqual([1, 1, 7, 1]);
     expect([...zones.flags]).toEqual([0, 2, 0, 0]);
-    // The heavier thread first, then any other with zones.
-    const laid = tracks(zones, [9, 4]);
-    expect(laid).toEqual([
-      { thread: 9, row: 0, depths: 1 },
-      { thread: 4, row: 1, depths: 2 },
+    const index = indexBlocks(zones);
+    expect([...index.depths]).toEqual([
+      [4, 2],
+      [9, 1],
     ]);
-    const track = laid[1] ?? laid[0];
-    expect(track && blockAt(zones, track, 1, 20, 0)).toBe(1);
-    expect(track && blockAt(zones, track, 1, 45, 0)).toBeNull();
+    expect(blockAt(zones, index, 4, 1, 20, 0)).toBe(1);
+    expect(blockAt(zones, index, 4, 1, 45, 0)).toBeNull();
+    // Slack reaches the nearer of two blocks, never the farther.
+    expect(blockAt(zones, index, 4, 1, 45, 6)).toBe(2);
+    expect(blockAt(zones, index, 4, 1, 44, 4)).toBe(1);
+    // Another thread's block at the same time and depth is not this one's.
+    expect(blockAt(zones, index, 9, 0, 20, 0)).toBe(3);
+    expect(blockAt(zones, index, 9, 1, 20, 100)).toBeNull();
+    expect(blockAt(zones, index, 7, 0, 20, 100)).toBeNull();
+    // What holds a zone, outermost first; a fold names nothing.
+    expect(nesting(zones, index, 4, 1, 20)).toEqual(["outer"]);
+    expect(nesting(zones, index, 4, 2, 51)).toEqual(["outer"]);
     expect(() =>
       decodeZones({ range: [0, 1], blocks: 2, names: [], marks: [], plots: [] }, bytes),
     ).toThrow("2 zone blocks need 72 bytes, not 144");
+  });
+
+  it("finds the block at a time by bisection, whatever order the blocks came in", () => {
+    // One row of a thousand blocks, each 10 long with a gap of 10, sent
+    // in reverse; a linear oracle agrees at every time and slack.
+    const count = 1000;
+    const bytes = new Uint8Array(count * 36);
+    const view = new DataView(bytes.buffer);
+    for (let at = 0; at < count; at += 1) {
+      const start = (count - 1 - at) * 20;
+      view.setFloat64(at * 8, start, true);
+      view.setFloat64((count + at) * 8, start + 10, true);
+      view.setUint32(count * 16 + (3 * count + at) * 4, 1, true);
+    }
+    const zones = decodeZones(
+      { range: [0, 20_000], blocks: count, names: ["a"], marks: [], plots: [] },
+      bytes,
+    );
+    const index = indexBlocks(zones);
+    for (const slack of [0, 3, 7]) {
+      for (let time = -10; time < 20_010; time += 7) {
+        let expected: number | null = null;
+        let distance = Number.POSITIVE_INFINITY;
+        for (let at = 0; at < count; at += 1) {
+          const start = zones.start[at] ?? 0;
+          const end = zones.end[at] ?? 0;
+          const away = time < start ? start - time : time > end ? time - end : 0;
+          if (away <= slack && away < distance) {
+            [expected, distance] = [at, away];
+          }
+        }
+        const found = blockAt(zones, index, 0, 0, time, slack);
+        const foundAway =
+          found === null
+            ? null
+            : Math.max((zones.start[found] ?? 0) - time, time - (zones.end[found] ?? 0), 0);
+        expect(foundAway).toBe(expected === null ? null : distance);
+      }
+    }
+  });
+
+  it("lays lanes one under another, and finds the one at a height", () => {
+    const { tops, height } = layLanes([0, 3, 1], 18, 16);
+    expect([...tops]).toEqual([0, 18, 84]);
+    expect(height).toBe(118);
+    expect(laneAt(tops, -1)).toBe(-1);
+    expect(laneAt(tops, 0)).toBe(0);
+    expect(laneAt(tops, 17.9)).toBe(0);
+    expect(laneAt(tops, 18)).toBe(1);
+    expect(laneAt(tops, 83)).toBe(1);
+    expect(laneAt(tops, 117)).toBe(2);
+  });
+
+  it("picks a band of lengths from histogram buckets, either way across", () => {
+    const spans = bucketSpans(
+      [
+        [100, 4],
+        [200, 0],
+        [400, 1],
+      ],
+      900,
+    );
+    expect(spans).toEqual([
+      [100, 199],
+      [200, 399],
+      [400, 900],
+    ]);
+    expect(bandOf(spans, 1, 1)).toEqual([200, 399]);
+    expect(bandOf(spans, 2, 0)).toEqual([100, 900]);
+    // One zone alone: its bucket holds its length.
+    expect(bucketSpans([[50, 1]], 50)).toEqual([[50, 50]]);
   });
 
   it("a plot's bin strokes from its first value through its extremes to its last, which holds until the next", () => {
@@ -498,7 +588,7 @@ describe("a time in the profile", () => {
   });
 });
 
-describe("a zones view's time", () => {
+describe("the lanes' time", () => {
   it("zooms about the pointer, and never past the profile or below a microsecond", () => {
     // Zooming in twice at a quarter of the way keeps that time where it was.
     expect(zoomed([0, 1000_000], 250_000, 0.5, 1000_000)).toEqual([125_000, 625_000]);
@@ -610,6 +700,89 @@ describe("a transform in the address", () => {
   });
 });
 
+describe("zones in the address", () => {
+  it("keeps a band and a scope only with a site, and a scope of the band only with a band", () => {
+    expect(validateProfileLook({ zb: "5-9", zf: "all", bz: "rest" })).toEqual({});
+    expect(validateProfileLook({ zs: "drain", zf: "band" })).toEqual({ zs: "drain" });
+    expect(validateProfileLook({ zs: "drain", zb: "9-5", bz: "rest" })).toEqual({ zs: "drain" });
+    const look: ProfileLook = { zs: "drain", zb: "5-9", zf: "band", bz: "rest", zi: "3:10-20" };
+    expect(roundTrip(look)).toEqual(look);
+    expect(validateProfileLook({ zi: "x:10-20" })).toEqual({});
+    expect(validateProfileLook({ zi: "3:20-10" })).toEqual({});
+  });
+
+  it("reads a band as inclusive, and one length as a band", () => {
+    expect(parseBand("7-7")).toEqual([7, 7]);
+    expect(parseBand("8-7")).toBeNull();
+    expect(parseInstance("12:5-9")).toEqual({ thread: 12, span: [5, 9] });
+    expect(parseInstance(":5-9")).toBeNull();
+  });
+
+  it("asks for the samples inside the site's zones, or its band's, but never a wait's", () => {
+    expect(scopeOf({ zs: "drain" })).toBeNull();
+    expect(scopeOf({ zs: "drain", zf: "all", zb: "5-9" })).toEqual({
+      name: "drain",
+      band: null,
+      outside: false,
+    });
+    expect(queryOf("p", { zs: "drain", zb: "5-9", zf: "band" }).zones).toEqual({
+      name: "drain",
+      band: [5, 9],
+      outside: false,
+    });
+    expect(queryOf("p", { zs: "drain", zf: "all", src: "waits" }).zones).toBeUndefined();
+  });
+
+  it("compares the band with the rest of its site over the same range", () => {
+    const query = queryOf("p", { zs: "drain", zb: "5-9", bz: "rest", range: "100-200" });
+    expect(query.zones).toEqual({ name: "drain", band: [5, 9], outside: false });
+    expect(query.base).toEqual({
+      profile: "p",
+      range: [100, 200],
+      zones: { name: "drain", band: [5, 9], outside: true },
+    });
+    // The rest takes the place of another profile.
+    expect(queryOf("p", { zs: "drain", zb: "5-9", bz: "rest", bp: "q" }).base?.profile).toBe("p");
+  });
+
+  it("reads one zone's span instead of the range and the site's zones, threads untouched", () => {
+    const look = withInstance(
+      { range: "0-1000", th: ["1"], zs: "drain", zf: "all" },
+      { thread: 4, span: [10, 20] },
+    );
+    expect(look.th).toEqual(["1"]);
+    expect(spanOf(look)).toEqual([10, 20]);
+    const query = queryOf("p", look);
+    expect(query.range).toEqual([10, 20]);
+    expect(query.threads).toEqual([1]);
+    expect(query.zones).toBeUndefined();
+  });
+
+  it("lets go of the zone, then the band, then the site", () => {
+    const look: ProfileLook = {
+      range: "0-9",
+      zs: "drain",
+      zb: "5-9",
+      zf: "band",
+      bz: "rest",
+      zi: "3:1-2",
+    };
+    const once = cleared(look);
+    expect(once).toEqual({ range: "0-9", zs: "drain", zb: "5-9", zf: "band", bz: "rest" });
+    const twice = cleared(once);
+    expect(twice).toEqual({ range: "0-9", zs: "drain" });
+    expect(cleared({ zs: "drain", zb: "5-9", zf: "all" })).toEqual({ zs: "drain", zf: "all" });
+    const thrice = cleared(twice);
+    expect(thrice).toEqual({ range: "0-9" });
+    // Nothing left to clear is the same look, so Escape does nothing.
+    expect(cleared(thrice)).toBe(thrice);
+  });
+
+  it("maps the old Zones view to the flame graph", () => {
+    expect(validateProfileLook({ view: "zones", zs: "drain" })).toEqual({ zs: "drain" });
+  });
+});
+
 describe("a zone's flags", () => {
   it("say each thing that was not seen", () => {
     expect(describeFlags(0)).toEqual([]);
@@ -715,7 +888,7 @@ describe("inspect", () => {
 
   it("marks round times under a chart and its end, leaving out one too near the end", () => {
     // 539 ms: a 100 ms step, and 500 ms is past 90% of the way, so only the end shows there.
-    expect(timeTicks(539e6, 600)).toEqual([
+    expect(timeTicks([0, 539e6], 600)).toEqual([
       { at: 0, label: "0" },
       { at: 100 / 539, label: "100 ms" },
       { at: 200 / 539, label: "200 ms" },
@@ -724,7 +897,7 @@ describe("inspect", () => {
       { at: 1, label: "539 ms" },
     ]);
     // 2.6 s: a half-second step, and 2.5 s is too near the end.
-    expect(timeTicks(2.6e9, 600).map(({ label }) => label)).toEqual([
+    expect(timeTicks([0, 2.6e9], 600).map(({ label }) => label)).toEqual([
       "0",
       "0.5 s",
       "1.0 s",
@@ -732,9 +905,15 @@ describe("inspect", () => {
       "2.0 s",
       "2.60 s",
     ]);
-    expect(timeTicks(0, 600)).toEqual([]);
+    expect(timeTicks([0, 0], 600)).toEqual([]);
+    // A view into the profile ends on its own time, not on its length.
+    expect(
+      timeTicks([1e9, 1.5e9], 600)
+        .map(({ label }) => label)
+        .at(-1),
+    ).toBe("1.5 s");
     // Twice as wide, twice as many: a 50 ms step over the same 539 ms.
-    expect(timeTicks(539e6, 1200).map(({ label }) => label)).toEqual([
+    expect(timeTicks([0, 539e6], 1200).map(({ label }) => label)).toEqual([
       "0",
       ...[50, 100, 150, 200, 250, 300, 350, 400, 450].map((ms) => `${ms} ms`),
       "539 ms",

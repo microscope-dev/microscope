@@ -12,7 +12,6 @@ const VIEWS: { view: ProfileView; label: string }[] = [
   { view: "flame", label: "Flame graph" },
   { view: "tree", label: "Call tree" },
   { view: "functions", label: "Functions" },
-  { view: "zones", label: "Zones" },
   { view: "syscalls", label: "Syscalls" },
 ];
 
@@ -23,11 +22,9 @@ export function defaultView(summary: ProfileSummary): ProfileView {
 }
 
 /** Whether Options offers a view: sample views when there are samples or
- * nothing else, zones when there are some, calls when traced. */
+ * nothing else, calls when traced. */
 function offers(summary: ProfileSummary, view: ProfileView): boolean {
   switch (view) {
-    case "zones":
-      return summary.zoneSites.length > 0 || summary.probes.plotted > 0;
     case "syscalls":
       return summary.syscalls > 0;
     default:

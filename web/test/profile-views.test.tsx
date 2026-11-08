@@ -24,13 +24,13 @@ import { createSession, type Session, SessionContext } from "../src/store";
 import { ProfileContext, type ProfileFocus } from "../src/ui/profile/context";
 import { FlameView } from "../src/ui/profile/FlameView";
 import { FunctionsView } from "../src/ui/profile/FunctionsView";
+import { Lanes } from "../src/ui/profile/Lanes";
 import { Options } from "../src/ui/profile/Options";
 import { LaneChip } from "../src/ui/profile/parts";
 import { Profile } from "../src/ui/profile/ProfilePage";
 import { SyscallsView } from "../src/ui/profile/SyscallsView";
-import { Timeline } from "../src/ui/profile/Timeline";
 import { TreeView } from "../src/ui/profile/TreeView";
-import { ZonesView } from "../src/ui/profile/ZonesView";
+import { ZonesPane } from "../src/ui/profile/ZonesPane";
 import { POLL } from "./fake-server";
 
 interface Asked {
@@ -1189,7 +1189,7 @@ function settled(): Promise<void> {
 it("paints the lanes again when they change, not when a function is chosen", async () => {
   const server = await mount(
     <div style={WIDE}>
-      <Timeline />
+      <Lanes />
     </div>,
     { summary: summaryOf({ timed: true }) },
   );
@@ -1228,7 +1228,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
   const summary = summaryOf({ timed: true, threads });
   const server = await mount(
     <div style={WIDE}>
-      <Timeline />
+      <Lanes />
     </div>,
     { summary },
   );
@@ -1275,7 +1275,7 @@ function pointerAt(target: Element, type: string, x: number): void {
 it("marks round times, the pointer's time, and a range's ends and length", async () => {
   const server = await mount(
     <div style={SECOND_WIDE}>
-      <Timeline />
+      <Lanes />
     </div>,
     { summary: summaryOf({ timed: true }) },
   );
@@ -1361,7 +1361,7 @@ it("names the lanes it cuts samples to with the other chips, not over the lanes"
   ];
   await mount(
     <>
-      <Timeline />
+      <Lanes />
       <LaneChip />
     </>,
     { summary: summaryOf({ timed: true, threads }) },
@@ -1427,16 +1427,349 @@ it("offers no Options for a trace of system calls alone", async () => {
 });
 
 it("says why the timeline could not be read", async () => {
-  const server = await mount(<Timeline />, { summary: summaryOf({ timed: true }) });
+  const server = await mount(<Lanes />, { summary: summaryOf({ timed: true }) });
   server.fail(await server.next("profileTimeline"), "the timeline is cut short");
   await expect.element(page.getByText("the timeline is cut short")).toBeVisible();
 });
 
-it("says it is reading zones, and why it could not", async () => {
-  const server = await mount(<ZonesView />);
-  await expect.element(page.getByText("Reading zones…")).toBeVisible();
+/** A zones answer and its columns, each block
+ * [start, end, thread, depth, name, zones, flags]. */
+function zonesOf(names: string[], blocks: number[][]): [unknown, Uint8Array] {
+  const count = blocks.length;
+  const bytes = new Uint8Array(count * 36);
+  const view = new DataView(bytes.buffer);
+  for (const [at, block] of blocks.entries()) {
+    for (const [column, value] of block.entries()) {
+      if (column < 2) {
+        view.setFloat64((column * count + at) * 8, value, true);
+      } else {
+        view.setUint32(count * 16 + ((column - 2) * count + at) * 4, value, true);
+      }
+    }
+  }
+  return [{ range: [0, 1e9], blocks: count, names, marks: [], plots: [] }, bytes];
+}
+
+const ZONED_THREADS: ProfileThread[] = [
+  { row: 0, pid: 1, tid: 10, name: "main", samples: 2, weight: 2, blocked: 0, preempted: 0 },
+  { row: 1, pid: 1, tid: 11, name: "worker", samples: 1, weight: 1, blocked: 0, preempted: 0 },
+];
+
+const DRAIN = { name: "drain", label: false, count: 2, total: 220e6, longest: 200e6, flagged: 0 };
+
+/** Lanes of two threads, the worker's zones a drain holding a parse and a
+ * short drain after; 1000 pixels for a second, so a pixel is a millisecond. */
+async function zonedLanes(look: ProfileLook = NO_LOOK): Promise<Server> {
+  const summary = summaryOf({
+    timed: true,
+    threads: ZONED_THREADS,
+    zoneSites: [DRAIN, { ...DRAIN, name: "parse", count: 1, total: 50e6, longest: 50e6 }],
+  });
+  const server = await mount(
+    <div style={SECOND_WIDE}>
+      <Lanes />
+    </div>,
+    { summary, look },
+  );
+  server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
+  const [answer, columns] = zonesOf(
+    ["drain", "parse"],
+    [
+      [100e6, 300e6, 1, 0, 0, 1, 0],
+      [150e6, 200e6, 1, 1, 1, 1, 0],
+      [500e6, 520e6, 1, 0, 0, 1, 0],
+    ],
+  );
+  server.answer(await server.next("profileZones"), answer, columns);
+  return server;
+}
+
+const lanesCanvas = () => page.getByRole("img", { name: /^Samples, zones, and time off CPU/u });
+
+it("says why the zones could not be read, and still draws the samples", async () => {
+  const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
+  const server = await mount(<Lanes />, { summary });
+  server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
   server.fail(await server.next("profileZones"), "the zones are cut short");
   await expect.element(page.getByText("the zones are cut short")).toBeVisible();
+  await expect.element(lanesCanvas()).toBeVisible();
+});
+
+it("asks for no zones in a recording without any, nor of task lanes", async () => {
+  const server = await mount(<Lanes />, {
+    summary: summaryOf({ timed: true, threads: ZONED_THREADS }),
+  });
+  await server.next("profileTimeline");
+  await settled();
+  expect(server.requests.some((request) => request.method === "profileZones")).toBe(false);
+});
+
+it("shows a thread's outer zones, and its nested ones from its chevron", async () => {
+  await zonedLanes();
+  const canvas = lanesCanvas();
+  // Two lanes of samples and the worker's one row of zones.
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16), POLL);
+  const chevron = page.getByRole("button", { name: "Show worker 11's nested zones" });
+  await expect.element(chevron).toHaveTextContent("▸ +1");
+  await chevron.click();
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16 * 2), POLL);
+  await page.getByRole("button", { name: "Hide worker 11's nested zones" }).click();
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16), POLL);
+});
+
+it("selects a zone and its site from a click, leaving the threads alone, and lets it go again", async () => {
+  await zonedLanes({ th: ["0"] });
+  const canvas = lanesCanvas();
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(52), POLL);
+  // The drain, 200 ms in, on the worker's first row of zones.
+  await userEvent.click(canvas, { position: { x: 200, y: 44 } });
+  await vi.waitFor(
+    () => expect(lookShown()).toEqual({ th: ["0"], zi: "1:100000000-300000000", zs: "drain" }),
+    POLL,
+  );
+  // Its thread opens, so the zones inside it show.
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
+  await userEvent.click(canvas, { position: { x: 200, y: 44 } });
+  await vi.waitFor(() => expect(lookShown()).toEqual({ th: ["0"], zs: "drain" }), POLL);
+
+  // Another site's zone takes its site, and the old site's band goes.
+  changeLook((look) => ({ ...look, zb: "1-2", zf: "band" }));
+  await userEvent.click(canvas, { position: { x: 175, y: 60 } });
+  await vi.waitFor(
+    () => expect(lookShown()).toEqual({ th: ["0"], zi: "1:150000000-200000000", zs: "parse" }),
+    POLL,
+  );
+  // Nothing under the pointer selects nothing.
+  await userEvent.click(canvas, { position: { x: 900, y: 44 } });
+  expect(lookShown().zi).toBe("1:150000000-200000000");
+});
+
+it("brings a zone chosen elsewhere into view, asking for it in whole nanoseconds", async () => {
+  const server = await zonedLanes();
+  // Under a pixel wide, so the lanes zoom to it, a third of its length
+  // either side: not a whole number of nanoseconds.
+  changeLook((look) => ({ ...look, zs: "drain", zi: "1:500000000-500300001" }));
+  const asked = await server.next("profileZones");
+  const range = (asked.params as { range: [number, number] }).range;
+  expect(range.every((time) => Number.isInteger(time))).toBe(true);
+  expect(range[0]).toBeLessThan(500_000_000);
+  expect(range[1]).toBeGreaterThan(500_300_001);
+  expect(range[1] - range[0]).toBeLessThan(1_000_000);
+  const timeline = await server.next("profileTimeline");
+  expect(
+    (timeline.params as { range: number[] }).range.every((time) => Number.isInteger(time)),
+  ).toBe(true);
+  // The views read the zone's span, and the threads stay as they were.
+  expect(lookShown().th).toBeUndefined();
+});
+
+it("names a zone, how long it took, and what holds it", async () => {
+  await zonedLanes();
+  await page.getByRole("button", { name: "Show worker 11's nested zones" }).click();
+  const canvas = lanesCanvas();
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
+  await userEvent.hover(canvas, { position: { x: 175, y: 60 } });
+  const zoneTip = page.getByTestId("zone-tip");
+  await vi.waitFor(
+    () =>
+      expect(zoneTip.element().textContent).toMatch(
+        /^parse: 50(\.0)? msworker 11, from 150 msin drain$/u,
+      ),
+    POLL,
+  );
+});
+
+it("zooms with ctrl and the wheel anywhere in the lanes, the names included", async () => {
+  await zonedLanes();
+  await vi.waitFor(() => expect(ruler().at(-1)).toBe("1.00 s"), POLL);
+  const names = document.querySelector(".lane-names");
+  assert(names, "the lanes have names");
+  const bounds = names.getBoundingClientRect();
+  act(() => {
+    names.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        deltaY: -400,
+        clientX: bounds.right + 500,
+        clientY: bounds.top + 4,
+      }),
+    );
+  });
+  await vi.waitFor(() => expect(ruler().at(-1)).not.toBe("1.00 s"), POLL);
+  // Zooming shows less, so it asks for that time's zones, but the range
+  // the views read stays as it was.
+  expect(lookShown().range).toBeUndefined();
+});
+
+/** A site's stats: 8 zones in four buckets of lengths, the longest one. */
+const STATS = {
+  count: 8,
+  total: 2000,
+  flagged: 0,
+  min: 100,
+  median: 150,
+  p90: 800,
+  p99: 900,
+  max: 900,
+  histogram: [
+    [100, 5],
+    [200, 2],
+    [400, 0],
+    [800, 1],
+  ],
+  longest: [{ thread: 1, start: 1000, end: 1900, value: null }],
+  banded: [8, 2000],
+  shorter: 0,
+  values: [],
+};
+
+const DRAIN_SITE = { ...DRAIN, count: 8, total: 2000, longest: 900 };
+
+const NOTHING = () => {};
+
+/** The sites the Zones pane lists, in order. */
+const listedSites = () =>
+  [...document.querySelectorAll(".zone-sites tbody td:first-child button")].map(
+    (button) => button.textContent,
+  );
+
+/** Presses at `from` across the histogram and lets go at `to`, each a
+ * share of its width. */
+function dragHistogram(from: number, to: number): void {
+  const bars = page.getByRole("img", { name: /^Lengths of drain/u }).element();
+  const bounds = bars.getBoundingClientRect();
+  const at = (share: number) => ({
+    bubbles: true,
+    pointerId: 1,
+    clientX: bounds.left + bounds.width * share,
+    clientY: bounds.top + 4,
+  });
+  act(() => {
+    bars.dispatchEvent(new PointerEvent("pointerdown", { ...at(from), button: 0 }));
+    bars.dispatchEvent(new PointerEvent("pointermove", at(to)));
+    bars.dispatchEvent(new PointerEvent("pointerup", at(to)));
+  });
+}
+
+it("lists sites by total, and sorts them by another column", async () => {
+  const summary = summaryOf({
+    zoneSites: [
+      { ...DRAIN, name: "few", count: 1, total: 900, longest: 900 },
+      { ...DRAIN, name: "many", count: 50, total: 100, longest: 10 },
+    ],
+  });
+  await mount(<ZonesPane close={NOTHING} />, { summary });
+  expect(listedSites()).toEqual(["few", "many"]);
+  await page.getByRole("button", { name: "count", exact: true }).click();
+  expect(listedSites()).toEqual(["many", "few"]);
+  await page.getByRole("button", { name: "many", exact: true }).click();
+  expect(lookShown().zs).toBe("many");
+  await page.getByRole("button", { name: "many", exact: true }).click();
+  expect(lookShown().zs).toBeUndefined();
+});
+
+it("says a recording has no zones", async () => {
+  await mount(<ZonesPane close={NOTHING} />);
+  await expect.element(page.getByText("This recording has no zones.")).toBeVisible();
+});
+
+it("picks a band from the histogram, scopes the views to it, compares it, and lets it go", async () => {
+  vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
+  const server = await mount(<ZonesPane close={NOTHING} />, {
+    summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
+    look: { zs: "drain", th: ["0"] },
+  });
+  const asked = await server.next("profileZoneStats");
+  expect(asked.params).toMatchObject({ name: "drain", threads: [0] });
+  server.answer(asked, STATS);
+  await vi.waitFor(
+    () => expect(page.getByTestId("zone-stats").element().textContent).toContain("count8total"),
+    POLL,
+  );
+  // Nothing to scope to until there is a band.
+  await expect.element(page.getByRole("button", { name: "Inside the band" })).toBeDisabled();
+  await expect
+    .element(page.getByRole("button", { name: "Compare the band with the rest" }))
+    .toBeDisabled();
+
+  // From the second bucket to the last: 200 ns to the longest, 900.
+  dragHistogram(0.3, 0.95);
+  expect(lookShown()).toEqual({ zs: "drain", th: ["0"], zb: "200-900" });
+  const banded = await server.next("profileZoneStats");
+  expect(banded.params).toMatchObject({ band: [200, 900] });
+  server.answer(banded, { ...STATS, banded: [3, 1300] });
+  await vi.waitFor(
+    () => expect(page.getByTestId("zone-band").element().textContent).toContain("3 of 8"),
+    POLL,
+  );
+  await expect.element(page.getByText("Longest in the band")).toBeVisible();
+
+  await page.getByRole("button", { name: "Inside the band" }).click();
+  expect(lookShown().zf).toBe("band");
+  await page.getByRole("button", { name: "Compare the band with the rest" }).click();
+  expect(lookShown().bz).toBe("rest");
+
+  // A click on one bucket picks it alone; on the band again, lets it go,
+  // and what read the band with it.
+  dragHistogram(0.1, 0.1);
+  expect(lookShown().zb).toBe("100-199");
+  dragHistogram(0.1, 0.1);
+  expect(lookShown()).toEqual({ zs: "drain", th: ["0"] });
+  vi.restoreAllMocks();
+});
+
+it("selects one of the longest, ranks it, and never touches the threads", async () => {
+  const server = await mount(<ZonesPane close={NOTHING} />, {
+    summary: summaryOf({ zoneSites: [DRAIN_SITE], threads: ZONED_THREADS }),
+    look: { zs: "drain", th: ["0"] },
+  });
+  server.answer(await server.next("profileZoneStats"), STATS);
+  const longest = page.getByRole("button", { name: "900 ns" });
+  await longest.click();
+  expect(lookShown()).toEqual({ zs: "drain", th: ["0"], zi: "1:1000-1900" });
+  const ranked = await server.next("profileZoneStats");
+  expect(ranked.params).toMatchObject({ rankOf: 900 });
+  server.answer(ranked, { ...STATS, shorter: 7 });
+  await expect
+    .element(page.getByTestId("zone-rank"))
+    .toHaveTextContent("The zone selected is p88 of 8: 900 ns");
+  await expect.element(longest).toHaveAttribute("aria-pressed", "true");
+  await longest.click();
+  expect(lookShown()).toEqual({ zs: "drain", th: ["0"] });
+});
+
+it("says why a site could not be measured, and when none of its zones are in the range", async () => {
+  const server = await mount(<ZonesPane close={NOTHING} />, {
+    summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
+    look: { zs: "drain" },
+  });
+  await expect.element(page.getByText("Measuring drain…")).toBeVisible();
+  server.fail(await server.next("profileZoneStats"), "no zones are named drain");
+  await expect.element(page.getByText("no zones are named drain")).toBeVisible();
+
+  changeLook((look) => ({ ...look, range: "5-9" }));
+  server.answer(await server.next("profileZoneStats"), {
+    ...STATS,
+    count: 0,
+    total: 0,
+    histogram: [],
+    longest: [],
+    banded: [0, 0],
+  });
+  await expect.element(page.getByText("None of its zones are in the range.")).toBeVisible();
+});
+
+it("offers no zone scope of waits, which zones never hold", async () => {
+  const server = await mount(<ZonesPane close={NOTHING} />, {
+    summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
+    look: { zs: "drain", zb: "100-199", src: "waits" },
+  });
+  server.answer(await server.next("profileZoneStats"), STATS);
+  for (const name of ["Range only", "Inside every one", "Inside the band"]) {
+    await expect.element(page.getByRole("button", { name })).toBeDisabled();
+  }
 });
 
 const traced = () => summaryOf({ samples: 0, syscalls: 10 });

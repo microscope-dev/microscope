@@ -1,5 +1,5 @@
-// Zones as the server sends them, in columns, and how the zones view lays
-// each thread's track out: a row per depth, tracks one under another.
+// Zones as the server sends them, in columns, and how the lanes find and
+// lay them out: under each thread's samples, a row per depth.
 
 import { assert } from "../assert";
 import type { ProfileThread, ProfileZones } from "../protocol";
@@ -51,73 +51,154 @@ export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefine
   };
 }
 
-/** One thread's track: its first row and how many rows it takes. */
-export interface Track {
-  thread: number;
-  row: number;
-  depths: number;
+/** Each row of zones, a thread's at one depth, as the blocks in it by
+ * start, and how deep each thread's zones go. */
+export interface BlockIndex {
+  rows: Map<number, Int32Array>;
+  depths: Map<number, number>;
 }
 
-/** Each thread's track, in `order`, then any other thread with zones,
- * each as deep as its deepest block. */
-export function tracks(blocks: ZoneBlocks, order: number[]): Track[] {
-  assert(
-    blocks.thread.length === blocks.count,
-    `${blocks.thread.length} block threads for ${blocks.count} blocks`,
-  );
-  assert(
-    blocks.depth.length === blocks.count,
-    `${blocks.depth.length} block depths for ${blocks.count} blocks`,
-  );
-  const deepest = new Map<number, number>();
+const rowKey = (thread: number, depth: number) => thread * 65_536 + depth;
+
+/** Indexes the blocks by row, so the one at a time is found by bisection. */
+export function indexBlocks(blocks: ZoneBlocks): BlockIndex {
+  const lists = new Map<number, number[]>();
+  const depths = new Map<number, number>();
   for (let at = 0; at < blocks.count; at += 1) {
     const thread = blocks.thread[at] ?? 0;
-    deepest.set(thread, Math.max(deepest.get(thread) ?? 0, (blocks.depth[at] ?? 0) + 1));
+    const depth = blocks.depth[at] ?? 0;
+    assert(depth < 65_536, `zone depth ${depth} is too deep to index`);
+    const key = rowKey(thread, depth);
+    const list = lists.get(key);
+    if (list) {
+      list.push(at);
+    } else {
+      lists.set(key, [at]);
+    }
+    depths.set(thread, Math.max(depths.get(thread) ?? 0, depth + 1));
   }
-  const threads = [
-    ...order.filter((thread) => deepest.has(thread)),
-    ...[...deepest.keys()].filter((thread) => !order.includes(thread)).toSorted((a, b) => a - b),
-  ];
-  let row = 0;
-  return threads.map((thread) => {
-    const depths = deepest.get(thread);
-    assert(depths !== undefined, `thread ${thread} has a track but no zones`);
-    assert(depths >= 1, `thread ${thread} has a track of ${depths} rows`);
-    const track = { thread, row, depths };
-    row += depths;
-    return track;
-  });
+  const rows = new Map<number, Int32Array>();
+  for (const [key, list] of lists) {
+    const row = Int32Array.from(list).toSorted(
+      (a, b) => (blocks.start[a] ?? 0) - (blocks.start[b] ?? 0),
+    );
+    rows.set(key, row);
+  }
+  return { rows, depths };
 }
 
-/** The block drawn at `time` in a row, if any. */
+/** The block of a row at `time`, or failing that the nearest within
+ * `slack` of it, if any. */
 export function blockAt(
   blocks: ZoneBlocks,
-  track: Track,
+  index: BlockIndex,
+  thread: number,
   depth: number,
   time: number,
   slack: number,
 ): number | null {
-  assert(
-    depth >= 0 && depth < track.depths,
-    `depth ${depth} is outside thread ${track.thread}'s ${track.depths} rows`,
-  );
   assert(slack >= 0, `slack ${slack} is negative`);
+  const row = index.rows.get(rowKey(thread, depth));
+  if (!row) {
+    return null;
+  }
+  // The last block that starts by `time + slack`, and the one before it,
+  // which may be the one `time` is in where the slack reaches the next.
+  let [low, high] = [0, row.length];
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((blocks.start[row[middle] ?? 0] ?? 0) <= time + slack) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
   let best: number | null = null;
-  for (let at = 0; at < blocks.count; at += 1) {
-    if (blocks.thread[at] !== track.thread || blocks.depth[at] !== depth) {
+  let distance = Number.POSITIVE_INFINITY;
+  for (const at of [low - 1, low - 2]) {
+    const block = row[at];
+    if (block === undefined) {
       continue;
     }
-    const start = blocks.start[at] ?? 0;
-    const end = blocks.end[at] ?? 0;
-    if (
-      start - slack <= time &&
-      time <= end + slack &&
-      (best === null || Math.abs(time - start) < Math.abs(time - (blocks.start[best] ?? 0)))
-    ) {
-      best = at;
+    const start = blocks.start[block] ?? 0;
+    const end = blocks.end[block] ?? 0;
+    const away = time < start ? start - time : time > end ? time - end : 0;
+    if (away <= slack && away < distance) {
+      [best, distance] = [block, away];
     }
   }
   return best;
+}
+
+/** The names of the zones around `time` above `depth` in a thread, outermost
+ * first. */
+export function nesting(
+  blocks: ZoneBlocks,
+  index: BlockIndex,
+  thread: number,
+  depth: number,
+  time: number,
+): string[] {
+  const names: string[] = [];
+  for (let above = 0; above < depth; above += 1) {
+    const block = blockAt(blocks, index, thread, above, time, 0);
+    if (block !== null && (blocks.zones[block] ?? 1) === 1) {
+      names.push(blocks.names[blocks.name[block] ?? 0] ?? "");
+    }
+  }
+  return names;
+}
+
+/** Where each lane begins, `strip` pixels of samples and then a row per
+ * depth of zones it shows, one under another; and how tall they are. */
+export function layLanes(
+  shown: readonly number[],
+  strip: number,
+  row: number,
+): { tops: Float64Array; height: number } {
+  const tops = new Float64Array(shown.length);
+  let top = 0;
+  for (const [at, rows] of shown.entries()) {
+    assert(rows >= 0, `lane ${at} shows ${rows} rows`);
+    tops[at] = top;
+    top += strip + rows * row;
+  }
+  return { tops, height: top };
+}
+
+/** The lane `y` pixels down, by bisection of their tops; -1 above them. */
+export function laneAt(tops: Float64Array, y: number): number {
+  let [low, high] = [0, tops.length];
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((tops[middle] ?? 0) <= y) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low - 1;
+}
+
+/** Each histogram bucket's lengths, `[low, high]`: to just short of the next
+ * bucket's low, the last to the longest. */
+export function bucketSpans(histogram: readonly number[][], max: number): [number, number][] {
+  return histogram.map(([low = 0], at) => {
+    const next = histogram[at + 1]?.[0];
+    return [low, next === undefined ? Math.max(max, low) : Math.max(next - 1, low)];
+  });
+}
+
+/** The band from bucket `from` to bucket `to`, either way round. */
+export function bandOf(
+  spans: readonly [number, number][],
+  from: number,
+  to: number,
+): [number, number] {
+  const first = spans[Math.min(from, to)];
+  const last = spans[Math.max(from, to)];
+  assert(first && last, `buckets ${from}..${to} are outside ${spans.length}`);
+  return [first[0], last[1]];
 }
 
 /** A thread's name and id, by its row: a pool's threads share a name. */
@@ -239,20 +320,24 @@ export function ticks(
   return { step, times };
 }
 
-/** Round times to mark along a chart of `duration` nanoseconds drawn
- * `width` pixels wide, each with its share of the way across. The end is
- * marked itself, so a round time too near it to be read beside it is left
- * out. */
-export function timeTicks(duration: number, width: number): { at: number; label: string }[] {
-  if (duration <= 0 || width <= 0) {
+/** Round times to mark along a chart of `[start, end]` drawn `width`
+ * pixels wide, each with its share of the way across. The end is marked
+ * itself, so a round time too near it to be read beside it is left out. */
+export function timeTicks(
+  [start, end]: readonly [number, number],
+  width: number,
+): { at: number; label: string }[] {
+  if (end <= start || width <= 0) {
     return [];
   }
-  const { step, times } = ticks([0, duration], width);
+  const span = end - start;
+  const { step, times } = ticks([start, end], width);
   const marks = times
-    .filter((time) => time / duration <= 0.9)
+    .filter((time) => (time - start) / span <= 0.9)
     .map((time) => ({
-      at: time / duration,
-      label: time === 0 ? "0" : formatInstant(time, step, duration),
+      at: (time - start) / span,
+      label: time === 0 ? "0" : formatInstant(time, step, end),
     }));
-  return [...marks, { at: 1, label: formatDuration(duration) }];
+  const last = start === 0 ? formatDuration(end) : formatInstant(end, step, end);
+  return [...marks, { at: 1, label: last }];
 }

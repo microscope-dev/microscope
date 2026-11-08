@@ -3346,10 +3346,14 @@ textarea.input {
   display: none;
 }
 
+/* Lanes of samples with zones under them. Tall enough for several
+ * threads' zones, scrolling past that. */
 .profile-timeline {
+  position: relative;
   display: flex;
+  flex: none;
   flex-direction: column;
-  max-height: 180px;
+  max-height: 40vh;
   overflow: auto;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
@@ -3483,6 +3487,7 @@ textarea.input {
 }
 
 .lane-name {
+  flex: none;
   height: 18px;
   padding: 0 8px;
   overflow: hidden;
@@ -3505,9 +3510,85 @@ textarea.input {
   color: var(--ink-3);
 }
 
-.lanes {
+/* Beside a thread's zones, the chevron that shows the nested ones. */
+.lane-zones {
   flex: none;
-  cursor: crosshair;
+  padding: 0 8px;
+}
+
+.lane-chevron {
+  height: 16px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--ink-3);
+  font: 11px / 16px var(--mono);
+  cursor: pointer;
+}
+
+.lane-chevron:hover {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.ruler-marks {
+  cursor: col-resize;
+}
+
+.profile-timeline.panning,
+.profile-timeline.panning canvas {
+  cursor: grabbing;
+}
+
+.plot-lane {
+  display: flex;
+  flex: none;
+  border-top: 1px solid var(--line);
+}
+
+.plot-lane svg {
+  display: block;
+  flex: none;
+}
+
+.plot-lane path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.25;
+}
+
+.plot-name {
+  flex: none;
+  padding: 2px 8px;
+  border-right: 1px solid var(--line);
+  color: var(--ink-2);
+  font: 11px / 16px var(--mono);
+}
+
+.plot-name .dim {
+  color: var(--ink-3);
+}
+
+/* At the pointer wherever the lanes have scrolled. */
+.lanes-tip {
+  position: fixed;
+  z-index: 5;
+  max-width: 360px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.lanes {
+  display: block;
+  flex: none;
+  cursor: pointer;
   touch-action: none;
 }
 
@@ -3798,98 +3879,51 @@ textarea.input {
 
 /* Zones */
 
-.profile-zones {
+/* The lanes and the view on the left, the Zones pane on the right. */
+.profile-body {
   display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.profile-body.zoned {
   grid-template-columns: minmax(0, 1fr) 340px;
-  min-height: 0;
 }
 
-.zones-tracks {
-  min-height: 0;
-  border-right: 1px solid var(--line);
-}
-
-.zones-body {
-  position: relative;
-  overflow: auto;
-}
-
-.zone-lane {
+.profile-main {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
-.zone-plot {
-  border-top: 1px solid var(--line);
+.zones-pane {
+  min-height: 0;
+  border-left: 1px solid var(--line);
 }
 
-/* The ruler stays in sight while the tracks scroll under it. */
-.zone-ruler {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
+.zones-pane .pane-head .end {
+  margin-left: auto;
 }
 
-.zone-ruler svg {
-  display: block;
-  flex: none;
-}
-
-.zone-ruler line {
-  stroke: var(--line-strong);
-}
-
-.zone-ruler text {
-  fill: var(--ink-3);
-  font: 10px var(--mono);
-}
-
-.zones-body.panning,
-.zones-body.panning canvas {
-  cursor: grabbing;
-}
-
-.zone-plot svg {
-  display: block;
-  flex: none;
-}
-
-.zone-plot path {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.25;
-}
-
-.zones-body canvas {
-  display: block;
-  flex: none;
-  cursor: pointer;
-}
-
-.zone-names {
-  position: relative;
-  flex: none;
-  border-right: 1px solid var(--line);
-}
-
-.zone-name {
-  position: absolute;
-  left: 0;
-  width: 100%;
-  height: 16px;
-  padding: 0 8px;
-  overflow: hidden;
-  color: var(--ink-2);
-  font: 11px / 16px var(--mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.find-zone .pane-body {
+.zones-pane .pane-body {
   padding: 6px 10px;
   overflow: auto;
+}
+
+/* The sites scroll on their own, so a long list never pushes the chosen
+ * site's lengths out of sight. */
+.zone-sites-list {
+  max-height: 260px;
+  overflow: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.zone-sites thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
 }
 
 .zone-sites {
@@ -3918,7 +3952,7 @@ textarea.input {
 }
 
 .zone-sites .warn,
-.find-zone .warn {
+.zones-pane .warn {
   color: var(--changed);
 }
 
@@ -3944,12 +3978,63 @@ textarea.input {
   gap: 1px;
   height: 60px;
   border-bottom: 1px solid var(--line);
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
 }
 
+/* Each bar fills its column, so the whole column takes the pointer, and
+ * draws its count as a share of the tallest. */
 .zone-histogram .bar {
+  position: relative;
   flex: 1;
-  min-height: 1px;
+  align-self: stretch;
+}
+
+.zone-histogram .bar::after {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: max(calc(var(--share) * 100%), 1px);
   background: var(--accent);
+  content: "";
+}
+
+.zone-histogram .bar.unbanded::after {
+  opacity: 0.3;
+}
+
+.zone-histogram .bar.banded {
+  background: var(--accent-soft);
+}
+
+/* The selected zone's length. */
+.zone-histogram .bar.here {
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.zone-band,
+.zone-rank,
+.zone-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 8px 0;
+  font: 11px var(--mono);
+}
+
+.zone-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 8px 0;
+}
+
+.zone-scope .segmented {
+  margin-left: 0;
 }
 
 .zone-axis {
@@ -4515,7 +4600,7 @@ textarea.input {
 
 @media (max-width: 760px) {
   .syscalls-split,
-  .profile-zones {
+  .profile-body.zoned {
     grid-template-columns: minmax(0, 1fr);
   }
 }

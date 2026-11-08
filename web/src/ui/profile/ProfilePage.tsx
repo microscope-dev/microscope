@@ -10,13 +10,18 @@ import {
 } from "react";
 
 import {
+  cleared,
   type ProfileLook,
+  parseBand,
+  parseInstance,
   parseRange,
   parseTransform,
   queryOf,
   rangeOf,
+  scopeOf,
   untransformed,
   validateProfileLook,
+  withInstance,
   withLook,
 } from "../../profile/look";
 import {
@@ -27,6 +32,7 @@ import {
   formatWeight,
 } from "../../profile/paint";
 import { tracedBy, traceNotes } from "../../profile/syscalls";
+import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import type { PaneProps } from "../../workbench/kinds";
@@ -43,12 +49,12 @@ import {
 import { CommandBlock, FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
+import { Lanes } from "./Lanes";
 import { defaultView, Options } from "./Options";
 import { Chip, ClearChip, LaneChip, LookButton, ShareBar } from "./parts";
 import { SyscallsView } from "./SyscallsView";
-import { Timeline } from "./Timeline";
 import { TreeView } from "./TreeView";
-import { ZonesView } from "./ZonesView";
+import { ZonesPane } from "./ZonesPane";
 
 /** What a profile pane keeps: the profile's name, for its tab, and how it
  * looks at the profile. */
@@ -107,7 +113,11 @@ export function ProfileBody({ id, pane }: PaneProps) {
   const search = location.search as Record<string, unknown>;
   const addressed = location.pathname === `/profile/${profile}`;
   useEffect(() => {
-    if (leads && (!addressed || !sameLook(validateProfileLook(search), look))) {
+    // What the look cannot mean, such as an old link's view, is taken out
+    // of the address too.
+    const kept = validateProfileLook(search);
+    const dropped = Object.keys(search).some((key) => !(key in kept));
+    if (leads && (!addressed || dropped || !sameLook(kept, look))) {
       void navigate({ to: "/profile/$profile", params: { profile }, search: look, replace: true });
     }
   }, [leads, addressed, search, look, navigate, profile]);
@@ -134,6 +144,31 @@ export function Profile({
   const revision = info?.revision ?? 0;
   const summary = useAnswer("profile", { profile, revision });
   const disconnected = useDisconnected();
+  const [zonesOpen, setZonesOpen] = useState(true);
+  const toggleZones = useCallback(() => setZonesOpen((was) => !was), []);
+  const closeZones = useCallback(() => setZonesOpen(false), []);
+  // Escape lets go of the most specific zone selection first, except where
+  // a field or a dialog has it.
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = root.current;
+    const escape = (event: KeyboardEvent) => {
+      const target = event.target as Element;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        target.closest("input, textarea, select, [role=dialog]")
+      ) {
+        return;
+      }
+      if (cleared(look) !== look) {
+        event.preventDefault();
+        setLook(cleared, true);
+      }
+    };
+    element?.addEventListener("keydown", escape);
+    return () => element?.removeEventListener("keydown", escape);
+  });
   const focus = useMemo<ProfileFocus | null>(
     () =>
       summary.data
@@ -175,9 +210,10 @@ export function Profile({
     return <div className="page muted">Reading the profile…</div>;
   }
   const view = look.view ?? defaultView(focus.summary);
+  const zoned = focus.summary.timed && focus.summary.zoneSites.length > 0;
   return (
     <ProfileContext.Provider value={focus}>
-      <div className="profile" data-testid="profile">
+      <div className="profile" data-testid="profile" ref={root}>
         <Accounting summary={focus.summary} />
         {disconnected ? (
           // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
@@ -186,27 +222,34 @@ export function Profile({
           </div>
         ) : null}
         {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
-        {focus.summary.timed ? (
-          <Timeline />
-        ) : (
-          <div className="profile-untimed muted" data-testid="untimed">
-            Read from {focus.summary.source ?? "a file"}, which keeps no times or threads: this
-            profile has no timeline.
+        <div className={`profile-body ${zoned && zonesOpen ? "zoned" : ""}`}>
+          <div className="profile-main">
+            {focus.summary.timed ? (
+              <Lanes />
+            ) : (
+              <div className="profile-untimed muted" data-testid="untimed">
+                Read from {focus.summary.source ?? "a file"}, which keeps no times or threads: this
+                profile has no timeline.
+              </div>
+            )}
+            <ProfileHead
+              info={info}
+              zonesOpen={zoned ? zonesOpen : null}
+              toggleZones={toggleZones}
+            />
+            <div className="profile-view">
+              {view === "syscalls" ? (
+                <SyscallsView />
+              ) : view === "functions" ? (
+                <FunctionsView />
+              ) : view === "tree" ? (
+                <TreeView />
+              ) : (
+                <FlameView />
+              )}
+            </div>
           </div>
-        )}
-        <ProfileHead info={info} />
-        <div className="profile-view">
-          {view === "syscalls" ? (
-            <SyscallsView />
-          ) : view === "zones" ? (
-            <ZonesView />
-          ) : view === "functions" ? (
-            <FunctionsView />
-          ) : view === "tree" ? (
-            <TreeView />
-          ) : (
-            <FlameView />
-          )}
+          {zoned && zonesOpen ? <ZonesPane close={closeZones} /> : null}
         </div>
       </div>
     </ProfileContext.Provider>
@@ -215,7 +258,16 @@ export function Profile({
 
 /** The profile's name, the views, and everything the query holds, each
  * removable where it shows. */
-function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
+function ProfileHead({
+  info,
+  zonesOpen,
+  toggleZones,
+}: {
+  info: ProfileInfo | undefined;
+  /** Whether the Zones pane shows, or null with no zones to show. */
+  zonesOpen: boolean | null;
+  toggleZones: () => void;
+}) {
   const { summary, look } = useProfile();
   const [detailing, setDetailing] = useState(false);
   const showDetails = useCallback(() => setDetailing(true), []);
@@ -247,10 +299,22 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
         </div>
       ) : null}
       <Options />
+      {zonesOpen === null ? null : (
+        <button
+          type="button"
+          className="tb ghost"
+          aria-pressed={zonesOpen}
+          title="Every zone site, and one's lengths"
+          onClick={toggleZones}
+        >
+          Zones
+        </button>
+      )}
       <div className="profile-query">
-        {range ? (
+        {range && !look.zi ? (
           <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
         ) : null}
+        <ZoneChips />
         <LaneChip />
         {(look.lb ?? []).map((label) => (
           <LabelChip key={label} label={label} />
@@ -258,7 +322,7 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
         {(look.tf ?? []).map((entry, index) => (
           <TransformChip key={entry} entry={entry} index={index} />
         ))}
-        {sampled ? <Compare /> : null}
+        {sampled && look.bz !== "rest" ? <Compare /> : null}
       </div>
     </div>
   );
@@ -273,6 +337,74 @@ const DIFF_MEASURES = [
   [undefined, "time", "Each function's cost, as report --base compares it"],
   ["share", "share", "Each function's share of its own profile"],
 ] as const;
+
+/** What the zones chosen keep of the samples: one zone's span, the
+ * zones of a site or its band, or a diff of the band with the rest. */
+function ZoneChips() {
+  const { summary, look, setLook } = useProfile();
+  const instance = look.zi ? parseInstance(look.zi) : null;
+  const scope = scopeOf(look);
+  const dropInstance = useCallback(
+    () => setLook((prev) => withInstance(prev, null), true),
+    [setLook],
+  );
+  const dropScope = useCallback(
+    () =>
+      // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+      setLook((prev) => withLook(withLook(prev, "zf", undefined), "bz", undefined), true),
+    [setLook],
+  );
+  const dropRest = useCallback(
+    // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
+    () => setLook((prev) => withLook(withLook(prev, "bz", undefined), "dm", undefined), true),
+    [setLook],
+  );
+  const band = look.zb ? parseBand(look.zb) : null;
+  const banded = band ? ` ${formatDuration(band[0])} – ${formatDuration(band[1])}` : "";
+  return (
+    <>
+      {instance ? (
+        <Chip
+          label={`${look.zs ?? "zone"} ${formatDuration(instance.span[1] - instance.span[0])}, ${threadName(summary.threads, instance.thread)}`}
+          title="Samples of the threads selected during this zone"
+          remove={dropInstance}
+        />
+      ) : null}
+      {scope && look.bz !== "rest" ? (
+        <Chip
+          label={`inside ${scope.name}${scope.band ? banded : ""}`}
+          title="Samples inside these zones, nested ones included"
+          remove={dropScope}
+        />
+      ) : null}
+      {scope && look.bz === "rest" ? (
+        <>
+          <Chip
+            label={`${scope.name}${banded} vs the rest`}
+            title="Red grew and blue shrank in the band's zones against the site's others"
+            remove={dropRest}
+          />
+          <DiffMeasure />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/** Whether a diff's change column compares time or each side's share,
+ * which tells apart sides of different sizes. */
+function DiffMeasure() {
+  const { look } = useProfile();
+  return (
+    <div className="segmented" title="What the change column compares">
+      {DIFF_MEASURES.map(([dm, label, title]) => (
+        <LookButton key={label} field="dm" value={dm} title={title} pressed={look.dm === dm}>
+          {label}
+        </LookButton>
+      ))}
+    </div>
+  );
+}
 
 function LabelChip({ label }: { label: string }) {
   const { setLook } = useProfile();
@@ -350,13 +482,7 @@ function Compare() {
           title="Red grew and blue shrank against this base"
           remove={removeBase}
         />
-        <div className="segmented" title="What the change column compares">
-          {DIFF_MEASURES.map(([dm, label, title]) => (
-            <LookButton key={label} field="dm" value={dm} title={title} pressed={look.dm === dm}>
-              {label}
-            </LookButton>
-          ))}
-        </div>
+        <DiffMeasure />
       </>
     );
   }
