@@ -86,7 +86,7 @@ just all             # full pre-commit gate
 ```
 
 Run `just stress` before merging lifecycle, run-control, attach, or concurrency
-changes. Run `just sim 600` for those changes and for simulator model changes.
+changes. Run `just sim 120` for those changes and for simulator model changes.
 
 ## Agent harnesses
 
