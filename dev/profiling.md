@@ -787,6 +787,10 @@ after reader loss. Changes to record layout require coordinated SDK, decoder,
 fixture, and format tests. A new static site layout also takes a section of its
 own, as `abi::SITE_SECTION` says, so that two SDKs in one program never walk
 each other's sites.
+A call that re-enters the SDK on the thread while it locks or allocates, as
+from the program's allocator or a signal handler, skips that work instead of
+waiting on itself: it defines no site, takes no ring, and its event is counted
+as dropped.
 
 The Rust SDK writes records as atomic words and never frees a ring, so its
 unsafe code is limited to making a ring and walking the site table. Its tests

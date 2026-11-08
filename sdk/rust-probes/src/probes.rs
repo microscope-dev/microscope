@@ -118,8 +118,10 @@ static DEFINED: std::sync::Mutex<Definitions> = std::sync::Mutex::new(Vec::new()
 /// The run-time site of `kind`, a `SITE_` constant other than
 /// [`abi::SITE_NONE`], named `name` at `file`'s `line`: the one defined
 /// before with all four, or a new one. None when the kind is not one,
-/// either text is longer than [`abi::MOST_SITE_TEXT`], or every site is
-/// taken. It is off until microscope switches it on, as a static site is.
+/// either text is longer than [`abi::MOST_SITE_TEXT`], every site is
+/// taken, or the thread is defining one already, as an allocator that
+/// defines one while the SDK copies a site's texts is. It is off until
+/// microscope switches it on, as a static site is.
 pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Site> {
     arm();
     let longest = abi::MOST_SITE_TEXT as usize;
@@ -130,6 +132,7 @@ pub fn define(kind: u8, name: &str, file: &str, line: u32) -> Option<&'static Si
         return None;
     }
 
+    let _inside = Inside::enter()?;
     let mut defined = DEFINED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -364,11 +367,44 @@ pub fn found() -> bool {
     listening() && CONTROL.timeout.load(Ordering::Acquire) != 0
 }
 
+thread_local! {
+    static INSIDE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The thread is in one of the SDK's paths that lock or allocate until this
+/// drops.
+struct Inside;
+
+impl Inside {
+    /// None when the thread is in one already: a call that re-enters the
+    /// SDK from there, as from the program's allocator or a signal handler,
+    /// must not wait on it or start it again.
+    fn enter() -> Option<Self> {
+        // Made only once entered: a refused call's guard would clear the
+        // flag as it dropped.
+        (!INSIDE.replace(true)).then(|| Self)
+    }
+}
+
+impl Drop for Inside {
+    fn drop(&mut self) {
+        INSIDE.set(false);
+    }
+}
+
 static ARMED: Once = Once::new();
 
 /// Switches the program on, once, if the recording that started it records
-/// every site and has not found it yet: see [`abi::RECORDER`].
+/// every site and has not found it yet: see [`abi::RECORDER`]. A call from
+/// inside the arming returns at once.
 fn arm() {
+    if ARMED.is_completed() {
+        return;
+    }
+
+    let Some(_inside) = Inside::enter() else {
+        return;
+    };
     ARMED.call_once(|| {
         let recorder =
             std::env::var_os(abi::RECORDER).and_then(|value| value.to_str()?.parse::<i32>().ok());
@@ -819,13 +855,19 @@ extern "C" fn exiting() {
 }
 
 /// The thread's ring, the first time it writes one: a free one, or a new
-/// one, or none.
+/// one, or none. An event the thread writes while it takes one, as from
+/// the allocator that makes the ring, gets none, and the thread takes its
+/// ring at the next.
 #[cold]
 #[inline(never)]
 fn acquire() -> Slot {
     if CONTROL.enable.load(Ordering::Acquire) == 0 {
         return Slot::Nothing;
     }
+
+    let Some(_inside) = Inside::enter() else {
+        return Slot::Nothing;
+    };
 
     ATFORK.call_once(|| {
         // The handlers touch only atomics, the thread's own slot, and the
