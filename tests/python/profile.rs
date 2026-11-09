@@ -979,66 +979,125 @@ mod bpf {
         )
     }
 
-    /// The fixture's profile under `interpreter` by the BPF engine, from
-    /// a recording that lets the program go after `running`.
-    fn recorded(interpreter: &str, running: Duration) -> Profile {
-        recorded_with(interpreter, "profiled.py", &[], running)
-    }
-
-    /// `fixture`'s profile under `interpreter` by the BPF engine, run with
-    /// `environment`, from a recording that lets the program go after
-    /// `running`.
-    fn recorded_with(
+    /// `fixture` run by `interpreter` with `environment`, as the BPF
+    /// tests record it.
+    fn program(
         interpreter: &str,
         fixture: &str,
         environment: &[(&str, &std::ffi::OsStr)],
-        running: Duration,
-    ) -> Profile {
-        // The recording runs in a process of its own, which the test cannot
-        // watch for samples as it records: it runs for `running`.
-        let scratch = crate::support::ScratchDir::new("python-bpf");
-        let output = scratch
-            .path()
-            .join(format!("{interpreter}-{fixture}.usprof"));
-
-        let mut child = Command::new(launcher())
-            .arg(env!("CARGO_BIN_EXE_microscope"))
-            .arg("record")
-            .arg("--python")
-            .arg("bpf")
-            .arg("--output")
-            .arg(&output)
-            .arg("--")
-            .arg(python::interpreter(interpreter))
+    ) -> Command {
+        let mut program = Command::new(python::interpreter(interpreter));
+        program
             .args(if environment.is_empty() {
                 ["-I", "-B"].as_slice()
             } else {
                 ["-s", "-B"].as_slice()
             })
             .arg(python::fixture(fixture))
-            .envs(environment.iter().copied())
+            .envs(environment.iter().copied());
+        program
+    }
+
+    /// The profile of `program`, recorded by the BPF engine while it is
+    /// held on its standard input. The recording runs in a process of its
+    /// own, so the test asks it for its window with SIGUSR2 and gives the
+    /// program as many lines as `lines` says of each window, until it has
+    /// given `release` of them, or the deadline passes.
+    fn recorded_until(
+        program: &Command,
+        release: usize,
+        mut lines: impl FnMut(&Profile) -> usize,
+    ) -> Profile {
+        use std::io::BufRead as _;
+
+        let scratch = crate::support::ScratchDir::new("python-bpf");
+        let output = scratch.path().join("bpf.usprof");
+        let mut child = Command::new(launcher())
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--python", "bpf", "--window", "3600", "--output"])
+            .arg(&output)
+            .arg("--")
+            .arg(program.get_program())
+            .args(program.get_args())
+            .envs(
+                program
+                    .get_envs()
+                    .filter_map(|(name, value)| Some((name, value?))),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
             .expect("run microscope");
 
-        std::thread::sleep(running);
-        child
-            .stdin
-            .take()
-            .expect("its input")
-            .write_all(b"\n")
-            .expect("release the program");
+        // microscope's lines, each sent as it comes, and all of them once
+        // it ends.
+        let (said, heard) = std::sync::mpsc::channel();
+        let stderr = std::io::BufReader::new(child.stderr.take().expect("its errors"));
+        let reader = std::thread::spawn(move || {
+            let mut all = String::new();
+            for line in stderr.lines() {
+                let line = line.expect("microscope's errors");
+                all.push_str(&line);
+                all.push('\n');
+                let _ = said.send(line);
+            }
+            all
+        });
+        let deadline = Instant::now() + READY_DEADLINE;
+        let next = |what: &str| loop {
+            let Ok(line) = heard.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            else {
+                return None;
+            };
+            if let Some(rest) = line.strip_prefix(what) {
+                return Some(rest.to_owned());
+            }
+        };
 
-        let finished = child.wait_with_output().expect("microscope finishes");
-        assert!(
-            finished.status.success(),
-            "{interpreter}: {}",
-            String::from_utf8_lossy(&finished.stderr)
-        );
+        // The window's saves, and the pid they are asked of, once
+        // microscope handles SIGUSR2.
+        let pid = next("microscope: keeping the last ")
+            .and_then(|rest| {
+                let (_, pid) = rest.split_once("`kill -USR2 ")?;
+                pid.split_once('`')?.0.parse().ok()
+            })
+            .map(nix::unistd::Pid::from_raw);
+        let mut input = child.stdin.take().expect("its input");
+        let mut given = 0;
+        while let Some(pid) = pid
+            && given < release
+        {
+            nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGUSR2)
+                .expect("ask for the window");
+            let Some(saved) = next("microscope: saved ") else {
+                break;
+            };
+            let path = saved
+                .split_once(" samples of the window to ")
+                .expect("where the window went")
+                .1;
+            let window = Profile::read(std::path::Path::new(path))
+                .expect("read the window")
+                .profile;
+            let wanted = lines(&window).min(release);
+            while given < wanted {
+                // A program that ended on its own has nothing to let go.
+                let _ = input.write_all(b"\n");
+                given += 1;
+            }
+        }
+        drop(input);
 
+        let status = child.wait().expect("microscope finishes");
+        let stderr = reader.join().expect("microscope's errors");
+        assert!(status.success(), "{stderr}");
         Profile::read(&output).expect("read the profile").profile
+    }
+
+    /// [`recorded_until`] for a program held once, until `ready`.
+    fn recorded_when(program: &Command, mut ready: impl FnMut(&Profile) -> bool) -> Profile {
+        recorded_until(program, 1, |window| usize::from(ready(window)))
     }
 
     /// The BPF engine names the methods `dataclasses` compiles from strings
@@ -1048,18 +1107,33 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn the_bpf_engine_names_dataclass_methods_by_their_class() {
         for interpreter in PROFILED {
-            let profile = recorded_with(
-                interpreter,
-                "dataclass_methods.py",
-                &[],
-                Duration::from_millis(500),
-            );
+            let methods = |profile: &Profile| {
+                let python = paths(profile, Source::Samples, Look::Python);
+                names_dataclass_methods(python.keys().flatten())
+            };
+            let profile =
+                recorded_when(&program(interpreter, "dataclass_methods.py", &[]), methods);
             let python = paths(&profile, Source::Samples, Look::Python);
             assert!(
                 names_dataclass_methods(python.keys().flatten()),
                 "{interpreter}: {python:#?}"
             );
         }
+    }
+
+    /// The samples of the OpenMP workers.
+    fn workers(
+        stacks: &[microscope::profiler::SampledStack],
+    ) -> Vec<&microscope::profiler::SampledStack> {
+        stacks
+            .iter()
+            .filter(|stack| {
+                stack
+                    .functions
+                    .iter()
+                    .any(|function| function == "gomp_thread_start")
+            })
+            .collect()
     }
 
     /// A thread that never enters the interpreter's loop, as a library's
@@ -1074,24 +1148,14 @@ mod bpf {
             ("OMP_NUM_THREADS", std::ffi::OsStr::new("2")),
         ];
 
-        recorded_with(
-            "3.14",
-            "workers.py",
-            &environment,
-            Duration::from_millis(200),
-        );
+        let program = program("3.14", "workers.py", &environment);
+        // The first recording reads the libraries' debug information into
+        // the cache, as the second, which the test asserts on, then finds.
+        recorded_when(&program, |profile| !workers(&profile.stacks()).is_empty());
 
-        let profile = recorded_with("3.14", "workers.py", &environment, Duration::from_secs(1));
+        let profile = recorded_when(&program, |profile| workers(&profile.stacks()).len() >= 100);
         let stacks = profile.stacks();
-        let workers = stacks
-            .iter()
-            .filter(|stack| {
-                stack
-                    .functions
-                    .iter()
-                    .any(|function| function == "gomp_thread_start")
-            })
-            .collect::<Vec<_>>();
+        let workers = workers(&stacks);
         assert!(!workers.is_empty(), "no samples on workers: {stacks:#?}");
 
         let unknown = workers
@@ -1163,41 +1227,22 @@ mod bpf {
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn a_program_an_exec_replaces_is_read_by_its_own_interpreter() {
         let lines = lines();
-        let scratch = crate::support::ScratchDir::new("python-bpf-exec");
-        let output = scratch.path().join("exec.usprof");
-
-        let mut child = Command::new(launcher())
-            .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--python", "bpf", "--output"])
-            .arg(&output)
-            .arg("--")
-            .arg(python::interpreter("3.12"))
-            .args(["-I", "-B"])
-            .arg(python::fixture("exec_profiled.py"))
-            .arg(python::interpreter("3.14"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("run microscope");
-
-        std::thread::sleep(Duration::from_secs(3));
-
-        child
-            .stdin
-            .take()
-            .expect("its input")
-            .write_all(b"\n")
-            .expect("release the program");
-
-        let finished = child.wait_with_output().expect("microscope finishes");
-        assert!(
-            finished.status.success(),
-            "{}",
-            String::from_utf8_lossy(&finished.stderr)
-        );
-
-        let profile = Profile::read(&output).expect("read the profile").profile;
+        let mut exec = program("3.12", "exec_profiled.py", &[]);
+        exec.arg(python::interpreter("3.14"));
+        let spinning = |profile: &Profile| {
+            paths(profile, Source::Samples, Look::Python)
+                .iter()
+                .any(|(path, _)| spins(path, &lines))
+        };
+        // Once the first program's Python frames are read, it executes the
+        // second; once the second's spinners are, it ends.
+        let profile = recorded_until(&exec, 2, |profile| {
+            if spinning(profile) {
+                2
+            } else {
+                usize::from(profile.interpreted())
+            }
+        });
         let python = paths(&profile, Source::Samples, Look::Python);
         let spinning: u64 = python
             .iter()
@@ -1224,7 +1269,18 @@ mod bpf {
     fn samples_hold_each_threads_python_frames_by_line() {
         let lines = lines();
         for interpreter in PROFILED {
-            let profile = recorded(interpreter, Duration::from_secs(2));
+            // Enough samples of the spinners that those taken before the
+            // engine knew the program are few among them.
+            let spinning = |profile: &Profile| {
+                let python = paths(profile, Source::Samples, Look::Python);
+                let spinning: u64 = python
+                    .iter()
+                    .filter(|(path, _)| spins(path, &lines))
+                    .map(|(_, weight)| weight)
+                    .sum();
+                spinning >= 1000 && spinning * 2 > python.values().sum()
+            };
+            let profile = recorded_when(&program(interpreter, "profiled.py", &[]), spinning);
             let python = paths(&profile, Source::Samples, Look::Python);
             let spinning: u64 = python
                 .iter()

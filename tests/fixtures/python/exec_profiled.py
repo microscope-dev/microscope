@@ -1,16 +1,17 @@
-"""A program that runs Python for a while and then replaces itself with
-another interpreter running profiled.py, which the first argument names: a
-profile must read the second program's frames by its own interpreter, not
-by what the first one's modules said.
+"""A program that runs Python until a line arrives on its standard input,
+and then replaces itself with another interpreter running profiled.py,
+which the first argument names: a profile must read the second program's
+frames by its own interpreter, not by what the first one's modules said.
 """
 
 import os
 import sys
-import time
+import threading
 
-deadline = time.monotonic() + 0.5
+released = threading.Thread(target=sys.stdin.readline)
+released.start()
 total = 0
-while time.monotonic() < deadline:
+while released.is_alive():
     total += 1
 
 profiled = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'profiled.py')
