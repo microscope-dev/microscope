@@ -532,11 +532,33 @@ fn cpu_samples_unwind_through_v8s_code_to_each_threads_root() {
 /// thread's root.
 #[test]
 fn v8_without_its_debugger_constants_unwinds_through_its_code() {
+    const ENOUGH: usize = 1000;
     let scratch = ScratchDir::new("node-busy-without-postmortem");
-    let (command, _) = busy_on("26-without-postmortem", &scratch, 2);
-    let recording =
-        microscope::profiler::record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
+    let (command, _) = busy_on("26-without-postmortem", &scratch, 60);
+    // The recording ends once it holds enough samples, not after a time,
+    // which a loaded machine spends loading what unwinds them.
+    let stop = AtomicBool::new(false);
+    let started = Instant::now();
+    let recording = record_watched(
+        command,
+        &RecordOptions::default(),
+        &mut Watch {
+            every: Duration::from_millis(100),
+            publish: &mut |profile| {
+                if profile.samples() >= ENOUGH || started.elapsed() > READY_DEADLINE {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+            stop: &stop,
+            save: None,
+        },
+    )
+    .expect("record");
+    assert!(
+        recording.profile.samples() >= ENOUGH,
+        "{} samples",
+        recording.profile.samples()
+    );
     let paths = paths(&recording.profile, Source::Samples, Look::Native);
     let total: u64 = paths.values().sum();
     let rootless = rootless(&paths);
