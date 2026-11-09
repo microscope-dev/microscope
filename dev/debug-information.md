@@ -429,7 +429,9 @@ see, one it attached to or a core's, glibc's records stand in for it
 is at the top of its stack, just above where it began, when the
 descriptor's `tid` names that thread. glibc marks neither end with a zero.
 Elsewhere, as under musl or for a thread raw `clone` made without its own
-descriptor, only the second bound holds.
+descriptor, only the second bound holds. So does a profiler
+sample (`src/unwind/sample.rs`), which carries no thread's start; below its
+bound the stack goes on by the kernel's chain where that can follow it.
 
 A core dump can leave out a thread's stack while still listing it as saved.
 `gcore`, and a kernel that skips pages it cannot read, write such a range as

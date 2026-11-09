@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use proptest::prelude::*;
 
 use super::{CHAIN_LIMIT, FrameRules, SampledFrame, SampledState, StackEnd, unwind_sample};
+use crate::capture::records::Truncation;
 use crate::debug_info::UnwindInfo;
 use crate::unwind::{
     DwarfRegister, MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile, SIGCONTEXT_REGISTERS,
@@ -597,6 +598,28 @@ fn unwinds_to_a_prefix(stack: &Stack) -> Result<(), TestCaseError> {
 
 /// Unwinds the sample a profiler takes of the stack.
 fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
+    let words = stack
+        .copied_words
+        .min(usize::try_from((truth.stack_end - truth.stack_pointer) / 8).unwrap());
+    let bytes = copy(truth, words);
+    let chain = kernel_chain(truth);
+    let registers = [
+        (RETURN_ADDRESS, truth.frames[0].0),
+        (RSP, truth.stack_pointer),
+        (RBP, truth.frames[0].1),
+    ];
+    unwind(
+        stack,
+        SampledState {
+            registers: &registers,
+            stack: &bytes,
+            chain: &chain,
+        },
+    )
+}
+
+/// Unwinds `sample` through the functions of `stack`.
+fn unwind(stack: &Stack, sample: SampledState<'_>) -> (Vec<SampledFrame>, StackEnd) {
     let rules = Rules { stack };
     let image = image(stack);
     let modules = [UnwindModule {
@@ -609,25 +632,10 @@ fn sample(stack: &Stack, truth: &Truth) -> (Vec<SampledFrame>, StackEnd) {
         image: &image,
         unwind: &rules,
     }];
-
-    let words = stack
-        .copied_words
-        .min(usize::try_from((truth.stack_end - truth.stack_pointer) / 8).unwrap());
-    let bytes = copy(truth, words);
-    let chain = kernel_chain(truth);
-    let registers = [
-        (RETURN_ADDRESS, truth.frames[0].0),
-        (RSP, truth.stack_pointer),
-        (RBP, truth.frames[0].1),
-    ];
     unwind_sample(
         &modules[..],
         &mut FrameRules::default(),
-        SampledState {
-            registers: &registers,
-            stack: &bytes,
-            chain: &chain,
-        },
+        sample,
         stack.limit,
     )
 }
@@ -702,4 +710,66 @@ fn a_sample_in_a_signal_trampoline_continues_to_what_it_interrupted() {
             .collect::<Vec<_>>(),
         truth.frames.iter().map(|frame| frame.0).collect::<Vec<_>>()
     );
+}
+
+/// A frame-pointer frame called from one with two words of zeroed locals,
+/// sampled in the callee, with the kernel's chain no further than the
+/// sample: the caller's rbp is `frame_pointer`, and the stack copy holds
+/// the locals, the return address, and two zero words above them.
+fn zero_return_address(frame_pointer: u64) -> (Vec<u64>, StackEnd) {
+    let function = |rule| Function {
+        rule,
+        role: CodeRole::Ordinary,
+    };
+    let stack = Stack {
+        functions: vec![
+            function(Rule::StackPointer {
+                locals: 2,
+                saves_rbp: false,
+            }),
+            function(Rule::FramePointer),
+        ],
+        frames: Vec::new(),
+        place: Place::Body,
+        copied_words: 5,
+        limit: 8,
+    };
+
+    let rip = Stack::base(0) + 0x10;
+    let caller = Stack::base(1) + 0x20;
+    let bytes = [0, 0, caller + 1, 0, 0]
+        .iter()
+        .flat_map(|word: &u64| word.to_le_bytes())
+        .collect::<Vec<_>>();
+    let (frames, end) = unwind(
+        &stack,
+        SampledState {
+            registers: &[(RETURN_ADDRESS, rip), (RSP, STACK), (RBP, frame_pointer)],
+            stack: &bytes,
+            chain: &[rip],
+        },
+    );
+
+    let addresses = frames.iter().map(|frame| frame.address.get()).collect();
+    (addresses, end)
+}
+
+/// The caller's frame, at its rbp, is the zero words above it: the zero
+/// return address there is where its thread's stack began.
+#[test]
+fn a_zero_return_address_above_the_frame_ends_the_stack() {
+    let (frames, end) = zero_return_address(STACK + 24);
+    assert_eq!(frames, [Stack::base(0) + 0x10, Stack::base(1) + 0x20]);
+    assert_eq!(end, StackEnd::Complete);
+}
+
+/// The caller's rbp was moved into unused stack, below its own stack
+/// pointer, where its rules find its return address among its callee's
+/// zeroed locals. No call wrote that zero, so the stack does not end
+/// there.
+#[test]
+fn a_zero_return_address_below_the_frame_is_no_stack_end() {
+    let (frames, end) = zero_return_address(STACK - 8);
+    assert_eq!(frames, [Stack::base(0) + 0x10, Stack::base(1) + 0x20]);
+    assert_eq!(end, StackEnd::Truncated(Truncation::InvalidCaller, Some(0)));
 }

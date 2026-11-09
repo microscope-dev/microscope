@@ -375,7 +375,8 @@ fn walk_cfi<M: Modules + ?Sized>(
         }
 
         let caller = match step.registers.get(RETURN_ADDRESS) {
-            None | Some(0) => return Walked::certain(StackEnd::Complete),
+            None => return Walked::certain(StackEnd::Complete),
+            Some(0) => return zero_return_address(&registers, step.cfa, index),
             Some(caller) => caller,
         };
 
@@ -422,6 +423,28 @@ fn walk_cfi<M: Modules + ?Sized>(
 
     Walked {
         end,
+        certain: false,
+    }
+}
+
+/// How a stack ends at the frame of module `index` with `registers`,
+/// whose return address is zero, with its caller's stack pointer at `cfa`.
+///
+/// A thread's creator may mark the end of its stack so, above the frame.
+/// At or below the frame's own stack pointer, its rules found a slot no
+/// call wrote, as where rbp was moved into unused stack, and the kernel's
+/// chain may still go on.
+fn zero_return_address(
+    registers: &RegisterFile,
+    cfa: VirtualAddress,
+    index: Option<usize>,
+) -> Walked {
+    if registers.get(RSP).is_none_or(|sp| cfa.get() > sp) {
+        return Walked::certain(StackEnd::Complete);
+    }
+
+    Walked {
+        end: StackEnd::Truncated(Truncation::InvalidCaller, index),
         certain: false,
     }
 }
