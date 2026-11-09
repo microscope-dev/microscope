@@ -15,6 +15,12 @@ function Field() {
   return (
     <>
       <PathInput id="program" value={value} onChange={setValue} />
+      {/* Tab skips these, so the field moving focus on by itself must too. */}
+      <button type="button" disabled>
+        Off
+      </button>
+      <span tabIndex={-1}>Not in the tab order</span>
+      <input type="hidden" />
       <button type="button">Next</button>
     </>
   );
@@ -85,6 +91,28 @@ it("lets Tab leave the field when completing fails", async () => {
   await userEvent.keyboard("{Tab}");
   await expect.element(next()).toHaveFocus();
   await expect.element(field()).toHaveValue("src");
+});
+
+it("moves a waiting Tab on when its text has no suggestions", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  const early = await asked(server, "b");
+  await userEvent.keyboard("{Tab}");
+  await expect.element(field()).toHaveFocus();
+  server.answer(early, entries());
+  await expect.element(next()).toHaveFocus();
+  await expect.element(field()).toHaveValue("b");
+});
+
+it("moves a waiting Tab on when completing fails", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  const early = await asked(server, "b");
+  await userEvent.keyboard("{Tab}");
+  await expect.element(field()).toHaveFocus();
+  server.refuse(early, "failed", "no such directory");
+  await expect.element(next()).toHaveFocus();
+  await expect.element(field()).toHaveValue("b");
 });
 
 it("passes Tab through an empty field and stops descending at a directory", async () => {

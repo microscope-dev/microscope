@@ -17,6 +17,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -828,6 +829,7 @@ export function PathInput({
   // Whether an arrow key chose the selected suggestion.
   const [picked, setPicked] = useState(false);
   const listId = useId();
+  const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) {
@@ -848,7 +850,8 @@ export function PathInput({
           setSelected((index) => Math.min(index, Math.max(entries.length - 1, 0)));
         }
       } catch {
-        // No suggestions, rather than none yet, so Tab is not held back.
+        // No suggestions, rather than none yet, so Tab is not held back and
+        // one already waiting moves on.
         if (current) {
           setCompletion({ text: value, entries: [] });
         }
@@ -885,7 +888,12 @@ export function PathInput({
     if (tabbed && current) {
       // oxlint-disable-next-line react/set-state-in-effect -- a Tab pressed early waits here for the suggestions
       setTabbed(false);
-      accept(current[0]);
+      if (current.length > 0) {
+        accept(current[0]);
+      } else if (input.current) {
+        // With nothing to complete, the Tab does what the browser would have.
+        focusAfter(input.current);
+      }
     }
   }, [tabbed, current, accept]);
 
@@ -936,6 +944,7 @@ export function PathInput({
   return (
     <div className="combo">
       <input
+        ref={input}
         id={id}
         className="input"
         value={value}
@@ -967,6 +976,30 @@ export function PathInput({
       )}
     </div>
   );
+}
+
+/**
+ * Moves focus as Tab would from `from`, whose tabindex is 0: to the next
+ * element in document order with tabindex 0 that can take focus. Positive
+ * tabindexes come before every 0 in tab order, so none of them is next. With
+ * nothing after it, focus stays, since the browser's own controls are next.
+ * Stops some browsers add, such as Chrome's at a scrollable box with nothing
+ * focusable inside, are skipped.
+ */
+function focusAfter(from: HTMLElement) {
+  assert(from.tabIndex === 0, `moving on from tabindex ${from.tabIndex}`);
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  walker.currentNode = from;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    // focus() refuses what is disabled, hidden, inert, or not focusable at
+    // all, which tabIndex alone does not show.
+    if ((node instanceof HTMLElement || node instanceof SVGElement) && node.tabIndex === 0) {
+      node.focus();
+      if (document.activeElement === node) {
+        return;
+      }
+    }
+  }
 }
 
 function Suggestion({
