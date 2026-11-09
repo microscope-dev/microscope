@@ -6661,8 +6661,9 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
     assert!(!complete.contains("stack copy exhausted"), "{complete}");
 
     // prod's copy, where the program keeps no frame pointers, reaches past
-    // it too.
-    let production = tree("prod.usprof", &["--preset", "prod"]);
+    // it too. At prod's 49 Hz the program's 40 ms of CPU sometimes takes no
+    // sample, so this samples faster and keeps prod's copy.
+    let production = tree("prod.usprof", &["--preset", "prod", "--rate", "999"]);
     assert!(
         production.lines().any(|line| line.ends_with("%  _start")),
         "{production}"
