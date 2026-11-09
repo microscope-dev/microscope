@@ -5,6 +5,10 @@
 //! sessions ended, its recordings are kept under the recorder's `tests`
 //! directory; otherwise they are discarded. Nextest runs each test in its own
 //! process, so everything this process records belongs to one test.
+//!
+//! Each run names its recordings after the test, the time it started, and
+//! its process, so no later run overwrites a failure's recordings or makes an
+//! old one look current. Only the newest few runs of a test keep theirs.
 
 #![allow(
     unused_imports,
@@ -12,7 +16,7 @@
 )]
 
 #[cfg(debug_assertions)]
-pub use recording::{adapter_finished, recording_path, watch_adapter, watch_scenarios};
+pub use recording::{KEPT_RUNS, adapter_finished, recording_path, watch_adapter, watch_scenarios};
 
 #[cfg(not(debug_assertions))]
 pub use stubs::{adapter_finished, watch_adapter, watch_scenarios};
@@ -38,6 +42,11 @@ mod recording {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::{Mutex, PoisonError};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// How many runs of one test keep their recordings, counting runs that
+    /// were killed before they could discard theirs.
+    pub const KEPT_RUNS: usize = 5;
 
     /// Records the scenarios this test runs in this process.
     pub fn watch_scenarios() {
@@ -92,13 +101,17 @@ mod recording {
     }
 
     /// Where a failing test keeps a recording: `""` for the scenarios it
-    /// ran here, `".adapter"` for its first adapter.
+    /// ran here, `".adapter"` for its first adapter. The path is this run's
+    /// own.
     pub fn recording_path(suffix: &str) -> PathBuf {
         with(|recordings| recordings.path(suffix))
     }
 
     struct Recordings {
-        /// The path every recording of this test starts with.
+        directory: PathBuf,
+        test: String,
+
+        /// The path every recording of this run starts with.
         stem: PathBuf,
 
         /// Whether a scenario ran in this process.
@@ -160,6 +173,9 @@ mod recording {
             for path in kept {
                 eprintln!("flight recording: {}", path.display());
             }
+
+            // After writing, so this run counts as the newest.
+            prune(&self.directory, &self.test, KEPT_RUNS);
         }
     }
 
@@ -179,25 +195,15 @@ mod recording {
         change(recordings.get_or_insert_with(start))
     }
 
-    /// Names this test's recordings after it, as libtest names its thread,
-    /// removes those an earlier run left, and keeps them on any panic.
+    /// Names this run's recordings after the test, as libtest names its
+    /// thread, prunes those of older runs, and keeps this run's on any panic.
     fn start() -> Recordings {
         let thread = std::thread::current();
-        let test = thread.name().unwrap_or("unnamed");
+        let test = thread.name().unwrap_or("unnamed").to_owned();
         let directory = microscope::flight_recorder::directory()
             .join("tests")
             .join(env!("CARGO_CRATE_NAME"));
-
-        for entry in fs::read_dir(&directory).into_iter().flatten().flatten() {
-            let name = entry.file_name();
-            let earlier = name
-                .to_str()
-                .and_then(|name| name.strip_prefix(test))
-                .is_some_and(|rest| rest.starts_with('.'));
-            if earlier {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
+        prune(&directory, &test, KEPT_RUNS);
 
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -211,11 +217,56 @@ mod recording {
             }
         }));
 
+        // Fixed-width milliseconds, so name order is start order.
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis());
+        let run = format!("{started:013}-{}", std::process::id());
         Recordings {
-            stem: directory.join(test),
+            stem: directory.join(format!("{test}.{run}")),
+            directory,
+            test,
             scenarios: false,
             adapters: Vec::new(),
             kept: false,
+        }
+    }
+
+    /// Removes the recordings of `test` in `directory` of all but its
+    /// newest `keep` runs, and any not named for a run, such as those from
+    /// before runs were named.
+    fn prune(directory: &Path, test: &str, keep: usize) {
+        let mut recordings = Vec::new();
+        for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let Some(rest) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(test)?.strip_prefix('.'))
+            else {
+                continue;
+            };
+
+            let run = rest.split_once('.').map_or(rest, |(run, _)| run);
+            let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+            let is_run = run
+                .split_once('-')
+                .is_some_and(|(time, process)| digits(time) && digits(process));
+            recordings.push((is_run.then(|| run.to_owned()), entry.path()));
+        }
+
+        let mut runs = recordings
+            .iter()
+            .filter_map(|(run, _)| run.clone())
+            .collect::<Vec<_>>();
+        runs.sort_unstable();
+        runs.dedup();
+        let newest = &runs[runs.len().saturating_sub(keep)..];
+
+        for (run, path) in recordings {
+            if !run.is_some_and(|run| newest.contains(&run)) {
+                // Another run of the test may be pruning the same file.
+                let _ = fs::remove_file(path);
+            }
         }
     }
 }

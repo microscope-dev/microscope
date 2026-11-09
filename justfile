@@ -279,10 +279,9 @@ node *ARGS: cache-warm
 
 # Races in process control fail far more often when the debugger competes for
 # the CPUs, so this oversubscribes the test threads and keeps busy loops
-# running beside them. It stops at the first failure so that the failing
-# test's flight recording is kept; a later pass of the same test would remove
-# it. It loads debug information afresh, without the image cache, so that the
-# suite also runs against the loader itself. Arguments go to nextest, e.g.
+# running beside them. It stops at the first failure. It loads debug
+# information afresh, without the image cache, so that the suite also runs
+# against the loader itself. Arguments go to nextest, e.g.
 # `just stress 100 -E 'binary(dap)'`.
 #
 # With SOAK_MINUTES set, the tokio soak then runs under the same load for that

@@ -42,7 +42,10 @@ native control call, wait status, stop classification, published event, and
 panic.
 
 On a scenario failure, the harness prints the retained path under the test
-suite. DAP failures can have both a scenario log and an adapter log. Read both
+suite: `target/flight-recorder/tests/<suite>/<test>.<millis>-<pid>.log`. The
+name is the run's own, so rerunning the test, or a later stress iteration,
+leaves it in place; each test keeps the recordings of its newest 5 runs. DAP
+failures can have both a scenario log and an adapter log. Read both
 from the beginning of the last successful operation through the first broken
 invariant.
 

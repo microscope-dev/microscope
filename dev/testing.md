@@ -91,10 +91,14 @@ Development builds record client requests, ptrace calls, wait statuses, stop
 classification, events, and panics under `target/flight-recorder`. Read the
 recording before adding temporary logging.
 
-A failing scenario keeps `tests/<suite>/<test>.log`; DAP tests may also keep an
-adapter log. Ordinary runs stream under `runs/`, retain the latest 20, and
-update `latest.log`. Set `MICROSCOPE_FLIGHT_RECORDING=PATH` to choose a path or
-to an empty value to disable recording.
+A failing scenario keeps `tests/<suite>/<test>.<millis>-<pid>.log`, named for
+the run's start time and process, and prints the path; DAP tests may also keep
+an adapter log beside it. Later runs of the test never overwrite or remove a
+failure's recordings, except that each test keeps only its newest 5 runs.
+
+Ordinary runs stream under `runs/`, retain the latest 20, and update
+`latest.log`. Set `MICROSCOPE_FLIGHT_RECORDING=PATH` to choose a path or to an
+empty value to disable recording.
 
 Record new native control paths with `record!` or the `Recorded` ptrace
 wrapper. Recording must never change what the inferior observes.
@@ -540,7 +544,7 @@ that runs only after successful assertions.
 test threads as physical cores and busy loops competing for processors. It
 counts cores rather than hyperthreads: a core's second thread adds little, so
 counting both overloads the machine past the tests' deadlines. It stops at
-the first failure so the failing test's flight recording survives.
+the first failure, whose flight recording later runs leave in place.
 
 Use a count and nextest expression to chase a rare test:
 
