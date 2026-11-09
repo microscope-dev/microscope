@@ -5,12 +5,11 @@
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{
     Granularity, Look, Profile, PythonEngine, Query, RecordError, RecordOptions, Source,
-    StackEnding, Watch, record, record_watched,
+    StackEnding, record,
 };
 
 use crate::support::python;
@@ -20,18 +19,7 @@ use crate::support::python;
 /// threads say whether they wait for it.
 const PROFILED: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"];
 
-/// How long a recording holds its program for a profile to be ready
-/// before it releases it anyway, and the test fails on what it lacks.
-const READY_DEADLINE: Duration = Duration::from_secs(30);
-
-/// The snapshots a recording must hold, past its deadline, before it is
-/// released unready, and how long it may wait for them. The first stopped
-/// snapshot's debugger reads every library's debug information, which
-/// `just stress`, with no image cache and every CPU busy, can make take
-/// most of the deadline; a recording released after one has shown nothing
-/// of the program.
-const ENOUGH_SNAPSHOTS: u64 = 10;
-const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(100);
+use crate::support::released::READY_DEADLINE;
 
 /// How often each engine reads the program.
 const EVERY: Duration = Duration::from_millis(20);
@@ -272,15 +260,13 @@ fn record_until_with_args(
     engine: PythonEngine,
     fixture: &str,
     arguments: &[&str],
-    mut ready: impl FnMut(&Profile) -> bool,
+    ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
-    let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(python::interpreter(interpreter));
     command
         .args(["-I", "-B"])
         .arg(python::fixture(fixture))
         .args(arguments)
-        .stdin(reader)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
@@ -290,29 +276,11 @@ fn record_until_with_args(
         ..RecordOptions::default()
     };
 
-    let stop = AtomicBool::new(false);
-    let mut released = false;
-    let started = Instant::now();
-    let recording = record_watched(
+    let recording = crate::support::released::record_released(
         command,
         &options,
-        &mut Watch {
-            every: Duration::from_millis(50),
-            publish: &mut |profile| {
-                let waited = started.elapsed();
-                let given_up = waited > READY_DEADLINE
-                    && (profile.task_snapshots().0 >= ENOUGH_SNAPSHOTS
-                        || waited > SNAPSHOT_DEADLINE);
-                if !released && (ready(&profile) || given_up) {
-                    writer.write_all(b"\n").expect("release the program");
-                    released = true;
-                }
-            },
-            stop: &stop,
-            save: None,
-        },
-    )
-    .expect("record");
+        crate::support::released::when_snapshotted(ready),
+    );
 
     assert!(
         recording.status.success(),
@@ -549,13 +517,9 @@ fn the_python_package_records_what_the_program_marks() {
             "MICROSCOPE_PROBES_LIBRARY",
             crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
         )
-        .stdin(Stdio::null())
         .stdout(Stdio::null());
-    let recording = record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
-
-    let profile = recording.profile;
-    crate::support::assert_probes_read(&profile);
+    let profile =
+        crate::support::released::record_probed(command, &RecordOptions::default()).profile;
     let counts = profile.probe_counts();
     assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
 
@@ -656,24 +620,14 @@ assert listened.stdout == 'False\n', listened
 # The zones are recorded already, but read only once microscope finds the
 # program, which can take seconds under load: it waits to be read as it
 # exits only if microscope read it within the last one.
-deadline = time.monotonic() + 30
-while not microscope.found():
-    assert time.monotonic() < deadline, 'microscope never found the program'
-    time.sleep(0.01)
+sys.stdin.readline()
 ";
     let mut command = Command::new(python::interpreter("3.14"));
-    command
-        .args(["-I", "-B", "-c", script])
-        .arg(sdk)
-        .env(
-            "MICROSCOPE_PROBES_LIBRARY",
-            crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
-        )
-        .stdin(Stdio::null());
-    let recording = record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
-
-    crate::support::assert_probes_read(&recording.profile);
+    command.args(["-I", "-B", "-c", script]).arg(sdk).env(
+        "MICROSCOPE_PROBES_LIBRARY",
+        crate::support::Scenario::fixture("libmicroscope_probes_c.so"),
+    );
+    let recording = crate::support::released::record_probed(command, &RecordOptions::default());
     let zones = recording.profile.zones();
     for name in ["first", "second"] {
         let zone = zones.iter().find(|zone| zone.name == name);

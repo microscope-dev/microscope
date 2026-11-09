@@ -1,11 +1,11 @@
-"""A program instrumented with microscope's Python package: it waits until
-microscope listens, then marks its work every way the package can, and ends
+"""A program instrumented with microscope's Python package: it waits for a
+line on its standard input, which the test writes once microscope has read
+its instrumentation, then marks its work every way the package can, and ends
 by timing the calls of its own module, then defines more sites than the
 library holds.
 """
 import os
 import sys
-import time
 import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -38,12 +38,9 @@ else:
     raise AssertionError('a zone spanned what a generator yields')
 
 # A recording that starts the program switches it on at once, but its marks
-# are safe only once microscope has found it.
+# are safe only once microscope has read it.
 microscope.frame('started')
-deadline = time.monotonic() + 30
-while not microscope.found():
-    assert time.monotonic() < deadline, 'microscope never found the program'
-    time.sleep(0.001)
+sys.stdin.readline()
 
 for round in range(3):
     with microscope.label('round', round):

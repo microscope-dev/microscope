@@ -1185,7 +1185,7 @@ fn timed_cuts_keep_exact_function_counts_including_inherited_threads() {
         }
         let (trigger, stop) = (AtomicBool::new(false), AtomicBool::new(false));
         let mut parts = Vec::new();
-        let deadline = std::time::Instant::now() + READY_DEADLINE;
+        let deadline = std::time::Instant::now() + support::released::READY_DEADLINE;
         let recording = record_watched(
             command,
             &options,
@@ -2639,48 +2639,23 @@ fn snapshots_in_a_budget_pause_leave_gaps_apart() {
     );
 }
 
-/// How long a recording holds its program for a profile to be ready
-/// before it releases it anyway, and the test fails on what it lacks.
-const READY_DEADLINE: Duration = Duration::from_secs(20);
-
 /// Records `command` with a task snapshot every 50 ms, `live` or stopping
 /// it, holding it until a profile so far is `ready`, or the deadline, then
 /// writing a line to release it.
 fn snapshot_until(
     mut command: Command,
     live: bool,
-    mut ready: impl FnMut(&Profile) -> bool,
+    ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
-    let (reader, mut writer) = std::io::pipe().expect("pipe");
-    command
-        .stdin(reader)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.stdout(Stdio::null()).stderr(Stdio::null());
     let options = RecordOptions {
         task_snapshots: Some(Duration::from_millis(50)),
         live_snapshots: live,
         ..RecordOptions::default()
     };
 
-    let stop = AtomicBool::new(false);
-    let mut released = false;
-    let deadline = std::time::Instant::now() + READY_DEADLINE;
-    let recording = record_watched(
-        command,
-        &options,
-        &mut Watch {
-            every: Duration::from_millis(20),
-            publish: &mut |profile| {
-                if !released && (ready(&profile) || std::time::Instant::now() > deadline) {
-                    writer.write_all(b"\n").expect("release the program");
-                    released = true;
-                }
-            },
-            stop: &stop,
-            save: None,
-        },
-    )
-    .expect("record");
+    let recording =
+        support::released::record_released(command, &options, support::released::when(ready));
     assert!(recording.status.success(), "{}", recording.status);
 
     recording.profile
@@ -2775,14 +2750,8 @@ fn follows_a_tokio_tasks_awaits(live: bool) {
 fn record_probes(arguments: &[&str], options: &RecordOptions) -> (Profile, String) {
     let (mut reader, writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("probes"));
-    command
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(writer)
-        .stderr(Stdio::null());
-    let recording = record(command, options).expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
-    support::assert_probes_read(&recording.profile);
+    command.args(arguments).stdout(writer).stderr(Stdio::null());
+    let recording = support::released::record_probed(command, options);
     let mut printed = String::new();
     std::io::Read::read_to_string(&mut reader, &mut printed).expect("read what it printed");
 
@@ -2963,7 +2932,6 @@ fn a_programs_trigger_saves_the_window() {
     let mut command = Command::new(Scenario::fixture("probes"));
     command
         .arg("zones")
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let options = RecordOptions {
@@ -2971,22 +2939,17 @@ fn a_programs_trigger_saves_the_window() {
         ..RecordOptions::default()
     };
 
-    let (trigger, stop) = (AtomicBool::new(false), AtomicBool::new(false));
+    let trigger = AtomicBool::new(false);
     let mut saved = Vec::new();
-    let recording = record_watched(
+    let recording = support::released::record_released_saving(
         command,
         &options,
-        &mut Watch {
-            every: Duration::from_millis(20),
-            publish: &mut |_| {},
-            stop: &stop,
-            save: Some(Save {
-                trigger: &trigger,
-                to: &mut |profile| saved.push(profile),
-            }),
-        },
-    )
-    .expect("record");
+        support::released::each_read(),
+        Some(Save {
+            trigger: &trigger,
+            to: &mut |profile| saved.push(profile),
+        }),
+    );
     assert!(recording.status.success(), "{}", recording.status);
     support::assert_probes_read(&recording.profile);
     assert_eq!(saved.len(), 1);

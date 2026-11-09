@@ -1,5 +1,8 @@
 //! A program instrumented with microscope's probes SDK. Each mode waits until
-//! microscope listens, does its work, and exits.
+//! microscope listens, does its work, and exits. A mode a test records waits
+//! for a line on its standard input, which the test writes once the profile
+//! shows microscope has read the program's instrumentation; the modes whose
+//! subject is `found` itself, or that a person runs, wait for that instead.
 //!
 //! - `zones`: three rounds of nested zones, each in a label, with a plot,
 //!   a message, and a frame, while a worker thread runs zones of its own,
@@ -7,10 +10,10 @@
 //! - `burst COUNT`: COUNT zones as fast as it can write them.
 //! - `churn COUNT`: COUNT threads, one after another, each one zone.
 //! - `fork`: a zone around a forked child, whose own zone records nothing.
-//! - `exec`: executes this program again as `execed`, which waits until
-//!   microscope listens to the new program and runs a zone.
-//! - `quiet`: says it is ready to be attached to, then zones until the
-//!   sites switch themselves off.
+//! - `exec`: executes this program again as `execed`, which waits for a
+//!   second line, once microscope has read the new program, and runs a zone.
+//! - `quiet`: says it is ready to be attached to, waits until microscope
+//!   has found it, then zones until the sites switch themselves off.
 //! - `cost COUNT`: times COUNT zones as they are, off unless microscope reads;
 //!   `cost-on COUNT` waits until it does.
 //! - `rate`: zones without end, a line for every hundred, listened to or
@@ -18,13 +21,13 @@
 //! - `defined`: sites defined as it runs, as a language that names its
 //!   zones at run time does: three rounds of a zone, a plot, and a zone
 //!   in another name, then a message whose site it defines once microscope
-//!   listens.
+//!   listens, which it waits for microscope to switch on.
 //! - `defines`: for each name a line of its standard input gives, a zone's
 //!   site of that name, and a line with the address of its state byte.
 //! - `records`: for each name a line gives, a zone's site of that name,
 //!   one zone of it, and a line saying it was recorded. Recording every
 //!   site switches each on as it is defined.
-//! - `late PATH`: waits until microscope listens, prints its pid, records a
+//! - `late PATH`: waits until microscope has found it, prints its pid, records a
 //!   zone, loads the shared library at PATH, and says `MAPPED`; then, once a
 //!   line arrives, records another zone and exits.
 
@@ -59,7 +62,11 @@ fn main() {
         defined();
         return;
     }
-    wait_until_found();
+    match arguments[1].as_str() {
+        "quiet" | "late" | "cost-on" => wait_until_found(),
+        "exiting" => {}
+        _ => wait_for_release(),
+    }
     match arguments[1].as_str() {
         "zones" => zones(),
         "burst" => burst(count()),
@@ -81,10 +88,24 @@ fn main() {
     }
 }
 
+/// Waits for the test to say microscope has read the program, with a line,
+/// or the end of its input once the test gives up. It reads a byte at a
+/// time, past any buffer, so that a line meant for the program it executes
+/// stays for it.
+fn wait_for_release() {
+    use std::io::Read as _;
+    use std::os::fd::FromRawFd as _;
+
+    // SAFETY: standard input is open for the program's life, and the file
+    // is never dropped, so it is never closed.
+    let mut input = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut byte = [0];
+    while input.read(&mut byte).expect("a line") == 1 && byte[0] != b'\n' {}
+}
+
 /// Waits until microscope has found the program and switched the sites on.
 /// A program `microscope record` starts switches itself on at once, so only
-/// `found` waits for microscope: its debug information can take it a
-/// second to load, and a program that exits meanwhile loses its marks.
+/// `found` waits for microscope.
 fn wait_until_found() {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !microscope_probes::found() {
@@ -219,7 +240,7 @@ fn defined() {
     let load = define(abi::SITE_ZONE, "dynamic.load", "app.py", 3).expect("a zone");
     let rows = define(abi::SITE_PLOT, "dynamic.rows", "app.py", 4).expect("a plot");
     let other = define(abi::SITE_ZONE, "other", "app.py", 5).expect("a zone");
-    wait_until_found();
+    wait_for_release();
     for round in 0..3_u32 {
         let _load = load.zone();
         rows.plot(f64::from(round));

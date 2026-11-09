@@ -204,22 +204,25 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
     assert!(String::from_utf8_lossy(&refused.stderr).contains("choose one with --to"));
 }
 
+/// A profile of the probes fixture's zones, in `scratch`.
+fn record_zones(scratch: &support::ScratchDir) -> PathBuf {
+    let mut command = Command::new(fixture("build/test-programs/probes"));
+    command.arg("zones").stdout(Stdio::null());
+    let recording =
+        support::released::record_probed(command, &microscope::profiler::RecordOptions::default());
+    let profile = scratch.path().join("zones.usprof");
+    recording
+        .profile
+        .write(&profile)
+        .expect("write the profile");
+    profile
+}
+
 /// A Chrome trace holds the program's zones, labels, and marks.
 #[test]
 fn convert_writes_instrumentation_as_a_chrome_trace() {
     let scratch = support::ScratchDir::new("cli-chrome");
-    let profile = scratch.path().join("zones.usprof");
-    let recorded = microscope_command()
-        .args(["record", "-o"])
-        .arg(&profile)
-        .arg("--")
-        .arg(fixture("build/test-programs/probes"))
-        .arg("zones")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run microscope record");
-    assert!(recorded.status.success());
-    assert_probes_read(&recorded);
+    let profile = record_zones(&scratch);
     let trace = scratch.path().join("zones.json");
     assert!(
         microscope(&[
@@ -257,18 +260,7 @@ fn convert_writes_instrumentation_as_a_chrome_trace() {
 #[test]
 fn report_lists_the_programs_messages_and_each_threads_zones() {
     let scratch = support::ScratchDir::new("cli-messages");
-    let profile = scratch.path().join("zones.usprof");
-    let recorded = microscope_command()
-        .args(["record", "-o"])
-        .arg(&profile)
-        .arg("--")
-        .arg(fixture("build/test-programs/probes"))
-        .arg("zones")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run microscope record");
-    assert!(recorded.status.success(), "{recorded:?}");
-    assert_probes_read(&recorded);
+    let profile = record_zones(&scratch);
     let profile = profile.to_string_lossy();
     let report = assert_success(microscope(&["report", &profile]));
     let block = |heading: &str| -> Vec<Vec<String>> {

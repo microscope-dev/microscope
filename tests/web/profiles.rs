@@ -772,9 +772,7 @@ async fn a_program_that_cannot_start_fails_its_recording() {
 fn record_zones(scratch: &ScratchDir) -> std::path::PathBuf {
     let mut command = Command::new(Scenario::fixture("probes"));
     command.arg("zones").stdout(Stdio::null());
-    let recording = record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success());
-    crate::support::assert_probes_read(&recording.profile);
+    let recording = crate::support::released::record_probed(command, &RecordOptions::default());
     let path = scratch.path().join("zones.usprof");
     recording.profile.write(&path).expect("write the profile");
     path
@@ -1050,9 +1048,7 @@ async fn a_zone_says_how_long_its_thread_was_off_its_cpu() {
     let scratch = ScratchDir::new("web-nap");
     let mut command = Command::new(Scenario::fixture("probes"));
     command.arg("nap").stdout(Stdio::null());
-    let recording = record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success());
-    crate::support::assert_probes_read(&recording.profile);
+    let recording = crate::support::released::record_probed(command, &RecordOptions::default());
     let path = scratch.path().join("nap.usprof");
     recording.profile.write(&path).expect("write the profile");
 

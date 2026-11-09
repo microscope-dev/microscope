@@ -3,7 +3,6 @@
 //! V8's own call sites reported (`tests/fixtures/node/truth.js`).
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
@@ -22,15 +21,7 @@ use crate::truth::{Thread, threads};
 /// test its use.
 pub const ENTRY: &str = "26";
 
-/// How long a recording holds its program for a profile to be ready
-/// before it releases it anyway, and the test fails on what it lacks.
-const READY_DEADLINE: Duration = Duration::from_secs(30);
-
-/// The snapshots a recording must hold, past its deadline, before it is
-/// released unready, and how long it may wait for them (see
-/// `tests/python/profile.rs`).
-const ENOUGH_SNAPSHOTS: u64 = 10;
-const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(100);
+use crate::support::released::READY_DEADLINE;
 
 /// How often each engine reads the program.
 const EVERY: Duration = Duration::from_millis(100);
@@ -158,50 +149,27 @@ pub fn record_released<T>(
     let scratch = ScratchDir::new("node-profile");
     let output = scratch.path().join("output");
     let errors = scratch.path().join("errors");
-    let (reader, mut writer) = std::io::pipe().expect("pipe");
     command
         .env_clear()
-        .stdin(reader)
         .stdout(std::fs::File::create(&output).expect("the fixture's output"))
         .stderr(std::fs::File::create(&errors).expect("the fixture's errors"));
 
-    let stop = AtomicBool::new(false);
-    let mut released = false;
-    let started = Instant::now();
     let mut reported = None;
     let read = || report(&std::fs::read_to_string(&output).unwrap_or_default());
-    let recording = record_watched(
+    // Once released, the program is past what it reported, which `when`
+    // asks no more.
+    let recording = crate::support::released::record_released(
         command,
         options,
-        &mut Watch {
-            every: Duration::from_millis(50),
-            publish: &mut |profile| {
-                if reported.is_none() {
-                    reported = read();
-                }
-                let waited = started.elapsed();
-                let given_up = waited > READY_DEADLINE
-                    && (profile.task_snapshots().0 + profile.live_snapshots().0
-                        >= ENOUGH_SNAPSHOTS
-                        || waited > SNAPSHOT_DEADLINE);
-                // Once released, the program is past what it reported.
-                let ready = !released
-                    && reported
-                        .as_ref()
-                        .is_some_and(|reported| ready(&profile, reported));
-                if !released && (ready || given_up) {
-                    // A program that ended on its own has nothing to let go.
-                    if let Err(error) = writer.write_all(b"\n") {
-                        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
-                    }
-                    released = true;
-                }
-            },
-            stop: &stop,
-            save: None,
-        },
-    )
-    .expect("record");
+        crate::support::released::when_snapshotted(|profile| {
+            if reported.is_none() {
+                reported = read();
+            }
+            reported
+                .as_ref()
+                .is_some_and(|reported| ready(profile, reported))
+        }),
+    );
 
     let text = std::fs::read_to_string(&output).unwrap_or_default();
     assert!(
@@ -351,6 +319,8 @@ fn writes(recording: &str) -> Vec<&str> {
 #[cfg(debug_assertions)]
 #[test]
 fn profiling_and_tracing_write_nothing() {
+    use std::io::Write as _;
+
     let scratch = ScratchDir::new("node-read-only");
     let recording = scratch.path().join("record.log");
     let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -1582,14 +1552,9 @@ fn the_node_package_records_what_the_program_marks() {
             "MICROSCOPE_NODE_ADDON",
             crate::support::Scenario::fixture("node-microscope.node"),
         )
-        .stdin(Stdio::null())
         .stdout(Stdio::piped());
-    let recording =
-        microscope::profiler::record(command, &RecordOptions::default()).expect("record");
-    assert!(recording.status.success(), "{}", recording.status);
-
-    let profile = recording.profile;
-    crate::support::assert_probes_read(&profile);
+    let profile =
+        crate::support::released::record_probed(command, &RecordOptions::default()).profile;
     let counts = profile.probe_counts();
     assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
 

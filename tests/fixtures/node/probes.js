@@ -1,21 +1,19 @@
-// A program instrumented with microscope's Node package: it waits until
-// microscope listens, then marks its work every way the package can, on
+// A program instrumented with microscope's Node package: it waits for a
+// line on its standard input, which the test writes once microscope has
+// read its instrumentation, then marks its work every way the package can, on
 // the main thread and a worker, and ends by defining more sites than the
 // library holds. MICROSCOPE_NODE_ADDON names the package's addon and
 // MICROSCOPE_PROBES_LIBRARY the probes library.
 
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const threads = require('node:worker_threads');
 const microscope = require(path.join(__dirname, '..', '..', '..', 'sdk', 'node'));
 
 if (microscope.problem !== null) {
   throw new Error(microscope.problem);
-}
-
-function sleep(milliseconds) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 if (!threads.isMainThread) {
@@ -40,15 +38,9 @@ for (const suspending of [async () => {}, function* numbers() {}]) {
 }
 
 // A recording that starts the program switches it on at once, but its marks
-// are safe only once microscope has found it.
+// are safe only once microscope has read it.
 microscope.frame('started');
-const deadline = Date.now() + 30000;
-while (!microscope.found()) {
-  if (Date.now() > deadline) {
-    throw new Error('microscope never found the program');
-  }
-  sleep(1);
-}
+fs.readSync(0, Buffer.alloc(1));
 
 for (let round = 0; round < 3; round++) {
   microscope.label('round', round, () => {
