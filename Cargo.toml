@@ -86,7 +86,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 toml = "1.1"
 mimalloc = { version = "0.1", default-features = false }
 foldhash = "0.2"
-# pprof's profiles are gzipped; object already brings it in.
+# pprof's profiles are gzipped, and ELF sections may be zlib-compressed.
 flate2 = "1.1"
 # `alloc` for zeroed vectors the allocator can take from fresh, already
 # zero pages instead of filling.
@@ -109,10 +109,12 @@ gimli = "0.34"
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "gas", "instr_info", "intel", "std"] }
 lzma-rs = "0.3"
 nix = { version = "0.31", features = ["feature", "fs", "personality", "poll", "ptrace", "process", "resource", "sched", "signal", "term", "time", "uio"] }
-object = { version = "0.39", features = ["read"] }
+# Without object's compression, which brings in a ruzstd of its own:
+# src/debug_info/compressed.rs decompresses sections with flate2 and ruzstd.
+object = { version = "0.39", default-features = false, features = ["read", "std"] }
 # Decompresses zstd sections only as far as their claimed size, which object
-# does not; object already brings it in.
-ruzstd = "0.8"
+# does not.
+ruzstd = "0.9.1"
 perf-event = "0.4"
 # Safe wrappers of the system calls nix does not make; clap brings it in.
 rustix = { version = "1.1", features = ["event", "net", "param", "process", "thread"] }
@@ -135,7 +137,7 @@ tokio-tungstenite = "0.29"
 ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-object = { version = "0.39", features = ["read", "write"] }
+object = { version = "0.39", default-features = false, features = ["read", "std", "write"] }
 
 # Debug-info normalization is deliberately CPU-heavy. A small amount of
 # optimization keeps the full behavioral matrix fast without the compile cost

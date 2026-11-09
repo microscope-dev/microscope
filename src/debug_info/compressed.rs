@@ -49,8 +49,15 @@ pub(super) enum SectionError {
     #[error("there is no memory for the {claimed} bytes its {section} section decompresses to")]
     NoMemory { section: String, claimed: u64 },
 
-    #[error("its {section} section is not the zstd data of {claimed} bytes its header claims")]
-    Zstd { section: String, claimed: u64 },
+    #[error("its {section} section is not the {format} data of {claimed} bytes its header claims")]
+    Data {
+        section: String,
+        format: &'static str,
+        claimed: u64,
+    },
+
+    #[error("its {section} section is compressed in a format other than zlib or zstd")]
+    Format { section: String },
 }
 
 /// The bytes of each of `sections`, empty for one that is missing. The
@@ -126,18 +133,20 @@ fn decompress<'data>(
     name: &str,
     data: CompressedData<'data>,
 ) -> Result<Cow<'data, [u8]>, SectionError> {
-    if data.format != CompressionFormat::Zstandard {
-        // object decompresses zlib into what the claim reserves and no
-        // further.
-        return Ok(data.decompress()?);
-    }
-
-    // object reads zstd to its end and only then compares the length with
-    // the claim, so a stream that claims little can still grow without
-    // bound. Read no more than the claim and one byte past it.
     let claimed = data.uncompressed_size;
-    let wrong = || SectionError::Zstd {
+    let format = match data.format {
+        CompressionFormat::None => return Ok(Cow::Borrowed(data.data)),
+        CompressionFormat::Zlib => "zlib",
+        CompressionFormat::Zstandard => "zstd",
+        _ => {
+            return Err(SectionError::Format {
+                section: name.to_owned(),
+            });
+        }
+    };
+    let wrong = || SectionError::Data {
         section: name.to_owned(),
+        format,
         claimed,
     };
     let size = usize::try_from(claimed).map_err(|_| wrong())?;
@@ -149,7 +158,28 @@ fn decompress<'data>(
             claimed,
         })?;
 
-    // A section may hold several frames, and skippable frames among them.
+    // zlib decompresses into what the claim reserved and no further.
+    if data.format == CompressionFormat::Zlib {
+        let mut zlib = flate2::Decompress::new(true);
+        let status = zlib
+            .decompress_vec(
+                data.data,
+                &mut decompressed,
+                flate2::FlushDecompress::Finish,
+            )
+            .map_err(|_| wrong())?;
+        if status != flate2::Status::StreamEnd
+            || zlib.total_in() != data.data.len() as u64
+            || decompressed.len() != size
+        {
+            return Err(wrong());
+        }
+        return Ok(Cow::Owned(decompressed));
+    }
+
+    // A zstd stream that claims little can still grow without bound, so
+    // read no more than the claim and one byte past it. A section may hold
+    // several frames, and skippable frames among them.
     let mut input = data.data;
     while !input.is_empty() {
         let decoder = match ruzstd::decoding::StreamingDecoder::new(&mut input) {
@@ -213,6 +243,78 @@ mod tests {
         frame
     }
 
+    /// A zstd frame of one compressed block holding `sequences` sequences,
+    /// each a literal byte and a 65,539-byte match of the byte before: three
+    /// bytes of input for each 64 KiB of output (RUSTSEC-2026-0344).
+    fn sequence_bomb(sequences: u16) -> Vec<u8> {
+        assert!((128..0x7f00).contains(&sequences));
+        let literals = usize::from(sequences);
+
+        // Raw literals with a 20-bit size.
+        let mut block = vec![
+            (0b11 << 2) | u8::try_from(literals & 0xf).expect("four bits"),
+            u8::try_from((literals >> 4) & 0xff).expect("a byte"),
+            u8::try_from(literals >> 12).expect("a byte"),
+        ];
+        block.resize(block.len() + literals, b'a');
+
+        // The count, then every code RLE: literal length 1, repeat offset
+        // 1, and match length code 52, whose 16 extra bits are all zero. The
+        // bitstream ends in its padding marker.
+        let [high, low] = sequences.to_be_bytes();
+        block.extend_from_slice(&[high | 0x80, low, 0x54, 1, 0, 52]);
+        block.resize(block.len() + 2 * literals, 0);
+        block.push(1);
+
+        // Magic, then a descriptor with no content size and an 8 MiB
+        // window, then the block's header: last, compressed, its size.
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x68];
+        let header = 1 | (2 << 1) | (u32::try_from(block.len()).expect("a block") << 3);
+        frame.extend_from_slice(&header.to_le_bytes()[..3]);
+        frame.extend_from_slice(&block);
+        frame
+    }
+
+    /// A zlib stream decompresses only to exactly its claim, and only when
+    /// it ends where the section does.
+    #[test]
+    fn zlib_is_read_to_its_claim() {
+        use std::io::Write as _;
+
+        let text = b"the quick brown fox jumps over the lazy dog ".repeat(100);
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&text).expect("compressed");
+        let stream = encoder.finish().expect("compressed");
+        let zlib = |data, claim: usize| {
+            decompress(
+                "s",
+                CompressedData {
+                    format: CompressionFormat::Zlib,
+                    data,
+                    uncompressed_size: claim as u64,
+                },
+            )
+        };
+
+        assert_eq!(zlib(&stream, text.len()).expect("the stream"), text);
+        for claim in [text.len() - 1, text.len() + 1] {
+            assert!(matches!(
+                zlib(&stream, claim),
+                Err(SectionError::Data { .. })
+            ));
+        }
+
+        let trailing = [&stream[..], &[0]].concat();
+        let cut = &stream[..stream.len() - 1];
+        for data in [&trailing[..], cut] {
+            assert!(matches!(
+                zlib(data, text.len()),
+                Err(SectionError::Data { .. })
+            ));
+        }
+    }
+
     /// A stream is read only to its claim: one longer fails having held the
     /// claim and a block past it, not all of its bytes, and one shorter
     /// fails too. Frames are read in turn and skippable frames skipped.
@@ -234,21 +336,23 @@ mod tests {
         for claim in [both.len() - 1, both.len() + 1] {
             assert!(matches!(
                 decompress("s", claiming(&frames, claim as u64)),
-                Err(SectionError::Zstd { .. })
+                Err(SectionError::Data { .. })
             ));
         }
 
-        // 64 MiB from 2 KiB, claiming 1 KiB.
-        let bomb = rle_frame(512);
-        start_totals();
-        let before = totals();
-        let result = decompress(".debug_info", claiming(&bomb, 1024));
-        let used = totals().since(&before).allocated.bytes;
-        stop_totals();
-        assert!(
-            matches!(result, Err(SectionError::Zstd { .. })),
-            "{result:?}"
-        );
-        assert!(used < 4 << 20, "{used} bytes");
+        // 64 MiB from 2 or 3 KiB, claiming 1 KiB: in blocks of 128 KiB, and in
+        // one block that claims more than a block may hold.
+        for bomb in [rle_frame(512), sequence_bomb(1024)] {
+            start_totals();
+            let before = totals();
+            let result = decompress(".debug_info", claiming(&bomb, 1024));
+            let used = totals().since(&before).allocated.bytes;
+            stop_totals();
+            assert!(
+                matches!(result, Err(SectionError::Data { .. })),
+                "{result:?}"
+            );
+            assert!(used < 4 << 20, "{used} bytes");
+        }
     }
 }

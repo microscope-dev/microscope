@@ -6744,7 +6744,12 @@ mod tests {
             let debug = object
                 .sections()
                 .filter(|section| section.name().is_ok_and(|name| name.starts_with(".debug_")))
-                .map(|section| section.uncompressed_data().expect("a section").len() as u64)
+                .map(|section| {
+                    section
+                        .compressed_data()
+                        .expect("a section")
+                        .uncompressed_size
+                })
                 .sum::<u64>();
 
             // Totals count every thread's blocks, so that work spread
