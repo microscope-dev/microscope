@@ -3492,12 +3492,14 @@ pub fn symbolize(image: &ModuleImage, address: ImageAddress) -> Vec<OwnedLine> {
 }
 
 /// Where the function at `address` begins, by the image's call-frame
-/// information, when any entry describes it.
+/// information when any entry describes it, or else where the function
+/// whose frames were proved there begins.
 fn unnamed_function(image: &ModuleImage, address: ImageAddress) -> Option<u64> {
     let view = crate::image::unwind::UnwindView::new(image.tables());
     [view.eh_frame_index(), view.debug_frame_index()]
         .into_iter()
         .find_map(|index| index.function_start(address.get()))
+        .or_else(|| view.proved_function_start(address))
 }
 
 /// The name of the function code belongs to. DWARF of line tables alone,

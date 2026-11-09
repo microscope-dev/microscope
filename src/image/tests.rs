@@ -616,6 +616,7 @@ fn the_schema_is_the_records_layout() {
         TableKind::StubFrames,
         TableKind::RestoredFrames,
         TableKind::ProvedFrames,
+        TableKind::ProvedFunctions,
     ] {
         assert_eq!(schema::record(kind), "Interval");
     }
@@ -630,7 +631,7 @@ fn the_schema_is_the_records_layout() {
     // layouts before reading tables; the container format is independent.
     assert_eq!(
         schema::layout_fingerprint(),
-        0x5f5b_89a4_01f1_0a01,
+        0xe071_0f1e_eab3_453a,
         "the layout changed:\n{}",
         schema::schema_text()
     );
@@ -1412,6 +1413,29 @@ fn validation_rejects_functions_that_disagree() {
     }
 }
 
+/// Functions whose frames are proved are told apart where they abut, and
+/// code in which no frame is proved belongs to none.
+#[test]
+fn proved_functions_read_back_by_where_they_begin() {
+    let (tables, files) = sample();
+    let image = reopen(seal(&tables, &files).unwrap().as_bytes()).unwrap();
+    let view = UnwindView::new(&image);
+    for (address, start) in [
+        (0x35ff, None),
+        (0x3600, Some(0x3600)),
+        (0x3603, Some(0x3600)),
+        (0x3604, Some(0x3604)),
+        (0x3605, Some(0x3604)),
+        (0x3606, None),
+    ] {
+        assert_eq!(
+            view.proved_function_start(ImageAddress::new(address)),
+            start,
+            "{address:#x}"
+        );
+    }
+}
+
 #[test]
 fn unwinding_tables_read_back_as_their_lookups() {
     let (tables, files) = sample();
@@ -1497,7 +1521,8 @@ fn unwinding_tables_read_back_as_their_lookups() {
         (0x3600, Some(0)),
         (0x3601, Some(0x21)),
         (0x3603, Some(0x21)),
-        (0x3604, None),
+        (0x3604, Some(0)),
+        (0x3606, None),
     ] {
         assert_eq!(
             view.proved_frame(ImageAddress::new(address)),

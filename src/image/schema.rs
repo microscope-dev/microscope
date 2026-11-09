@@ -818,6 +818,7 @@ pub(super) const SCHEMA: &[TableSchema] = &[
             ),
         ],
     },
+    intervals(TableKind::ProvedFunctions),
 ];
 
 /// Where a Python runtime record's offsets begin.

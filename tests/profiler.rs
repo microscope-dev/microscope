@@ -1527,7 +1527,8 @@ fn a_stack_through_the_vdso_goes_on_to_its_callers() {
 
 /// The vDSO's `getrandom` makes its bytes in hand-written cipher code that
 /// has neither a symbol nor call-frame information, and only `getrandom`'s
-/// call reaches it. A stack sampled there still goes on to its callers.
+/// call reaches it. A stack sampled there still goes on to its callers,
+/// and is named for where that code begins, so its samples count together.
 #[test]
 fn a_stack_in_the_vdsos_undescribed_code_goes_on_to_its_callers() {
     let mut command = Command::new(Scenario::fixture("profile-vdso"));
@@ -1543,6 +1544,7 @@ fn a_stack_in_the_vdsos_undescribed_code_goes_on_to_its_callers() {
         "_start",
     ];
     let mut through = 0;
+    let mut names = std::collections::BTreeSet::new();
 
     for stack in stacks
         .iter()
@@ -1550,12 +1552,18 @@ fn a_stack_in_the_vdsos_undescribed_code_goes_on_to_its_callers() {
     {
         let context = format!("{stack:?}");
         assert_eq!(stack.ending, StackEnding::Complete, "{context}");
+        assert!(!stack.functions[0].starts_with("[vdso]+"), "{context}");
         let tail = &stack.functions[stack.functions.len().saturating_sub(main.len())..];
         assert_eq!(tail, main, "{context}");
+        if stack.functions[0].starts_with("<unnamed [vdso]+") {
+            names.insert(stack.functions[0].clone());
+        }
         through += 1;
     }
 
-    // Making random bytes is all the program does.
+    // Making random bytes is all the program does, and the cipher code is
+    // one function.
+    assert_eq!(names.len(), 1, "{names:?}");
     assert!(
         through > 0,
         "{} samples, {} lost",

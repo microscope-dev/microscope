@@ -384,11 +384,16 @@ pub enum TableKind {
 
     /// The V8 runtime the module carries.
     V8Runtime = 100,
+
+    /// The functions whose frames are proved, each from its entry to the
+    /// next function's, so that code no symbol names is named by where its
+    /// function begins.
+    ProvedFunctions = 101,
 }
 
 impl TableKind {
     /// Every kind, in the order tables are laid out.
-    pub const ALL: [Self; 100] = [
+    pub const ALL: [Self; 101] = [
         Self::Strings,
         Self::Files,
         Self::LineAddresses,
@@ -489,6 +494,7 @@ impl TableKind {
         Self::RestoredFrames,
         Self::ProvedFrames,
         Self::V8Runtime,
+        Self::ProvedFunctions,
     ];
 
     pub const COUNT: usize = Self::ALL.len();

@@ -170,6 +170,9 @@ pub struct Unwind {
     /// call-frame information describes, where it is proved, encoded as
     /// `debug_info`'s frame prover encodes it.
     pub proved_frames: Vec<(AddressRange<ImageAddress>, u32)>,
+
+    /// The code of each function `proved_frames` covers, from its entry.
+    pub proved_functions: Vec<AddressRange<ImageAddress>>,
 }
 
 /// Why unwinding information could not be encoded.
@@ -275,6 +278,10 @@ pub fn add_to<'a>(
         .owned_shared(
             TableKind::ProvedFrames,
             index::intervals(unwind.proved_frames.iter().copied()),
+        )
+        .owned_shared(
+            TableKind::ProvedFunctions,
+            index::intervals(unwind.proved_functions.iter().map(|&range| (range, 0))),
         );
 
     if let Some(go) = go {
@@ -474,6 +481,19 @@ impl<'a> UnwindView<'a> {
         index::containing(self.image.shared(TableKind::ProvedFrames), address).next()
     }
 
+    /// Where the function whose frames are proved at `address` begins.
+    pub fn proved_function_start(self, address: ImageAddress) -> Option<u64> {
+        self.proved_frame(address)?;
+        let functions: &[index::Interval] = self.image.shared(TableKind::ProvedFunctions);
+        let end = functions.partition_point(|function| function.start.get() <= address.get());
+        functions
+            .get(..end)?
+            .iter()
+            .rev()
+            .find(|function| address.get() < function.end.get())
+            .map(|function| function.start.get())
+    }
+
     /// Go's table, when the image has it.
     pub fn go(self) -> Option<(&'a [u8], GoTableFacts)> {
         let record = self.record?;
@@ -581,6 +601,7 @@ pub(super) fn validate(image: &Image) -> Result<(), String> {
             MOST_RESTORED_REGISTERS as usize + 1,
         )
         || !index::valid_intervals(image.shared(TableKind::ProvedFrames), u32::MAX as usize + 1)
+        || !index::valid_intervals(image.shared(TableKind::ProvedFunctions), 1)
     {
         return Err("an unwinding index is malformed".into());
     }

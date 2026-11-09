@@ -2171,7 +2171,9 @@ fn load_unwind_info(
             &code,
         ));
         unwind.restored = restored;
-        unwind.proved_frames = proved_frames(object, debug_object, &unwind);
+        let mut functions = Vec::new();
+        unwind.proved_frames = proved_frames(object, debug_object, &unwind, &mut functions);
+        unwind.proved_functions = functions;
     }
 
     Ok(unwind)
@@ -2182,12 +2184,14 @@ fn load_unwind_info(
 /// in a module whose call-frame information leaves most of its code
 /// undescribed, as Google's build of Chrome does, every function its own
 /// code or relocations reach. A separate debug file may name the builtins
-/// its module's file was stripped of.
+/// its module's file was stripped of. The code of each function proved
+/// that a symbol may not name is added to `functions`.
 #[cfg(target_arch = "x86_64")]
 fn proved_frames(
     object: &object::File<'_>,
     debug_object: Option<&object::File<'_>>,
     unwind: &crate::image::unwind::Unwind,
+    functions: &mut Vec<AddressRange<ImageAddress>>,
 ) -> Vec<(AddressRange<ImageAddress>, u32)> {
     let mut builtins = super::v8::builtins(object);
     if builtins.is_empty()
@@ -2258,7 +2262,7 @@ fn proved_frames(
         &described,
         &starts,
         scan,
-        &mut frames,
+        (&mut frames, functions),
     );
 
     // Where glibc's clone returns in both threads, which no frame of the
@@ -2362,6 +2366,11 @@ fn v8_frames(
     }
 }
 
+/// Frames proved over ranges of code, each encoded as the frame prover
+/// encodes it.
+#[cfg(target_arch = "x86_64")]
+type ProvedFrames = Vec<(AddressRange<ImageAddress>, u32)>;
+
 /// The most code a module may hold and still have every call and address
 /// load of it scanned for the functions they reach, as the vDSO's few
 /// kilobytes are.
@@ -2395,31 +2404,15 @@ fn scanned(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> 
     described.saturating_mul(2) < code
 }
 
-/// The frames of the functions of `object` that no call-frame information
-/// describes and that `starts` does not already hold, each found at an
-/// address a symbol of the module or its debug file names, a relocation
-/// holds, or, with `scan`, its code calls or loads, and analyzed up to the
-/// next function's start.
+/// Where the functions of `object` may begin, in its code `sections`: at
+/// an address a symbol of the module or its debug file names or a
+/// relocation holds, and, with `scan`, where its code calls or loads.
 #[cfg(target_arch = "x86_64")]
-fn undescribed_frames(
+fn function_entries(
     (object, debug_object): (&object::File<'_>, Option<&object::File<'_>>),
-    unwind: &crate::image::unwind::Unwind,
-    described: &(dyn Fn(u64) -> bool + Sync),
-    starts: &std::collections::BTreeSet<u64>,
+    sections: &[(u64, &[u8])],
     scan: bool,
-    frames: &mut Vec<(AddressRange<ImageAddress>, u32)>,
-) {
-    let sections: Vec<(u64, &[u8])> = object
-        .sections()
-        .filter(|section| section.kind() == object::SectionKind::Text)
-        .filter_map(|section| Some((section.address(), section.data().ok()?)))
-        .collect();
-    let in_code = |address: u64| {
-        sections
-            .iter()
-            .any(|(start, code)| *start <= address && address - start < code.len() as u64)
-    };
-
+) -> Vec<u64> {
     let mut entries: Vec<u64> = if scan {
         sections
             .par_iter()
@@ -2466,7 +2459,34 @@ fn undescribed_frames(
                 .then(|| relocation.addend().cast_unsigned())
             }),
     );
-    entries.retain(|&address| in_code(address));
+    entries.retain(|&address| {
+        sections
+            .iter()
+            .any(|(start, code)| *start <= address && address - start < code.len() as u64)
+    });
+    entries
+}
+
+/// The frames of the functions of `object` that no call-frame information
+/// describes and that `starts` does not already hold, each found at an
+/// address a symbol of the module or its debug file names, a relocation
+/// holds, or, with `scan`, its code calls or loads, and analyzed up to the
+/// next function's start, which bounds the function added to `functions`.
+#[cfg(target_arch = "x86_64")]
+fn undescribed_frames(
+    (object, debug_object): (&object::File<'_>, Option<&object::File<'_>>),
+    unwind: &crate::image::unwind::Unwind,
+    described: &(dyn Fn(u64) -> bool + Sync),
+    starts: &std::collections::BTreeSet<u64>,
+    scan: bool,
+    (frames, functions): (&mut ProvedFrames, &mut Vec<AddressRange<ImageAddress>>),
+) {
+    let sections: Vec<(u64, &[u8])> = object
+        .sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .filter_map(|section| Some((section.address(), section.data().ok()?)))
+        .collect();
+    let mut entries = function_entries((object, debug_object), &sections, scan);
 
     // Where each function ends: at the next start of any function,
     // described or not.
@@ -2483,7 +2503,7 @@ fn undescribed_frames(
     entries.sort_unstable();
     entries.dedup();
 
-    let found: Vec<Vec<(AddressRange<ImageAddress>, u32)>> = entries
+    let found: Vec<((u64, u64), ProvedFrames)> = entries
         .par_iter()
         .filter(|&&address| !starts.contains(&address))
         .filter_map(|&address| {
@@ -2507,7 +2527,7 @@ fn undescribed_frames(
             let length = usize::try_from(end - address).ok()?;
             let code = code.get(offset..offset.checked_add(length)?)?;
             if let Some(frames) = super::x86_64::frames::musl_clone(code, address) {
-                return Some(frames);
+                return Some(((address, end), frames));
             }
             // A function that begins by linking its frame was built to keep
             // the chain, so each call its paths do not reach, as the cases
@@ -2515,10 +2535,14 @@ fn undescribed_frames(
             let convention = code.starts_with(&super::x86_64::frames::PROLOGUE);
             let mut frames = Vec::new();
             super::x86_64::frames::runtime_frames(code, address, convention, &mut frames);
-            Some(frames)
+            Some(((address, end), frames))
         })
         .collect();
-    frames.extend(found.into_iter().flatten());
+    functions.extend(found.iter().map(|&((start, end), _)| AddressRange {
+        start: ImageAddress::new(start),
+        end: ImageAddress::new(end),
+    }));
+    frames.extend(found.into_iter().flat_map(|(_, found)| found));
 }
 
 /// The instructions of `section`'s functions at which registers their
