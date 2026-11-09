@@ -129,6 +129,13 @@ test("each profile tab keeps its own look, and the address follows the tab shown
   await expect(groupOf(page, second).getByRole("tree", { name: "Call tree" })).toBeVisible();
   await expect(page).not.toHaveURL(/fn=/u);
   await expect(tab(page, second)).toHaveCount(1);
+
+  // Closing one profile hands the address to the profile shown after it.
+  await page.keyboard.press("Alt+KeyW");
+  await expect(tab(page, second)).toHaveCount(0);
+  await expect(tab(page, first)).toHaveAttribute("aria-selected", "true");
+  await expect.poll(() => pathname(page)).toBe(firstPath);
+  await expect(page).toHaveURL(/view=tree/u);
 });
 
 test("a closed profile tab reopens as it looked, and Back and Forward step through its looks", async ({
@@ -154,16 +161,26 @@ test("a closed profile tab reopens as it looked, and Back and Forward step throu
   await expect(page).toHaveURL(/tf=merge:middle/u);
   await expect(page.getByText("merge middle")).toBeVisible();
 
-  // Closed and reopened, the tab comes back as it was.
+  // Closed, it takes its look out of the address; reopened, the tab comes
+  // back as it was, and takes the address again.
   await tab(page, "calls.usprof").click();
   await page.keyboard.press("Alt+KeyW");
   await expect(tab(page, "calls.usprof")).toHaveCount(0);
+  await expect.poll(() => pathname(page)).toBe("/");
+  await expect(page).not.toHaveURL(/tf=|view=/u);
   await page.keyboard.press("Alt+Shift+KeyT");
   await expect(tab(page, "calls.usprof")).toHaveAttribute("aria-selected", "true");
   await expect.poll(() => pathname(page)).toBe(profile);
   await expect(page).toHaveURL(/tf=merge:middle/u);
   await expect(page).toHaveURL(/view=tree/u);
   await expect(page.getByText("merge middle")).toBeVisible();
+
+  // Closed again, a reload leaves it closed.
+  await page.keyboard.press("Alt+KeyW");
+  await expect.poll(() => pathname(page)).toBe("/");
+  await page.reload();
+  await expect(tab(page, "Explorer")).toBeVisible();
+  await expect(tab(page, "calls.usprof")).toHaveCount(0);
 });
 
 test("two profiles side by side each keep their zones, and Escape lets go only in the one it is in", async ({

@@ -3,14 +3,22 @@
 // Account. Old addresses of pages that became panes open those panes.
 
 import { Navigate, Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { followEmailLink, followSignIn } from "../account";
 import { KIND } from "../documents";
 import { type Note, targetName } from "../model";
 import { useModel } from "../store";
-import { activate, type Json, paneOf, setParams } from "../workbench/layout";
-import { change, workbench } from "../workbench/store";
+import { activate, groups, type Json, paneOf, setParams } from "../workbench/layout";
+import { change, useLayout, workbench } from "../workbench/store";
 import { SessionLink } from "./Explorer";
 import { profileLayout, showPane, showProfile, startLayout } from "./panes";
 import { PICKED } from "./Picker";
@@ -119,6 +127,33 @@ export function ProfileRoute() {
       return activate(setParams(layout, id, next), id);
     });
   }, [profile, name, look]);
+  // Once its pane closes, the address names a profile still shown, or none.
+  const navigate = useNavigate();
+  const open = useLayout((layout) => paneOf(layout, KIND.profile, profile) !== null);
+  const was = useRef({ profile, open });
+  useEffect(() => {
+    const closed = was.current.profile === profile && was.current.open && !open;
+    was.current = { profile, open };
+    if (!closed) {
+      return;
+    }
+    // The focused group's profile, else one shown in another group.
+    const layout = workbench.getState().layout;
+    const shown = groups(layout)
+      .toSorted((a, b) => Number(b.id === layout.focused) - Number(a.id === layout.focused))
+      .flatMap((group) => (group.active ? [layout.panes[group.active]] : []));
+    const next = shown.find((pane) => pane?.kind === KIND.profile);
+    if (next) {
+      void navigate({
+        to: "/profile/$profile",
+        params: { profile: next.key },
+        search: profileParams(next).look,
+        replace: true,
+      });
+    } else {
+      void navigate({ to: "/", replace: true });
+    }
+  }, [profile, open, navigate]);
   const start = useCallback(() => profileLayout(profile, name, look), [profile, name, look]);
   return <Workbench focus={null} wants="start" start={start} />;
 }
