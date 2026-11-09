@@ -982,15 +982,16 @@ async fn npx_is_followed_through_the_bins_interpreter_line() {
 #[tokio::test]
 async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
     let scratch = support::ScratchDir::new("group-node-watch");
-    // The first run changes its own file and waits to be replaced; the
-    // second, which finds the marker, ends.
+    // The first run leaves a marker and waits to be replaced; the second,
+    // which finds it, ends.
+    let app = scratch.path().join("app.js");
+    let marker = scratch.path().join("restarted");
     fs::write(
-        scratch.path().join("app.js"),
+        &app,
         "const fs = require('node:fs');\n\
          const marker = __dirname + '/restarted';\n\
          if (!fs.existsSync(marker)) {\n\
            fs.writeFileSync(marker, '');\n\
-           setTimeout(() => fs.appendFileSync(__filename, '// changed\\n'), 200);\n\
            setInterval(() => {}, 1000);\n\
          }\n",
     )
@@ -1018,7 +1019,10 @@ async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
         .expect("launch node --watch");
 
     // The watcher, the first app, and the restarted one each stop once.
+    // The app's file changes once the first app has left its marker and
+    // the watcher watches the file.
     let mut stopped = Vec::new();
+    let mut changed = false;
     while stopped.len() < 3 {
         let (member, reason) = group.stop().await;
         if function_breakpoint(&reason) && !stopped.contains(&member) {
@@ -1029,6 +1033,17 @@ async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
             .continue_all()
             .await
             .expect("continue the group");
+        if stopped.len() == 2 && !changed {
+            let watcher = group
+                .inner
+                .members()
+                .iter()
+                .find(|joined| joined.number == stopped[0])
+                .and_then(|joined| joined.process)
+                .expect("the watcher's process");
+            change_once_watched(watcher, &app, &marker).await;
+            changed = true;
+        }
     }
     let [watcher, first, restarted] = stopped[..] else {
         unreachable!("three members stopped");
@@ -1065,6 +1080,47 @@ async fn a_watched_app_restarted_joins_again_with_its_breakpoints() {
             "{process:?} is {state:?}"
         );
     }
+}
+
+/// Changes `app` once the first run has left `marker` and `watcher`
+/// watches `app`, failing at the deadline.
+async fn change_once_watched(watcher: ProcessId, app: &std::path::Path, marker: &std::path::Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !(marker.exists() && watches(watcher, app)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first app left no marker, or the watcher never watched its file"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    fs::OpenOptions::new()
+        .append(true)
+        .open(app)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, b"// changed\n"))
+        .expect("change app.js");
+}
+
+/// Whether `process` holds an inotify watch on `file` or its directory.
+fn watches(process: ProcessId, file: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let inode = |path: &std::path::Path| fs::metadata(path).map(|metadata| metadata.ino()).ok();
+    let watched = [inode(file), file.parent().and_then(inode)];
+    let Ok(entries) = fs::read_dir(format!("/proc/{process}/fdinfo")) else {
+        return false;
+    };
+    entries
+        .filter_map(|entry| fs::read_to_string(entry.ok()?.path()).ok())
+        .flat_map(|info| {
+            info.lines()
+                .filter_map(|line| {
+                    let rest = line.strip_prefix("inotify wd:")?;
+                    let (_, ino) = rest.split_once(" ino:")?;
+                    u64::from_str_radix(ino.split_whitespace().next()?, 16).ok()
+                })
+                .collect::<Vec<_>>()
+        })
+        .any(|ino| watched.contains(&Some(ino)))
 }
 
 /// Waits for the group to report that `member` did not take a change to
