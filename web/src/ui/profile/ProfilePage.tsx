@@ -172,6 +172,8 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
 const ViewBody = memo(function ViewBody({ view }: { view: ProfileView }) {
   return view === "zones" ? (
     <ZonesPane />
+  ) : view === "details" ? (
+    <FileDetails />
   ) : (
     <div className="profile-view">
       {view === "syscalls" ? (
@@ -329,7 +331,7 @@ const Overview = memo(function Overview() {
     <>
       <Accounting summary={summary} />
       {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
-      <ProfileHead info={info} />
+      <ProfileHead />
       {summary.timed ? (
         drawsTimeline(summary) ? (
           <Lanes />
@@ -346,11 +348,8 @@ const Overview = memo(function Overview() {
 
 /** The profile's name, and everything the query holds, each removable
  * where it shows. */
-function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
+function ProfileHead() {
   const { summary, look, setLook } = useProfile();
-  const [detailing, setDetailing] = useState(false);
-  const showDetails = useCallback(() => setDetailing(true), []);
-  const hideDetails = useCallback(() => setDetailing(false), []);
   const range = rangeOf(look);
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to compare.
@@ -360,13 +359,16 @@ function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
     () => setLook((prev) => withLook(prev, "view", "zones"), true),
     [setLook],
   );
+  const showDetails = useCallback(
+    () => setLook((prev) => withLook(prev, "view", "details"), true),
+    [setLook],
+  );
 
   return (
     <div className="profile-head">
-      <button type="button" className="tb ghost" aria-haspopup="dialog" onClick={showDetails}>
+      <button type="button" className="tb ghost" onClick={showDetails}>
         File details
       </button>
-      {detailing ? <FileDetails info={info} close={hideDetails} /> : null}
       {snapshots ? (
         <div className="segmented">
           {SOURCES.map(([src, label, title]) => (

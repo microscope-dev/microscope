@@ -147,6 +147,7 @@ export const KINDS = kinds<Need>([
   profileKind(KIND.profileFunctions, () => "Functions"),
   profileKind(KIND.profileSyscalls, () => "Syscalls"),
   profileKind(KIND.profileZones, () => "Zones"),
+  profileKind(KIND.profileDetails, () => "File details"),
 ]);
 
 /** One of a profile's panes. Each of its views names its profile's file,

@@ -2702,21 +2702,12 @@ textarea.input {
 
 /* File details */
 
-.details-overlay {
-  padding: 6vh 16px;
-}
-
 .details {
   display: flex;
   flex-direction: column;
-  width: min(960px, 100%);
-  max-height: 100%;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  height: 100%;
+  min-height: 0;
   background: var(--surface);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-  outline: none;
 }
 
 .details-head {

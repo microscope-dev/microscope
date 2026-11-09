@@ -42,6 +42,7 @@ const VIEW_KINDS: Readonly<Record<ProfileView, KindId>> = {
   functions: KIND.profileFunctions,
   syscalls: KIND.profileSyscalls,
   zones: KIND.profileZones,
+  details: KIND.profileDetails,
 };
 
 const VIEWS: ReadonlySet<ProfileView> = new Set(Object.keys(VIEW_KINDS) as ProfileView[]);
@@ -59,8 +60,14 @@ export function viewOf(pane: Pane): ProfileView | null | undefined {
   return KIND_VIEWS.get(pane.kind);
 }
 
-/** The views that list samples' stacks, which open together as tabs. */
-const STACKS: ReadonlySet<ProfileView> = new Set(["flame", "tree", "functions", "syscalls"]);
+/** The wide views, which open together as tabs below the overview. */
+const STACKS: ReadonlySet<ProfileView> = new Set([
+  "flame",
+  "tree",
+  "functions",
+  "syscalls",
+  "details",
+]);
 
 /** What a profile's link holds. */
 export interface ProfileLink {
@@ -414,7 +421,9 @@ export function arrange(
 
   let next = layout;
   const firsts = new Map<GroupId, PaneId>();
-  for (const view of fresh) {
+  // File details is never called for by a summary, only asked for.
+  const asked = first && held.show?.view === "details" ? (["details"] as const) : [];
+  for (const view of [...fresh, ...asked]) {
     if (paneOfView(next, link, view)) {
       continue;
     }
@@ -435,8 +444,8 @@ export function arrange(
 
   // What the address asked for is shown when views are first offered, or
   // let go of if there is none of it.
-  const asked = first && held.show ? paneOfView(next, link, held.show.view) : null;
-  const focus = asked ?? (back && next.panes[back] ? back : null);
+  const wanted = first && held.show ? paneOfView(next, link, held.show.view) : null;
+  const focus = wanted ?? (back && next.panes[back] ? back : null);
   next = focus ? activate(next, focus) : next;
   return setLink(
     next,

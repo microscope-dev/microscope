@@ -220,6 +220,24 @@ describe("a profile's panes", () => {
     expect(checkLayout(shown.layout)).toEqual([]);
   });
 
+  it("open File details only when asked, among the stacks, from an address too", () => {
+    const { layout, link } = arranged();
+    expect(viewOpen(layout, "p1", "details")).toBe(false);
+    const shown = showView(layout, link, "details");
+    expect(kindsIn(shown.layout, shown.pane as PaneId)?.toSorted()).toEqual([
+      "details",
+      "flame",
+      "functions",
+      "tree",
+    ]);
+    expect(focusedPane(shown.layout)).toBe(shown.pane);
+
+    // An address asks for it before the summary is read.
+    const asked = arranged({ view: "details" }).layout;
+    expect(focusedPane(asked)).toBe(only(asked, "details"));
+    expect(checkLayout(asked)).toEqual([]);
+  });
+
   it("show the overview, not a view, before they are arranged", () => {
     const opened = openProfile(emptyLayout(), "p1", "x.usprof", {}, G0);
     const link = linkOf(opened.layout.panes[opened.pane] as Pane) as LinkId;

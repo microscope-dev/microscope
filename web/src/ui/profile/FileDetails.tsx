@@ -1,10 +1,8 @@
 import {
   type KeyboardEvent,
   type MouseEvent,
-  type PointerEvent,
   type ReactNode,
   useCallback,
-  useEffect,
   useId,
   useMemo,
   useRef,
@@ -35,13 +33,13 @@ import type {
   ProfileInspection,
   ProfileSummary,
 } from "../../protocol";
+import { useModel } from "../../store";
 import { presented, serverUrl } from "../../target";
-import { useDialogFocus } from "../dialog";
 import { useAnswer, useProfile } from "./context";
 
 type Tab = "metadata" | "samples";
 
-/** About how wide the dialog draws its charts, which spaces their ticks. */
+/** About how wide the pane draws its charts, which spaces their ticks. */
 const CHART_WIDTH = 600;
 
 const NAMES: Record<Tab, string> = { metadata: "Metadata", samples: "Samples" };
@@ -49,37 +47,15 @@ const BOTH: Tab[] = ["metadata", "samples"];
 const METADATA_ONLY: Tab[] = ["metadata"];
 
 /** What the profile holds and how it was recorded, and its file to
- * download, over the page until Escape, Close, or a click outside closes
- * it. */
-export function FileDetails({ info, close }: { info: ProfileInfo | undefined; close(): void }) {
+ * download, in a pane of its own. */
+export function FileDetails() {
   const { profile, summary } = useProfile();
+  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
   const answer = useAnswer("profileInspect", { profile, revision: info?.revision ?? 0 });
   // A trace of system calls alone has no samples to describe.
   const tabs = summary.samples > 0 ? BOTH : METADATA_ONLY;
   const [tab, setTab] = useState<Tab>("metadata");
-  const dialog = useRef<HTMLDivElement>(null);
   const chosen = useRef<HTMLButtonElement>(null);
-  useDialogFocus(dialog, chosen);
-
-  useEffect(() => {
-    const key = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [close]);
-
-  const outside = useCallback(
-    (event: PointerEvent) => {
-      if (event.target === event.currentTarget) {
-        close();
-      }
-    },
-    [close],
-  );
   const choose = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     setTab(event.currentTarget.dataset.tab as Tab);
   }, []);
@@ -99,65 +75,52 @@ export function FileDetails({ info, close }: { info: ProfileInfo | undefined; cl
 
   const inspection = answer.data;
   return (
-    <div className="overlay details-overlay" onPointerDown={outside}>
-      <div
-        className="details"
-        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- an overlay the page draws, not a <dialog>
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="details-title"
-        tabIndex={-1}
-        ref={dialog}
-      >
-        <div className="details-head">
-          <h1 id="details-title">{summary.name}</h1>
-          {tabs.length > 1 ? (
-            <div className="segmented" role="tablist" aria-label="File details">
-              {tabs.map((each) => (
-                <button
-                  key={each}
-                  type="button"
-                  role="tab"
-                  id={`details-${each}`}
-                  data-tab={each}
-                  aria-selected={tab === each}
-                  aria-controls="details-panel"
-                  tabIndex={tab === each ? 0 : -1}
-                  ref={tab === each ? chosen : undefined}
-                  onClick={choose}
-                  onKeyDown={arrows}
-                >
-                  {NAMES[each]}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {info ? <Download info={info} /> : null}
-          <button type="button" className="tb ghost" onClick={close}>
-            Close
-          </button>
-        </div>
-        <div
-          className="details-body"
-          id="details-panel"
-          role={tabs.length > 1 ? "tabpanel" : undefined}
-          aria-labelledby={tabs.length > 1 ? `details-${tab}` : undefined}
-        >
-          {answer.error ? (
-            <span className="error">Could not read its details: {answer.error.message}</span>
-          ) : inspection === undefined ? (
-            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output
-            <span className="muted" role="status">
-              Reading the profile…
-            </span>
-          ) : tab === "metadata" ? (
-            <Metadata summary={summary} inspection={inspection} />
-          ) : (
-            <Samples summary={summary} inspection={inspection} />
-          )}
-        </div>
+    <section className="details" aria-labelledby="details-title">
+      <div className="details-head">
+        <h1 id="details-title">{summary.name}</h1>
+        {tabs.length > 1 ? (
+          <div className="segmented" role="tablist" aria-label="File details">
+            {tabs.map((each) => (
+              <button
+                key={each}
+                type="button"
+                role="tab"
+                id={`details-${each}`}
+                data-tab={each}
+                aria-selected={tab === each}
+                aria-controls="details-panel"
+                tabIndex={tab === each ? 0 : -1}
+                ref={tab === each ? chosen : undefined}
+                onClick={choose}
+                onKeyDown={arrows}
+              >
+                {NAMES[each]}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {info ? <Download info={info} /> : null}
       </div>
-    </div>
+      <div
+        className="details-body"
+        id="details-panel"
+        role={tabs.length > 1 ? "tabpanel" : undefined}
+        aria-labelledby={tabs.length > 1 ? `details-${tab}` : undefined}
+      >
+        {answer.error ? (
+          <span className="error">Could not read its details: {answer.error.message}</span>
+        ) : inspection === undefined ? (
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a styled span, not a form output
+          <span className="muted" role="status">
+            Reading the profile…
+          </span>
+        ) : tab === "metadata" ? (
+          <Metadata summary={summary} inspection={inspection} />
+        ) : (
+          <Samples summary={summary} inspection={inspection} />
+        )}
+      </div>
+    </section>
   );
 }
 

@@ -53,6 +53,7 @@ export const KIND = {
   profileFunctions: kind("profile-functions"),
   profileSyscalls: kind("profile-syscalls"),
   profileZones: kind("profile-zones"),
+  profileDetails: kind("profile-details"),
   settings: kind("settings"),
   keys: kind("keys"),
 } as const;

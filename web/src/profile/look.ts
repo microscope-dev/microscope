@@ -14,7 +14,7 @@ import type {
 import type { DiffMode } from "./paint";
 
 /** A profile's panes other than its overview, which holds its timeline. */
-export type ProfileView = "flame" | "tree" | "functions" | "syscalls" | "zones";
+export type ProfileView = "flame" | "tree" | "functions" | "syscalls" | "zones" | "details";
 
 /** The Syscalls view's tabs; the summary when absent. */
 export type SyscallTab = "log" | "files" | "network" | "processes";
@@ -91,7 +91,14 @@ export interface ProfileLook {
   sl?: string;
 }
 
-const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "syscalls", "zones"];
+const VIEWS: readonly ProfileView[] = [
+  "flame",
+  "tree",
+  "functions",
+  "syscalls",
+  "zones",
+  "details",
+];
 const SYSCALL_GROUPS: ReadonlySet<string> = new Set(["class", "process", "thread", "path", "site"]);
 const SYSCALL_TABS: ReadonlySet<string> = new Set(["log", "files", "network", "processes"]);
 const GRANULARITIES: ReadonlySet<string> = new Set(["physical", "line", "address"]);

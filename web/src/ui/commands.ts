@@ -473,6 +473,7 @@ export const COMMANDS = registry({
   profileFunctions: profileView("functions", "Functions"),
   profileSyscalls: profileView("syscalls", "Syscalls"),
   profileZones: profileView("zones", "Zones"),
+  profileDetails: profileView("details", "File details"),
   duplicateLinked: duplicatePane(false, "New pane like this"),
   duplicateApart: duplicatePane(true, "Copy to a new selection"),
   // A page microscope web serves is connected to it, with no accounts.

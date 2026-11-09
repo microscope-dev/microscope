@@ -2470,7 +2470,7 @@ function inspectionOf(change: Partial<ProfileInspection> = {}): ProfileInspectio
 /** A recording of a program with an argument a shell would split. */
 const RG = { arguments: ["/bin/rg", "-c", "a b", "it's"], text: "/bin/rg -c a b it's" };
 
-it("shows the file's details in a dialog: its whole command, then its samples", async () => {
+it("shows the file's details in a pane: its whole command, then its samples", async () => {
   const summary = summaryOf({
     command: RG,
     timed: true,
@@ -2483,15 +2483,13 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
       { name: "command 0", value: "/bin/rg -c a b it's" },
     ],
   });
-  const server = await mountPage(summary, true);
+  const server = await mountPage(summary, true, "details");
   server.answer(await server.next("profile"), summary);
-  const inspect = page.getByRole("button", { name: "File details" });
-  await userEvent.click(inspect);
-  const dialog = page.getByRole("dialog", { name: "test.usprof" });
-  await expect.element(dialog).toBeVisible();
+  const details = page.getByRole("region", { name: "test.usprof" });
+  await expect.element(details).toBeVisible();
   const asked = await server.next("profileInspect");
   expect(asked.params).toEqual({ profile: summary.id, revision: 0 });
-  await expect.element(dialog.getByText("Reading the profile…")).toBeVisible();
+  await expect.element(details.getByText("Reading the profile…")).toBeVisible();
   server.answer(asked, inspectionOf());
 
   // Metadata comes first: every argument whole, on its own line, quoted
@@ -2502,25 +2500,27 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
   await expect.element(page.getByTestId("command")).toBeVisible();
   const lines = [...page.getByTestId("command").element().children].map((line) => line.textContent);
   expect(lines).toEqual(["/bin/rg \\", "-c \\", "'a b' \\", String.raw`'it'\''s'`]);
-  await expect.element(dialog.getByRole("heading", { name: "Command", exact: true })).toBeVisible();
+  await expect
+    .element(details.getByRole("heading", { name: "Command", exact: true }))
+    .toBeVisible();
   const written = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
-  await userEvent.click(dialog.getByRole("button", { name: "Copy" }));
+  await userEvent.click(details.getByRole("button", { name: "Copy" }));
   expect(written).toHaveBeenCalledWith(String.raw`/bin/rg -c 'a b' 'it'\''s'`);
-  await expect.element(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect.element(details.getByRole("button", { name: "Copied" })).toBeVisible();
   written.mockRestore();
 
   // Settings shown elsewhere are left out of Recording.
   await expect
-    .element(dialog.getByRole("row", { name: "Source CPU time at 999 Hz" }))
+    .element(details.getByRole("row", { name: "Source CPU time at 999 Hz" }))
     .toBeVisible();
-  expect(dialog.getByRole("row", { name: /^Program/u }).elements()).toHaveLength(0);
+  expect(details.getByRole("row", { name: /^Program/u }).elements()).toHaveLength(0);
   await expect
-    .element(dialog.getByRole("row", { name: /^\/lib\/libc\.so\.6 1\.00 KiB 5a70 2$/u }))
+    .element(details.getByRole("row", { name: /^\/lib\/libc\.so\.6 1\.00 KiB 5a70 2$/u }))
     .toBeVisible();
   await expect
-    .element(dialog.getByRole("row", { name: "Debug info after exit 5.00 ms" }))
+    .element(details.getByRole("row", { name: "Debug info after exit 5.00 ms" }))
     .toBeVisible();
-  await expect.element(dialog.getByRole("row", { name: "samples 300 B 75.0%" })).toBeVisible();
+  await expect.element(details.getByRole("row", { name: "samples 300 B 75.0%" })).toBeVisible();
 
   // The arrow keys move to Samples.
   await userEvent.click(page.getByRole("tab", { name: "Metadata" }));
@@ -2529,14 +2529,14 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
   await expect.element(samples).toHaveAttribute("aria-selected", "true");
   await expect.element(samples).toHaveFocus();
   await expect
-    .element(dialog.getByRole("row", { name: "Stacks cut short 3, 30.0%" }))
+    .element(details.getByRole("row", { name: "Stacks cut short 3, 30.0%" }))
     .toBeVisible();
   await expect
-    .element(dialog.getByRole("row", { name: "Reached the outermost frame 7 70.0%" }))
+    .element(details.getByRole("row", { name: "Reached the outermost frame 7 70.0%" }))
     .toBeVisible();
 
   // Depth starts at one frame, as no sample has none; the median is 3.
-  const bars = dialog.getByRole("button", { name: /frames?: /u });
+  const bars = details.getByRole("button", { name: /frames?: /u });
   expect(bars.elements().map((bar) => bar.getAttribute("aria-label"))).toEqual([
     "1 frame: 2 samples",
     "2 frames: 0 samples",
@@ -2544,15 +2544,15 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
     "4 frames: 3 samples",
   ]);
   expect(bars.elements()[2]?.classList.contains("marked")).toBe(true);
-  await expect.element(dialog.getByText("median 3")).toBeVisible();
+  await expect.element(details.getByText("median 3")).toBeVisible();
   await userEvent.hover(bars.nth(3));
-  const depthRegion = dialog.getByRole("region", { name: /stack depth/u });
+  const depthRegion = details.getByRole("region", { name: /stack depth/u });
   await expect
     .element(depthRegion.getByRole("status"))
     .toHaveTextContent("4 frames: 3 samples, 30.0%");
 
   // Each slice of time reads out its span and count too, under round ticks.
-  const time = dialog.getByRole("region", { name: /over time/u });
+  const time = details.getByRole("region", { name: /over time/u });
   const slices = time.getByRole("button");
   expect(slices.elements()).toHaveLength(3);
   await userEvent.hover(slices.nth(2));
@@ -2568,39 +2568,23 @@ it("shows the file's details in a dialog: its whole command, then its samples", 
     "0.8 s",
     "1.00 s",
   ]);
-
-  // Escape closes it and gives focus back to File details.
-  await userEvent.keyboard("{Escape}");
-  await expect.element(dialog).not.toBeInTheDocument();
-  await expect.element(inspect).toHaveFocus();
 });
 
-it("closes File details on a click outside, and says when a recording kept only the joined command", async () => {
+it("says when a recording kept only the joined command, with no Samples for a trace", async () => {
   const summary = summaryOf({
     samples: 0,
     syscalls: 4,
     command: { arguments: null, text: "/bin/sh -c 'a b'" },
   });
-  const server = await mountPage(summary, true);
+  const server = await mountPage(summary, true, "details");
   server.answer(await server.next("profile"), summary);
-  await userEvent.click(page.getByRole("button", { name: "File details" }));
   server.answer(await server.next("profileInspect"), inspectionOf({ file: null }));
-  const dialog = page.getByRole("dialog");
+  const details = page.getByRole("region", { name: "test.usprof" });
   // A trace with no samples has nothing for a Samples tab.
-  await expect.element(dialog.getByText(/kept the command as one line/u)).toBeVisible();
-  expect(dialog.getByRole("tab").elements()).toHaveLength(0);
+  await expect.element(details.getByText(/kept the command as one line/u)).toBeVisible();
+  expect(details.getByRole("tab").elements()).toHaveLength(0);
   expect(page.getByTestId("command").element().textContent).toBe("/bin/sh -c 'a b'");
-  await expect.element(dialog.getByRole("row", { name: "Source a live recording" })).toBeVisible();
-
-  // A click in the dialog keeps it; one on the scrim around it closes it.
-  await userEvent.click(dialog.getByText(/kept the command/u));
-  await expect.element(dialog).toBeVisible();
-  const scrim = document.querySelector(".details-overlay") as HTMLElement;
-  // This harness has no styles, so the scrim has no margin to click.
-  act(() => {
-    scrim.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-  });
-  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(details.getByRole("row", { name: "Source a live recording" })).toBeVisible();
 });
 
 /** Takes the clipboard API away, as from a page served over plain HTTP to
@@ -2627,15 +2611,14 @@ function withoutClipboard() {
 
 it("copies the command from File details where the page has no clipboard API", async () => {
   const summary = summaryOf({ command: RG });
-  const server = await mountPage(summary, true);
+  const server = await mountPage(summary, true, "details");
   server.answer(await server.next("profile"), summary);
-  await userEvent.click(page.getByRole("button", { name: "File details" }));
   server.answer(await server.next("profileInspect"), inspectionOf());
-  const dialog = page.getByRole("dialog", { name: "test.usprof" });
+  const details = page.getByRole("region", { name: "test.usprof" });
   const without = withoutClipboard();
   try {
-    await userEvent.click(dialog.getByRole("button", { name: "Copy" }));
-    await expect.element(dialog.getByRole("button", { name: "Copied" })).toBeVisible();
+    await userEvent.click(details.getByRole("button", { name: "Copy" }));
+    await expect.element(details.getByRole("button", { name: "Copied" })).toBeVisible();
     expect(without.selected).toEqual([String.raw`/bin/rg -c 'a b' 'it'\''s'`]);
   } finally {
     without.restore();
@@ -2724,24 +2707,23 @@ it("leads with what was recorded, and shows only the losses there were", async (
 
 it("says why File details failed", async () => {
   const summary = summaryOf();
-  const server = await mountPage(summary, true);
+  const server = await mountPage(summary, true, "details");
   server.answer(await server.next("profile"), summary);
-  await userEvent.click(page.getByRole("button", { name: "File details" }));
   server.fail(await server.next("profileInspect"), "the file went away", "failed");
   await expect
     .element(page.getByText("Could not read its details: the file went away"))
     .toBeVisible();
 
-  // Download sits between the tabs and Close. This test's page serves no
-  // profiles, so the download fails, and says why.
-  const dialog = page.getByRole("dialog");
-  const buttons = [...dialog.element().querySelectorAll(".details-head > button")];
-  expect(buttons.map((button) => button.textContent)).toEqual(["Download", "Close"]);
-  const download = dialog.getByRole("button", { name: "Download" });
+  // Download ends the head. This test's page serves no profiles, so the
+  // download fails, and says why.
+  const details = page.getByRole("region", { name: "test.usprof" });
+  const buttons = [...details.element().querySelectorAll(".details-head > button")];
+  expect(buttons.map((button) => button.textContent)).toEqual(["Download"]);
+  const download = details.getByRole("button", { name: "Download" });
   await expect.element(download).toHaveAttribute("title", expect.stringContaining(".usprof"));
   await userEvent.click(download);
   await expect
-    .element(dialog.getByText(/Could not download it: the server answered/u))
+    .element(details.getByText(/Could not download it: the server answered/u))
     .toBeVisible();
 });
 

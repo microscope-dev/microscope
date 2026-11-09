@@ -162,7 +162,7 @@ test("each thread's lane says how long it was off its CPU, and the accounting wh
   await expect(accounting).not.toContainText("of a CPU");
 });
 
-test("File details shows the whole command recorded, the samples' shape, and closes", async ({
+test("File details opens as a pane with the whole command recorded and the samples' shape, and closes", async ({
   page,
   microscope,
 }, info) => {
@@ -176,40 +176,45 @@ test("File details shows the whole command recorded, the samples' shape, and clo
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await page.getByRole("button", { name: "File details" }).click();
-  const dialog = page.getByRole("dialog", { name: "argv.usprof" });
-  await expect(page.getByRole("tab", { name: "Metadata" })).toBeFocused();
+  const inspect = page.getByRole("button", { name: "File details", exact: true });
+  await inspect.click();
+  const details = page.getByRole("region", { name: "argv.usprof" });
+  const tab = page.getByRole("tab", { name: /^File details/u });
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/view=details/u);
+  await page.getByRole("tab", { name: "Metadata" }).click();
 
   // Each argument whole on its own line, quoted as a shell reads it back.
-  const lines = dialog.getByTestId("command").locator(":scope > div");
+  const lines = details.getByTestId("command").locator(":scope > div");
   await expect(lines).toHaveText([
     `${program} \\`,
     "20000000 \\",
     "'two words' \\",
     String.raw`'it'\''s'`,
   ]);
-  await expect(dialog.getByRole("heading", { name: "Command", exact: true })).toBeVisible();
-  await expect(dialog.getByRole("row", { name: /profile-stacks-gcc-o0 .* \d+$/u })).toBeVisible();
+  await expect(details.getByRole("heading", { name: "Command", exact: true })).toBeVisible();
+  await expect(details.getByRole("row", { name: /profile-stacks-gcc-o0 .* \d+$/u })).toBeVisible();
 
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Samples" })).toHaveAttribute("aria-selected", "true");
-  const bars = dialog.getByRole("button", { name: /frames?: \d+ samples?$/u });
+  const bars = details.getByRole("button", { name: /frames?: \d+ samples?$/u });
   await expect(bars.first()).toBeVisible();
   await bars.last().hover();
-  await expect(dialog.getByRole("region", { name: /stack depth/u }).getByRole("status")).toHaveText(
-    /^[\d,]+ frames?: [\d,]+ samples?, /u,
-  );
+  await expect(
+    details.getByRole("region", { name: /stack depth/u }).getByRole("status"),
+  ).toHaveText(/^[\d,]+ frames?: [\d,]+ samples?, /u);
 
-  // A click on the page around it closes it; so does Escape, which gives
-  // focus back to the button that opened it.
-  const inspect = page.getByRole("button", { name: "File details" });
-  await page.mouse.click(4, 4);
-  await expect(dialog).toBeHidden();
+  // The button shows the pane it opened rather than another; closed, it
+  // goes, and a reload of its address opens it again.
+  await page.getByRole("tab", { name: "argv.usprof", exact: true }).click();
   await inspect.click();
-  await expect(dialog).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toBeHidden();
-  await expect(inspect).toBeFocused();
+  await expect(tab).toHaveCount(1);
+  await expect(tab).toHaveAttribute("aria-selected", "true");
+  await page.reload();
+  await expect(details).toBeVisible();
+  await page.getByRole("button", { name: /^Close File details/u }).click();
+  await expect(details).toBeHidden();
+  await expect(page).not.toHaveURL(/view=details/u);
 });
 
 const level = (rows: number[][]) => rows.map((_, index) => [index * 18, 18]);
@@ -276,8 +281,11 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
 
   const saving = page.waitForEvent("download");
-  await page.getByRole("button", { name: "File details" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Download" }).click();
+  await page.getByRole("button", { name: "File details", exact: true }).click();
+  await page
+    .getByRole("tabpanel", { name: "File details", exact: true })
+    .getByRole("button", { name: "Download" })
+    .click();
   expect((await saving).suggestedFilename()).toBe("spin.usprof");
 });
 
