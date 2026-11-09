@@ -1,5 +1,6 @@
 import {
   type MouseEvent as ReactMouseEvent,
+  memo,
   type PointerEvent,
   useCallback,
   useEffect,
@@ -1264,7 +1265,7 @@ function Measured({ x, width, label }: { x: number; width: number; label: string
 }
 
 /** A label on the ruler, `x` pixels in. */
-function RulerMark({
+const RulerMark = memo(function RulerMark({
   x,
   label,
   className,
@@ -1279,7 +1280,7 @@ function RulerMark({
       {label}
     </span>
   );
-}
+});
 
 /** The line under the pointer, down through every lane. */
 function Cursor({ x, height }: { x: number; height: number }) {
@@ -1290,7 +1291,7 @@ function Cursor({ x, height }: { x: number; height: number }) {
 /** A lane's name, which toggles its thread or task in the selection, and
  * under it, for a thread whose zones go deeper than one row, a chevron that
  * folds them to one. The lane of threads without zones opens to them. */
-function LaneName({
+const LaneName = memo(function LaneName({
   row,
   selected,
   toggle,
@@ -1352,7 +1353,7 @@ function LaneName({
       ) : null}
     </>
   );
-}
+});
 
 /** One plotted series as a line from its lowest value to its highest. */
 function PlotLane({

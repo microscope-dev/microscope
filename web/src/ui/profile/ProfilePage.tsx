@@ -1,6 +1,7 @@
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   type ChangeEvent,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -38,7 +39,6 @@ import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import type { PaneProps } from "../../workbench/kinds";
-import { groups } from "../../workbench/layout";
 import { change, useLayout, useLink, workbench } from "../../workbench/store";
 import { useDialogFocus, useDismiss } from "../dialog";
 import {
@@ -55,6 +55,7 @@ import { Lanes } from "./Lanes";
 import {
   arrange,
   drawsTimeline,
+  leadingPane,
   lookOf,
   paneParams,
   readLink,
@@ -74,31 +75,43 @@ const sameLook = (a: ProfileLook, b: ProfileLook) => JSON.stringify(a) === JSON.
  * the address, the address follows it, so a link opens the same view. */
 export function ProfilePaneBody({ id, pane }: PaneProps) {
   const view = viewOf(pane) ?? null;
-  const { link } = paneParams(pane);
+  const { link, own } = useMemo(() => paneParams(pane), [pane]);
   const held = useLink(link, (value) => value);
   const linked = useMemo(() => readLink(held), [held]);
   const look = useMemo<ProfileLook>(
-    () => ({ ...linked?.look, ...paneParams(pane).own, ...(view === null ? {} : { view }) }),
-    [linked, pane, view],
+    () => ({ ...linked?.look, ...own, ...(view === null ? {} : { view }) }),
+    [linked, own, view],
   );
   const profile = linked?.profile ?? "";
   const navigate = useNavigate();
-  const location = useLocation();
-  const inSession = location.pathname.startsWith("/s/");
-  const focused = useLayout(
-    (layout) => groups(layout).find((group) => group.id === layout.focused)?.active === id,
-  );
+  const router = useRouter();
+  // Only what this pane reads of the address, so other addresses do not
+  // render it again.
+  const inSession = useRouterState({
+    select: (state) => state.location.pathname.startsWith("/s/"),
+  });
+  const addressed = useRouterState({
+    select: (state) => state.location.pathname === `/profile/${profile}`,
+  });
+  const focused = useLayout((layout) => leadingPane(layout) === id);
   const leads = focused && !inSession;
+  // Only the pane that leads reads the search, which every tab switch changes.
+  const search = useRouterState({
+    select: (state) => (leads ? (state.location.search as Record<string, unknown>) : null),
+  });
 
   const setLook = useCallback(
     (by: (look: ProfileLook) => ProfileLook, push = false) => {
-      const now = lookOf(workbench.getState().layout, id);
+      const layout = workbench.getState().layout;
+      const now = lookOf(layout, id);
       if (!now) {
         return;
       }
       const next = by(now);
-      change((layout) => storeLook(layout, id, next).layout);
-      if (leads) {
+      const leading =
+        leadingPane(layout) === id && !router.state.location.pathname.startsWith("/s/");
+      change((each) => storeLook(each, id, next).layout);
+      if (leading) {
         void navigate({
           to: "/profile/$profile",
           params: { profile },
@@ -107,12 +120,10 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
         });
       }
     },
-    [id, leads, navigate, profile],
+    [id, navigate, profile, router],
   );
 
   // The address names the profile this pane shows, as it changes.
-  const search = location.search as Record<string, unknown>;
-  const addressed = location.pathname === `/profile/${profile}`;
   const led = useRef(false);
   useEffect(() => {
     // An address naming this profile changes the look, as Back does, through
@@ -121,7 +132,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
     // out of the address too.
     const took = leads && !led.current;
     led.current = leads;
-    if (!linked) {
+    if (!linked || !search) {
       return;
     }
     const kept = validateProfileLook(search);
@@ -158,7 +169,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
 }
 
 /** A view's body, in a pane of its own. */
-function ViewBody({ view }: { view: ProfileView }) {
+const ViewBody = memo(function ViewBody({ view }: { view: ProfileView }) {
   return view === "zones" ? (
     <ZonesPane />
   ) : (
@@ -174,7 +185,7 @@ function ViewBody({ view }: { view: ProfileView }) {
       )}
     </div>
   );
-}
+});
 
 const MISSING_CARD = { width: "min(560px, 100%)" };
 const NO_MARGIN = { margin: 0 };
@@ -238,7 +249,7 @@ function ProfileFrame({
     };
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
-  });
+  }, [leads, look, setLook]);
   const focus = useMemo<ProfileFocus | null>(
     () =>
       summary.data
@@ -311,7 +322,7 @@ export function Profile({
   );
 }
 
-function Overview() {
+const Overview = memo(function Overview() {
   const { profile, summary } = useProfile();
   const info = useModel((model) => model.profiles.find((each) => each.id === profile));
   return (
@@ -331,7 +342,7 @@ function Overview() {
       )}
     </>
   );
-}
+});
 
 /** The profile's name, and everything the query holds, each removable
  * where it shows. */
