@@ -1043,7 +1043,7 @@ impl Processor {
         window.marks.front().filter(|(time, _)| *time <= passed)
     }
 
-    fn process(&mut self, record: decode::Record<'_>) {
+    pub(super) fn process(&mut self, record: decode::Record<'_>) {
         let time = record.time().unwrap_or(self.latest);
         self.account_before(time);
         self.map_lost_before(time);

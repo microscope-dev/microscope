@@ -768,7 +768,11 @@ fn drive(
             }
             .saturating_sub(drained_at.elapsed());
             if let Some(pacer) = &mut pacer {
-                let edge = pacer.pace(monotonic(), events, processor);
+                let edge = pacer.pace(monotonic(), processor, |on| {
+                    let toggling = monotonic();
+                    events.sample(on);
+                    (toggling, monotonic())
+                });
                 // While the budget pauses sampling only the sideband's
                 // records come, few enough to wait for the next edge.
                 wait = if pacer.sampling() {
@@ -1269,13 +1273,14 @@ impl Pacer {
         self.on_since.is_some()
     }
 
-    /// Turns sampling on or off as the schedule says at `now`, and says
-    /// how long until it next changes.
+    /// Turns sampling on or off with `toggle` as the schedule says at
+    /// `now`, and says how long until it next changes. `toggle` says when
+    /// it began and ended turning sampling on or off.
     fn pace(
         &mut self,
         now: u64,
-        events: &perf::Events,
         processor: &mut record::Processor,
+        mut toggle: impl FnMut(bool) -> (u64, u64),
     ) -> Duration {
         let current = |pacer: &Self| {
             if pacer.controller.warm() {
@@ -1293,16 +1298,12 @@ impl Pacer {
         let (from, until) = self.window;
         let wanted = from <= now && now < until;
         if wanted && let Some(paused) = self.paused_since.take() {
-            let began = monotonic();
+            let (began, on) = toggle(true);
             processor.gap(paused, began, GapReason::Budget);
-            events.sample(true);
-            let on = monotonic();
             self.toggled.0 = on.saturating_sub(began);
             self.on_since = Some(on);
         } else if !wanted && let Some(on) = self.on_since.take() {
-            let began = monotonic();
-            events.sample(false);
-            let off = monotonic();
+            let (began, off) = toggle(false);
             self.toggled.1 = off.saturating_sub(began);
             self.sampled += off.saturating_sub(on);
             self.paused_since = Some(off);
@@ -1710,6 +1711,68 @@ fn cut(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    /// The pacer tells the processor where a budget pause began as it
+    /// begins, as the pause becomes a gap only when it ends: a thread off
+    /// its CPU before the pause and back during it is off only until the
+    /// pause began, not until it came back unseen.
+    #[test]
+    fn a_budget_pause_cuts_time_off_a_cpu_where_it_began() {
+        use crate::backend::perf::decode::Record;
+        use crate::model::{Pid, Tid};
+
+        let mut processor =
+            super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
+        let (pid, tid) = (Pid::new(100), Tid::new(101));
+        processor.process(Record::Fork {
+            pid,
+            ppid: Pid::new(1),
+            tid,
+            ptid: Tid::new(1),
+            time: 1_000,
+        });
+        let switch = |out, time| Record::Switch {
+            pid,
+            tid,
+            out,
+            preempted: false,
+            time,
+        };
+
+        // Sampling is on until 3,000 of a period that outlasts the test.
+        let budget = super::Budget {
+            cpu: 0.01,
+            period: Duration::from_hours(1),
+        };
+        let mut pacer = super::Pacer::new(budget, 1_000, &processor);
+        pacer.window = (1_000, 3_000);
+        let mut toggled = Vec::new();
+        let mut pace = |pacer: &mut super::Pacer, processor: &mut _, now| {
+            pacer.pace(now, processor, |on| {
+                toggled.push((now, on));
+                (now, now)
+            });
+        };
+
+        pace(&mut pacer, &mut processor, 1_500);
+        processor.process(switch(true, 2_000));
+        pace(&mut pacer, &mut processor, 3_000);
+        processor.process(switch(false, 4_000));
+        pace(&mut pacer, &mut processor, 5_000);
+        pacer.finish(9_000, &mut processor);
+        assert_eq!(toggled, [(3_000, false)]);
+
+        let profile = super::Profile {
+            capture: processor.finish(),
+        };
+        let off: Vec<_> = profile
+            .off_cpu()
+            .iter()
+            .map(|interval| (interval.time, interval.duration))
+            .collect();
+        assert_eq!(off, [(2_000, 1_000)]);
+        assert_eq!(profile.paused(super::GapReason::Budget), [(3_000, 9_000)]);
+    }
 
     #[test]
     fn a_program_ending_before_its_first_task_snapshot_explains_the_empty_result() {
