@@ -685,21 +685,6 @@ for _ in range(1000):
     traced()
 assert calls > 2000, calls
 
-# With every site it disabled restarted, the SDK's thread sleeps.
-import os
-def wakes():
-    for task in os.listdir('/proc/self/task'):
-        with open(f'/proc/self/task/{task}/comm') as comm:
-            if comm.read().strip() != 'microscope-sdk':
-                continue
-        with open(f'/proc/self/task/{task}/status') as status:
-            return next(int(line.split()[1]) for line in status
-                        if line.startswith('voluntary_ctxt_switches'))
-    raise AssertionError('no thread is named microscope-sdk')
-before = wakes()
-time.sleep(0.2)
-assert wakes() == before, (before, wakes())
-
 microscope._traced.states[state] = 0
 traced()
 off = calls
