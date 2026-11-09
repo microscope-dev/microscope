@@ -933,15 +933,27 @@ fn on_stacks(profile: &Profile) -> std::collections::BTreeSet<String> {
         .collect()
 }
 
+/// The samples kept weigh what the events counted, within a part of a
+/// period, unless the kernel dropped some: those weigh nothing, so the kept
+/// ones then weigh less, and never more.
 fn assert_cpu_accounting(profile: &Profile) {
     let (start, end) = profile.span();
     assert!(start <= end, "{start}..{end}");
-    let error = profile.total_weight().abs_diff(profile.counted());
+    support::profile::assert_loss_explained(profile);
+    let (weight, counted, lost) = (
+        profile.total_weight(),
+        profile.counted(),
+        profile.lost_samples(),
+    );
+    let error = if lost == 0 {
+        weight.abs_diff(counted)
+    } else {
+        weight.saturating_sub(counted)
+    };
     assert!(
         error < 20_000_000,
-        "{start}..{end}: weight {} differs from counted {} by {error} ns",
-        profile.total_weight(),
-        profile.counted()
+        "{start}..{end}: weight {weight} differs from counted {counted} by {error} ns, \
+         with {lost} samples lost"
     );
 }
 
