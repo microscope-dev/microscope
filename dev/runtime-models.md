@@ -286,12 +286,11 @@ entered, or an inactive `LocalSet` no known future reaches, may hold tasks
 that cannot be discovered. An empty enumeration is not proof that the process
 has no tasks. A `LocalSet` is found from the stack of the thread that drives
 it, so a task list reports a gap for each such thread whose stack does not
-unwind to its end. A thread stopped in code no unwind rules describe is the
-exception: every thread that starts another passes through glibc's
-`clone3`, which has none after its system call, so such a gap would be
-noise. Any set it drives is then missing unreported. The debugger permits
-an empty list before runtime startup; an explicitly requested profile
-snapshot reports when it discovers none.
+unwind to its end. A thread stopped in glibc's `clone3` unwinds whole too:
+its frame is proved from its instructions (see
+[`debug-information.md`](debug-information.md)). The debugger permits an
+empty list before runtime startup; an explicitly requested profile snapshot
+reports when it discovers none.
 
 A task can be running, scheduled, idle, completed, or in a state the current
 runtime provider does not understand. A running task can join its logical

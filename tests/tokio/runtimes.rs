@@ -376,3 +376,82 @@ async fn a_register_write_changes_the_tasks_found_on_a_threads_stack() {
     assert!(says_lost(&after, shared), "{fixture}: {after:?}");
     scenario.shutdown().await;
 }
+
+/// glibc's `clone3` has no call-frame information after its system call.
+/// The thread that runs the first set starts a thread from it. Stopped as
+/// that call returns, its stack unwinds whole, through the frame that
+/// drives the set, and the list holds the set's tasks with no gap.
+#[tokio::test]
+async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
+    use microscope::CatchPhase;
+    use microscope::syscalls::{Abi, SyscallId};
+
+    for fixture in ["tokio-runtimes-o0", "tokio-runtimes-1.52-o0"] {
+        let mut scenario = Scenario::launch(fixture);
+        let clone3 = SyscallId::named(Abi::X86_64, "clone3").expect("x86-64 names clone3");
+        scenario
+            .operation(
+                "catch clone3",
+                scenario
+                    .handle()
+                    .add_catchpoint([clone3].into(), CatchPhase::Exit, None),
+            )
+            .await;
+        let mut reason = scenario
+            .run_with_to_stop(LaunchOptions {
+                arguments: vec!["clone".into()],
+                stdout: Some(Stdio::null()),
+                ..LaunchOptions::default()
+            })
+            .await;
+
+        // The clone the thread `local` makes.
+        let local = loop {
+            assert!(
+                matches!(reason, StopReason::Syscall(_)),
+                "{fixture}: {reason:?}"
+            );
+            let snapshot = scenario.snapshot().await;
+            let InferiorState::Stopped { thread_id, .. } = snapshot.inferior else {
+                panic!("{fixture}: not stopped");
+            };
+            let name = snapshot
+                .threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .and_then(|thread| thread.name.as_deref());
+            if name == Some("local") {
+                break thread_id;
+            }
+            reason = scenario.resume_to_stop().await;
+        };
+
+        let (tasks, gaps) = tasks(&scenario, 4096).await;
+        assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
+        let in_set = tasks
+            .iter()
+            .filter(|task| {
+                task.labels
+                    .iter()
+                    .any(|(key, value)| &**key == "runtime" && value.to_string().contains("local"))
+            })
+            .count();
+        assert_eq!(in_set, 2, "{fixture}: thread {local}: {tasks:#?}");
+        let trace = scenario
+            .operation("backtrace", scenario.handle().backtrace())
+            .await;
+        assert_eq!(
+            trace.termination,
+            microscope::UnwindTermination::Complete,
+            "{fixture}: {trace:#?}"
+        );
+        assert!(
+            trace.frames.iter().any(|frame| frame
+                .function
+                .as_ref()
+                .is_some_and(|function| function.name.starts_with("block_on"))),
+            "{fixture}: {trace:#?}"
+        );
+        scenario.shutdown().await;
+    }
+}

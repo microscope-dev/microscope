@@ -561,19 +561,8 @@ impl<P: InspectionOps> Controller<P> {
                 }
             };
 
-            // Nor is one driven past where the stack could be unwound. A
-            // thread stopped in code no rules describe, as glibc's `clone3`
-            // between its system call and its return, is left out: every
-            // thread that starts another passes through there, and both
-            // stacks unwind whole a moment later.
-            let stopped_undescribed = matches!(
-                expanded.trace.termination,
-                UnwindTermination::NoUnwindInfo { address }
-                    if expanded.trace.frames.first().and_then(|frame| frame.instruction)
-                        == Some(address)
-            );
+            // Nor is one driven past where the stack could be unwound.
             if expanded.trace.termination != UnwindTermination::Complete
-                && !stopped_undescribed
                 && runtimes.iter().any(|runtime| runtime.model.has_task_sets())
             {
                 gaps.push(

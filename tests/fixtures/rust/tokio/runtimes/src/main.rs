@@ -56,6 +56,9 @@ fn thread(name: &str, body: impl FnOnce() + Send + 'static) -> (i32, std::thread
 }
 
 fn main() {
+    // With the argument `clone`, the thread that runs the first set also
+    // starts a thread from it.
+    let clone = std::env::args().nth(1).as_deref() == Some("clone");
     let multi = Builder::new_multi_thread()
         .worker_threads(2)
         .enable_time()
@@ -104,6 +107,9 @@ fn main() {
                     async move { notify.notified().await }
                 }));
                 tokio::task::spawn_local(parked("local", "sleep", sleep()));
+                if clone {
+                    std::thread::spawn(|| ()).join().expect("the thread ends");
+                }
                 spawned.send(()).expect("the program waits");
                 let _ = local_released.await;
             });

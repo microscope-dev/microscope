@@ -2260,7 +2260,51 @@ fn proved_frames(
         scan,
         &mut frames,
     );
+
+    // Where glibc's clone returns in both threads, which no frame of the
+    // function's other code describes.
+    let clones = clone_returns(object, unwind, &described);
+    if let Some(value) = super::x86_64::frames::CodeFrame::Clone.encode() {
+        frames.retain(|(range, _)| {
+            clones
+                .iter()
+                .all(|clone| range.end <= clone.start || clone.end <= range.start)
+        });
+        frames.extend(clones.into_iter().map(|range| (range, value)));
+    }
     frames
+}
+
+/// The instructions of glibc's `clone` and `clone3` that follow their
+/// system call, which glibc's call-frame information leaves out: each
+/// begins where an entry of it ends.
+#[cfg(target_arch = "x86_64")]
+fn clone_returns(
+    object: &object::File<'_>,
+    unwind: &crate::image::unwind::Unwind,
+    described: &dyn Fn(u64) -> bool,
+) -> Vec<AddressRange<ImageAddress>> {
+    // The call's number is loaded just before.
+    const LOAD: u64 = 5;
+
+    let sections: Vec<(u64, &[u8])> = object
+        .sections()
+        .filter(|section| section.kind() == object::SectionKind::Text)
+        .filter_map(|section| Some((section.address(), section.data().ok()?)))
+        .collect();
+    [&unwind.eh_frame_index, &unwind.debug_frame_index]
+        .iter()
+        .flat_map(|index| index.entries.iter())
+        .filter_map(|entry| {
+            let from = entry.end.get().checked_sub(LOAD)?;
+            let (start, code) = sections
+                .iter()
+                .find(|(start, code)| *start <= from && from - start < code.len() as u64)?;
+            let code = code.get(usize::try_from(from - start).ok()?..)?;
+            super::x86_64::frames::clone_return(code, from)
+        })
+        .filter(|range| !described(range.start.get()))
+        .collect()
 }
 
 /// The frames of V8's builtins and of V8's other hand-written code, whose

@@ -387,6 +387,16 @@ process's entry point that clears rbp and runs straight to a call, as the
 psABI asks of the outermost frame, is proved `Outermost` up to that call, so
 a stack through musl's `_start` ends complete.
 
+glibc's `clone` and `clone3` have CFI up to their system call and again
+from the child's `xor ebp, ebp`, but none for `syscall; test rax, rax; jl;
+je; ret` between, where every thread that starts another stops at its
+clone event and every new thread stops first. Only that exact sequence,
+after `mov eax, SYS_clone` or `SYS_clone3` and right where an FDE ends, is
+proved `Clone`. Both threads run it: the new one, where rax is zero, on a
+stack that holds nothing else, so its frame is the outermost; the caller,
+where rax is the child's id or an error, with the frame it was called with,
+its return address at rsp.
+
 A sample taken in a signal trampoline after its handler returned unwinds by
 the trampoline's role, from the `ucontext` at its stack pointer, as a
 handler's caller does: musl's `__restore_rt` has no CFI.

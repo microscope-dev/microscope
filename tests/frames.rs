@@ -1629,3 +1629,99 @@ async fn revealing_an_inline_frame_without_running_selects_the_innermost_frame()
     );
     scenario.shutdown().await;
 }
+
+/// glibc's `clone3` has no call-frame information from its system call to
+/// its return, which both threads run: the caller as the call returns,
+/// unwinding through `pthread_create` to `main`, and the new thread from its
+/// first instruction, on a stack that holds nothing else.
+#[tokio::test]
+async fn both_threads_of_glibcs_clone_unwind_whole_from_its_system_call() {
+    use microscope::syscalls::{Abi, SyscallId};
+    use microscope::{BreakpointSpec, CatchPhase, InferiorState, StopContext, UnwindTermination};
+
+    let mut scenario = Scenario::launch("threads");
+    let clone3 = SyscallId::named(Abi::X86_64, "clone3").expect("x86-64 names clone3");
+    let catchpoint = scenario
+        .operation(
+            "catch clone3",
+            scenario
+                .handle()
+                .add_catchpoint([clone3].into(), CatchPhase::Exit, None),
+        )
+        .await;
+    assert!(matches!(
+        scenario.run_to_stop().await,
+        StopReason::Syscall(_)
+    ));
+    let tail = backtrace(&scenario).await[0]
+        .instruction
+        .expect("a thread's frame has an instruction");
+
+    // Each thread at the system call's return, by whether it is the new one,
+    // where clone3 returned zero.
+    let (mut parent, mut child) = (0, 0);
+    loop {
+        let snapshot = scenario.snapshot().await;
+        let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
+            panic!("not stopped: {:?}", snapshot.inferior);
+        };
+        for thread in snapshot.threads.iter() {
+            let view = scenario.handle().at(StopContext {
+                stop: stop_id,
+                execution: thread.id.into(),
+                frame: StackFrameId::INNERMOST,
+            });
+            let trace = scenario.operation("backtrace", view.backtrace()).await;
+            if trace.frames[0].instruction != Some(tail) {
+                continue;
+            }
+            let registers = scenario.operation("registers", view.registers()).await;
+            let rax = registers
+                .registers
+                .iter()
+                .find(|value| &*value.register.name == "rax")
+                .and_then(|value| value.bytes.as_deref())
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u64::from_le_bytes)
+                .expect("rax");
+
+            assert_eq!(trace.termination, UnwindTermination::Complete, "{trace:#?}");
+            if rax == 0 {
+                assert_eq!(trace.frames.len(), 1, "{trace:#?}");
+                child += 1;
+            } else {
+                assert!(
+                    trace
+                        .frames
+                        .iter()
+                        .any(|frame| function_name(frame) == Some("main")),
+                    "{trace:#?}"
+                );
+                parent += 1;
+            }
+        }
+        if child > 0 {
+            break;
+        }
+
+        // The second thread's creation passes the same instruction.
+        if parent == 1 {
+            scenario
+                .operation(
+                    "remove the catchpoint",
+                    scenario.handle().remove_catchpoint(catchpoint.id),
+                )
+                .await;
+            scenario
+                .add_breakpoint_spec(BreakpointSpec::Address(tail))
+                .await;
+        }
+        let reason = scenario.resume_to_stop().await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{reason:?}"
+        );
+    }
+    assert!(parent > 0, "no caller stopped there");
+    scenario.shutdown().await;
+}

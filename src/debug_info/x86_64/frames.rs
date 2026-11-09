@@ -20,7 +20,7 @@ use iced_x86::{
 };
 
 use super::{full_register, is_immediate, is_push_register, is_register_move};
-use crate::unwind::{MemoryReader, RBP, RETURN_ADDRESS, RSP, RegisterFile, UnwindStep};
+use crate::unwind::{MemoryReader, RAX, RBP, RETURN_ADDRESS, RSP, RegisterFile, UnwindStep};
 use crate::{AddressRange, ImageAddress, UnwindTermination, VirtualAddress};
 
 /// Where a frame keeps what its caller needs, at one instruction.
@@ -44,6 +44,12 @@ pub(in crate::debug_info) enum CodeFrame {
     /// The process's entry point, which the kernel jumps to with no
     /// return address: the frame has no caller.
     Outermost,
+
+    /// glibc's `clone` or `clone3` from its system call to its return,
+    /// which both threads run: in the new one, where the call returned
+    /// zero in rax, the outermost frame; in the caller, the frame it was
+    /// called with.
+    Clone,
 }
 
 /// How far the stack pointer is below rbp, in a frame found from rbp.
@@ -235,7 +241,7 @@ fn next(frame: CodeFrame, instruction: &Instruction, factory: &mut InstructionIn
             caller_frame_pointer,
         } => next_on_stack(pushed, caller_frame_pointer, instruction, factory),
         CodeFrame::Based { offset, below } => next_based(offset, below, instruction, factory),
-        CodeFrame::Outermost => Next::Unproved,
+        CodeFrame::Outermost | CodeFrame::Clone => Next::Unproved,
     }
 }
 
@@ -539,6 +545,7 @@ impl CodeFrame {
             } => (2, pushed, 0),
             Self::Based { offset, .. } => (3, offset, 0),
             Self::Outermost => (0, 0, 1),
+            Self::Clone => (2, 0, 1),
         };
         if first > MOST_ENCODED_BYTES || second > MOST_ENCODED_BYTES {
             return None;
@@ -559,6 +566,7 @@ impl CodeFrame {
             (0, 1) if first == 0 => Some(Self::Outermost),
             (1, offset) => Some(stack(CallerFramePointer::Saved(offset))),
             (2, 0) => Some(stack(CallerFramePointer::Lost)),
+            (2, 1) if first == 0 => Some(Self::Clone),
             (3, 0) => Some(Self::Based {
                 offset: first,
                 below: Below::Unknown,
@@ -609,6 +617,53 @@ pub(in crate::debug_info) fn entry_frame(
         }
     }
     None
+}
+
+/// The instructions of glibc's `clone` or `clone3` from its system call
+/// to its return, when `code`, at `address`, begins with them:
+///
+/// ```text
+/// mov eax, SYS_clone3   ; or SYS_clone
+/// syscall               ; the range starts here
+/// test rax, rax
+/// jl error
+/// je child
+/// ret                   ; and ends after this
+/// child: xor ebp, ebp
+/// ```
+///
+/// The caller runs them with the stack it was called with, since `ret`
+/// returns from it and nothing in between moves rsp or writes rbp. The new
+/// thread, on its new stack, takes `je`, where clearing rbp marks the
+/// outermost frame as the psABI asks. Which of the two runs is rax: zero
+/// only in the new thread.
+pub(in crate::debug_info) fn clone_return(
+    code: &[u8],
+    address: u64,
+) -> Option<AddressRange<ImageAddress>> {
+    const SYS_CLONE: [u8; 5] = [0xb8, 0x38, 0, 0, 0];
+    const SYS_CLONE3: [u8; 5] = [0xb8, 0xb3, 0x01, 0, 0];
+    // syscall; test rax, rax; jl error, to any offset
+    const TO_ERROR: [u8; 6] = [0x0f, 0x05, 0x48, 0x85, 0xc0, 0x7c];
+    // je child; ret; child: xor ebp, ebp
+    const TO_CHILD: [u8; 5] = [0x74, 0x01, 0xc3, 0x31, 0xed];
+    // From the system call through `ret`.
+    const RANGE: u64 = 10;
+
+    let (call, tail) = code.split_at_checked(SYS_CLONE.len())?;
+    let after_error = TO_ERROR.len() + 1;
+    if call != SYS_CLONE && call != SYS_CLONE3
+        || tail.get(..TO_ERROR.len())? != TO_ERROR
+        || tail.get(after_error..after_error + TO_CHILD.len())? != TO_CHILD
+    {
+        return None;
+    }
+
+    let start = address.checked_add(SYS_CLONE.len() as u64)?;
+    Some(AddressRange {
+        start: ImageAddress::new(start),
+        end: ImageAddress::new(start.checked_add(RANGE)?),
+    })
 }
 
 /// `push rbp; mov rbp, rsp`, the prologue of a function that keeps the
@@ -716,7 +771,7 @@ pub(in crate::debug_info) fn frame_cfa(
             .checked_add(pushed)
             .and_then(|top| top.checked_add(8)),
         CodeFrame::Based { offset, .. } => register(registers, RBP, "rbp")?.checked_add(offset),
-        CodeFrame::Outermost => register(registers, RSP, "rsp")?.checked_add(8),
+        CodeFrame::Outermost | CodeFrame::Clone => register(registers, RSP, "rsp")?.checked_add(8),
     };
 
     cfa.map(VirtualAddress::new)
@@ -733,7 +788,9 @@ pub(in crate::debug_info) fn frame_caller(
     registers: &RegisterFile,
     memory: &mut dyn MemoryReader,
 ) -> Result<UnwindStep, UnwindTermination> {
-    if frame == CodeFrame::Outermost {
+    if frame == CodeFrame::Outermost
+        || frame == CodeFrame::Clone && register(registers, RAX, "rax")? == 0
+    {
         return Err(UnwindTermination::Complete);
     }
 
@@ -746,7 +803,8 @@ pub(in crate::debug_info) fn frame_caller(
             caller_frame_pointer: CallerFramePointer::Saved(offset),
             ..
         } => Some(read(memory, cfa, offset)?),
-        CodeFrame::Stack {
+        CodeFrame::Clone
+        | CodeFrame::Stack {
             caller_frame_pointer: CallerFramePointer::Kept,
             ..
         } => registers.get(RBP),
@@ -842,6 +900,7 @@ mod tests {
                 below: Below::Unknown,
             },
             CodeFrame::Outermost,
+            CodeFrame::Clone,
         ] {
             let encoded = frame.encode().expect("it fits");
             assert_eq!(CodeFrame::decode(encoded), Some(frame), "{frame:?}");
@@ -860,10 +919,10 @@ mod tests {
         );
         assert_eq!(stack(1 << 15, Kept).and_then(CodeFrame::encode), None);
         // A Kept or Lost frame with a second count is no encoding, but for
-        // the outermost frame's.
+        // the outermost and clone frames'.
         assert_eq!(CodeFrame::decode(2 << 17), None);
         assert_eq!(CodeFrame::decode(1 << 17 | 1 << 2), None);
-        assert_eq!(CodeFrame::decode(2 | 1 << 17), None);
+        assert_eq!(CodeFrame::decode(2 | 1 << 2 | 1 << 17), None);
         assert_eq!(CodeFrame::decode(3 | 1 << 17), None);
     }
 
@@ -894,6 +953,77 @@ mod tests {
         assert_eq!(range(&[0x31, 0xed, 0xe9, 0, 0, 0, 0]), None);
         // xor ebp, ebp; and nothing after
         assert_eq!(range(&[0x31, 0xed]), None);
+    }
+
+    /// glibc 2.42's `clone3` from loading its call's number to its child's
+    /// first instruction, and its `clone`'s, which differ only in the
+    /// number; any other call, or other code after it, is not glibc's.
+    #[test]
+    fn only_glibcs_clone_tail_is_proved_from_its_system_call_to_its_return() {
+        let range = |code: &[u8]| {
+            clone_return(code, 0x1000).map(|range| (range.start.get(), range.end.get()))
+        };
+        // mov eax, 435; syscall; test rax, rax; jl err; je child; ret;
+        // child: xor ebp, ebp
+        let clone3 = [
+            0xb8, 0xb3, 0x01, 0, 0, 0x0f, 0x05, 0x48, 0x85, 0xc0, 0x7c, 0x14, 0x74, 0x01, 0xc3,
+            0x31, 0xed,
+        ];
+        assert_eq!(range(&clone3), Some((0x1005, 0x100f)));
+        let mut clone = clone3;
+        clone[1..3].copy_from_slice(&[0x38, 0]);
+        assert_eq!(range(&clone), Some((0x1005, 0x100f)));
+
+        // fork (57), whose child has the whole stack.
+        let mut fork = clone3;
+        fork[1..3].copy_from_slice(&[0x39, 0]);
+        assert_eq!(range(&fork), None);
+        // The child's first instruction is missing, or keeps rbp.
+        assert_eq!(range(&clone3[..15]), None);
+        let mut kept = clone3;
+        kept[15..].copy_from_slice(&[0x90, 0x90]);
+        assert_eq!(range(&kept), None);
+        // The branch to the child skips more than the return.
+        let mut longer = clone3;
+        longer[13] = 0x02;
+        assert_eq!(range(&longer), None);
+    }
+
+    /// The new thread, where clone returned zero, has no caller; the
+    /// thread that called it returns to its caller with its stack as it
+    /// was, whether the call succeeded or failed.
+    #[test]
+    fn a_clone_frame_is_outermost_only_where_it_returned_zero() {
+        struct Stack;
+
+        impl MemoryReader for Stack {
+            fn read_u64(&mut self, address: VirtualAddress) -> Option<u64> {
+                (address.get() == 0x7000).then_some(0x40_1234)
+            }
+        }
+
+        let registers = |rax| RegisterFile::new([(RAX, rax), (RSP, 0x7000), (RBP, 0x7100)]);
+        assert!(matches!(
+            frame_caller(CodeFrame::Clone, &registers(0), &mut Stack),
+            Err(UnwindTermination::Complete)
+        ));
+        for rax in [1234, (-22_i64).cast_unsigned()] {
+            let Ok(caller) = frame_caller(CodeFrame::Clone, &registers(rax), &mut Stack) else {
+                panic!("no caller where rax is {rax:#x}");
+            };
+            assert_eq!(caller.cfa, VirtualAddress::new(0x7008));
+            assert_eq!(caller.registers.get(RETURN_ADDRESS), Some(0x40_1234));
+            assert_eq!(caller.registers.get(RSP), Some(0x7008));
+            assert_eq!(caller.registers.get(RBP), Some(0x7100));
+        }
+        assert!(matches!(
+            frame_caller(
+                CodeFrame::Clone,
+                &RegisterFile::new([(RSP, 0x7000)]),
+                &mut Stack
+            ),
+            Err(UnwindTermination::RegisterUnavailable { .. })
+        ));
     }
 
     #[test]
