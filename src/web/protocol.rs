@@ -1477,13 +1477,20 @@ pub struct ProfileZonesQuery {
 
 /// Zones as a view draws them: the binary frame before it holds, for each
 /// block, its start and end as `f64` nanoseconds from the profile's start,
-/// then its thread, depth, name (an index into `names`), zone count, and
-/// flags as `u32`s, column by column.
+/// the nanoseconds inside its zones, and of those, how many its thread
+/// spent blocked and preempted, also as `f64`s; then its thread, depth,
+/// name (an index into `names`), zone count, and flags as `u32`s, column
+/// by column.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileZones {
     pub range: [i64; 2],
     pub blocks: u32,
+
+    /// Whether the recording traced time off the CPU, without which a
+    /// block's blocked and preempted times are zero.
+    pub off_cpu: bool,
     pub names: Vec<String>,
 
     /// The program's messages, frames, and triggers in the range.
@@ -1734,6 +1741,9 @@ pub struct ProfileThread {
     pub name: Option<String>,
     pub samples: u64,
     pub weight: u64,
+
+    /// How many zones it recorded.
+    pub zones: u64,
 
     /// Nanoseconds off its CPU, blocked and preempted.
     pub blocked: u64,

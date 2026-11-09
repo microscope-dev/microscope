@@ -10,6 +10,10 @@ export interface ZoneBlocks {
   /** Nanoseconds from the profile's start. */
   start: Float64Array;
   end: Float64Array;
+  /** Nanoseconds its zones cover, and of those, off their thread's CPU. */
+  covered: Float64Array;
+  blocked: Float64Array;
+  preempted: Float64Array;
   thread: Uint32Array;
   depth: Uint32Array;
   /** Indices into `names`. */
@@ -18,16 +22,18 @@ export interface ZoneBlocks {
   zones: Uint32Array;
   flags: Uint32Array;
   names: string[];
+  /** Whether time off the CPU was traced, without which it reads zero. */
+  offCpu: boolean;
 }
 
-/** Decodes an answer and the columns sent before it: starts and ends as
- * little-endian `f64`s, then threads, depths, names, counts, and flags as
- * `u32`s. */
+/** Decodes an answer and the columns sent before it: starts, ends, and
+ * times covered, blocked, and preempted as little-endian `f64`s, then
+ * threads, depths, names, counts, and flags as `u32`s. */
 export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefined): ZoneBlocks {
   const count = answer.blocks;
   const bytes = payload ?? new Uint8Array();
-  if (bytes.byteLength !== count * 36) {
-    throw new Error(`${count} zone blocks need ${count * 36} bytes, not ${bytes.byteLength}`);
+  if (bytes.byteLength !== count * 60) {
+    throw new Error(`${count} zone blocks need ${count * 60} bytes, not ${bytes.byteLength}`);
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const floats = (column: number) =>
@@ -36,18 +42,22 @@ export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefine
     );
   const words = (column: number) =>
     Uint32Array.from({ length: count }, (_, at) =>
-      view.getUint32(count * 16 + (column * count + at) * 4, true),
+      view.getUint32(count * 40 + (column * count + at) * 4, true),
     );
   return {
     count,
     start: floats(0),
     end: floats(1),
+    covered: floats(2),
+    blocked: floats(3),
+    preempted: floats(4),
     thread: words(0),
     depth: words(1),
     name: words(2),
     zones: words(3),
     flags: words(4),
     names: answer.names,
+    offCpu: answer.offCpu,
   };
 }
 
@@ -332,12 +342,14 @@ export function timeTicks(
   }
   const span = end - start;
   const { step, times } = ticks([start, end], width);
+  const last = start === 0 ? formatDuration(end) : formatInstant(end, step, end);
+  // The end, rounded to the step, can read as the round time before it.
   const marks = times
     .filter((time) => (time - start) / span <= 0.9)
     .map((time) => ({
       at: (time - start) / span,
       label: time === 0 ? "0" : formatInstant(time, step, end),
-    }));
-  const last = start === 0 ? formatDuration(end) : formatInstant(end, step, end);
+    }))
+    .filter((mark) => mark.label !== last);
   return [...marks, { at: 1, label: last }];
 }

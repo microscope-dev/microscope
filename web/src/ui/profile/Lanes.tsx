@@ -24,6 +24,7 @@ import {
   blockAt,
   decodeZones,
   describeFlags,
+  type ZoneBlocks,
   indexBlocks,
   laneAt,
   layLanes,
@@ -41,25 +42,37 @@ import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
 
 /** A lane's samples, a row of zones, and a plot, in CSS pixels. */
 const STRIP = 18;
+/** How tall a lane's CPU is drawn: thinner over zones, which say more. */
+const RIBBON = 8;
+const ZONED_RIBBON = 4;
 const ROW = 16;
 const PLOT = 40;
-/** How far a press moves before it pans rather than clicks. */
+/** How far a press moves before it drags rather than clicks. */
 const DRAG = 4;
 /** Show only the tasks with the greatest weight. */
 const MOST_TASK_LANES = 50;
 /** How long the view rests before its answers are asked for again. */
 const SETTLE = 80;
 
-/** A lane: what the look selects it by, and the answer's lane id. */
+/** A lane: what the look selects it by, and the answer's lane id. The
+ * lane of threads without zones stands for `others`, shown under it when
+ * open. */
 interface Row {
   id: string;
   lane: number;
   label: string;
   dim?: string;
   title: string;
+  zoned?: boolean;
+  nested?: boolean;
+  others?: Row[];
 }
 
-/** Waits always use tasks. Task-based samples add a lane for unknown tasks. */
+/** The lane id of the threads without zones, which no thread has. */
+const OTHERS = -2;
+
+/** Waits always use tasks. Task-based samples add a lane for unknown tasks.
+ * Threads with zones come first, and those without fold into one lane. */
 function rows(
   summary: ProfileSummary,
   src: ProfileFocus["look"]["src"],
@@ -67,7 +80,7 @@ function rows(
 ): Row[] {
   const waits = src === "waits";
   if (!waits && lanes !== "tasks") {
-    return summary.threads
+    const threads = summary.threads
       .toSorted((a, b) => b.weight - a.weight)
       .map((thread) => ({
         id: String(thread.row),
@@ -75,7 +88,21 @@ function rows(
         label: thread.name ?? "thread",
         dim: String(thread.tid),
         title: `pid ${thread.pid}, tid ${thread.tid}: ${formatCount(thread.samples, "sample")}${offCpu(thread)}`,
+        zoned: thread.zones > 0,
       }));
+    const zoned = threads.filter((row) => row.zoned);
+    const others: Row[] = threads.filter((row) => !row.zoned);
+    if (zoned.length === 0 || others.length === 0) {
+      return threads;
+    }
+    for (const row of others) {
+      row.nested = true;
+    }
+    const label = `${others.length} without zones`;
+    return [
+      ...zoned,
+      { id: "others", lane: OTHERS, label, title: `${label}: their mean CPU`, others },
+    ];
   }
   const weight = (task: ProfileSummary["tasks"][number]) => (waits ? task.waited : task.weight);
   const tasks: Row[] = summary.tasks
@@ -118,11 +145,12 @@ function useSettled<T>(value: T, wait: number): T {
 }
 
 /**
- * Each thread's samples over time, and under them the zones it recorded, a
- * row per depth, on one axis. Ctrl and the wheel, or a pinch, zoom about
- * the pointer and a sideways swipe or a drag pans, anywhere in the box;
- * dragging on the ruler selects a range. A click on a zone selects it, on
- * a fold zooms to it, and on a lane's name toggles its thread.
+ * Each thread's CPU over time, and under it the zones it recorded, a row
+ * per depth, on one axis. Ctrl and the wheel, or a pinch, zoom about the
+ * pointer, and a sideways swipe or a drag with ctrl or ⌘ held pans,
+ * anywhere in the box; a drag selects a range, and a click off the zones
+ * lets go of it. A click on a zone selects it, on a fold zooms to it, and
+ * on a lane's name toggles its thread.
  */
 export function Lanes() {
   const { profile, summary, query, look, setLook } = useProfile();
@@ -179,14 +207,18 @@ export function Lanes() {
 
   // Read from the look's lane fields alone, so choosing a function, which
   // changes the rest of it, does not paint the lanes again.
-  const lanes = useMemo(() => rows(summary, look.src, look.lanes), [summary, look.src, look.lanes]);
+  const [othersOpen, setOthersOpen] = useState(false);
+  const lanes = useMemo(() => {
+    const all = rows(summary, look.src, look.lanes);
+    return othersOpen ? all.flatMap((row) => [row, ...(row.others ?? [])]) : all;
+  }, [summary, look.src, look.lanes, othersOpen]);
   const chosen = (byTask ? look.tk : look.th)?.join(",");
   const selected = useMemo(() => (chosen ? new Set(chosen.split(",")) : null), [chosen]);
 
   // How deep each thread's zones go: the deepest seen, so a lane keeps its
   // height as the view moves across shallower zones.
   const [depths, setDepths] = useState<ReadonlyMap<number, number>>(() => new Map());
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(() => new Set());
   // Merged as each answer arrives, while rendering, so a deeper lane is
   // never drawn a frame too short.
   const [merged, setMerged] = useState(index);
@@ -203,9 +235,9 @@ export function Lanes() {
     () =>
       lanes.map((row) => {
         const depth = byTask ? 0 : (depths.get(row.lane) ?? 0);
-        return expanded.has(row.lane) ? depth : Math.min(depth, 1);
+        return collapsed.has(row.lane) ? Math.min(depth, 1) : depth;
       }),
-    [lanes, byTask, depths, expanded],
+    [lanes, byTask, depths, collapsed],
   );
   const laid = useMemo(() => layLanes(shownRows, STRIP, ROW), [shownRows]);
   const laneOf = useMemo(() => new Map(lanes.map((row, at) => [row.lane, at])), [lanes]);
@@ -218,9 +250,17 @@ export function Lanes() {
   const [pointer, setPointer] = useState<{ time: number; x: number; y: number } | null>(null);
   const [hit, setHit] = useState<Hit | null>(null);
   // A press, read by each event as it comes, so a release in the frame of
-  // a pan never reads as a click.
-  const pressed = useRef<{ x: number; view: [number, number]; moved: boolean } | null>(null);
+  // a drag never reads as a click. With ctrl or ⌘ held it pans, otherwise
+  // it selects a range from where it began.
+  const pressed = useRef<{
+    x: number;
+    view: [number, number];
+    moved: boolean;
+    pan: boolean;
+  } | null>(null);
   const [panning, setPanning] = useState(false);
+  // Where a drag on the ruler began.
+  const rulerFrom = useRef<number | null>(null);
 
   // Views asked for while zooming or panning, applied once a frame.
   const latest = useRef({ view: shownView, total, plot });
@@ -259,8 +299,38 @@ export function Lanes() {
       const from = Math.max(start - margin, 0);
       setView([from, Math.min(Math.max(end + margin, from + 1000), now.total)]);
     }
-    setExpanded((was) => (was.has(instance.thread) ? was : new Set([...was, instance.thread])));
+    setCollapsed((was) => {
+      if (!was.has(instance.thread)) {
+        return was;
+      }
+      const next = new Set(was);
+      next.delete(instance.thread);
+      return next;
+    });
   }, [instance]);
+
+  // And its thread scrolls into view, once for each zone chosen, so the
+  // reader can scroll away from it again.
+  const scrolledTo = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const element = box.current;
+    const drawn = canvas.current;
+    const lane = instance ? laneOf.get(instance.thread) : undefined;
+    if (!look.zi || look.zi === scrolledTo.current || !element || !drawn || lane === undefined) {
+      return;
+    }
+    scrolledTo.current = look.zi;
+    const ruler = element.querySelector(".timeline-ruler")?.getBoundingClientRect().height ?? 0;
+    const top =
+      drawn.getBoundingClientRect().top -
+      element.getBoundingClientRect().top +
+      element.scrollTop +
+      (laid.tops[lane] ?? 0);
+    const bottom = top + STRIP + (shownRows[lane] ?? 0) * ROW;
+    if (top < element.scrollTop + ruler || bottom > element.scrollTop + element.clientHeight) {
+      element.scrollTop = top - ruler;
+    }
+  }, [look.zi, instance, laneOf, laid, shownRows]);
 
   useEffect(() => {
     const element = box.current;
@@ -295,8 +365,9 @@ export function Lanes() {
     const dark = scheme === "dark";
     return {
       sites,
+      // One lightness for every hue, so labels read as well on each.
       fills: sites.map((site) =>
-        dark ? `hsl(${hue(site)} 35% 32%)` : `hsl(${hue(site)} 55% 76%)`,
+        dark ? `oklch(0.5 0.13 ${hue(site)})` : `oklch(0.8 0.13 ${hue(site)})`,
       ),
     };
   }, [blocks, scheme]);
@@ -320,21 +391,18 @@ export function Lanes() {
       }
     }
 
-    paintSamples(context, {
-      lanes: timeline.data?.lanes ?? [],
-      range: timeline.data?.range ?? asked,
-      rows: lanes,
-      tops: laid.tops,
-      byTask,
-      selected,
-      x,
-    });
+    const answered = new Map(
+      (timeline.data?.lanes ?? []).map((lane) => [(byTask ? lane.task : lane.thread) ?? -1, lane]),
+    );
+    const sliced = timeline.data?.range ?? asked;
+    paintCpu(context, { answered, rows: lanes, tops: laid.tops, selected, x, range: sliced });
 
     if (blocks && index) {
       const folded = token("--line-strong");
       const flagged = token("--changed");
       const found = token("--accent");
       const ink = token("--ink");
+      const glyph = context.measureText("0").width;
       const lit = (at: number) => {
         if (!look.zs) {
           return true;
@@ -346,24 +414,57 @@ export function Lanes() {
         return !band || (length >= band[0] && length <= band[1]);
       };
       for (let at = 0; at < blocks.count; at += 1) {
-        const lane = laneOf.get(blocks.thread[at] ?? 0);
+        const thread = blocks.thread[at] ?? 0;
+        const lane = laneOf.get(thread);
         const depth = blocks.depth[at] ?? 0;
         if (lane === undefined || depth >= (shownRows[lane] ?? 0)) {
           continue;
         }
         const top = (laid.tops[lane] ?? 0) + STRIP + depth * ROW;
-        const from = x(blocks.start[at] ?? 0);
-        const to = x(blocks.end[at] ?? 0);
+        const start = blocks.start[at] ?? 0;
+        const end = blocks.end[at] ?? 0;
+        const from = x(start);
+        const to = x(end);
         if (to < 0 || from > plot) {
           continue;
         }
         const wide = Math.max(to - from, 1);
+        const name = blocks.name[at] ?? 0;
+        const label = blocks.names[name] ?? "";
         const many = (blocks.zones[at] ?? 1) > 1;
-        const on = lit(at);
-        context.globalAlpha = on ? 1 : 0.3;
-        context.fillStyle = many ? folded : (palette.fills[blocks.name[at] ?? 0] ?? folded);
-        context.fillRect(from, top + 1, wide, ROW - 2);
-        if (look.zs && on) {
+        const fill = many && label === "zones" ? folded : (palette.fills[name] ?? folded);
+        const dim = lit(at) ? 1 : 0.3;
+        const covered = blocks.covered[at] ?? 0;
+        const running = onCpu(blocks, at);
+        context.fillStyle = fill;
+        if (many) {
+          // Too narrow to draw alone, as strong as the share they cover.
+          context.globalAlpha = dim * (0.25 + (0.75 * covered) / Math.max(end - start, 1));
+          context.fillRect(from, top + 1, wide, ROW - 2);
+        } else if (running === null) {
+          context.globalAlpha = dim;
+          context.fillRect(from, top + 1, wide, ROW - 2);
+        } else {
+          // Faint where its thread was off its CPU, solid where it ran.
+          context.globalAlpha = dim * 0.2;
+          context.fillRect(from, top + 1, wide, ROW - 2);
+          paintRunning(context, {
+            lane: answered.get(thread),
+            range: sliced,
+            span: [start, end],
+            share: running,
+            alpha: dim,
+            x,
+            top: top + 1,
+            height: ROW - 2,
+          });
+          context.globalAlpha = dim;
+          context.strokeStyle = fill;
+          context.lineWidth = 1;
+          context.strokeRect(from + 0.5, top + 1.5, Math.max(wide - 1, 1), ROW - 3);
+        }
+        context.globalAlpha = dim;
+        if (look.zs && dim === 1) {
           context.strokeStyle = found;
           context.lineWidth = 1.5;
           context.strokeRect(from + 0.75, top + 1.75, Math.max(wide - 1.5, 1), ROW - 3.5);
@@ -374,22 +475,17 @@ export function Lanes() {
           context.strokeRect(from + 0.5, top + 1.5, Math.max(wide - 1, 1), ROW - 3);
           context.setLineDash([]);
         }
-        if (wide > 40) {
-          context.save();
-          context.beginPath();
-          context.rect(from, top, wide, ROW);
-          context.clip();
+        const room = Math.min(to, plot) - Math.max(from, 0) - 6;
+        const text =
+          room > 16
+            ? many
+              ? fitting([formatCount(blocks.zones[at] ?? 0, "zone")], room, glyph)
+              : fitting(zoneLabels(label, end - start, running), room, glyph)
+            : null;
+        if (text) {
+          context.globalAlpha = dim;
           context.fillStyle = ink;
-          const length = (blocks.end[at] ?? 0) - (blocks.start[at] ?? 0);
-          const label = blocks.names[blocks.name[at] ?? 0] ?? "";
-          context.fillText(
-            many
-              ? formatCount(blocks.zones[at] ?? 0, "zone")
-              : `${label} ${formatDuration(length)}`,
-            Math.max(from, 0) + 3,
-            top + ROW / 2,
-          );
-          context.restore();
+          context.fillText(text, Math.max(from, 0) + 3, top + ROW / 2);
         }
       }
       context.globalAlpha = 1;
@@ -506,6 +602,7 @@ export function Lanes() {
     [plot, height, shownView, span, laid, lanes, marks, blocks, index],
   );
 
+  const canvasLeft = useCallback(() => canvas.current?.getBoundingClientRect().left ?? 0, []);
   const local = useCallback((event: { clientX: number; clientY: number }) => {
     const bounds = canvas.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
     return [event.clientX - bounds.left, event.clientY - bounds.top] as const;
@@ -529,7 +626,12 @@ export function Lanes() {
         return;
       }
       body.setPointerCapture(event.pointerId);
-      pressed.current = { x: event.clientX, view: shownView, moved: false };
+      pressed.current = {
+        x: event.clientX,
+        view: shownView,
+        moved: false,
+        pan: event.ctrlKey || event.metaKey,
+      };
     },
     [shownView],
   );
@@ -558,20 +660,45 @@ export function Lanes() {
     },
     [blocks, palette, setLook, show, total],
   );
+  // A range chosen by dragging, which lets go of any zone selected, since
+  // the views would read the zone and not the range.
+  const chooseRange = useCallback(
+    (from: number, to: number) => {
+      const [start, end] = [Math.min(from, to), Math.max(from, to)];
+      const chosenRange =
+        ((end - start) * plot) / span >= 3 ? formatRange([start, end]) : undefined;
+      setLook((prev) => withInstance(withLook(prev, "range", chosenRange), null), true);
+    },
+    [plot, span, setLook],
+  );
   const release = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
       const was = pressed.current;
       pressed.current = null;
       setPanning(false);
+      setDragging(null);
+      if (was?.moved && !was.pan) {
+        chooseRange(
+          timeAt(was.view, plot, was.x - canvasLeft()),
+          timeAt(was.view, plot, event.clientX - canvasLeft()),
+        );
+        return;
+      }
       if (!was || was.moved) {
         return;
       }
       const found = at(...local(event));
       if (found?.block !== null && found?.block !== undefined) {
         select(found.block, false);
+      } else {
+        // A click off the zones lets go of the range, as one on the ruler does.
+        setLook((prev) => {
+          const { range: _range, ...rest } = prev;
+          return prev.range ? rest : prev;
+        }, true);
       }
     },
-    [at, local, select],
+    [at, local, select, chooseRange, plot, canvasLeft, setLook],
   );
   const doubleClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -590,11 +717,20 @@ export function Lanes() {
         if (held.moved || Math.abs(by) >= DRAG) {
           if (!held.moved) {
             held.moved = true;
-            setPanning(true);
+            setPanning(held.pan);
           }
           setHit(null);
-          const per = (held.view[1] - held.view[0]) / Math.max(plot, 1);
-          show(panned(held.view, -by * per, total));
+          if (held.pan) {
+            const per = (held.view[1] - held.view[0]) / Math.max(plot, 1);
+            show(panned(held.view, -by * per, total));
+            return;
+          }
+          const [from, to] = [
+            timeAt(held.view, plot, held.x - canvasLeft()),
+            timeAt(held.view, plot, event.clientX - canvasLeft()),
+          ];
+          setDragging([Math.min(from, to), Math.max(from, to)]);
+          setPointer({ time: to, x: event.clientX, y: event.clientY });
           return;
         }
       }
@@ -611,7 +747,7 @@ export function Lanes() {
           : null,
       );
     },
-    [plot, show, total, local, at, shownView, span],
+    [plot, show, total, local, at, shownView, span, canvasLeft],
   );
   const leave = useCallback(() => {
     setHit(null);
@@ -620,6 +756,27 @@ export function Lanes() {
   const cancel = useCallback(() => {
     pressed.current = null;
     setPanning(false);
+    setDragging(null);
+  }, []);
+  // Escape lets go of a drag, before it can clear anything else.
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && (pressed.current || rulerFrom.current !== null)) {
+        event.preventDefault();
+        pressed.current = null;
+        rulerFrom.current = null;
+        setPanning(false);
+        setDragging(null);
+      }
+    };
+    window.addEventListener("keydown", escape, { capture: true });
+    return () => window.removeEventListener("keydown", escape, { capture: true });
+  }, []);
+  // A ctrl-click opens the context menu on a Mac, which a pan must not.
+  const menu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.ctrlKey) {
+      event.preventDefault();
+    }
   }, []);
 
   // Dragging on the ruler selects a range; a click there clears it.
@@ -631,7 +788,6 @@ export function Lanes() {
     },
     [plot, shownView, span],
   );
-  const rulerFrom = useRef<number | null>(null);
   const rulerDown = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) {
@@ -661,13 +817,9 @@ export function Lanes() {
       if (from === null) {
         return;
       }
-      const to = rulerTime(event);
-      const [start, end] = [Math.min(from, to), Math.max(from, to)];
-      const chosenRange =
-        ((end - start) * plot) / span >= 3 ? formatRange([start, end]) : undefined;
-      setLook((prev) => withLook(prev, "range", chosenRange), true);
+      chooseRange(from, rulerTime(event));
     },
-    [rulerTime, plot, span, setLook],
+    [rulerTime, chooseRange],
   );
   const rulerCancel = useCallback(() => {
     rulerFrom.current = null;
@@ -688,7 +840,7 @@ export function Lanes() {
   );
   const expand = useCallback(
     (thread: number) =>
-      setExpanded((was) => {
+      setCollapsed((was) => {
         const next = new Set(was);
         if (!next.delete(thread)) {
           next.add(thread);
@@ -697,6 +849,8 @@ export function Lanes() {
       }),
     [],
   );
+
+  const flipOthers = useCallback(() => setOthersOpen((was) => !was), []);
 
   const ref = useCallback(
     (element: HTMLDivElement | null) => {
@@ -724,6 +878,7 @@ export function Lanes() {
       onPointerMove={hover}
       onPointerLeave={leave}
       onDoubleClick={doubleClick}
+      onContextMenu={menu}
     >
       <Ruler
         view={shownView}
@@ -744,8 +899,8 @@ export function Lanes() {
               selected={selected?.has(row.id) ?? false}
               toggle={toggle}
               depth={byTask ? 0 : (depths.get(row.lane) ?? 0)}
-              open={expanded.has(row.lane)}
-              expand={expand}
+              open={row.others ? othersOpen : !collapsed.has(row.lane)}
+              expand={row.others ? flipOthers : expand}
               rows={shownRows[lane] ?? 0}
             />
           ))}
@@ -758,11 +913,11 @@ export function Lanes() {
           <div className="timeline-plot" style={plotStyle}>
             <canvas
               ref={canvas}
-              className={`lanes ${zones.current ? "" : "stale"}`}
+              className={`lanes ${zonesParams && !zones.current ? "stale" : ""}`}
               style={canvasStyle}
               // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
               role="img"
-              aria-label={`Samples${zoned ? ", zones," : ""} and time off CPU over ${formatDuration(span)}`}
+              aria-label={`CPU${zoned ? " and zones" : ""} over ${formatDuration(span)}`}
             />
             {pointer !== null && !dragging && !panning ? (
               <Cursor x={((pointer.time - shownView[0]) * plot) / span} height={height} />
@@ -791,73 +946,142 @@ export function Lanes() {
   );
 }
 
+/** The time `x` pixels into lanes `plot` wide showing `view`, kept to it. */
+function timeAt(view: readonly [number, number], plot: number, x: number): number {
+  const px = Math.min(Math.max(x, 0), plot);
+  return view[0] + (px * (view[1] - view[0])) / Math.max(plot, 1);
+}
+
 /** The look without a band, or anything that reads one. */
 function clearBand(look: ProfileFocus["look"]): ProfileFocus["look"] {
   const { zb: _zb, bz: _bz, zf, ...rest } = look;
   return zf === "all" ? { ...rest, zf } : rest;
 }
 
-/** Each lane's samples: weight as bars, time off its CPU as bands, grey
- * for blocking and amber for preemption, dim for a lane not selected. */
-function paintSamples(
+/** Each lane's CPU as a gray ribbon, as strong as its load; the lane of
+ * threads without zones draws their mean. Dim for a lane not selected. */
+function paintCpu(
   context: CanvasRenderingContext2D,
   {
-    lanes,
-    range,
+    answered,
     rows: shown,
     tops,
-    byTask,
     selected,
     x,
+    range,
   }: {
-    lanes: ProfileLane[];
-    range: readonly [number, number];
+    answered: ReadonlyMap<number, ProfileLane>;
     rows: Row[];
     tops: Float64Array;
-    byTask: boolean;
     selected: ReadonlySet<string> | null;
     x: (time: number) => number;
+    range: readonly [number, number];
   },
 ) {
-  const answered = new Map(lanes.map((lane) => [(byTask ? lane.task : lane.thread) ?? -1, lane]));
   let most = 1;
   for (const lane of answered.values()) {
     most = largest(lane.weights, most);
   }
-  const bar = token("--accent");
-  const bands: [keyof Pick<ProfileLane, "blocked" | "preempted">, string][] = [
-    ["blocked", token("--line-strong")],
-    ["preempted", token("--warn-line")],
-  ];
-  for (const [index, row] of shown.entries()) {
-    const lane = answered.get(row.lane);
-    if (!lane) {
+  context.fillStyle = token("--ink-2");
+  for (const [at, row] of shown.entries()) {
+    const lanes = (row.others ?? [row]).flatMap((each) => answered.get(each.lane) ?? []);
+    const count = largest(
+      lanes.map((lane) => lane.weights.length),
+      0,
+    );
+    if (count === 0) {
       continue;
     }
-    const top = tops[index] ?? 0;
-    const count = Math.max(lane.weights.length, lane.blocked.length, 1);
     const slice = (range[1] - range[0]) / count;
     const step = Math.max(x(range[0] + slice) - x(range[0]), 1);
+    const tall = row.zoned ? ZONED_RIBBON : RIBBON;
+    const top = (tops[at] ?? 0) + STRIP - 3 - tall;
     const dim = selected && !selected.has(row.id) ? 0.3 : 1;
-    for (const [kind, color] of bands) {
-      context.fillStyle = color;
-      for (const [bucket, off] of lane[kind].entries()) {
-        if (off > 0) {
-          context.globalAlpha = dim * Math.min(1, off / Math.max(slice, 1));
-          context.fillRect(x(range[0] + bucket * slice), top + 1, step, STRIP - 2);
-        }
+    for (let bucket = 0; bucket < count; bucket += 1) {
+      let weight = 0;
+      for (const lane of lanes) {
+        weight += lane.weights[bucket] ?? 0;
       }
-    }
-    context.globalAlpha = dim * 0.85;
-    context.fillStyle = bar;
-    for (const [bucket, weight] of lane.weights.entries()) {
       if (weight > 0) {
-        const h = Math.max(1, ((STRIP - 3) * weight) / most);
-        context.fillRect(x(range[0] + bucket * slice), top + STRIP - 1 - h, step, h);
+        context.globalAlpha = dim * (0.15 + (0.75 * weight) / (most * lanes.length));
+        context.fillRect(x(range[0] + bucket * slice), top, step, tall);
       }
     }
   }
   context.globalAlpha = 1;
+}
+
+/** The share of a single zone's time its thread was on its CPU, or null
+ * when that was not traced. */
+function onCpu(blocks: ZoneBlocks, at: number): number | null {
+  const covered = blocks.covered[at] ?? 0;
+  if (!blocks.offCpu || covered <= 0) {
+    return null;
+  }
+  const off = (blocks.blocked[at] ?? 0) + (blocks.preempted[at] ?? 0);
+  return Math.min(Math.max(1 - off / covered, 0), 1);
+}
+
+/** A zone solid where its thread ran, from the timeline's off-CPU time in
+ * each of its buckets, or failing those, as strong as its `share`. */
+function paintRunning(
+  context: CanvasRenderingContext2D,
+  {
+    lane,
+    range,
+    span: [start, end],
+    share,
+    alpha,
+    x,
+    top,
+    height,
+  }: {
+    lane: ProfileLane | undefined;
+    range: readonly [number, number];
+    span: [number, number];
+    share: number;
+    alpha: number;
+    x: (time: number) => number;
+    top: number;
+    height: number;
+  },
+) {
+  const count = lane?.blocked.length ?? 0;
+  if (!lane || count === 0 || lane.preempted.length !== count) {
+    context.globalAlpha = alpha * share;
+    context.fillRect(x(start), top, Math.max(x(end) - x(start), 1), height);
+    return;
+  }
+  const slice = (range[1] - range[0]) / count;
+  const first = Math.max(Math.floor((start - range[0]) / slice), 0);
+  const last = Math.min(Math.ceil((end - range[0]) / slice), count);
+  for (let bucket = first; bucket < last; bucket += 1) {
+    const from = Math.max(range[0] + bucket * slice, start);
+    const to = Math.min(range[0] + (bucket + 1) * slice, end);
+    const off = (lane.blocked[bucket] ?? 0) + (lane.preempted[bucket] ?? 0);
+    const ran = 1 - Math.min(off / Math.max(slice, 1), 1);
+    // Whole pixels, so neighbouring buckets meet without a seam.
+    const [left, right] = [Math.round(x(from)), Math.round(x(to))];
+    if (ran > 0 && right > left) {
+      context.globalAlpha = alpha * ran;
+      context.fillRect(left, top, right - left, height);
+    }
+  }
+}
+
+/** What a zone's label may say, longest first. */
+function zoneLabels(name: string, length: number, running: number | null): string[] {
+  const took = formatDuration(length);
+  if (running === null) {
+    return [`${name} ${took}`, took];
+  }
+  const cpu = `${Math.round(running * 100)}%`;
+  return [`${name} ${took}, ${cpu} CPU`, `${took}, ${cpu} CPU`, `${cpu} CPU`, cpu];
+}
+
+/** The first of `labels` that fits in `room` pixels of `glyph`-wide text. */
+function fitting(labels: readonly string[], room: number, glyph: number): string | null {
+  return labels.find((label) => label.length * glyph <= room) ?? null;
 }
 
 /** A tooltip's lines for what the pointer is over. */
@@ -897,17 +1121,27 @@ function tipLines(
       ? `${formatCount(count)} ${label === "zones" ? "zones" : label} over ${formatDuration(length)}: click to zoom in`
       : `${label}: ${formatDuration(length)}`;
   const inside = nesting(blocks, index, thread, blocks.depth[at] ?? 0, blocks.start[at] ?? 0);
+  const running = count > 1 ? null : onCpu(blocks, at);
   return [
     head,
+    ...(running === null
+      ? []
+      : [
+          `${Math.round(running * 100)}% on CPU, ${formatDuration(blocks.blocked[at] ?? 0)} blocked, ${formatDuration(blocks.preempted[at] ?? 0)} preempted`,
+        ]),
     `${threadName(summary.threads, thread)}, from ${formatInstant(blocks.start[at] ?? 0, pixel)}`,
     ...(inside.length > 0 ? [`in ${inside.join(" › ")}`] : []),
     ...describeFlags(blocks.flags[at] ?? 0),
   ];
 }
 
-/** About how wide, in pixels, a pill and a round time's label are. */
-const PILL = 64;
+/** About how wide, in pixels, a letter of the ruler and a round time's
+ * label are. */
+const LETTER = 6.5;
 const LABEL = 56;
+/** About how wide a pill with `label` in it is: the finer the zoom, the
+ * longer its times. */
+const pillWidth = (label: string) => label.length * LETTER + 12;
 /** The narrowest range, in pixels, with room to show its length. */
 const MEASURED = 72;
 
@@ -934,17 +1168,24 @@ function Ruler({
   const resolution = span / Math.max(plot, 1);
   const pixel = (time: number) => ((time - view[0]) * plot) / span;
   const instant = (time: number) => formatInstant(time, resolution, view[1]);
-  const pills: { id: "from" | "to" | "at"; x: number; label: string }[] = [];
+  const pills: { id: "from" | "to" | "at"; x: number; label: string; width: number }[] = [];
   const taken: [number, number][] = [];
   let measure: { x: number; width: number; label: string | null } | null = null;
   if (marked && marked[1] >= view[0] && marked[0] <= view[1]) {
     const [left, right] = [pixel(marked[0]), pixel(marked[1])];
-    const [from, to] = [Math.max(left, PILL), Math.min(right, plot - PILL)];
+    const [start, end] = [instant(marked[0]), instant(marked[1])];
+    const [before, after] = [pillWidth(start), pillWidth(end)];
+    // Each end's pill stays on the ruler, though its end is off it, and
+    // where that would pull one over the other, they sit side by side.
+    let [from, to] = [Math.max(left, before), Math.min(right, plot - after)];
+    if (to < from) {
+      [from, to] = from > left ? [from, from] : [to, to];
+    }
     pills.push(
-      { id: "from", x: from, label: instant(marked[0]) },
-      { id: "to", x: to, label: instant(marked[1]) },
+      { id: "from", x: from, label: start, width: before },
+      { id: "to", x: to, label: end, width: after },
     );
-    taken.push([from - PILL, to + PILL]);
+    taken.push([from - before, to + after]);
     if (right - left >= MEASURED) {
       measure = {
         x: Math.max(left, 0),
@@ -954,16 +1195,35 @@ function Ruler({
     }
   }
   if (pointer !== null) {
-    const x = Math.min(Math.max(pixel(pointer), PILL / 2), plot - PILL / 2);
-    pills.push({ id: "at", x, label: instant(pointer) });
-    taken.push([x - PILL / 2, x + PILL / 2]);
+    const label = instant(pointer);
+    const width = pillWidth(label);
+    const x = Math.min(Math.max(pixel(pointer), width / 2), plot - width / 2);
+    // The pointer's time stands in for a range's end it would cover: an
+    // end's pill sits beside its end, the pointer's over it.
+    for (let at = pills.length - 1; at >= 0; at -= 1) {
+      const pill = pills[at];
+      if (!pill) {
+        continue;
+      }
+      const middle = pill.x + (pill.id === "from" ? -pill.width / 2 : pill.width / 2);
+      if (Math.abs(middle - x) < (pill.width + width) / 2) {
+        pills.splice(at, 1);
+      }
+    }
+    pills.push({ id: "at", x, label, width });
+    taken.push([x - width / 2, x + width / 2]);
     // The pointer's time stands in for the length it would cover.
-    if (measure && Math.abs(x - (measure.x + measure.width / 2)) < (PILL + LABEL) / 2) {
+    if (measure && Math.abs(x - (measure.x + measure.width / 2)) < (width + LABEL) / 2) {
       measure = { ...measure, label: null };
     }
   }
-  const covered = (x: number) =>
-    taken.some(([from, to]) => x > from - LABEL / 2 && x < to + LABEL / 2);
+  // A round time's label is centered on it, but the first and last sit
+  // inside the ruler's ends.
+  const covered = (x: number, label: string, index: number) => {
+    const width = label.length * LETTER + 8;
+    const left = index === 0 ? x : index === marks.length - 1 ? x - width : x - width / 2;
+    return taken.some(([from, to]) => left < to + 4 && left + width > from - 4);
+  };
   const marksStyle = useMemo(() => ({ width: plot }), [plot]);
   return (
     <div className="timeline-ruler" data-testid="ruler">
@@ -975,9 +1235,9 @@ function Ruler({
         {...handlers}
       >
         {marks.map(({ at, label }, index) =>
-          covered(at * plot) ? null : (
+          covered(at * plot, label, index) ? null : (
             <RulerMark
-              key={label}
+              key={at}
               x={at * plot}
               label={label}
               className={index === 0 ? "first" : index === marks.length - 1 ? "last" : undefined}
@@ -1029,7 +1289,7 @@ function Cursor({ x, height }: { x: number; height: number }) {
 
 /** A lane's name, which toggles its thread or task in the selection, and
  * under it, for a thread whose zones go deeper than one row, a chevron that
- * shows them all. */
+ * folds them to one. The lane of threads without zones opens to them. */
 function LaneName({
   row,
   selected,
@@ -1050,11 +1310,25 @@ function LaneName({
   const click = useCallback(() => toggle(row.id), [toggle, row.id]);
   const flip = useCallback(() => expand(row.lane), [expand, row.lane]);
   const style = useMemo(() => ({ height: shown * ROW }), [shown]);
+  if (row.others) {
+    return (
+      <button
+        type="button"
+        className="lane-name lane-others"
+        aria-expanded={open}
+        aria-label={row.label}
+        title={row.title}
+        onClick={flip}
+      >
+        {open ? "▾" : "▸"} {row.label}
+      </button>
+    );
+  }
   return (
     <>
       <button
         type="button"
-        className={`lane-name ${selected ? "selected" : ""}`}
+        className={`lane-name ${selected ? "selected" : ""} ${row.nested ? "nested" : ""}`}
         aria-pressed={selected}
         title={row.title}
         onClick={click}

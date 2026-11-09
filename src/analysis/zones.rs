@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::capture::Capture;
-use crate::capture::records::NONE;
+use crate::capture::records::{NONE, OffCpu};
 
 /// What a view draws of one thread's zones at one depth: one zone, or a
 /// run of zones too narrow to tell apart, drawn as one.
@@ -27,11 +27,41 @@ pub struct ZoneBlock {
 
     /// The `ZONE_` flags of any of them.
     pub flags: u32,
+
+    /// Nanoseconds inside its zones, and of those, how many its thread
+    /// spent off its CPU blocked and preempted.
+    pub covered: i64,
+    pub blocked: i64,
+    pub preempted: i64,
+}
+
+/// A thread's time off its CPU inside `[start, end)`: blocked, then
+/// preempted. Its spans do not overlap, so their ends are in order too.
+fn off_cpu_within(spans: &[OffCpu], (start, end): (i64, i64)) -> (i64, i64) {
+    let ends = |span: &OffCpu| span.time.get().saturating_add_unsigned(span.duration.get());
+    let first = spans.partition_point(|span| ends(span) <= start);
+    let (mut blocked, mut preempted) = (0, 0);
+    for span in spans
+        .iter()
+        .skip(first)
+        .take_while(|span| span.time.get() < end)
+    {
+        let overlap = ends(span).min(end) - span.time.get().max(start);
+        debug_assert!(overlap >= 0, "an off-CPU span outside the zone");
+        if span.preempted == 0 {
+            blocked += overlap;
+        } else {
+            preempted += overlap;
+        }
+    }
+
+    (blocked, preempted)
 }
 
 /// The zones in `range` of the threads `threads` selects, by thread and
-/// depth, each run of zones narrower than `fold` with less than `fold`
-/// between them drawn as one block.
+/// depth, each run of zones narrower than `fold` that fits in `fold` drawn
+/// as one block. A run never grows wider, so a thousand short zones in a
+/// row still show where they are dense.
 pub fn zone_blocks(
     capture: &Capture,
     range: (i64, i64),
@@ -39,12 +69,25 @@ pub fn zone_blocks(
     fold: i64,
 ) -> Vec<ZoneBlock> {
     let mut blocks = Vec::new();
+    let off_cpu: BTreeMap<u32, &[OffCpu]> = capture
+        .off_cpu_ranges
+        .iter()
+        .map(|range| (range.thread.get(), capture.thread_off_cpu(range)))
+        .collect();
 
     for zones in &capture.zone_ranges {
         let thread = zones.thread.get();
         if threads.is_some_and(|threads| !threads.contains(&thread)) {
             continue;
         }
+
+        let spans = off_cpu.get(&thread).copied().unwrap_or_default();
+        debug_assert!(
+            spans
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.time.get() <= b.time.get())),
+            "a thread's off-CPU spans are out of order"
+        );
 
         let row = capture.range_zones(zones);
 
@@ -58,6 +101,7 @@ pub fn zone_blocks(
         let row = &row[first..last.max(first)];
         let mut run: Option<ZoneBlock> = None;
         for zone in row {
+            let (blocked, preempted) = off_cpu_within(spans, (zone.start.get(), zone.end.get()));
             let block = ZoneBlock {
                 thread,
                 depth: zones.depth.get(),
@@ -67,6 +111,9 @@ pub fn zone_blocks(
                 value: zone.value.get(),
                 count: 1,
                 flags: zone.flags.get(),
+                covered: zone.end.get() - zone.start.get(),
+                blocked,
+                preempted,
             };
 
             if block.end - block.start >= fold {
@@ -76,10 +123,13 @@ pub fn zone_blocks(
             }
 
             match &mut run {
-                Some(run) if block.start - run.end < fold => {
+                Some(run) if block.end - run.start <= fold => {
                     run.end = block.end;
                     run.count += 1;
                     run.flags |= block.flags;
+                    run.covered += block.covered;
+                    run.blocked += block.blocked;
+                    run.preempted += block.preempted;
                     if (run.site, run.value) != (block.site, block.value) {
                         (run.site, run.value) = (NONE, NONE);
                     }

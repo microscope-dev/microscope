@@ -67,6 +67,10 @@ fn main() {
             let _zone = zone!("after");
         }
         "quiet" => quiet(),
+        "nap" => {
+            let _nap = zone!("nap");
+            std::thread::sleep(Duration::from_millis(30));
+        }
         "exiting" => exiting(),
         "cost-on" => cost(count()),
         mode => panic!("unknown mode {mode}"),

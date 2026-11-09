@@ -403,29 +403,42 @@ describe("a real server's call trees", () => {
 
 describe("a zones answer", () => {
   it("decodes its columns, and finds the block at a time in each thread's row", () => {
-    // [start, end, thread, depth, name, count, flags]
+    // [start, end, covered, blocked, preempted, thread, depth, name, count, flags]
     const blocks: number[][] = [
-      [0, 100, 4, 0, 0, 1, 0],
-      [10, 40, 4, 1, 1, 1, 2],
-      [50, 52, 4, 1, 2, 7, 0],
-      [5, 30, 9, 0, 0, 1, 0],
+      [0, 100, 100, 60, 10, 4, 0, 0, 1, 0],
+      [10, 40, 30, 0, 0, 4, 1, 1, 1, 2],
+      [50, 52, 1.5, 0, 0.5, 4, 1, 2, 7, 0],
+      [5, 30, 25, 0, 0, 9, 0, 0, 1, 0],
     ];
     const count = blocks.length;
-    const bytes = new Uint8Array(count * 36);
+    const bytes = new Uint8Array(count * 60);
     const view = new DataView(bytes.buffer);
     for (const [at, block] of blocks.entries()) {
       for (const [column, value] of block.entries()) {
-        if (column < 2) {
+        if (column < 5) {
           view.setFloat64((column * count + at) * 8, value, true);
         } else {
-          view.setUint32(count * 16 + ((column - 2) * count + at) * 4, value, true);
+          view.setUint32(count * 40 + ((column - 5) * count + at) * 4, value, true);
         }
       }
     }
     const zones = decodeZones(
-      { range: [0, 100], blocks: count, names: ["outer", "inner", "zones"], marks: [], plots: [] },
+      {
+        range: [0, 100],
+        blocks: count,
+        names: ["outer", "inner", "zones"],
+        marks: [],
+        plots: [],
+        offCpu: true,
+      },
       bytes,
     );
+    expect(zones.offCpu).toBe(true);
+    expect([...zones.start]).toEqual([0, 10, 50, 5]);
+    expect([...zones.covered]).toEqual([100, 30, 1.5, 25]);
+    expect([...zones.blocked]).toEqual([60, 0, 0, 0]);
+    expect([...zones.preempted]).toEqual([10, 0, 0.5, 0]);
+    expect([...zones.thread]).toEqual([4, 4, 4, 9]);
     expect([...zones.zones]).toEqual([1, 1, 7, 1]);
     expect([...zones.flags]).toEqual([0, 2, 0, 0]);
     const index = indexBlocks(zones);
@@ -446,24 +459,27 @@ describe("a zones answer", () => {
     expect(nesting(zones, index, 4, 1, 20)).toEqual(["outer"]);
     expect(nesting(zones, index, 4, 2, 51)).toEqual(["outer"]);
     expect(() =>
-      decodeZones({ range: [0, 1], blocks: 2, names: [], marks: [], plots: [] }, bytes),
-    ).toThrow("2 zone blocks need 72 bytes, not 144");
+      decodeZones(
+        { range: [0, 1], blocks: 2, names: [], marks: [], plots: [], offCpu: false },
+        bytes,
+      ),
+    ).toThrow("2 zone blocks need 120 bytes, not 240");
   });
 
   it("finds the block at a time by bisection, whatever order the blocks came in", () => {
     // One row of a thousand blocks, each 10 long with a gap of 10, sent
     // in reverse; a linear oracle agrees at every time and slack.
     const count = 1000;
-    const bytes = new Uint8Array(count * 36);
+    const bytes = new Uint8Array(count * 60);
     const view = new DataView(bytes.buffer);
     for (let at = 0; at < count; at += 1) {
       const start = (count - 1 - at) * 20;
       view.setFloat64(at * 8, start, true);
       view.setFloat64((count + at) * 8, start + 10, true);
-      view.setUint32(count * 16 + (3 * count + at) * 4, 1, true);
+      view.setUint32(count * 40 + (3 * count + at) * 4, 1, true);
     }
     const zones = decodeZones(
-      { range: [0, 20_000], blocks: count, names: ["a"], marks: [], plots: [] },
+      { range: [0, 20_000], blocks: count, names: ["a"], marks: [], plots: [], offCpu: false },
       bytes,
     );
     const index = indexBlocks(zones);
@@ -798,7 +814,17 @@ describe("a zone's flags", () => {
 describe("a zone's thread", () => {
   it("is named by its row's thread and its id, so workers of one name differ", () => {
     const threads = [
-      { row: 0, pid: 40, tid: 40, name: "main", samples: 0, weight: 0, blocked: 0, preempted: 0 },
+      {
+        row: 0,
+        pid: 40,
+        tid: 40,
+        name: "main",
+        samples: 0,
+        weight: 0,
+        zones: 0,
+        blocked: 0,
+        preempted: 0,
+      },
       {
         row: 1,
         pid: 40,
@@ -806,6 +832,7 @@ describe("a zone's thread", () => {
         name: "WorkerThread",
         samples: 0,
         weight: 0,
+        zones: 0,
         blocked: 0,
         preempted: 0,
       },
@@ -816,10 +843,21 @@ describe("a zone's thread", () => {
         name: "WorkerThread",
         samples: 0,
         weight: 0,
+        zones: 0,
         blocked: 0,
         preempted: 0,
       },
-      { row: 3, pid: 40, tid: 52, name: null, samples: 0, weight: 0, blocked: 0, preempted: 0 },
+      {
+        row: 3,
+        pid: 40,
+        tid: 52,
+        name: null,
+        samples: 0,
+        weight: 0,
+        zones: 0,
+        blocked: 0,
+        preempted: 0,
+      },
     ];
     expect(threadName(threads, 0)).toBe("main 40");
     expect(threadName(threads, 1)).toBe("WorkerThread 47");
@@ -918,5 +956,19 @@ describe("inspect", () => {
       ...[50, 100, 150, 200, 250, 300, 350, 400, 450].map((ms) => `${ms} ms`),
       "539 ms",
     ]);
+    // Rounded to the step, a view's end can read as the round time before
+    // it: that one is left out, so no two marks read alike.
+    expect(timeTicks([3_827_129_872, 4_244_501_091], 344).map(({ label }) => label)).toEqual([
+      "4.0 s",
+      "4.2 s",
+    ]);
+    for (const view of [
+      [4_365_562_973, 6_231_633_582],
+      [9_386_206_571, 9_386_234_158],
+      [105_497_791, 105_544_710],
+    ] as const) {
+      const labels = timeTicks(view, 400).map(({ label }) => label);
+      expect(new Set(labels).size).toBe(labels.length);
+    }
   });
 });

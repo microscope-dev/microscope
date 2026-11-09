@@ -782,11 +782,29 @@ fn record_zones(scratch: &ScratchDir) -> std::path::PathBuf {
 /// A zones answer's blocks: thread, depth, name, and zone count.
 fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32)> {
     let count = usize::try_from(answer["blocks"].as_u64().expect("a count")).expect("small");
-    assert_eq!(bytes.len(), count * 36);
+    assert_eq!(bytes.len(), count * 60);
+    let time = |column: usize, at: usize| {
+        let offset = (column * count + at) * 8;
+        f64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("eight bytes"))
+    };
     let word = |column: usize, at: usize| {
-        let offset = count * 16 + (column * count + at) * 4;
+        let offset = count * 40 + (column * count + at) * 4;
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
     };
+
+    // A block's time inside its zones fits between its ends, and its time
+    // off the CPU inside that.
+    for at in 0..count {
+        let (start, end, covered) = (time(0, at), time(1, at), time(2, at));
+        assert!(
+            covered <= end - start,
+            "block {at} covers {covered} of {start}..{end}"
+        );
+        assert!(
+            time(3, at) + time(4, at) <= covered,
+            "block {at} is off its CPU too long"
+        );
+    }
 
     let names = answer["names"].as_array().expect("names");
     (0..count)
@@ -995,6 +1013,60 @@ async fn zone_scopes(tab: &mut Client, id: &str) {
         let error = failed.expect_err(why);
         assert!(format!("{error:?}").contains(why), "{error:?}");
     }
+}
+
+/// A zone the program slept through is served as time blocked off its CPU,
+/// not time it ran.
+#[tokio::test]
+async fn a_zone_says_how_long_its_thread_was_off_its_cpu() {
+    let scratch = ScratchDir::new("web-nap");
+    let mut command = Command::new(Scenario::fixture("probes"));
+    command.arg("nap").stdout(Stdio::null());
+    let recording = record(command, &RecordOptions::default()).expect("record");
+    assert!(recording.status.success());
+    let path = scratch.path().join("nap.usprof");
+    recording.profile.write(&path).expect("write the profile");
+
+    let web = Web::start("profile", &[path.to_str().expect("a path")]);
+    let mut tab = web.control("tab").await;
+    let listed = tab
+        .expect("the profiles", |message| message["type"] == "profiles")
+        .await;
+    let id = listed["profiles"][0]["id"].as_str().expect("an id");
+    let summary = tab.ok("profile", json!({"profile": id})).await;
+    let zones: Vec<u64> = summary["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .filter_map(|thread| thread["zones"].as_u64())
+        .filter(|zones| *zones > 0)
+        .collect();
+    assert_eq!(zones, [1], "only the napping thread recorded a zone");
+
+    let (answer, bytes) = tab
+        .with_bytes(
+            "profileZones",
+            json!({"profile": id, "width": 1_000_000_000}),
+        )
+        .await
+        .expect("zones");
+    let drawn = blocks(&answer, &bytes);
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert_eq!(answer["offCpu"], true);
+
+    let time = |column: usize| {
+        f64::from_le_bytes(
+            bytes[column * 8..column * 8 + 8]
+                .try_into()
+                .expect("eight bytes"),
+        )
+    };
+    let (covered, blocked) = (time(2), time(3));
+    assert!(covered >= 30e6, "the nap took {covered} ns");
+    assert!(
+        blocked >= 0.9 * covered,
+        "{blocked} of {covered} ns blocked"
+    );
 }
 
 /// A function's samples are served on its source lines, with the text

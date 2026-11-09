@@ -831,6 +831,7 @@ fn summary(entry: &Entry) -> ProfileSummary {
                 name: thread.name,
                 samples: thread.samples,
                 weight: thread.weight,
+                zones: thread.zones,
                 blocked: thread.blocked,
                 preempted: thread.preempted,
             })
@@ -1369,13 +1370,18 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
         })
     };
 
-    let mut bytes = Vec::with_capacity(blocks.len() * 36);
-    for block in &blocks {
-        bytes.extend_from_slice(&exact_time(block.start - start).to_le_bytes());
-    }
-
-    for block in &blocks {
-        bytes.extend_from_slice(&exact_time(block.end - start).to_le_bytes());
+    let mut bytes = Vec::with_capacity(blocks.len() * 60);
+    let times: [&dyn Fn(&microscope::profiler::ZoneBlock) -> i64; 5] = [
+        &|block| block.start - start,
+        &|block| block.end - start,
+        &|block| block.covered,
+        &|block| block.blocked,
+        &|block| block.preempted,
+    ];
+    for column in times {
+        for block in &blocks {
+            bytes.extend_from_slice(&exact_time(column(block)).to_le_bytes());
+        }
     }
 
     let columns: [&dyn Fn(&microscope::profiler::ZoneBlock) -> u32; 2] =
@@ -1440,6 +1446,7 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
     let answer = protocol::ProfileZones {
         range: [range.0 - start, range.1 - start],
         blocks: u32::try_from(blocks.len()).unwrap_or(u32::MAX),
+        off_cpu: profile.setting("off-CPU") == Some("on"),
         names,
         marks,
         plots,

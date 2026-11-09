@@ -173,6 +173,8 @@ const HARNESS_SIZE = { width: 900, height: 800, display: "grid" };
 const WIDE = { width: 5000 };
 /** 180 pixels of lane names leave 1000 for the lanes. */
 const SECOND_WIDE = { width: 1180 };
+// Narrower than the lanes' names, leaving no room to draw.
+const NAMES_WIDE = { width: 150 };
 const NO_LOOK: ProfileLook = {};
 
 /** Changes the look from outside, as the address bar would. */
@@ -1222,6 +1224,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
     name: `worker ${row}`,
     samples: 1,
     weight: 1,
+    zones: 0,
     blocked: 0,
     preempted: 0,
   }));
@@ -1245,7 +1248,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
       preempted: [],
     })),
   });
-  const canvas = page.getByRole("img", { name: /Samples and time off CPU/u });
+  const canvas = page.getByRole("img", { name: /^CPU over/u });
   await vi.waitFor(() => {
     const element = canvas.element() as HTMLCanvasElement;
     const pixels = element.getContext("2d")?.getImageData(0, 0, 4, 18).data ?? [];
@@ -1296,7 +1299,7 @@ it("marks round times, the pointer's time, and a range's ends and length", async
   await vi.waitFor(() => expect(ruler()).toEqual(all), POLL);
 
   // The pointer's time hides the round times either side of it.
-  const canvas = page.getByRole("img", { name: /Samples and time off CPU/u }).element();
+  const canvas = page.getByRole("img", { name: /^CPU over/u }).element();
   pointerAt(canvas, "pointermove", 250);
   expect(ruler()).toEqual([
     ...all.filter((label) => !["0.2 s", "0.3 s"].includes(label)),
@@ -1351,10 +1354,15 @@ it("marks round times, the pointer's time, and a range's ends and length", async
     "[0.200 s]",
     "[0.250 s]",
   ]);
+
+  // The pointer at an end, as after a drag across the lanes, stands in for
+  // that end's pill, which it would cover.
+  pointerAt(canvas, "pointermove", 252);
+  expect(ruler().filter((mark) => mark.startsWith("["))).toEqual(["[0.200 s]", "[0.252 s]"]);
 });
 
 it("names the lanes it cuts samples to with the other chips, not over the lanes", async () => {
-  const thread = { pid: 1, samples: 1, weight: 1, blocked: 0, preempted: 0 };
+  const thread = { pid: 1, samples: 1, weight: 1, zones: 0, blocked: 0, preempted: 0 };
   const threads: ProfileThread[] = [
     { ...thread, row: 0, tid: 10, name: "main" },
     { ...thread, row: 1, tid: 11, name: "worker" },
@@ -1432,34 +1440,62 @@ it("says why the timeline could not be read", async () => {
   await expect.element(page.getByText("the timeline is cut short")).toBeVisible();
 });
 
-/** A zones answer and its columns, each block
- * [start, end, thread, depth, name, zones, flags]. */
-function zonesOf(names: string[], blocks: number[][]): [unknown, Uint8Array] {
+/** A zones answer and its columns, each block [start, end, thread, depth,
+ * name, zones, flags, blocked, preempted], covering all of its span. */
+function zonesOf(names: string[], blocks: number[][], offCpu = false): [unknown, Uint8Array] {
   const count = blocks.length;
-  const bytes = new Uint8Array(count * 36);
+  const bytes = new Uint8Array(count * 60);
   const view = new DataView(bytes.buffer);
   for (const [at, block] of blocks.entries()) {
-    for (const [column, value] of block.entries()) {
-      if (column < 2) {
-        view.setFloat64((column * count + at) * 8, value, true);
-      } else {
-        view.setUint32(count * 16 + ((column - 2) * count + at) * 4, value, true);
-      }
+    const [start = 0, end = 0, blocked = 0, preempted = 0] = [
+      block[0],
+      block[1],
+      block[7],
+      block[8],
+    ];
+    for (const [column, value] of [start, end, end - start, blocked, preempted].entries()) {
+      view.setFloat64((column * count + at) * 8, value, true);
+    }
+    for (const [column, value] of block.slice(2, 7).entries()) {
+      view.setUint32(count * 40 + (column * count + at) * 4, value, true);
     }
   }
-  return [{ range: [0, 1e9], blocks: count, names, marks: [], plots: [] }, bytes];
+  return [{ range: [0, 1e9], blocks: count, names, marks: [], plots: [], offCpu }, bytes];
 }
 
 const ZONED_THREADS: ProfileThread[] = [
-  { row: 0, pid: 1, tid: 10, name: "main", samples: 2, weight: 2, blocked: 0, preempted: 0 },
-  { row: 1, pid: 1, tid: 11, name: "worker", samples: 1, weight: 1, blocked: 0, preempted: 0 },
+  {
+    row: 0,
+    pid: 1,
+    tid: 10,
+    name: "main",
+    samples: 2,
+    weight: 2,
+    zones: 0,
+    blocked: 0,
+    preempted: 0,
+  },
+  {
+    row: 1,
+    pid: 1,
+    tid: 11,
+    name: "worker",
+    samples: 1,
+    weight: 1,
+    zones: 3,
+    blocked: 0,
+    preempted: 0,
+  },
 ];
 
 const DRAIN = { name: "drain", label: false, count: 2, total: 220e6, longest: 200e6, flagged: 0 };
 
 /** Lanes of two threads, the worker's zones a drain holding a parse and a
- * short drain after; 1000 pixels for a second, so a pixel is a millisecond. */
-async function zonedLanes(look: ProfileLook = NO_LOOK): Promise<Server> {
+ * short drain after; 1000 pixels for a second, so a pixel is a millisecond.
+ * The worker comes first, open to both its rows, at 18 and 34 pixels, and
+ * main is folded into a lane of threads without zones under it. With
+ * `offCpu`, the drain was blocked for 120 ms and preempted for 20. */
+async function zonedLanes(look: ProfileLook = NO_LOOK, offCpu = false): Promise<Server> {
   const summary = summaryOf({
     timed: true,
     threads: ZONED_THREADS,
@@ -1475,16 +1511,17 @@ async function zonedLanes(look: ProfileLook = NO_LOOK): Promise<Server> {
   const [answer, columns] = zonesOf(
     ["drain", "parse"],
     [
-      [100e6, 300e6, 1, 0, 0, 1, 0],
+      [100e6, 300e6, 1, 0, 0, 1, 0, 120e6, 20e6],
       [150e6, 200e6, 1, 1, 1, 1, 0],
       [500e6, 520e6, 1, 0, 0, 1, 0],
     ],
+    offCpu,
   );
   server.answer(await server.next("profileZones"), answer, columns);
   return server;
 }
 
-const lanesCanvas = () => page.getByRole("img", { name: /^Samples, zones, and time off CPU/u });
+const lanesCanvas = () => page.getByRole("img", { name: /^CPU and zones over/u });
 
 it("says why the zones could not be read, and still draws the samples", async () => {
   const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
@@ -1493,6 +1530,30 @@ it("says why the zones could not be read, and still draws the samples", async ()
   server.fail(await server.next("profileZones"), "the zones are cut short");
   await expect.element(page.getByText("the zones are cut short")).toBeVisible();
   await expect.element(lanesCanvas()).toBeVisible();
+});
+
+it("waits on no zones in a box too narrow to draw them", async () => {
+  const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
+  const server = await mount(
+    <div style={NAMES_WIDE}>
+      <Lanes />
+    </div>,
+    { summary },
+  );
+  await settled();
+  expect(server.requests.some((request) => request.method === "profileZones")).toBe(false);
+  expect(document.querySelector("canvas.lanes")?.classList.contains("stale")).toBe(false);
+});
+
+it("puts a range's ends side by side where it is too near an edge for both", async () => {
+  await zonedLanes({ range: "995000000-998000000" });
+  await vi.waitFor(() => expect(ruler()).toContain("[0.998 s]"), POLL);
+  const [from, to] = [...document.querySelectorAll(".ruler-marks .marker")].map((pill) =>
+    pill.getBoundingClientRect(),
+  );
+  assert(from && to, "a range has two ends");
+  expect(from.right).toBeLessThanOrEqual(to.left);
+  expect(covered()).toEqual([]);
 });
 
 it("asks for no zones in a recording without any, nor of task lanes", async () => {
@@ -1504,43 +1565,147 @@ it("asks for no zones in a recording without any, nor of task lanes", async () =
   expect(server.requests.some((request) => request.method === "profileZones")).toBe(false);
 });
 
-it("shows a thread's outer zones, and its nested ones from its chevron", async () => {
+it("shows a thread's zones to every depth, and folds them to one from its chevron", async () => {
   await zonedLanes();
   const canvas = lanesCanvas();
-  // Two lanes of samples and the worker's one row of zones.
-  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16), POLL);
-  const chevron = page.getByRole("button", { name: "Show worker 11's nested zones" });
-  await expect.element(chevron).toHaveTextContent("▸ +1");
-  await chevron.click();
+  // The worker's lane and both its rows of zones, and the folded lane.
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16 * 2), POLL);
-  await page.getByRole("button", { name: "Hide worker 11's nested zones" }).click();
+  const chevron = page.getByRole("button", { name: "Hide worker 11's nested zones" });
+  await expect.element(chevron).toHaveTextContent("▾");
+  await chevron.click();
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16), POLL);
+  const shown = page.getByRole("button", { name: "Show worker 11's nested zones" });
+  await expect.element(shown).toHaveTextContent("▸ +1");
+  await shown.click();
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16 * 2), POLL);
+});
+
+const laneNames = () =>
+  [...document.querySelectorAll(".lane-names .lane-name")].map((name) => name.textContent);
+
+it("puts threads with zones first, and folds the rest into a lane that opens to them", async () => {
+  await zonedLanes();
+  const canvas = lanesCanvas();
+  // The worker has less weight than main, and still comes first.
+  await vi.waitFor(() => expect(laneNames()).toEqual(["worker 11", "▸ 1 without zones"]), POLL);
+  const others = page.getByRole("button", { name: "1 without zones" });
+  await expect.element(others).toHaveAttribute("aria-expanded", "false");
+
+  await others.click();
+  await vi.waitFor(
+    () => expect(laneNames()).toEqual(["worker 11", "▾ 1 without zones", "main 10"]),
+    POLL,
+  );
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 3 + 16 * 2), POLL);
+  // Opening the lane selects no thread; a thread in it selects as any does.
+  expect(lookShown().th).toBeUndefined();
+  await page.getByRole("button", { name: "main 10" }).click();
+  expect(lookShown().th).toEqual(["0"]);
+
+  await others.click();
+  await vi.waitFor(() => expect(laneNames()).toEqual(["worker 11", "▸ 1 without zones"]), POLL);
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(18 * 2 + 16 * 2), POLL);
+  // The thread it hides stays selected.
+  expect(lookShown().th).toEqual(["0"]);
+});
+
+it("folds no lane when every thread has zones, or none does", async () => {
+  const both = ZONED_THREADS.map((thread) => ({ ...thread, zones: 1 }));
+  await mount(<Lanes />, {
+    summary: summaryOf({ timed: true, threads: both, zoneSites: [DRAIN] }),
+  });
+  await expect.element(page.getByRole("button", { name: "main 10" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "worker 11" })).toBeVisible();
+  expect(document.body.textContent).not.toContain("without zones");
+  cleanup();
+
+  const neither = ZONED_THREADS.map((thread) => ({ ...thread, zones: 0 }));
+  await mount(<Lanes />, { summary: summaryOf({ timed: true, threads: neither }) });
+  await expect.element(page.getByRole("button", { name: "main 10" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "worker 11" })).toBeVisible();
+  expect(document.body.textContent).not.toContain("without zones");
+});
+
+it("says how much of a zone ran on its CPU, in a label that fits it", async () => {
+  const drawn: { text: string; width: number }[] = [];
+  const fillText = CanvasRenderingContext2D.prototype.fillText;
+  vi.spyOn(CanvasRenderingContext2D.prototype, "fillText").mockImplementation(function (
+    this: CanvasRenderingContext2D,
+    text,
+    ...rest
+  ) {
+    drawn.push({ text, width: this.measureText(text).width });
+    fillText.call(this, text, ...rest);
+  });
+  await zonedLanes(NO_LOOK, true);
+  // The drain ran for 60 of its 200 ms.
+  await vi.waitFor(
+    () => expect(drawn.map(({ text }) => text)).toContain("drain 200 ms, 30% CPU"),
+    POLL,
+  );
+  // A pixel is a millisecond: the parse has 44 pixels for its label, the
+  // short drain too few for any.
+  const parse = drawn.filter(({ text }) => text.endsWith("%") || text.includes("CPU"));
+  expect(parse.every(({ text }) => !text.startsWith("parse"))).toBe(true);
+  expect(drawn.find(({ text }) => text.includes("100%"))?.width).toBeLessThanOrEqual(44);
+  expect(drawn.some(({ text }) => text.includes("20.0 ms") || text.includes("20 ms"))).toBe(false);
+
+  await userEvent.hover(lanesCanvas(), { position: { x: 200, y: 26 } });
+  await vi.waitFor(
+    () =>
+      expect(page.getByTestId("zone-tip").element().textContent).toContain(
+        "30% on CPU, 120 ms blocked, 20.0 ms preempted",
+      ),
+    POLL,
+  );
+  vi.restoreAllMocks();
+});
+
+it("draws a zone without its CPU when the recording did not trace it", async () => {
+  const drawn: string[] = [];
+  const fillText = CanvasRenderingContext2D.prototype.fillText;
+  vi.spyOn(CanvasRenderingContext2D.prototype, "fillText").mockImplementation(function (
+    this: CanvasRenderingContext2D,
+    text,
+    ...rest
+  ) {
+    drawn.push(text);
+    fillText.call(this, text, ...rest);
+  });
+  await zonedLanes();
+  await vi.waitFor(() => expect(drawn).toContain("drain 200 ms"), POLL);
+  expect(drawn.some((text) => text.includes("%"))).toBe(false);
+  await userEvent.hover(lanesCanvas(), { position: { x: 200, y: 26 } });
+  await vi.waitFor(
+    () => expect(page.getByTestId("zone-tip").element().textContent).toContain("drain: 200 ms"),
+    POLL,
+  );
+  expect(page.getByTestId("zone-tip").element().textContent).not.toContain("on CPU");
+  vi.restoreAllMocks();
 });
 
 it("selects a zone and its site from a click, leaving the threads alone, and lets it go again", async () => {
   await zonedLanes({ th: ["0"] });
   const canvas = lanesCanvas();
-  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(52), POLL);
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
   // The drain, 200 ms in, on the worker's first row of zones.
-  await userEvent.click(canvas, { position: { x: 200, y: 44 } });
+  await userEvent.click(canvas, { position: { x: 200, y: 26 } });
   await vi.waitFor(
     () => expect(lookShown()).toEqual({ th: ["0"], zi: "1:100000000-300000000", zs: "drain" }),
     POLL,
   );
-  // Its thread opens, so the zones inside it show.
-  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
-  await userEvent.click(canvas, { position: { x: 200, y: 44 } });
+  await userEvent.click(canvas, { position: { x: 200, y: 26 } });
   await vi.waitFor(() => expect(lookShown()).toEqual({ th: ["0"], zs: "drain" }), POLL);
 
   // Another site's zone takes its site, and the old site's band goes.
   changeLook((look) => ({ ...look, zb: "1-2", zf: "band" }));
-  await userEvent.click(canvas, { position: { x: 175, y: 60 } });
+  await userEvent.click(canvas, { position: { x: 175, y: 42 } });
   await vi.waitFor(
     () => expect(lookShown()).toEqual({ th: ["0"], zi: "1:150000000-200000000", zs: "parse" }),
     POLL,
   );
   // Nothing under the pointer selects nothing.
-  await userEvent.click(canvas, { position: { x: 900, y: 44 } });
+  await userEvent.click(canvas, { position: { x: 900, y: 26 } });
   expect(lookShown().zi).toBe("1:150000000-200000000");
 });
 
@@ -1563,12 +1728,56 @@ it("brings a zone chosen elsewhere into view, asking for it in whole nanoseconds
   expect(lookShown().th).toBeUndefined();
 });
 
+it("scrolls a zone chosen elsewhere into view, once, so the lanes scroll away from it again", async () => {
+  // Forty threads with zones, the last of them the one the zone is on.
+  const threads: ProfileThread[] = Array.from({ length: 40 }, (_, row) => ({
+    row,
+    pid: 1,
+    tid: row + 1,
+    name: `worker ${row}`,
+    samples: 40 - row,
+    weight: 40 - row,
+    zones: 1,
+    blocked: 0,
+    preempted: 0,
+  }));
+  const server = await mount(
+    <div style={SECOND_WIDE}>
+      <Lanes />
+    </div>,
+    { summary: summaryOf({ timed: true, threads, zoneSites: [DRAIN] }) },
+  );
+  server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
+  const [answer, columns] = zonesOf(
+    ["drain"],
+    threads.map(({ row }) => [100e6, 300e6, row, 0, 0, 1, 0]),
+  );
+  server.answer(await server.next("profileZones"), answer, columns);
+  const box = page.getByTestId("timeline").element();
+  await vi.waitFor(() => expect(box.scrollHeight).toBeGreaterThan(box.clientHeight * 2), POLL);
+  expect(box.scrollTop).toBe(0);
+
+  const last = page.getByRole("button", { name: "worker 39 40" }).element();
+  const shown = () => {
+    const [outer, name] = [box.getBoundingClientRect(), last.getBoundingClientRect()];
+    return name.top >= outer.top && name.bottom <= outer.bottom;
+  };
+  expect(shown()).toBe(false);
+  changeLook((look) => ({ ...look, zs: "drain", zi: "39:100000000-300000000" }));
+  await vi.waitFor(() => expect(shown()).toBe(true), POLL);
+
+  // Scrolled back, it stays where the reader put it.
+  box.scrollTop = 0;
+  changeLook((look) => ({ ...look, range: "0-500000000" }));
+  await settled();
+  expect(box.scrollTop).toBe(0);
+});
+
 it("names a zone, how long it took, and what holds it", async () => {
   await zonedLanes();
-  await page.getByRole("button", { name: "Show worker 11's nested zones" }).click();
   const canvas = lanesCanvas();
   await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
-  await userEvent.hover(canvas, { position: { x: 175, y: 60 } });
+  await userEvent.hover(canvas, { position: { x: 175, y: 42 } });
   const zoneTip = page.getByTestId("zone-tip");
   await vi.waitFor(
     () =>
@@ -1601,6 +1810,183 @@ it("zooms with ctrl and the wheel anywhere in the lanes, the names included", as
   // Zooming shows less, so it asks for that time's zones, but the range
   // the views read stays as it was.
   expect(lookShown().range).toBeUndefined();
+});
+
+/** The ruler's labels that a pill covers, which it should hide. */
+function covered(): string[] {
+  const marks = [...document.querySelectorAll("[data-testid=ruler] .ruler-marks > span")];
+  const pills = marks.filter((mark) => mark.classList.contains("marker"));
+  return marks
+    .filter((mark) => !mark.classList.contains("marker"))
+    .filter((mark) => {
+      const at = mark.getBoundingClientRect();
+      return pills.some((pill) => {
+        const over = pill.getBoundingClientRect();
+        return at.left < over.right && over.left < at.right;
+      });
+    })
+    .map((mark) => mark.textContent ?? "");
+}
+
+/** The ruler's last round time, the end of what the lanes show. */
+const lastMark = () => ruler().findLast((mark) => !/^[[<]/u.test(mark));
+
+/** Presses the lanes `from` pixels in and lets go `to` pixels in, `y`
+ * pixels down, with ctrl held or not. */
+function dragLanes(
+  from: number,
+  to: number,
+  ctrlKey = false,
+  y = 60,
+  beforeRelease = NOTHING,
+): void {
+  const canvas = lanesCanvas().element();
+  const bounds = canvas.getBoundingClientRect();
+  const at = (x: number) => ({
+    bubbles: true,
+    button: 0,
+    ctrlKey,
+    clientX: bounds.left + x,
+    clientY: bounds.top + y,
+  });
+  for (const [type, x] of [
+    ["pointerdown", from],
+    ["pointermove", (from + to) / 2],
+    ["pointermove", to],
+    ["pointerup", to],
+  ] as const) {
+    if (type === "pointerup") {
+      beforeRelease();
+    }
+    act(() => {
+      canvas.dispatchEvent(new PointerEvent(type, at(x)));
+    });
+  }
+}
+
+it("selects a range from a drag across the lanes, letting go of the zone, and a click lets it go", async () => {
+  vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
+  await zonedLanes();
+  const canvas = lanesCanvas();
+  await vi.waitFor(() => expect(canvas.element().clientHeight).toBe(68), POLL);
+  await userEvent.click(canvas, { position: { x: 200, y: 26 } });
+  await vi.waitFor(
+    () => expect(lookShown()).toEqual({ zs: "drain", zi: "1:100000000-300000000" }),
+    POLL,
+  );
+  // Right to left, starting over a zone: a pixel is a millisecond.
+  dragLanes(250, 120, false, 26);
+  await vi.waitFor(
+    () => expect(lookShown()).toEqual({ zs: "drain", range: "120000000-250000000" }),
+    POLL,
+  );
+  expect(ruler()).toContain("[0.120 s]");
+  // The view stayed put. A press that hardly moves is a click, which off
+  // the zones lets go of the range.
+  expect(lastMark()).toBe("1.00 s");
+  dragLanes(500, 503);
+  await vi.waitFor(() => expect(lookShown()).toEqual({ zs: "drain" }), POLL);
+  // A drag past the lanes' ends stops at them.
+  dragLanes(900, 5000);
+  await vi.waitFor(() => expect(lookShown().range).toBe("900000000-1000000000"), POLL);
+  act(() => {
+    lanesCanvas()
+      .element()
+      .dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+  });
+  expect(covered()).toEqual([]);
+  // Escape lets go of a drag under way, and of nothing else.
+  dragLanes(100, 300, false, 60, () => {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+  });
+  await settled();
+  expect(lookShown().range).toBe("900000000-1000000000");
+  expect(ruler()).not.toContain("<0.200 s>");
+  vi.restoreAllMocks();
+});
+
+it("keeps a range's ends on the ruler however long their times grow", async () => {
+  vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
+  await zonedLanes();
+  const canvas = lanesCanvas().element();
+  const bounds = canvas.getBoundingClientRect();
+  // Zoomed in about two thirds of the way, to a few microseconds, whose
+  // times take many digits.
+  for (let step = 0; step < 6; step += 1) {
+    act(() => {
+      canvas.dispatchEvent(
+        new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: true,
+          deltaY: -1000,
+          clientX: bounds.left + 666,
+          clientY: bounds.top + 4,
+        }),
+      );
+    });
+    await settled();
+  }
+  // Across the whole of the lanes and past both ends.
+  dragLanes(-50, 1100);
+  await vi.waitFor(() => expect(lookShown().range).toBeDefined(), POLL);
+  act(() => {
+    canvas.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+  });
+  const marks = document.querySelector("[data-testid=ruler] .ruler-marks");
+  assert(marks, "the ruler has marks");
+  const pills = [...marks.querySelectorAll(".marker")];
+  expect(pills.map((pill) => pill.textContent?.length ?? 0).every((length) => length > 9)).toBe(
+    true,
+  );
+  expect(covered()).toEqual([]);
+  const outer = marks.getBoundingClientRect();
+  for (const pill of pills) {
+    const at = pill.getBoundingClientRect();
+    expect(at.left).toBeGreaterThanOrEqual(outer.left);
+    expect(at.right).toBeLessThanOrEqual(outer.right);
+  }
+  vi.restoreAllMocks();
+});
+
+it("pans with ctrl held while dragging, selecting nothing, and keeps the menu away", async () => {
+  vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
+  await zonedLanes();
+  await vi.waitFor(() => expect(lastMark()).toBe("1.00 s"), POLL);
+  // The whole profile shows, so there is nowhere to pan to.
+  dragLanes(600, 300, true);
+  await settled();
+  expect(lastMark()).toBe("1.00 s");
+  expect(lookShown().range).toBeUndefined();
+
+  const canvas = lanesCanvas().element();
+  const bounds = canvas.getBoundingClientRect();
+  act(() => {
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        deltaY: -400,
+        clientX: bounds.left,
+        clientY: bounds.top + 4,
+      }),
+    );
+  });
+  await vi.waitFor(() => expect(lastMark()).not.toBe("1.00 s"), POLL);
+  const zoomedEnd = lastMark();
+  dragLanes(600, 300, true);
+  await vi.waitFor(() => expect(lastMark()).not.toBe(zoomedEnd), POLL);
+  expect(lookShown().range).toBeUndefined();
+
+  const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, ctrlKey: true });
+  act(() => {
+    canvas.dispatchEvent(menu);
+  });
+  expect(menu.defaultPrevented).toBe(true);
+  vi.restoreAllMocks();
 });
 
 /** A site's stats: 8 zones in four buckets of lengths, the longest one. */
@@ -1722,7 +2108,10 @@ it("picks a band from the histogram, scopes the views to it, compares it, and le
 
 it("selects one of the longest, ranks it, and never touches the threads", async () => {
   const server = await mount(<ZonesPane close={NOTHING} />, {
-    summary: summaryOf({ zoneSites: [DRAIN_SITE], threads: ZONED_THREADS }),
+    summary: summaryOf({
+      zoneSites: [DRAIN_SITE, { ...DRAIN_SITE, name: "parse" }],
+      threads: ZONED_THREADS,
+    }),
     look: { zs: "drain", th: ["0"] },
   });
   server.answer(await server.next("profileZoneStats"), STATS);
@@ -1738,6 +2127,12 @@ it("selects one of the longest, ranks it, and never touches the threads", async 
   await expect.element(longest).toHaveAttribute("aria-pressed", "true");
   await longest.click();
   expect(lookShown()).toEqual({ zs: "drain", th: ["0"] });
+
+  // Another site lets go of the zone, which is not one of its own.
+  await longest.click();
+  expect(lookShown().zi).toBe("1:1000-1900");
+  await page.getByRole("button", { name: "parse", exact: true }).click();
+  expect(lookShown()).toEqual({ zs: "parse", th: ["0"] });
 });
 
 it("says why a site could not be measured, and when none of its zones are in the range", async () => {
@@ -1759,6 +2154,19 @@ it("says why a site could not be measured, and when none of its zones are in the
     banded: [0, 0],
   });
   await expect.element(page.getByText("None of its zones are in the range.")).toBeVisible();
+
+  // Threads chosen may leave them out too, wherever they are.
+  const empty = { ...STATS, count: 0, total: 0, histogram: [], longest: [], banded: [0, 0] };
+  changeLook((look) => ({ ...look, th: ["1"] }));
+  server.answer(await server.next("profileZoneStats"), empty);
+  await expect
+    .element(page.getByText("None of its zones are in the range or on the thread selected."))
+    .toBeVisible();
+  changeLook(({ range: _range, ...look }) => ({ ...look, th: ["1", "2"] }));
+  server.answer(await server.next("profileZoneStats"), empty);
+  await expect
+    .element(page.getByText("None of its zones are on the threads selected."))
+    .toBeVisible();
 });
 
 it("offers no zone scope of waits, which zones never hold", async () => {
@@ -2194,7 +2602,7 @@ const stats = () =>
   );
 
 it("leads with what was recorded, and shows only the losses there were", async () => {
-  const thread = { pid: 1, samples: 1, weight: 1, blocked: 0, preempted: 0 };
+  const thread = { pid: 1, samples: 1, weight: 1, zones: 0, blocked: 0, preempted: 0 };
   const summary = summaryOf({
     command: RG,
     timed: true,

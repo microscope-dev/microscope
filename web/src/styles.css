@@ -3510,6 +3510,19 @@ textarea.input {
   color: var(--ink-3);
 }
 
+/* The threads without zones, folded into one lane and listed under it. */
+.lane-others {
+  color: var(--ink-3);
+}
+
+.lane-others:hover {
+  color: var(--ink);
+}
+
+.lane-name.nested {
+  padding-left: 22px;
+}
+
 /* Beside a thread's zones, the chevron that shows the nested ones. */
 .lane-zones {
   flex: none;

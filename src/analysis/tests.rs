@@ -1221,6 +1221,16 @@ type Sample = (u32, i64, u64, u32);
 /// A capture of label spans `route=vN` (thread, start, length, N), and of
 /// samples of one stack, goroutine 2 labeled `phase=spin`.
 fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
+    labeled_off(spans, samples, &[])
+}
+
+/// A span of time off a CPU: thread, start, length, and whether it was
+/// preempted rather than blocked.
+type Off = (u32, i64, u64, bool);
+
+/// [`labeled`], its threads off their CPUs for `off`, which may not overlap
+/// on one thread.
+fn labeled_off(spans: &[(u32, i64, i64, u32)], samples: &[Sample], off: &[Off]) -> Capture {
     let mut builder = CaptureBuilder::new();
     let module = builder.module("/bin/app", None, [0; 16], 0);
     let frame = builder.frame(FrameKind::Native, module, 0x10, 0);
@@ -1267,6 +1277,10 @@ fn labeled(spans: &[(u32, i64, i64, u32)], samples: &[Sample]) -> Capture {
             stack,
             task_row(task),
         );
+    }
+
+    for &(thread, time, duration, preempted) in off {
+        builder.off_cpu(threads[thread as usize], time, duration, preempted);
     }
 
     builder.finish()
@@ -1393,6 +1407,61 @@ proptest! {
     /// narrower than the fold, and never overlap in a row; a zone drawn
     /// alone is one that was recorded, below every zone it begins inside,
     /// however the zones cross.
+    /// However zones fold, a thread's blocks hold exactly the time its
+    /// zones in the range cover, and of that, exactly the time it spent
+    /// blocked and preempted.
+    #[test]
+    fn zone_blocks_hold_their_zones_time_off_the_cpu(
+        spans in proptest::collection::vec((0..2_u32, 0..400_i64, 0..60_i64, 0..3_u32), 0..30),
+        gaps in proptest::collection::vec((0..2_u32, 0..40_i64, 1..40_u64, any::<bool>()), 0..30),
+        range in (0..300_i64, 1..300_i64),
+        fold in 1..40_i64,
+    ) {
+        // Each thread's spans off its CPU, one after another.
+        let mut at = [0_i64; 2];
+        let off: Vec<Off> = gaps
+            .iter()
+            .map(|&(thread, gap, length, preempted)| {
+                let time = at[thread as usize] + gap;
+                at[thread as usize] = time + length.cast_signed();
+                (thread, time, length, preempted)
+            })
+            .collect();
+        let capture = labeled_off(&spans, &[], &off);
+        let range = (range.0, range.0 + range.1);
+        let blocks = zone_blocks(&capture, range, None, fold);
+
+        let mut drawn: BTreeMap<u32, (i64, i64, i64)> = BTreeMap::new();
+        for block in &blocks {
+            prop_assert!(block.blocked + block.preempted <= block.covered, "{:?}", block);
+            let totals = drawn.entry(block.thread).or_default();
+            *totals = (totals.0 + block.covered, totals.1 + block.blocked, totals.2 + block.preempted);
+        }
+
+        let mut expected: BTreeMap<u32, (i64, i64, i64)> = BTreeMap::new();
+        for &(thread, start, length, _) in &spans {
+            if start + length > range.0 && start < range.1 {
+                let totals = expected.entry(thread).or_default();
+                totals.0 += length;
+                for &(on, time, duration, preempted) in &off {
+                    let overlap = ((time + duration.cast_signed()).min(start + length) - time.max(start)).max(0);
+                    if on == thread && preempted {
+                        totals.2 += overlap;
+                    } else if on == thread {
+                        totals.1 += overlap;
+                    }
+                }
+            }
+        }
+
+        // Threads are told apart by row in the blocks, by choice here.
+        let rows: BTreeMap<u32, (i64, i64, i64)> = drawn
+            .into_iter()
+            .map(|(row, totals)| (capture.threads[row as usize].tid.get() - 1, totals))
+            .collect();
+        prop_assert_eq!(rows, expected);
+    }
+
     #[test]
     fn zone_blocks_draw_each_zone_once_and_fold_only_narrow_ones(
         spans in proptest::collection::vec((0..2_u32, 0..400_i64, 0..60_i64, 0..3_u32), 0..40),
@@ -1412,7 +1481,7 @@ proptest! {
 
         for block in &blocks {
             *drawn.entry(block.thread).or_default() += block.count;
-            prop_assert!(block.count == 1 || block.end - block.start < fold * i64::from(2 * block.count));
+            prop_assert!(block.count == 1 || block.end - block.start <= fold, "{:?}", block);
         }
 
         // The spans in the range, as recorded, each thread's choice its row.

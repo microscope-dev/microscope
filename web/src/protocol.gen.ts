@@ -1290,6 +1290,10 @@ truncated: boolean, };
 
 export type ProfileThread = { row: number, pid: number, tid: number, name: string | null, samples: number, weight: number, 
 /**
+ * How many zones it recorded.
+ */
+zones: number, 
+/**
  * Nanoseconds off its CPU, blocked and preempted.
  */
 blocked: number, preempted: number, };
@@ -1423,7 +1427,12 @@ threads?: Array<number> | null,
  */
 width: number, };
 
-export type ProfileZones = { range: [number, number], blocks: number, names: Array<string>, 
+export type ProfileZones = { range: [number, number], blocks: number, 
+/**
+ * Whether the recording traced time off the CPU, without which a
+ * block's blocked and preempted times are zero.
+ */
+offCpu: boolean, names: Array<string>, 
 /**
  * The program's messages, frames, and triggers in the range.
  */

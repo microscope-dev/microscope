@@ -543,6 +543,9 @@ pub struct ProfileThread {
     pub samples: u64,
     pub weight: u64,
 
+    /// How many zones it recorded.
+    pub zones: u64,
+
     /// Nanoseconds it spent off its CPU, blocked and preempted.
     pub blocked: u64,
     pub preempted: u64,
@@ -683,6 +686,7 @@ impl Profile {
                     .map(str::to_owned),
                 samples: 0,
                 weight: 0,
+                zones: 0,
                 blocked: 0,
                 preempted: 0,
             }
@@ -698,7 +702,7 @@ impl Profile {
 
         for range in &capture.zone_ranges {
             let row = range.thread.get();
-            threads.entry(row).or_insert_with(|| new(row));
+            threads.entry(row).or_insert_with(|| new(row)).zones += u64::from(range.count.get());
         }
 
         for range in &capture.off_cpu_ranges {

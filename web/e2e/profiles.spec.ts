@@ -360,7 +360,7 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   const served = await microscope.start([file]);
   await join(page, served.link);
   await expect(page.getByTestId("accounting")).toContainText(/Probe events[\d,]+, lost 0/u);
-  const lanes = page.getByRole("img", { name: /^Samples, zones, and time off CPU/u });
+  const lanes = page.getByRole("img", { name: /^CPU and zones over/u });
   await expect(lanes).toBeVisible();
   await expect(page.getByRole("img", { name: "Plot round, 3 values from 0 – 2" })).toBeVisible();
   const pane = page.getByTestId("zones-pane");
@@ -413,6 +413,30 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page).toHaveURL(/zi=\d+(%3A|:)\d+-\d+/u);
   expect(look().get("th")).toBeNull();
   await expect(page.getByTestId("zone-rank")).toContainText("of 2");
+  // Somewhere down the middle of it, its tip says how much of it ran on
+  // its CPU. The lanes show the whole recording, which their label says
+  // the length of.
+  const [, from = 0, to = 0] = (look().get("zi") ?? "").split(/[:-]/u).map(Number);
+  const named = (await lanes.getAttribute("aria-label")) ?? "";
+  const [, length = "0", unit] = / ([\d.]+) (ms|s)$/u.exec(named) ?? [];
+  const total = Number(length) * (unit === "s" ? 1e9 : 1e6);
+  const tip = page.getByTestId("zone-tip");
+  await expect
+    .poll(async () => {
+      const box = (await lanes.boundingBox()) ?? { x: 0, y: 0, width: 0, height: 0 };
+      for (let y = 20; y < box.height; y += 8) {
+        await page.mouse.move(box.x + (box.width * (from + to)) / 2 / total, box.y + y);
+        const text = (await tip.count()) > 0 ? await tip.textContent() : null;
+        if (text?.startsWith("step")) {
+          return text;
+        }
+      }
+      return "";
+    })
+    .toMatch(/^step: 20\.\d ms\d+% on CPU, [\d.]+ \S+ blocked, [\d.]+ \S+ preempted/u);
+  await page.mouse.move(0, 0);
+  // From anywhere on the page, even what takes no focus.
+  await page.getByTestId("accounting").click();
   await page.keyboard.press("Escape");
   await expect(page).not.toHaveURL(/zi=/u);
   await page.keyboard.press("Escape");
@@ -422,7 +446,7 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page).not.toHaveURL(/zs=/u);
 
   // Ctrl and the wheel zoom anywhere in the lanes, their names too, and
-  // dragging pans; neither changes the range the views read.
+  // dragging with ctrl held pans; neither changes the range the views read.
   const ruler = page.getByTestId("ruler");
   const end = () => ruler.locator(".ruler-marks > span.last").textContent();
   const whole = await end();
@@ -435,16 +459,28 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect.poll(end).not.toBe(whole);
   const zoomed = await end();
   await page.mouse.move(drawn.x + drawn.width / 2, drawn.y + 4);
+  await page.keyboard.down("Control");
   await page.mouse.down();
   // Zoomed in at the start, so a drag to the left shows later times.
   await page.mouse.move(drawn.x + drawn.width / 2 - 120, drawn.y + 4, { steps: 4 });
   await page.mouse.up();
+  await page.keyboard.up("Control");
   await expect.poll(end).not.toBe(zoomed);
   expect(look().get("range")).toBeNull();
   expect(look().get("zi")).toBeNull();
 
-  // Dragging on the ruler selects a range.
+  // Dragging across the lanes selects a range, and a click off the zones
+  // lets go of it; so does dragging on the ruler, and a click there.
   const marks = (await ruler.boundingBox()) ?? drawn;
+  const below = drawn.y + drawn.height - 2;
+  await page.mouse.move(drawn.x + 10, below);
+  await page.mouse.down();
+  await page.mouse.move(drawn.x + drawn.width / 2, below, { steps: 4 });
+  await page.mouse.up();
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
+  await expect(page.getByTestId("range-length")).toBeVisible();
+  await page.mouse.click(drawn.x + 10, below);
+  await expect(page).not.toHaveURL(/range=/u);
   await page.mouse.move(drawn.x + 10, marks.y + 8);
   await page.mouse.down();
   await page.mouse.move(drawn.x + drawn.width / 2, marks.y + 8, { steps: 4 });
@@ -489,7 +525,7 @@ test("a recording without zones has no Zones pane, and its lanes ask for none", 
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await expect(page.getByRole("img", { name: /^Samples and time off CPU/u })).toBeVisible();
+  await expect(page.getByRole("img", { name: /^CPU over/u })).toBeVisible();
   await expect(page.getByTestId("zones-pane")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Zones", exact: true })).toHaveCount(0);
   // A link naming a site this recording lacks keeps nothing it cannot read.

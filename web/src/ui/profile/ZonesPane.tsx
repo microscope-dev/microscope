@@ -44,7 +44,8 @@ export function ZonesPane({ close }: { close: () => void }) {
   const choose = useCallback(
     (name: string) =>
       setLook((prev) => {
-        const { zs, zb: _zb, zf: _zf, bz: _bz, ...rest } = prev;
+        // The zone selected, if any, is one of the old site's.
+        const { zs, zb: _zb, zf: _zf, bz: _bz, zi: _zi, ...rest } = prev;
         return zs === name ? rest : { ...rest, zs: name };
       }, true),
     [setLook],
@@ -242,7 +243,7 @@ function ZoneStats({ site }: { site: ProfileZoneSite }) {
         ))}
       </dl>
       {stats.count === 0 ? (
-        <div className="muted">None of its zones are in the range.</div>
+        <div className="muted">{emptyWhy(range !== null, query.threads?.length ?? 0)}</div>
       ) : (
         <Histogram stats={stats} band={band} length={length} name={site.name} />
       )}
@@ -587,4 +588,13 @@ function LabelValue({ label, on }: { label: string; on: boolean }) {
       {label}
     </button>
   );
+}
+
+/** Why a site's stats hold no zones: what the views read leaves them out. */
+function emptyWhy(ranged: boolean, threads: number): string {
+  const where = [
+    ...(ranged ? ["in the range"] : []),
+    ...(threads > 0 ? [`on the ${threads === 1 ? "thread" : "threads"} selected`] : []),
+  ];
+  return where.length > 0 ? `None of its zones are ${where.join(" or ")}.` : "It has no zones.";
 }

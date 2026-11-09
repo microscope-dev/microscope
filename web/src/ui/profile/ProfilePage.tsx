@@ -148,15 +148,16 @@ export function Profile({
   const toggleZones = useCallback(() => setZonesOpen((was) => !was), []);
   const closeZones = useCallback(() => setZonesOpen(false), []);
   // Escape lets go of the most specific zone selection first, except where
-  // a field or a dialog has it.
+  // a field or a dialog has it. A click on the lanes, which take no focus,
+  // leaves it on what holds the profile, such as its tab, which counts.
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const element = root.current;
     const escape = (event: KeyboardEvent) => {
       const target = event.target as Element;
       if (
         event.key !== "Escape" ||
         event.defaultPrevented ||
+        !(root.current?.contains(target) || target.contains(root.current)) ||
         target.closest("input, textarea, select, [role=dialog]")
       ) {
         return;
@@ -166,8 +167,8 @@ export function Profile({
         setLook(cleared, true);
       }
     };
-    element?.addEventListener("keydown", escape);
-    return () => element?.removeEventListener("keydown", escape);
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
   });
   const focus = useMemo<ProfileFocus | null>(
     () =>
