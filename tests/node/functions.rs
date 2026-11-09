@@ -95,9 +95,13 @@ async fn function_breakpoints_stop_where_each_function_begins() {
         // The program waits for its line, with the nested function
         // compiled, and the search that resumed it finds it.
         let running = session.scenario.start_resuming().await;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut reasons = pending(&session).await;
-        while !reasons[4].is_empty() && std::time::Instant::now() < deadline {
+        while !reasons[4].is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node {entry}: the nested function stayed pending: {reasons:?}"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             reasons = pending(&session).await;
         }
