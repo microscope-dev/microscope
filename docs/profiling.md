@@ -103,7 +103,8 @@ counters stay on when the queue fills: calls are still counted, and the kernel
 counts samples that cannot fit in its rings as lost.
 
 The report gives a count and percentage for samples the kernel drops, for
-example when the recorder lacks CPU time. A full ring can also lose mapping,
+example when the recorder lacks CPU time: in calls for a function
+recording, whose every call is still counted. A full ring can also lose mapping,
 name, and context-switch records. The report counts these separately so they
 do not inflate the sample-loss count beyond what the program's CPU time
 allows. If the kernel shrinks rings to fit locked-memory limits, the recorder

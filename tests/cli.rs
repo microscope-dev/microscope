@@ -6836,7 +6836,15 @@ fn function_recording_counts_calls_without_capturing_every_stack() {
     assert!(report.contains("with stacks ("), "{report}");
     assert!(report.contains("Stacks are sampled"), "{report}");
     assert!(profile.samples() > 0 && profile.samples() < 4000);
-    assert!(!String::from_utf8_lossy(&recorded.stderr).contains("kernel dropped"));
+    // What the kernel dropped is said in calls, when it dropped any.
+    let stderr = String::from_utf8_lossy(&recorded.stderr);
+    let lost = profile.lost_samples();
+    let said = format!(
+        "the kernel dropped {lost} of {} calls",
+        profile.samples() as u64 + lost
+    );
+    assert_eq!(stderr.contains(&said), lost > 0, "{stderr}");
+    assert_eq!(stderr.contains("kernel dropped"), lost > 0, "{stderr}");
 }
 
 /// Without frame pointers, a stack unwinds only as far as its copy reaches.

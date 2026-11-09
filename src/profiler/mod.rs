@@ -837,6 +837,32 @@ impl Profile {
             .account(crate::capture::records::AccountKind::LostSamples as u32)
     }
 
+    /// What the kernel dropped of the samples it tried to write, as
+    /// "the kernel dropped N of M samples (x%)", in calls for a recording
+    /// that counts executions: none when it dropped nothing.
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a percentage needs no more precision than f64's"
+    )]
+    pub fn dropped_samples(&self) -> Option<String> {
+        let lost = self.lost_samples();
+        if lost == 0 {
+            return None;
+        }
+
+        let total = (self.samples() as u64).saturating_add(lost);
+        let unit = if self.setting("weight") == Some("executions") {
+            "calls"
+        } else {
+            "samples"
+        };
+        Some(format!(
+            "the kernel dropped {lost} of {total} {unit} ({:.1}%)",
+            lost as f64 * 100.0 / total as f64
+        ))
+    }
+
     /// Samples whose stack copy the recorder cut short while it was behind
     /// processing.
     #[must_use]
@@ -1272,4 +1298,43 @@ pub enum ProfileFileError {
     /// The file is not a profile, or is damaged.
     #[error("{0}")]
     Invalid(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::builder::CaptureBuilder;
+    use crate::capture::records::{AccountKind, FrameKind, NONE};
+    use crate::model::{Pid, Tid};
+
+    /// A profile of `kept` samples weighted by `weight`, of which the
+    /// kernel dropped `lost` more.
+    fn lossy(weight: &str, kept: u64, lost: u64) -> Profile {
+        let mut builder = CaptureBuilder::new();
+        builder.setting("weight", weight);
+        let frame = builder.frame(FrameKind::Native, NONE, 0x1000, 0);
+        let stack = builder.stack(&[frame]);
+        let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
+        for time in 0..kept {
+            builder.sample(thread, time.cast_signed(), 1, stack, NONE);
+        }
+        builder.count(AccountKind::LostSamples as u32, lost);
+        Profile::from_capture(builder.finish())
+    }
+
+    /// The kernel's loss is said in calls for a recording that counts
+    /// executions, as in samples for one weighted by time, of all it
+    /// tried to write: the samples kept and those dropped.
+    #[test]
+    fn dropped_samples_are_said_in_the_recordings_unit() {
+        assert_eq!(
+            lossy("executions", 4, 2).dropped_samples().as_deref(),
+            Some("the kernel dropped 2 of 6 calls (33.3%)")
+        );
+        assert_eq!(
+            lossy("nanoseconds", 9, 1).dropped_samples().as_deref(),
+            Some("the kernel dropped 1 of 10 samples (10.0%)")
+        );
+        assert_eq!(lossy("executions", 6, 0).dropped_samples(), None);
+    }
 }
