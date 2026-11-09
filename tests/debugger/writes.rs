@@ -591,3 +591,111 @@ async fn a_thread_moved_out_of_a_system_call_resumes_where_it_was_moved() {
     );
     scenario.shutdown().await;
 }
+
+/// The frames of a stop are unwound from the thread's registers each time
+/// they are asked for, so assigning its frame pointer changes them at the
+/// same stop.
+#[tokio::test]
+async fn assigning_the_frame_pointer_changes_the_backtrace_at_the_same_stop() {
+    let mut scenario = Scenario::launch("jump");
+    scenario.add_breakpoint("elsewhere").await;
+    assert!(matches!(
+        scenario.run_to_stop().await,
+        StopReason::Breakpoint { .. }
+    ));
+    let caller = |trace: &microscope::Backtrace| {
+        trace
+            .frames
+            .get(1)
+            .and_then(|frame| frame.function.as_ref())
+            .map(|function| function.name.to_string())
+    };
+
+    let stop = scenario.snapshot().await.stop_id;
+    let before = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    assert_eq!(caller(&before).as_deref(), Some("main"), "{before:#?}");
+
+    let context = frame_view(&mut scenario, 0).await;
+    let handle = scenario.handle().clone();
+    let view = handle.at(context);
+    let registers = scenario.operation("registers", view.registers()).await;
+    let moved = register_u64(&registers, RegisterRole::StackPointer) - 0x200;
+    scenario
+        .operation("assign $rbp", assign(&view, "$rbp", &format!("{moved:#x}")))
+        .await;
+
+    let after = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    assert_eq!(scenario.snapshot().await.stop_id, stop);
+    assert_eq!(after.frames[0].instruction, before.frames[0].instruction);
+    assert_ne!(caller(&after).as_deref(), Some("main"), "{after:#?}");
+    scenario.shutdown().await;
+}
+
+/// A write changes what the stop shows without leaving it, so it moves the
+/// revision on as every other change of state does; reads made after it
+/// carry the new revision.
+#[tokio::test]
+async fn writes_move_the_revision_on_at_the_same_stop() {
+    let mut scenario = Scenario::launch("jump");
+    scenario.add_breakpoint("elsewhere").await;
+    assert!(matches!(
+        scenario.run_to_stop().await,
+        StopReason::Breakpoint { .. }
+    ));
+    let first = scenario.snapshot().await;
+    let context = frame_view(&mut scenario, 0).await;
+    let handle = scenario.handle().clone();
+    let view = handle.at(context);
+    let registers = scenario.operation("registers", view.registers()).await;
+
+    // Below the red zone, which the stopped function may use.
+    let unused = VirtualAddress::new(register_u64(&registers, RegisterRole::StackPointer) - 0x100);
+    scenario
+        .operation(
+            "write memory",
+            scenario.handle().write_memory(unused, &[0; 8]),
+        )
+        .await;
+    let written = scenario.snapshot().await;
+    let read = scenario
+        .operation("read memory", scenario.handle().read_memory(unused, 8))
+        .await;
+    assert!(
+        written.revision > first.revision,
+        "memory write: {} then {}",
+        first.revision,
+        written.revision
+    );
+    assert_eq!(read.revision, written.revision);
+
+    scenario
+        .operation("assign $rax", assign(&view, "$rax", "1"))
+        .await;
+    let assigned = scenario.snapshot().await;
+    let registers = scenario.operation("registers", view.registers()).await;
+    assert!(
+        assigned.revision > written.revision,
+        "register write: {} then {}",
+        written.revision,
+        assigned.revision
+    );
+    assert_eq!(registers.revision, assigned.revision);
+
+    scenario
+        .operation("assign status", assign(&view, "status", "3"))
+        .await;
+    let stored = scenario.snapshot().await;
+    assert!(
+        stored.revision > assigned.revision,
+        "assignment: {} then {}",
+        assigned.revision,
+        stored.revision
+    );
+
+    assert_eq!(stored.stop_id, first.stop_id);
+    scenario.shutdown().await;
+}

@@ -211,7 +211,7 @@ fn thread_identity_evidence_is_read_once_and_forgotten_after_memory_changes() {
     let second = memory.thread_identities(&[crate::ThreadId::new(5000)], read);
     assert!(std::sync::Arc::ptr_eq(&first, &second));
     assert_eq!(calls.get(), 1);
-    memory.forget();
+    let memory = super::StopMemory::default();
     assert_eq!(
         &*memory.thread_identities(&[crate::ThreadId::new(5000)], read),
         &*first

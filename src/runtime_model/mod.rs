@@ -396,7 +396,7 @@ type ThreadIdPairs = Arc<[(ThreadId, TargetThreadId)]>;
 /// read or as unreadable. A stopped process's memory does not change, so a
 /// read near one made before, as an object's fields, a table's entries, and
 /// the objects allocated together are, reads nothing more. Whoever keeps
-/// one forgets it once the program runs or the debugger writes to it.
+/// one makes a new one once the program runs or the debugger writes to it.
 #[derive(Debug)]
 pub struct StopMemory {
     blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Block>>,
@@ -578,12 +578,6 @@ impl StopMemory {
             *self.thread_ids.borrow_mut() = Some(Arc::clone(&ids));
         }
         ids
-    }
-
-    /// Forgets every block, once the memory may have changed.
-    pub fn forget(&self) {
-        self.blocks.borrow_mut().clear();
-        *self.thread_ids.borrow_mut() = None;
     }
 }
 

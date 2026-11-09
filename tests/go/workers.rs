@@ -1,13 +1,16 @@
 //! A worker pool, and goroutines parked in every way a program parks one.
 
 use std::collections::BTreeSet;
+use std::process::Stdio;
 
 use microscope::{
-    Backtrace, BreakpointOptions, BreakpointSpec, Condition, Evaluation, ExecutionContext,
-    Expression, InferiorState, ScalarValue, StackFrameId, StackSegment, StopContext, StopReason,
-    TaskSnapshot, TaskState, ThreadActivity, ThreadId, VariableState, VariableValue,
+    Backtrace, BreakpointOptions, BreakpointSpec, Condition, Evaluation, EvaluationMode,
+    ExecutionContext, Expression, InferiorState, InspectionLimits, LaunchOptions, ScalarValue,
+    StackFrameId, StackSegment, StopContext, StopReason, TaskSnapshot, TaskState, ThreadActivity,
+    ThreadId, VariableState, VariableUnavailableReason, VariableValue, VirtualAddress,
 };
 
+use crate::support::Scenario;
 use crate::truth::GoSession;
 
 const BUILDS: [&str; 2] = ["workers-go-o0", "workers-go-o2"];
@@ -525,4 +528,143 @@ fn runtime_hides(function: &str) -> bool {
     function.starts_with("runtime.")
         || function.starts_with("internal/runtime/")
         || function.contains(".gowrap")
+}
+
+/// A worker pool stopped at its first checkpoint, with nothing read at the
+/// stop: a checked session reads every thread as the stop arrives.
+async fn stopped_unread(fixture: &str) -> Scenario {
+    let mut scenario = Scenario::launch(fixture);
+    scenario.add_breakpoint("main.reached").await;
+    let reason = scenario
+        .run_with_to_stop(LaunchOptions {
+            stdout: Some(Stdio::null()),
+            ..LaunchOptions::default()
+        })
+        .await;
+    assert!(
+        matches!(reason, StopReason::Breakpoint { .. }),
+        "{fixture}: {reason:?}"
+    );
+    scenario
+}
+
+/// What the stopping thread runs, as the snapshot says.
+async fn stopping_activity(scenario: &mut Scenario) -> Option<ThreadActivity> {
+    let snapshot = scenario.snapshot().await;
+    let InferiorState::Stopped { thread_id, .. } = snapshot.inferior else {
+        panic!("not stopped");
+    };
+
+    snapshot
+        .threads
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .and_then(|thread| thread.activity.clone())
+}
+
+/// What `$task` reads in the selected frame.
+async fn task_variable(scenario: &Scenario) -> VariableState {
+    let expression = Expression::parse("$task").expect("an expression");
+    let Evaluation::Value { value, .. } = scenario
+        .operation("$task", scenario.handle().evaluate(&expression))
+        .await
+    else {
+        panic!("$task: not a value");
+    };
+    value.state
+}
+
+/// The stopping thread's `fs_base`, below which Go keeps its g.
+async fn thread_pointer(scenario: &Scenario) -> u64 {
+    let registers = scenario
+        .operation("registers", scenario.handle().registers())
+        .await;
+    registers
+        .registers
+        .iter()
+        .find(|value| value.register.name.as_ref() == "fs_base")
+        .and_then(|value| value.bytes.as_deref())
+        .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("a word")))
+        .expect("fs_base")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FirstRead {
+    Snapshot,
+    Evaluation,
+}
+
+/// A thread whose g a write zeroes runs no goroutine, whatever the stop
+/// read of it before the write. On linux/amd64 Go keeps the g at -8(FS).
+#[tokio::test]
+async fn a_memory_write_changes_what_a_thread_runs_at_the_same_stop() {
+    for fixture in BUILDS {
+        for first in [FirstRead::Snapshot, FirstRead::Evaluation] {
+            let context = format!("{fixture}, {first:?} first");
+            let mut scenario = stopped_unread(fixture).await;
+            match first {
+                FirstRead::Snapshot => {
+                    let before = stopping_activity(&mut scenario).await;
+                    assert!(
+                        matches!(before, Some(ThreadActivity::Task { .. })),
+                        "{context}: {before:?}"
+                    );
+                }
+                FirstRead::Evaluation => {
+                    let before = task_variable(&scenario).await;
+                    assert!(
+                        matches!(before, VariableState::Available { .. }),
+                        "{context}: {before:?}"
+                    );
+                }
+            }
+
+            let slot = VirtualAddress::new(thread_pointer(&scenario).await - 8);
+            let written = scenario
+                .operation("zero g", scenario.handle().write_memory(slot, &[0; 8]))
+                .await;
+            assert_eq!(written, 8, "{context}");
+
+            let after = stopping_activity(&mut scenario).await;
+            assert_eq!(after, Some(ThreadActivity::Idle), "{context}");
+            let task = task_variable(&scenario).await;
+            assert!(
+                matches!(
+                    task,
+                    VariableState::Unavailable(VariableUnavailableReason::NoTask)
+                ),
+                "{context}: {task:?}"
+            );
+            scenario.shutdown().await;
+        }
+    }
+}
+
+/// Moving a thread's thread pointer moves where its g is read from, though
+/// the assignment itself reads what the thread runs before it writes.
+#[tokio::test]
+async fn a_thread_pointer_write_changes_what_a_thread_runs_at_the_same_stop() {
+    for fixture in BUILDS {
+        let mut scenario = stopped_unread(fixture).await;
+        let expression = Expression::parse("$fs_base = 0x1000").expect("an expression");
+        scenario
+            .operation(
+                "assign $fs_base",
+                scenario.handle().evaluate_with(
+                    &expression,
+                    EvaluationMode::Assign,
+                    InspectionLimits::default(),
+                ),
+            )
+            .await;
+        assert_eq!(thread_pointer(&scenario).await, 0x1000, "{fixture}");
+
+        // Nothing is mapped at 0xff8, so the g cannot be read.
+        let after = stopping_activity(&mut scenario).await;
+        assert!(
+            matches!(&after, Some(ThreadActivity::Unknown(reason)) if reason.contains("unreadable")),
+            "{fixture}: {after:?}"
+        );
+        scenario.shutdown().await;
+    }
 }

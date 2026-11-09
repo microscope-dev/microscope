@@ -130,17 +130,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         // a task may no longer be where its runtime kept it.
         self.views.forget_scans();
 
-        if let Some(stop) = self
-            .session
-            .inferior()
-            .and_then(|inferior| inferior.public_stop.as_ref())
-        {
-            stop.task_locators.borrow_mut().clear();
-            stop.task_sets.borrow_mut().take();
-            stop.interpreted.borrow_mut().clear();
-            stop.memory.forget();
-        }
-
         if length > MAX_PUBLIC_MEMORY_WRITE {
             return Err(Error::MemoryWriteTooLarge {
                 requested: length,
@@ -149,13 +138,29 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        write_logical_memory_with(
+        let published = match inferior.public_stop.as_mut() {
+            Some(stop) => {
+                stop.caches.after_memory_write();
+                true
+            }
+            None => false,
+        };
+
+        let written = write_logical_memory_with(
             &mut inferior.breakpoints,
             address,
             bytes,
             |word| self.ptrace.read_word(pid, word),
             |word, value| self.ptrace.write_word(pid, word, value),
-        )
+        );
+
+        // Even a failed write may have changed the words before it, and a
+        // client reads the stop again only once its revision moves on.
+        if published {
+            self.bump_revision();
+        }
+
+        written
     }
 
     /// Writes the low bytes of a register of the innermost frame. A thread
@@ -163,12 +168,20 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// it was in would restart, which the kernel would otherwise do by
     /// moving it back.
     pub(super) fn write_register(
-        &self,
+        &mut self,
         pid: Pid,
         register: crate::RegisterId,
         bytes: &[u8],
     ) -> Result<()> {
         self.views.forget_scans();
+        if let Some(stop) = self
+            .session
+            .inferior_mut()
+            .and_then(|inferior| inferior.public_stop.as_mut())
+        {
+            stop.caches.after_register_write();
+        }
+
         let mut registers = self.ptrace.registers(pid)?;
         let slot = super::registers::x86_64_register_slot(&mut registers, register)
             .ok_or_else(|| backend_error(LinuxError::UnsupportedRegisterWrite))?;
@@ -178,11 +191,20 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         *slot = u64::from_le_bytes(value);
 
-        if super::registers::is_program_counter(register) {
+        let moves = super::registers::is_program_counter(register);
+        if moves {
             registers.orig_rax = u64::MAX;
         }
 
-        self.ptrace.set_registers(pid, registers)
+        self.ptrace.set_registers(pid, registers)?;
+
+        // A moved thread is published under a new stop, which moves the
+        // revision on itself.
+        if !moves {
+            self.bump_revision();
+        }
+
+        Ok(())
     }
 
     /// Moves a stopped thread, without running it, to resume at the one
@@ -298,10 +320,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         stop.selected_frames.clear();
         stop.returned = None;
         stop.presentations.insert(pid, presentation);
-        stop.task_locators.borrow_mut().clear();
-        stop.task_sets.borrow_mut().take();
-        stop.interpreted.borrow_mut().clear();
-        stop.memory.forget();
+
+        // The new stop reads everything again, as one the program ran to does.
+        stop.caches = super::StopCaches::default();
         let process_id = process_id(inferior.tgid);
         self.bump_revision();
 

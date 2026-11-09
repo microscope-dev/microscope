@@ -481,11 +481,14 @@ impl<P: InspectionOps> Controller<P> {
                 .public_stop
                 .as_ref()
                 .and_then(|stop| {
-                    let found = stop.task_sets.borrow();
+                    let found = stop.caches.task_sets.borrow();
                     found.as_ref().map(|found| found.sets.to_vec())
                 })
                 .unwrap_or_default(),
-            memory: inferior.public_stop.as_ref().map(|stop| &stop.memory),
+            memory: inferior
+                .public_stop
+                .as_ref()
+                .map(|stop| &stop.caches.memory),
             identities: OnceCell::new(),
             locals: &inferior.inspectors.locals,
         })
@@ -499,13 +502,13 @@ impl<P: InspectionOps> Controller<P> {
             return Arc::from([]);
         };
 
-        if let Some(found) = stop.task_sets.borrow().as_ref() {
+        if let Some(found) = stop.caches.task_sets.borrow().as_ref() {
             return Arc::clone(&found.gaps);
         }
 
         let (sets, gaps) = self.find_task_sets(inferior, stop.triggering_thread);
         let gaps: Arc<[Arc<str>]> = gaps.into();
-        *stop.task_sets.borrow_mut() = Some(TaskSets {
+        *stop.caches.task_sets.borrow_mut() = Some(TaskSets {
             sets: sets.into(),
             gaps: Arc::clone(&gaps),
         });
@@ -604,7 +607,7 @@ impl<P: InspectionOps> Controller<P> {
             locator: inferior
                 .public_stop
                 .as_ref()
-                .and_then(|stop| stop.task_locators.borrow().get(&task).copied()),
+                .and_then(|stop| stop.caches.task_locators.borrow().get(&task).copied()),
         }
     }
 
@@ -653,7 +656,8 @@ impl<P: InspectionOps> Controller<P> {
                 });
             gaps.extend(page.gaps);
             if let Some(stop) = inferior.public_stop.as_ref() {
-                stop.task_locators
+                stop.caches
+                    .task_locators
                     .borrow_mut()
                     .extend(page.value.tasks.iter().map(|task| {
                         (
@@ -849,12 +853,15 @@ impl<P: InspectionOps> Controller<P> {
             return self.read_thread_activity(inferior, pid);
         };
 
-        if let Some(known) = stop.activities.borrow().get(&pid) {
+        if let Some(known) = stop.caches.activities.borrow().get(&pid) {
             return known.clone();
         }
 
         let activity = self.read_thread_activity(inferior, pid);
-        stop.activities.borrow_mut().insert(pid, activity.clone());
+        stop.caches
+            .activities
+            .borrow_mut()
+            .insert(pid, activity.clone());
         activity
     }
 
@@ -904,11 +911,12 @@ impl<P: InspectionOps> Controller<P> {
         let Some(stop) = inferior.public_stop.as_ref() else {
             return Arc::from([]);
         };
-        if stop.labels.borrow().is_none() {
+        if stop.caches.labels.borrow().is_none() {
             let labels = self.read_thread_labels(inferior);
-            *stop.labels.borrow_mut() = Some(labels);
+            *stop.caches.labels.borrow_mut() = Some(labels);
         }
-        stop.labels
+        stop.caches
+            .labels
             .borrow()
             .as_ref()
             .and_then(|labels| labels.get(&pid).cloned())
@@ -1275,7 +1283,7 @@ mod identity_tests {
             Some(target)
         );
         assert_eq!(edge.reads.get(), 2);
-        memory.forget();
+        let memory = crate::runtime_model::StopMemory::default();
         assert_eq!(
             stop(&edge, &sites, Some(&memory)).target_thread_id(host),
             Some(target)

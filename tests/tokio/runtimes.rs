@@ -10,13 +10,14 @@ use std::fs::File;
 use std::process::Stdio;
 
 use microscope::{
-    BreakpointSpec, CoreDumpOptions, LaunchOptions, StopReason, TaskSnapshot, TaskState,
-    ThreadActivity, ThreadId,
+    BreakpointSpec, CoreDumpOptions, Evaluation, EvaluationMode, Expression, InferiorState,
+    InspectionLimits, LaunchOptions, RegisterRole, StackFrameId, StopContext, StopReason,
+    TaskSnapshot, TaskState, ThreadActivity, ThreadId,
 };
 
 use crate::invariants::checked;
 use crate::support::truth::Report;
-use crate::support::{Scenario, ScratchDir};
+use crate::support::{Scenario, ScratchDir, register_u64};
 use crate::workers::{activities, tasks};
 
 const BUILDS: [&str; 4] = [
@@ -273,4 +274,94 @@ async fn a_running_sets_task_runs_on_its_thread() {
 
         scenario.shutdown().await;
     }
+}
+
+/// The program stopped at its checkpoint with nothing read at the stop,
+/// which a checked scenario reads in full as the stop arrives.
+async fn stopped_unread(fixture: &str) -> Scenario {
+    let mut scenario = Scenario::launch(fixture);
+    scenario
+        .add_breakpoint_spec(BreakpointSpec::Function("truth_reached".into()))
+        .await;
+    let reason = scenario
+        .run_with_to_stop(LaunchOptions {
+            stdout: Some(Stdio::null()),
+            ..LaunchOptions::default()
+        })
+        .await;
+    assert!(
+        matches!(reason, StopReason::Breakpoint { .. }),
+        "{fixture}: {reason:?}"
+    );
+    scenario
+}
+
+/// Moves the stack and frame pointers of the thread that runs the second
+/// set down into its unused stack, where unwinding it no longer finds the
+/// frame that drives the set.
+async fn move_shared_stack(scenario: &mut Scenario) {
+    let snapshot = scenario.snapshot().await;
+    let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
+        panic!("not stopped");
+    };
+    let shared = snapshot
+        .threads
+        .iter()
+        .find(|thread| thread.name.as_deref() == Some("shared"))
+        .expect("the thread that runs the second set")
+        .id;
+    let view = scenario.handle().at(StopContext {
+        stop: stop_id,
+        execution: shared.into(),
+        frame: StackFrameId::INNERMOST,
+    });
+    let registers = scenario.operation("registers", view.registers()).await;
+    let moved = register_u64(&registers, RegisterRole::StackPointer) - 0x8000;
+
+    for register in ["$rsp", "$rbp"] {
+        let text = format!("{register} = {moved:#x}");
+        let expression = Expression::parse(&text).expect("an expression");
+        let assigned = scenario
+            .operation(
+                &text,
+                view.evaluate_with(
+                    &expression,
+                    EvaluationMode::Assign,
+                    InspectionLimits::default(),
+                ),
+            )
+            .await;
+        assert!(
+            matches!(assigned, Evaluation::Value { .. }),
+            "{text}: {assigned:?}"
+        );
+    }
+}
+
+/// The task numbers listed in order, and the gaps.
+async fn listing(scenario: &Scenario) -> (Vec<u64>, Vec<String>) {
+    let (tasks, gaps) = tasks(scenario, 4096).await;
+    let mut numbers = tasks.iter().map(|task| task.id.number).collect::<Vec<_>>();
+    numbers.sort_unstable();
+    (numbers, gaps)
+}
+
+/// A set's tasks are found from the stack of the thread that drives it, so
+/// moving that stack changes the list at the same stop. Listed before the
+/// move or not, the list is the one read only after it.
+#[tokio::test]
+async fn a_register_write_changes_the_tasks_found_on_a_threads_stack() {
+    let fixture = "tokio-runtimes-o0";
+
+    let mut scenario = stopped_unread(fixture).await;
+    move_shared_stack(&mut scenario).await;
+    let moved = listing(&scenario).await;
+    scenario.shutdown().await;
+
+    let mut scenario = stopped_unread(fixture).await;
+    let before = listing(&scenario).await;
+    assert_ne!(before, moved, "{fixture}: the move loses the set");
+    move_shared_stack(&mut scenario).await;
+    assert_eq!(listing(&scenario).await, moved, "{fixture}");
+    scenario.shutdown().await;
 }

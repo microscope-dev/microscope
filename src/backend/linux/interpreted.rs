@@ -95,7 +95,7 @@ impl<P: InspectionOps> Controller<P> {
     ) -> Option<Arc<Partial<InterpretedStacks>>> {
         let stop = inferior.public_stop.as_ref();
         if let Some(found) =
-            stop.and_then(|stop| stop.interpreted.borrow().get(&runtime.id).cloned())
+            stop.and_then(|stop| stop.caches.interpreted.borrow().get(&runtime.id).cloned())
         {
             return found;
         }
@@ -106,7 +106,8 @@ impl<P: InspectionOps> Controller<P> {
             })
             .map(Arc::new);
         if let Some(stop) = stop {
-            stop.interpreted
+            stop.caches
+                .interpreted
                 .borrow_mut()
                 .insert(runtime.id, found.clone());
         }

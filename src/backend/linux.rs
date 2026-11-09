@@ -929,7 +929,17 @@ struct PublicStop {
     /// Frames selected by clients; an absent context has its innermost
     /// frame selected.
     selected_frames: BTreeMap<ExecutionContext, StackFrameId>,
+    caches: StopCaches,
 
+    /// What the function a step out finished returned.
+    returned: Option<returns::Returned>,
+}
+
+/// What requests read of the stopped process and keep while it holds. A
+/// write changes the process without leaving the stop, so each kind of
+/// write names what it keeps: anything added here is forgotten by default.
+#[derive(Default)]
+struct StopCaches {
     /// What each thread runs for a language runtime, read once asked for.
     activities: RefCell<BTreeMap<Pid, Option<crate::ThreadActivity>>>,
 
@@ -937,25 +947,36 @@ struct PublicStop {
     /// when first asked, since each read numbers what threads run in.
     labels: RefCell<Option<BTreeMap<Pid, Arc<[crate::ThreadLabel]>>>>,
 
-    /// Where each runtime said it keeps the tasks it listed at this stop,
-    /// forgotten once the debugger writes memory.
+    /// Where each runtime said it keeps the tasks it listed at this stop.
     task_locators: RefCell<BTreeMap<crate::TaskId, u64>>,
 
     /// The sets of tasks the futures threads drive run, found once asked
-    /// for, and why some may be missing; forgotten once the debugger
-    /// writes memory.
+    /// for from the threads' stacks, and why some may be missing.
     task_sets: RefCell<Option<runtimes::TaskSets>>,
 
     /// The frames each runtime interprets on the threads, read once asked
-    /// for; forgotten once the debugger writes memory.
+    /// for.
     interpreted: interpreted::InterpretedCache,
 
-    /// The memory runtime models read at the stop; forgotten once the
-    /// debugger writes memory.
+    /// The memory runtime models read at the stop.
     memory: crate::runtime_model::StopMemory,
+}
 
-    /// What the function a step out finished returned.
-    returned: Option<returns::Returned>,
+impl StopCaches {
+    /// Any of it may have been read from memory.
+    fn after_memory_write(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Runtime models read threads' registers, and task sets come from the
+    /// stacks registers unwind, so only what memory alone gives is kept.
+    fn after_register_write(&mut self) {
+        *self = Self {
+            task_locators: std::mem::take(&mut self.task_locators),
+            memory: std::mem::take(&mut self.memory),
+            ..Self::default()
+        };
+    }
 }
 
 /// Stop identifiers are unique across every session in the process: a
@@ -3214,12 +3235,7 @@ impl PublicStop {
             selected: ExecutionContext::Thread(debug_thread_id(triggering_thread)),
             selected_thread: Some(triggering_thread),
             selected_frames: BTreeMap::new(),
-            activities: RefCell::default(),
-            labels: RefCell::default(),
-            task_locators: RefCell::default(),
-            task_sets: RefCell::default(),
-            interpreted: RefCell::default(),
-            memory: crate::runtime_model::StopMemory::default(),
+            caches: StopCaches::default(),
             returned: None,
         }
     }
