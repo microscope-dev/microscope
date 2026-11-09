@@ -1517,13 +1517,15 @@ fn perf_map_leaf(stack: &SampledStack) -> Option<usize> {
 
 /// Stops and reaps the owned fixture after collecting real leaf evidence.
 fn sample_perf_map(version: &str) -> (microscope::profiler::Recording, Option<i64>) {
+    let (reader, mut writer) = std::io::pipe().expect("a pipe");
     let mut command = Command::new(support::python::interpreter(version));
     command
         .args(["-I", "-X", "perf"])
         .arg(support::python::fixture("perf.py"))
-        .stdin(Stdio::null())
+        .stdin(reader)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    let mut released = false;
 
     // Startup and descheduling take an unbounded fraction of a fixed
     // wall interval under stress. Collect actual leaf evidence instead.
@@ -1536,8 +1538,21 @@ fn sample_perf_map(version: &str) -> (microscope::profiler::Recording, Option<i6
         &mut Watch {
             every: Duration::from_millis(50),
             publish: &mut |profile| {
-                let through = profile
-                    .stacks()
+                let stacks = profile.stacks();
+                // The map named early, so it was read before leaf runs.
+                if !released
+                    && (std::time::Instant::now() >= deadline
+                        || stacks.iter().any(|stack| {
+                            stack
+                                .functions
+                                .iter()
+                                .any(|function| function.starts_with("py::early:"))
+                        }))
+                {
+                    writer.write_all(b"\n").expect("release the program");
+                    released = true;
+                }
+                let through = stacks
                     .iter()
                     .filter(|stack| perf_map_leaf(stack).is_some())
                     .count();
