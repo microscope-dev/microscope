@@ -828,7 +828,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
           {formatPercent(behind, span)}
         </Stat>
       ) : null}
-      {summary.probes.events > 0 || probesLost > 0 ? (
+      {summary.probes.events > 0 || probesLost > 0 || summary.probeProblems.length > 0 ? (
         <Stat
           label="Probe events"
           title={[

@@ -774,6 +774,7 @@ fn record_zones(scratch: &ScratchDir) -> std::path::PathBuf {
     command.arg("zones").stdout(Stdio::null());
     let recording = record(command, &RecordOptions::default()).expect("record");
     assert!(recording.status.success());
+    crate::support::assert_probes_read(&recording.profile);
     let path = scratch.path().join("zones.usprof");
     recording.profile.write(&path).expect("write the profile");
     path
@@ -1024,6 +1025,7 @@ async fn a_zone_says_how_long_its_thread_was_off_its_cpu() {
     command.arg("nap").stdout(Stdio::null());
     let recording = record(command, &RecordOptions::default()).expect("record");
     assert!(recording.status.success());
+    crate::support::assert_probes_read(&recording.profile);
     let path = scratch.path().join("nap.usprof");
     recording.profile.write(&path).expect("write the profile");
 

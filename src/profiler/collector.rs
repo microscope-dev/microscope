@@ -61,6 +61,20 @@ pub struct Found {
     pub table: Arc<Table>,
 }
 
+/// What a process mapped and executed since the collector last asked.
+#[derive(Debug, Default)]
+pub struct FoundProbes {
+    /// Whether it executed a program, which ends the instrumentation found
+    /// before.
+    pub executed: bool,
+
+    /// Modules it found before it executed, which went unread.
+    pub skipped: Vec<Found>,
+
+    /// Modules with instrumentation it mapped since it last executed.
+    pub found: Vec<Found>,
+}
+
 /// What microscope knows of one ring.
 #[derive(Debug, Clone, Copy, Default)]
 struct Ring {
@@ -105,6 +119,9 @@ struct Instance {
     states: Vec<u64>,
     rings: BTreeMap<u64, Ring>,
     dropped: u64,
+
+    /// The heartbeat of the last drain that read every ring, if one has.
+    read_at: Option<u64>,
 }
 
 /// Reads one process's instrumentation.
@@ -152,7 +169,14 @@ impl Collector {
     /// Switches on the sites of every module the processor has found
     /// mapped since, then reads every ring.
     pub fn drain(&mut self, processor: &mut Processor) {
-        let (executed, found) = processor.found_probes(Pid::new(self.pid));
+        let FoundProbes {
+            executed,
+            skipped,
+            found,
+        } = processor.found_probes(Pid::new(self.pid));
+        for skipped in &skipped {
+            self.unread(processor, &skipped.path, &skipped.table, EXECUTED);
+        }
         if executed {
             self.executed(processor);
         }
@@ -166,7 +190,8 @@ impl Collector {
         }
 
         self.anchors.push(perf::tsc_anchor());
-        let heartbeat = monotonic().to_le_bytes();
+        let now = monotonic();
+        let heartbeat = now.to_le_bytes();
 
         for index in 0..self.instances.len() {
             if self.at(index).defines {
@@ -189,6 +214,7 @@ impl Collector {
                 self.gone = true;
                 return;
             }
+            instance_mut(&mut self.instances, index).read_at = Some(now);
         }
     }
 
@@ -196,6 +222,7 @@ impl Collector {
     /// process is still there to read.
     pub fn finish(&mut self, processor: &mut Processor, alive: bool) {
         if !alive || self.gone {
+            self.ended_unread(processor);
             return;
         }
 
@@ -220,6 +247,7 @@ impl Collector {
             .collect();
         self.drain(processor);
         if self.gone {
+            self.ended_unread(processor);
             return;
         }
 
@@ -237,7 +265,11 @@ impl Collector {
     /// wrote after cannot be read.
     fn executed(&mut self, processor: &mut Processor) {
         record!("probes: the process executed a program");
-        for instance in self.instances.drain(..) {
+        for instance in std::mem::take(&mut self.instances) {
+            if instance.read_at.is_none() {
+                let text = format!("{}: pid {} {EXECUTED}", instance.path, self.pid);
+                processor.probes_unread(&text);
+            }
             for ring in instance.rings.values() {
                 if let Some((_, row)) = ring.thread {
                     processor.probe_thread_ended(row);
@@ -267,6 +299,7 @@ impl Collector {
             states: Vec::new(),
             rings: BTreeMap::new(),
             dropped: 0,
+            read_at: None,
         };
 
         for site in &found.table.sites {
@@ -295,6 +328,54 @@ impl Collector {
         }
         if self.wants_on(index) {
             self.switch_on(index);
+        }
+    }
+
+    /// Says which modules' instrumentation went unread as the process
+    /// ended: those microscope never read, and those it last read so long
+    /// before the process exited that the program no longer waited to be
+    /// read. What a program wrote within a second of its exit without
+    /// waiting, as one that calls `_exit` does, is not counted.
+    fn ended_unread(&mut self, processor: &mut Processor) {
+        let FoundProbes { skipped, found, .. } = processor.found_probes(Pid::new(self.pid));
+        for skipped in &skipped {
+            self.unread(processor, &skipped.path, &skipped.table, EXECUTED);
+        }
+        for found in &found {
+            self.unread(processor, &found.path, &found.table, EXITED);
+        }
+
+        let exited = processor.exited_at(Pid::new(self.pid));
+        for instance in std::mem::take(&mut self.instances) {
+            let text = match (instance.read_at, exited) {
+                (None, _) => format!("{}: pid {} {EXITED}", instance.path, self.pid),
+                (Some(read), Some(exited))
+                    if exited.saturating_sub(read) >= abi::FRESH_NANOSECONDS =>
+                {
+                    format!(
+                        "{}: pid {} exited {} ms after microscope last read its \
+                         instrumentation, so what it wrote after that is unread",
+                        instance.path,
+                        self.pid,
+                        (exited - read) / 1_000_000
+                    )
+                }
+                _ => continue,
+            };
+            processor.probes_unread(&text);
+        }
+    }
+
+    /// Says that a module went unread, if the recording would have read
+    /// any of its sites: as [`Collector::adopt`] keeps it.
+    fn unread(&self, processor: &mut Processor, path: &str, table: &Table, why: &str) {
+        let records = table.abi >= 2
+            || table
+                .sites
+                .iter()
+                .any(|site| self.selection.selects(&site.name));
+        if records && self.selection != ProbeSelection::Off {
+            processor.probes_unread(&format!("{path}: pid {} {why}", self.pid));
         }
     }
 
@@ -811,6 +892,10 @@ fn filled(bytes: &[u8], read: usize) -> &[u8] {
 /// The process has gone: its memory can no longer be read.
 struct Gone;
 
+/// Why a module went unread, after its process's id.
+const EXITED: &str = "exited before microscope read its instrumentation";
+const EXECUTED: &str = "executed another program before microscope read its instrumentation";
+
 fn gone(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32)
 }
@@ -826,6 +911,7 @@ fn monotonic() -> u64 {
 mod tests {
     use super::*;
     use crate::debug_info::DebugFileSearch;
+    use crate::profiler::probes::SiteRecord;
     use crate::profiler::record;
 
     /// Perf can report a worker's exit before its ring is first read.
@@ -893,6 +979,7 @@ mod tests {
                     states: Vec::new(),
                     rings: BTreeMap::new(),
                     dropped: 0,
+                    read_at: None,
                 });
 
                 // Seeing an empty ring must not choose the thread's lifetime
@@ -1287,6 +1374,7 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
             states: Vec::new(),
             rings: BTreeMap::from([(0x2000, Ring::default()), (0x3000, Ring::default())]),
             dropped: 0,
+            read_at: None,
         });
         for ring in [0x2000, 0x3000] {
             collector.read_ring(&mut processor, 0, ring);
@@ -1298,6 +1386,169 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
                 .builder()
                 .account(AccountKind::ProbeMalformed as u32),
             0
+        );
+    }
+
+    /// A collector of `pid`, a process that has exited, holding one module
+    /// read last at each of `reads`, `None` for never.
+    fn collector_of(pid: u32, reads: &[Option<u64>]) -> Collector {
+        let mut collector =
+            Collector::new(pid, ProbeSelection::All, std::time::Duration::from_secs(1));
+        for (module, &read_at) in reads.iter().enumerate() {
+            collector.instances.push(Instance {
+                control: 0x1000,
+                module: u32::try_from(module).expect("a few modules"),
+                path: format!("/m{module}").into(),
+                defines: false,
+                defined: 0,
+                full: false,
+                on: read_at.is_some(),
+                sites: HashMap::default(),
+                states: vec![0x2000],
+                rings: BTreeMap::new(),
+                dropped: 0,
+                read_at,
+            });
+        }
+
+        collector
+    }
+
+    /// A process of its own, which has exited and been reaped, so that
+    /// nothing reads another's memory.
+    fn exited_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("a process");
+        child.wait().expect("its exit");
+        child.id()
+    }
+
+    /// The probe problems a processor holds, in order.
+    fn problems(processor: Processor) -> Vec<String> {
+        let profile = crate::profiler::Profile {
+            capture: processor.finish(),
+        };
+        profile
+            .probe_problems()
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect()
+    }
+
+    /// A program waits at its exit at most a second after microscope last
+    /// read it, so what it wrote is unread only from a second on; a module
+    /// never read is unread whenever its process exited.
+    #[test]
+    fn instrumentation_goes_unread_once_its_exit_no_longer_waits() {
+        let pid = exited_pid();
+        let exit = 10_000_000_000_u64;
+        let second = abi::FRESH_NANOSECONDS;
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let process = Pid::new(pid);
+        processor.builder().process(process, 1_000);
+        processor
+            .builder()
+            .process_exit(process, exit.cast_signed());
+
+        let mut collector =
+            collector_of(pid, &[Some(exit - second + 1), Some(exit - second), None]);
+        collector.finish(&mut processor, false);
+
+        assert_eq!(
+            processor
+                .builder()
+                .account(AccountKind::ProbesUnread as u32),
+            2
+        );
+        assert_eq!(
+            problems(processor),
+            [
+                format!(
+                    "/m1: pid {pid} exited 1000 ms after microscope last read its \
+                     instrumentation, so what it wrote after that is unread"
+                ),
+                format!("/m2: pid {pid} exited before microscope read its instrumentation"),
+            ]
+        );
+    }
+
+    /// Without its exit's time, as when the kernel dropped it, a module
+    /// microscope read is not said to be unread; one it never read is.
+    #[test]
+    fn a_read_module_is_not_unread_when_its_exit_time_is_unknown() {
+        let pid = exited_pid();
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let mut collector = collector_of(pid, &[Some(1), None]);
+        collector.finish(&mut processor, false);
+
+        assert_eq!(
+            problems(processor),
+            [format!(
+                "/m1: pid {pid} exited before microscope read its instrumentation"
+            )]
+        );
+    }
+
+    /// A program that executes another leaves the modules microscope never
+    /// read unread, and those it read as they were.
+    #[test]
+    fn a_module_never_read_before_an_exec_is_unread() {
+        let pid = exited_pid();
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let mut collector = collector_of(pid, &[Some(1), None]);
+        collector.executed(&mut processor);
+
+        assert!(collector.instances.is_empty());
+        assert_eq!(
+            processor
+                .builder()
+                .account(AccountKind::ProbesUnread as u32),
+            1
+        );
+        assert_eq!(
+            problems(processor),
+            [format!(
+                "/m1: pid {pid} executed another program before microscope read its \
+                 instrumentation"
+            )]
+        );
+    }
+
+    /// A module none of whose sites the recording selects records nothing,
+    /// so it is not unread; one that may define sites as it runs might.
+    #[test]
+    fn a_module_the_recording_reads_nothing_of_is_not_unread() {
+        let site = SiteRecord {
+            key: 1,
+            kind: abi::SITE_ZONE,
+            line: 1,
+            name: "other".into(),
+            file: "app.rs".into(),
+            state: 0x10,
+        };
+        let table = |abi| Table {
+            control: 0,
+            abi,
+            sites: vec![site.clone()],
+        };
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let named = Collector::new(
+            1,
+            ProbeSelection::Named(vec!["zone*".into()]),
+            std::time::Duration::from_secs(1),
+        );
+        named.unread(&mut processor, "/static", &table(1), EXITED);
+        named.unread(&mut processor, "/defines", &table(2), EXITED);
+        let all = Collector::new(1, ProbeSelection::All, std::time::Duration::from_secs(1));
+        all.unread(&mut processor, "/all", &table(1), EXITED);
+
+        assert_eq!(
+            problems(processor),
+            [
+                format!("/defines: pid 1 {EXITED}"),
+                format!("/all: pid 1 {EXITED}"),
+            ]
         );
     }
 }

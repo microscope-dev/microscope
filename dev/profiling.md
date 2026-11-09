@@ -742,6 +742,24 @@ for a recorder that stopped reading. A malformed table or record is counted
 as malformed. The decoder still reads ABI
 1, which has no table.
 
+An armed program that exits waits at most `EXIT_WAIT_NANOSECONDS` for
+microscope to read it, and only while its heartbeat is younger than
+`FRESH_NANOSECONDS`. So a program can exit with records nobody read, and the
+collector counts each such module as `AccountKind::ProbesUnread`, with a probe
+problem naming the pid: one it never read, whether the process exited or
+executed another program first, and one whose process exited a second or more
+after the heartbeat of its last read, by the process's exit record. The SDK
+waited and gave up then, or never waited, and either way its last records are
+lost. A process that exits without waiting within a second of a read, as one
+killed or calling `_exit` does, is not counted: it loses at most a drain's
+worth, and nothing distinguishes it from one that wrote nothing.
+
+A development build holds the debug-information load of every module named
+`NAME` while `$MICROSCOPE_TEST_HOLD_LOADS/NAME.hold` exists, and writes
+`NAME.held` there as it begins to wait. Tests use it to make microscope as
+slow to load a module as they need, without a sleep: the unread-probe tests in
+`tests/cli.rs` hold a load until the program has exited.
+
 The SDK's `c` feature exports C entry points to run-time sites
 (`sdk/rust-probes/src/c.rs`), which the Python package in `sdk/python` loads
 with ctypes from the SDK built as a cdylib. A site is the pointer

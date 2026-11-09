@@ -2603,6 +2603,18 @@ const stats = () =>
       `${stat.querySelector(".stat-label")?.textContent}: ${stat.querySelector(".stat-value")?.textContent}`,
   );
 
+it("warns of instrumentation that went unread though no event was read", async () => {
+  const problem = "/bin/app: pid 7 exited before microscope read its instrumentation";
+  const summary = summaryOf({ probeProblems: [{ time: 0, text: problem }] });
+  const server = await mountPage(summary, true);
+  server.answer(await server.next("profile"), summary);
+  await expect.element(page.getByText("Probe events")).toBeVisible();
+  expect(stats()).toContain("Probe events: 0, lost 0");
+  const stat = document.querySelector("[data-testid=accounting] .stat:has(.warn)");
+  expect(stat?.querySelector(".stat-label")?.textContent).toBe("Probe events");
+  expect(stat?.getAttribute("title") ?? "").toContain(problem);
+});
+
 it("leads with what was recorded, and shows only the losses there were", async () => {
   const thread = { pid: 1, samples: 1, weight: 1, zones: 0, blocked: 0, preempted: 0 };
   const summary = summaryOf({

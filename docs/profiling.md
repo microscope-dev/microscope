@@ -467,6 +467,21 @@ the profile reports attempts beyond that limit. Each distinct name is a
 separate site. Put changing values, such as request IDs, in label values rather
 than site names.
 
+A program that exits while microscope reads it waits at most one second for
+its last marks to be read. Marks microscope did not read are lost, and the
+recording says so as it ends, in `report`, and in the browser's probe events:
+
+- `pid N exited before microscope read its instrumentation`: the program
+  exited before microscope found it, so none of its marks were read.
+- `pid N executed another program before microscope read its instrumentation`:
+  the same, for a program that executed another.
+- `pid N exited M ms after microscope last read its instrumentation`: microscope
+  was busy for more than the program's one-second wait, so the marks it made
+  after that read are lost.
+
+Marks a program makes in the moment before it exits without waiting, as a
+process killed by a signal or one that calls `_exit` does, are not counted.
+
 After the summary, `report` shows:
 
 | Table | Contents |

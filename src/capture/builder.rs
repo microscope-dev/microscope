@@ -197,6 +197,12 @@ impl CaptureBuilder {
         process
     }
 
+    /// When the last process `pid` named exited, if it has.
+    pub fn process_end(&self, pid: Pid) -> Option<i64> {
+        let process = *self.ended_processes.get(&pid)?.last()?;
+        Some(own(&self.processes, process).end.get())
+    }
+
     /// Names a process, as when it execs.
     pub fn process_name(&mut self, process: u32, name: &str) {
         let name = self.string(name);

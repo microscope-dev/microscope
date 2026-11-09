@@ -858,6 +858,9 @@ fn report_losses(profile: &Profile) {
     if let Some(behind) = behind(profile) {
         eprintln!("microscope: {behind}");
     }
+    for (_, problem) in profile.probe_problems() {
+        eprintln!("microscope: {problem}");
+    }
     for note in debug_information_notes(profile) {
         eprintln!("microscope: {note}");
     }

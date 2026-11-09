@@ -12,7 +12,7 @@ use std::sync::Arc;
 use foldhash::HashMap;
 
 use super::calls::Branch;
-use super::collector::Found;
+use super::collector::{Found, FoundProbes};
 use super::frame_pointers::{CallSites, call_sites};
 use super::interpreted::{self, Interpreted, Sampled, Walked};
 use super::jit::{Jit, JitCode, Stale};
@@ -401,10 +401,11 @@ pub struct Processor {
 
     /// Each process's modules with instrumentation, once mapped since it
     /// last executed a program, those the collector has not taken yet, and
-    /// the processes that executed one since the collector last asked.
+    /// the processes that executed one since the collector last asked,
+    /// with the modules it found but did not take before they went.
     probes_mapped: BTreeSet<(Pid, usize)>,
     probes_found: Vec<(Pid, Found)>,
-    probes_executed: BTreeSet<Pid>,
+    probes_executed: BTreeMap<Pid, Vec<Found>>,
 
     /// The mappings of each process read after a loss, by the time they
     /// were read, which take the place of the records lost once every
@@ -493,7 +494,7 @@ impl Processor {
             probes_found: Vec::new(),
             lost_mappings: std::collections::VecDeque::new(),
             live_unmapped: std::collections::VecDeque::new(),
-            probes_executed: BTreeSet::new(),
+            probes_executed: BTreeMap::new(),
             stacks: Stacks::default(),
             triggered: false,
             symbols_later: false,
@@ -989,9 +990,7 @@ impl Processor {
 
                     // Its instrumentation went with it; the new program's
                     // is found as it maps.
-                    self.probes_mapped.retain(|(process, _)| *process != pid);
-                    self.probes_found.retain(|(process, _)| *process != pid);
-                    self.probes_executed.insert(pid);
+                    self.probes_executed_by(pid);
                     let process = self.builder.process(pid, at);
                     self.builder.process_name(process, &name);
                     self.builder.setting(&super::command_setting(process), "");
@@ -1297,6 +1296,8 @@ impl Processor {
         let module =
             self.builder
                 .module(&path.to_string_lossy(), build_id.as_deref(), digest, size);
+        #[cfg(debug_assertions)]
+        hold_load(path);
         let loaded = data.and_then(|data| {
             if self.debug_loading == DebugLoading::AfterCollection && path.is_absolute() {
                 crate::debug_info::load_profile_module_bytes(path, &data, id, &self.search).ok()
@@ -2452,20 +2453,46 @@ impl Processor {
         }
     }
 
-    /// Whether process `pid` has executed a program since last asked,
-    /// which ends the instrumentation found before, and the modules with
-    /// instrumentation it has mapped since then.
-    pub fn found_probes(&mut self, pid: Pid) -> (bool, Vec<Found>) {
-        let executed = self.probes_executed.remove(&pid);
+    /// Forgets the instrumentation the program process `pid` replaced
+    /// held, keeping what the collector never took to say it went unread.
+    fn probes_executed_by(&mut self, pid: Pid) {
+        self.probes_mapped.retain(|(process, _)| *process != pid);
+        let (gone, kept) = std::mem::take(&mut self.probes_found)
+            .into_iter()
+            .partition(|(process, _)| *process == pid);
+        self.probes_found = kept;
+        self.probes_executed
+            .entry(pid)
+            .or_default()
+            .extend(gone.into_iter().map(|(_, found)| found));
+    }
+
+    /// What process `pid` has mapped and executed since last asked.
+    pub fn found_probes(&mut self, pid: Pid) -> FoundProbes {
+        let skipped = self.probes_executed.remove(&pid);
         let (found, others) = std::mem::take(&mut self.probes_found)
             .into_iter()
             .partition(|(process, _)| *process == pid);
         self.probes_found = others;
 
-        (
-            executed,
-            found.into_iter().map(|(_, found)| found).collect(),
-        )
+        FoundProbes {
+            executed: skipped.is_some(),
+            skipped: skipped.unwrap_or_default(),
+            found: found.into_iter().map(|(_, found)| found).collect(),
+        }
+    }
+
+    /// When process `pid` exited, on the recording's clock, if it has.
+    pub fn exited_at(&self, pid: Pid) -> Option<u64> {
+        self.builder
+            .process_end(pid)
+            .and_then(|end| u64::try_from(end).ok())
+    }
+
+    /// Says that a module's instrumentation was not read to its end.
+    pub fn probes_unread(&mut self, text: &str) {
+        self.builder.count(AccountKind::ProbesUnread as u32, 1);
+        self.probe_problem(text);
     }
 
     /// The row of a module's site.
@@ -3298,6 +3325,36 @@ pub fn truncation_counts(capture: &Capture) -> Vec<(Truncation, u64)> {
 
 pub use crate::backend::perf::sys::thread_cpu;
 
+/// In development builds, a directory where a file `NAME.hold` holds the
+/// debug-information load of every module whose file is named `NAME` until
+/// the file is removed, so that a test can make a load as slow as it needs.
+/// microscope writes `NAME.held` there as the load begins to wait.
+#[cfg(debug_assertions)]
+const HOLD_LOADS: &str = "MICROSCOPE_TEST_HOLD_LOADS";
+
+/// Waits while the test that set [`HOLD_LOADS`] holds `path`'s load, for at
+/// most a minute, so that a failed test can't hang the recording.
+#[cfg(debug_assertions)]
+fn hold_load(path: &std::path::Path) {
+    let (Some(directory), Some(name)) = (std::env::var_os(HOLD_LOADS), path.file_name()) else {
+        return;
+    };
+
+    let directory = std::path::Path::new(&directory);
+    let name = name.to_string_lossy();
+    let hold = directory.join(format!("{name}.hold"));
+    if !hold.exists() {
+        return;
+    }
+
+    record!("record: the test holds the load of {}", path.display());
+    let _ = std::fs::write(directory.join(format!("{name}.held")), b"");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while hold.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4009,10 +4066,10 @@ mod tests {
             time: 2_000,
         });
         processor.process(comm(3_000));
-        let early = processor.found_probes(pid).1.len();
+        let early = processor.found_probes(pid).found.len();
 
         processor.ingest(&[], None);
-        let found = processor.found_probes(pid).1;
+        let found = processor.found_probes(pid).found;
         let mapped = processor.processes[&pid].mapped.len();
 
         processor.process(decode::Record::Lost {
@@ -4021,7 +4078,7 @@ mod tests {
         });
         processor.ingest(&[], None);
         let again = (
-            processor.found_probes(pid).1.len(),
+            processor.found_probes(pid).found.len(),
             processor.processes[&pid].mapped.len(),
         );
 

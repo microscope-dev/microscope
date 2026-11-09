@@ -914,6 +914,18 @@ impl Scenario {
     }
 }
 
+/// Fails, saying why, unless microscope read the program's instrumentation
+/// to its end. A test whose program exited before microscope read it would
+/// otherwise fail on the zones it lacks, saying nothing of the cause.
+pub fn assert_probes_read(profile: &microscope::profiler::Profile) {
+    let unread = profile.probe_counts().unread;
+    assert!(
+        unread == 0,
+        "{unread} modules' instrumentation went unread: {:?}",
+        profile.probe_problems()
+    );
+}
+
 /// Waits until `condition`, a fact outside the debugger such as `/proc`,
 /// holds, failing with `what` at the event deadline.
 pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {

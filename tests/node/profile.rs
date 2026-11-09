@@ -1589,6 +1589,7 @@ fn the_node_package_records_what_the_program_marks() {
     assert!(recording.status.success(), "{}", recording.status);
 
     let profile = recording.profile;
+    crate::support::assert_probes_read(&profile);
     let counts = profile.probe_counts();
     assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
 

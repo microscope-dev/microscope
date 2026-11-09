@@ -24,6 +24,11 @@
 //! - `records`: for each name a line gives, a zone's site of that name,
 //!   one zone of it, and a line saying it was recorded. Recording every
 //!   site switches each on as it is defined.
+//! - `hasty`: prints its pid, switches itself on as a program a recording
+//!   starts does, records a zone, and exits without waiting for microscope.
+//! - `late PATH`: waits until microscope listens, prints its pid, records a
+//!   zone, loads the shared library at PATH, and says `MAPPED`; then, once a
+//!   line arrives, records another zone and exits.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -56,6 +61,10 @@ fn main() {
         defined();
         return;
     }
+    if arguments[1] == "hasty" {
+        hasty();
+        return;
+    }
     wait_until_found();
     match arguments[1].as_str() {
         "zones" => zones(),
@@ -72,6 +81,7 @@ fn main() {
             std::thread::sleep(Duration::from_millis(30));
         }
         "exiting" => exiting(),
+        "late" => late(&arguments[2]),
         "cost-on" => cost(count()),
         mode => panic!("unknown mode {mode}"),
     }
@@ -265,6 +275,40 @@ fn exiting() {
     drop(site.zone());
     println!("DONE");
     std::io::stdout().flush().expect("flush");
+}
+
+/// A program that switches itself on, as one `microscope record` starts
+/// does, records, and exits before microscope may have found it.
+fn hasty() {
+    println!("PID {}", std::process::id());
+    std::io::stdout().flush().expect("flush");
+    assert!(microscope_probes::listening(), "the program did not arm");
+    drop(zone!("hasty"));
+}
+
+/// Loads the shared library at `path`, which microscope reads the debug
+/// information of, between two zones; the second waits for a line.
+fn late(path: &str) {
+    println!("PID {}", std::process::id());
+    drop(zone!("before"));
+
+    let path = std::ffi::CString::new(path).expect("a path");
+    // SAFETY: the library's constructors are the test's own, and it is
+    // never closed.
+    let library = unsafe { dlopen(path.as_ptr(), RTLD_NOW) };
+    assert!(!library.is_null(), "dlopen failed");
+    println!("MAPPED");
+    std::io::stdout().flush().expect("flush");
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).expect("a line");
+    drop(zone!("after"));
+}
+
+const RTLD_NOW: i32 = 2;
+
+unsafe extern "C" {
+    fn dlopen(path: *const std::ffi::c_char, flags: i32) -> *mut u8;
 }
 
 fn spin(rounds: u64) -> u64 {

@@ -219,6 +219,7 @@ fn convert_writes_instrumentation_as_a_chrome_trace() {
         .output()
         .expect("run microscope record");
     assert!(recorded.status.success());
+    assert_probes_read(&recorded);
     let trace = scratch.path().join("zones.json");
     assert!(
         microscope(&[
@@ -267,6 +268,7 @@ fn report_lists_the_programs_messages_and_each_threads_zones() {
         .output()
         .expect("run microscope record");
     assert!(recorded.status.success(), "{recorded:?}");
+    assert_probes_read(&recorded);
     let profile = profile.to_string_lossy();
     let report = assert_success(microscope(&["report", &profile]));
     let block = |heading: &str| -> Vec<Vec<String>> {
@@ -338,6 +340,140 @@ fn report_lists_the_programs_messages_and_each_threads_zones() {
         );
         assert!(first <= last && inside <= last - first + 0.001, "{report}");
     }
+}
+
+/// `microscope record` of the probes fixture with `arguments`, while the
+/// test holds the debug-information load of the module named `held`: the
+/// running recording, and the program's output.
+fn record_probes_held(
+    scratch: &support::ScratchDir,
+    held: &str,
+    arguments: &[&std::ffi::OsStr],
+) -> (Child, BufReader<std::process::ChildStdout>) {
+    fs::write(scratch.path().join(format!("{held}.hold")), "").expect("hold the load");
+    let mut child = microscope_command()
+        .args(["record", "-o"])
+        .arg(scratch.path().join("held.usprof"))
+        .arg("--")
+        .arg(fixture("build/test-programs/probes"))
+        .args(arguments)
+        .env("MICROSCOPE_TEST_HOLD_LOADS", scratch.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start microscope record");
+    let stdout = BufReader::new(child.stdout.take().expect("the program's output"));
+
+    (child, stdout)
+}
+
+/// Fails, with what microscope said, if a recording left a program's
+/// instrumentation unread, as it says as the recording ends.
+fn assert_probes_read(recorded: &Output) {
+    let stderr = String::from_utf8_lossy(&recorded.stderr);
+    assert!(
+        !stderr.contains("microscope read its instrumentation")
+            && !stderr.contains("microscope last read its instrumentation"),
+        "{stderr}"
+    );
+}
+
+/// The next line the program printed, which must be there.
+fn next_line(output: &mut BufReader<std::process::ChildStdout>) -> String {
+    let mut line = String::new();
+    output.read_line(&mut line).expect("read the program");
+    assert!(!line.is_empty(), "the program ended its output early");
+    line.trim_end().to_owned()
+}
+
+/// Lets the held load go once the program has exited, then reports the
+/// recording: what microscope said as it ended, and the profile's report.
+fn release_held_after_exit(
+    scratch: &support::ScratchDir,
+    held: &str,
+    pid: u32,
+    child: Child,
+) -> (String, String) {
+    support::wait_until("microscope holds the load", || {
+        scratch.path().join(format!("{held}.held")).exists()
+    });
+    support::wait_until("the program exits", || {
+        matches!(process_state(pid), None | Some('Z'))
+    });
+    fs::remove_file(scratch.path().join(format!("{held}.hold"))).expect("release the load");
+
+    let output = child.wait_with_output().expect("wait for microscope");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    let profile = scratch.path().join("held.usprof");
+    let report = assert_success(microscope(&["report", &profile.to_string_lossy()]));
+
+    (stderr, report)
+}
+
+/// A program that exits before microscope found its instrumentation lost
+/// what it recorded, and the recording says so as it ends and in its
+/// report, rather than showing no zones.
+#[test]
+fn a_program_that_exits_before_its_instrumentation_is_read_is_reported() {
+    let scratch = support::ScratchDir::new("cli-probes-unread");
+    let (child, mut output) = record_probes_held(&scratch, "probes", &["hasty".as_ref()]);
+    let pid: u32 = next_line(&mut output)
+        .strip_prefix("PID ")
+        .and_then(|pid| pid.parse().ok())
+        .expect("the program's pid");
+
+    let (stderr, report) = release_held_after_exit(&scratch, "probes", pid, child);
+    let said = format!("pid {pid} exited before microscope read its instrumentation");
+    assert!(stderr.contains(&said), "{stderr}");
+    assert!(report.contains(&said), "{report}");
+}
+
+/// A program that exits while microscope is busy, after its exit has
+/// waited as long as it does, wrote records microscope never read, and the
+/// recording says how long before its exit it last read them.
+#[test]
+fn a_program_that_exits_long_after_its_last_read_is_reported() {
+    let scratch = support::ScratchDir::new("cli-probes-unread-tail");
+    let code = scratch.path().join("late-code.so");
+    fs::copy(fixture("build/test-programs/libelf-symbols-gcc.so"), &code)
+        .expect("copy a library to load");
+    let (mut child, mut output) = record_probes_held(
+        &scratch,
+        "late-code.so",
+        &["late".as_ref(), code.as_os_str()],
+    );
+    let pid: u32 = next_line(&mut output)
+        .strip_prefix("PID ")
+        .and_then(|pid| pid.parse().ok())
+        .expect("the program's pid");
+    assert_eq!(next_line(&mut output), "MAPPED");
+
+    support::wait_until("microscope holds the load", || {
+        scratch.path().join("late-code.so.held").exists()
+    });
+    let mut stdin = child.stdin.take().expect("the program's input");
+    writeln!(stdin, "go").expect("release the program");
+    drop(stdin);
+
+    let (stderr, report) = release_held_after_exit(&scratch, "late-code.so", pid, child);
+    let said = format!("pid {pid} exited ");
+    let line = stderr
+        .lines()
+        .find(|line| line.contains(&said))
+        .unwrap_or_else(|| panic!("nothing said of pid {pid}: {stderr}"));
+    let waited: u64 = line
+        .split_once(&said)
+        .and_then(|(_, rest)| rest.split_once(" ms after microscope last read"))
+        .and_then(|(ms, _)| ms.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"));
+    assert!(waited >= 1000, "{line}");
+    assert!(
+        line.ends_with("its instrumentation, so what it wrote after that is unread"),
+        "{line}"
+    );
+    assert!(report.contains(&said), "{report}");
 }
 
 /// report's reshaping flags apply in the order given, a bare flag among
@@ -6709,6 +6845,7 @@ fn python_report(
         .output()
         .expect("run microscope record");
     assert!(recorded.status.success(), "{recorded:?}");
+    assert_probes_read(&recorded);
     assert_success(microscope(&["report", &profile.to_string_lossy()]))
 }
 

@@ -555,6 +555,7 @@ fn the_python_package_records_what_the_program_marks() {
     assert!(recording.status.success(), "{}", recording.status);
 
     let profile = recording.profile;
+    crate::support::assert_probes_read(&profile);
     let counts = profile.probe_counts();
     assert!(!counts.lost() && counts.malformed == 0, "{counts:?}");
 
@@ -672,6 +673,7 @@ while not microscope.found():
     let recording = record(command, &RecordOptions::default()).expect("record");
     assert!(recording.status.success(), "{}", recording.status);
 
+    crate::support::assert_probes_read(&recording.profile);
     let zones = recording.profile.zones();
     for name in ["first", "second"] {
         let zone = zones.iter().find(|zone| zone.name == name);

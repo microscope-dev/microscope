@@ -82,6 +82,10 @@ pub struct ProbeCounts {
     /// Records, and rings, that broke the ABI.
     pub malformed: u64,
 
+    /// Modules whose instrumentation went unread as their process ended;
+    /// the profile's probe problems say which.
+    pub unread: u64,
+
     /// Values plotted.
     pub plotted: u64,
 }
@@ -105,7 +109,7 @@ impl ProbeCounts {
     /// Whether anything was lost.
     #[must_use]
     pub const fn lost(&self) -> bool {
-        self.overwritten + self.no_ring + self.interrupted + self.malformed > 0
+        self.overwritten + self.no_ring + self.interrupted + self.malformed + self.unread > 0
     }
 }
 
@@ -204,6 +208,7 @@ impl Profile {
             no_ring: account(AccountKind::ProbeNoRing),
             interrupted: account(AccountKind::ProbeInterrupted),
             malformed: account(AccountKind::ProbeMalformed),
+            unread: account(AccountKind::ProbesUnread),
             plotted: self.capture.plots.len() as u64,
         }
     }

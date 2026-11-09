@@ -611,6 +611,12 @@ pub enum AccountKind {
     /// Samples whose stack copy microscope cut short while it was behind
     /// processing, rather than turn sampling off.
     ShortenedStacks = 32,
+
+    /// Modules whose instrumentation microscope did not read to its end:
+    /// their process exited or executed another program before microscope
+    /// read them, or exited a second or more after microscope last read
+    /// them, when the program no longer waits to be read.
+    ProbesUnread = 33,
 }
 
 /// A count of something the views must show.

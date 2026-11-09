@@ -2782,6 +2782,7 @@ fn record_probes(arguments: &[&str], options: &RecordOptions) -> (Profile, Strin
         .stderr(Stdio::null());
     let recording = record(command, options).expect("record");
     assert!(recording.status.success(), "{}", recording.status);
+    support::assert_probes_read(&recording.profile);
     let mut printed = String::new();
     std::io::Read::read_to_string(&mut reader, &mut printed).expect("read what it printed");
 
@@ -2987,6 +2988,7 @@ fn a_programs_trigger_saves_the_window() {
     )
     .expect("record");
     assert!(recording.status.success(), "{}", recording.status);
+    support::assert_probes_read(&recording.profile);
     assert_eq!(saved.len(), 1);
     let markers = saved[0].program_markers();
     let triggers: Vec<&str> = markers
