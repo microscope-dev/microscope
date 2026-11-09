@@ -91,7 +91,7 @@ queue for an empty buffer under the lock and copies it after: copying 64 MiB
 under the lock took 9 to 20 ms, longer than a ring holds 16 busy threads'
 samples, and every one of those waits lost samples. Both buffers are reserved
 up front for the same reason. A reader that is never read from pauses instead
-of losing samples (`a_reader_that_falls_behind_pauses_sampling_instead_of_losing_samples`).
+of losing samples (`a_reader_far_behind_pauses_sampling_instead_of_losing_samples`).
 
 Breakpoint counters never pause for a full queue: that would miss calls without
 counting them as lost. At 64 MiB their reader waits for processing to take the
