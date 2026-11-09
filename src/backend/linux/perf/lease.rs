@@ -75,6 +75,10 @@ mod imp {
         let pool = POOL.get_or_init(|| {
             let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ring-lease");
             let pool = Pool::new(directory, user_ring_bytes()?);
+            #[cfg_attr(
+                not(debug_assertions),
+                expect(unused_variables, reason = "only recorded")
+            )]
             if let Err(error) = &pool {
                 record!("perf: no ring lease pool: {error}");
             }
