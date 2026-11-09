@@ -472,6 +472,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.refresh_thread_names();
         let load_bias = self.executable_load_bias(pid)?;
         self.load_main_image(load_bias)?;
+        let stack_start = self
+            .ptrace
+            .registers(pid)
+            .ok()
+            .map(|registers| registers.rsp);
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         let execution_id = inferior
@@ -484,6 +489,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let generation = inferior.watch.generation;
         let thread = inferior.thread_mut(pid)?;
         thread.expected = ExpectedStop::None;
+        thread.stack_start = stack_start;
 
         // A freshly executed image starts with empty debug registers.
         thread.armed = Some(generation);
@@ -803,9 +809,20 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.arm_new_thread(pid)
         };
 
+        let stack_start = if vanished {
+            None
+        } else {
+            self.ptrace
+                .registers(pid)
+                .ok()
+                .map(|registers| registers.rsp)
+        };
+
         if let Some(inferior) = self.session.inferior_mut() {
             let name = self.ptrace.thread_name(inferior.tgid, pid);
-            inferior.thread_mut(pid)?.name = name;
+            let thread = inferior.thread_mut(pid)?;
+            thread.name = name;
+            thread.stack_start = stack_start;
         }
 
         let (process_id, barrier_active, should_resume) = {
@@ -1374,6 +1391,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         survivor.stopped_at_breakpoint = None;
         survivor.trapped_at = None;
         survivor.awaiting_breakpoint = None;
+        survivor.stack_start = self
+            .ptrace
+            .registers(pid)
+            .ok()
+            .map(|registers| registers.rsp);
 
         // The execing thread takes over the leader's TID, whose exit the
         // kernel never reports.

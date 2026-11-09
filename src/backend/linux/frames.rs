@@ -410,8 +410,14 @@ impl<P: InspectionOps> Controller<P> {
             }))
         };
 
+        let mut dwarf =
+            self.caller_provider(inferior, &runtimes, root.reader(), registers, !after_call);
+        if root.thread().is_none() {
+            dwarf.stack_start = None;
+        }
+
         let mut provider = RoleCallerProvider {
-            dwarf: self.caller_provider(inferior, &runtimes, root.reader(), registers, !after_call),
+            dwarf,
             stacks,
             other: if root.thread().is_some() {
                 StackSegment::Thread
@@ -1824,8 +1830,11 @@ impl RoleCallerProvider<'_, '_> {
                     Some(Ok(Crossing::Resume(_) | Crossing::Continue(_))) if self.dispatched => {
                         CallerResult::Finished(UnwindTermination::Complete)
                     }
+                    // Past a switch, the frames are on a stack the thread
+                    // did not begin on.
                     Some(Ok(Crossing::Resume(registers))) => {
                         self.dwarf.registers = registers;
+                        self.dwarf.stack_start = None;
                         self.carried = None;
                         self.dispatched = false;
                         self.dwarf.caller(current)
@@ -1837,6 +1846,7 @@ impl RoleCallerProvider<'_, '_> {
 
                         self.dwarf.first = false;
                         self.dwarf.registers = registers;
+                        self.dwarf.stack_start = None;
                         self.carried = None;
                         self.dispatched = false;
 
@@ -1873,6 +1883,10 @@ pub(super) struct DwarfCallerProvider<'a> {
     pub(super) memory: PtraceMemory<'a>,
     pub(super) first: bool,
 
+    /// The stack pointer the thread began with, while the frames are on
+    /// the stack it began on; see [`DwarfCallerProvider::zero_return_address`].
+    pub(super) stack_start: Option<u64>,
+
     /// The code runtimes own as the process says, which keeps the
     /// runtime's frame-pointer convention: a frame there that no
     /// call-frame information describes is unwound by it.
@@ -1901,6 +1915,10 @@ impl<P: InspectionOps> Controller<P> {
                 pid,
             },
             first,
+            stack_start: inferior
+                .threads
+                .get(&pid)
+                .and_then(|thread| thread.stack_start),
             runtime_code: self
                 .runtime_process_code(inferior, runtimes, pid)
                 .into_iter()
@@ -1942,6 +1960,30 @@ impl DwarfCallerProvider<'_> {
     /// return address of zero, which ends the stack.
     fn lookup_address(&self, current: &FrameContext) -> Option<VirtualAddress> {
         frame_lookup_address(u32::from(!self.first), current)
+    }
+
+    /// How a stack ends at a frame whose return address is zero, with its
+    /// caller's stack pointer at `cfa`.
+    ///
+    /// A thread's creator may mark the end of its stack so, at the stack
+    /// pointer it starts the thread with. A zero below that, or below the
+    /// frame's own stack pointer, is no mark: no call writes one, so the
+    /// frame's rules found a slot that holds no return address, as in
+    /// memory the stack has not reached.
+    fn zero_return_address(&self, cfa: VirtualAddress) -> UnwindTermination {
+        let floor = self
+            .registers
+            .get(crate::unwind::RSP)
+            .into_iter()
+            .chain(self.stack_start)
+            .max();
+        if floor.is_none_or(|floor| cfa.get() > floor) {
+            return UnwindTermination::Complete;
+        }
+
+        UnwindTermination::InvalidCaller {
+            description: "the return address is zero, in the thread's own stack".into(),
+        }
     }
 
     /// The canonical frame address of `current`, from its own unwind rules.
@@ -2033,7 +2075,7 @@ impl CallerProvider for DwarfCallerProvider<'_> {
         };
 
         if instruction == 0 {
-            return CallerResult::Finished(UnwindTermination::Complete);
+            return CallerResult::Finished(self.zero_return_address(step.cfa));
         }
 
         if step.cfa.get() == current.cfa.map_or(0, VirtualAddress::get)

@@ -1337,6 +1337,13 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
         false
     }
 
+    /// Whether the program may have sets of tasks that only
+    /// [`Self::task_set`] finds, from the stacks of the threads that drive
+    /// them.
+    fn has_task_sets(&self) -> bool {
+        false
+    }
+
     /// The role of the runtime's frames that drive frames the native stack
     /// does not show, as a scheduler's `block_on` drives a future no task
     /// holds. A backtrace asks [`Self::driven`] only of frames in this role.

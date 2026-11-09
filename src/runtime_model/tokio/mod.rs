@@ -825,7 +825,11 @@ impl RuntimeModel for TokioRuntime {
     }
 
     fn may_run_task_set(&self, ty: crate::TypeReference) -> bool {
-        self.locals().is_ok_and(|locals| locals.is_some()) && may_hold_set(self.image.as_ref(), ty)
+        self.has_task_sets() && may_hold_set(self.image.as_ref(), ty)
+    }
+
+    fn has_task_sets(&self) -> bool {
+        self.locals().is_ok_and(|locals| locals.is_some())
     }
 
     fn task_entries(

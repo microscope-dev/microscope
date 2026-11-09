@@ -632,6 +632,17 @@ async fn assigning_the_frame_pointer_changes_the_backtrace_at_the_same_stop() {
     assert_eq!(scenario.snapshot().await.stop_id, stop);
     assert_eq!(after.frames[0].instruction, before.frames[0].instruction);
     assert_ne!(caller(&after).as_deref(), Some("main"), "{after:#?}");
+
+    // The frame now names a caller in memory below the stack pointer, which
+    // holds no frame, so the stack ends there without being whole.
+    assert_eq!(before.termination, microscope::UnwindTermination::Complete);
+    assert!(
+        matches!(
+            after.termination,
+            microscope::UnwindTermination::InvalidCaller { .. }
+        ),
+        "{after:#?}"
+    );
     scenario.shutdown().await;
 }
 

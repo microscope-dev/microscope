@@ -298,8 +298,8 @@ async fn stopped_unread(fixture: &str) -> Scenario {
 
 /// Moves the stack and frame pointers of the thread that runs the second
 /// set down into its unused stack, where unwinding it no longer finds the
-/// frame that drives the set.
-async fn move_shared_stack(scenario: &mut Scenario) {
+/// frame that drives the set. Returns the thread.
+async fn move_shared_stack(scenario: &mut Scenario) -> ThreadId {
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
         panic!("not stopped");
@@ -336,6 +336,8 @@ async fn move_shared_stack(scenario: &mut Scenario) {
             "{text}: {assigned:?}"
         );
     }
+
+    shared
 }
 
 /// The task numbers listed in order, and the gaps.
@@ -348,20 +350,29 @@ async fn listing(scenario: &Scenario) -> (Vec<u64>, Vec<String>) {
 
 /// A set's tasks are found from the stack of the thread that drives it, so
 /// moving that stack changes the list at the same stop. Listed before the
-/// move or not, the list is the one read only after it.
+/// move or not, the list is the one read only after it, which says that
+/// the thread's stack ends before the frame that drives the set.
 #[tokio::test]
 async fn a_register_write_changes_the_tasks_found_on_a_threads_stack() {
     let fixture = "tokio-runtimes-o0";
+    let says_lost = |(_, gaps): &(Vec<u64>, Vec<String>), shared: ThreadId| {
+        let named = format!("thread {shared}'s stack");
+        matches!(&gaps[..], [gap] if gap.starts_with(&named))
+    };
 
     let mut scenario = stopped_unread(fixture).await;
-    move_shared_stack(&mut scenario).await;
+    let shared = move_shared_stack(&mut scenario).await;
     let moved = listing(&scenario).await;
+    assert!(says_lost(&moved, shared), "{fixture}: {moved:?}");
     scenario.shutdown().await;
 
     let mut scenario = stopped_unread(fixture).await;
     let before = listing(&scenario).await;
-    assert_ne!(before, moved, "{fixture}: the move loses the set");
-    move_shared_stack(&mut scenario).await;
-    assert_eq!(listing(&scenario).await, moved, "{fixture}");
+    assert!(before.1.is_empty(), "{fixture}: {before:?}");
+    assert_ne!(before.0, moved.0, "{fixture}: the move loses the set");
+    let shared = move_shared_stack(&mut scenario).await;
+    let after = listing(&scenario).await;
+    assert_eq!(after.0, moved.0, "{fixture}");
+    assert!(says_lost(&after, shared), "{fixture}: {after:?}");
     scenario.shutdown().await;
 }

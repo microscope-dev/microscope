@@ -20,7 +20,7 @@ use crate::{
     AddressRange, ColumnNumber, Error, ExecutionContext, ImageAddress, InspectionUsage, LineNumber,
     LoadedModule, ModuleImage, RecordedPlace, Result, RuntimeId, SourceLocation, StackSegment,
     TaskCursor, TaskId, TaskLocation, TaskPage, TaskSnapshot, TaskState, ThreadActivity, ThreadId,
-    ThreadLabel, VirtualAddress,
+    ThreadLabel, UnwindTermination, VirtualAddress,
 };
 
 use super::activation::TaskStack;
@@ -560,6 +560,31 @@ impl<P: InspectionOps> Controller<P> {
                     continue;
                 }
             };
+
+            // Nor is one driven past where the stack could be unwound. A
+            // thread stopped in code no rules describe, as glibc's `clone3`
+            // between its system call and its return, is left out: every
+            // thread that starts another passes through there, and both
+            // stacks unwind whole a moment later.
+            let stopped_undescribed = matches!(
+                expanded.trace.termination,
+                UnwindTermination::NoUnwindInfo { address }
+                    if expanded.trace.frames.first().and_then(|frame| frame.instruction)
+                        == Some(address)
+            );
+            if expanded.trace.termination != UnwindTermination::Complete
+                && !stopped_undescribed
+                && runtimes.iter().any(|runtime| runtime.model.has_task_sets())
+            {
+                gaps.push(
+                    format!(
+                        "thread {}'s stack, where it may drive a local set, ends before its outermost frame: {}",
+                        debug_thread_id(pid),
+                        expanded.trace.termination
+                    )
+                    .into(),
+                );
+            }
 
             // A set that a future that cannot be read runs is not found.
             if let Some(unread) = expanded.trace.unfollowed.first()

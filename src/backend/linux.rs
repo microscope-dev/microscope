@@ -420,6 +420,11 @@ struct TraceThread {
 
     /// The thread's name as of its start or the last published stop.
     name: Option<Arc<str>>,
+
+    /// The stack pointer the thread began with, where its creator may have
+    /// marked the end of its stack. `None` for a thread whose start the
+    /// debugger did not see, as one it attached to.
+    stack_start: Option<u64>,
 }
 
 impl TraceThread {
@@ -440,6 +445,7 @@ impl TraceThread {
             stepping_call: false,
             inside_call: false,
             name: None,
+            stack_start: None,
         }
     }
 }

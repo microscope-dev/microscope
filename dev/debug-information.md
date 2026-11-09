@@ -406,6 +406,15 @@ stack ends as well as missing memory, missing registers, unsupported rules,
 cycles, and bounds. Keep the frames already established when the next one
 cannot be proven.
 
+A zero return address is how some code marks the end of a new thread's
+stack, at the stack pointer the thread starts with, which the debugger
+records when it sees the thread start. It ends a stack complete only where
+its caller would lie above that and above the frame's own stack pointer.
+Lower, the zero is in memory the thread's own frames use, where no call
+writes one, as when a stack pointer was moved into unused stack, so the walk
+ends with `InvalidCaller`. A thread whose start the debugger did not see,
+such as one it attached to, has only the second bound.
+
 A core dump can leave out a thread's stack while still listing it as saved.
 `gcore`, and a kernel that skips pages it cannot read, write such a range as
 a hole in a sparse file, which reads back as zeros, and a walk over zeros ends
