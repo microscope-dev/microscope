@@ -105,8 +105,8 @@ static int break_interpreter(int program) {
     return -1;
 }
 
-/* Executes the copy once the leader sleeps in pause, or after a deadline
- * without that. */
+/* Executes the copy once the leader sleeps in pause, failing if it never
+ * does within the deadline. */
 static void *replace_image(void *argument) {
     char *const arguments[] = {"true", NULL};
     char *const environment[] = {NULL};
@@ -116,7 +116,11 @@ static void *replace_image(void *argument) {
     if (program < 0 || (argument != NULL && break_interpreter(program) != 0)) {
         _exit(91);
     }
-    for (int tries = 0; tries < 30000 && !leader_paused(); tries++) {
+    for (int tries = 0; !leader_paused(); tries++) {
+        if (tries == 30000) {
+            fputs("thread-exec: the leader never slept in pause\n", stderr);
+            _exit(92);
+        }
         nanosleep(&wait, NULL);
     }
     fexecve(program, arguments, environment);
