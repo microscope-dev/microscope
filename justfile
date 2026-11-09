@@ -94,9 +94,11 @@ run *ARGS: build
 # differ in what the flight recorder compiles. Incremental checking halves the
 # release lint after an edit and leaves release builds as they are. The Rust
 # probe SDK is its own crate, with its own target directory. Unsafe code stays
-# in the files scripts/unsafe-sites.sh lists.
+# in the files scripts/unsafe-sites.sh lists, and tests sleep only where
+# scripts/test-sleeps.sh classes it.
 lint: deny vet
     ./scripts/unsafe-sites.sh
+    ./scripts/test-sleeps.sh
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
     CARGO_PROFILE_RELEASE_INCREMENTAL=true cargo clippy --release --all-targets --all-features -- -D warnings
