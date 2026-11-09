@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use microscope::{
-    ExitStatus, GroupEvent, GroupHandle, MemberNumber, MemberState, SourcePathMap, StopReason,
+    ExitStatus, GroupEvent, GroupHandle, InferiorState, MemberNumber, MemberState, SourcePathMap,
+    StopReason,
 };
 use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
 
@@ -155,6 +156,10 @@ impl Cli {
         }
     }
 
+    /// Waits until the group has seen the selected member's command end,
+    /// and reports what the group did meanwhile. When the command ended in
+    /// a stop, it waits for the group stop with that stop's id. An older
+    /// group stop that nobody read yet is printed as a notice instead.
     pub(super) async fn member_execution_end(
         &self,
         reason: &StopReason,
@@ -164,18 +169,25 @@ impl Cli {
             return Ok(());
         };
         let member = self.selected_member();
+
+        // Nothing else moves the member, so its current stop is the one
+        // the command ended at.
+        let stop = match self.debugger().snapshot().await?.inferior {
+            InferiorState::Stopped { stop_id, .. } if !matches!(reason, StopReason::Exited(_)) => {
+                Some(stop_id)
+            }
+            _ => None,
+        };
+
         let mut events = group.events.lock().await;
         loop {
             let event = events.recv().await?;
             match event {
                 GroupEvent::GroupStopped {
-                    member: stopped, ..
-                } if !matches!(reason, StopReason::Exited(_))
-                    && (group.handle.stops() == microscope::StopScope::Group
-                        || stopped == member) =>
-                {
-                    break;
-                }
+                    member: stopped,
+                    stop: reported,
+                    ..
+                } if stopped == member && Some(reported) == stop => break,
                 GroupEvent::MemberExited { member: ended, .. }
                 | GroupEvent::MemberWatched { member: ended, .. }
                     if ended == member =>
@@ -268,7 +280,7 @@ impl Cli {
             };
 
             match event {
-                GroupEvent::GroupStopped { member, reason } => break (member, reason),
+                GroupEvent::GroupStopped { member, reason, .. } => break (member, reason),
                 GroupEvent::MemberLost { member } => {
                     bail!(
                         "the session of [{member}] failed, so its process was released or killed"
@@ -503,5 +515,152 @@ impl MemberEvents {
         while let Ok((debugger, event)) = self.received.try_recv() {
             lines.record(&debugger, event, renderer);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use microscope::{
+        DebugFileOptions, FollowPolicy, GroupEvent, InferiorState, ProcessGroup, Program,
+    };
+    use tokio::sync::{broadcast, watch};
+
+    use super::super::{Cli, LaunchSettings, Renderers, config::Settings};
+
+    /// A CLI session of a group, driven by calling its commands directly,
+    /// with no terminal. The group's events reach the session through a
+    /// channel the test owns, so a test can add its own events to it.
+    /// `forwarded` counts the group stops copied into it so far.
+    struct Session {
+        cli: Cli,
+        group: ProcessGroup,
+        sender: broadcast::Sender<GroupEvent>,
+        forwarded: watch::Receiver<usize>,
+    }
+
+    impl Session {
+        fn of(program: &str) -> Self {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let program = Program::load(
+                root.join("build/test-programs").join(program),
+                &DebugFileOptions::default(),
+            )
+            .expect("load the program");
+            let group =
+                ProcessGroup::new(program, FollowPolicy::default()).expect("make the group");
+            let mut cli = Cli::new(
+                group.handle().root(),
+                Renderers::console(false, root.to_owned()),
+                Settings::defaults(root.to_owned()),
+                LaunchSettings::default(),
+            )
+            .with_group(group.handle(), microscope::SourcePathMap::default());
+
+            let (sender, received) = broadcast::channel(64);
+            let (count, forwarded) = watch::channel(0);
+            let mut events = group.handle().subscribe();
+            let forward = sender.clone();
+            tokio::spawn(async move {
+                while let Ok(event) = events.recv().await {
+                    let stop = matches!(event, GroupEvent::GroupStopped { .. });
+                    let _ = forward.send(event);
+                    if stop {
+                        count.send_modify(|count| *count += 1);
+                    }
+                }
+            });
+            #[expect(clippy::disallowed_types, reason = "held only across a receive")]
+            let received = tokio::sync::Mutex::new(received);
+            cli.group.as_mut().expect("a group session").events = received;
+
+            Self {
+                cli,
+                group,
+                sender,
+                forwarded,
+            }
+        }
+
+        async fn run(&self, line: &str) {
+            tokio::time::timeout(Duration::from_secs(10), self.cli.execute(line))
+                .await
+                .unwrap_or_else(|_| panic!("`{line}` did not finish"))
+                .unwrap_or_else(|error| panic!("`{line}` failed: {error:#}"));
+        }
+
+        /// Waits until `count` of the group's stops have reached the
+        /// session.
+        async fn forwarded(&mut self, count: usize) {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                self.forwarded.wait_for(|&forwarded| forwarded >= count),
+            )
+            .await
+            .expect("the group's stops reach the session")
+            .expect("the group runs");
+        }
+
+        /// The group stops the session received and no command read.
+        async fn unread_stops(&self) -> Vec<GroupEvent> {
+            let group = self.cli.group.as_ref().expect("a group session");
+            let mut events = group.events.lock().await;
+            std::iter::from_fn(|| events.try_recv().ok())
+                .filter(|event| matches!(event, GroupEvent::GroupStopped { .. }))
+                .collect()
+        }
+
+        async fn end(self) {
+            drop(self.cli);
+            tokio::time::timeout(Duration::from_secs(10), self.group.shutdown())
+                .await
+                .expect("end the group in time")
+                .expect("end the group");
+        }
+    }
+
+    /// A step waits for the group stop its own step made. An older group
+    /// stop that nothing read yet, like one the prompt did not get to
+    /// print, must not end it. If it did, the step's own stop would stay
+    /// unread, and the next command would take it as its own end.
+    #[tokio::test]
+    async fn a_step_ends_at_its_own_group_stop_not_an_older_one() {
+        let mut session = Session::of("basic");
+        session.run("break breakpoint_target").await;
+        session.run("run").await;
+        session.forwarded(1).await;
+        assert_eq!(session.unread_stops().await, [], "the run read its stop");
+
+        // A copy of the breakpoint stop, as if nothing read it yet.
+        let InferiorState::Stopped {
+            stop_id, reason, ..
+        } = session
+            .group
+            .handle()
+            .root()
+            .snapshot()
+            .await
+            .expect("the root's state")
+            .inferior
+        else {
+            panic!("the root is not at its breakpoint");
+        };
+        let stale = GroupEvent::GroupStopped {
+            member: 1,
+            stop: stop_id,
+            reason,
+        };
+        session.sender.send(stale).expect("send the stale stop");
+
+        session.run("stepi").await;
+        session.forwarded(2).await;
+        assert_eq!(
+            session.unread_stops().await,
+            [],
+            "the step ended at the old stop and left its own unread"
+        );
+
+        session.end().await;
     }
 }

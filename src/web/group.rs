@@ -369,7 +369,7 @@ impl Pump {
                     self.watch(member, debugger.subscribe());
                 }
             }
-            GroupEvent::GroupStopped { member, reason } => {
+            GroupEvent::GroupStopped { member, reason, .. } => {
                 self.stopped = Some(member);
                 // A pause stops no member in particular, so the selection
                 // stays unless its member is gone.
@@ -530,7 +530,7 @@ fn group_line(
             "process {process} executed {}, which microscope watches until it runs a program to debug",
             program.display()
         )),
-        GroupEvent::GroupStopped { member, reason }
+        GroupEvent::GroupStopped { member, reason, .. }
             if members.len() > 1 && *reason != StopReason::Pause =>
         {
             let stopped = members

@@ -87,9 +87,12 @@ pub enum GroupEvent {
         reason: String,
     },
 
-    /// A member stopped, and every other member is stopped too.
+    /// A member stopped, and every other member is stopped too. `stop` is
+    /// the member's stop, as its own session names it, so a client can
+    /// tell this stop from an earlier one with the same reason.
     GroupStopped {
         member: MemberNumber,
+        stop: crate::StopId,
         reason: StopReason,
     },
 
@@ -1258,6 +1261,7 @@ impl Driver {
     fn report(&self, stop: MemberStop) {
         self.emit(GroupEvent::GroupStopped {
             member: stop.member,
+            stop: stop.stop,
             reason: stop.reason,
         });
     }
@@ -1813,6 +1817,7 @@ mod tests {
             received.try_recv().expect("the group stop"),
             GroupEvent::GroupStopped {
                 member: 2,
+                stop: crate::StopId::new(1),
                 reason: breakpoint_stop(),
             }
         );
@@ -1887,6 +1892,7 @@ mod tests {
             next_group_stop(&mut driver, &mut received).await,
             GroupEvent::GroupStopped {
                 member: 1,
+                stop: stepped,
                 reason: StopReason::Step {
                     kind: crate::StepKind::Instruction,
                 },
@@ -1958,13 +1964,19 @@ mod tests {
         .await
         .expect("step the root");
         let stepped = next_group_stop(&mut driver, &mut received).await;
-        let step = GroupEvent::GroupStopped {
-            member: 1,
-            reason: StopReason::Step {
-                kind: crate::StepKind::Instruction,
-            },
-        };
-        assert_eq!(stepped, step);
+        assert!(
+            matches!(
+                stepped,
+                GroupEvent::GroupStopped {
+                    member: 1,
+                    stop,
+                    reason: StopReason::Step {
+                        kind: crate::StepKind::Instruction,
+                    },
+                } if stop != shown
+            ),
+            "{stepped:?}"
+        );
 
         // A continue reports no stop the root has left; it resumes the
         // root, which runs to its exit.
@@ -2177,6 +2189,7 @@ mod tests {
             received.try_recv().expect("the first group stop"),
             GroupEvent::GroupStopped {
                 member: 2,
+                stop: crate::StopId::new(1),
                 reason: StopReason::Pause,
             }
         );
@@ -2192,6 +2205,7 @@ mod tests {
                 GroupEvent::GroupStopped {
                     member: 1,
                     reason: StopReason::Breakpoint { .. },
+                    ..
                 }
             ),
             "{coincident:?}"

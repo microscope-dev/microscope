@@ -202,7 +202,7 @@ async fn releasing_a_launched_child_closes_only_its_preloads_inspector(entry: &s
         let member = tokio::time::timeout(Duration::from_secs(30), async {
                 loop {
                     match events.recv().await.expect("group event") {
-                        GroupEvent::GroupStopped { member, reason } => {
+                        GroupEvent::GroupStopped { member, reason, .. } => {
                             assert!(matches!(reason, StopReason::Breakpoint { .. }), "{entry}: {reason:?}");
                             break member;
                         }

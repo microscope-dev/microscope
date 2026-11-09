@@ -89,7 +89,7 @@ impl Group {
     async fn stop(&mut self) -> (MemberNumber, StopReason) {
         loop {
             match self.next().await {
-                GroupEvent::GroupStopped { member, reason } => return (member, reason),
+                GroupEvent::GroupStopped { member, reason, .. } => return (member, reason),
                 GroupEvent::GroupExited => panic!("the group exited; saw {:#?}", self.seen),
                 _ => {}
             }
@@ -102,7 +102,7 @@ impl Group {
         let mut stops = Vec::new();
         loop {
             match self.next().await {
-                GroupEvent::GroupStopped { member, reason } => {
+                GroupEvent::GroupStopped { member, reason, .. } => {
                     self.assert_all_stopped();
                     stops.push((member, reason));
                     self.inner.continue_all().await.expect("continue the group");

@@ -58,7 +58,7 @@ async fn a_child_interpreter_joins_its_parents_group() {
                 .unwrap_or_else(|_| panic!("{name}: an event in time; stopped {stopped:?}"))
                 .expect("events");
             match event {
-                GroupEvent::GroupStopped { member, reason } => {
+                GroupEvent::GroupStopped { member, reason, .. } => {
                     if matches!(reason, StopReason::Breakpoint { .. }) {
                         stopped.push(member);
                     }
@@ -129,7 +129,7 @@ async fn a_python_breakpoint_stops_in_a_child_interpreter() {
                     .expect("events");
                 seen.push(event.clone());
                 match event {
-                    GroupEvent::GroupStopped { member, reason } => {
+                    GroupEvent::GroupStopped { member, reason, .. } => {
                         if matches!(reason, StopReason::Breakpoint { .. }) {
                             stopped.push(member);
                         }
@@ -201,7 +201,7 @@ async fn a_python_breakpoint_stops_in_a_pools_workers() {
                 .expect("events");
             seen.push(event.clone());
             match event {
-                GroupEvent::GroupStopped { member, reason } => {
+                GroupEvent::GroupStopped { member, reason, .. } => {
                     if matches!(reason, StopReason::Breakpoint { .. }) {
                         stopped.push(member);
                     }
