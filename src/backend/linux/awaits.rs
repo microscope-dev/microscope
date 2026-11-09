@@ -799,7 +799,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some((execution, task, awaiting, activation)) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, start, .. } => {
                     let awaiting = start.awaiting.as_ref().filter(|step| !step.waits())?;
@@ -1225,7 +1225,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.active.as_mut())
+            .and_then(|inferior| inferior.run.execution_mut())
             .map(|active| &mut active.kind)
         {
             // A step out ends where the step over the dropping frame's line
@@ -1302,7 +1302,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let dropped = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(
                 |active| matches!(&active.kind, ActiveKind::Step { start, .. } if start.dropped.is_some()),
             );
@@ -1366,7 +1366,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some((kind, owner, awaiting)) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
                     kind, owner, start, ..

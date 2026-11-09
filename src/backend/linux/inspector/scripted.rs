@@ -1277,7 +1277,7 @@ fn an_assignment_holds_v8_s_pause_until_its_own_stop_resumes() {
         .inferior()
         .expect("inferior");
     let process = super::super::process_id(inferior.tgid);
-    let stop = inferior.public_stop.as_ref().expect("a stop").id;
+    let stop = inferior.run.stop().expect("a stop").id;
     scripted
         .harness
         .controller

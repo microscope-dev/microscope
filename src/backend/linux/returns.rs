@@ -63,7 +63,7 @@ impl<P: InspectionOps> Controller<P> {
         }
 
         let inferior = self.session.inferior()?;
-        let ActiveKind::Step { start, .. } = &inferior.active.as_ref()?.kind else {
+        let ActiveKind::Step { start, .. } = &inferior.run.execution()?.kind else {
             return None;
         };
 
@@ -80,7 +80,7 @@ impl<P: InspectionOps> Controller<P> {
         let Some(returning) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
                     owner,
@@ -99,7 +99,7 @@ impl<P: InspectionOps> Controller<P> {
         if let Some(ActiveKind::Step { start, .. }) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.active.as_mut())
+            .and_then(|inferior| inferior.run.execution_mut())
             .map(|active| &mut active.kind)
         {
             start.returned = returned;

@@ -33,11 +33,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         validate_public_stop(inferior, Some(stop_id))?;
-        let pid = inferior
-            .public_stop
-            .as_ref()
-            .ok_or(Error::NotStopped)?
-            .reader();
+        let pid = inferior.run.stop().ok_or(Error::NotStopped)?.reader();
         self.write_memory_as(pid, address, bytes)
     }
 
@@ -138,7 +134,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let published = match inferior.public_stop.as_mut() {
+        let published = match inferior.run.stop_mut() {
             Some(stop) => {
                 stop.caches.after_memory_write();
                 true
@@ -177,7 +173,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(stop) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.public_stop.as_mut())
+            .and_then(|inferior| inferior.run.stop_mut())
         {
             stop.caches.after_register_write();
         }
@@ -206,7 +202,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             if let Some(stop) = self
                 .session
                 .inferior_mut()
-                .and_then(|inferior| inferior.public_stop.as_mut())
+                .and_then(|inferior| inferior.run.stop_mut())
             {
                 stop.selected_frames.clear();
             }
@@ -320,7 +316,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let thread = inferior.thread_mut(pid)?;
         thread.stopped_at_breakpoint = thread.stopped_at_breakpoint.filter(|trap| *trap == pc);
         thread.reason = Some(reason.clone());
-        let stop = inferior.public_stop.as_mut().ok_or(Error::NotStopped)?;
+        let stop = inferior.run.stop_mut().ok_or(Error::NotStopped)?;
         stop.id = stop_id;
         stop.triggering_thread = pid;
         stop.reason = reason.clone();

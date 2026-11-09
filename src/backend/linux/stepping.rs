@@ -46,7 +46,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn active_execution(&self) -> Result<ExecutionId> {
         self.session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .map(|active| active.id)
             .ok_or(Error::NotRunning)
     }
@@ -55,7 +55,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn is_advance_target(&self, address: VirtualAddress) -> bool {
         self.session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.targets.contains(&address))
             })
@@ -112,7 +112,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// The state of the active step, if one is active.
     pub(super) fn active_step_mut(&mut self) -> Option<&mut StepStart> {
-        match &mut self.session.inferior_mut()?.active.as_mut()?.kind {
+        match &mut self.session.inferior_mut()?.run.execution_mut()?.kind {
             ActiveKind::Step { start, .. } => Some(start),
             _ => None,
         }
@@ -138,7 +138,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             validate_public_stop(inferior, Some(stop_id))?;
             validate_resumable(inferior)?;
             validate_stopped_thread(inferior, pid)?;
-            let stop = inferior.public_stop.as_ref().ok_or(Error::NotStopped)?;
+            let stop = inferior.run.stop().ok_or(Error::NotStopped)?;
             let Some(current) = stop.presentations.get(&pid) else {
                 return Ok(None);
             };
@@ -168,7 +168,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let stop = inferior.public_stop.as_mut().ok_or(Error::NotStopped)?;
+        let stop = inferior.run.stop_mut().ok_or(Error::NotStopped)?;
         inferior.next_execution = execution_id.get();
         stop.id = next_stop_id;
         stop.triggering_thread = pid;
@@ -199,7 +199,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let uses_plan_breakpoints = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(
                     &active.kind,
@@ -256,7 +256,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn step_enters_runtime(&self) -> bool {
         self.session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.enters_runtime)
             })
@@ -376,7 +376,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let following = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(
                 |active| matches!(&active.kind, ActiveKind::Step { start, .. } if start.following),
             );
@@ -421,7 +421,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some((following, frame, inlined, start_module)) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, start, .. } if self.runs_step(*owner, pid) => Some((
                     start.following,
@@ -566,7 +566,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let inferior = self.session.inferior()?;
-        let ActiveKind::Step { owner, .. } = &inferior.active.as_ref()?.kind else {
+        let ActiveKind::Step { owner, .. } = &inferior.run.execution()?.kind else {
             return None;
         };
 
@@ -591,7 +591,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(ActiveKind::Step { owner, .. }) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.active.as_mut())
+            .and_then(|inferior| inferior.run.execution_mut())
             .map(|active| &mut active.kind)
             && owner.thread != pid
         {
@@ -683,7 +683,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(address) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => start.judged_by_trap,
                 _ => None,
@@ -702,7 +702,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let owner = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, start, .. } if start.judged_by_trap == Some(address) => {
                     Some(*owner)
@@ -725,7 +725,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let plan = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
                     owner,
@@ -779,7 +779,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn step_frame_returned(&self) -> bool {
         self.session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.returned_to.is_some())
             })
@@ -802,7 +802,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let activation = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 // A step over begun in code no debug information describes
                 // steps as stepping in does, which follows no frame.
@@ -848,7 +848,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let plan = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } if !start.plan_addresses.is_empty() => {
                     start.returned_to.map(|caller| (active.id, caller))
@@ -907,7 +907,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let start = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => Some(start),
                 _ => None,
@@ -941,7 +941,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (execution, already_traversing, start_source, start_module, kind, activation) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
                     owner, start, kind, ..
@@ -1047,7 +1047,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (execution, already_traversing, activation, start_instance, start_physical, start) =
             self.session
                 .inferior()
-                .and_then(|inferior| inferior.active.as_ref())
+                .and_then(|inferior| inferior.run.execution())
                 .and_then(|active| match &active.kind {
                     ActiveKind::Step { owner, start, .. } if self.runs_step(*owner, pid) => Some((
                         active.id,
@@ -1152,7 +1152,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let retirement = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, kind, .. } => start
                     .epilogue_traversal
@@ -1193,7 +1193,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let retirement = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => start
                     .return_traversal
@@ -1277,7 +1277,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let start = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => Some(start),
                 _ => None,

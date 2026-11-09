@@ -472,7 +472,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     pub(super) fn active_step(&self) -> Option<&StepStart> {
-        match &self.session.inferior()?.active.as_ref()?.kind {
+        match &self.session.inferior()?.run.execution()?.kind {
             ActiveKind::Step { start, .. } => Some(start),
             _ => None,
         }

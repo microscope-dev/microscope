@@ -134,6 +134,7 @@ submodules divide work by behavior:
 | `native` | Real Linux operations and the trait boundary used by simulation |
 | `lifecycle` | Launch, attach, detach, termination, and process ownership |
 | `classify` | Convert raw wait evidence into debugger stop classes |
+| `run_phase` | Whether the inferior runs, gathers a stop, or is stopped, and which reason a stop publishes |
 | `awaits` | Gather run results and complete the all-stop transition |
 | `stepping`, `step_targets` | Source and instruction execution plans |
 | `breakpoints` | Physical sites, logical owners, hit processing, and repair |

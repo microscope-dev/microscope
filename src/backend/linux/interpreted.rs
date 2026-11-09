@@ -93,7 +93,7 @@ impl<P: InspectionOps> Controller<P> {
         runtime: &BoundRuntime,
         root: &StackRoot,
     ) -> Option<Arc<Partial<InterpretedStacks>>> {
-        let stop = inferior.public_stop.as_ref();
+        let stop = inferior.run.stop();
         if let Some(found) =
             stop.and_then(|stop| stop.caches.interpreted.borrow().get(&runtime.id).cloned())
         {

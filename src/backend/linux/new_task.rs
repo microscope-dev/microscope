@@ -103,7 +103,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(state) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } => start.new_task.clone(),
                 _ => None,
@@ -276,7 +276,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if let Some(ActiveKind::Step { owner, start, .. }) =
-            inferior.active.as_mut().map(|active| &mut active.kind)
+            inferior.run.execution_mut().map(|active| &mut active.kind)
         {
             *owner = StepOwner {
                 thread: pid,
@@ -322,7 +322,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (execution, kind) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { kind, .. } => Some((active.id, *kind)),
                 _ => None,
@@ -359,7 +359,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let kind = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { kind, .. } => Some(*kind),
                 _ => None,
@@ -376,7 +376,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some((running, requested)) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
                     kind, requested, ..
@@ -429,7 +429,7 @@ impl<P: InspectionOps> Controller<P> {
     pub(super) fn entered_new_task(&self) -> bool {
         self.session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(
                     &active.kind,

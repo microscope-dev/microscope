@@ -456,7 +456,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// program runs, or as it resumes when it is stopped.
     fn judge_inspector_pause(&mut self) -> Result<()> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
-        if inferior.public_stop.is_none() && inferior.active.is_some() {
+        if inferior.run.stop().is_none() && inferior.run.execution().is_some() {
             self.queue_internal_edit(super::super::Edit::InspectorPaused)?;
             self.finish_barrier_if_ready()?;
         }
@@ -547,15 +547,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         {
             thread.reason = Some(reason.clone());
         }
-        if let Some(barrier) = inferior.barrier.as_mut() {
-            if barrier.reason.as_ref().is_none_or(|current| {
-                super::super::classify::visible_stop_priority(&reason)
-                    > super::super::classify::visible_stop_priority(current)
-            }) {
-                barrier.triggering_thread = pid;
-                barrier.reason = Some(reason);
+        if let Some(barrier) = inferior.run.barrier_mut() {
+            barrier.offer(Some(pid), reason);
+            if interrupted {
+                barrier.pause();
             }
-            barrier.paused |= interrupted;
         }
     }
 

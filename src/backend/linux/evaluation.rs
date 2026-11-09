@@ -1557,7 +1557,7 @@ impl<P: InspectionOps> Machine for StopMachine<'_, '_, P> {
 
         // A condition at a hit, before the other threads stop, reads the
         // task from the thread's own state alone, which they cannot change.
-        if frame.inferior.public_stop.is_none() {
+        if frame.inferior.run.stop().is_none() {
             return match frame
                 .controller
                 .current_task(frame.inferior, frame.root.reader())

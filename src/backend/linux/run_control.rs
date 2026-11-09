@@ -19,7 +19,7 @@ use super::breakpoints::{
     install_plan_breakpoint, remove_breakpoint_owner_from, runtime_breakpoint_address,
 };
 
-use super::classify::{format_raw_stop, visible_stop_priority};
+use super::classify::format_raw_stop;
 use super::loops::LoopReach;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::new_task::NewTask;
@@ -343,20 +343,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             inferior.thread_mut(pid)?.reason = None;
         }
 
-        inferior.public_stop = None;
-        debug_assert!(
-            inferior.active.is_none(),
-            "beginning execution {execution_id} while execution {:?} is active",
-            inferior.active.as_ref().map(|active| active.id)
-        );
-
-        inferior.active = Some(ActiveExecution {
+        let repairs = collect_repairs(inferior, &resume_threads);
+        inferior.run.begin(ActiveExecution {
             id: execution_id,
             kind,
             scope,
             resume_threads,
+            repairs,
         });
-        inferior.repairs = collect_repairs(inferior);
 
         for installation in inferior.agents.values_mut() {
             installation.start_deadline(std::time::Instant::now());
@@ -486,7 +480,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn begin_pause(&mut self, requested_process: ProcessId) -> Result<ExecutionId> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
-        let execution_id = inferior.active.as_ref().ok_or(Error::AlreadyStopped)?.id;
+        let execution_id = inferior.run.execution().ok_or(Error::AlreadyStopped)?.id;
 
         // Running JavaScript pauses in its inspector, which names its
         // locals; the native all-stop follows if it does not in time.
@@ -500,9 +494,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Stops every thread for a client's pause, wherever each is.
     pub(super) fn pause_natively(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        if let Some(barrier) = inferior.barrier.as_mut() {
-            barrier.reason.get_or_insert(StopReason::Pause);
-            barrier.paused = true;
+        if let Some(barrier) = inferior.run.barrier_mut() {
+            barrier.pause();
             return Ok(());
         }
 
@@ -540,7 +533,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 })
             })
             .ok_or(Error::NotStopped)?;
-        inferior.barrier = Some(StopBarrier::visible(triggering_thread, StopReason::Pause));
+        inferior
+            .run
+            .gather(StopBarrier::visible(triggering_thread, StopReason::Pause))?;
 
         self.request_stops()?;
         self.finish_barrier_if_ready()
@@ -553,7 +548,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .ok_or(Error::NotRunning)?
-            .repairs
+            .run
+            .repairs()
             .is_empty()
         {
             return self.start_next_repair();
@@ -575,7 +571,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
 
-            let active = inferior.active.as_ref().ok_or(Error::NotRunning)?;
+            let active = inferior.run.execution().ok_or(Error::NotRunning)?;
             (active.kind.clone(), active.resume_threads.clone())
         };
 
@@ -614,7 +610,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     if let Some(ActiveKind::Step { progress_owed, .. }) = self
                         .session
                         .inferior_mut()
-                        .and_then(|inferior| inferior.active.as_mut())
+                        .and_then(|inferior| inferior.run.execution_mut())
                         .map(|active| &mut active.kind)
                     {
                         *progress_owed = false;
@@ -664,7 +660,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             let group = inferior
-                .repairs
+                .run
+                .repairs()
                 .front()
                 .ok_or_else(|| Error::internal("repair group exists"))?;
             if group.current.is_some() {
@@ -678,8 +675,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .filter(|pid| !exiting(inferior, pid))
                 .collect::<VecDeque<_>>();
             let group = inferior
-                .repairs
-                .front_mut()
+                .run
+                .repairs_mut()
+                .and_then(VecDeque::front_mut)
                 .ok_or_else(|| Error::internal("repair group exists"))?;
             group.remaining = remaining;
             group.remaining.pop_front().map(|pid| {
@@ -712,8 +710,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             let pid = inferior.memory_thread();
             let group = inferior
-                .repairs
-                .front_mut()
+                .run
+                .repairs_mut()
+                .and_then(VecDeque::front_mut)
                 .ok_or_else(|| Error::internal("repair group exists"))?;
             self.ptrace
                 .remove_breakpoint(pid, &mut inferior.breakpoints, address)?;
@@ -735,8 +734,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn finish_repair_group(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let group = inferior
-            .repairs
-            .pop_front()
+            .run
+            .repairs_mut()
+            .and_then(VecDeque::pop_front)
             .ok_or_else(|| Error::internal("repair group exists"))?;
         if group.site_removed {
             self.ptrace.reinstall_breakpoint(
@@ -1009,8 +1009,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let step = inferior
-            .active
-            .as_ref()
+            .run
+            .execution()
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { owner, kind, .. } if self.runs_step(*owner, pid) => {
                     Some((active.id, *kind))
@@ -1140,7 +1140,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn step_runs_to_guard(&self) -> bool {
         self.session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(&active.kind, ActiveKind::Step { start, .. } if start.resume_guard.is_some())
             })
@@ -1310,7 +1310,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn barrier_active(&self) -> bool {
         self.session
             .inferior()
-            .is_some_and(|inferior| inferior.barrier.is_some())
+            .is_some_and(|inferior| inferior.run.barrier().is_some())
     }
 
     /// Records a trace stop that arrived while every thread is being
@@ -1468,8 +1468,9 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let memory = inferior.memory_thread();
         if let Some(group) = inferior
-            .repairs
-            .front_mut()
+            .run
+            .repairs_mut()
+            .and_then(VecDeque::front_mut)
             .filter(|group| group.address == address && group.current == Some(pid))
         {
             group.current = None;
@@ -1568,7 +1569,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some((execution, kind, guard, planned)) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step {
                     owner, kind, start, ..
@@ -1659,21 +1660,23 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         debug_assert!(
             !inferior
-                .repairs
+                .run
+                .repairs()
                 .iter()
                 .any(|group| { group.current == Some(pid) || group.remaining.contains(&pid) }),
             "thread {pid} is queued to step over the trap at {address} while it \
              already waits to step over another"
         );
 
-        if let Some(group) = inferior
-            .repairs
-            .iter_mut()
-            .find(|group| group.address == address)
-        {
+        // Only an execution's threads step over traps.
+        let repairs = inferior
+            .run
+            .repairs_mut()
+            .ok_or_else(|| Error::internal("a repair is queued for an execution"))?;
+        if let Some(group) = repairs.iter_mut().find(|group| group.address == address) {
             group.remaining.push_front(pid);
         } else {
-            inferior.repairs.push_front(RepairGroup {
+            repairs.push_front(RepairGroup {
                 address,
                 remaining: VecDeque::from([pid]),
                 current: None,
@@ -1702,15 +1705,10 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// already in progress publishes the most important reason it sees.
     pub(super) fn raise_barrier(&mut self, pid: Pid, reason: StopReason) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        if let Some(barrier) = inferior.barrier.as_mut() {
-            if barrier.reason.as_ref().is_none_or(|current| {
-                visible_stop_priority(&reason) > visible_stop_priority(current)
-            }) {
-                barrier.triggering_thread = pid;
-                barrier.reason = Some(reason);
-            }
+        if let Some(barrier) = inferior.run.barrier_mut() {
+            barrier.offer(Some(pid), reason);
         } else {
-            inferior.barrier = Some(StopBarrier::visible(pid, reason));
+            inferior.run.gather(StopBarrier::visible(pid, reason))?;
             self.request_stops()?;
         }
 
@@ -1735,7 +1733,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             inferior.thread_mut(triggering_thread)?.reason = Some(reason.clone());
-            inferior.barrier = Some(StopBarrier::visible(triggering_thread, reason));
+            // A stop the failed resume already began keeps the edits it
+            // holds, and publishes the failure.
+            if let Some(barrier) = inferior.run.barrier_mut() {
+                barrier.offer(Some(triggering_thread), reason);
+            } else {
+                inferior
+                    .run
+                    .gather(StopBarrier::visible(triggering_thread, reason))?;
+            }
         }
 
         self.request_stops()?;
@@ -1839,7 +1845,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// breakpoint's hit stopped it, if one did.
     fn stepping_thread_hit(&self) -> Option<(Pid, VirtualAddress)> {
         let inferior = self.session.inferior()?;
-        let ActiveKind::Step { owner, .. } = inferior.active.as_ref()?.kind else {
+        let ActiveKind::Step { owner, .. } = inferior.run.execution()?.kind else {
             return None;
         };
 
@@ -1857,7 +1863,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     pub(super) fn finish_barrier_if_ready(&mut self) -> Result<()> {
         let ready = self.session.inferior().is_some_and(|inferior| {
-            inferior.barrier.is_some()
+            inferior.run.barrier().is_some()
                 && inferior
                     .threads
                     .iter()
@@ -1901,8 +1907,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         if self
             .session
             .inferior()
-            .and_then(|inferior| inferior.barrier.as_ref())
-            .is_some_and(|barrier| barrier.reason.is_none())
+            .and_then(|inferior| inferior.run.barrier())
+            .is_some_and(|barrier| barrier.reason().is_none())
         {
             return self.resume_after_internal_stop();
         }
@@ -1910,7 +1916,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(execution) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .map(|active| active.id)
         {
             self.cleanup_plan_breakpoints(execution)?;
@@ -1934,8 +1940,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         let (triggering_thread, reason) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.barrier.as_ref())
-            .and_then(|barrier| Some((barrier.triggering_thread, barrier.reason.clone()?)))
+            .and_then(|inferior| inferior.run.barrier())
+            .and_then(StopBarrier::publishable)
             .ok_or_else(|| Error::internal("ready barrier publishes a reason"))?;
         self.publish_stop(triggering_thread, reason)
     }
@@ -1959,7 +1965,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             thread.expected = ExpectedStop::None;
         }
 
-        inferior.barrier = None;
         // Any stop answers a client's pause, so its deadline must not
         // stop the threads again after the next continue.
         inferior.inspectors.end_interrupt();
@@ -1976,13 +1981,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             BTreeMap::from([(triggering_thread, presentation)]),
         );
         stop.returned = returned;
-        inferior.public_stop = Some(stop);
+        let execution = inferior.run.publish(stop)?;
 
         for installation in inferior.agents.values_mut() {
             installation.pause_deadline(std::time::Instant::now());
         }
 
-        let execution = inferior.active.take().map(|active| active.id);
         let process_id = process_id(inferior.tgid);
         // A stop an agent reported is about the program's frame, not the
         // agent's hook it entered; and a store to an interpreted variable is
@@ -2101,15 +2105,15 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-pub(super) fn collect_repairs(inferior: &Inferior) -> VecDeque<RepairGroup> {
-    let Some(active) = inferior.active.as_ref() else {
-        // Without an execution no thread resumes, so none steps over a trap.
-        return VecDeque::new();
-    };
-
+/// The repairs an execution resuming `resume_threads` makes first: each
+/// of those threads stopped at a breakpoint steps over it.
+pub(super) fn collect_repairs(
+    inferior: &Inferior,
+    resume_threads: &BTreeSet<Pid>,
+) -> VecDeque<RepairGroup> {
     let mut grouped: BTreeMap<VirtualAddress, VecDeque<Pid>> = BTreeMap::new();
 
-    for &pid in &active.resume_threads {
+    for &pid in resume_threads {
         if let Some(address) = inferior
             .threads
             .get(&pid)
@@ -2130,15 +2134,10 @@ pub(super) fn collect_repairs(inferior: &Inferior) -> VecDeque<RepairGroup> {
         .collect()
 }
 
-/// Panics if `inferior` is not in the state a stop is published from: no
-/// stop already published, every thread stopped, every trap in place, no
-/// repair outstanding, and none of the active execution's traps left.
+/// Panics if `inferior` is not in the state a stop is published from:
+/// every thread stopped, every trap in place, and none of the active
+/// execution's traps left.
 fn check_publishable(inferior: &Inferior, stop_id: StopId) {
-    debug_assert!(
-        inferior.public_stop.is_none(),
-        "publishing stop {stop_id} over stop {:?}",
-        inferior.public_stop.as_ref().map(|stop| stop.id)
-    );
     for (&pid, thread) in &inferior.threads {
         debug_assert!(
             inferior.settled(pid, thread),
@@ -2147,13 +2146,7 @@ fn check_publishable(inferior: &Inferior, stop_id: StopId) {
         );
     }
 
-    debug_assert!(
-        inferior.repairs.is_empty(),
-        "publishing stop {stop_id} with {} breakpoint repairs outstanding",
-        inferior.repairs.len()
-    );
-
-    let execution = inferior.active.as_ref().map(|active| active.id);
+    let execution = inferior.run.execution().map(|active| active.id);
     for (&address, site) in &inferior.breakpoints {
         debug_assert!(
             site.installed,
@@ -2167,12 +2160,4 @@ fn check_publishable(inferior: &Inferior, stop_id: StopId) {
              trap at {address}"
         );
     }
-
-    debug_assert!(
-        inferior
-            .barrier
-            .as_ref()
-            .is_none_or(|barrier| barrier.edits.is_empty()),
-        "publishing stop {stop_id} drops edits queued after the stop's edits were applied"
-    );
 }

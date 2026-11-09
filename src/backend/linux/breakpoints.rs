@@ -279,7 +279,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     fn location_in_stopped_package(&self, location: &str) -> Option<String> {
         let inferior = self.session.inferior()?;
-        let stop = inferior.public_stop.as_ref()?;
+        let stop = inferior.run.stop()?;
         let root = self.stack_root(stop.id, stop.selected).ok()?;
         let frame = self
             .resolve_frame(inferior, &root, super::selected_frame(stop))
@@ -1092,7 +1092,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let removed: Vec<_> = inferior
-            .repairs
+            .run
+            .repairs()
             .iter()
             .filter(|group| group.site_removed)
             .map(|group| group.address)
@@ -1104,7 +1105,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .reinstall_breakpoint(pid, &mut inferior.breakpoints, address)?;
         }
 
-        inferior.repairs.clear();
+        if let Some(repairs) = inferior.run.repairs_mut() {
+            repairs.clear();
+        }
         Ok(())
     }
 
@@ -1740,7 +1743,9 @@ pub(super) fn forget_removed_site(
         }
     }
 
-    inferior.repairs.retain(|group| group.address != address);
+    if let Some(repairs) = inferior.run.repairs_mut() {
+        repairs.retain(|group| group.address != address);
+    }
 }
 
 pub(super) fn remove_breakpoint_owner_from(

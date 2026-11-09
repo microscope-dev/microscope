@@ -990,8 +990,8 @@ impl SimController {
         self.controller
             .session
             .inferior()?
-            .public_stop
-            .as_ref()
+            .run
+            .stop()
             .map(|stop| stop.id.get())
     }
 
@@ -1079,8 +1079,8 @@ impl SimController {
                     )
                 })
                 .collect(),
-            active_execution: inferior.active.as_ref().map(|active| active.id.get()),
-            public_stop: inferior.public_stop.as_ref().map(|stop| stop.id.get()),
+            active_execution: inferior.run.execution().map(|active| active.id.get()),
+            public_stop: inferior.run.stop().map(|stop| stop.id.get()),
             inferior: Some(tgid(inferior.tgid)),
             established: !self.controller.session.starting(),
             threads: inferior.threads.keys().map(|pid| pid.as_raw()).collect(),

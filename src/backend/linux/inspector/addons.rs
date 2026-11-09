@@ -121,7 +121,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(active) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
         else {
             return false;
         };

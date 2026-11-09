@@ -533,7 +533,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             if self
                 .session
                 .inferior()
-                .is_some_and(|inferior| inferior.active.is_some())
+                .is_some_and(|inferior| inferior.run.execution().is_some())
             {
                 self.activate_inspector(&bound, pid);
             }

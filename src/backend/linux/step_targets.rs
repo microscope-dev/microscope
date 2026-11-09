@@ -188,7 +188,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(chosen) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, owner, .. }
                     if self.runs_step(*owner, pid) && start.resume_guard.is_none() =>

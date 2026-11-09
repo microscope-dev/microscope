@@ -1020,15 +1020,20 @@ impl Controller<CoreTarget> {
                 (pid, thread)
             })
             .collect();
-        let inferior = Inferior {
-            public_stop: Some(PublicStop::new(
-                allocate_stop_id()?,
-                selected,
-                reason.clone(),
-                BTreeMap::new(),
-            )),
-            ..Inferior::new(InferiorOrigin::PostMortem, tgid, main, trace_threads, None)
-        };
+        let stop = PublicStop::new(
+            allocate_stop_id()?,
+            selected,
+            reason.clone(),
+            BTreeMap::new(),
+        );
+        let inferior = Inferior::new(
+            InferiorOrigin::PostMortem,
+            tgid,
+            main,
+            trace_threads,
+            None,
+            super::RunPhase::stopped(stop),
+        );
         self.session = Session::live(inferior);
 
         // A dump holds no trap of the debugger's to take out of a copy.
@@ -1045,7 +1050,7 @@ impl Controller<CoreTarget> {
         let presentation = self.presentation_for_thread(selected, Some(reason))?;
         self.session
             .inferior_mut()
-            .and_then(|inferior| inferior.public_stop.as_mut())
+            .and_then(|inferior| inferior.run.stop_mut())
             .ok_or_else(|| Error::internal("the post-mortem stop exists"))?
             .presentations
             .insert(selected, presentation);

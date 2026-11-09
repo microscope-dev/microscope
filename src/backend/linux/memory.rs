@@ -42,11 +42,7 @@ impl<P: InspectionOps> Controller<P> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_process(inferior, requested_process)?;
         validate_public_stop(inferior, Some(stop_id))?;
-        let pid = inferior
-            .public_stop
-            .as_ref()
-            .ok_or(Error::NotStopped)?
-            .reader();
+        let pid = inferior.run.stop().ok_or(Error::NotStopped)?.reader();
 
         let read = read_logical_memory(&self.ptrace, pid, &inferior.breakpoints, address, size)?;
         Ok(MemoryRead {

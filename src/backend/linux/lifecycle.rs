@@ -1,7 +1,7 @@
 //! Starting, attaching to, and ending a traced process, and tracking its
 //! threads, forks, and exec.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use super::signals::{Signal, WaitEvent};
@@ -16,6 +16,7 @@ use crate::protocol::{
 
 use crate::{Error, Result, VirtualAddress};
 
+use super::RunPhase;
 use super::breakpoints::{install_logical_breakpoint, lift_all_traps, reinstall_all_traps};
 use super::memory::holding_word;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
@@ -132,7 +133,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut thread = TraceThread::starting(ExpectedStop::None);
         thread.state = NativeThreadState::Stopped;
         self.reset_breakpoint_hit_counts();
-        let mut inferior = Inferior::new(
+        let inferior = Inferior::new(
             if launched {
                 InferiorOrigin::Launched
             } else {
@@ -142,8 +143,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.main.loaded(crate::LoadBias::default()),
             BTreeMap::from([(pid, thread)]),
             Some(waiter),
+            RunPhase::gathering(None, StopBarrier::visible(pid, StopReason::Attach)),
         );
-        inferior.barrier = Some(StopBarrier::visible(pid, StopReason::Attach));
         self.trace(inferior, Startup::Attach { reply, rescans: 0 });
         self.join_python_bootstrap(pid);
 
@@ -276,23 +277,29 @@ impl<P: LinuxTraceOps> Controller<P> {
         let process_id = process_id(pid);
         let execution_id = ExecutionId::new(1);
         self.reset_breakpoint_hit_counts();
+        let launch = ActiveExecution {
+            id: execution_id,
+            kind: ActiveKind::Launch,
+            scope: ResumeScope::Process(process_id),
+            resume_threads: BTreeSet::from([pid]),
+            repairs: VecDeque::new(),
+        };
+        // Like a pause requested during launch, an entry stop completes at
+        // the initial exec stop.
+        let run = if stop_at_entry {
+            RunPhase::gathering(Some(launch), StopBarrier::visible(pid, StopReason::Entry))
+        } else {
+            RunPhase::running(launch)
+        };
         let inferior = Inferior {
-            active: Some(ActiveExecution {
-                id: execution_id,
-                kind: ActiveKind::Launch,
-                scope: ResumeScope::Process(process_id),
-                resume_threads: BTreeSet::from([pid]),
-            }),
             next_execution: 1,
-            // Like a pause requested during launch, an entry stop completes
-            // at the initial exec stop.
-            barrier: stop_at_entry.then_some(StopBarrier::visible(pid, StopReason::Entry)),
             ..Inferior::new(
                 origin,
                 pid,
                 self.main.loaded(crate::LoadBias::default()),
                 BTreeMap::from([(pid, TraceThread::starting(expected))]),
                 Some(waiter),
+                run,
             )
         };
         self.trace(inferior, Startup::Launch(reply));
@@ -326,6 +333,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.main.loaded(crate::LoadBias::default()),
             threads,
             Some(waiter),
+            RunPhase::idle(),
         );
         inferior.unseized_threads = unseized;
         inferior.observer = observe;
@@ -354,7 +362,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        inferior.barrier = Some(StopBarrier::visible(triggering_thread, StopReason::Attach));
+        if let Err(error) = inferior
+            .run
+            .gather(StopBarrier::visible(triggering_thread, StopReason::Attach))
+        {
+            self.fail_inferior(error);
+        }
     }
 
     /// Seizes every listed thread of the process `requested` names, and
@@ -480,12 +493,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         let execution_id = inferior
-            .active
-            .as_ref()
+            .run
+            .execution()
             .ok_or_else(|| Error::internal("launch is active"))?
             .id;
         let process_id = process_id(inferior.tgid);
-        let pause_requested = inferior.barrier.is_some();
+        let pause_requested = inferior.run.barrier().is_some();
         let generation = inferior.watch.generation;
         let thread = inferior.thread_mut(pid)?;
         thread.expected = ExpectedStop::None;
@@ -838,14 +851,14 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             // A thread created while a breakpoint site is lifted for a repair
             // waits for the repair; resuming execution then resumes it.
-            let should_resume = inferior.repairs.is_empty()
+            let should_resume = inferior.run.repairs().is_empty()
                 && inferior
-                    .active
-                    .as_ref()
+                    .run
+                    .execution()
                     .is_some_and(|active| active.resume_threads.contains(&pid));
             (
                 process_id(inferior.tgid),
-                inferior.barrier.is_some(),
+                inferior.run.barrier().is_some(),
                 should_resume,
             )
         };
@@ -1074,7 +1087,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A new thread runs with its siblings, unless the execution resumed
         // one thread alone.
-        if let Some(active) = inferior.active.as_mut()
+        if let Some(active) = inferior.run.execution_mut()
             && matches!(active.scope, ResumeScope::Process(_))
         {
             active.resume_threads.insert(child);
@@ -1404,7 +1417,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.breakpoints.clear();
         inferior.former_sites.clear();
         inferior.plan_sites.clear();
-        inferior.repairs.clear();
+        if let Some(repairs) = inferior.run.repairs_mut() {
+            repairs.clear();
+        }
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
         let agent_cleanup = inferior.retire_agents_after_exit();
@@ -1475,7 +1490,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let continued = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(
                     active.kind,
@@ -1599,7 +1614,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.thread_mut(pid)?.state = NativeThreadState::Running;
-        if inferior.public_stop.take().is_some() {
+        if inferior.run.release() {
             self.bump_revision();
         }
 
@@ -1623,7 +1638,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let process_id = process_id(inferior.tgid);
-        let execution = inferior.active.as_ref().map(|active| active.id);
+        let execution = inferior.run.execution().map(|active| active.id);
         let leader_exited = pid == inferior.tgid;
 
         // Until an attach stops every thread it seized, a thread created
@@ -1736,7 +1751,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let thread_id = debug_thread_id(pid);
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let process_id = process_id(inferior.tgid);
-        let owned_execution = inferior.active.as_ref().is_some_and(|active| {
+        let owned_execution = inferior.run.execution().is_some_and(|active| {
             matches!(active.scope, ResumeScope::Thread(thread) if thread == thread_id)
                 || matches!(
                     active.kind,
@@ -1747,9 +1762,9 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A thread resumed alone to reach its awaited breakpoint holds its
         // siblings back; they must run once it is gone.
-        let ran_alone = awaited_breakpoint && inferior.active.is_some();
+        let ran_alone = awaited_breakpoint && inferior.run.execution().is_some();
         let repair_interrupted = inferior.forget_thread(pid, &status);
-        let barrier_active = inferior.barrier.is_some();
+        let barrier_active = inferior.run.barrier().is_some();
         self.bump_revision();
         let _ = self.events.send(DebuggerEvent::ThreadExited {
             revision: self.revision,
@@ -1773,14 +1788,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 && let Some(barrier) = self
                     .session
                     .inferior_mut()
-                    .and_then(|inferior| inferior.barrier.as_mut())
+                    .and_then(|inferior| inferior.run.barrier_mut())
             {
                 // The execution has no thread left to resume, so the stop
                 // ends in this exit unless it publishes something that
                 // matters more, and even if an edit drops that.
-                let reason = StopReason::ThreadExited { thread_id, status };
-                barrier.ended = Some(reason.clone());
-                barrier.reason.get_or_insert(reason);
+                barrier.end_execution(StopReason::ThreadExited { thread_id, status });
             }
 
             return self.finish_barrier_if_ready();
@@ -2535,10 +2548,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             signal,
             delivered: false,
         });
-        let (tgid, stop) = (
-            inferior.tgid,
-            inferior.public_stop.as_ref().map(|stop| stop.id),
-        );
+        let (tgid, stop) = (inferior.tgid, inferior.run.stop().map(|stop| stop.id));
         self.ptrace.kill(tgid, signal)?;
         let Some(stop) = stop else {
             return Ok(());

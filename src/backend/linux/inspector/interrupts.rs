@@ -53,7 +53,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         inferior.inspectors.end_interrupt();
         record!("V8 did not pause in time; every thread stops natively");
-        if inferior.active.is_none() {
+        if inferior.run.execution().is_none() {
             return Ok(());
         }
         self.pause_natively()

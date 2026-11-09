@@ -832,7 +832,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let current = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .is_some_and(|active| {
                 matches!(
                     active.kind,
@@ -851,14 +851,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(thread) = inferior.threads.get_mut(&pid) {
             thread.reason = Some(reason.clone());
         }
-        if let Some(barrier) = inferior.barrier.as_mut()
-            && barrier.reason.as_ref().is_none_or(|current| {
-                super::super::classify::visible_stop_priority(&reason)
-                    > super::super::classify::visible_stop_priority(current)
-            })
-        {
-            barrier.triggering_thread = pid;
-            barrier.reason = Some(reason);
+        if let Some(barrier) = inferior.run.barrier_mut() {
+            barrier.offer(Some(pid), reason);
         }
     }
 

@@ -369,7 +369,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(stop) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.public_stop.as_ref())
+            .and_then(|inferior| inferior.run.stop())
         else {
             return;
         };
@@ -390,7 +390,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(stop) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.public_stop.as_mut())
+            .and_then(|inferior| inferior.run.stop_mut())
         {
             stop.selected_frames.insert(context, id);
         }
@@ -405,7 +405,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        let Some(stop) = inferior.public_stop.as_ref() else {
+        let Some(stop) = inferior.run.stop() else {
             return;
         };
 
@@ -425,7 +425,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(stop) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.public_stop.as_mut())
+            .and_then(|inferior| inferior.run.stop_mut())
         {
             stop.selected_frames.insert(context, frame);
         }

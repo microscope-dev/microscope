@@ -280,19 +280,20 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         inferior.inspectors.cleanup = Some(cleanup);
         inferior.inspectors.end_interrupt();
-        inferior.public_stop = None;
-        inferior.barrier = None;
         inferior.next_execution += 1;
-        inferior.active = Some(ActiveExecution {
+        let resume_threads = inferior.threads.keys().copied().collect::<BTreeSet<_>>();
+        let repairs =
+            crate::backend::linux::run_control::collect_repairs(inferior, &resume_threads);
+        inferior.run.begin(ActiveExecution {
             id: ExecutionId::new(inferior.next_execution),
             kind: ActiveKind::Continue,
             scope: ResumeScope::Process(crate::backend::linux::process_id(inferior.tgid)),
-            resume_threads: inferior.threads.keys().copied().collect::<BTreeSet<_>>(),
+            resume_threads,
+            repairs,
         });
         for thread in inferior.threads.values_mut() {
             thread.reason = None;
         }
-        inferior.repairs = crate::backend::linux::run_control::collect_repairs(inferior);
         self.install_inspector_startup_hooks()?;
         self.advance_execution()?;
         Ok(true)
@@ -560,9 +561,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 if let Some(barrier) = self
                     .session
                     .inferior_mut()
-                    .and_then(|inferior| inferior.barrier.as_mut())
+                    .and_then(|inferior| inferior.run.barrier_mut())
                 {
-                    barrier.reason = None;
+                    barrier.make_internal();
                 }
                 return Ok(false);
             }

@@ -352,7 +352,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         failure: Option<Arc<str>>,
     ) -> Option<StopReason> {
         let inferior = self.session.inferior_mut()?;
-        let active = inferior.active.as_ref()?;
+        let active = inferior.run.execution()?;
         let ActiveKind::RuntimeAssignment {
             thread,
             runtime: assigning,
@@ -381,7 +381,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .filter(|inferior| inferior.runtime_assignment.is_some())
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match active.kind {
                 ActiveKind::RuntimeAssignment { runtime, .. } => Some(runtime),
                 _ => None,
@@ -410,7 +410,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some((stop_id, context)) = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.public_stop.as_ref())
+            .and_then(|inferior| inferior.run.stop())
             .map(|stop| (stop.id, stop.selected))
         else {
             return;
@@ -424,7 +424,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(stop) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.public_stop.as_mut())
+            .and_then(|inferior| inferior.run.stop_mut())
         {
             stop.selected_frames.insert(context, id);
         }

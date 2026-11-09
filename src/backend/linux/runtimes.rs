@@ -478,17 +478,14 @@ impl<P: InspectionOps> Controller<P> {
                 .map(|pid| debug_thread_id(*pid))
                 .collect(),
             task_sets: inferior
-                .public_stop
-                .as_ref()
+                .run
+                .stop()
                 .and_then(|stop| {
                     let found = stop.caches.task_sets.borrow();
                     found.as_ref().map(|found| found.sets.to_vec())
                 })
                 .unwrap_or_default(),
-            memory: inferior
-                .public_stop
-                .as_ref()
-                .map(|stop| &stop.caches.memory),
+            memory: inferior.run.stop().map(|stop| &stop.caches.memory),
             identities: OnceCell::new(),
             locals: &inferior.inspectors.locals,
         })
@@ -498,7 +495,7 @@ impl<P: InspectionOps> Controller<P> {
     /// which no runtime lists, found once for a published stop from the
     /// futures their stacks show, and why some may be missing.
     pub(super) fn task_sets(&self, inferior: &Inferior) -> Arc<[Arc<str>]> {
-        let Some(stop) = inferior.public_stop.as_ref() else {
+        let Some(stop) = inferior.run.stop() else {
             return Arc::from([]);
         };
 
@@ -633,8 +630,8 @@ impl<P: InspectionOps> Controller<P> {
         TaskRef {
             number: task.number,
             locator: inferior
-                .public_stop
-                .as_ref()
+                .run
+                .stop()
                 .and_then(|stop| stop.caches.task_locators.borrow().get(&task).copied()),
         }
     }
@@ -650,8 +647,8 @@ impl<P: InspectionOps> Controller<P> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let reader = inferior
-            .public_stop
-            .as_ref()
+            .run
+            .stop()
             .ok_or(Error::NotStopped)?
             .triggering_thread;
         let limit = limit.clamp(1, MAX_TASK_PAGE);
@@ -683,7 +680,7 @@ impl<P: InspectionOps> Controller<P> {
                         .tasks(stop, cursor.position, limit - tasks.len(), program_only)
                 });
             gaps.extend(page.gaps);
-            if let Some(stop) = inferior.public_stop.as_ref() {
+            if let Some(stop) = inferior.run.stop() {
                 stop.caches
                     .task_locators
                     .borrow_mut()
@@ -877,7 +874,7 @@ impl<P: InspectionOps> Controller<P> {
     /// A published stop remembers each thread's; run control, which asks
     /// at a breakpoint's hit before any stop is published, reads afresh.
     pub(super) fn thread_activity(&self, inferior: &Inferior, pid: Pid) -> Option<ThreadActivity> {
-        let Some(stop) = inferior.public_stop.as_ref() else {
+        let Some(stop) = inferior.run.stop() else {
             return self.read_thread_activity(inferior, pid);
         };
 
@@ -936,7 +933,7 @@ impl<P: InspectionOps> Controller<P> {
     /// Every thread's are read at once, when the stop is first asked,
     /// since reading them numbers what each thread runs in.
     pub(super) fn thread_labels(&self, inferior: &Inferior, pid: Pid) -> Arc<[ThreadLabel]> {
-        let Some(stop) = inferior.public_stop.as_ref() else {
+        let Some(stop) = inferior.run.stop() else {
             return Arc::from([]);
         };
         if stop.caches.labels.borrow().is_none() {
@@ -1159,8 +1156,8 @@ impl<P: InspectionOps> Controller<P> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         validate_public_stop(inferior, Some(stop_id))?;
         let reader = inferior
-            .public_stop
-            .as_ref()
+            .run
+            .stop()
             .ok_or(Error::NotStopped)?
             .triggering_thread;
 

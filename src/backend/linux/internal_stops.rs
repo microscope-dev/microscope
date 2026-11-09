@@ -36,7 +36,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let running = self
             .session
             .inferior()
-            .is_some_and(|inferior| inferior.public_stop.is_none())
+            .is_some_and(|inferior| inferior.run.stop().is_none())
             && !self.session.starting();
         if !running {
             self.apply_edit(edit);
@@ -51,13 +51,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(barrier) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.barrier.as_mut())
+            .and_then(|inferior| inferior.run.barrier_mut())
         else {
             edit.reject(Error::internal("an internal stop has a barrier"));
             return;
         };
 
-        barrier.edits.push(edit);
+        barrier.queue(edit);
         if let Err(error) = self.finish_barrier_if_ready() {
             self.fail_inferior(error);
         }
@@ -176,7 +176,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .ok_or(Error::NotRunning)?
-            .barrier
+            .run
+            .barrier()
             .is_none()
         {
             self.begin_internal_stop()?;
@@ -185,18 +186,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let barrier = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.barrier.as_mut())
+            .and_then(|inferior| inferior.run.barrier_mut())
             .ok_or_else(|| Error::internal("an internal stop has a barrier"))?;
 
-        let kind = std::mem::discriminant(&edit);
-        if !barrier
-            .edits
-            .iter()
-            .any(|queued| std::mem::discriminant(queued) == kind)
-        {
-            barrier.edits.push(edit);
-        }
-
+        barrier.queue_once(edit);
         Ok(())
     }
 
@@ -205,18 +198,14 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// [`Self::finish_barrier_if_ready`].
     pub(super) fn begin_internal_stop(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        if inferior.barrier.is_some() {
+        if inferior.run.barrier().is_some() {
             return Ok(());
         }
 
         let triggering_thread = *inferior.threads.keys().next().ok_or(Error::NotRunning)?;
-        inferior.barrier = Some(StopBarrier {
-            triggering_thread,
-            reason: None,
-            paused: false,
-            ended: None,
-            edits: Vec::new(),
-        });
+        inferior
+            .run
+            .gather(StopBarrier::internal(triggering_thread))?;
 
         // An agent's acknowledgement budget counts only running time.
         for installation in inferior.agents.values_mut() {
@@ -234,8 +223,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// then published from it, as for a new thread that can't be armed.
     pub(super) fn resume_after_internal_stop(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        inferior.barrier = None;
-        if inferior.active.is_none() {
+        if !inferior.run.resume() {
             return Ok(());
         }
         for installation in inferior.agents.values_mut() {
@@ -263,7 +251,15 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        inferior.repairs = collect_repairs(inferior);
+        let resume_threads = inferior
+            .run
+            .execution()
+            .map(|active| active.resume_threads.clone())
+            .unwrap_or_default();
+        let repairs = collect_repairs(inferior, &resume_threads);
+        if let Some(queued) = inferior.run.repairs_mut() {
+            *queued = repairs;
+        }
         self.advance_execution()
     }
 
@@ -273,7 +269,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn repair_when_alone(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.thread_mut(pid)?.stopped_at_breakpoint = Some(address);
-        if inferior.barrier.is_none() && others_stopped(inferior, pid) {
+        if inferior.run.barrier().is_none() && others_stopped(inferior, pid) {
             self.queue_repair(pid, address)?;
             return self.start_next_repair();
         }
@@ -289,7 +285,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let owner = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match active.kind {
                 ActiveKind::Step { owner, .. } => Some(owner),
                 _ => None,
@@ -301,7 +297,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if let Some(ActiveKind::Step { progress_owed, .. }) = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.active.as_mut())
+            .and_then(|inferior| inferior.run.execution_mut())
             .map(|active| &mut active.kind)
         {
             *progress_owed = true;
@@ -315,11 +311,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
 
-        if inferior.barrier.is_some() {
+        if inferior.run.barrier().is_some() {
             return Ok(());
         }
 
-        let Some(active) = inferior.active.as_ref() else {
+        let Some(active) = inferior.run.execution() else {
             return Ok(());
         };
 
@@ -372,8 +368,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let Some(resumed) = inferior
-            .active
-            .as_ref()
+            .run
+            .execution()
             .map(|active| active.resume_threads.clone())
         else {
             return Ok(());
@@ -413,42 +409,25 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        let Some(barrier) = inferior.barrier.as_mut() else {
+        let Some(triggering_thread) = inferior.run.barrier().map(StopBarrier::triggering_thread)
+        else {
             return Ok(());
         };
 
-        if !matches!(
-            barrier.reason,
-            Some(StopReason::Breakpoint { .. } | StopReason::Watchpoint { .. })
-        ) {
-            return Ok(());
-        }
-
-        // A barrier publishes its triggering thread's own reason.
-        barrier.reason = inferior
+        // A barrier publishes its triggering thread's own reason. If its hit
+        // is gone, another thread's reason, if any, takes its place.
+        let own = inferior
             .threads
-            .get(&barrier.triggering_thread)
+            .get(&triggering_thread)
             .and_then(|thread| thread.reason.clone());
-        if barrier.reason.is_some() {
-            return Ok(());
-        }
-
-        // The published hit is gone; another thread's reason, if any, takes
-        // its place, then the end of an execution that cannot resume, and a
-        // pause the hit outranked otherwise.
-        if let Some((pid, reason)) = inferior
+        let best = inferior
             .threads
             .iter()
             .filter(|(pid, _)| resumed.contains(pid))
             .filter_map(|(&pid, thread)| thread.reason.clone().map(|reason| (pid, reason)))
-            .max_by_key(|(_, reason)| visible_stop_priority(reason))
-        {
-            barrier.triggering_thread = pid;
-            barrier.reason = Some(reason);
-        } else if let Some(reason) = barrier.ended.clone() {
-            barrier.reason = Some(reason);
-        } else if barrier.paused {
-            barrier.reason = Some(StopReason::Pause);
+            .max_by_key(|(_, reason)| visible_stop_priority(reason));
+        if let Some(barrier) = inferior.run.barrier_mut() {
+            barrier.settle_dropped_hit(own, best);
         }
 
         Ok(())

@@ -492,7 +492,7 @@ fn virtual_inline_step_emits_a_new_stop_without_native_operations() {
         .controller
         .session
         .inferior()
-        .and_then(|inferior| inferior.public_stop.as_ref())
+        .and_then(|inferior| inferior.run.stop())
         .expect("new public stop");
 
     // Stop identifiers are process-wide, so only their freshness is known.
@@ -577,9 +577,10 @@ fn user_breakpoint_supersedes_a_coincident_exception_barrier() {
     let pending = harness.thread(pending_thread);
     pending.state = NativeThreadState::StopRequested;
     pending.debugger_stop_pending = true;
-    let inferior = harness.inferior();
-    inferior.public_stop = None;
-    inferior.barrier = Some(StopBarrier::visible(pid, StopReason::Exception(exception)));
+    harness.inferior().run = RunPhase::gathering(
+        None,
+        StopBarrier::visible(pid, StopReason::Exception(exception)),
+    );
     let breakpoint = StopReason::Breakpoint {
         address: Some(VirtualAddress::new(0x20)),
         hits: Arc::from([BreakpointHit {
@@ -595,11 +596,11 @@ fn user_breakpoint_supersedes_a_coincident_exception_barrier() {
 
     let barrier = harness
         .inferior()
-        .barrier
-        .as_ref()
+        .run
+        .barrier()
         .expect("pending thread keeps barrier active");
-    assert_eq!(barrier.triggering_thread, breakpoint_thread);
-    assert_eq!(barrier.reason, Some(breakpoint));
+    assert_eq!(barrier.triggering_thread(), breakpoint_thread);
+    assert_eq!(barrier.reason(), Some(&breakpoint));
     assert!(harness.trace().take_actions().is_empty());
 }
 
@@ -1634,7 +1635,7 @@ impl WatchHarness {
         self.controller
             .session
             .inferior()
-            .and_then(|inferior| inferior.public_stop.as_ref())
+            .and_then(|inferior| inferior.run.stop())
             .expect("a public stop")
             .id
     }
@@ -1736,12 +1737,12 @@ impl WatchHarness {
     /// Marks every thread running inside a process-wide continue.
     pub(super) fn start_continue(&mut self) {
         let inferior = self.controller.session.inferior_mut().expect("inferior");
-        inferior.public_stop = None;
-        inferior.active = Some(ActiveExecution {
+        inferior.run = RunPhase::running(ActiveExecution {
             id: ExecutionId::new(2),
             kind: ActiveKind::Continue,
             scope: ResumeScope::Process(process_id(inferior.tgid)),
             resume_threads: inferior.threads.keys().copied().collect(),
+            repairs: VecDeque::new(),
         });
 
         for thread in inferior.threads.values_mut() {
@@ -1835,7 +1836,7 @@ impl WatchHarness {
         self.controller
             .session
             .inferior()
-            .and_then(|inferior| inferior.public_stop.as_ref())
+            .and_then(|inferior| inferior.run.stop())
             .map(|stop| stop.reason.clone())
     }
 }
@@ -1896,19 +1897,6 @@ fn watch_harness_keeping(
     };
 
     let mut inferior = Inferior {
-        public_stop: Some(PublicStop::new(
-            StopId::new(1),
-            pid,
-            StopReason::Pause,
-            BTreeMap::from([(
-                pid,
-                FramePresentation {
-                    instruction: VirtualAddress::new(0x10),
-                    frame: PresentedFrame::Physical,
-                    hidden_inline_frames: 2,
-                },
-            )]),
-        )),
         next_execution: 1,
         ..Inferior::new(
             InferiorOrigin::Launched,
@@ -1916,6 +1904,19 @@ fn watch_harness_keeping(
             LoadedModule::main(image.id(), crate::LoadBias::default()),
             threads.iter().map(|&pid| (pid, stopped())).collect(),
             None,
+            RunPhase::stopped(PublicStop::new(
+                StopId::new(1),
+                pid,
+                StopReason::Pause,
+                BTreeMap::from([(
+                    pid,
+                    FramePresentation {
+                        instruction: VirtualAddress::new(0x10),
+                        frame: PresentedFrame::Physical,
+                        hidden_inline_frames: 2,
+                    },
+                )]),
+            )),
         )
     };
 
@@ -2151,8 +2152,8 @@ fn new_threads_are_armed_before_they_first_run() {
             .threads
             .insert(child, TraceThread::starting(ExpectedStop::None));
         inferior
-            .active
-            .as_mut()
+            .run
+            .execution_mut()
             .expect("continue")
             .resume_threads
             .insert(child);
@@ -2368,15 +2369,15 @@ fn a_hit_while_stepping_over_a_breakpoint_completes_the_repair_and_stops() {
                 owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
             },
         );
-        inferior.repairs = VecDeque::from([RepairGroup {
-            address: site,
-            remaining: VecDeque::new(),
-            current: Some(pid),
-            site_removed: true,
-        }]);
     }
 
     harness.start_continue();
+    *harness.inferior().run.repairs_mut().expect("an execution") = VecDeque::from([RepairGroup {
+        address: site,
+        remaining: VecDeque::new(),
+        current: Some(pid),
+        site_removed: true,
+    }]);
     harness.thread(pid).expected = ExpectedStop::BreakpointRepair { address: site };
     harness.trace().take_actions();
     harness
@@ -2393,7 +2394,7 @@ fn a_hit_while_stepping_over_a_breakpoint_completes_the_repair_and_stops() {
 
     assert_eq!(hits[0].watchpoint, watchpoint.id);
     let inferior = harness.controller.session.inferior().expect("inferior");
-    assert!(inferior.repairs.is_empty());
+    assert!(inferior.run.repairs().is_empty());
     assert!(
         inferior.breakpoints[&site].installed,
         "the site is restored"
@@ -3342,8 +3343,10 @@ impl WatchHarness {
         traced.startup = Some(Startup::Attach { reply, rescans: 0 });
         let inferior = &mut traced.inferior;
         inferior.origin = InferiorOrigin::Attached;
-        inferior.public_stop = None;
-        inferior.barrier = Some(StopBarrier::visible(inferior.tgid, StopReason::Attach));
+        inferior.run = RunPhase::gathering(
+            None,
+            StopBarrier::visible(inferior.tgid, StopReason::Attach),
+        );
 
         for thread in inferior.threads.values_mut() {
             *thread = TraceThread::starting(ExpectedStop::InitialAttach);
@@ -3439,7 +3442,7 @@ fn an_attach_whose_seized_threads_die_traces_the_threads_left_before_ending() {
     let inferior = harness.inferior();
     inferior.threads.remove(&leader);
     inferior.unseized_threads.insert(leader);
-    inferior.barrier = Some(StopBarrier::visible(seized, StopReason::Attach));
+    inferior.run = RunPhase::gathering(None, StopBarrier::visible(seized, StopReason::Attach));
     let untraced = Pid::from_raw(5100);
     harness
         .trace()
@@ -3985,7 +3988,7 @@ fn the_invariant_check_finds_a_site_no_owner_holds() {
 fn the_invariant_check_finds_an_inferior_in_no_run_phase() {
     let mut harness = watch_harness(1);
     harness.controller.check_invariants();
-    harness.inferior().public_stop = None;
+    harness.inferior().run = RunPhase::idle();
     harness.controller.check_invariants();
 }
 
@@ -4693,7 +4696,7 @@ fn a_stop_whose_thread_sigkill_ends_while_it_is_handled_waits_for_the_exit() {
 
     harness.start_continue();
     let inferior = harness.inferior();
-    inferior.active.as_mut().expect("execution").kind =
+    inferior.run.execution_mut().expect("execution").kind =
         step_execution(stepping, StepKind::OverInstruction, StepStart::default());
     inferior.thread_mut(stepping).expect("thread").expected = ExpectedStop::UserStep {
         kind: StepKind::OverInstruction,
@@ -4830,12 +4833,12 @@ fn a_launch_killed_at_its_first_stop_ends_in_its_exit() {
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
     let inferior = harness.inferior();
-    inferior.public_stop = None;
-    inferior.active = Some(ActiveExecution {
+    inferior.run = RunPhase::running(ActiveExecution {
         id: ExecutionId::new(1),
         kind: ActiveKind::Launch,
         scope: ResumeScope::Process(process_id(pid)),
         resume_threads: BTreeSet::from([pid]),
+        repairs: VecDeque::new(),
     });
     let thread = inferior.thread_mut(pid).expect("thread");
     thread.state = NativeThreadState::Starting;
@@ -4878,7 +4881,7 @@ fn repairs_after_the_debuggers_own_kill_are_left_undone() {
     };
 
     let inferior = harness.inferior();
-    inferior.repairs = VecDeque::from([RepairGroup {
+    *inferior.run.repairs_mut().expect("an execution") = VecDeque::from([RepairGroup {
         address: VirtualAddress::new(0x40),
         remaining: VecDeque::from([running]),
         current: Some(repairing),
@@ -5035,7 +5038,7 @@ impl WatchHarness {
     pub(super) fn resume(&mut self) -> Result<ExecutionId> {
         let inferior = self.controller.session.inferior().expect("inferior");
         let process = process_id(inferior.tgid);
-        let stop = inferior.public_stop.as_ref().expect("public stop").id;
+        let stop = inferior.run.stop().expect("public stop").id;
         self.controller.begin_execution(
             process,
             stop,
@@ -5195,7 +5198,7 @@ fn a_co_hit_meeting_its_condition_turns_an_internal_stop_visible() {
         .controller
         .session
         .inferior()
-        .and_then(|inferior| inferior.public_stop.as_ref())
+        .and_then(|inferior| inferior.run.stop())
         .expect("published stop");
     assert_eq!(stop.triggering_thread, second);
     assert_eq!(harness.thread(first).reason, None);
@@ -5387,7 +5390,7 @@ fn a_breakpoint_hit_where_a_signal_interrupted_a_step_is_stepped_over() {
     let mut harness = hit_harness(1, "==2");
     let pid = harness.threads[0];
     let inferior = harness.inferior();
-    inferior.active.as_mut().expect("execution").kind =
+    inferior.run.execution_mut().expect("execution").kind =
         step_execution(pid, StepKind::Instruction, StepStart::default());
     inferior.thread_mut(pid).expect("thread").expected = ExpectedStop::UserStep {
         kind: StepKind::Instruction,
@@ -5557,7 +5560,7 @@ fn another_thread_at_a_stepping_plans_site_is_stepped_over_while_the_others_are_
     harness.start_continue();
     {
         let inferior = harness.inferior();
-        let active = inferior.active.as_mut().expect("execution");
+        let active = inferior.run.execution_mut().expect("execution");
         active.kind = step_execution(
             stepping,
             StepKind::OverSource,
@@ -5615,9 +5618,9 @@ fn another_thread_at_a_stepping_plans_site_is_stepped_over_while_the_others_are_
         "the stepping plan's site is never reported for another thread"
     );
     let inferior = harness.controller.session.inferior().expect("inferior");
-    assert!(inferior.barrier.is_none() && inferior.repairs.is_empty());
+    assert!(inferior.run.barrier().is_none() && inferior.run.repairs().is_empty());
     assert_eq!(
-        inferior.active.as_ref().map(|active| active.id),
+        inferior.run.execution().map(|active| active.id),
         Some(ExecutionId::new(2))
     );
 }
@@ -5643,7 +5646,7 @@ fn a_steps_site_shared_with_a_breakpoint_edited_while_running(
     harness.start_continue();
     {
         let inferior = harness.inferior();
-        let active = inferior.active.as_mut().expect("execution");
+        let active = inferior.run.execution_mut().expect("execution");
         let execution = active.id;
         active.kind = step_execution(
             stepping,
@@ -5764,7 +5767,7 @@ fn a_step_resumed_to_a_trap_edited_away_while_running(
     harness.start_continue();
     {
         let inferior = harness.inferior();
-        inferior.active.as_mut().expect("execution").kind =
+        inferior.run.execution_mut().expect("execution").kind =
             step_execution(stepping, StepKind::IntoSource, StepStart::default());
         inferior.thread_mut(stepping).expect("thread").expected = ExpectedStop::UserStep {
             kind: StepKind::IntoSource,
@@ -6207,7 +6210,7 @@ fn a_watch_enabled_while_its_stack_moves_stays_set_aside() {
 fn begin_task_step(harness: &mut WatchHarness, thread: Pid, task: crate::TaskId) {
     harness.start_continue();
     let inferior = harness.inferior();
-    let active = inferior.active.as_mut().expect("execution");
+    let active = inferior.run.execution_mut().expect("execution");
     let mut kind = step_execution(
         thread,
         StepKind::OverSource,
@@ -6266,7 +6269,7 @@ fn a_step_follows_its_task_to_another_thread_and_passes_the_others() {
     runtime.runs(first, 2);
     runtime.runs(moved, 1);
     runtime.runs(other, 3);
-    let owner = |harness: &mut WatchHarness| match &harness.inferior().active.as_ref()?.kind {
+    let owner = |harness: &mut WatchHarness| match &harness.inferior().run.execution()?.kind {
         ActiveKind::Step { owner, .. } => Some(owner.thread),
         _ => None,
     };
@@ -7521,7 +7524,7 @@ fn a_hit_on_a_watchpoint_removed_while_running_is_dropped() {
             .any(|event| matches!(event, DebuggerEvent::WatchpointsChanged { .. }))
     );
     let inferior = harness.controller.session.inferior().expect("inferior");
-    assert!(inferior.watch.watchpoints.is_empty() && inferior.barrier.is_none());
+    assert!(inferior.watch.watchpoints.is_empty() && inferior.run.barrier().is_none());
     assert!(
         inferior.threads.values().all(
             |thread| thread.state == NativeThreadState::Running && thread.watch_hits.is_empty()
@@ -7682,7 +7685,7 @@ fn a_store_that_changes_nothing_resumes_only_its_own_thread() {
     );
     assert_eq!(harness.published(), []);
     let inferior = harness.controller.session.inferior().expect("inferior");
-    assert!(inferior.barrier.is_none());
+    assert!(inferior.run.barrier().is_none());
     assert!(inferior.threads.values().all(|thread| {
         thread.state == NativeThreadState::Running && thread.watch_hits.is_empty()
     }));
@@ -7879,7 +7882,7 @@ fn a_change_undone_before_every_thread_stopped_lets_a_stepi_finish_once() {
         .expect("arm");
     harness.start_continue();
     let inferior = harness.inferior();
-    inferior.active.as_mut().expect("execution").kind =
+    inferior.run.execution_mut().expect("execution").kind =
         step_execution(stepping, StepKind::Instruction, StepStart::default());
     inferior.thread_mut(stepping).expect("thread").expected = ExpectedStop::UserStep {
         kind: StepKind::Instruction,
@@ -8025,7 +8028,7 @@ fn an_unchanged_store_while_stepping_over_a_breakpoint_finishes_the_repair_and_r
         );
         assert_eq!(harness.published(), []);
         let inferior = harness.controller.session.inferior().expect("inferior");
-        assert!(inferior.repairs.is_empty());
+        assert!(inferior.run.repairs().is_empty());
         assert_eq!(inferior.threads[&repairing].stopped_at_breakpoint, None);
     }
 }
@@ -8172,7 +8175,7 @@ fn repairing_harness_of(repairing: usize) -> WatchHarness {
     harness.start_continue();
     let (repairing, waiting) = (harness.threads[repairing], harness.threads[1 - repairing]);
     let inferior = harness.inferior();
-    inferior.repairs = VecDeque::from([RepairGroup {
+    *inferior.run.repairs_mut().expect("an execution") = VecDeque::from([RepairGroup {
         address: VirtualAddress::new(0x40),
         remaining: VecDeque::new(),
         current: Some(repairing),
@@ -8204,7 +8207,7 @@ fn a_step_whose_main_thread_exited_alone_runs_its_siblings_on() {
     let mut harness = repairing_harness_of(1);
     let (leader, repairing) = (harness.threads[0], harness.threads[1]);
     let inferior = harness.inferior();
-    let active = inferior.active.as_mut().expect("execution");
+    let active = inferior.run.execution_mut().expect("execution");
     active.kind = step_execution(leader, StepKind::IntoSource, StepStart::default());
     inferior.thread_mut(leader).expect("leader").state = NativeThreadState::Exiting;
     harness.trace().killed.borrow_mut().insert(leader);
@@ -8229,7 +8232,12 @@ fn an_exiting_thread_is_not_stepped_over_its_breakpoint() {
     let mut harness = repairing_harness_of(0);
     let (finished, exiting) = (harness.threads[0], harness.threads[1]);
     let inferior = harness.inferior();
-    inferior.repairs.front_mut().expect("group").remaining = VecDeque::from([exiting]);
+    inferior
+        .run
+        .repairs_mut()
+        .and_then(VecDeque::front_mut)
+        .expect("group")
+        .remaining = VecDeque::from([exiting]);
     let thread = inferior.thread_mut(exiting).expect("thread");
     thread.stopped_at_breakpoint = Some(VirtualAddress::new(0x40));
     thread.state = NativeThreadState::Exiting;
@@ -8462,8 +8470,7 @@ fn lost_frame_harness() -> WatchHarness {
     inferior
         .plan_sites
         .insert(execution, BTreeSet::from([site]));
-    inferior.public_stop = None;
-    inferior.active = Some(ActiveExecution {
+    inferior.run = RunPhase::running(ActiveExecution {
         id: execution,
         kind: step_execution(
             pid,
@@ -8483,6 +8490,7 @@ fn lost_frame_harness() -> WatchHarness {
         ),
         scope: ResumeScope::Thread(debug_thread_id(pid)),
         resume_threads: BTreeSet::from([pid]),
+        repairs: VecDeque::new(),
     });
     let thread = harness.thread(pid);
     thread.state = NativeThreadState::Running;
@@ -8628,7 +8636,7 @@ fn a_step_whose_thread_exits_while_an_edit_drops_the_other_reason_ends_in_its_ex
     let breakpoint = harness.add_breakpoint(0x40);
     harness.start_continue();
     let inferior = harness.inferior();
-    inferior.active.as_mut().expect("an execution").kind = step_execution(
+    inferior.run.execution_mut().expect("an execution").kind = step_execution(
         stepping,
         StepKind::OverSource,
         StepStart {
@@ -8929,7 +8937,7 @@ fn instruction_steps_work_where_the_inline_frame_is_ambiguous() {
     let pid = harness.threads[0];
     harness.trace().set_pc(pid, 0x1a);
     let inferior = harness.inferior();
-    let stop = inferior.public_stop.as_mut().expect("public stop");
+    let stop = inferior.run.stop_mut().expect("public stop");
     stop.presentations.insert(
         pid,
         FramePresentation {

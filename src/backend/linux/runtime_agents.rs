@@ -458,10 +458,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         if let Some(inferior) = self.session.inferior_mut() {
             // An internal stop starts the deadline as it resumes.
-            if inferior.active.is_some()
-                && inferior.public_stop.is_none()
-                && inferior.barrier.is_none()
-            {
+            if inferior.run.is_running() {
                 installation.start_deadline(Instant::now());
             }
             inferior.agents.insert(bound.id, installation);
@@ -526,8 +523,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         let preferred = inferior
-            .public_stop
-            .as_ref()
+            .run
+            .stop()
             .and_then(|stop| stop.selected_thread)
             .map(debug_thread_id);
 
@@ -768,11 +765,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let barrier = self
             .session
             .inferior_mut()
-            .and_then(|inferior| inferior.barrier.as_mut())
+            .and_then(|inferior| inferior.run.barrier_mut())
             .ok_or("the report has no all-stop barrier")?;
         // Unlike ArmAgents these reports cannot be coalesced: two generations
         // or runtimes may report before their siblings finish stopping.
-        barrier.edits.push(Edit::AgentReport {
+        barrier.queue(Edit::AgentReport {
             runtime,
             generation,
             failure,
@@ -791,17 +788,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             && let Some(barrier) = self
                 .session
                 .inferior_mut()
-                .and_then(|inferior| inferior.barrier.as_mut())
+                .and_then(|inferior| inferior.run.barrier_mut())
         {
             // As any other reason a barrier's threads give, it does not
             // displace one that stopped a thread first, as a breakpoint's.
-            let reason = crate::StopReason::RuntimeEvent { description };
-            if barrier.reason.as_ref().is_none_or(|current| {
-                super::classify::visible_stop_priority(&reason)
-                    > super::classify::visible_stop_priority(current)
-            }) {
-                barrier.reason = Some(reason);
-            }
+            barrier.offer(None, crate::StopReason::RuntimeEvent { description });
         }
 
         if self.sync_runtime_arming() {
@@ -1388,8 +1379,8 @@ mod tests {
                     .session
                     .inferior()
                     .unwrap()
-                    .public_stop
-                    .as_ref()
+                    .run
+                    .stop()
                     .unwrap()
                     .reason,
                 StopReason::Pause
@@ -1763,7 +1754,8 @@ mod tests {
                 .session
                 .inferior()
                 .unwrap()
-                .barrier
+                .run
+                .barrier()
                 .is_none()
         );
         assert!(
@@ -1792,7 +1784,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let inferior = harness.controller.session.inferior().unwrap();
         let process = super::super::process_id(inferior.tgid);
-        let stop = inferior.public_stop.as_ref().unwrap().id;
+        let stop = inferior.run.stop().unwrap().id;
         let first = super::super::debug_thread_id(inferior.tgid);
         let second = super::super::debug_thread_id(*inferior.threads.keys().last().unwrap());
         let mut model = ScriptedRuntime::default();
@@ -1845,8 +1837,8 @@ mod tests {
                 .session
                 .inferior()
                 .unwrap()
-                .public_stop
-                .as_ref()
+                .run
+                .stop()
                 .unwrap()
                 .id,
             stop

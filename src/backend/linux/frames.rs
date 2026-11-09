@@ -39,9 +39,9 @@ use super::{
 impl<P: InspectionOps> Controller<P> {
     pub(super) fn presentation_for_stopped_thread(&self, pid: Pid) -> Result<FramePresentation> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
-        validate_public_stop(inferior, inferior.public_stop.as_ref().map(|stop| stop.id))?;
+        validate_public_stop(inferior, inferior.run.stop().map(|stop| stop.id))?;
         validate_stopped_thread(inferior, pid)?;
-        let stop = inferior.public_stop.as_ref().ok_or(Error::NotStopped)?;
+        let stop = inferior.run.stop().ok_or(Error::NotStopped)?;
 
         // The triggering thread's presentation is cached when the stop is
         // published. Another thread is presented by its own stop reason, or
@@ -816,8 +816,8 @@ impl<P: InspectionOps> Controller<P> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         inferior
-            .public_stop
-            .as_mut()
+            .run
+            .stop_mut()
             .ok_or(Error::NotStopped)?
             .selected_frames
             .insert(context, frame);
@@ -838,7 +838,7 @@ impl<P: InspectionOps> Controller<P> {
         let thread = root.thread();
         let presentation = self.root_presentation(&root)?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let stop = inferior.public_stop.as_mut().ok_or(Error::NotStopped)?;
+        let stop = inferior.run.stop_mut().ok_or(Error::NotStopped)?;
         if let (Some(pid), Some(presentation)) = (thread, presentation) {
             stop.presentations.insert(pid, presentation);
         }

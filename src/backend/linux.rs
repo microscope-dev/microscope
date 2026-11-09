@@ -32,6 +32,7 @@ pub use inspector::InspectorMessage;
 use nix::errno::Errno;
 use nix::libc;
 use nix::unistd::Pid;
+use run_phase::{RunPhase, StopBarrier};
 use session::{Orphans, Session, Shutdown};
 use signals::SignalPolicies;
 pub use signals::{Signal, WaitEvent};
@@ -123,6 +124,7 @@ mod recorded;
 mod registers;
 mod returns;
 mod run_control;
+mod run_phase;
 mod runtime_agents;
 mod runtime_steps;
 mod runtimes;
@@ -788,6 +790,10 @@ struct ActiveExecution {
     kind: ActiveKind,
     scope: ResumeScope,
     resume_threads: BTreeSet<Pid>,
+
+    /// Threads stopped at breakpoint sites that step over them, one site at
+    /// a time, before the execution's threads run.
+    repairs: VecDeque<RepairGroup>,
 }
 
 struct RepairGroup {
@@ -795,41 +801,6 @@ struct RepairGroup {
     remaining: VecDeque<Pid>,
     current: Option<Pid>,
     site_removed: bool,
-}
-
-/// Stops every thread of the inferior, then either publishes a stop or,
-/// when no thread produced a visible reason, applies its edits and resumes
-/// the active execution as if nothing happened.
-struct StopBarrier {
-    triggering_thread: Pid,
-
-    /// The stop to publish, or `None` while the stop is internal.
-    reason: Option<StopReason>,
-
-    /// Whether a client paused, so the stop is published as a pause when
-    /// every reason it would have published is dropped.
-    paused: bool,
-
-    /// Why the active execution ended during the stop, such as its
-    /// stepping thread exiting. The execution cannot resume, so the stop
-    /// publishes this when every other reason is dropped.
-    ended: Option<StopReason>,
-
-    /// Client edits applied once every thread is stopped.
-    edits: Vec<Edit>,
-}
-
-impl StopBarrier {
-    /// A barrier that publishes `reason` from `triggering_thread`.
-    fn visible(triggering_thread: Pid, reason: StopReason) -> Self {
-        Self {
-            triggering_thread,
-            paused: reason == StopReason::Pause,
-            reason: Some(reason),
-            ended: None,
-            edits: Vec::new(),
-        }
-    }
 }
 
 /// A breakpoint or watchpoint change that needs every thread stopped.
@@ -1076,10 +1047,7 @@ struct Inferior {
     /// shares, and so must be reinstalled when the last window closes.
     traps_lifted: bool,
     waiter: Option<Waiter>,
-    active: Option<ActiveExecution>,
-    repairs: VecDeque<RepairGroup>,
-    barrier: Option<StopBarrier>,
-    public_stop: Option<PublicStop>,
+    run: RunPhase,
     next_execution: u64,
 
     /// Why the program an exec replaced the main program with is not
@@ -1151,6 +1119,7 @@ impl Inferior {
         loaded_module: LoadedModule,
         threads: BTreeMap<Pid, TraceThread>,
         waiter: Option<Waiter>,
+        run: RunPhase,
     ) -> Self {
         Self {
             origin,
@@ -1172,10 +1141,7 @@ impl Inferior {
             vfork_windows: BTreeMap::new(),
             traps_lifted: false,
             waiter,
-            active: None,
-            repairs: VecDeque::new(),
-            barrier: None,
-            public_stop: None,
+            run,
             next_execution: 0,
             unfollowed_exec: None,
             loader_site: None,
@@ -1225,7 +1191,7 @@ impl Inferior {
             ExpectedStop::BreakpointRepair { .. }
                 | ExpectedStop::AwaitBreakpoint { .. }
                 | ExpectedStop::UserStep { .. }
-        ) || self.active.as_ref().is_some_and(|active| {
+        ) || self.run.execution().is_some_and(|active| {
             matches!(active.kind, ActiveKind::Step { .. })
                 || matches!(active.scope, ResumeScope::Thread(_))
         })
@@ -1262,12 +1228,12 @@ impl Inferior {
     /// Returns whether the thread's breakpoint repair step was interrupted,
     /// in which case execution must advance to the next repair.
     fn forget_thread(&mut self, pid: Pid, status: &ExitStatus) -> bool {
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.run.execution_mut() {
             active.resume_threads.remove(&pid);
         }
 
         let mut interrupted = false;
-        for group in &mut self.repairs {
+        for group in self.run.repairs_mut().into_iter().flatten() {
             group.remaining.retain(|&waiting| waiting != pid);
             if group.current == Some(pid) {
                 group.current = None;
@@ -1275,7 +1241,7 @@ impl Inferior {
             }
         }
 
-        if let Some(stop) = self.public_stop.as_mut() {
+        if let Some(stop) = self.run.stop_mut() {
             stop.presentations.remove(&pid);
             if stop.selected_thread == Some(pid) {
                 stop.selected_thread = None;
@@ -1290,21 +1256,10 @@ impl Inferior {
             .find(|(_, thread)| matches!(thread.state, NativeThreadState::Stopped))
             .or_else(|| others().next())
             .map(|(&pid, _)| pid);
-        if let Some(barrier) = self
-            .barrier
-            .as_mut()
-            .filter(|barrier| barrier.triggering_thread == pid)
+        if let Some(barrier) = self.run.barrier_mut()
             && let Some(replacement) = replacement
         {
-            barrier.triggering_thread = replacement;
-
-            // An internal stop stays internal.
-            if barrier.reason.is_some() {
-                barrier.reason = Some(StopReason::ThreadExited {
-                    thread_id: debug_thread_id(pid),
-                    status: status.clone(),
-                });
-            }
+            barrier.thread_exited(pid, replacement, status);
         }
 
         interrupted
@@ -1312,9 +1267,9 @@ impl Inferior {
 
     /// The edits an internal stop holds until every thread stopped.
     fn take_pending_edits(&mut self) -> Vec<Edit> {
-        self.barrier
-            .as_mut()
-            .map(|barrier| std::mem::take(&mut barrier.edits))
+        self.run
+            .barrier_mut()
+            .map(StopBarrier::take_edits)
             .unwrap_or_default()
     }
 
@@ -1344,8 +1299,9 @@ impl Inferior {
         thread.trapped_at = None;
 
         let group = self
-            .repairs
-            .front_mut()
+            .run
+            .repairs_mut()
+            .and_then(VecDeque::front_mut)
             .filter(|group| group.address == address && group.current == Some(pid))
             .ok_or_else(|| {
                 backend_error(LinuxError::UnexpectedWait(format!(
@@ -3141,10 +3097,10 @@ impl<P: InspectionOps> Controller<P> {
         };
 
         let process_id = process_id(inferior.tgid);
-        let state = inferior.public_stop.as_ref().map_or_else(
+        let state = inferior.run.stop().map_or_else(
             || InferiorState::Running {
                 process_id,
-                execution_id: inferior.active.as_ref().map(|active| active.id),
+                execution_id: inferior.run.execution().map(|active| active.id),
             },
             |stop| InferiorState::Stopped {
                 process_id,
@@ -3182,11 +3138,11 @@ impl<P: InspectionOps> Controller<P> {
         StateSnapshot {
             revision: self.revision,
             inferior: state,
-            stop_id: inferior.public_stop.as_ref().map(|stop| stop.id),
-            selected: inferior.public_stop.as_ref().map(|stop| stop.selected),
-            selected_frame: inferior.public_stop.as_ref().map(selected_frame),
+            stop_id: inferior.run.stop().map(|stop| stop.id),
+            selected: inferior.run.stop().map(|stop| stop.selected),
+            selected_frame: inferior.run.stop().map(selected_frame),
             threads,
-            presentation: inferior.public_stop.as_ref().and_then(|stop| {
+            presentation: inferior.run.stop().and_then(|stop| {
                 stop.selected_thread
                     .and_then(|pid| stop.presentations.get(&pid))
                     .cloned()
@@ -3207,7 +3163,7 @@ impl<P: InspectionOps> Controller<P> {
     /// and threads that every stopped request would otherwise pay for.
     fn stopped_selection(&self) -> Result<crate::StoppedSelection> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
-        let stop = inferior.public_stop.as_ref().ok_or(Error::NotStopped)?;
+        let stop = inferior.run.stop().ok_or(Error::NotStopped)?;
         Ok(crate::StoppedSelection {
             process: process_id(inferior.tgid),
             stop: stop.id,
@@ -3272,7 +3228,7 @@ fn validate_process(inferior: &Inferior, requested: ProcessId) -> Result<()> {
 }
 
 fn validate_public_stop(inferior: &Inferior, requested: Option<StopId>) -> Result<()> {
-    match (&inferior.public_stop, requested) {
+    match (inferior.run.stop(), requested) {
         (Some(current), Some(requested)) if current.id == requested => Ok(()),
         (Some(_), Some(_)) => Err(Error::StaleStop),
         (Some(_), None) => Ok(()),
@@ -3283,8 +3239,8 @@ fn validate_public_stop(inferior: &Inferior, requested: Option<StopId>) -> Resul
 /// Rejects execution from a stop that cannot be resumed safely.
 fn validate_resumable(inferior: &Inferior) -> Result<()> {
     if inferior
-        .public_stop
-        .as_ref()
+        .run
+        .stop()
         .is_some_and(|stop| matches!(stop.reason, StopReason::Unclassifiable { .. }))
     {
         return Err(Error::UnclassifiableStop);

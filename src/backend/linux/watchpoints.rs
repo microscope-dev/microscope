@@ -68,7 +68,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
                 // A target is armed only at the stop that resolved it, not
                 // at a later stop or while the inferior runs.
-                if inferior.public_stop.as_ref().map(|stop| stop.id) != Some(target.stop_id) {
+                if inferior.run.stop().map(|stop| stop.id) != Some(target.stop_id) {
                     return Err(Error::StaleStop);
                 }
 
@@ -724,11 +724,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 StopReason::Watchpoint { hits: hits.into() }
             };
 
-            if let Some(barrier) = inferior.barrier.as_mut()
-                && barrier.triggering_thread == pid
-                && matches!(barrier.reason, Some(StopReason::Watchpoint { .. }))
-            {
-                barrier.reason = Some(reason.clone());
+            if let Some(barrier) = inferior.run.barrier_mut() {
+                barrier.restate_watchpoint(pid, &reason);
             }
 
             thread.reason = Some(reason);

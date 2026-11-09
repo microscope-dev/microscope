@@ -177,7 +177,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         number: u64,
         incomplete: Option<Arc<str>>,
     ) -> Option<StopReason> {
-        let active = self.session.inferior()?.active.as_ref()?;
+        let active = self.session.inferior()?.run.execution()?;
         match active.kind {
             ActiveKind::RuntimeStep {
                 owner,
@@ -213,7 +213,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.session.inferior() else {
             return false;
         };
-        let Some(active) = inferior.active.as_ref() else {
+        let Some(active) = inferior.run.execution() else {
             return false;
         };
         let ActiveKind::RuntimeStep {
@@ -301,8 +301,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(activation) = inferior
-            .active
-            .as_ref()
+            .run
+            .execution()
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } if !start.running_on => start.activation,
                 _ => None,
@@ -333,8 +333,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn returned_into_unlined_code(&self, pid: Pid) -> Result<bool> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let Some(activation) = inferior
-            .active
-            .as_ref()
+            .run
+            .execution()
             .and_then(|active| match &active.kind {
                 ActiveKind::Step { start, .. } if !start.running_on => start.activation,
                 _ => None,
@@ -372,17 +372,17 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
         let visible = inferior
-            .barrier
-            .as_ref()
-            .is_some_and(|barrier| barrier.reason.is_some())
+            .run
+            .barrier()
+            .is_some_and(|barrier| barrier.reason().is_some())
             || inferior
                 .threads
                 .values()
                 .any(|thread| thread.reason.is_some());
         let Some((owner, requested)) =
             inferior
-                .active
-                .as_ref()
+                .run
+                .execution()
                 .and_then(|active| match &active.kind {
                     ActiveKind::Step {
                         owner, requested, ..
@@ -447,7 +447,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             if let Some(active) = controller
                 .session
                 .inferior_mut()
-                .and_then(|inferior| inferior.active.as_mut())
+                .and_then(|inferior| inferior.run.execution_mut())
             {
                 active.kind = ActiveKind::RuntimeStep {
                     owner,
@@ -467,7 +467,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
     ) -> Option<StepKind> {
         let inferior = self.session.inferior()?;
-        let active = inferior.active.as_ref()?;
+        let active = inferior.run.execution()?;
         let ActiveKind::RuntimeStep { owner, kind, .. } = active.kind else {
             return None;
         };
@@ -484,7 +484,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let runtime = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.active.as_ref())
+            .and_then(|inferior| inferior.run.execution())
             .and_then(|active| match active.kind {
                 ActiveKind::RuntimeStep { runtime, .. } => Some(runtime),
                 _ => None,

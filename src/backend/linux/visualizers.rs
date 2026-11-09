@@ -100,11 +100,7 @@ impl<P: InspectionOps> Controller<P> {
     /// stored, with no breakpoint's trap among them.
     fn read_block(&self, address: u64, length: u64) -> Result<Arc<[u8]>> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
-        let pid = inferior
-            .public_stop
-            .as_ref()
-            .ok_or(Error::NotStopped)?
-            .reader();
+        let pid = inferior.run.stop().ok_or(Error::NotStopped)?.reader();
         let size = usize::try_from(length).map_err(|_| Error::AddressOverflow)?;
         let read = read_logical_block(
             &self.ptrace,

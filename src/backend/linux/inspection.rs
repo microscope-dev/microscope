@@ -206,10 +206,7 @@ impl<P: InspectionOps> Controller<P> {
 
                 // A step out's stop shows what the finished function
                 // returned beside the frame it returned to.
-                if let Some(returned) = inferior
-                    .public_stop
-                    .as_ref()
-                    .and_then(|stop| stop.returned.as_ref())
+                if let Some(returned) = inferior.run.stop().and_then(|stop| stop.returned.as_ref())
                 {
                     variables.extend(self.returned_variables(
                         returned,
@@ -634,8 +631,8 @@ pub(super) const fn variable_context(
 /// none at all for values read at a breakpoint hit.
 fn public_stop_id(inferior: &Inferior) -> StopId {
     inferior
-        .public_stop
-        .as_ref()
+        .run
+        .stop()
         .map_or_else(|| StopId::new(0), |stop| stop.id)
 }
 

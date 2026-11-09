@@ -44,14 +44,8 @@ impl<P: InspectionOps> Controller<P> {
     /// Once launched or attached, and until shutdown, the inferior is
     /// always running an execution, gathering a stop, or stopped.
     fn check_run_phase(&self, inferior: &Inferior) {
-        if self.shutdown.is_some() || self.session.starting() {
-            return;
-        }
-
         debug_assert!(
-            inferior.active.is_some()
-                || inferior.barrier.is_some()
-                || inferior.public_stop.is_some(),
+            !inferior.run.is_idle() || self.shutdown.is_some() || self.session.starting(),
             "inferior {} runs no execution, gathers no stop, and has no stop published",
             inferior.tgid
         );
@@ -332,7 +326,7 @@ impl Inferior {
             "the traps are lifted with no vfork window open to reinstall them"
         );
 
-        for group in &self.repairs {
+        for group in self.run.repairs() {
             let site = self.breakpoints.get(&group.address);
             debug_assert!(
                 site.is_some(),
@@ -384,7 +378,7 @@ impl Inferior {
             if !shutting_down {
                 debug_assert!(
                     !matches!(thread.state, NativeThreadState::StopRequested)
-                        || self.barrier.is_some(),
+                        || self.run.barrier().is_some(),
                     "thread {id} was asked to stop with no stop in progress"
                 );
             }
@@ -404,7 +398,7 @@ impl Inferior {
             );
         }
 
-        if !shutting_down && let Some(active) = &self.active {
+        if !shutting_down && let Some(active) = self.run.execution() {
             for pid in &active.resume_threads {
                 debug_assert!(
                     self.threads.contains_key(pid),
@@ -415,18 +409,14 @@ impl Inferior {
             }
         }
 
-        if let Some(barrier) = &self.barrier {
+        if let Some(barrier) = self.run.barrier()
+            && !shutting_down
+        {
             debug_assert!(
-                !barrier.paused || barrier.reason.is_some(),
-                "a paused stop has no reason to publish"
+                self.threads.contains_key(&barrier.triggering_thread()),
+                "the stop in progress was triggered by thread {}, which is gone",
+                debug_thread_id(barrier.triggering_thread())
             );
-            if !shutting_down {
-                debug_assert!(
-                    self.threads.contains_key(&barrier.triggering_thread),
-                    "the stop in progress was triggered by thread {}, which is gone",
-                    debug_thread_id(barrier.triggering_thread)
-                );
-            }
         }
 
         if !shutting_down {
@@ -439,27 +429,10 @@ impl Inferior {
     }
 
     fn check_stop(&self) {
-        let Some(stop) = &self.public_stop else {
+        let Some(stop) = self.run.stop() else {
             return;
         };
 
-        debug_assert!(
-            self.barrier.is_none(),
-            "stop {} is published while another stop is in progress",
-            stop.id
-        );
-        debug_assert!(
-            self.active.as_ref().is_none(),
-            "stop {} is published while execution {:?} is active",
-            stop.id,
-            self.active.as_ref().map(|active| active.id)
-        );
-        debug_assert!(
-            self.repairs.is_empty(),
-            "stop {} is published with {} breakpoint repairs outstanding",
-            stop.id,
-            self.repairs.len()
-        );
         for &pid in stop.presentations.keys() {
             debug_assert!(
                 self.threads.contains_key(&pid),
@@ -494,7 +467,7 @@ impl Inferior {
             }
         }
 
-        if self.barrier.is_some() {
+        if self.run.barrier().is_some() {
             return;
         }
 
