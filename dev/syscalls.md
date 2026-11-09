@@ -314,6 +314,13 @@ its path, which the evaluator exposes as `$arg0`–`$arg5`, `$ret`, and
 call, including the step over a breakpoint's trap, has to pass through the
 call's two stops; `catchpoints.rs` handles that case.
 
+Two threads can reach caught calls at once, as when both return from
+`clone3`. One stop reports both: the stop names one thread, and each
+thread's snapshot carries its own call as its reason. A test that waits
+for one thread's catch must look at every thread's reason, not only at the
+thread the stop names. The simulator's `CatchCoHit` mark reaches this, and
+catch accounting fails a run that resumes such a thread unreported.
+
 The simulator models catch stops with numbered K-SYS rules, each documented
 and pinned by a dual run in `src/sim/conformance/kernel.rs`.
 

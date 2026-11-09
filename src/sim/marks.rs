@@ -362,6 +362,9 @@ marks! {
     /// A step ended at a catchpoint.
     CatchStepStop,
 
+    /// A published stop reported two threads at caught calls.
+    CatchCoHit,
+
     /// The decoder read a call from the model of the tracepoint stream.
     TraceDecoded,
 

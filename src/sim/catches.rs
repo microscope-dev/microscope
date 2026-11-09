@@ -170,6 +170,10 @@ pub fn judge(
         });
     }
 
+    if marks.len() > 1 {
+        marks.push(Mark::CatchCoHit);
+    }
+
     Ok(marks)
 }
 

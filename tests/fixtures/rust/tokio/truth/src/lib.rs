@@ -155,8 +155,16 @@ pub fn thread_parked(tid: i32) -> bool {
         stat.rsplit_once(") ")
             .is_some_and(|(_, rest)| rest.starts_with('S'))
     });
-    let in_futex = std::fs::read_to_string(format!("{task}/syscall"))
-        .is_ok_and(|syscall| syscall.split_whitespace().next() == Some("202"));
+    // A timed wait that a debugger's stop interrupted goes on in
+    // `restart_syscall`, still in the futex.
+    let in_futex = std::fs::read_to_string(format!("{task}/syscall")).is_ok_and(|syscall| {
+        match syscall.split_whitespace().next() {
+            Some("202") => true,
+            Some("219") => std::fs::read_to_string(format!("{task}/wchan"))
+                .is_ok_and(|wchan| wchan.starts_with("futex")),
+            _ => false,
+        }
+    });
     sleeping && in_futex
 }
 
