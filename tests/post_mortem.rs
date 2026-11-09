@@ -2234,6 +2234,18 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
 /// stack that ends whole.
 #[tokio::test]
 async fn a_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
+    cores_stacks_moved_into_unused_stack_do_not_end_whole("crash-gcc-o0-segv.core", 1 + WORKERS)
+        .await;
+}
+
+/// The same under musl, whose records, with the auxiliary vector the core
+/// saved, bound it too.
+#[tokio::test]
+async fn a_musl_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
+    cores_stacks_moved_into_unused_stack_do_not_end_whole("tls-modules-musl-gcc-o0.core", 3).await;
+}
+
+async fn cores_stacks_moved_into_unused_stack_do_not_end_whole(name: &str, threads: u64) {
     use microscope::{StackFrameId, StopContext};
 
     /// Where `elf_prstatus` keeps the registers, and where among them
@@ -2264,10 +2276,9 @@ async fn a_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
         ends
     }
 
-    let name = "crash-gcc-o0-segv.core";
     let mut reference = open_core(name);
     let before = terminations(&mut reference).await;
-    assert_eq!(before.len() as u64, 1 + WORKERS);
+    assert_eq!(before.len() as u64, threads);
     assert!(
         before.iter().all(|end| *end == UnwindTermination::Complete),
         "{before:?}"

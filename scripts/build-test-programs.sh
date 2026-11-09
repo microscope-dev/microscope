@@ -1506,6 +1506,9 @@ for version_node in "12.4 22" "13.6 24" "14.6 26"; do
 done
 build_fixture gcc "$c_fixtures_dir/attach-threads.c" "$output_dir/attach-threads" \
     -O0 -g3 -fPIE -pie -pthread
+build_fixture musl-gcc "$c_fixtures_dir/attach-threads.c" "$output_dir/attach-threads-musl" \
+    -O0 -g3 -fPIE -pie -pthread
+require_musl "$output_dir/attach-threads-musl"
 build_fixture gcc "$c_fixtures_dir/attach-sleepers.c" "$output_dir/attach-sleepers" \
     -O0 -g3 -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/attach-clones.c" "$output_dir/attach-clones" \
@@ -2193,6 +2196,13 @@ build_fixture gcc "$c_fixtures_dir/spin.c" "$output_dir/spin" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/threads.c" "$output_dir/threads" \
     -O0 -g3 -fPIE -pie -pthread
+# musl's clone, in its libc.so and linked into the program.
+build_fixture musl-gcc "$c_fixtures_dir/threads.c" "$output_dir/threads-musl" \
+    -O0 -g3 -fPIE -pie -pthread
+build_fixture musl-gcc "$c_fixtures_dir/threads.c" "$output_dir/threads-musl-static" \
+    -O0 -g3 -static -pthread
+require_musl "$output_dir/threads-musl"
+require_musl "$output_dir/threads-musl-static"
 build_fixture gcc "$c_fixtures_dir/process-environment.c" "$output_dir/process-environment" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/output-streams.c" "$output_dir/output-streams" \

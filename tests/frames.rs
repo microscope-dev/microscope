@@ -1636,19 +1636,44 @@ async fn revealing_an_inline_frame_without_running_selects_the_innermost_frame()
 /// first instruction, on a stack that holds nothing else.
 #[tokio::test]
 async fn both_threads_of_glibcs_clone_unwind_whole_from_its_system_call() {
+    both_threads_of_clone_unwind_whole("threads", "clone3").await;
+}
+
+/// musl's `__clone` has no call-frame information at all. The caller
+/// returns from it with the stack it called it with; the new thread clears
+/// rbp, pops its argument, and calls its start function, which never
+/// returns to it.
+#[tokio::test]
+async fn both_threads_of_musls_clone_unwind_whole_from_its_system_call() {
+    both_threads_of_clone_unwind_whole("threads-musl", "clone").await;
+}
+
+/// The same, with musl linked into the program.
+#[tokio::test]
+async fn both_threads_of_a_static_musls_clone_unwind_whole_from_its_system_call() {
+    both_threads_of_clone_unwind_whole("threads-musl-static", "clone").await;
+}
+
+/// Runs `fixture`, a build of `threads.c`, and unwinds each thread that
+/// stops right after the system call `call` a thread is created with, and
+/// each worker at `worker_breakpoint`. Every stack ends whole: the creating
+/// thread's in `main`, the new thread's at its one frame, and a worker's
+/// through its start.
+async fn both_threads_of_clone_unwind_whole(fixture: &str, call: &str) {
     use microscope::syscalls::{Abi, SyscallId};
     use microscope::{BreakpointSpec, CatchPhase, InferiorState, StopContext, UnwindTermination};
 
-    let mut scenario = Scenario::launch("threads");
-    let clone3 = SyscallId::named(Abi::X86_64, "clone3").expect("x86-64 names clone3");
+    let mut scenario = Scenario::launch(fixture);
+    let id = SyscallId::named(Abi::X86_64, call).expect("x86-64 names the call");
     let catchpoint = scenario
         .operation(
-            "catch clone3",
+            "catch the call",
             scenario
                 .handle()
-                .add_catchpoint([clone3].into(), CatchPhase::Exit, None),
+                .add_catchpoint([id].into(), CatchPhase::Exit, None),
         )
         .await;
+    scenario.add_breakpoint("worker_breakpoint").await;
     assert!(matches!(
         scenario.run_to_stop().await,
         StopReason::Syscall(_)
@@ -1658,8 +1683,9 @@ async fn both_threads_of_glibcs_clone_unwind_whole_from_its_system_call() {
         .expect("a thread's frame has an instruction");
 
     // Each thread at the system call's return, by whether it is the new one,
-    // where clone3 returned zero.
-    let (mut parent, mut child) = (0, 0);
+    // where the call returned zero.
+    let (mut parent, mut child, mut workers) = (0, 0, 0);
+    let mut caught = false;
     loop {
         let snapshot = scenario.snapshot().await;
         let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
@@ -1672,6 +1698,18 @@ async fn both_threads_of_glibcs_clone_unwind_whole_from_its_system_call() {
                 frame: StackFrameId::INNERMOST,
             });
             let trace = scenario.operation("backtrace", view.backtrace()).await;
+            if function_name(&trace.frames[0]) == Some("worker_breakpoint") {
+                assert_eq!(trace.termination, UnwindTermination::Complete, "{trace:#?}");
+                assert!(
+                    trace
+                        .frames
+                        .iter()
+                        .any(|frame| function_name(frame) == Some("worker")),
+                    "{trace:#?}"
+                );
+                workers += 1;
+                continue;
+            }
             if trace.frames[0].instruction != Some(tail) {
                 continue;
             }
@@ -1700,12 +1738,13 @@ async fn both_threads_of_glibcs_clone_unwind_whole_from_its_system_call() {
                 parent += 1;
             }
         }
-        if child > 0 {
+        if child > 0 && workers > 0 {
             break;
         }
 
         // The second thread's creation passes the same instruction.
-        if parent == 1 {
+        if !caught {
+            caught = true;
             scenario
                 .operation(
                     "remove the catchpoint",

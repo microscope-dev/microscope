@@ -42,13 +42,14 @@ pub(in crate::debug_info) enum CodeFrame {
     Based { offset: u64, below: Below },
 
     /// The process's entry point, which the kernel jumps to with no
-    /// return address: the frame has no caller.
+    /// return address, or the code musl's new thread starts in: the frame
+    /// has no caller.
     Outermost,
 
-    /// glibc's `clone` or `clone3` from its system call to its return,
-    /// which both threads run: in the new one, where the call returned
-    /// zero in rax, the outermost frame; in the caller, the frame it was
-    /// called with.
+    /// glibc's `clone` or `clone3` from its system call to its return, or
+    /// musl's `__clone` to its branch to the new thread's code, which both
+    /// threads run: in the new one, where the call returned zero in rax,
+    /// the outermost frame; in the caller, the frame it was called with.
     Clone,
 }
 
@@ -666,6 +667,91 @@ pub(in crate::debug_info) fn clone_return(
     })
 }
 
+/// The frames of musl's `__clone`, when `code`, a function's at `address`,
+/// is exactly it (`src/thread/x86_64/clone.s`), which has no call-frame
+/// information:
+///
+/// ```text
+///     xor eax, eax
+///     mov al, SYS_clone
+///     ...                   ; moves the arguments, writes the new stack
+///     syscall               ; Clone from here
+///     test eax, eax
+///     jnz 1f
+///     xor ebp, ebp          ; Outermost from here, in the new thread only
+///     pop rdi
+///     call r9               ; to the thread's start, which never returns
+///     mov edi, eax
+///     xor eax, eax
+///     mov al, SYS_exit
+///     syscall
+///     hlt
+/// 1:  ret                   ; the caller's frame again
+/// ```
+///
+/// Nothing before `ret` moves rsp or writes rbp in the caller, so its
+/// return address stays at rsp. The new thread starts after `syscall` on
+/// its new stack, where rax is zero, and clears rbp to mark the outermost
+/// frame, as the psABI asks.
+pub(in crate::debug_info) fn musl_clone(
+    code: &[u8],
+    address: u64,
+) -> Option<Vec<(AddressRange<ImageAddress>, u32)>> {
+    #[rustfmt::skip]
+    const CLONE: [u8; 57] = [
+        0x31, 0xc0,             // xor eax, eax
+        0xb0, 0x38,             // mov al, 56
+        0x49, 0x89, 0xfb,       // mov r11, rdi
+        0x48, 0x89, 0xd7,       // mov rdi, rdx
+        0x4c, 0x89, 0xc2,       // mov rdx, r8
+        0x4d, 0x89, 0xc8,       // mov r8, r9
+        0x4c, 0x8b, 0x54, 0x24, 0x08, // mov r10, [rsp+8]
+        0x4d, 0x89, 0xd9,       // mov r9, r11
+        0x48, 0x83, 0xe6, 0xf0, // and rsi, -16
+        0x48, 0x83, 0xee, 0x08, // sub rsi, 8
+        0x48, 0x89, 0x0e,       // mov [rsi], rcx
+        0x0f, 0x05,             // syscall
+        0x85, 0xc0,             // test eax, eax
+        0x75, 0x0f,             // jnz 1f
+        0x31, 0xed,             // xor ebp, ebp
+        0x5f,                   // pop rdi
+        0x41, 0xff, 0xd1,       // call r9
+        0x89, 0xc7,             // mov edi, eax
+        0x31, 0xc0,             // xor eax, eax
+        0xb0, 0x3c,             // mov al, 60
+        0x0f, 0x05,             // syscall
+        0xf4,                   // hlt
+        0xc3,                   // 1: ret
+    ];
+    const SYSCALL: u64 = 35;
+    const CHILD: u64 = 41;
+    const RETURN: u64 = 56;
+
+    if !code.starts_with(&CLONE) {
+        return None;
+    }
+
+    let caller = CodeFrame::Stack {
+        pushed: 0,
+        caller_frame_pointer: CallerFramePointer::Kept,
+    };
+    [
+        (0, SYSCALL, caller),
+        (SYSCALL, CHILD, CodeFrame::Clone),
+        (CHILD, RETURN, CodeFrame::Outermost),
+        (RETURN, CLONE.len() as u64, caller),
+    ]
+    .into_iter()
+    .map(|(start, end, frame)| {
+        let range = AddressRange {
+            start: ImageAddress::new(address.checked_add(start)?),
+            end: ImageAddress::new(address.checked_add(end)?),
+        };
+        Some((range, frame.encode()?))
+    })
+    .collect()
+}
+
 /// `push rbp; mov rbp, rsp`, the prologue of a function that keeps the
 /// frame-pointer chain.
 pub(in crate::debug_info) const PROLOGUE: [u8; 4] = [0x55, 0x48, 0x89, 0xe5];
@@ -987,6 +1073,60 @@ mod tests {
         let mut longer = clone3;
         longer[13] = 0x02;
         assert_eq!(range(&longer), None);
+    }
+
+    /// musl 1.2.5's `__clone`, byte for byte: the caller's frame to its
+    /// system call and at its return, the clone frame to its branch, and
+    /// the new thread's outermost frame from there.
+    #[test]
+    fn only_musls_whole_clone_is_proved() {
+        let clone = [
+            0x31, 0xc0, 0xb0, 0x38, 0x49, 0x89, 0xfb, 0x48, 0x89, 0xd7, 0x4c, 0x89, 0xc2, 0x4d,
+            0x89, 0xc8, 0x4c, 0x8b, 0x54, 0x24, 0x08, 0x4d, 0x89, 0xd9, 0x48, 0x83, 0xe6, 0xf0,
+            0x48, 0x83, 0xee, 0x08, 0x48, 0x89, 0x0e, 0x0f, 0x05, 0x85, 0xc0, 0x75, 0x0f, 0x31,
+            0xed, 0x5f, 0x41, 0xff, 0xd1, 0x89, 0xc7, 0x31, 0xc0, 0xb0, 0x3c, 0x0f, 0x05, 0xf4,
+            0xc3,
+        ];
+        let frames = |code: &[u8]| {
+            musl_clone(code, 0x1000).map(|frames| {
+                frames
+                    .into_iter()
+                    .map(|(range, value)| {
+                        (
+                            range.start.get(),
+                            range.end.get(),
+                            CodeFrame::decode(value).expect("a frame"),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let caller = CodeFrame::Stack {
+            pushed: 0,
+            caller_frame_pointer: CallerFramePointer::Kept,
+        };
+        assert_eq!(
+            frames(&clone),
+            Some(vec![
+                (0x1000, 0x1023, caller),
+                (0x1023, 0x1029, CodeFrame::Clone),
+                (0x1029, 0x1038, CodeFrame::Outermost),
+                (0x1038, 0x1039, caller),
+            ])
+        );
+        // Code after the function changes nothing.
+        let mut followed = clone.to_vec();
+        followed.extend([0xcc; 7]);
+        assert_eq!(frames(&followed), frames(&clone));
+
+        // fork (57) instead, the return cut off, or the child keeping rbp.
+        let mut fork = clone;
+        fork[3] = 0x39;
+        assert_eq!(frames(&fork), None);
+        assert_eq!(frames(&clone[..56]), None);
+        let mut kept = clone;
+        kept[41..43].copy_from_slice(&[0x90, 0x90]);
+        assert_eq!(frames(&kept), None);
     }
 
     /// The new thread, where clone returned zero, has no caller; the

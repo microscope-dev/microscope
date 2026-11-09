@@ -389,9 +389,19 @@ async fn invalid_or_missing_attach_targets_fail_without_starting_a_session() {
 /// frame's caller reads zero, it ends incomplete.
 #[tokio::test]
 async fn an_attached_threads_stack_moved_into_unused_stack_does_not_end_whole() {
+    attached_stacks_moved_into_unused_stack_do_not_end_whole("attach-threads").await;
+}
+
+/// The same under musl, whose records bound it too.
+#[tokio::test]
+async fn an_attached_musl_threads_stack_moved_into_unused_stack_does_not_end_whole() {
+    attached_stacks_moved_into_unused_stack_do_not_end_whole("attach-threads-musl").await;
+}
+
+async fn attached_stacks_moved_into_unused_stack_do_not_end_whole(fixture: &str) {
     use microscope::{EvaluationMode, Expression, InspectionLimits, StackFrameId, StopContext};
 
-    let mut child = support::ExternalProcess::spawn(&Scenario::fixture("attach-threads"));
+    let mut child = support::ExternalProcess::spawn(&Scenario::fixture(fixture));
     let mut scenario = Scenario::attached("attach threads", child.attach().await);
     let snapshot = scenario.snapshot().await;
     let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {

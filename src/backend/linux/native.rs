@@ -121,6 +121,13 @@ pub(super) trait InspectionOps {
 
     fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct>;
 
+    /// The auxiliary vector the kernel gave `pid`'s process, as it kept
+    /// it, without its terminating entry, or `None` where this target
+    /// does not say.
+    fn auxv(&self, _pid: Pid) -> Option<Vec<(u64, u64)>> {
+        None
+    }
+
     /// Whether the byte at `address` is the one the process held, rather
     /// than one a core dump's producer saved but never wrote.
     fn memory_written(&self, _address: u64) -> bool {
@@ -535,6 +542,20 @@ impl InspectionOps for LinuxPtrace {
     fn registers(&self, pid: Pid) -> Result<libc::user_regs_struct> {
         self.assert_owner_thread();
         ptrace::getregs(pid).map_err(|error| backend_error(LinuxError::System(error)))
+    }
+
+    fn auxv(&self, pid: Pid) -> Option<Vec<(u64, u64)>> {
+        let bytes = fs::read(format!("/proc/{pid}/auxv")).ok()?;
+        let (words, _) = bytes.as_chunks::<8>();
+        Some(
+            words
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[key, value]| (u64::from_le_bytes(*key), u64::from_le_bytes(*value)))
+                .take_while(|&(key, _)| key != 0)
+                .collect(),
+        )
     }
 
     fn floating_registers(&self, pid: Pid) -> Result<Fxsave> {

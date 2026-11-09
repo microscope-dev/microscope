@@ -268,6 +268,10 @@ impl CoreDump {
         })
     }
 
+    pub(super) fn auxv(&self) -> &[(u64, u64)] {
+        &self.auxv
+    }
+
     pub(super) fn auxv_value(&self, key: u64) -> Option<u64> {
         self.auxv
             .iter()

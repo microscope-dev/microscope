@@ -136,6 +136,10 @@ impl<P: InspectionOps> InspectionOps for Recorded<P> {
         self.0.registers(pid)
     }
 
+    fn auxv(&self, pid: Pid) -> Option<Vec<(u64, u64)>> {
+        self.0.auxv(pid)
+    }
+
     fn floating_registers(&self, pid: Pid) -> Result<Fxsave> {
         self.0.floating_registers(pid)
     }

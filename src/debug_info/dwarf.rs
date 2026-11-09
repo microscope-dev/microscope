@@ -2491,6 +2491,9 @@ fn undescribed_frames(
             let offset = usize::try_from(address - start).ok()?;
             let length = usize::try_from(end - address).ok()?;
             let code = code.get(offset..offset.checked_add(length)?)?;
+            if let Some(frames) = super::x86_64::frames::musl_clone(code, address) {
+                return Some(frames);
+            }
             // A function that begins by linking its frame was built to keep
             // the chain, so each call its paths do not reach, as the cases
             // of a jump table, keeps it too.

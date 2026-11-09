@@ -713,36 +713,165 @@ mod tests {
             registers: &[(DwarfRegister, u64)],
             words: &[u64],
         ) -> (Vec<u64>, StackEnd) {
-            let stack = words
-                .iter()
-                .flat_map(|word| word.to_le_bytes())
-                .collect::<Vec<_>>();
-
-            let modules = [UnwindModule {
-                loaded: LoadedModule {
-                    id: ModuleId::new(1),
-                    image: ModuleImageId::new(1),
-                    load_bias: crate::LoadBias::default(),
-                    window: None,
-                },
-                image: &self.info.image,
-                unwind: self.info.unwind.as_ref(),
-            }];
-
-            let (frames, end) = unwind_sample(
-                &modules[..],
-                &mut FrameRules::default(),
-                SampledState {
-                    registers,
-                    stack: &stack,
-                    chain: &[rip, self.returns_to],
-                },
-                16,
-            );
-
-            let addresses = frames.iter().map(|frame| frame.address.get()).collect();
-            (addresses, end)
+            unwind_in(&self.info, registers, words, &[rip, self.returns_to])
         }
+    }
+
+    /// Unwinds a sample of the program `info` describes, loaded where it
+    /// was linked, with `registers`, the stack `words`, and the kernel's
+    /// `chain`.
+    fn unwind_in(
+        info: &crate::debug_info::DebugInfo,
+        registers: &[(DwarfRegister, u64)],
+        words: &[u64],
+        chain: &[u64],
+    ) -> (Vec<u64>, StackEnd) {
+        let stack = words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect::<Vec<_>>();
+
+        let modules = [UnwindModule {
+            loaded: LoadedModule {
+                id: ModuleId::new(1),
+                image: ModuleImageId::new(1),
+                load_bias: crate::LoadBias::default(),
+                window: None,
+            },
+            image: &info.image,
+            unwind: info.unwind.as_ref(),
+        }];
+
+        let (frames, end) = unwind_sample(
+            &modules[..],
+            &mut FrameRules::default(),
+            SampledState {
+                registers,
+                stack: &stack,
+                chain,
+            },
+            16,
+        );
+
+        let addresses = frames.iter().map(|frame| frame.address.get()).collect();
+        (addresses, end)
+    }
+
+    /// A statically linked program's clone function, which no call-frame
+    /// information describes after its system call.
+    struct Clone {
+        info: crate::debug_info::DebugInfo,
+
+        /// Just past its system call, where both threads return.
+        tail: u64,
+
+        /// Just past a call to it, where it returns in its caller.
+        returns_to: u64,
+    }
+
+    impl Clone {
+        fn new(program: &str, function: &str) -> Self {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("build/test-programs")
+                .join(program);
+            let data = std::fs::read(&path).expect("build the test programs");
+            let info =
+                crate::debug_info::load_bytes(&path, &data).expect("load its debug information");
+            let file = object::File::parse(&*data).expect("parse it");
+            let text = file.section_by_name(".text").expect("a text section");
+            let instructions = Decoder::with_ip(
+                64,
+                text.data().expect("text bytes"),
+                text.address(),
+                DecoderOptions::NONE,
+            )
+            .iter()
+            .collect::<Vec<_>>();
+            let start = file
+                .symbols()
+                .find(|symbol| symbol.name() == Ok(function))
+                .expect("the clone function")
+                .address();
+
+            let tail = instructions
+                .iter()
+                .find(|instruction| {
+                    instruction.ip() >= start && instruction.mnemonic() == Mnemonic::Syscall
+                })
+                .expect("its system call")
+                .next_ip();
+            let returns_to = instructions
+                .iter()
+                .find(|instruction| {
+                    instruction.mnemonic() == Mnemonic::Call
+                        && instruction.near_branch_target() == start
+                })
+                .expect("a call to it")
+                .next_ip();
+
+            Self {
+                info,
+                tail,
+                returns_to,
+            }
+        }
+
+        /// Unwinds a sample at the tail with `rax`, or none, from a stack
+        /// whose one word copied is `top`.
+        fn unwind(&self, rax: Option<u64>, top: u64) -> (Vec<u64>, StackEnd) {
+            let mut registers = vec![
+                (RETURN_ADDRESS, self.tail),
+                (RSP, 0x7000_0000),
+                (RBP, 0x7100_0000),
+            ];
+            registers.extend(rax.map(|rax| (crate::unwind::RAX, rax)));
+            unwind_in(&self.info, &registers, &[top], &[self.tail])
+        }
+    }
+
+    /// A sample where clone returns: the new thread, where rax is zero,
+    /// has no caller; the thread that called it goes on to its caller from
+    /// the return address at its stack pointer, as far as the copy holds.
+    /// Without rax the two cannot be told apart, and the stack ends there.
+    fn both_threads_of_a_sampled_clone_unwind_as_the_debuggers(clone: &Clone) {
+        let arguments = 0x7000_0040;
+        assert_eq!(
+            clone.unwind(Some(0), arguments),
+            (vec![clone.tail], StackEnd::Complete)
+        );
+
+        for rax in [1234, (-38_i64).cast_unsigned()] {
+            let (frames, end) = clone.unwind(Some(rax), clone.returns_to);
+            assert_eq!(frames, [clone.tail, clone.returns_to - 1], "rax {rax:#x}");
+            assert_eq!(
+                end,
+                StackEnd::Truncated(Truncation::StackCopyExhausted, None)
+            );
+        }
+
+        assert_eq!(
+            clone.unwind(None, clone.returns_to),
+            (
+                vec![clone.tail],
+                StackEnd::Truncated(Truncation::InvalidCaller, Some(0))
+            )
+        );
+    }
+
+    #[test]
+    fn both_threads_of_a_sampled_glibc_clone_unwind_as_the_debuggers() {
+        both_threads_of_a_sampled_clone_unwind_as_the_debuggers(&Clone::new(
+            "tls-modules-gcc-static",
+            "__clone3",
+        ));
+    }
+
+    #[test]
+    fn both_threads_of_a_sampled_musl_clone_unwind_as_the_debuggers() {
+        both_threads_of_a_sampled_clone_unwind_as_the_debuggers(&Clone::new(
+            "threads-musl-static",
+            "__clone",
+        ));
     }
 
     /// A sample in an epilogue, after a register was popped whose rules

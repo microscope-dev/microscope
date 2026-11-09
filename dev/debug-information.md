@@ -397,6 +397,25 @@ stack that holds nothing else, so its frame is the outermost; the caller,
 where rax is the child's id or an error, with the frame it was called with,
 its return address at rsp.
 
+musl's `__clone` has no CFI at all, and without help the proof from its
+entry takes `syscall` for a call that returns to the same frame, in both
+threads, and stops at the new thread's `pop rdi`, so its start function's
+return address, where every musl thread's stack ends, has no rule. Only a
+function whose bytes are all of musl 1.2.5's `__clone` gets its frames
+written out instead: the caller's up to `syscall` and at `ret`, `Clone`
+from `syscall` to its `jnz`, and `Outermost` from the new thread's
+`xor ebp, ebp` on. The function is found by its symbol, so a stripped musl
+leaves it unproved.
+
+Every source of samples carries rax: perf's sampled registers include it,
+and the syscall tracer's BPF records copy it from the thread's saved
+registers, where it is `-ENOSYS` in a thread still inside `clone` and zero
+in the new one. So the sampled unwinder tells the two threads apart as the
+debugger does. Only `unwind::frame_pointer_rule`, which asks each rule with
+rbp and rsp alone, finds a `Clone` frame `NotKept`, as it finds any frame
+found from the stack pointer; the range holds no call, so no return
+address lands in it.
+
 A sample taken in a signal trampoline after its handler returned unwinds by
 the trampoline's role, from the `ucontext` at its stack pointer, as a
 handler's caller does: musl's `__restore_rt` has no CFI.
@@ -428,8 +447,16 @@ see, one it attached to or a core's, glibc's records stand in for it
 `__libc_stack_end`, and another thread's descriptor, at its thread pointer,
 is at the top of its stack, just above where it began, when the
 descriptor's `tid` names that thread. glibc marks neither end with a zero.
-Elsewhere, as under musl or for a thread raw `clone` made without its own
-descriptor, only the second bound holds. So does a profiler
+musl's records are not ABI, so each is used only where another fact
+proves it. Its first thread's is `__libc.auxv`, which musl's own
+`pthread_getattr_np` takes for the top of that stack, when the words there
+are the auxiliary vector the kernel kept (`/proc/PID/auxv`, or the core's
+`NT_AUXV`). Another thread's descriptor holds the top of the stack it began
+below, at offset 0x58, when its `tid`, at 0x30, names that thread. Those
+are musl 1.2.5's offsets; only the `tid` check guards them against another
+version's layout.
+Elsewhere, as for a thread raw `clone` made without its own descriptor,
+only the second bound holds. So does a profiler
 sample (`src/unwind/sample.rs`), which carries no thread's start; below its
 bound the stack goes on by the kernel's chain where that can follow it.
 

@@ -205,6 +205,10 @@ impl InspectionOps for CoreTarget {
         self.memory.core().written(address)
     }
 
+    fn auxv(&self, _pid: Pid) -> Option<Vec<(u64, u64)>> {
+        Some(self.memory.core().auxv().to_vec())
+    }
+
     fn read_block(&self, _pid: Pid, address: u64, size: usize) -> Option<Vec<u8>> {
         let mut bytes = vec![0; size];
         self.memory
