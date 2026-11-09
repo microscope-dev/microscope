@@ -334,24 +334,13 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     );
 
     let summary = tab.ok("profile", json!({"profile": id})).await;
-    assert_eq!(summary["samples"], kept, "{summary}");
     assert_eq!(
-        summary["samples"]
-            .as_u64()
-            .map(|kept| kept + summary["lost"].as_u64().expect("lost")),
-        Some(6),
-        "{summary}"
+        (&summary["samples"], &summary["lost"]),
+        (&json!(kept), &json!(6 - kept))
     );
     assert_eq!(summary["unit"], "executions");
     let threads = summary["threads"].as_array().expect("threads");
-    let served: std::collections::BTreeMap<u64, u64> = threads
-        .iter()
-        .map(|thread| {
-            let field = |name: &str| thread[name].as_u64().expect("a number");
-            (field("tid"), field("samples"))
-        })
-        .collect();
-    assert_eq!(served, by_thread, "{summary}");
+    assert_eq!(samples_by_thread(threads), by_thread, "{summary}");
 
     // Every call ends in leaf, under main's descent or the worker's.
     let everything = tree(&mut tab, json!({"profile": id})).await;
@@ -433,6 +422,17 @@ async fn a_profile_is_served_as_trees_functions_and_a_timeline() {
     assert_eq!(kind, "invalid");
     assert!(message.contains("nothing"), "{message}");
     tab.save_traffic("profile");
+}
+
+/// Each served thread's samples, by its thread id.
+fn samples_by_thread(threads: &[Value]) -> std::collections::BTreeMap<u64, u64> {
+    threads
+        .iter()
+        .map(|thread| {
+            let field = |name: &str| thread[name].as_u64().expect("a number");
+            (field("tid"), field("samples"))
+        })
+        .collect()
 }
 
 /// The summary names the recorded command; Inspect, its file and every
