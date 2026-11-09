@@ -422,8 +422,14 @@ records when it sees the thread start. It ends a stack complete only where
 its caller would lie above that and above the frame's own stack pointer.
 Lower, the zero is in memory the thread's own frames use, where no call
 writes one, as when a stack pointer was moved into unused stack, so the walk
-ends with `InvalidCaller`. A thread whose start the debugger did not see,
-such as one it attached to, has only the second bound.
+ends with `InvalidCaller`. For a thread whose start the debugger did not
+see, one it attached to or a core's, glibc's records stand in for it
+(`src/backend/linux/stack_start.rs`): the first thread's is
+`__libc_stack_end`, and another thread's descriptor, at its thread pointer,
+is at the top of its stack, just above where it began, when the
+descriptor's `tid` names that thread. glibc marks neither end with a zero.
+Elsewhere, as under musl or for a thread raw `clone` made without its own
+descriptor, only the second bound holds.
 
 A core dump can leave out a thread's stack while still listing it as saved.
 `gcore`, and a kernel that skips pages it cannot read, write such a range as

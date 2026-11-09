@@ -130,6 +130,7 @@ mod session;
 mod signals;
 #[cfg(any(test, feature = "sim"))]
 pub mod sim_edge;
+mod stack_start;
 mod stack_watches;
 mod step_targets;
 mod stepping;

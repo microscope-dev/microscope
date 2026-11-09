@@ -2226,3 +2226,94 @@ async fn vdso_images_the_dump_lost_are_missing_rather_than_guessed() {
         scenario.shutdown().await;
     }
 }
+
+/// Each thread's stack in a core ends whole, though the debugger never saw
+/// a thread start; glibc's records bound where a zero return address may
+/// end it. The same core with every thread's stack and frame pointers
+/// moved down into unused stack, where a frame's caller reads zero, has no
+/// stack that ends whole.
+#[tokio::test]
+async fn a_cores_stacks_moved_into_unused_stack_do_not_end_whole() {
+    use microscope::{StackFrameId, StopContext};
+
+    /// Where `elf_prstatus` keeps the registers, and where among them
+    /// x86-64's rbp and rsp are.
+    const REGISTERS: usize = 112;
+    const RBP: usize = 4;
+    const RSP: usize = 19;
+
+    async fn terminations(scenario: &mut Scenario) -> Vec<UnwindTermination> {
+        let snapshot = scenario.snapshot().await;
+        let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
+            panic!("not stopped: {:?}", snapshot.inferior);
+        };
+        let mut ends = Vec::new();
+        for thread in snapshot.threads.iter() {
+            let view = scenario.handle().at(StopContext {
+                stop: stop_id,
+                execution: thread.id.into(),
+                frame: StackFrameId::INNERMOST,
+            });
+            ends.push(
+                scenario
+                    .operation("backtrace", view.backtrace())
+                    .await
+                    .termination,
+            );
+        }
+        ends
+    }
+
+    let name = "crash-gcc-o0-segv.core";
+    let mut reference = open_core(name);
+    let before = terminations(&mut reference).await;
+    assert_eq!(before.len() as u64, 1 + WORKERS);
+    assert!(
+        before.iter().all(|end| *end == UnwindTermination::Complete),
+        "{before:?}"
+    );
+    reference.shutdown().await;
+
+    let mut bytes = fs::read(core(name)).expect("read fixture");
+    let header = elf::FileHeader64::<Endianness>::parse(bytes.as_slice()).expect("core header");
+    let endian = header.endian().expect("core endianness");
+    let mut statuses = Vec::new();
+    for program in header
+        .program_headers(endian, bytes.as_slice())
+        .expect("program headers")
+    {
+        let Some(mut notes) = program
+            .notes(endian, bytes.as_slice())
+            .expect("the core's notes")
+        else {
+            continue;
+        };
+        while let Some(note) = notes.next().expect("a note") {
+            if note.n_type(endian) == elf::NT_PRSTATUS {
+                let offset = note.desc().as_ptr() as usize - bytes.as_ptr() as usize;
+                statuses.push(offset + REGISTERS);
+            }
+        }
+    }
+    assert_eq!(statuses.len(), before.len());
+    for registers in statuses {
+        let word = |index: usize| registers + index * 8..registers + index * 8 + 8;
+        let stack = u64::from_le_bytes(bytes[word(RSP)].try_into().unwrap());
+        let moved = (stack - 0x8000).to_le_bytes();
+        bytes[word(RSP)].copy_from_slice(&moved);
+        bytes[word(RBP)].copy_from_slice(&moved);
+    }
+
+    let directory = ScratchDir::new("post-mortem-moved-stacks");
+    let path = directory.path().join("moved.core");
+    fs::write(&path, bytes).expect("write the core");
+    let mut scenario = Scenario::open_core("moved stacks", &CoreDumpOptions::new(path));
+    let after = terminations(&mut scenario).await;
+    assert!(
+        after
+            .iter()
+            .all(|end| matches!(end, UnwindTermination::InvalidCaller { .. })),
+        "{after:?}"
+    );
+    scenario.shutdown().await;
+}

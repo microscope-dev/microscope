@@ -1883,8 +1883,10 @@ pub(super) struct DwarfCallerProvider<'a> {
     pub(super) memory: PtraceMemory<'a>,
     pub(super) first: bool,
 
-    /// The stack pointer the thread began with, while the frames are on
-    /// the stack it began on; see [`DwarfCallerProvider::zero_return_address`].
+    /// The stack pointer the thread began with, or for a thread whose
+    /// start the debugger did not see an address glibc says is no lower,
+    /// while the frames are on the stack it began on; see
+    /// [`DwarfCallerProvider::zero_return_address`].
     pub(super) stack_start: Option<u64>,
 
     /// The code runtimes own as the process says, which keeps the
@@ -1918,7 +1920,8 @@ impl<P: InspectionOps> Controller<P> {
             stack_start: inferior
                 .threads
                 .get(&pid)
-                .and_then(|thread| thread.stack_start),
+                .and_then(|thread| thread.stack_start)
+                .or_else(|| self.unseen_stack_start(inferior, pid)),
             runtime_code: self
                 .runtime_process_code(inferior, runtimes, pid)
                 .into_iter()

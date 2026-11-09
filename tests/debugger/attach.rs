@@ -382,3 +382,69 @@ async fn invalid_or_missing_attach_targets_fail_without_starting_a_session() {
         .await
         .expect("shutdown replacement debugger");
 }
+
+/// A thread the debugger attached to has no start it saw, so glibc's own
+/// records bound where a zero return address may end its stack. Each
+/// thread's stack ends whole, and moved down into unused stack, where the
+/// frame's caller reads zero, it ends incomplete.
+#[tokio::test]
+async fn an_attached_threads_stack_moved_into_unused_stack_does_not_end_whole() {
+    use microscope::{EvaluationMode, Expression, InspectionLimits, StackFrameId, StopContext};
+
+    let mut child = support::ExternalProcess::spawn(&Scenario::fixture("attach-threads"));
+    let mut scenario = Scenario::attached("attach threads", child.attach().await);
+    let snapshot = scenario.snapshot().await;
+    let InferiorState::Stopped { stop_id, .. } = snapshot.inferior else {
+        panic!("not stopped: {:?}", snapshot.inferior);
+    };
+    assert_eq!(snapshot.threads.len(), 3);
+
+    for thread in snapshot.threads.iter() {
+        let view = scenario.handle().at(StopContext {
+            stop: stop_id,
+            execution: thread.id.into(),
+            frame: StackFrameId::INNERMOST,
+        });
+        let before = scenario.operation("backtrace", view.backtrace()).await;
+        assert_eq!(
+            before.termination,
+            UnwindTermination::Complete,
+            "{before:#?}"
+        );
+
+        let assign = |text: String| async move {
+            let expression = Expression::parse(&text).expect("an expression");
+            let assigned = view
+                .evaluate_with(
+                    &expression,
+                    EvaluationMode::Assign,
+                    InspectionLimits::default(),
+                )
+                .await;
+            assert!(
+                matches!(assigned, Ok(microscope::Evaluation::Value { .. })),
+                "{text}: {assigned:?}"
+            );
+        };
+        let registers = scenario.operation("registers", view.registers()).await;
+        let stack = register_u64(&registers, RegisterRole::StackPointer);
+        let frame = register_u64(&registers, RegisterRole::FramePointer);
+        let moved = stack - 0x8000;
+        assign(format!("$rsp = {moved:#x}")).await;
+        assign(format!("$rbp = {moved:#x}")).await;
+
+        let after = scenario.operation("backtrace", view.backtrace()).await;
+        assert!(
+            matches!(after.termination, UnwindTermination::InvalidCaller { .. }),
+            "thread {}: {after:#?}",
+            thread.id
+        );
+
+        assign(format!("$rsp = {stack:#x}")).await;
+        assign(format!("$rbp = {frame:#x}")).await;
+    }
+
+    child.release();
+    scenario.shutdown().await;
+    assert_eq!(exit_code(child), Some(0));
+}
