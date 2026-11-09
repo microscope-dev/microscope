@@ -2265,6 +2265,8 @@ build_fixture gcc "$c_fixtures_dir/memfd-exec.c" "$output_dir/memfd-exec" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/fork.c" "$output_dir/fork" \
     -O0 -g3 -fPIE -pie
+build_fixture gcc "$c_fixtures_dir/fork-orphans.c" "$output_dir/fork-orphans" \
+    -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/vfork.c" "$output_dir/vfork" \
     -O0 -g3 -fPIE -pie
 build_fixture gcc "$c_fixtures_dir/vfork-threads.c" "$output_dir/vfork-threads" \

@@ -24,6 +24,7 @@ while read -r class file text; do
 done <<'LIST'
 poll     tests/breakpoint_states.rs                   tokio::time::sleep(Duration::from_millis(1)).await;
 parked   tests/debugger/attach.rs                     std::process::Command::new("sh").args(["-c", "sleep 30"]),
+poll     tests/debugger/forks.rs                      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 poll     tests/debugger/group.rs                      std::thread::sleep(Duration::from_millis(1));
 poll     tests/debugger/group.rs                      tokio::time::sleep(Duration::from_millis(10)).await;
 poll     tests/debugger/group.rs                      tokio::time::sleep(Duration::from_millis(1)).await;

@@ -1,4 +1,5 @@
 mod lifecycle;
+mod pids;
 mod run_phase;
 mod session_model;
 

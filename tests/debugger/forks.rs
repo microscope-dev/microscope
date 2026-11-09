@@ -78,3 +78,30 @@ async fn a_sibling_blocked_during_a_vfork_is_resumed_under_its_traps() {
 
     scenario.shutdown().await;
 }
+
+/// Children of a program that exits without waiting for them each run
+/// `shared_work`, whose trap they inherited, to a clean exit, and the
+/// session ends without waiting on them.
+#[tokio::test]
+async fn children_a_program_leaves_behind_run_their_inherited_traps_cleanly() {
+    let done = support::ScratchDir::new("fork-orphans");
+    let mut scenario = Scenario::launch("fork-orphans");
+    scenario.add_breakpoint("shared_work").await;
+    assert_eq!(
+        scenario
+            .run_with_to_stop(LaunchOptions {
+                arguments: vec![done.path().into()],
+                ..LaunchOptions::default()
+            })
+            .await,
+        StopReason::Exited(ExitStatus::Code(0))
+    );
+    scenario.shutdown().await;
+
+    let finished = || std::fs::read_dir(done.path()).map_or(0, Iterator::count);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while finished() < 8 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(finished(), 8, "every child ran past its trap");
+}
