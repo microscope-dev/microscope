@@ -780,7 +780,12 @@ fn drive(
             // A snapshot asked for more often than the drain's own pace
             // is taken when due, not at the next drain.
             let due = snapshots.iter().map(Snapshots::due_in).min();
-            let wait = due.map_or(wait, |due| wait.min(due));
+            // A drain that stopped at a module to load goes on at once.
+            let wait = if processor.stopped_at_load() {
+                Duration::ZERO
+            } else {
+                due.map_or(wait, |due| wait.min(due))
+            };
             // Paused, the rings fill too slowly to need waking for, and
             // waiting on the program alone costs a fraction of a poll of
             // every ring, and still ends the recording when it exits.
@@ -795,10 +800,12 @@ fn drive(
         drained_at = std::time::Instant::now();
         {
             let _span = crate::span!("record drain");
-            processor.ingest_drained(
-                |blocks| drained = events.drain_blocks(blocks),
-                (!finished).then_some(watermark),
-            );
+            let drain = |blocks: &mut perf::Blocks| drained = events.drain_blocks(blocks);
+            if probes.is_some() && !finished {
+                processor.ingest_drained_after_probes(drain, watermark);
+            } else {
+                processor.ingest_drained(drain, (!finished).then_some(watermark));
+            }
         }
         record!("record: drained {drained} bytes, finished {finished}");
         for (start, end) in events.behind(None) {
@@ -820,14 +827,22 @@ fn drive(
                 probes.drain(processor);
             }
         }
+        // The debug information of what the drain stopped at loads once
+        // the collector has read the instrumentation it found.
+        processor.load_stopped();
 
         if let Some(end) = disabled_at {
             break end;
         }
 
-        for snapshots in &mut snapshots {
-            let sampling = pacer.as_ref().is_none_or(Pacer::sampling);
-            snapshots.when_due(processor, events, sampling);
+        // A snapshot reads the program's modules as processed, which a
+        // drain stopped at a module to load has not finished: it waits for
+        // the next drain, at once.
+        if !processor.stopped_at_load() {
+            for snapshots in &mut snapshots {
+                let sampling = pacer.as_ref().is_none_or(Pacer::sampling);
+                snapshots.when_due(processor, events, sampling);
+            }
         }
 
         // A program's trigger saves the window as microscope's does.

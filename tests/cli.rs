@@ -350,13 +350,32 @@ fn record_probes_held(
     held: &str,
     arguments: &[&std::ffi::OsStr],
 ) -> (Child, BufReader<std::process::ChildStdout>) {
+    let mut program = Command::new(fixture("build/test-programs/probes"));
+    program.args(arguments);
+    record_held(scratch, held, &program)
+}
+
+/// `microscope record` of `program`, with its arguments and environment,
+/// while the test holds the debug-information load of the module named
+/// `held`: the running recording, and the program's output.
+fn record_held(
+    scratch: &support::ScratchDir,
+    held: &str,
+    program: &Command,
+) -> (Child, BufReader<std::process::ChildStdout>) {
     fs::write(scratch.path().join(format!("{held}.hold")), "").expect("hold the load");
-    let mut child = microscope_command()
+    let mut command = microscope_command();
+    for (name, value) in program.get_envs() {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    let mut child = command
         .args(["record", "-o"])
         .arg(scratch.path().join("held.usprof"))
         .arg("--")
-        .arg(fixture("build/test-programs/probes"))
-        .args(arguments)
+        .arg(program.get_program())
+        .args(program.get_args())
         .env("MICROSCOPE_TEST_HOLD_LOADS", scratch.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -377,6 +396,15 @@ fn assert_probes_read(recorded: &Output) {
             && !stderr.contains("microscope last read its instrumentation"),
         "{stderr}"
     );
+}
+
+/// The flake's CPython `version`.
+fn cpython(version: &str) -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("MICROSCOPE_CPYTHON").expect("MICROSCOPE_CPYTHON names the interpreters"),
+    )
+    .join(version)
+    .join("python")
 }
 
 /// The next line the program printed, which must be there.
@@ -414,17 +442,34 @@ fn release_held_after_exit(
 
 /// A program that exits before microscope found its instrumentation lost
 /// what it recorded, and the recording says so as it ends and in its
-/// report, rather than showing no zones.
+/// report, rather than showing no zones. Here microscope is busy loading
+/// the interpreter, mapped before the library that holds the probes, as a
+/// cold load of a large one keeps it.
 #[test]
 fn a_program_that_exits_before_its_instrumentation_is_read_is_reported() {
     let scratch = support::ScratchDir::new("cli-probes-unread");
-    let (child, mut output) = record_probes_held(&scratch, "probes", &["hasty".as_ref()]);
+    let python = cpython("3.14");
+    let held = fs::canonicalize(&python).expect("the interpreter");
+    let held = held.file_name().expect("its name").to_string_lossy();
+    let mut program = Command::new(&python);
+    program
+        .args([
+            "-c",
+            "import os, microscope\nprint('PID', os.getpid(), flush=True)\n\
+             with microscope.zone('hasty'): pass\n",
+        ])
+        .env("PYTHONPATH", fixture("sdk/python"))
+        .env(
+            "MICROSCOPE_PROBES_LIBRARY",
+            fixture("build/test-programs/libmicroscope_probes_c.so"),
+        );
+    let (child, mut output) = record_held(&scratch, &held, &program);
     let pid: u32 = next_line(&mut output)
         .strip_prefix("PID ")
         .and_then(|pid| pid.parse().ok())
         .expect("the program's pid");
 
-    let (stderr, report) = release_held_after_exit(&scratch, "probes", pid, child);
+    let (stderr, report) = release_held_after_exit(&scratch, &held, pid, child);
     let said = format!("pid {pid} exited before microscope read its instrumentation");
     assert!(stderr.contains(&said), "{stderr}");
     assert!(report.contains(&said), "{report}");
@@ -474,6 +519,46 @@ fn a_program_that_exits_long_after_its_last_read_is_reported() {
         "{line}"
     );
     assert!(report.contains(&said), "{report}");
+}
+
+/// microscope reads a program's instrumentation before its debug
+/// information loads: the program is found while the load of its own
+/// module is held, and once that load and the program go on, every zone is
+/// read.
+#[test]
+fn a_program_is_found_before_its_debug_information_loads() {
+    let scratch = support::ScratchDir::new("cli-probes-found-early");
+    let library = scratch.path().join("library.so");
+    fs::copy(
+        fixture("build/test-programs/libelf-symbols-gcc.so"),
+        &library,
+    )
+    .expect("copy a library to load");
+    let (mut child, mut output) =
+        record_probes_held(&scratch, "probes", &["late".as_ref(), library.as_os_str()]);
+
+    // The program says its pid once found.
+    assert!(next_line(&mut output).starts_with("PID "));
+    assert!(
+        scratch.path().join("probes.hold").exists(),
+        "found only once the load was let go"
+    );
+    assert_eq!(next_line(&mut output), "MAPPED");
+
+    support::wait_until("microscope holds the load", || {
+        scratch.path().join("probes.held").exists()
+    });
+    fs::remove_file(scratch.path().join("probes.hold")).expect("release the load");
+    let mut stdin = child.stdin.take().expect("the program's input");
+    writeln!(stdin, "go").expect("release the program");
+    drop(stdin);
+
+    let recorded = child.wait_with_output().expect("wait for microscope");
+    assert!(recorded.status.success(), "{recorded:?}");
+    assert_probes_read(&recorded);
+    let profile = scratch.path().join("held.usprof");
+    let report = assert_success(microscope(&["report", &profile.to_string_lossy()]));
+    assert!(report.contains("in 2 zones from 2 sites."), "{report}");
 }
 
 /// report's reshaping flags apply in the order given, a bare flag among

@@ -332,6 +332,7 @@ mod tests {
             v8: false,
             code_keepers: std::sync::OnceLock::new(),
             copied: None,
+            pending: None,
         }
     }
 

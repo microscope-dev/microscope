@@ -221,6 +221,18 @@ struct Image {
     /// copies the same builtins for each isolate, which this finds without
     /// probing every function that begins a page.
     copied: Option<(ImageAddress, ImageAddress)>,
+
+    /// What loading its debug information needs, until it is loaded.
+    pending: Option<Pending>,
+}
+
+/// An image whose debug information is still to be loaded: until it is,
+/// `info` is `None` and no mapping of it is processed.
+struct Pending {
+    path: PathBuf,
+    data: Option<Vec<u8>>,
+    digest: [u8; 16],
+    build_id: Option<String>,
 }
 
 /// One executable mapping of a process.
@@ -300,6 +312,24 @@ struct Located {
 /// a drain or two after the snapshot that follows them.
 const LOCATED_KEPT: usize = 4;
 
+/// When a drain loads the debug information of a module it finds mapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Loads {
+    /// As it processes the mapping.
+    AsMapped,
+
+    /// Once the collector has read the instrumentation of every module
+    /// mapped so far: the drain stops at the mapping.
+    AfterProbes,
+}
+
+/// Each sample's record of its interpreter's frames, by the sample's place.
+type Pairs = HashMap<usize, (interpreted::RecordKey, usize)>;
+
+/// A drain's records in the order they are processed, where each lies,
+/// and the samples' pairs.
+type Ordered<'a> = (&'a [(u64, usize)], &'a [RecordAt], &'a Pairs);
+
 /// A process's executable mappings, as `/proc/PID/maps` lists them.
 type ProcessMappings = (Pid, Vec<perf::Mapped>);
 
@@ -325,6 +355,12 @@ pub struct Processor {
     /// Records held back for the next batch, past its watermark, in the
     /// order they go before it.
     held: Vec<RecordAt>,
+
+    /// When this drain loads debug information (see
+    /// [`Processor::ingest_drained_after_probes`]), and the image whose
+    /// mapping it stopped at, if it did.
+    loads: Loads,
+    stopped: Option<usize>,
 
     /// Where each record of a batch lies, and in what order they are
     /// processed, by their time and then their place.
@@ -451,6 +487,8 @@ impl Processor {
             search,
             images: Vec::new(),
             image_index: HashMap::default(),
+            loads: Loads::AsMapped,
+            stopped: None,
             vdso_read: false,
             vdso: None,
             processes: BTreeMap::new(),
@@ -580,7 +618,7 @@ impl Processor {
         }
 
         let inode = std::fs::metadata(path).ok()?.ino();
-        let image = self.image(path.to_owned(), path, Some(inode));
+        let image = self.image(path.to_owned(), path, Some(inode), false);
         let info = image_of(&self.images, image).info.as_ref()?;
         let sites = call_sites(&data, &info.image, info.unwind.as_ref());
         let function = sites.first_not_kept.and_then(|address| {
@@ -606,7 +644,7 @@ impl Processor {
     ) -> Option<crate::backend::bpf::sampler::RawV8Layout> {
         use std::os::unix::fs::MetadataExt;
         let inode = std::fs::metadata(path).ok()?.ino();
-        let image = self.image(path.to_owned(), path, Some(inode));
+        let image = self.image(path.to_owned(), path, Some(inode), false);
         interpreted::v8_layout_before(image_of(&self.images, image).info.as_ref()?)
     }
 
@@ -736,13 +774,30 @@ impl Processor {
         self.ingest_blocks(batches, blocks, watermark);
     }
 
+    /// Ingests as [`Processor::ingest_drained`] does, up to `watermark`,
+    /// but finds the instrumentation of every module mapped first, and
+    /// stops at the mapping of a module whose debug information is not yet
+    /// loaded, so that the collector reads that instrumentation before the
+    /// load: a program waits for microscope at its exit only so long.
+    /// [`Processor::load_stopped`] loads it, and the next drain goes on
+    /// from the mapping.
+    pub fn ingest_drained_after_probes(
+        &mut self,
+        drain: impl FnOnce(&mut perf::Blocks),
+        watermark: u64,
+    ) {
+        self.loads = Loads::AfterProbes;
+        self.ingest_drained(drain, Some(watermark));
+        self.loads = Loads::AsMapped;
+    }
+
     fn ingest_blocks(
         &mut self,
         mut batches: Batches,
         blocks: std::ops::Range<u64>,
         watermark: Option<u64>,
     ) {
-        self.processed_to = self.processed_to.max(watermark.unwrap_or(0));
+        self.stopped = None;
         let outputs = self
             .interpreted
             .as_mut()
@@ -764,7 +819,10 @@ impl Processor {
         // A record of Python frames goes with the next sample of its
         // thread and CPU in its ring (see `interpreted`).
         let mut unpaired: Unpaired = Vec::new();
-        let mut pairs: HashMap<usize, (interpreted::RecordKey, usize)> = HashMap::default();
+        let mut pairs: Pairs = HashMap::default();
+        // The mappings and execs, which a drain that stops at a module to
+        // load reads ahead for instrumentation.
+        let mut mappings = Vec::new();
         let (mut next_held, mut block, mut offset) = (0, blocks.start, 0);
 
         loop {
@@ -818,7 +876,11 @@ impl Processor {
                         pairs.insert(index, ((key.0, key.1, time), pair));
                     }
                 }
-                decode::Record::Mmap(mmap) => self.mapped_early(&mmap),
+                decode::Record::Mmap(mmap) => {
+                    self.mapped_early(&mmap);
+                    mappings.push((time, index));
+                }
+                decode::Record::Comm { exec: true, .. } => mappings.push((time, index)),
                 _ => {}
             }
 
@@ -826,28 +888,13 @@ impl Processor {
         }
 
         order.sort_unstable();
-        let record = |index| record_at(&records, index);
-        for &(time, index) in &order {
-            let at = record(index);
-            let pair = pairs.get(&index).map(|&(key, pair)| (key, record(pair)));
-            if watermark.is_some_and(|watermark| time > watermark) {
-                // A held-back sample keeps its frames before it.
-                self.held.extend(pair.map(|(_, pair)| pair));
-                self.held.push(at);
-                continue;
-            }
-
-            self.paired = pair.and_then(|(key, pair)| {
-                let data = self.output_data(batches.record(pair), &outputs)?;
-                Some((key, data))
-            });
-
-            if let Some(Ok((record, _))) =
-                decode::next_with_period(batches.record(at), &outputs, self.fixed_period)
-            {
-                self.process(record);
-            }
+        if self.loads == Loads::AfterProbes {
+            mappings.sort_unstable();
+            self.find_probes_ahead(&mappings, &records, &batches, watermark);
         }
+        let ordered = (order.as_slice(), records.as_slice(), &pairs);
+        let watermark = self.process_ordered(ordered, &batches, &outputs, watermark);
+        self.processed_to = self.processed_to.max(watermark.unwrap_or(0));
 
         self.hold_unpaired(unpaired, &records, watermark);
         self.recycle_paired();
@@ -858,6 +905,54 @@ impl Processor {
         self.account_before(watermark.unwrap_or(u64::MAX));
         self.processed = watermark.unwrap_or(self.latest).max(self.processed);
         self.map_lost_before(watermark.unwrap_or(u64::MAX));
+    }
+
+    /// Processes the records of `order` up to `watermark`, holding back
+    /// the rest, and returns the watermark processing reached: just before
+    /// a mapping it stopped at, as [`Processor::ingest_drained_after_probes`]
+    /// may, which it holds with every record after it.
+    fn process_ordered(
+        &mut self,
+        (order, records, pairs): Ordered<'_>,
+        batches: &Batches,
+        outputs: &[u64],
+        watermark: Option<u64>,
+    ) -> Option<u64> {
+        let record = |index| record_at(records, index);
+        let mut stopped = None;
+        for &(time, index) in order {
+            let at = record(index);
+            let pair = pairs.get(&index).map(|&(key, pair)| (key, record(pair)));
+            if stopped.is_some() || watermark.is_some_and(|watermark| time > watermark) {
+                // A held-back sample keeps its frames before it.
+                self.held.extend(pair.map(|(_, pair)| pair));
+                self.held.push(at);
+                continue;
+            }
+
+            self.paired = pair.and_then(|(key, pair)| {
+                let data = self.output_data(batches.record(pair), outputs)?;
+                Some((key, data))
+            });
+
+            if let Some(Ok((record, _))) =
+                decode::next_with_period(batches.record(at), outputs, self.fixed_period)
+            {
+                self.process(record);
+            }
+
+            if self.stopped.is_some() {
+                self.held.extend(pair.map(|(_, pair)| pair));
+                self.held.push(at);
+                stopped = Some(time);
+            }
+        }
+
+        let Some(time) = stopped else {
+            return watermark;
+        };
+        let before = time.saturating_sub(1);
+        Some(watermark.map_or(before, |watermark| watermark.min(before)))
     }
 
     /// Gives the interpreter's frames of thread `tid` on CPU `cpu`, which
@@ -1137,9 +1232,21 @@ impl Processor {
         } else {
             perf::identify(mmap).map(|(file, bias)| {
                 let path = PathBuf::from(String::from_utf8_lossy(mmap.path).into_owned());
-                (self.image(path, &file, mmap.inode), bias)
+                let defer = self.loads == Loads::AfterProbes;
+                (self.image(path, &file, mmap.inode, defer), bias)
             })
         };
+
+        // A module whose debug information is still to load is mapped once
+        // it has. Its instrumentation is found now, so that the collector
+        // reads it before the load, and processing stops at this record.
+        if let Some((image, bias)) = image {
+            self.found_probes_in(mmap, image, bias);
+            if image_of(&self.images, image).pending.is_some() {
+                self.stopped = Some(image);
+                return;
+            }
+        }
 
         let state = self.processes.entry(mmap.pid).or_default();
         let images = &self.images;
@@ -1186,19 +1293,6 @@ impl Processor {
             return;
         };
 
-        if let Some(table) = &image_of(&self.images, image).probes
-            && self.probes_mapped.insert((mmap.pid, image))
-        {
-            let found = Found {
-                module: image_of(&self.images, image).module,
-                path: String::from_utf8_lossy(mmap.path).into(),
-                bias,
-                table: Arc::clone(table),
-            };
-
-            self.probes_found.push((mmap.pid, found));
-        }
-
         let loaded = LoadedModule {
             id: ModuleId::new(self.next_module),
             image: image_of(&self.images, image).id,
@@ -1237,6 +1331,23 @@ impl Processor {
         }
     }
 
+    /// Gives the collector the instrumentation of image `image`, which
+    /// `mmap` maps at `bias`, the first time the process maps it.
+    fn found_probes_in(&mut self, mmap: &decode::Mmap<'_>, image: usize, bias: LoadBias) {
+        if let Some(table) = &image_of(&self.images, image).probes
+            && self.probes_mapped.insert((mmap.pid, image))
+        {
+            let found = Found {
+                module: image_of(&self.images, image).module,
+                path: String::from_utf8_lossy(mmap.path).into(),
+                bias,
+                table: Arc::clone(table),
+            };
+
+            self.probes_found.push((mmap.pid, found));
+        }
+    }
+
     /// The vDSO's image, which no file holds, and the address it links at.
     fn vdso(&mut self) -> Option<(usize, u64)> {
         if self.vdso_read {
@@ -1254,32 +1365,112 @@ impl Processor {
         vdso
     }
 
-    /// The image of the file at `path`, loading it the first time.
-    fn image(&mut self, path: PathBuf, file: &std::path::Path, inode: Option<u64>) -> usize {
+    /// The image of the file at `path`, read the first time. Its debug
+    /// information is loaded then too, unless `defer`, which leaves it to
+    /// [`Processor::load_stopped`] or the mapping's processing.
+    fn image(
+        &mut self,
+        path: PathBuf,
+        file: &std::path::Path,
+        inode: Option<u64>,
+        defer: bool,
+    ) -> usize {
         let key = (path, inode.unwrap_or(0));
-        if let Some(&image) = self.image_index.get(&key) {
-            return image;
-        }
+        let image = if let Some(&image) = self.image_index.get(&key) {
+            image
+        } else {
+            let _span = crate::span!("record image", "{}", file.display());
+            let data = crate::image::backing::read_input(file)
+                .ok()
+                .map(|(data, _)| data);
+            let image = self.register_image(&key.0, data);
+            self.image_index.insert(key, image);
+            image
+        };
 
-        let _span = crate::span!("record image", "{}", file.display());
-        let data = crate::image::backing::read_input(file)
-            .ok()
-            .map(|(data, _)| data);
-        let image = self.add_image(&key.0, data);
-        self.image_index.insert(key, image);
+        if !defer {
+            self.complete_image(image);
+        }
         image
     }
 
     /// Adds the image of a module whose file holds `data`, if it could be
-    /// read.
+    /// read, with its debug information.
     fn add_image(&mut self, path: &std::path::Path, data: Option<Vec<u8>>) -> usize {
-        let began = self.own_cpu();
-        let image = self.load_image(path, data);
-        self.loading += self.own_cpu().saturating_sub(began);
+        let image = self.register_image(path, data);
+        self.complete_image(image);
         image
     }
 
-    fn load_image(&mut self, path: &std::path::Path, data: Option<Vec<u8>>) -> usize {
+    /// Whether the last drain stopped at a module still to load, so that
+    /// the next goes on from it.
+    pub const fn stopped_at_load(&self) -> bool {
+        self.stopped.is_some()
+    }
+
+    /// Whether an image's debug information is still to be loaded.
+    #[cfg(test)]
+    fn images_pending(&self) -> bool {
+        self.images.iter().any(|image| image.pending.is_some())
+    }
+
+    /// Finds the instrumentation of every module the `mappings` up to
+    /// `watermark` map, in time order with the execs among them, before
+    /// any of their debug information loads, so that the collector reads it
+    /// first. What a process maps after it executes a program is the next
+    /// program's, which the collector takes only once it has seen the exec.
+    fn find_probes_ahead(
+        &mut self,
+        mappings: &[(u64, usize)],
+        records: &[RecordAt],
+        batches: &Batches,
+        watermark: Option<u64>,
+    ) {
+        let mut executed = BTreeSet::new();
+        for &(time, index) in mappings {
+            if watermark.is_some_and(|watermark| time > watermark) {
+                break;
+            }
+
+            match decode::next(batches.record(record_at(records, index))) {
+                Some(Ok((
+                    decode::Record::Comm {
+                        pid, exec: true, ..
+                    },
+                    _,
+                ))) => {
+                    executed.insert(pid);
+                }
+                Some(Ok((decode::Record::Mmap(mmap), _)))
+                    if !executed.contains(&mmap.pid) && !perf::is_vdso(&mmap) =>
+                {
+                    if let Some((file, bias)) = perf::identify(&mmap) {
+                        let path = PathBuf::from(String::from_utf8_lossy(mmap.path).into_owned());
+                        let image = self.image(path, &file, mmap.inode, true);
+                        self.found_probes_in(&mmap, image, bias);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Loads the debug information of the module whose mapping the last
+    /// drain stopped at, once the collector has read the instrumentation
+    /// the drain found. One at a time, so that a module the program maps
+    /// meanwhile, which may hold its instrumentation, waits for one load
+    /// rather than for every module mapped before it.
+    pub fn load_stopped(&mut self) {
+        if let Some(image) = self.stopped {
+            self.complete_image(image);
+        }
+    }
+
+    /// Adds the image of a module whose file holds `data`, as far as its
+    /// file says without its debug information: its identity and its
+    /// instrumentation, which a recording may read before the rest loads.
+    fn register_image(&mut self, path: &std::path::Path, data: Option<Vec<u8>>) -> usize {
+        let began = self.own_cpu();
         let id = ModuleImageId::new(u32::try_from(self.images.len()).unwrap_or(u32::MAX));
         let parsed = data
             .as_ref()
@@ -1296,19 +1487,6 @@ impl Processor {
         let module =
             self.builder
                 .module(&path.to_string_lossy(), build_id.as_deref(), digest, size);
-        #[cfg(debug_assertions)]
-        hold_load(path);
-        let loaded = data.and_then(|data| {
-            if self.debug_loading == DebugLoading::AfterCollection && path.is_absolute() {
-                crate::debug_info::load_profile_module_bytes(path, &data, id, &self.search).ok()
-            } else {
-                crate::debug_info::load_module_bytes(path, &data, id, &self.search)
-                    .ok()
-                    .map(|info| (info, false))
-            }
-        });
-        let deferred = loaded.as_ref().is_some_and(|(_, deferred)| *deferred);
-        let info = loaded.map(|(info, _)| info);
 
         let probes = match probes {
             Some(Ok(table)) => table.map(Arc::new),
@@ -1323,6 +1501,57 @@ impl Processor {
             }
             None => None,
         };
+
+        let image = self.images.len();
+        self.images.push(Image {
+            v8: false,
+            info: None,
+            id,
+            module,
+            probes,
+            anonymous: false,
+            deferred: None,
+            generated: false,
+            code_keepers: std::sync::OnceLock::new(),
+            copied: None,
+            pending: Some(Pending {
+                path: path.to_owned(),
+                data,
+                digest,
+                build_id,
+            }),
+        });
+        self.loading += self.own_cpu().saturating_sub(began);
+        image
+    }
+
+    /// Loads the debug information of image `image`, if it has not been.
+    fn complete_image(&mut self, image: usize) {
+        let Some(Pending {
+            path,
+            data,
+            digest,
+            build_id,
+        }) = image_of_mut(&mut self.images, image).pending.take()
+        else {
+            return;
+        };
+
+        let began = self.own_cpu();
+        let id = image_of(&self.images, image).id;
+        #[cfg(debug_assertions)]
+        hold_load(&path);
+        let loaded = data.and_then(|data| {
+            if self.debug_loading == DebugLoading::AfterCollection && path.is_absolute() {
+                crate::debug_info::load_profile_module_bytes(&path, &data, id, &self.search).ok()
+            } else {
+                crate::debug_info::load_module_bytes(&path, &data, id, &self.search)
+                    .ok()
+                    .map(|info| (info, false))
+            }
+        });
+        let deferred = loaded.as_ref().is_some_and(|(_, deferred)| *deferred);
+        let info = loaded.map(|(info, _)| info);
 
         // An image the cache could not keep is read again by every later
         // recording, which a large program's recordings notice.
@@ -1345,22 +1574,19 @@ impl Processor {
             );
         }
 
-        let image = self.images.len();
-        self.images.push(Image {
-            v8: info
-                .as_ref()
-                .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image)),
-            info,
-            id,
-            module,
-            probes,
-            anonymous: false,
-            deferred: deferred.then_some((digest, build_id)),
-            generated: false,
-            code_keepers: std::sync::OnceLock::new(),
-            copied: None,
-        });
-        image
+        let entry = image_of_mut(&mut self.images, image);
+        entry.v8 = info
+            .as_ref()
+            .is_some_and(|info| crate::debug_info::v8::is_v8(&info.image));
+        entry.info = info;
+        entry.deferred = deferred.then_some((digest, build_id));
+        let spent = self.own_cpu().saturating_sub(began);
+        self.loading += spent;
+        record!(
+            "record: loaded {} in {} ms of CPU",
+            path.display(),
+            spent.as_millis()
+        );
     }
 
     /// Makes the module of anonymous code a perf map names, mapped at the
@@ -1633,6 +1859,7 @@ impl Processor {
             generated: false,
             code_keepers: std::sync::OnceLock::new(),
             copied: None,
+            pending: None,
         });
 
         let loaded = LoadedModule {
@@ -4192,6 +4419,183 @@ mod tests {
             |_| drained += 1,
         );
         assert_eq!(drained, READ_DRAINS);
+    }
+
+    impl Processor {
+        /// [`Processor::ingest_drained_after_probes`] of `batch`.
+        fn ingest_after_probes(&mut self, batch: &[u8], watermark: u64) {
+            let mut batch = batch.to_vec();
+            self.ingest_drained_after_probes(
+                |blocks| blocks.filled.push(std::mem::take(&mut batch)),
+                watermark,
+            );
+        }
+    }
+
+    /// A drain that loads after the probes finds the instrumentation of
+    /// every module mapped up to its watermark before any loads, then stops
+    /// at the first mapping of a module not yet loaded, holding it and
+    /// every record after it, and says that what it processed ends before
+    /// it. Once the modules load, the next drain goes on from that mapping.
+    /// A drain to the end, as a recording's last is, loads as it goes.
+    #[test]
+    fn a_drain_finds_probes_then_stops_at_a_module_to_load() {
+        use std::io::{BufRead as _, Write as _};
+        const MS: u64 = 1_000_000;
+
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("defines")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program");
+        let pid = Pid::new(child.id());
+        let mut names = child.stdin.take().expect("its input");
+        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
+        writeln!(names, "ready").expect("name a site");
+        lines.next().expect("a site").expect("its line");
+
+        let code: Vec<perf::Mapped> = perf::mappings(pid.get())
+            .expect("its mappings")
+            .into_iter()
+            .filter(|mapped| mapped.executable && mapped.path.starts_with(b"/"))
+            .collect();
+        let library = code
+            .iter()
+            .find(|mapped| mapped.path.windows(3).any(|part| part == b".so"))
+            .expect("a library");
+        let own = code
+            .iter()
+            .find(|mapped| mapped.path == program.as_os_str().as_encoded_bytes())
+            .expect("the program's code");
+
+        // The library is mapped first, as the loader's are before a
+        // library's that the program opens holds its instrumentation.
+        let mut batch = mmap_record(pid.get(), library, 1_000 * MS);
+        batch.extend(mmap_record(pid.get(), own, 1_001 * MS));
+        batch.extend(bare_sample(1_002 * MS));
+        let mapped = |processor: &Processor| {
+            let code = processor.mapped_code(pid);
+            [library, own].map(|mapped| {
+                code.iter()
+                    .any(|piece| (piece.start..piece.end).contains(&mapped.start))
+            })
+        };
+
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.ingest_after_probes(&batch, 2_000 * MS);
+        let found = processor.found_probes(pid).found;
+        assert_eq!(
+            found
+                .iter()
+                .map(|found| std::path::Path::new(&*found.path))
+                .collect::<Vec<_>>(),
+            [program.as_path()]
+        );
+        assert_eq!(mapped(&processor), [false, false]);
+        assert!(processor.images_pending() && processor.stopped_at_load());
+        assert_eq!(processor.processed, 1_000 * MS - 1);
+        assert_eq!(processor.processed_to, 1_000 * MS - 1);
+        assert!(processor.snapshot().samples.is_empty());
+
+        // The library loads alone, and the drain stops at the program's
+        // code, which the drain before found but did not load.
+        processor.load_stopped();
+        assert!(processor.images_pending());
+        processor.ingest_after_probes(&[], 2_000 * MS);
+        assert_eq!(mapped(&processor), [true, false]);
+        assert!(processor.stopped_at_load());
+        assert_eq!(processor.processed, 1_001 * MS - 1);
+
+        processor.load_stopped();
+        assert!(!processor.images_pending());
+        processor.ingest_after_probes(&[], 2_000 * MS);
+        assert_eq!(mapped(&processor), [true, true]);
+        assert!(!processor.stopped_at_load());
+        assert_eq!(processor.processed, 2_000 * MS);
+        assert_eq!(processor.snapshot().samples.len(), 1);
+        assert!(processor.found_probes(pid).found.is_empty(), "found twice");
+
+        let mut at_once = Processor::new(DebugFileSearch::default(), 64);
+        at_once.ingest(&batch, Some(2_000 * MS));
+        assert_eq!(mapped(&at_once), [true, true]);
+        assert!(!at_once.images_pending() && !at_once.stopped_at_load());
+        assert_eq!(at_once.found_probes(pid).found.len(), 1);
+        assert_eq!(at_once.snapshot().samples.len(), 1);
+
+        drop(names);
+        child.wait().expect("its exit");
+    }
+
+    /// What a process maps after it executes a program is the new
+    /// program's: a drain finds no instrumentation of it ahead of the exec,
+    /// which ends what was found before.
+    #[test]
+    fn a_drain_finds_no_probes_ahead_of_an_exec() {
+        const MS: u64 = 1_000_000;
+        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/probes")
+            .canonicalize()
+            .expect("run `just build-test-programs`");
+        let mut child = std::process::Command::new(&program)
+            .arg("defines")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the program");
+        let pid = Pid::new(child.id());
+        let mut names = child.stdin.take().expect("its input");
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(
+            child.stdout.take().expect("its output"),
+        ));
+        std::io::Write::write_all(&mut names, b"ready\n").expect("name a site");
+        lines.next().expect("a site").expect("its line");
+        let code: Vec<perf::Mapped> = perf::mappings(pid.get())
+            .expect("its mappings")
+            .into_iter()
+            .filter(|mapped| mapped.executable && mapped.path.starts_with(b"/"))
+            .collect();
+        let library = code
+            .iter()
+            .find(|mapped| mapped.path.windows(3).any(|part| part == b".so"))
+            .expect("a library");
+        let own = code
+            .iter()
+            .find(|mapped| mapped.path == program.as_os_str().as_encoded_bytes())
+            .expect("the program's code");
+
+        // PERF_RECORD_COMM with the exec bit, and its sample_id trailer.
+        let mut exec = vec![0; 64];
+        exec[..4].copy_from_slice(&3_u32.to_le_bytes());
+        exec[4..6].copy_from_slice(&0x2000_u16.to_le_bytes());
+        exec[6..8].copy_from_slice(&64_u16.to_le_bytes());
+        exec[8..12].copy_from_slice(&pid.get().to_le_bytes());
+        exec[12..16].copy_from_slice(&pid.get().to_le_bytes());
+        exec[16..23].copy_from_slice(b"probes\0");
+        exec[40..48].copy_from_slice(&(1_001 * MS).to_le_bytes());
+
+        let mut batch = mmap_record(pid.get(), library, 1_000 * MS);
+        batch.extend(exec);
+        batch.extend(mmap_record(pid.get(), own, 1_002 * MS));
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        processor.ingest_after_probes(&batch, 2_000 * MS);
+        let ahead = processor.found_probes(pid);
+
+        while processor.stopped_at_load() {
+            processor.load_stopped();
+            processor.ingest_after_probes(&[], 2_000 * MS);
+        }
+        let after = processor.found_probes(pid);
+
+        drop(names);
+        child.wait().expect("its exit");
+        assert!(ahead.found.is_empty() && !ahead.executed, "{ahead:?}");
+        assert!(after.executed && after.skipped.is_empty(), "{after:?}");
+        assert_eq!(after.found.len(), 1, "{after:?}");
     }
 
     /// Once a recording has loaded a program's modules and seen its stacks,

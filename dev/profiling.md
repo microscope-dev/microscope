@@ -754,6 +754,32 @@ lost. A process that exits without waiting within a second of a read, as one
 killed or calling `_exit` does, is not counted: it loses at most a drain's
 worth, and nothing distinguishes it from one that wrote nothing.
 
+The collector reads a program's instrumentation before the recorder loads
+any debug information it would wait for. Recording a program it started with
+probes on, the recording loop's drains
+(`Processor::ingest_drained_after_probes`) split each image in two: reading
+its file, build id, and probe table, which is cheap, and loading its debug
+information, which can take a second cold. A drain first reads ahead through
+the mappings and execs up to its watermark, in time order, and hands the
+collector every module with a probe table, except what a process maps after
+an exec in the drain, which is the next program's. It then stops at the
+first mapping whose module has not loaded, holds that record and every one
+after it, and lowers its watermark to just before it. The drive loop drains
+the probes, loads that one module (`Processor::load_stopped`), and drains
+again at once. One module at a time, so that a module the program maps
+meanwhile waits for one load, not for every module mapped before it: loading
+nine at once kept a Python program's library unread for 160 ms. With a cold
+cache, a Python 3.12 program found microscope 140 ms after defining its
+first site, 195 ms with half the cores busy; now 28 ms and 26 to 32 ms.
+
+Every other drain loads as it goes: the last, a live read's, and a stopped
+task snapshot's, which claims every sample before it. When the snapshot's
+own drain could stop too, a free-threaded Python's snapshots lost the
+interpreter's frames under their Python ones
+(`stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil_on_3_14t`).
+A snapshot due while a drain is stopped also waits for the next drain, since
+it unwinds by the modules processed so far.
+
 A development build holds the debug-information load of every module named
 `NAME` while `$MICROSCOPE_TEST_HOLD_LOADS/NAME.hold` exists, and writes
 `NAME.held` there as it begins to wait. Tests use it to make microscope as

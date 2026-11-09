@@ -24,8 +24,6 @@
 //! - `records`: for each name a line gives, a zone's site of that name,
 //!   one zone of it, and a line saying it was recorded. Recording every
 //!   site switches each on as it is defined.
-//! - `hasty`: prints its pid, switches itself on as a program a recording
-//!   starts does, records a zone, and exits without waiting for microscope.
 //! - `late PATH`: waits until microscope listens, prints its pid, records a
 //!   zone, loads the shared library at PATH, and says `MAPPED`; then, once a
 //!   line arrives, records another zone and exits.
@@ -59,10 +57,6 @@ fn main() {
     }
     if arguments[1] == "defined" {
         defined();
-        return;
-    }
-    if arguments[1] == "hasty" {
-        hasty();
         return;
     }
     wait_until_found();
@@ -275,15 +269,6 @@ fn exiting() {
     drop(site.zone());
     println!("DONE");
     std::io::stdout().flush().expect("flush");
-}
-
-/// A program that switches itself on, as one `microscope record` starts
-/// does, records, and exits before microscope may have found it.
-fn hasty() {
-    println!("PID {}", std::process::id());
-    std::io::stdout().flush().expect("flush");
-    assert!(microscope_probes::listening(), "the program did not arm");
-    drop(zone!("hasty"));
 }
 
 /// Loads the shared library at `path`, which microscope reads the debug
