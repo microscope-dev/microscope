@@ -4323,6 +4323,94 @@ mod tests {
         assert_eq!(again, (0, mapped), "a known mapping was mapped again");
     }
 
+    /// A module made from a perf map names only what the map named then.
+    /// A sample in code the program made since, in the same anonymous
+    /// range, reads the map again for its name, as for V8's code.
+    #[test]
+    fn a_perf_maps_module_reads_the_map_again_for_code_it_does_not_name() {
+        #[repr(align(64))]
+        struct Code([u8; 64]);
+        static CODE: Code = Code([0xcc; 64]);
+        struct Removed(String);
+        impl Drop for Removed {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let own = std::process::id();
+        let (pid, tid) = (Pid::new(own), Tid::new(own));
+        let start = CODE.0.as_ptr() as u64;
+        let path = format!("/tmp/perf-{own}.map");
+        std::fs::write(&path, format!("{start:x} 10 a\n")).expect("write the map");
+        let _removed = Removed(path.clone());
+
+        // A sample whose kernel chain holds `address` alone.
+        let sample = |address: u64, time: u64| {
+            let mut body = Vec::new();
+            for word in [
+                1,
+                u64::from(own) | (u64::from(own) << 32),
+                time,
+                3,
+                1_000,
+                1,
+            ] {
+                body.extend_from_slice(&word.to_le_bytes());
+            }
+            for word in [address, 0, 0] {
+                body.extend_from_slice(&word.to_le_bytes());
+            }
+            let mut record = 9_u32.to_le_bytes().to_vec();
+            record.extend_from_slice(&0_u16.to_le_bytes());
+            record.extend_from_slice(&u16::try_from(8 + body.len()).expect("small").to_le_bytes());
+            record.extend_from_slice(&body);
+            record
+        };
+
+        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+        let now = super::super::session::monotonic();
+        processor.process(decode::Record::Fork {
+            pid,
+            ppid: Pid::new(1),
+            tid,
+            ptid: Tid::new(1),
+            time: now,
+        });
+        let anonymous = perf::Mapped {
+            start,
+            end: start + 64,
+            file_offset: 0,
+            inode: 0,
+            executable: true,
+            writable: false,
+            path: b"//anon".to_vec(),
+        };
+        let mut records = mmap_record(own, &anonymous, now + 1);
+        records.extend(sample(start + 8, now + 2));
+        processor.ingest(&records, None);
+
+        // The program names b after the map was read, and runs it later.
+        let mut map = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open the map");
+        std::io::Write::write_all(&mut map, format!("{:x} 10 b\n", start + 0x20).as_bytes())
+            .expect("append to the map");
+        let later = super::super::session::monotonic() + 1_000_000_000;
+        processor.ingest(&sample(start + 0x28, later), None);
+
+        let profile = super::super::Profile {
+            capture: processor.finish(),
+        };
+        let leaves: Vec<Option<String>> = profile
+            .stacks()
+            .into_iter()
+            .map(|stack| stack.functions.first().cloned())
+            .collect();
+        assert_eq!(leaves, [Some("a".to_owned()), Some("b".to_owned())]);
+    }
+
     /// The bytes of a perf record of process `pid` mapping `mapped`, as
     /// the kernel writes it, stamped `time`.
     fn mmap_record(pid: u32, mapped: &perf::Mapped, time: u64) -> Vec<u8> {
