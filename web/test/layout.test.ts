@@ -21,12 +21,20 @@ import {
   groups,
   type KindId,
   type Layout,
+  type LinkId,
+  linkOf,
+  linksOf,
   maximize,
   move,
   type Node,
   open,
+  openLinked,
+  type Pane,
   type PaneId,
   reframe,
+  restoreLinks,
+  setLink,
+  setParams,
   split,
   toggleHidden,
 } from "../src/workbench/layout";
@@ -346,9 +354,28 @@ describe("any run of operations", () => {
         const lost = Object.keys(before.panes).filter((id) => !(id in after.panes));
         const gained = Object.keys(after.panes).filter((id) => !(id in before.panes));
         expect(lost.length).toBe(chosen.op === "close" && after !== before ? 1 : 0);
-        expect(gained.length).toBeLessThanOrEqual(chosen.op === "open" ? 1 : 0);
+        const opens = ["open", "openLinked", "openOnLink"].includes(chosen.op);
+        expect(gained.length).toBeLessThanOrEqual(opens ? 1 : 0);
         for (const id of Object.keys(after.panes) as PaneId[]) {
           expect(after.panes[id]).toBe(before.panes[id] ?? after.panes[id]);
+        }
+      }),
+    );
+  });
+
+  it("only gains a link by opening a pane on it, and loses one only with its last reader", () => {
+    fc.assert(
+      fc.property(steps, step, (run, chosen) => {
+        const before = runLayout(run);
+        const after = apply(before, chosen);
+        const lost = Object.keys(before.links).filter((id) => !(id in after.links));
+        const gained = Object.keys(after.links).filter((id) => !(id in before.links));
+        expect(gained.length).toBeLessThanOrEqual(chosen.op === "openLinked" ? 1 : 0);
+        expect(lost.length).toBeLessThanOrEqual(chosen.op === "close" ? 1 : 0);
+        for (const link of lost) {
+          const readers = Object.values(before.panes).filter((pane) => linkOf(pane) === link);
+          expect(readers).toHaveLength(1);
+          expect(Object.values(after.panes)).not.toContain(readers[0]);
         }
       }),
     );
@@ -400,8 +427,8 @@ describe("a saved layout", () => {
   it("refuses text that is no layout, and layouts from a newer page", () => {
     expect(loadLayout("{").ok).toBe(false);
     expect(loadLayout("null").ok).toBe(false);
-    const newer = JSON.stringify({ version: 3, layout: emptyLayout() });
-    expect(loadLayout(newer)).toEqual({ ok: false, why: "it is from version 3, not up to 2" });
+    const newer = JSON.stringify({ version: 4, layout: emptyLayout() });
+    expect(loadLayout(newer)).toEqual({ ok: false, why: "it is from version 4, not up to 3" });
   });
 
   it("refuses an exhausted id counter before opening another pane can lose tabs", () => {
@@ -422,6 +449,7 @@ describe("a saved layout", () => {
   it.each([
     ["v1", []],
     ["v2", ["g0"]],
+    ["v3", ["g0"]],
   ])("of version %s loads", (version, hidden) => {
     const text = readFileSync(join(import.meta.dirname, "layouts", `${version}.json`), "utf8");
     const loaded = loadLayout(text);
@@ -440,6 +468,74 @@ describe("a saved layout", () => {
         ],
       ],
     });
+  });
+});
+
+/** A pane that reads `link`. */
+const reader = (link: LinkId, key = ""): Pane => ({
+  kind: "reader" as KindId,
+  key,
+  params: { link },
+});
+
+describe("a link", () => {
+  it("stays while any pane reads it, goes with its last reader, and comes back with it", () => {
+    const owned = openLinked(emptyLayout(), (link) => reader(link, "owner"), { n: 1 });
+    const link = linkOf(owned.layout.panes[owned.pane] as Pane) as LinkId;
+    const shared = open(owned.layout, reader(link, "other"));
+    expect(checkLayout(shared.layout)).toEqual([]);
+    const changed = setLink(shared.layout, link, { n: 2 });
+
+    const one = close(changed, owned.pane);
+    expect(one.links[link]).toEqual({ n: 2 });
+    const none = close(one, shared.pane);
+    expect(none.links).toEqual({});
+    expect(checkLayout(none)).toEqual([]);
+
+    // Reopened, a pane reads its link as it was when it closed.
+    const remembered = linksOf(one, [one.panes[shared.pane] as Pane]);
+    const back = open(restoreLinks(none, remembered), reader(link, "other"));
+    expect(back.layout.links[link]).toEqual({ n: 2 });
+    expect(checkLayout(back.layout)).toEqual([]);
+  });
+
+  it("is never read by a pane whose params would change it, nor holds the same value anew", () => {
+    const owned = openLinked(emptyLayout(), (link) => reader(link), 1);
+    const other = openLinked(owned.layout, (link) => reader(link, "b"), 2);
+    const link = linkOf(other.layout.panes[other.pane] as Pane) as LinkId;
+    expect(setParams(other.layout, owned.pane, { link })).toBe(other.layout);
+    expect(setParams(other.layout, owned.pane, { link: null })).toBe(other.layout);
+    expect(setLink(other.layout, link, 2)).toBe(other.layout);
+    expect(setLink(other.layout, "l99" as LinkId, 3)).toBe(other.layout);
+  });
+
+  it("is not made for a pane that is open already, which is shown instead", () => {
+    const first = openLinked(emptyLayout(), (link) => reader(link), 1);
+    const again = openLinked(first.layout, (link) => reader(link), 2);
+    expect(again.pane).toBe(first.pane);
+    expect(Object.values(again.layout.links)).toEqual([1]);
+  });
+
+  it("moves a version 2 profile pane's look into a link of its own", () => {
+    const old = {
+      version: 2,
+      layout: {
+        ...emptyLayout(),
+        links: undefined,
+        root: { type: "group", id: "g0", tabs: ["p1"], active: "p1" },
+        panes: {
+          p1: { kind: "profile", key: "ab12", params: { name: "x.usprof", look: { fn: "leaf" } } },
+        },
+        next: 2,
+      },
+    };
+    const loaded = loadLayout(JSON.stringify(old));
+    if (!loaded.ok) {
+      throw new Error(loaded.why);
+    }
+    expect(loaded.layout.panes["p1" as PaneId]?.params).toEqual({ name: "x.usprof", link: "l2" });
+    expect(loaded.layout.links).toEqual({ l2: { profile: "ab12", look: { fn: "leaf" } } });
+    expect(loaded.layout.next).toBe(3);
   });
 });
 

@@ -15,6 +15,7 @@ export type PaneId = Id<"pane">;
 export type GroupId = Id<"group">;
 export type SplitId = Id<"split">;
 export type KindId = Id<"kind">;
+export type LinkId = Id<"link">;
 
 export type Json =
   | null
@@ -69,6 +70,7 @@ export interface Pane {
   /** Tells panes of a kind apart: a file's path, or "" for a kind with one
    * pane. Opening a kind and key that is open already shows that pane. */
   readonly key: string;
+  /** The pane's own state. A `link` names the link it reads. */
   readonly params: Json;
 }
 
@@ -83,6 +85,9 @@ export interface Layout {
   /** The group keys and new panes go to. */
   readonly focused: GroupId;
   readonly panes: Readonly<Record<PaneId, Pane>>;
+  /** State panes share: each pane whose params name a link reads it, and a
+   * link no pane reads goes. */
+  readonly links: Readonly<Record<LinkId, Json>>;
   /** The number the next new id gets, so ids are never reused. */
   readonly next: number;
 }
@@ -106,6 +111,7 @@ export function emptyLayout(): Layout {
     hidden: [],
     focused: root.id,
     panes: {},
+    links: {},
     next: 1,
   };
 }
@@ -113,6 +119,70 @@ export function emptyLayout(): Layout {
 /** Every group: the dock's in reading order, then the floating ones. */
 export function groups(layout: Layout): Group[] {
   return [...docked(layout.root), ...layout.floating.map((window) => window.group)];
+}
+
+/** The link a pane reads, if it reads one. */
+export function linkOf(pane: Pane): LinkId | null {
+  const { params } = pane;
+  const link =
+    typeof params === "object" && params !== null && !Array.isArray(params)
+      ? (params as { readonly link?: Json }).link
+      : undefined;
+  return typeof link === "string" ? (link as LinkId) : null;
+}
+
+/** Opens a pane, as `open` does, that reads a new link holding `value`;
+ * `make` names the link in the pane's params. */
+export function openLinked(
+  layout: Layout,
+  make: (link: LinkId) => Pane,
+  value: Json,
+  group: GroupId = layout.focused,
+): { layout: Layout; pane: PaneId } {
+  const link = `l${layout.next}` as LinkId;
+  const pane = make(link);
+  assert(linkOf(pane) === link, "a linked pane does not read its link");
+  const existing = paneOf(layout, pane.kind, pane.key);
+  if (existing) {
+    return { layout: activate(layout, existing), pane: existing };
+  }
+  const linked = { ...layout, links: { ...layout.links, [link]: value }, next: layout.next + 1 };
+  return open(linked, pane, group);
+}
+
+/** Changes what a link holds. */
+export function setLink(layout: Layout, link: LinkId, value: Json): Layout {
+  const found = layout.links[link];
+  if (found === undefined || JSON.stringify(found) === JSON.stringify(value)) {
+    return layout;
+  }
+  return { ...layout, links: { ...layout.links, [link]: value } };
+}
+
+/** Puts back links a closed pane read, under their ids, which are never
+ * reused, so a pane opened again reads them as it did. */
+export function restoreLinks(layout: Layout, links: Readonly<Record<LinkId, Json>>): Layout {
+  const missing = (Object.keys(links) as LinkId[]).filter(
+    (link) => layout.links[link] === undefined && Number(link.slice(1)) < layout.next,
+  );
+  if (missing.length === 0) {
+    return layout;
+  }
+  return {
+    ...layout,
+    links: { ...layout.links, ...Object.fromEntries(missing.map((link) => [link, links[link]])) },
+  };
+}
+
+/** The links these panes read, and what each holds. */
+export function linksOf(layout: Layout, panes: readonly Pane[]): Record<LinkId, Json> {
+  return Object.fromEntries(
+    panes.flatMap((pane) => {
+      const link = linkOf(pane);
+      const value = link === null ? undefined : layout.links[link];
+      return link === null || value === undefined ? [] : [[link, value]];
+    }),
+  );
 }
 
 export function groupOf(layout: Layout, pane: PaneId): Group | null {
@@ -166,9 +236,10 @@ export type Shape =
   | { readonly axis: Axis; readonly children: readonly (readonly [number, Shape])[] }
   | readonly Pane[];
 
-/** Builds a layout from a shape, its first group focused. */
-export function build(shape: Shape): Layout {
-  let next = 0;
+/** Builds a layout from a shape, its first group focused, holding the links
+ * its panes read. */
+export function build(shape: Shape, links: Readonly<Record<LinkId, Json>> = {}): Layout {
+  let next = Math.max(0, ...Object.keys(links).map((link) => Number(link.slice(1)) + 1));
   const panes: Record<PaneId, Pane> = {};
   const node = (part: Shape): Node => {
     if ("axis" in part) {
@@ -198,6 +269,7 @@ export function build(shape: Shape): Layout {
     hidden: [],
     focused: first.id,
     panes,
+    links,
     next,
   });
 }
@@ -208,8 +280,15 @@ export function close(layout: Layout, pane: PaneId): Layout {
   if (!group) {
     return layout;
   }
-  const { [pane]: _, ...panes } = layout.panes;
-  return settle({ ...replaceGroup(layout, without(group, pane)), panes });
+  const { [pane]: closed, ...panes } = layout.panes;
+  const link = closed ? linkOf(closed) : null;
+  const read = link !== null && Object.values(panes).some((other) => linkOf(other) === link);
+  const { [link as LinkId]: _, ...links } = layout.links;
+  return settle({
+    ...replaceGroup(layout, without(group, pane)),
+    panes,
+    links: link === null || read ? layout.links : links,
+  });
 }
 
 /** Shows a pane in its group, focuses the group, and raises its window. */
@@ -312,7 +391,12 @@ export function float(layout: Layout, pane: PaneId, rect: Rect): Layout {
  * profile; the same layout when they are the same. */
 export function setParams(layout: Layout, pane: PaneId, params: Json): Layout {
   const found = layout.panes[pane];
-  if (!found || JSON.stringify(found.params) === JSON.stringify(params)) {
+  // A pane keeps the link it reads; what it holds changes with setLink.
+  if (
+    !found ||
+    linkOf({ ...found, params }) !== linkOf(found) ||
+    JSON.stringify(found.params) === JSON.stringify(params)
+  ) {
     return layout;
   }
   return { ...layout, panes: { ...layout.panes, [pane]: { ...found, params } } };
@@ -655,6 +739,18 @@ export function checkLayout(layout: Layout): string[] {
   }
   if (Object.keys(layout.panes).length !== seen.size) {
     broken.push("a pane is in no group");
+  }
+  const read = new Set(Object.values(layout.panes).flatMap((pane) => linkOf(pane) ?? []));
+  for (const link of read) {
+    if (layout.links[link] === undefined) {
+      broken.push(`a pane reads ${link}, which is no link`);
+    }
+  }
+  for (const link of Object.keys(layout.links)) {
+    counted(link);
+    if (!read.has(link as LinkId)) {
+      broken.push(`no pane reads ${link}`);
+    }
   }
   const kinds = Object.values(layout.panes).map((pane) => `${pane.kind}\u0000${pane.key}`);
   if (new Set(kinds).size !== kinds.length) {

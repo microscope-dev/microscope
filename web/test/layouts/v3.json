@@ -1,0 +1,79 @@
+{
+  "version": 3,
+  "layout": {
+    "root": {
+      "type": "split",
+      "id": "s5",
+      "axis": "row",
+      "children": [
+        {
+          "weight": 0.25,
+          "node": {
+            "type": "group",
+            "id": "g0",
+            "tabs": ["p1", "p2"],
+            "active": "p1"
+          }
+        },
+        {
+          "weight": 0.75,
+          "node": {
+            "type": "split",
+            "id": "s6",
+            "axis": "column",
+            "children": [
+              {
+                "weight": 0.7,
+                "node": {
+                  "type": "group",
+                  "id": "g3",
+                  "tabs": ["p4"],
+                  "active": "p4"
+                }
+              },
+              {
+                "weight": 0.3,
+                "node": {
+                  "type": "group",
+                  "id": "g7",
+                  "tabs": ["p8"],
+                  "active": "p8"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "floating": [],
+    "maximized": null,
+    "hidden": ["g0"],
+    "focused": "g3",
+    "panes": {
+      "p1": {
+        "kind": "threads",
+        "key": "",
+        "params": null
+      },
+      "p2": {
+        "kind": "tasks",
+        "key": "",
+        "params": null
+      },
+      "p4": {
+        "kind": "source",
+        "key": "src/main.c",
+        "params": {
+          "path": "src/main.c"
+        }
+      },
+      "p8": {
+        "kind": "console",
+        "key": "",
+        "params": null
+      }
+    },
+    "next": 9,
+    "links": {}
+  }
+}

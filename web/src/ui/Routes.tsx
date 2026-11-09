@@ -17,12 +17,12 @@ import { followEmailLink, followSignIn } from "../account";
 import { KIND } from "../documents";
 import { type Note, targetName } from "../model";
 import { useModel } from "../store";
-import { activate, groups, type Json, paneOf, setParams } from "../workbench/layout";
+import { activate, groups, linkOf, paneOf, setLink, setParams } from "../workbench/layout";
 import { change, useLayout, workbench } from "../workbench/store";
 import { SessionLink } from "./Explorer";
 import { profileLayout, showPane, showProfile, startLayout } from "./panes";
 import { PICKED } from "./Picker";
-import { profileParams } from "./profile/ProfilePage";
+import { profileLink, profileParams, readProfileLink } from "./profile/ProfilePage";
 import { orgLink } from "./SingleSignOn";
 import { Workbench } from "./Workspace";
 
@@ -122,9 +122,11 @@ export function ProfileRoute() {
     }
     change((layout) => {
       const now = layout.panes[id];
-      const params = now ? profileParams(now) : { name, look };
-      const next = { name: name || params.name, look } as unknown as Json;
-      return activate(setParams(layout, id, next), id);
+      const params = now ? profileParams(now) : { name, link: null };
+      const named = setParams(layout, id, { name: name || params.name, link: params.link });
+      const looked =
+        params.link === null ? named : setLink(named, params.link, profileLink(profile, look));
+      return activate(looked, id);
     });
   }, [profile, name, look]);
   // Once its pane closes, the address names a profile still shown, or none.
@@ -144,10 +146,11 @@ export function ProfileRoute() {
       .flatMap((group) => (group.active ? [layout.panes[group.active]] : []));
     const next = shown.find((pane) => pane?.kind === KIND.profile);
     if (next) {
+      const link = linkOf(next);
       void navigate({
         to: "/profile/$profile",
         params: { profile: next.key },
-        search: profileParams(next).look,
+        search: (link && readProfileLink(layout.links[link])?.look) ?? {},
         replace: true,
       });
     } else {

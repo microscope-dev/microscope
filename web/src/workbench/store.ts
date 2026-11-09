@@ -4,11 +4,21 @@
 
 import { createStore, useStore } from "zustand";
 
-import { emptyLayout, type GroupId, type Layout, type Node, type Pane } from "./layout";
+import {
+  emptyLayout,
+  type GroupId,
+  type Json,
+  type Layout,
+  type LinkId,
+  type Node,
+  type Pane,
+} from "./layout";
 
 /** A closed tab, and where it was, to open it there again. */
 export interface Closed {
   readonly pane: Pane;
+  /** What the links it read held as it closed. */
+  readonly links: Readonly<Record<LinkId, Json>>;
   readonly group: GroupId;
   readonly index: number;
 }
@@ -31,6 +41,14 @@ export function resetWorkbench(layout: Layout = emptyLayout()): void {
 
 export function useLayout<T>(select: (layout: Layout) => T): T {
   return useStore(workbench, (state) => select(state.layout));
+}
+
+/** What a link holds, as `select` reads it. A pane re-renders only when
+ * what it selects changes, not on each change of the layout. */
+export function useLink<T>(link: LinkId | null, select: (value: Json | undefined) => T): T {
+  return useStore(workbench, (state) =>
+    select(link === null ? undefined : state.layout.links[link]),
+  );
 }
 
 /** Applies an operation; one that changes nothing changes no state. */

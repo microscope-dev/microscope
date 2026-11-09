@@ -17,10 +17,11 @@ import {
   activate,
   build,
   close,
-  type Json,
   type KindId,
   type Layout,
+  type LinkId,
   open,
+  openLinked,
   type Pane,
   type PaneId,
   paneOf,
@@ -46,7 +47,7 @@ import { Output, OutputBadge } from "./Output";
 import { fileName } from "./paths";
 import { StartBody } from "./Picker";
 import { Processes, ProcessesBadge } from "./Processes";
-import { ProfileBody, profileParams } from "./profile/ProfilePage";
+import { ProfileBody, profileLink, profileParams } from "./profile/ProfilePage";
 import { Registers, RegistersBadge } from "./Registers";
 import { KeysBody, SettingsBody } from "./Settings";
 import { Modules, Signals } from "./Signals";
@@ -232,20 +233,21 @@ export function showPane(kind: KindId): void {
   requestAnimationFrame(() => shown && focusPane(shown));
 }
 
-/** A profile's pane. */
-const profilePane = (id: string, name: string, look: ProfileLook = {}): Pane => ({
+/** A profile's pane, reading how it looks at the profile from `link`. */
+const profilePane = (id: string, name: string, link: LinkId): Pane => ({
   kind: KIND.profile,
   key: id,
-  params: { name, look } as unknown as Json,
+  params: { name, link },
 });
 
 /** Shows a profile's pane, opening it among the documents when it is not
  * open, and says which pane it is. */
 export function showProfile(id: string, name: string, look: ProfileLook = {}): PaneId {
   const before = workbench.getState().layout;
-  const opened = open(
+  const opened = openLinked(
     before,
-    profilePane(id, name, look),
+    (link) => profilePane(id, name, link),
+    profileLink(id, look),
     documentsGroup(before, tab.getState().files),
   );
   change(() => activate(opened.layout, opened.pane));
@@ -390,11 +392,15 @@ export function restoreLayout(): string | null {
 
 /** A profile, with Explorer beside it to open another. */
 export function profileLayout(id: string, name: string, look: ProfileLook): Layout {
-  return build({
-    axis: "row",
-    children: [
-      [0.78, [profilePane(id, name, look)]],
-      [0.22, [single(KIND.explorer), single(KIND.account)]],
-    ],
-  });
+  const link = "l0" as LinkId;
+  return build(
+    {
+      axis: "row",
+      children: [
+        [0.78, [profilePane(id, name, link)]],
+        [0.22, [single(KIND.explorer), single(KIND.account)]],
+      ],
+    },
+    { [link]: profileLink(id, look) },
+  );
 }

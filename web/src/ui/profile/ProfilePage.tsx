@@ -37,8 +37,8 @@ import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import type { PaneProps } from "../../workbench/kinds";
-import { groups, type Json, type Pane, setParams } from "../../workbench/layout";
-import { change, useLayout, workbench } from "../../workbench/store";
+import { groups, type Json, type LinkId, linkOf, type Pane, setLink } from "../../workbench/layout";
+import { change, useLayout, useLink, workbench } from "../../workbench/store";
 import { useDialogFocus, useDismiss } from "../dialog";
 import {
   ProfileContext,
@@ -57,30 +57,54 @@ import { SyscallsView } from "./SyscallsView";
 import { TreeView } from "./TreeView";
 import { ZonesPane } from "./ZonesPane";
 
-/** What a profile pane keeps: the profile's name, for its tab, and how it
- * looks at the profile. */
+/** What a profile pane keeps: the profile's name, for its tab, and the
+ * link it reads how it looks at the profile from. */
 export interface ProfileParams {
   readonly name: string;
-  readonly look: ProfileLook;
+  readonly link: LinkId | null;
 }
 
 export function profileParams(pane: Pane): ProfileParams {
-  const params = (pane.params ?? {}) as { name?: unknown; look?: unknown };
-  const look = typeof params.look === "object" && params.look !== null ? params.look : {};
-  return {
-    name: typeof params.name === "string" ? params.name : "",
-    look: validateProfileLook(look as Record<string, unknown>),
-  };
+  const params = (pane.params ?? {}) as { name?: unknown };
+  return { name: typeof params.name === "string" ? params.name : "", link: linkOf(pane) };
 }
+
+/** What a profile's link holds: the profile, and how its panes look at it. */
+export interface ProfileLink {
+  readonly profile: string;
+  readonly look: ProfileLook;
+}
+
+export function readProfileLink(value: Json | undefined): ProfileLink | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const { profile, look } = value as { profile?: unknown; look?: unknown };
+  return typeof profile === "string"
+    ? {
+        profile,
+        look: validateProfileLook(
+          typeof look === "object" && look !== null ? (look as Record<string, unknown>) : {},
+        ),
+      }
+    : null;
+}
+
+export const profileLink = (profile: string, look: ProfileLook): Json =>
+  ({ profile, look }) as unknown as Json;
 
 const sameLook = (a: ProfileLook, b: ProfileLook) => JSON.stringify(a) === JSON.stringify(b);
 
-/** A profile pane. The pane keeps its look; while its tab is the one shown
+const EMPTY_LOOK: ProfileLook = {};
+
+/** A profile pane. Its link keeps the look; while its tab is the one shown
  * in the focused group and no session's focus is in the address, the
  * address follows it, so a link opens the same view. */
 export function ProfileBody({ id, pane }: PaneProps) {
   const profile = pane.key;
-  const { look } = profileParams(pane);
+  const { link } = profileParams(pane);
+  const held = useLink(link, (value) => value);
+  const look = useMemo(() => readProfileLink(held)?.look ?? EMPTY_LOOK, [held]);
   const navigate = useNavigate();
   const location = useLocation();
   const inSession = location.pathname.startsWith("/s/");
@@ -91,13 +115,15 @@ export function ProfileBody({ id, pane }: PaneProps) {
 
   const setLook = useCallback(
     (by: (look: ProfileLook) => ProfileLook, push = false) => {
-      const now = workbench.getState().layout.panes[id];
+      if (link === null) {
+        return;
+      }
+      const now = readProfileLink(workbench.getState().layout.links[link]);
       if (!now) {
         return;
       }
-      const params = profileParams(now);
-      const next = by(params.look);
-      change((layout) => setParams(layout, id, { ...params, look: next } as unknown as Json));
+      const next = by(now.look);
+      change((layout) => setLink(layout, link, profileLink(profile, next)));
       if (leads) {
         void navigate({
           to: "/profile/$profile",
@@ -107,7 +133,7 @@ export function ProfileBody({ id, pane }: PaneProps) {
         });
       }
     },
-    [id, leads, navigate, profile],
+    [link, leads, navigate, profile],
   );
 
   // The address names the profile this pane shows, as it changes.

@@ -15,14 +15,17 @@ import {
   groups,
   type KindId,
   type Layout,
+  type LinkId,
   maximize,
   move,
   open,
+  openLinked,
   type PaneId,
   type Rect,
   reframe,
   resize,
   restore,
+  setLink,
   type Side,
   split,
   splits,
@@ -32,6 +35,9 @@ import {
 
 export type Step =
   | { op: "open"; kind: string; key: string }
+  | { op: "openLinked"; key: string; value: number }
+  | { op: "openOnLink"; link: number; key: string }
+  | { op: "setLink"; link: number; value: number }
   | { op: "close" | "activate"; pane: number }
   | { op: "move"; pane: number; target: TargetChoice }
   | { op: "split"; group: number; side: Side }
@@ -71,6 +77,30 @@ export const step: fc.Arbitrary<Step> = fc.oneof(
       op: fc.constant("open" as const),
       kind: fc.constantFrom("source", "registers", "memory"),
       key: fc.constantFrom("", "a", "b", "c"),
+    }),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      op: fc.constant("openLinked" as const),
+      key: fc.constantFrom("a", "b", "c"),
+      value: fc.nat({ max: 3 }),
+    }),
+  },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      op: fc.constant("openOnLink" as const),
+      link: choice,
+      key: fc.constantFrom("a", "b", "c"),
+    }),
+  },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      op: fc.constant("setLink" as const),
+      link: choice,
+      value: fc.nat({ max: 3 }),
     }),
   },
   {
@@ -123,6 +153,10 @@ function paneAt(layout: Layout, index: number): PaneId | undefined {
   return pick(Object.keys(layout.panes).toSorted() as PaneId[], index);
 }
 
+function linkAt(layout: Layout, index: number): LinkId | undefined {
+  return pick(Object.keys(layout.links).toSorted() as LinkId[], index);
+}
+
 function targetAt(layout: Layout, chosen: TargetChoice): Target | undefined {
   if (chosen.type === "edge") {
     return chosen;
@@ -137,6 +171,22 @@ export function apply(layout: Layout, chosen: Step): Layout {
     case "open":
       return open(layout, { kind: chosen.kind as KindId, key: chosen.key, params: chosen.key })
         .layout;
+    case "openLinked":
+      return openLinked(
+        layout,
+        (link) => ({ kind: "linked" as KindId, key: chosen.key, params: { link } }),
+        chosen.value,
+      ).layout;
+    case "openOnLink": {
+      const link = linkAt(layout, chosen.link);
+      return link
+        ? open(layout, { kind: "reader" as KindId, key: chosen.key, params: { link } }).layout
+        : layout;
+    }
+    case "setLink": {
+      const link = linkAt(layout, chosen.link);
+      return link ? setLink(layout, link, chosen.value) : layout;
+    }
     case "close":
     case "activate": {
       const pane = paneAt(layout, chosen.pane);

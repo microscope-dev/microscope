@@ -12,6 +12,7 @@ import {
   type Json,
   type KindId,
   type Layout,
+  type LinkId,
   type Node,
   type Pane,
   type PaneId,
@@ -20,12 +21,37 @@ import {
 } from "./layout";
 
 /** Raise this, and add a migration, whenever the saved shape changes. */
-export const VERSION = 2;
+export const VERSION = 3;
 
 /** Each turns a saved layout of one version into the next version's. */
 const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {
   // Version 2 can hide docked nodes; nothing was hidden before.
   1: (old) => ({ ...record(old, "the layout"), hidden: [] }),
+  // Version 3 keeps what panes share in links. A profile's pane kept how it
+  // looked at its profile in its params; it reads that from a link now.
+  2: (old) => {
+    // Converts what it can read; reading the result says what is wrong.
+    const layout = record(old, "the layout");
+    const { panes } = layout;
+    if (typeof panes !== "object" || panes === null || typeof layout.next !== "number") {
+      return { ...layout, links: {} };
+    }
+    let { next } = layout;
+    const links: Record<string, unknown> = {};
+    const moved = Object.fromEntries(
+      Object.entries(panes).map(([id, pane]: [string, unknown]) => {
+        const found = pane as { kind?: unknown; key?: unknown; params?: unknown } | null;
+        if (found?.kind !== "profile" || typeof found.params !== "object" || !found.params) {
+          return [id, pane];
+        }
+        const params = found.params as { name?: unknown; look?: unknown };
+        const link = `l${next++}`;
+        links[link] = { profile: found.key, look: params.look ?? {} };
+        return [id, { ...found, params: { name: params.name ?? "", link } }];
+      }),
+    );
+    return { ...layout, panes: moved, links, next };
+  },
 };
 
 export type Loaded = { ok: true; layout: Layout } | { ok: false; why: string };
@@ -80,6 +106,13 @@ function readLayout(value: unknown): Layout {
     ),
     focused: ident<GroupId>(layout.focused, "g", "focused"),
     panes,
+    links: Object.fromEntries(
+      Object.entries(record(layout.links, "links")).map(([id, held]) => [
+        ident<LinkId>(id, "l", "a link"),
+        // JSON.parse makes nothing but JSON.
+        held as Json,
+      ]),
+    ),
     next: count(layout.next, "next"),
   };
 }
@@ -163,7 +196,7 @@ function count(value: unknown, what: string): number {
 }
 
 /** An id: its letter, then its number. */
-function ident<T extends PaneId | GroupId | SplitId>(
+function ident<T extends PaneId | GroupId | SplitId | LinkId>(
   value: unknown,
   letter: string,
   what: string,
