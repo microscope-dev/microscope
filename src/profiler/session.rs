@@ -291,7 +291,7 @@ pub fn record_attached(
     // walks is unknown.
     if let Some(walker) = &mut walker {
         walker.refresh(&mut processor);
-        events.enable(true);
+        events.start();
     }
 
     let mut stopped = false;
@@ -744,7 +744,7 @@ fn drive(
 
         let finished = now || ended(Duration::ZERO);
         let disabled_at = finished.then(|| {
-            events.enable(false);
+            events.stop();
             monotonic()
         });
 
@@ -1169,9 +1169,7 @@ impl Snapshots {
             return;
         }
 
-        // Only sampling pauses: the program runs on until the snapshot
-        // stops it and after it lets go, and a mapping it makes then must
-        // still be recorded, or its module is never found.
+        // Only sampling pauses, as `Events::stop` says.
         if sampling {
             events.sample(false);
         }

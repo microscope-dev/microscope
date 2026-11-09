@@ -245,12 +245,19 @@ struct Gate {
     /// was, not yet taken.
     behind: Option<u64>,
     spans: Vec<(u64, u64)>,
+
+    /// The recording stopped its events, for good.
+    stopped: bool,
 }
 
 impl Gate {
     /// The recording wants sampling `on`: whether the sampling events are
     /// to be on, which they are not while the reader is behind.
-    const fn want(&mut self, on: bool) -> bool {
+    fn want(&mut self, on: bool) -> bool {
+        assert!(
+            !(on && self.stopped),
+            "sampling resumed after the events stopped"
+        );
         self.off = !on;
         on && self.behind.is_none()
     }
@@ -854,10 +861,34 @@ impl Events {
         }
     }
 
-    /// Starts or stops every event, and every event a thread inherited
-    /// from one, counting and sampling. While the reader is behind,
-    /// sampling starts only once it catches up.
-    pub fn enable(&self, on: bool) {
+    /// Starts every event of an attached process, and every event a thread
+    /// inherited from one, counting and sampling. Events start once, before
+    /// they stop.
+    pub fn start(&self) {
+        self.enable(true);
+    }
+
+    /// Stops every event for good, the sideband with sampling, as the
+    /// recording ends. A pause turns only sampling off ([`Self::sample`]):
+    /// the program runs on through it, and a mapping it makes meanwhile
+    /// must still be recorded, or its module is never found.
+    pub fn stop(&self) {
+        self.enable(false);
+        self.gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stopped = true;
+    }
+
+    fn enable(&self, on: bool) {
+        assert!(
+            !self
+                .gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stopped,
+            "events started or stopped after they stopped"
+        );
         self.sample(on);
         for fd in &self.sideband {
             let _ = sys::enable(fd, on);
