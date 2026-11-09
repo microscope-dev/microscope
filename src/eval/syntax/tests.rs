@@ -643,10 +643,12 @@ fn assigns(text: &str) -> bool {
 }
 
 /// An operand of `op`, parenthesized where it may hold a comparison and
-/// `op` is one: comparisons do not chain.
+/// `op` binds at least as tightly as one: comparisons do not chain, and
+/// `a < b & c == d` is `a < (b & c) == d`.
 fn operand_of(op: &str, text: String) -> String {
     let compares = text.contains("==") || text.replace("<<", "").contains('<');
-    if matches!(op, "==" | "<") && compares {
+    let looser = matches!(op, "&&" | "||" | "=" | "+=");
+    if compares && !looser {
         format!("({text})")
     } else {
         text
@@ -767,6 +769,23 @@ fn printed_casts_and_nested_assignments_read_back_the_same() {
         parse(text);
         check_invariants(text).unwrap_or_else(|error| panic!("{text}: {error}"));
     }
+}
+
+/// Found by the round trip below: comparisons joined by an operator that
+/// binds tighter than they do chain, as in Rust, so the generator now
+/// parenthesizes them; parenthesized, they read back the same.
+#[test]
+fn comparisons_joined_by_a_tighter_operator_chain() {
+    let error = Expression::parse("(8)->g.0 <1.5 &ns::d==  $rax")
+        .expect_err("comparisons joined by `&` chain");
+    assert!(
+        error.to_string().contains("comparisons do not chain"),
+        "{error}"
+    );
+
+    let text = "((8)->g.0 <1.5) & (ns::d==  $rax)";
+    parse(text);
+    check_invariants(text).unwrap_or_else(|error| panic!("{text}: {error}"));
 }
 
 proptest! {

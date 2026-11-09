@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc b1d67f054e7d9b3759f52b497408529bcb0556d6dfb60c89499881902cb86cd1 # shrinks to text = "(n) - ((a) as int) as int"
 cc 0397bf3c291d3f2f8352285c7e76a33d11432a2a083bcae399d492241c1f12cc # shrinks to text = "sizeof(a ? a = a : a)"
+cc af6ade842d07bd496410de3e7c3564c17021b98d07bbec6ac4cc025ceb2c7722 # shrinks to text = "(8)->g.0 <1.5 &ns::d==  $rax"
