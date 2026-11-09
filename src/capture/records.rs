@@ -617,6 +617,11 @@ pub enum AccountKind {
     /// read them, or exited a second or more after microscope last read
     /// them, when the program no longer waits to be read.
     ProbesUnread = 33,
+
+    /// Modules whose instrumentation microscope read: each once, at its
+    /// first read, which a program waits for before it relies on its
+    /// marks being recorded.
+    ProbesRead = 34,
 }
 
 /// A count of something the views must show.

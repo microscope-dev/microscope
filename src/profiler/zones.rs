@@ -86,6 +86,9 @@ pub struct ProbeCounts {
     /// the profile's probe problems say which.
     pub unread: u64,
 
+    /// Modules whose instrumentation microscope has read.
+    pub read: u64,
+
     /// Values plotted.
     pub plotted: u64,
 }
@@ -209,6 +212,7 @@ impl Profile {
             interrupted: account(AccountKind::ProbeInterrupted),
             malformed: account(AccountKind::ProbeMalformed),
             unread: account(AccountKind::ProbesUnread),
+            read: account(AccountKind::ProbesRead),
             plotted: self.capture.plots.len() as u64,
         }
     }

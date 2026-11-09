@@ -214,7 +214,13 @@ impl Collector {
                 self.gone = true;
                 return;
             }
-            instance_mut(&mut self.instances, index).read_at = Some(now);
+            if instance_mut(&mut self.instances, index)
+                .read_at
+                .replace(now)
+                .is_none()
+            {
+                processor.builder().count(AccountKind::ProbesRead as u32, 1);
+            }
         }
     }
 
@@ -1238,6 +1244,11 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         drop(names);
         child.wait().expect("its exit");
         assert_eq!(on, 1, "the site stays off");
+        assert_eq!(
+            processor.builder().account(AccountKind::ProbesRead as u32),
+            1,
+            "a module is counted read at its first read alone"
+        );
         let problems = processor.snapshot().markers;
         assert_eq!(problems.len(), 1, "{problems:?}");
     }
