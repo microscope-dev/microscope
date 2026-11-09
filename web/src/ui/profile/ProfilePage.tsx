@@ -113,13 +113,20 @@ export function ProfileBody({ id, pane }: PaneProps) {
   // The address names the profile this pane shows, as it changes.
   const search = location.search as Record<string, unknown>;
   const addressed = location.pathname === `/profile/${profile}`;
+  const led = useRef(false);
   useEffect(() => {
-    // What the look cannot mean, such as an old link's view, is taken out
-    // of the address too.
+    // An address naming this profile changes the look, as Back does, through
+    // ProfileRoute; the look takes the address only as the pane takes the
+    // lead. What the look cannot mean, such as an old link's view, is taken
+    // out of the address too.
+    const took = leads && !led.current;
+    led.current = leads;
     const kept = validateProfileLook(search);
     const dropped = Object.keys(search).some((key) => !(key in kept));
-    if (leads && (!addressed || dropped || !sameLook(kept, look))) {
-      void navigate({ to: "/profile/$profile", params: { profile }, search: look, replace: true });
+    const stale = took && !sameLook(kept, look);
+    if (leads && (!addressed || stale || dropped)) {
+      const shown = !addressed || took ? look : kept;
+      void navigate({ to: "/profile/$profile", params: { profile }, search: shown, replace: true });
     }
   }, [leads, addressed, search, look, navigate, profile]);
 

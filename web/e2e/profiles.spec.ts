@@ -5,20 +5,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import * as path from "node:path";
 
-import type { Page } from "@playwright/test";
-
-import { expect, fixture, join, menu, root, test } from "./server";
-
-/** Shows a view from Options, opening it if it is closed, and puts it away. */
-async function showView(page: Page, label: string): Promise<void> {
-  const options = page.getByRole("dialog", { name: "Options" });
-  if (!(await options.isVisible())) {
-    await page.getByRole("button", { name: "Options" }).click();
-  }
-  await options.getByRole("combobox", { name: "View" }).selectOption({ label });
-  await page.keyboard.press("Escape");
-  await expect(options).toBeHidden();
-}
+import { expect, fixture, join, menu, root, showView, test } from "./server";
 
 // The test serves a profile it records, not a program.
 test.use({ program: [] });
