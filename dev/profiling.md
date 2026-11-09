@@ -92,6 +92,10 @@ under the lock took 9 to 20 ms, longer than a ring holds 16 busy threads'
 samples, and every one of those waits lost samples. Both buffers are reserved
 up front for the same reason. A reader that is never read from pauses instead
 of losing samples (`a_reader_far_behind_pauses_sampling_instead_of_losing_samples`).
+What the reader does on each pass (`Pass::of`) and when sampling is on
+(`Gate`) are pure, so their tests replay starved readers, full queues and
+budget pauses exactly. Tests on real rings check only what holds under any
+load (dev/testing.md).
 
 Breakpoint counters never pause for a full queue: that would miss calls without
 counting them as lost. At 64 MiB their reader waits for processing to take the
