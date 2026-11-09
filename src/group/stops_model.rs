@@ -24,6 +24,10 @@ enum Member {
 enum Command {
     Continue,
     Resume,
+
+    /// A continue or resume from a stop that is no longer current, which
+    /// the driver refuses before it asks the rule anything.
+    Stale,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +149,9 @@ impl Reference {
     /// A continue reports a pending stop, or resumes the stopped members;
     /// a resume forgets the pending stops first.
     fn serve(&mut self, command: Command) {
+        if command == Command::Stale {
+            return;
+        }
         if command == Command::Resume {
             self.pending = 0;
         }
@@ -200,7 +207,7 @@ impl ReferenceStateMachine for Model {
 
         let mut events = vec![(
             2,
-            prop::sample::select(vec![Command::Continue, Command::Resume])
+            prop::sample::select(vec![Command::Continue, Command::Resume, Command::Stale])
                 .prop_map(Event::Client)
                 .boxed(),
         )];
@@ -409,6 +416,9 @@ impl Harness {
             self.awaited
         );
         assert!(self.unserved.remove(&id), "command {id} was served twice");
+        if command == Command::Stale {
+            return;
+        }
 
         if command == Command::Resume {
             self.stops.discard_pending();

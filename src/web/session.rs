@@ -1208,12 +1208,30 @@ impl Session {
     async fn resume(&self, connection: u32, stop: Option<u64>) -> Result<String, Failure> {
         let (handle, launch, started) = self.current_launch().await?;
         if let Some(stop) = stop {
-            let selected = self.current_handle().await?;
-            let InferiorState::Stopped {
-                process_id,
-                stop_id,
-                ..
-            } = selected.snapshot().await?.inferior
+            let (group, view) = self
+                .target
+                .lock()
+                .await
+                .as_ref()
+                .map(|target| {
+                    (
+                        target.group.as_ref().map(ProcessGroup::handle),
+                        target.selection.view(),
+                    )
+                })
+                .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))?;
+
+            // The group resumes the member shown at the stop the tab saw,
+            // or nothing: another tab may have moved it on since.
+            if let Some(group) = group {
+                self.caused(connection, "continued");
+                group
+                    .continue_from((view.member, StopId::new(stop)))
+                    .await?;
+                return Ok("continued".to_owned());
+            }
+
+            let InferiorState::Stopped { process_id, .. } = view.handle.snapshot().await?.inferior
             else {
                 return Err(Failure::new(
                     ErrorKind::NotStopped,
@@ -1222,23 +1240,13 @@ impl Session {
             };
 
             self.caused(connection, "continued");
-            match self.group_handle().await {
-                Some(group) => {
-                    if stop_id != StopId::new(stop) {
-                        return Err(microscope::Error::StaleStop.into());
-                    }
-                    group.continue_all().await?;
-                }
-                None => {
-                    selected
-                        .continue_execution(
-                            StopId::new(stop),
-                            ResumeScope::Process(process_id),
-                            ExceptionDisposition::Pass,
-                        )
-                        .await?;
-                }
-            }
+            view.handle
+                .continue_execution(
+                    StopId::new(stop),
+                    ResumeScope::Process(process_id),
+                    ExceptionDisposition::Pass,
+                )
+                .await?;
             return Ok("continued".to_owned());
         }
 

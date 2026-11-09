@@ -156,3 +156,128 @@ async fn a_detached_member_runs_on_alone() {
         "{exited}"
     );
 }
+
+/// The members `group-spin` makes: its own process and the four it forks.
+const SPINNING: usize = 5;
+
+/// A group of spinning members, stopped by a pause, with member `selected`
+/// shown, and a second tab on it.
+async fn spinning(name: &str, selected: impl Fn(&Value) -> u64) -> (Web, Client, Client, u64) {
+    let web = Web::start(
+        name,
+        &[&Scenario::fixture("group-spin").display().to_string()],
+    );
+    let mut a = web.control("a").await;
+    let b = web.control("b").await;
+    a.state("the program loaded", |state| state["session"].is_string())
+        .await;
+    a.ok("continue", json!({})).await;
+    let all = a
+        .state("every member running", |state| {
+            state["group"]["members"].as_array().is_some_and(|members| {
+                members.len() == SPINNING
+                    && members.iter().all(|member| member["state"] == "running")
+            })
+        })
+        .await;
+    let number = selected(&all);
+    a.ok("pause", json!(null)).await;
+    a.inferior("stopped").await;
+    a.ok("selectMember", json!({"member": number})).await;
+    (web, a, b, number)
+}
+
+/// The answer to request `id`, which `tab` sent without waiting for it.
+async fn answer(tab: &mut Client, id: u64) -> Result<Value, String> {
+    let answer = tab
+        .expect("an answer", |message| {
+            message["id"] == id && matches!(message["type"].as_str(), Some("result" | "error"))
+        })
+        .await;
+    if answer["type"] == "result" {
+        Ok(answer["result"].clone())
+    } else {
+        Err(answer["error"]["kind"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned())
+    }
+}
+
+/// Two tabs act on the stop both show, one continuing the group and one
+/// stepping the member shown. Only the first to reach that member may
+/// resume it: a continue that lost must not resume the step's stop, nor
+/// the rest of the group without it.
+async fn continue_races_a_step(name: &str, selected: impl Fn(&Value) -> u64) {
+    let (_web, mut a, mut b, number) = spinning(name, selected).await;
+
+    let mut previous = Value::Null;
+    for round in 0..4 {
+        let stopped = a
+            .state("a stop of the member shown", |state| {
+                state["inferior"]["state"] == "stopped"
+                    && state["group"]["selected"] == number
+                    && state["inferior"]["stop"] != previous
+            })
+            .await;
+        let (stop, thread) = (
+            stopped["inferior"]["stop"].clone(),
+            stopped["inferior"]["thread"].clone(),
+        );
+
+        let continue_request = a.send("continue", json!({"stop": stop})).await;
+        let step_request = b
+            .send(
+                "step",
+                json!({"stop": stop, "thread": thread, "kind": "instruction"}),
+            )
+            .await;
+        let step_answer = answer(&mut b, step_request).await;
+        let continue_answer = answer(&mut a, continue_request).await;
+        assert!(
+            step_answer.is_ok() != continue_answer.is_ok(),
+            "round {round}: from stop {stop}, the step answered {step_answer:?} and the continue {continue_answer:?}"
+        );
+
+        if step_answer.is_ok() {
+            // The group stays stopped at the step's stop, which is still
+            // there to continue from.
+            let landed = a
+                .state("the step's stop", |state| {
+                    state["inferior"]["state"] == "stopped" && state["inferior"]["stop"] != stop
+                })
+                .await;
+            assert_eq!(landed["inferior"]["reason"]["kind"], "step", "{landed}");
+            previous = landed["inferior"]["stop"].clone();
+            a.request("continue", json!({"stop": previous}))
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("round {round}: the step's stop {previous} was resumed: {error:?}")
+                });
+        } else {
+            previous = stop;
+        }
+
+        a.inferior("running").await;
+        a.ok("pause", json!(null)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_continue_that_loses_to_a_step_resumes_no_member_resumed_last() {
+    continue_races_a_step("group-race-last", |state| {
+        state["group"]["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|member| member["number"].as_u64())
+            .max()
+            .unwrap_or(1)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_continue_that_loses_to_a_step_resumes_no_member_resumed_first() {
+    continue_races_a_step("group-race-first", |_| 1).await;
+}

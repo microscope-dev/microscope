@@ -180,7 +180,10 @@ impl Shared {
 }
 
 enum Command {
-    ContinueAll(oneshot::Sender<Result<()>>),
+    ContinueAll(
+        Option<(MemberNumber, crate::StopId)>,
+        oneshot::Sender<Result<()>>,
+    ),
     ResumeAll(
         Option<(MemberNumber, crate::StopId)>,
         oneshot::Sender<Result<()>>,
@@ -363,8 +366,23 @@ impl GroupHandle {
     /// Resumes every stopped member. A stop a member made while the group
     /// was stopping is reported instead, as a [`GroupEvent::GroupStopped`],
     /// without resuming anything.
+    ///
+    /// This resumes whatever stop each member is at now. A client that
+    /// showed a stop continues from it with
+    /// [`continue_from`](Self::continue_from) instead.
     pub async fn continue_all(&self) -> Result<()> {
-        self.command(Command::ContinueAll).await
+        self.command(|reply| Command::ContinueAll(None, reply))
+            .await
+    }
+
+    /// Continues as [`continue_all`](Self::continue_all) does, from member
+    /// `observed.0`'s stop `observed.1`, which a client showed. That member
+    /// resumes first, at that stop; when the stop is no longer current, or
+    /// the member is not stopped, the continue fails with its error and
+    /// resumes nothing.
+    pub async fn continue_from(&self, observed: (MemberNumber, crate::StopId)) -> Result<()> {
+        self.command(|reply| Command::ContinueAll(Some(observed), reply))
+            .await
     }
 
     /// What a stop in one member stops: the group, or that member alone.
@@ -377,7 +395,8 @@ impl GroupHandle {
     /// [`continue_all`](Self::continue_all) would report first, for a client
     /// that already shows each member's stop on its own. `observed` is the
     /// stop the client showed, from the member's own events, which the
-    /// group may not have seen yet; it is resumed all the same.
+    /// group may not have seen yet; it is resumed all the same, first. When
+    /// it is no longer current, the resume fails and resumes nothing.
     pub async fn resume_all(&self, observed: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
         self.command(|reply| Command::ResumeAll(observed, reply))
             .await
@@ -673,6 +692,11 @@ impl<C> Stops<C> {
         std::mem::take(&mut self.deferred)
     }
 
+    /// Whether a continue would report a stop rather than resume.
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     /// Forgets the stops yet to report, for a client that showed them.
     fn discard_pending(&mut self) {
         self.pending.clear();
@@ -775,7 +799,7 @@ impl Driver {
                 }
                 Some(notice) = notices.recv() => self.notice(notice).await,
                 command = commands.recv() => match command {
-                    Some(command @ (Command::ContinueAll(_) | Command::ResumeAll(..))) => {
+                    Some(command @ (Command::ContinueAll(..) | Command::ResumeAll(..))) => {
                         self.resume(command).await;
                     }
                     Some(Command::Detach(number, reply)) => {
@@ -1258,31 +1282,46 @@ impl Driver {
         }
     }
 
-    /// Resumes member `number` at `stop`, which a client showed from the
-    /// member's own events before they reached the group, and returns
-    /// whether it did. A member the group already saw stop is left to
-    /// [`Self::continue_all`].
-    async fn catch_up(&mut self, number: MemberNumber, stop: crate::StopId) -> bool {
-        let Some(live) = self.members.get_mut(&number) else {
-            return false;
-        };
-        let Some(process) = live.process.filter(|_| live.running && !live.gone) else {
-            return false;
-        };
+    /// Resumes member `number` at `stop`, which a client showed, perhaps
+    /// from the member's own events before they reached the group. The
+    /// member's session refuses a stop that is no longer current, so that a
+    /// client's continue never resumes a stop it did not see.
+    async fn resume_observed(&mut self, number: MemberNumber, stop: crate::StopId) -> Result<()> {
+        let live = self
+            .members
+            .get_mut(&number)
+            .ok_or(Error::UnknownMember(number))?;
+        let process = live
+            .process
+            .filter(|_| !live.gone)
+            .ok_or(Error::NotRunning)?;
 
-        let resumed = live
-            .handle
+        live.handle
             .continue_execution(
                 stop,
                 ResumeScope::Process(process),
                 ExceptionDisposition::Pass,
             )
-            .await
-            .is_ok();
-        if resumed {
-            live.passed = Some(stop);
+            .await?;
+
+        // The member's event for the stop may still be on its way, and must
+        // not report it again.
+        live.passed = Some(stop);
+        live.running = true;
+        Ok(())
+    }
+
+    /// Fails unless member `number` is still at `stop`.
+    async fn still_at(&self, number: MemberNumber, stop: crate::StopId) -> Result<()> {
+        let live = self
+            .members
+            .get(&number)
+            .ok_or(Error::UnknownMember(number))?;
+        match live.handle.snapshot().await?.inferior {
+            InferiorState::Stopped { stop_id, .. } if stop_id == stop => Ok(()),
+            InferiorState::Stopped { .. } => Err(Error::StaleStop),
+            _ => Err(Error::NotStopped),
         }
-        resumed
     }
 
     /// Serves the continues and resumes that waited for the group to
@@ -1301,23 +1340,49 @@ impl Driver {
             return;
         };
         match command {
-            Command::ContinueAll(reply) => {
+            Command::ContinueAll(None, reply) => {
                 let _ = reply.send(self.continue_all().await);
             }
-            Command::ResumeAll(observed, reply) => {
-                self.stops.discard_pending();
-                let caught_up = match observed {
-                    Some((number, stop)) => self.catch_up(number, stop).await,
-                    None => false,
-                };
-                let resumed = self.continue_all().await;
-                let _ = reply.send(if caught_up {
-                    resumed.or(Ok(()))
+            Command::ContinueAll(Some((number, stop)), reply) => {
+                // A stop to report resumes nothing, but the client must
+                // still be continuing from the stop it showed.
+                let observed = if self.stops.has_pending() {
+                    self.still_at(number, stop).await
                 } else {
-                    resumed
+                    self.resume_observed(number, stop).await
+                };
+                let _ = reply.send(match observed {
+                    Ok(()) => self.continue_rest().await,
+                    Err(error) => Err(error),
+                });
+            }
+            Command::ResumeAll(observed, reply) => {
+                let resumed = match observed {
+                    Some((number, stop)) => self.resume_observed(number, stop).await,
+                    None => Ok(()),
+                };
+                if let Err(error) = resumed {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+
+                self.stops.discard_pending();
+                let _ = reply.send(if observed.is_some() {
+                    self.continue_rest().await
+                } else {
+                    self.continue_all().await
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Continues the group once the member a client showed has resumed,
+    /// which is enough even with no other member stopped.
+    async fn continue_rest(&mut self) -> Result<()> {
+        match self.continue_all().await {
+            Err(Error::NotStopped) => Ok(()),
+            result => result,
         }
     }
 
