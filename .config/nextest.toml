@@ -20,12 +20,9 @@ slow-timeout = { period = "60s", terminate-after = 15 }
 [profile.soak]
 slow-timeout = { period = "60s", terminate-after = 1440 }
 
-# The BPF engines' tests each map perf rings on every CPU, which count
-# against this user's perf memory (kernel.perf_event_mlock_kb on each CPU,
-# then RLIMIT_MEMLOCK): more than two at once can run out of it. Each of
-# the two groups below runs one at a time.
+# Perf ring memory needs no group: test builds lease it
+# (src/backend/linux/perf/lease.rs).
 [test-groups]
-perf-rings = { max-threads = 1 }
 bpf-profiles = { max-threads = 1 }
 
 # Python's BPF profile tests bound the share of samples whose frames could
@@ -36,13 +33,11 @@ bpf-profiles = { max-threads = 1 }
 filter = 'binary(profiler_kernel) | (test(/(^|::)bpf::/) & (binary(node) | (binary(python) & test(/^profile::/))))'
 test-group = 'bpf-profiles'
 
+# A loss bound measures collection, not competing test workers, and the
+# reader tests need their program's CPU to fill the reader's queue: under
+# `just stress` beside other tests it got too little to fill even 4 MiB.
 [[profile.default.overrides]]
-filter = 'test(/(^|::)bpf::/) | binary(profiler) | (binary(microscope) & test(/^backend::linux::perf::tests::|^profiler::session::tests::.*breakpoint/))'
-test-group = 'perf-rings'
-
-# Loss bounds measure collection, not competing test workers.
-[[profile.default.overrides]]
-filter = '(binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_(reader_that_falls_behind|reader_far_behind|low_rate_is_read)/))'
+filter = '(binary(profiler) & test(=maximum_rate_keeps_at_least_99_percent_of_a_short_rust_burst)) | (binary(microscope) & test(/^backend::linux::perf::tests::a_reader_(that_falls_behind|far_behind)/))'
 threads-required = 'num-test-threads'
 
 # Node's profile and syscall tests record a program that spins two threads,

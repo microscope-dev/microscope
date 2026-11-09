@@ -399,6 +399,14 @@ checks that it and the dropped count add up.
 
 Exact draining and loss are tested on synthetic sequences, not on real rings.
 
+Test builds (the `ring-lease` feature, which every `just` test recipe turns
+on) lease each recording's ring memory from a pool the size of what the user
+may lock, held in lock files under `target/ring-lease`. A recording whose
+lease is not free gets smaller rings, as the kernel would give it, and one
+at its fewest pages waits for a lease rather than fail. So no nextest group
+is needed for ring memory. Recordings outside the suite, such as a build
+runner of the same user's, are not in the pool.
+
 ## Unit tests
 
 Unit-test complicated deterministic logic where a failure can identify the

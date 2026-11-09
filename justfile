@@ -11,6 +11,11 @@ set positional-arguments := true
 # threads. More concurrency adds contention without improving wall time.
 max_test_threads := "16"
 
+# Every build of the test profile has the same features, so that none
+# rebuilds what another built. Recordings in tests lease their perf ring
+# memory (src/backend/linux/perf/lease.rs).
+test_features := "tools,ring-lease"
+
 # The fuzz targets that decode x86, whose decoder tables iced-x86 never
 # frees; see `fuzz`.
 decoding_fuzz_targets := "disassembly dispatch elf-symbols dwarf-load jit-code runtime-go runtime-tokio runtime-python runtime-node"
@@ -136,7 +141,7 @@ vet:
 # which took the machine's core handler most of a second each.
 [doc("Builds the native test fixtures and runs the Rust test suite.")]
 test *ARGS: cache-warm
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" "$@"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" "$@"
     if (( $# == 0 )); then cargo test --doc; CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c; fi
 
 # Runs the unit tests with every property test trying CASES cases instead
@@ -144,7 +149,7 @@ test *ARGS: cache-warm
 # unit tests run too; they take seconds. Arguments go to nextest.
 [doc("Runs the unit tests with CASES cases for each property test.")]
 props CASES="10000" *ARGS: cache-warm
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; PROPTEST_CASES="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --profile props --test-threads "$test_threads" --lib --bins "${@:2}"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; PROPTEST_CASES="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --profile props --test-threads "$test_threads" --lib --bins "${@:2}"
 
 # Runs the BPF engine's tests, which need CAP_BPF and CAP_PERFMON, starting
 # microscope through LAUNCHER: the microscope-bpf wrapper
@@ -160,7 +165,7 @@ test-bpf LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-programs
         exit 1
     fi
     ulimit -c 0
-    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --run-ignored only --test syscalls --test python --test node --test profiler_kernel -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
+    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --run-ignored only --test syscalls --test python --test node --test profiler_kernel -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
 
 # How many seeds `just miri` tries its concurrent tests under: about as many
 # as run at once. Try more with `just miri_seeds=0..256 miri`, or
@@ -265,7 +270,7 @@ loom-mutants BOUND="3" *ARGS:
 # checkout's loader: entries name the sources that built them, so an edit
 # leaves the old ones to eviction.
 cache-warm: build-test-programs
-    cargo build --quiet --profile test --features tools --bin microscope-tools
+    cargo build --quiet --profile test --features {{test_features}} --bin microscope-tools
     ./scripts/contained.sh ./target/debug/microscope-tools --cache target/image-cache warm build/test-programs build/golden
 
 # Builds the tokio fixtures where their sources changed and runs the tokio
@@ -273,13 +278,13 @@ cache-warm: build-test-programs
 # e.g. `just tokio workers::`.
 tokio *ARGS:
     ./scripts/build-test-programs.sh tokio
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" --test tokio "$@"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" --test tokio "$@"
 
 # Runs the Node suite alone, after the fixtures and Node cores it reads are
 # built: the quick loop for work on Node support. Arguments go to nextest,
 # e.g. `just node stacks::`.
 node *ARGS: cache-warm
-    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$test_threads" --test node "$@"
+    ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" --test node "$@"
 
 # Races in process control fail far more often when the debugger competes for
 # the CPUs, so this oversubscribes the test threads and keeps busy loops
@@ -296,7 +301,7 @@ node *ARGS: cache-warm
 [script]
 stress COUNT="3" *ARGS: build-test-programs
     # Build before the busy loops start so they slow only the tests.
-    cargo nextest run --features tools --no-run
+    cargo nextest run --features {{test_features}} --no-run
     # Physical cores, not logical CPUs: two hyperthreads of a core run little
     # more than one does, and the tests' deadlines are in seconds. Counting
     # each of them oversubscribed a 12-core, 24-thread machine past the
@@ -306,9 +311,9 @@ stress COUNT="3" *ARGS: build-test-programs
     trap 'kill "${burners[@]}" 2>/dev/null || true' EXIT
     for (( i = 0; i < cpus / 2; i++ )); do (while :; do :; done) & burners+=($!); done
     ulimit -c 0
-    XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --test-threads "$(( cpus * 2 ))" --stress-count "$1" "${@:2}"
+    XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$(( cpus * 2 ))" --stress-count "$1" "${@:2}"
     if (( ${SOAK_MINUTES:-0} > 0 )); then
-        MICROSCOPE_SOAK_SECONDS="$(( SOAK_MINUTES * 60 ))" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features tools --profile soak --no-capture --run-ignored only --test tokio -E 'test(=soak::soak)'
+        MICROSCOPE_SOAK_SECONDS="$(( SOAK_MINUTES * 60 ))" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --profile soak --no-capture --run-ignored only --test tokio -E 'test(=soak::soak)'
     fi
 
 # Installs the web page's locked dependencies.
@@ -369,13 +374,13 @@ web-props CASES="10000": web-deps
 # Drives the built page and real `microscope web` servers in Chromium and
 # Firefox. Arguments go to Playwright, e.g. `just web-e2e --project=chromium`.
 web-e2e *ARGS: web-build build-test-programs
-    cargo build --quiet --profile test
+    cargo build --quiet --profile test --features {{test_features}}
     cd web && MICROSCOPE_CACHE_DIR="$PWD/../target/image-cache" ./node_modules/.bin/playwright test "$@"
 
 # Rerecords the server traffic the page's replay tests read
 # (web/test/transcripts) from the Rust web tests.
 web-transcripts: build-test-programs
-    MICROSCOPE_WEB_TRANSCRIPTS="$PWD/web/test/transcripts" cargo nextest run --features tools --test web
+    MICROSCOPE_WEB_TRANSCRIPTS="$PWD/web/test/transcripts" cargo nextest run --features {{test_features}} --test web
 
 # Rebuilds one golden program and rewrites its manifest, after a deliberate
 # change to its sources or the toolchain. Commit a new manifest on its own.
@@ -405,7 +410,7 @@ sim-shrink SEED *ARGS: golden
 # `just timings BASE NEW`. Pass --threads for each thread's work, and --all
 # for every phase.
 timings *ARGS:
-    cargo run --quiet --profile test --features tools --bin microscope-tools -- timings "$@"
+    cargo run --quiet --profile test --features {{test_features}} --bin microscope-tools -- timings "$@"
 
 # Single-steps PROGRAM to its end and checks the stack unwound at every
 # instruction against the calls it really made, as the debugger and the
@@ -418,7 +423,7 @@ unwind-oracle PROGRAM *ARGS:
 # Prints every answer PROGRAM's debug information gives, in a canonical form
 # that compares with `diff`. Pass --sections to dump only some.
 dump PROGRAM *ARGS:
-    cargo run --quiet --profile test --features tools --bin microscope-tools -- dump "$@"
+    cargo run --quiet --profile test --features {{test_features}} --bin microscope-tools -- dump "$@"
 
 # Loads every program of the pinned corpus in processes of their own and
 # reports what each load costs. Pass --out FILE to save the report and
@@ -457,7 +462,7 @@ syscall-overhead LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-p
 # Checks cold, single-worker loads of the pinned Nix corpus against reviewed
 # allocation-count and allocated-byte ceilings. No test-fixture build needed.
 bench-smoke *ARGS:
-    cargo build --quiet --profile test --features tools --bin microscope-tools
+    cargo build --quiet --profile test --features {{test_features}} --bin microscope-tools
     ./scripts/contained.sh ./target/debug/microscope-tools bench-smoke --corpus "$MICROSCOPE_BENCH_CORPUS" --budgets bench/smoke.json "$@"
 
 # Builds the full benchmark's large program: microscope's own development build

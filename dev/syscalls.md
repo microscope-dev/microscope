@@ -414,11 +414,11 @@ change only the lines. `microscope report` always prints microseconds.
   under each build, alternating, and compare the losses and microscope's
   CPU time.
 - The BPF tests each map perf rings on every CPU, which count against the
-  user's perf memory, so nextest runs at most two at once: one of the
-  `perf-rings` group, and one of `bpf-profiles`, which holds Node's BPF
-  tests and Python's BPF profile tests, so that Node's spinning programs
-  never run beside the Python tests that bound their unread samples
-  (`.config/nextest.toml`).
+  user's perf memory; test builds lease it, as every recording in tests
+  does (`src/backend/linux/perf/lease.rs`). Node's BPF tests and Python's
+  BPF profile tests run one at a time in the `bpf-profiles` group, so that
+  Node's spinning programs never run beside the Python tests that bound
+  their unread samples (`.config/nextest.toml`).
 - The browser's view is covered by `tests/web/syscalls.rs`, Vitest, and
   `web/e2e/syscalls.spec.ts`.
 

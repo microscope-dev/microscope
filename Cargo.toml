@@ -36,6 +36,10 @@ self-probes = ["microscope-probes/enabled"]
 # Developer tools: `microscope-tools` dumps every answer a program's debug
 # information gives, loads programs for benchmarks, and summarizes timings.
 tools = []
+# Leases perf ring memory from a pool every test process shares, so that
+# recordings beside each other never lock more than the user may
+# (src/backend/linux/perf/lease.rs). `just` builds tests with it.
+ring-lease = []
 
 [[bin]]
 name = "microscope-tools"
