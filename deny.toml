@@ -17,7 +17,10 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
-ignore = []
+ignore = [
+    # pin-utils is unmaintained.
+    { id = "RUSTSEC-2026-0441", reason = "only the tests build it, through expectrl 0.9's nix 0.26, and expectrl has no later release" },
+]
 
 [licenses]
 # Licenses that let a crate ship inside an MIT OR Apache-2.0 binary.
