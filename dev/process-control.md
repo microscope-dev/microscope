@@ -424,6 +424,17 @@ A stop that another member made while the group was stopping is queued.
 member's stop. With `StopScope::Process`, each member's stop is reported
 alone.
 
+A group continue never resumes a stop that neither the group nor the
+client has seen. `continue_from` and `resume_all` take the member and
+`StopId` the client showed and resume that member first, at that stop;
+when it is no longer current, the continue fails and resumes nothing.
+`continue_all` resumes the other members only at the stop the group
+joined each in or last saw it stop at. A member at a stop the group has
+not seen stays stopped, and the stop is reported when its event arrives.
+The driver keeps each member's newest known stop. A session's stop ids
+only grow, so an event for that stop or an earlier one is for a stop the
+group handled or a client resumed past, and reports nothing.
+
 Ending the group ends every member, killing launched processes and
 releasing attached ones, then the watched processes, and then joins the
 tracer thread. `GroupHandle::detach` releases one stopped member; the root

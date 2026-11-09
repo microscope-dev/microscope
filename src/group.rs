@@ -450,20 +450,17 @@ struct Live {
     handle: DebuggerHandle,
     process: Option<ProcessId>,
 
-    /// The stop the member joined in, which is not one of its own.
-    joined_at: Option<crate::StopId>,
-
-    /// A stop a client resumed before the member's event for it reached
-    /// the group, which the event must not report again.
-    passed: Option<crate::StopId>,
+    /// The member's newest stop the group knows: the one it joined in,
+    /// which is not one of its own, the last one the group handled, which
+    /// a resync may find again, or one a client resumed before its event
+    /// arrived. A session's stop ids only grow, so the member's events for
+    /// this stop and every earlier one are behind the group.
+    seen: Option<crate::StopId>,
 
     /// The revision of the member's state a resync after a lag took in
     /// whole; its events up to that revision came before it, and applying
     /// them now would take the member back.
     resynced: u64,
-
-    /// The last stop the group handled, which a resync may find again.
-    stopped_at: Option<crate::StopId>,
 
     /// The member's copy of each of the root's breakpoints, by the root's
     /// id, with the root's settings it was given.
@@ -766,10 +763,8 @@ impl Driver {
                 debugger: root,
                 handle,
                 process: None,
-                joined_at: None,
-                passed: None,
+                seen: None,
                 resynced: 0,
-                stopped_at: None,
                 mirrored: BTreeMap::new(),
                 running: false,
                 gone: false,
@@ -1042,10 +1037,8 @@ impl Driver {
             debugger,
             handle: handle.clone(),
             process: Some(process),
-            joined_at: None,
-            passed: None,
+            seen: None,
             resynced: 0,
-            stopped_at: None,
             mirrored: BTreeMap::new(),
             running: false,
             gone: false,
@@ -1053,7 +1046,7 @@ impl Driver {
         let mut failures = Vec::new();
         match ready {
             Ok(()) => {
-                live.joined_at = handle
+                live.seen = handle
                     .snapshot()
                     .await
                     .ok()
@@ -1199,10 +1192,10 @@ impl Driver {
         let Some(live) = self.members.get_mut(&number) else {
             return;
         };
-        if [live.joined_at, live.passed, live.stopped_at].contains(&Some(stop_id)) {
+        if Some(stop_id) <= live.seen {
             return;
         }
-        live.stopped_at = Some(stop_id);
+        live.seen = Some(stop_id);
 
         self.set_running(number, false);
         let state = MemberState::Stopped(reason.clone());
@@ -1304,9 +1297,14 @@ impl Driver {
             )
             .await?;
 
-        // The member's event for the stop may still be on its way, and must
-        // not report it again.
-        live.passed = Some(stop);
+        // The member's events for this stop and any before it may still be
+        // on their way, and must not report them.
+        debug_assert!(
+            Some(stop) >= live.seen,
+            "member {number} resumed at {stop}, older than its stop {:?}",
+            live.seen
+        );
+        live.seen = Some(stop);
         live.running = true;
         Ok(())
     }
@@ -1398,8 +1396,8 @@ impl Driver {
                 continue;
             }
 
-            let known = [live.joined_at, live.stopped_at];
-            match continue_stopped(&live.handle, |stop| known.contains(&Some(stop))).await {
+            let seen = live.seen;
+            match continue_stopped(&live.handle, |stop| Some(stop) == seen).await {
                 Ok(()) => {
                     live.running = true;
                     result = Ok(());
@@ -1708,7 +1706,7 @@ mod tests {
     }
 
     /// Serves the members' events as the driver's loop does, until the
-    /// group reports a stop.
+    /// group reports a stop or that every member is gone.
     async fn next_group_stop(
         driver: &mut Driver,
         received: &mut broadcast::Receiver<GroupEvent>,
@@ -1716,7 +1714,10 @@ mod tests {
         let served = async {
             loop {
                 while let Ok(event) = received.try_recv() {
-                    if matches!(event, GroupEvent::GroupStopped { .. }) {
+                    if matches!(
+                        event,
+                        GroupEvent::GroupStopped { .. } | GroupEvent::GroupExited
+                    ) {
                         return event;
                     }
                 }
@@ -1848,6 +1849,74 @@ mod tests {
         assert!(
             matches!(now, InferiorState::Stopped { stop_id, .. } if stop_id == stepped),
             "the group reports the step's stop {stepped:?}, and the root is {now:?}"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
+            .await
+            .expect("end the root session in time")
+            .expect("end the root session");
+    }
+
+    /// A client that shows a member's stops from its own events can
+    /// resume it through the group twice before the group sees the first
+    /// of them. Both stops are behind the group then, and neither may stop
+    /// it while the member runs on.
+    #[tokio::test]
+    async fn a_resume_leaves_every_earlier_stop_behind() {
+        let (mut driver, mut received) = driver_of("basic", StopScope::Group);
+        let root = driver.root.clone();
+        root.add_breakpoint(crate::BreakpointSpec::Function(
+            "breakpoint_target".to_owned(),
+        ))
+        .await
+        .expect("add the breakpoint");
+        let mut own = root.subscribe();
+        root.launch_with(crate::LaunchOptions::default())
+            .await
+            .expect("launch the root");
+
+        // The group learns the root's process, and none of its stops.
+        loop {
+            let Internal::Event(member, event) =
+                driver.internal.1.recv().await.expect("the root's events")
+            else {
+                panic!("the root's session ended");
+            };
+            let launched = matches!(event, DebuggerEvent::InferiorLaunched { .. });
+            assert!(
+                !matches!(event, DebuggerEvent::InferiorStopped { .. }),
+                "the root stopped before it launched"
+            );
+            driver.event(member, event).await;
+            if launched {
+                break;
+            }
+        }
+
+        // The client resumes each call of breakpoint_target as it sees it.
+        for _ in 0..2 {
+            let stop = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Ok(DebuggerEvent::InferiorStopped { stop_id, .. }) = own.recv().await {
+                        return stop_id;
+                    }
+                }
+            })
+            .await
+            .expect("the root stops in time");
+            let (reply, resumed) = oneshot::channel();
+            driver
+                .resume(Command::ResumeAll(Some((1, stop)), reply))
+                .await;
+            resumed
+                .await
+                .expect("the resume is answered")
+                .expect("resume the root");
+        }
+
+        assert_eq!(
+            next_group_stop(&mut driver, &mut received).await,
+            GroupEvent::GroupExited,
+            "the root ran to its exit"
         );
         tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
             .await

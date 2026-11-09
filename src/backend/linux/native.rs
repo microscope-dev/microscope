@@ -269,6 +269,8 @@ pub(super) trait LinuxTraceOps: InspectionOps {
     /// process-wide counter so no two sessions in a process share one; an
     /// edge whose sessions share nothing, as a simulation's, may count its
     /// own so that a session's identifiers do not depend on the others.
+    /// Each is greater than every one the edge issued before it, so a
+    /// process group can tell a member's stop from one it already passed.
     fn allocate_stop_id(&self) -> Result<StopId>;
 
     /// Resolves the file behind a module mapping and its load bias, or
