@@ -655,15 +655,15 @@ fn close(socket: &mut WebSocket<QuickAck>) -> bool {
             Err(_) => return false,
         };
 
-        // tungstenite reads the inspector's answering close as a message,
-        // then reports the connection closed.
+        // The inspector's close frame is its answer. Reading on could fail
+        // on a frame it wrote after that close.
         loop {
             match socket.read() {
+                Ok(Message::Close(_)) | Err(tungstenite::Error::ConnectionClosed) => return true,
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                     break;
                 }
-                Err(tungstenite::Error::ConnectionClosed) => return true,
                 Err(_) => return false,
             }
         }
@@ -1398,6 +1398,36 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
 
+        client.finish();
+        server.join().expect("server");
+    }
+
+    #[test]
+    fn a_close_answered_before_a_late_frame_counts_as_answered() {
+        let (address, server) = serve(|stream| {
+            let mut server = accept(stream);
+            while !matches!(server.read().expect("the close"), Message::Close(_)) {}
+            assert!(matches!(
+                server.flush(),
+                Err(tungstenite::Error::ConnectionClosed)
+            ));
+
+            let mut stream = server.into_inner();
+            stream
+                .write_all(&[0x81, 0x02, b'{', b'}'])
+                .expect("a late frame");
+            while stream.read(&mut [0; 64]).is_ok_and(|read| read > 0) {}
+        });
+
+        let mut client = Client::open(address);
+        assert_eq!(client.next(), Incoming::Connected);
+        client.connection.close();
+        client.connection.join();
+
+        let Incoming::Closed { answered, .. } = client.next() else {
+            panic!("expected the connection to close");
+        };
+        assert!(answered);
         client.finish();
         server.join().expect("server");
     }
