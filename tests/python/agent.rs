@@ -779,11 +779,11 @@ async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
         session.go_on().await;
         session.wait_for_output("SPINNING").await;
         // A pause can find the thread in a function the loop calls, as
-        // one that pops a frame: then let it run on a moment.
-        let mut attempts = 0;
+        // one that pops a frame: then step it until it is back in the loop.
+        session.pause().await;
+        let mut steps = 0;
 
         loop {
-            session.pause().await;
             let trace = session.backtrace(main).await;
             // The innermost native code, past the Python frames the loop
             // runs and the functions inlined into it.
@@ -799,13 +799,22 @@ async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
             if looping {
                 break;
             }
-            attempts += 1;
+            steps += 1;
             assert!(
-                attempts < 100,
-                "{interpreter}: never paused in the loop: {trace:#?}"
+                steps < 100_000,
+                "{interpreter}: never stepped back into the loop: {trace:#?}"
             );
-            session.resume().await;
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            session
+                .scenario
+                .operation(
+                    "select the main thread",
+                    session.scenario.handle().select_context(main),
+                )
+                .await;
+            session
+                .scenario
+                .step_to_stop(microscope::StepKind::Instruction)
+                .await;
         }
 
         session
