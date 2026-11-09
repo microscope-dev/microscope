@@ -32,6 +32,8 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    # libFuzzer's, in libfuzzer-sys, which only fuzz/ builds.
+    "NCSA",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
