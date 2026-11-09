@@ -10,6 +10,10 @@ license = "MIT OR Apache-2.0"
 description = "A Linux x86-64 native debugger"
 repository = "https://github.com/microscope-dev/microscope"
 readme = "README.md"
+# crates.io takes no git dependencies, and cpp_demangle is our fork until
+# upstream releases its C++20 support. Publishing will also need a version
+# on microscope-probes, which cargo-deny asks for once this goes.
+publish = false
 keywords = ["debugger", "dwarf", "linux", "ptrace"]
 categories = ["command-line-utilities", "development-tools::debugging"]
 
