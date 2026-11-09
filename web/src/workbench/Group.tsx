@@ -18,7 +18,15 @@ import { classOf } from "./classes";
 import { panelId, tabId, useDock } from "./context";
 import { pressTab } from "./drag";
 import type { PaneProps } from "./kinds";
-import { activate, type GroupId, groups, type Layout, type Pane, type PaneId } from "./layout";
+import {
+  activate,
+  type GroupId,
+  groups,
+  type Layout,
+  linkOf,
+  type Pane,
+  type PaneId,
+} from "./layout";
 import { PaneHost } from "./PaneHost";
 import { change, useLayout } from "./store";
 import { chooseTab, closeTab } from "./tabs";
@@ -154,6 +162,18 @@ export const GroupView = memo(function GroupView({ id }: { id: GroupId }) {
   );
 });
 
+/** Whether a pane other than the one the keyboard is in reads the link
+ * that one reads, so its tab can show they share what is selected. */
+function readsFocusedLink(layout: Layout, pane: PaneId, found: Pane): boolean {
+  const link = linkOf(found);
+  if (link === null) {
+    return false;
+  }
+  const lead = groups(layout).find((group) => group.id === layout.focused)?.active;
+  const leading = lead ? layout.panes[lead] : undefined;
+  return lead !== pane && leading !== undefined && linkOf(leading) === link;
+}
+
 /** One tab in the strip, and its close button if its pane can close. */
 function Tab({
   pane,
@@ -169,6 +189,7 @@ function Tab({
   const { kinds } = useDock();
   const kind = kinds.get(found.kind);
   const Badge = kind.Badge;
+  const linked = useLayout((layout) => readsFocusedLink(layout, pane, found));
 
   const choose = useCallback(() => chooseTab(kinds, pane), [kinds, pane]);
   const shut = useCallback(() => closeTab(kinds, pane), [kinds, pane]);
@@ -190,8 +211,9 @@ function Tab({
   return (
     // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- pointer handling shared by the two buttons inside, which carry the roles and keys
     <div
-      className={`${css("group-tab")} ${shown ? css("on") : ""}`}
+      className={`${css("group-tab")} ${shown ? css("on") : ""} ${linked ? css("linked") : ""}`}
       data-part="tab"
+      data-linked={linked || undefined}
       onPointerDown={press}
       onMouseDown={noAutoscroll}
       onAuxClick={auxClick}

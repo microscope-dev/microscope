@@ -38,6 +38,8 @@
   --changed-bg: #fce8d4;
   --warn-bg: #fff5dc;
   --warn-line: #e3bd5f;
+  /* Tabs of the panes that share the focused pane's selection. */
+  --linked-line: #c9a43c;
   --error: #b42525;
   --error-bg: #fde6e6;
   --frame-bg: #e9eefb;
@@ -83,6 +85,7 @@
     --changed-bg: #3c2a18;
     --warn-bg: #2e2712;
     --warn-line: #7c6526;
+    --linked-line: #8f7a3a;
     --error: #ff8a8a;
     --error-bg: #3a1a1c;
     --frame-bg: #1c2638;
@@ -124,6 +127,7 @@
   --changed-bg: #3c2a18;
   --warn-bg: #2e2712;
   --warn-line: #7c6526;
+  --linked-line: #8f7a3a;
   --error: #ff8a8a;
   --error-bg: #3a1a1c;
   --frame-bg: #1c2638;

@@ -31,14 +31,25 @@
   color: var(--ink-3);
 }
 
+/* The shown tab of every group is raised into its pane: the pane's own
+ * background, a bar over it, and full ink. */
 .group-tab.on {
   background: var(--surface);
   color: var(--ink);
+  box-shadow: inset 0 2px 0 var(--ink-3);
 }
 
-/* The accent underline marks the shown tab of the group keys go to. */
+/* The group keys go to marks its shown tab with the accent instead. */
 .group.focused .group-tab.on {
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+/* Each other tab that reads what the focused pane reads, such as the
+ * other panes of its profile, is outlined in a dull yellow: related, not
+ * shown. */
+.group-tab.linked {
+  outline: 1px solid var(--linked-line);
+  outline-offset: -1px;
 }
 
 .group-tab [role="tab"] {

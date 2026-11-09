@@ -58,6 +58,12 @@ const tab = (page: Page, title: string, profile?: string) => {
 const groupOf = (page: Page, title: string, profile?: string) =>
   page.locator("[data-group]").filter({ has: tab(page, title, profile) });
 
+/** The tabs marked as sharing the focused pane's selection. */
+const marked = (page: Page) => page.locator("[data-part=tab][data-linked]");
+
+/** What holds a tab, which is what is marked. */
+const holding = (which: Locator) => which.locator("xpath=..");
+
 const panel = (page: Page, title: string) =>
   page.getByRole("tabpanel", { name: title, exact: true });
 
@@ -102,6 +108,16 @@ test("a profile opens as panes that share what is selected and keep how each dra
   await expect(tab(page, "Flame graph")).toHaveAttribute("aria-selected", "true");
   await expect(tab(page, "Zones")).toHaveCount(0);
   await expect(page).not.toHaveURL(/view=/u);
+
+  // The pane being worked in marks the tabs of the panes that share its
+  // selection, wherever they are docked, and nothing else's.
+  await tab(page, "calls.usprof").click();
+  await expect(marked(page)).toHaveCount(3);
+  for (const title of ["Flame graph", "Call tree", "Functions"]) {
+    await expect(holding(tab(page, title))).toHaveAttribute("data-linked");
+  }
+  await tab(page, "Explorer").click();
+  await expect(marked(page)).toHaveCount(0);
 
   // A function chosen in one view is chosen in the others.
   await showView(page, "Functions");
@@ -190,6 +206,15 @@ test("a view's pane is duplicated to share its selection, or copied to keep one 
   await expect(tab(page, "Call tree")).toHaveCount(2);
   await expect(page).toHaveURL(/view=tree/u);
   await expect(page).toHaveURL(/fn=middle/u);
+
+  // The copy's other pane is marked as one of its own, and none of the
+  // panes it was copied from is.
+  await expect(marked(page)).toHaveCount(1);
+  await expect(holding(tab(page, "Functions").nth(1))).toHaveAttribute("data-linked");
+  await tab(page, "Functions").nth(0).click();
+  await expect(marked(page)).toHaveCount(4);
+  await expect(holding(tab(page, "Functions").nth(1))).not.toHaveAttribute("data-linked");
+  await tab(page, "Functions").nth(1).click();
 
   // Copies outlive what they were copied from, and a reload keeps them.
   await page.reload();
