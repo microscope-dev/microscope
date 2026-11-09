@@ -151,6 +151,14 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
         .output()
         .expect("run microscope record");
     assert!(recorded.status.success());
+    // Each of the six calls the recording kept is converted.
+    let kept = support::profile::accounted(
+        &microscope::profiler::Profile::read(&profile)
+            .expect("read the profile")
+            .profile,
+        6,
+    )
+    .len() as u64;
     let profile = profile.to_string_lossy().into_owned();
 
     let pprof = scratch.path().join("leaf.pb.gz");
@@ -171,13 +179,13 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
         .take_while(|line| !line.starts_with("Locations"))
         .filter_map(|line| line.trim().split_once(':')?.0.parse::<u64>().ok())
         .sum();
-    assert_eq!(samples, 6, "{raw}");
+    assert_eq!(samples, kept, "{raw}");
     assert!(raw.contains(" leaf "), "{raw}");
     let back = assert_success(microscope(&["report", &pprof.to_string_lossy()]));
     assert_in_order(
         &back,
         &[
-            "6 executions",
+            &format!("{kept} executions"),
             "which keeps no times or threads",
             "100.00% 100.00%  leaf",
         ],
@@ -197,7 +205,7 @@ fn convert_writes_what_go_and_flame_graph_tools_read() {
         weight += count.parse::<u64>().expect("a number");
     }
 
-    assert_eq!(weight, 6, "{folded}");
+    assert_eq!(weight, kept, "{folded}");
 
     let refused = microscope(&["convert", &profile, "out.bin"]);
     assert!(!refused.status.success());
@@ -7375,31 +7383,64 @@ fn record_writes_a_profile_that_report_summarizes() {
         "{}",
         String::from_utf8_lossy(&recorded.stderr)
     );
-    assert!(String::from_utf8_lossy(&recorded.stderr).contains("recorded 6 samples"));
+    // Each thread calls leaf three times, and the report says what the
+    // recording kept of the six.
+    let kept = support::profile::accounted(
+        &microscope::profiler::Profile::read(&profile)
+            .expect("read the profile")
+            .profile,
+        6,
+    );
+    let count = |count: usize| u32::try_from(count).expect("six at most");
+    let on_main = count(
+        kept.iter()
+            .filter(|stack| stack.functions.iter().any(|name| name == "descend"))
+            .count(),
+    );
+    let (on_worker, kept) = (count(kept.len()) - on_main, count(kept.len()));
+    assert!(
+        String::from_utf8_lossy(&recorded.stderr).contains(&format!("recorded {kept} samples"))
+    );
 
     let top = assert_success(microscope(&["report", &profile.to_string_lossy()]));
-    assert_in_order(
-        &top,
-        &[
-            "6 executions, 6 with stacks (100.0%)",
-            "    own   total  function",
-            "100.00% 100.00%  leaf",
-            "  0.00% 100.00%  middle",
-            "  0.00% 100.00%  outer",
-        ],
-    );
+    let share = |count: u32| f64::from(count) * 100.0 / f64::from(kept);
+    let mut lines = vec![format!(
+        "6 executions, {kept} with stacks ({:.1}%)",
+        f64::from(kept) * 100.0 / 6.0
+    )];
+    if kept > 0 {
+        lines.extend(
+            [
+                "    own   total  function",
+                "100.00% 100.00%  leaf",
+                "  0.00% 100.00%  middle",
+                "  0.00% 100.00%  outer",
+            ]
+            .map(str::to_owned),
+        );
+    }
+    assert_in_order(&top, &lines.iter().map(String::as_str).collect::<Vec<_>>());
     let tree = assert_success(microscope(&[
         "report",
         "--tree",
         &profile.to_string_lossy(),
     ]));
-    for line in [
-        " 50.00%   0.00%  _start",
-        " 50.00%   0.00%                  descend",
-        " 50.00%  50.00%                        leaf",
-        " 50.00%   0.00%  __GI___clone3",
-        " 50.00%  50.00%            leaf",
-    ] {
+    let (main, worker) = (share(on_main), share(on_worker));
+    let mut lines = Vec::new();
+    if on_main > 0 {
+        lines.extend([
+            format!("{main:6.2}%   0.00%  _start"),
+            format!("{main:6.2}%   0.00%                  descend"),
+            format!("{main:6.2}% {main:6.2}%                        leaf"),
+        ]);
+    }
+    if on_worker > 0 {
+        lines.extend([
+            format!("{worker:6.2}%   0.00%  __GI___clone3"),
+            format!("{worker:6.2}% {worker:6.2}%            leaf"),
+        ]);
+    }
+    for line in lines {
         assert!(
             tree.lines().any(|candidate| candidate == line),
             "{line:?} in\n{tree}"

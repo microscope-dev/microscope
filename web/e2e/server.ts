@@ -1,7 +1,7 @@
 // Each test gets its own `microscope web`, started from the development build
 // (which serves build/web from disk), and stopped when the test ends.
 
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
@@ -14,6 +14,44 @@ export const root = path.join(import.meta.dirname, "..", "..");
 
 export function fixture(name: string): string {
   return path.join(root, "build", "test-programs", name);
+}
+
+/** Records each of the stacks fixture's six calls of `symbol` to `file`,
+ * and returns how many samples it kept. The kernel may drop some when
+ * other recordings shrink this one's rings; then the recording says how
+ * many, and those it kept and those it dropped are the six. */
+export function recordCalls(file: string, symbol: string): number {
+  const recorded = spawnSync(
+    path.join(root, "target", "debug", "microscope"),
+    [
+      "record",
+      "-o",
+      file,
+      "--function",
+      symbol,
+      "--function-period",
+      "1",
+      // A small copy, as the Rust tests' recordings of leaf take: six deep
+      // ones overfill the rings a recording gets while others hold perf
+      // memory.
+      "--stack-bytes",
+      "512",
+      "--",
+      fixture("profile-stacks-gcc-o0"),
+      "1",
+    ],
+    { encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] },
+  );
+  const said = recorded.stderr;
+  const kept = /recorded (\d+) samples/u.exec(said);
+  if (recorded.status !== 0 || !kept) {
+    throw new Error(`recording ${symbol} failed: ${said}`);
+  }
+  const dropped = /the kernel dropped (\d+) of 6 calls/u.exec(said);
+  const samples = Number(kept[1]);
+  expect(samples + Number(dropped?.[1] ?? 0), said).toBe(6);
+  expect(samples, said).toBeGreaterThan(0);
+  return samples;
 }
 
 export interface Microscope {

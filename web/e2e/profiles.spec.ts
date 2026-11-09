@@ -5,7 +5,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import * as path from "node:path";
 
-import { expect, fixture, join, menu, root, showView, test } from "./server";
+import { expect, fixture, join, menu, recordCalls, root, showView, test } from "./server";
 
 // The test serves a profile it records, not a program.
 test.use({ program: [] });
@@ -15,32 +15,12 @@ test("a profile is explored, and its address opens the same view", async ({
   microscope,
 }, info) => {
   const file = info.outputPath("calls.usprof");
-  execFileSync(
-    path.join(root, "target", "debug", "microscope"),
-    [
-      "record",
-      "-o",
-      file,
-      "--function",
-      "leaf",
-      "--function-period",
-      "1",
-      // A small copy, as the Rust tests' recordings of leaf take: six deep
-      // ones overfill the rings a recording gets while others hold perf
-      // memory, and a starved reader then loses calls made back to back.
-      "--stack-bytes",
-      "512",
-      "--",
-      fixture("profile-stacks-gcc-o0"),
-      "1",
-    ],
-    { stdio: "ignore" },
-  );
+  const kept = recordCalls(file, "leaf");
   const served = await microscope.start([file]);
   await join(page, served.link);
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}$/u);
   const accounting = page.getByTestId("accounting");
-  await expect(accounting).toContainText("Sampled6 executions");
+  await expect(accounting).toContainText(`Sampled${kept} execution`);
   await expect(accounting).toContainText("Samplingeach call of leaf");
 
   // leaf owns every sample, and its callers are middle, then outer.
@@ -583,32 +563,11 @@ test("a profile is diffed with a range of its own, and with another profile", as
   page,
   microscope,
 }, info) => {
-  const recorded = (symbol: string, name: string) => {
-    const file = info.outputPath(name);
-    execFileSync(
-      path.join(root, "target", "debug", "microscope"),
-      [
-        "record",
-        "-o",
-        file,
-        "--function",
-        symbol,
-        "--function-period",
-        "1",
-        "--stack-bytes",
-        "512",
-        "--",
-        fixture("profile-stacks-gcc-o0"),
-        "1",
-      ],
-      { stdio: "ignore" },
-    );
-    return file;
-  };
-  const served = await microscope.start([
-    recorded("leaf", "calls.usprof"),
-    recorded("middle", "middle.usprof"),
-  ]);
+  const leaf = info.outputPath("calls.usprof");
+  const kept = recordCalls(leaf, "leaf");
+  const middle = info.outputPath("middle.usprof");
+  recordCalls(middle, "middle");
+  const served = await microscope.start([leaf, middle]);
   await join(page, served.link);
 
   // The selected range becomes the base, and nothing changed against it.
@@ -637,7 +596,10 @@ test("a profile is diffed with a range of its own, and with another profile", as
   await compare.selectOption({ label: "diff with middle.usprof" });
   await expect(page).toHaveURL(/bp=[0-9a-f]{16}/u);
   // In time by default, as report --base compares them.
-  await expect(row("leaf")).toHaveAttribute("aria-label", /, \+6 executions new change$/u);
+  await expect(row("leaf")).toHaveAttribute(
+    "aria-label",
+    new RegExp(`, \\+${kept} executions? new change$`, "u"),
+  );
   await expect(row("middle")).toHaveAttribute("aria-label", /, −\d+ executions? gone change$/u);
   await expect(page.getByRole("button", { name: "by change" })).toBeVisible();
 

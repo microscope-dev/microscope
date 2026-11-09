@@ -71,7 +71,7 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
             String::from_utf8_lossy(&output.stderr)
         );
         let profile = Profile::read(&path).expect("read the recording").profile;
-        assert_eq!(profile.lost_samples(), 0);
+        support::profile::assert_loss_explained(&profile);
         profiles.push(profile);
     }
 

@@ -8,31 +8,14 @@ import * as path from "node:path";
 
 import type { Locator, Page, TestInfo } from "@playwright/test";
 
-import { expect, fixture, join, menu, root, showView, test } from "./server";
+import { expect, fixture, join, menu, recordCalls, root, showView, test } from "./server";
 
 test.use({ program: [] });
 
 /** Records each call of `symbol` in the stacks fixture. */
 function calls(info: TestInfo, symbol: string, name: string): string {
   const file = info.outputPath(name);
-  execFileSync(
-    path.join(root, "target", "debug", "microscope"),
-    [
-      "record",
-      "-o",
-      file,
-      "--function",
-      symbol,
-      "--function-period",
-      "1",
-      "--stack-bytes",
-      "512",
-      "--",
-      fixture("profile-stacks-gcc-o0"),
-      "1",
-    ],
-    { stdio: "ignore" },
-  );
+  recordCalls(file, symbol);
   return file;
 }
 
@@ -433,7 +416,9 @@ test("a link to a profile microscope does not serve says so, and a link's nonsen
   page,
   microscope,
 }, info) => {
-  const served = await microscope.start([calls(info, "leaf", "calls.usprof")]);
+  const file = info.outputPath("calls.usprof");
+  const kept = recordCalls(file, "leaf");
+  const served = await microscope.start([file]);
   await join(page, served.link);
   const profile = pathname(page);
 
@@ -461,5 +446,5 @@ test("a link to a profile microscope does not serve says so, and a link's nonsen
   // The served one is still a tab away.
   await tab(page, "calls.usprof").click();
   await expect.poll(() => pathname(page)).toBe(profile);
-  await expect(page.getByTestId("accounting")).toContainText("Sampled6 executions");
+  await expect(page.getByTestId("accounting")).toContainText(`Sampled${kept} execution`);
 });

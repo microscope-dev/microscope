@@ -12,6 +12,7 @@ pub mod flight_recordings;
 pub mod held;
 mod memory_cap;
 pub mod node;
+pub mod profile;
 pub mod python;
 pub mod released;
 pub mod truth;

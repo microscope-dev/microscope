@@ -374,6 +374,31 @@ prints each spinning thread's call sites and tiers before it spins. Their `bpf` 
 reads the flight recordings of a profile and a syscall trace and fails on any
 memory write or inspector command.
 
+## Profile recordings
+
+The kernel counts every sampled event, but it keeps only the samples that fit
+in the perf rings. Rings shrink when other recordings hold the user's locked
+memory, and a reader starved of CPU falls behind, so a real recording may lose
+samples under load. The profile says what it lost and why. A test of a real
+recording may assert only these:
+
+1. **Counted.** `counted()` equals what the fixture did.
+2. **Identity.** Kept samples plus `lost_samples()` equal the count.
+3. **Loss is explained.** Samples or other records are lost only with a
+   `ring warning` setting or a `Behind` gap.
+4. **Correctness.** Every kept sample is placed right: its stack, line and
+   thread.
+5. **Coverage floors.** Only with margin against loss, for example "until N
+   samples, then release", not "N samples within a window".
+
+`support::profile::accounted(&profile, calls)` checks rules 1 to 3 and returns
+the kept samples for the test to check against rule 4. Expected weights,
+thread counts and lane counts come from those samples, not from the fixture's
+call count. In the web e2e tests, `recordCalls` returns the kept count and
+checks that it and the dropped count add up.
+
+Exact draining and loss are tested on synthetic sequences, not on real rings.
+
 ## Unit tests
 
 Unit-test complicated deterministic logic where a failure can identify the
