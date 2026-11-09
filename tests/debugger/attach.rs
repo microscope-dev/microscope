@@ -458,3 +458,24 @@ async fn attached_stacks_moved_into_unused_stack_do_not_end_whole(fixture: &str)
     scenario.shutdown().await;
     assert_eq!(exit_code(child), Some(0));
 }
+
+/// A fixture that never says it is ready fails its test at the deadline,
+/// naming itself, rather than holding it until nextest kills it.
+#[test]
+#[should_panic(expected = "sh printed no readiness line within 200ms")]
+fn a_fixture_that_never_gets_ready_fails_at_the_deadline() {
+    support::ExternalProcess::spawn_within(
+        std::process::Command::new("sh").args(["-c", "sleep 30"]),
+        Duration::from_millis(200),
+    );
+}
+
+/// A fixture that ends, or prints something else first, fails at once.
+#[test]
+#[should_panic(expected = "sh printed \"\", not its readiness line")]
+fn a_fixture_that_ends_before_it_is_ready_fails_at_once() {
+    support::ExternalProcess::spawn_within(
+        std::process::Command::new("sh").args(["-c", "exit 0"]),
+        Duration::from_secs(30),
+    );
+}

@@ -17,7 +17,7 @@ pub mod released;
 pub mod truth;
 
 use std::future::Future;
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{
@@ -146,11 +146,18 @@ impl ExternalProcess {
     }
 
     fn handshake(command: &mut Command) -> Self {
-        let child = command
+        Self::spawn_within(command, ATTACH_TIMEOUT)
+    }
+
+    /// Spawns `command` and waits up to `timeout` for its readiness line,
+    /// failing with the command's name if it ends or stays silent first.
+    pub fn spawn_within(command: &mut Command, timeout: Duration) -> Self {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+        let mut stdout = child.stdout.take().expect("fixture stdout");
 
         // Owned before reading, so a failed handshake still kills the child.
         let mut process = Self {
@@ -158,18 +165,46 @@ impl ExternalProcess {
             ready: String::new(),
         };
 
-        let stdout = process
+        // A byte at a time, so that what follows the line stays in the pipe
+        // for whoever takes the output next.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = Vec::new();
+            let mut byte = [0];
+            let read = loop {
+                match std::io::Read::read(&mut stdout, &mut byte) {
+                    Ok(0) => break Ok(()),
+                    Ok(_) if byte[0] == b'\n' => break Ok(()),
+                    Ok(_) => line.push(byte[0]),
+                    Err(error) => break Err(error),
+                }
+            };
+            let _ = sender.send(read.map(|()| (line, stdout)));
+        });
+
+        let program = command.get_program().to_string_lossy();
+        let (line, stdout) = match receiver.recv_timeout(timeout) {
+            Ok(read) => read.unwrap_or_else(|error| panic!("read {program}'s readiness: {error}")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("{program} printed no readiness line within {timeout:?}")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("reading {program}'s readiness panicked")
+            }
+        };
+        let ready = String::from_utf8_lossy(&line).into_owned();
+        assert!(
+            ready.starts_with("READY"),
+            "{program} printed {ready:?}, not its readiness line"
+        );
+
+        process
             .child
             .as_mut()
-            .and_then(|child| child.stdout.as_mut());
-
-        let mut ready = String::new();
-        BufReader::new(stdout.expect("fixture stdout"))
-            .read_line(&mut ready)
-            .expect("read fixture readiness");
-
-        assert!(ready.starts_with("READY"), "unexpected readiness {ready:?}");
-        process.ready = ready.trim_end().to_owned();
+            .expect("the fixture")
+            .stdout
+            .replace(stdout);
+        process.ready = ready;
         process
     }
 
