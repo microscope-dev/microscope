@@ -989,6 +989,43 @@ struct VforkWindow {
     resumed: bool,
 }
 
+/// What the controller knows of a pid that is not a live thread of the
+/// inferior: a thread on its way out or in, or a fork child.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tracked {
+    /// A thread that left the inferior, whose exit status is still due.
+    Retired,
+
+    /// A thread that began exiting before the event that announces it.
+    Vanished,
+
+    /// A listed thread that exited before an attach could seize it, such
+    /// as a leader that exited before the rest of its process. No status
+    /// of it is due.
+    Unseized,
+
+    /// The initial stop of a new thread or fork child, which arrived
+    /// before the event that announces it.
+    EarlyStop(WaitEvent),
+
+    /// A fork child announced before its initial stop arrived, with the
+    /// breakpoint sites it inherited. A vfork child shares its parent's
+    /// memory and blocks it until the child execs or exits, so it is
+    /// always released.
+    ForkChild {
+        sites: Vec<(VirtualAddress, u8)>,
+        vfork: bool,
+    },
+
+    /// A fork child killed, or found dying, as it was released, whose exit
+    /// is still due: another process's exit may follow the leader's.
+    Killed,
+
+    /// A fork child handed to the session's group, which the same tracer
+    /// thread traces but this session no longer owns.
+    HandedOver,
+}
+
 struct Inferior {
     origin: InferiorOrigin,
     tgid: Pid,
@@ -1000,44 +1037,16 @@ struct Inferior {
     plan_sites: BTreeMap<ExecutionId, BTreeSet<VirtualAddress>>,
     threads: BTreeMap<Pid, TraceThread>,
 
-    /// Threads that left the inferior and whose exit status is still due.
-    retired_threads: BTreeSet<Pid>,
-
-    /// Initial stops of new threads or fork children that arrived before
-    /// the event that announces them.
-    unowned_stops: BTreeMap<Pid, WaitEvent>,
-
-    /// Threads that began exiting before the event that announces them.
-    vanished_threads: BTreeSet<Pid>,
+    /// What is known of each pid that is not one of `threads`.
+    tracked: BTreeMap<Pid, Tracked>,
 
     /// Sites removed since the address space began, with their original
     /// bytes: a process forked before their removal still holds their traps.
     former_sites: BTreeMap<VirtualAddress, u8>,
 
-    /// Listed threads that exited before an attach could seize them, such
-    /// as a leader that exited before the rest of its process. No status
-    /// of theirs is due.
-    unseized_threads: BTreeSet<Pid>,
-
     /// Whether the session only reads the process, so plants none of the
     /// debugger's own breakpoints (`DebuggerHandle::observe_process`).
     observer: bool,
-
-    /// Fork children announced before their initial stop arrived, with the
-    /// breakpoint sites each inherited.
-    fork_children: BTreeMap<Pid, Vec<(VirtualAddress, u8)>>,
-
-    /// Vfork children not yet settled. Each shares its parent's memory and
-    /// blocks it until the child execs or exits, so it is always released.
-    vfork_children: BTreeSet<Pid>,
-
-    /// Fork children killed, or found dying, as they were released, whose
-    /// exits are still due: another process's exit may follow the leader's.
-    killed_children: BTreeSet<Pid>,
-
-    /// Fork children handed to the session's group, which the same tracer
-    /// thread traces but this session no longer owns.
-    handed_over: BTreeSet<Pid>,
 
     /// Threads in a vfork that shares this memory, by the thread that
     /// vforked. The traps are lifted while any window is open.
@@ -1128,16 +1137,9 @@ impl Inferior {
             breakpoints: BTreeMap::new(),
             plan_sites: BTreeMap::new(),
             threads,
-            retired_threads: BTreeSet::new(),
-            unowned_stops: BTreeMap::new(),
-            vanished_threads: BTreeSet::new(),
-            unseized_threads: BTreeSet::new(),
+            tracked: BTreeMap::new(),
             observer: false,
             former_sites: BTreeMap::new(),
-            fork_children: BTreeMap::new(),
-            vfork_children: BTreeSet::new(),
-            killed_children: BTreeSet::new(),
-            handed_over: BTreeSet::new(),
             vfork_windows: BTreeMap::new(),
             traps_lifted: false,
             waiter,
@@ -2960,28 +2962,8 @@ impl<P: LinuxTraceOps> Controller<P> {
     fn process_wait(&mut self, status: WaitEvent) -> Result<()> {
         let pid = status.pid();
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
-        let known = inferior.threads.contains_key(&pid);
-        let retired = inferior.retired_threads.contains(&pid);
-
-        if !known {
-            // A retired thread's exit, a fork child, or a new thread's first
-            // stop arriving before its parent's clone or fork event, which is
-            // SIGSTOP for a launched process and PTRACE_EVENT_STOP for a
-            // seized one.
-            let stop = matches!(
-                status,
-                WaitEvent::Stopped(..) | WaitEvent::PtraceEvent(_, _, libc::PTRACE_EVENT_STOP)
-            );
-            let expected = stop
-                || retired
-                || inferior.fork_children.contains_key(&pid)
-                || matches!(
-                    status,
-                    WaitEvent::PtraceEvent(_, _, libc::PTRACE_EVENT_EXIT)
-                        | WaitEvent::Exited(..)
-                        | WaitEvent::Signaled(..)
-                );
-            if expected && self.absorb_untracked_wait(&status) {
+        if !inferior.threads.contains_key(&pid) {
+            if self.absorb_untracked_wait(&status) {
                 return Ok(());
             }
 

@@ -377,10 +377,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.group
             .as_ref()
             .is_some_and(|group| !group.root && !group.following.debugs(program))
-            && self
-                .session
-                .inferior()
-                .is_some_and(|inferior| inferior.retired_threads.is_empty())
+            && self.session.inferior().is_some_and(|inferior| {
+                !(inferior.tracked.values()).any(|record| *record == super::Tracked::Retired)
+            })
     }
 }
 

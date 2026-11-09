@@ -17,7 +17,7 @@ use super::native::LinuxTraceOps;
 use super::session::{Orphans, Session, Shutdown};
 use super::{
     BREAKPOINT_OPCODE, Controller, ControllerMessage, Ending, Inferior, InferiorOrigin, Signal,
-    WaitEvent, Waiter,
+    Tracked, WaitEvent, Waiter,
 };
 
 use crate::VirtualAddress;
@@ -106,15 +106,20 @@ impl<P: LinuxTraceOps> Controller<P> {
         // to a thread would end the whole process.
         let tgid = inferior.tgid;
         let (unannounced_children, unannounced_threads): (Vec<Pid>, Vec<Pid>) =
-            inferior.unowned_stops.keys().copied().partition(|&pid| {
-                self.ptrace
-                    .thread_group_id(pid)
-                    .is_ok_and(|group| group != tgid)
-            });
+            (inferior.tracked.iter())
+                .filter(|(_, record)| matches!(record, Tracked::EarlyStop(_)))
+                .map(|(&pid, _)| pid)
+                .partition(|&pid| {
+                    self.ptrace
+                        .thread_group_id(pid)
+                        .is_ok_and(|group| group != tgid)
+                });
         let threads: Vec<Pid> = (inferior.threads.keys().copied())
             .chain(unannounced_threads)
             .collect();
-        let children: Vec<Pid> = (inferior.fork_children.keys().copied())
+        let children: Vec<Pid> = (inferior.tracked.iter())
+            .filter(|(_, record)| matches!(record, Tracked::ForkChild { .. }))
+            .map(|(&pid, _)| pid)
             .chain(unannounced_children)
             .collect();
         let sites = inferior.inherited_sites();
@@ -247,11 +252,10 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) {
         let live = |pid: &Pid| seen.stopped.contains(pid) && !seen.gone.contains(pid);
         for child in children.into_iter().filter(live) {
-            let child_sites = inferior
-                .fork_children
-                .get(&child)
-                .map_or(sites, Vec::as_slice);
-            let vfork = inferior.vfork_children.contains(&child);
+            let (child_sites, vfork) = match inferior.tracked.get(&child) {
+                Some(Tracked::ForkChild { sites, vfork }) => (sites.as_slice(), *vfork),
+                _ => (sites, false),
+            };
             self.scrub_and_settle(inferior.tgid, child, child_sites, vfork);
         }
     }

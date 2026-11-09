@@ -1299,7 +1299,13 @@ mod tests {
         let inferior = harness.controller.session.inferior_mut().expect("inferior");
         let pid = inferior.tgid;
         inferior.agents.insert(RuntimeId::new(0), installation);
-        inferior.fork_children.insert(child, Vec::new());
+        inferior.tracked.insert(
+            child,
+            crate::backend::linux::Tracked::ForkChild {
+                sites: Vec::new(),
+                vfork: false,
+            },
+        );
         harness
             .controller
             .handle_terminal(pid, ExitStatus::Code(0))

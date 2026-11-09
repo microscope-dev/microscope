@@ -345,20 +345,9 @@ impl Inferior {
         for (&pid, thread) in &self.threads {
             let id = debug_thread_id(pid);
             debug_assert!(
-                !self.retired_threads.contains(&pid),
-                "thread {id} is both live and retired"
-            );
-            debug_assert!(
-                !self.vanished_threads.contains(&pid),
-                "thread {id} is both live and vanished"
-            );
-            debug_assert!(
-                !self.unseized_threads.contains(&pid),
-                "thread {id} is both live and unseized"
-            );
-            debug_assert!(
-                !self.unowned_stops.contains_key(&pid),
-                "thread {id} is live and its stop is recorded as unowned"
+                !self.tracked.contains_key(&pid),
+                "thread {id} is live and also tracked as {:?}",
+                self.tracked.get(&pid)
             );
             if let Some(address) = thread.stopped_at_breakpoint {
                 debug_assert!(
@@ -382,20 +371,6 @@ impl Inferior {
                     "thread {id} was asked to stop with no stop in progress"
                 );
             }
-        }
-
-        for pid in &self.vfork_children {
-            debug_assert!(
-                self.fork_children.contains_key(pid),
-                "vfork child {pid} is marked but no longer awaits its first stop"
-            );
-        }
-
-        for pid in self.fork_children.keys() {
-            debug_assert!(
-                !self.killed_children.contains(pid),
-                "fork child {pid} is both awaiting its first stop and killed"
-            );
         }
 
         if !shutting_down && let Some(active) = self.run.execution() {

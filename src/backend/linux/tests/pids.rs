@@ -19,31 +19,19 @@ fn record(harness: &WatchHarness, pid: Pid) -> String {
             if inferior.threads.contains_key(&pid) {
                 held.push("live".to_owned());
             }
-            if inferior.retired_threads.contains(&pid) {
-                held.push("retired".to_owned());
-            }
-            if inferior.vanished_threads.contains(&pid) {
-                held.push("vanished".to_owned());
-            }
-            if inferior.unseized_threads.contains(&pid) {
-                held.push("unseized".to_owned());
-            }
-            if let Some(status) = inferior.unowned_stops.get(&pid) {
-                held.push(format!("early {status:?}"));
-            }
-            if let Some(sites) = inferior.fork_children.get(&pid) {
-                let vfork = if inferior.vfork_children.contains(&pid) {
-                    " vfork"
-                } else {
-                    ""
-                };
-                held.push(format!("fork child of {} sites{vfork}", sites.len()));
-            }
-            if inferior.killed_children.contains(&pid) {
-                held.push("killed".to_owned());
-            }
-            if inferior.handed_over.contains(&pid) {
-                held.push("handed over".to_owned());
+            match inferior.tracked.get(&pid) {
+                None => {}
+                Some(Tracked::Retired) => held.push("retired".to_owned()),
+                Some(Tracked::Vanished) => held.push("vanished".to_owned()),
+                Some(Tracked::Unseized) => held.push("unseized".to_owned()),
+                Some(Tracked::EarlyStop(status)) => held.push(format!("early {status:?}")),
+                Some(Tracked::ForkChild { sites, vfork }) => held.push(format!(
+                    "fork child of {} sites{}",
+                    sites.len(),
+                    if *vfork { " vfork" } else { "" }
+                )),
+                Some(Tracked::Killed) => held.push("killed".to_owned()),
+                Some(Tracked::HandedOver) => held.push("handed over".to_owned()),
             }
         }
         Session::Draining { orphans, .. } => {
@@ -283,21 +271,21 @@ fn each_event_of_a_pid_that_is_not_a_live_thread_settles_the_same() {
         "unknown (nothing) / is cloned: live, running [] {continue 5000 None}",
         "unknown (nothing) / is forked: fork child of 1 sites, running [] {continue 5000 None}",
         "unknown (nothing) / parent exits: orphan of 1 sites, draining [exited] {continue 5000 None}",
-        "unseized (unseized) / stops: unseized + early Stopped(Pid(6000), SIGSTOP), running [] {}",
-        "unseized (unseized) / interrupt stops: unseized + early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
-        "unseized (unseized) / reaches exit: vanished + unseized, running [] {continue 6000 None}",
-        "unseized (unseized) / exits: vanished + unseized, running [] {}",
-        "unseized (unseized) / is killed: vanished + unseized, running [] {}",
-        "unseized (unseized) / is cloned: live + unseized, running [] {continue 4000 None}",
-        "unseized (unseized) / is forked: unseized + fork child of 0 sites, running [] {continue 4000 None}",
+        "unseized (unseized) / stops: early Stopped(Pid(6000), SIGSTOP), running [] {}",
+        "unseized (unseized) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
+        "unseized (unseized) / reaches exit: unseized, running [] {continue 6000 None}",
+        "unseized (unseized) / exits: vanished, running [] {}",
+        "unseized (unseized) / is killed: vanished, running [] {}",
+        "unseized (unseized) / is cloned: live, running [] {continue 4000 None}",
+        "unseized (unseized) / is forked: fork child of 0 sites, running [] {continue 4000 None}",
         "unseized (unseized) / parent exits: orphan of 0 sites, draining [exited] {continue 4000 None}",
-        "found exiting at attach (retired) / stops: retired + early Stopped(Pid(6000), SIGSTOP), running [] {}",
-        "found exiting at attach (retired) / interrupt stops: retired + early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
-        "found exiting at attach (retired) / reaches exit: retired + vanished, running [] {continue 6000 None}",
+        "found exiting at attach (retired) / stops: early Stopped(Pid(6000), SIGSTOP), running [] {}",
+        "found exiting at attach (retired) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
+        "found exiting at attach (retired) / reaches exit: retired, running [] {continue 6000 None}",
         "found exiting at attach (retired) / exits: nothing, running [] {}",
         "found exiting at attach (retired) / is killed: nothing, running [] {}",
-        "found exiting at attach (retired) / is cloned: live + retired, running [] {continue 4000 None}",
-        "found exiting at attach (retired) / is forked: retired + fork child of 0 sites, running [] {continue 4000 None}",
+        "found exiting at attach (retired) / is cloned: live, running [] {continue 4000 None}",
+        "found exiting at attach (retired) / is forked: fork child of 0 sites, running [] {continue 4000 None}",
         "found exiting at attach (retired) / parent exits: orphan of 0 sites, draining [exited] {continue 4000 None}",
         "stopped unannounced (early Stopped(Pid(6000), SIGSTOP)) / stops: early Stopped(Pid(6000), SIGSTOP), running [] {}",
         "stopped unannounced (early Stopped(Pid(6000), SIGSTOP)) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
@@ -307,45 +295,45 @@ fn each_event_of_a_pid_that_is_not_a_live_thread_settles_the_same() {
         "stopped unannounced (early Stopped(Pid(6000), SIGSTOP)) / is cloned: live, running [] {continue 5000 None, set_options 6000, continue 6000 None}",
         "stopped unannounced (early Stopped(Pid(6000), SIGSTOP)) / is forked: nothing, running [released 6000] {write_word 6000 0x40 0x90, detach 6000 None, continue 5000 None}",
         "stopped unannounced (early Stopped(Pid(6000), SIGSTOP)) / parent exits: nothing, idle [released 6000, exited] {write_word 6000 0x40 0x90, detach 6000 None, continue 5000 None}",
-        "exited unannounced (vanished) / stops: vanished + early Stopped(Pid(6000), SIGSTOP), running [] {}",
-        "exited unannounced (vanished) / interrupt stops: vanished + early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
+        "exited unannounced (vanished) / stops: early Stopped(Pid(6000), SIGSTOP), running [] {}",
+        "exited unannounced (vanished) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
         "exited unannounced (vanished) / reaches exit: vanished, running [] {continue 6000 None}",
         "exited unannounced (vanished) / exits: vanished, running [] {}",
         "exited unannounced (vanished) / is killed: vanished, running [] {}",
         "exited unannounced (vanished) / is cloned: nothing, running [] {continue 5000 None}",
-        "exited unannounced (vanished) / is forked: vanished + fork child of 1 sites, running [] {continue 5000 None}",
+        "exited unannounced (vanished) / is forked: fork child of 1 sites, running [] {continue 5000 None}",
         "exited unannounced (vanished) / parent exits: orphan of 1 sites, draining [exited] {continue 5000 None}",
         "forked (fork child of 1 sites) / stops: nothing, running [released 6000] {write_word 6000 0x40 0x90, detach 6000 None}",
         "forked (fork child of 1 sites) / interrupt stops: nothing, running [released 6000] {write_word 6000 0x40 0x90, detach 6000 None}",
-        "forked (fork child of 1 sites) / reaches exit: vanished + fork child of 1 sites, running [] {continue 6000 None}",
+        "forked (fork child of 1 sites) / reaches exit: fork child of 1 sites, running [] {continue 6000 None}",
         "forked (fork child of 1 sites) / exits: nothing, running [] {}",
         "forked (fork child of 1 sites) / is killed: nothing, running [] {}",
-        "forked (fork child of 1 sites) / is cloned: live + fork child of 1 sites, running [] {continue 5000 None}",
+        "forked (fork child of 1 sites) / is cloned: live, running [] {continue 5000 None}",
         "forked (fork child of 1 sites) / is forked: fork child of 1 sites, running [] {continue 5000 None}",
         "forked (fork child of 1 sites) / parent exits: orphan of 1 sites, draining [exited] {continue 5000 None}",
         "vforked (fork child of 0 sites vfork) / stops: nothing, running [released 6000] {detach 6000 None}",
         "vforked (fork child of 0 sites vfork) / interrupt stops: nothing, running [released 6000] {detach 6000 None}",
-        "vforked (fork child of 0 sites vfork) / reaches exit: vanished + fork child of 0 sites vfork, running [] {continue 6000 None}",
+        "vforked (fork child of 0 sites vfork) / reaches exit: fork child of 0 sites vfork, running [] {continue 6000 None}",
         "vforked (fork child of 0 sites vfork) / exits: nothing, running [] {}",
         "vforked (fork child of 0 sites vfork) / is killed: nothing, running [] {}",
-        "vforked (fork child of 0 sites vfork) / is cloned: live + fork child of 0 sites vfork, running [] {}",
-        "vforked (fork child of 0 sites vfork) / is forked: fork child of 1 sites vfork, running [] {}",
+        "vforked (fork child of 0 sites vfork) / is cloned: live, running [] {}",
+        "vforked (fork child of 0 sites vfork) / is forked: fork child of 1 sites, running [] {}",
         "vforked (fork child of 0 sites vfork) / parent exits: orphan of 0 sites, draining [exited] {continue 5000 None, reinstall_site 0x40}",
-        "killed for its traps (killed) / stops: early Stopped(Pid(6000), SIGSTOP) + killed, running [] {}",
-        "killed for its traps (killed) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128) + killed, running [] {}",
-        "killed for its traps (killed) / reaches exit: vanished + killed, running [] {continue 6000 None}",
+        "killed for its traps (killed) / stops: early Stopped(Pid(6000), SIGSTOP), running [] {}",
+        "killed for its traps (killed) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
+        "killed for its traps (killed) / reaches exit: killed, running [] {continue 6000 None}",
         "killed for its traps (killed) / exits: nothing, running [] {}",
         "killed for its traps (killed) / is killed: nothing, running [] {}",
-        "killed for its traps (killed) / is cloned: live + killed, running [] {continue 5000 None}",
-        "killed for its traps (killed) / is forked: fork child of 1 sites + killed, running [] {continue 5000 None}",
+        "killed for its traps (killed) / is cloned: live, running [] {continue 5000 None}",
+        "killed for its traps (killed) / is forked: fork child of 1 sites, running [] {continue 5000 None}",
         "killed for its traps (killed) / parent exits: killed orphan, draining [exited] {continue 5000 None}",
-        "handed over (handed over) / stops: early Stopped(Pid(6000), SIGSTOP) + handed over, running [] {}",
-        "handed over (handed over) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128) + handed over, running [] {}",
-        "handed over (handed over) / reaches exit: vanished + handed over, running [] {continue 6000 None}",
-        "handed over (handed over) / exits: vanished + handed over, running [] {}",
-        "handed over (handed over) / is killed: vanished + handed over, running [] {}",
-        "handed over (handed over) / is cloned: live + handed over, running [] {continue 5000 None}",
-        "handed over (handed over) / is forked: fork child of 1 sites + handed over, running [] {continue 5000 None}",
+        "handed over (handed over) / stops: early Stopped(Pid(6000), SIGSTOP), running [] {}",
+        "handed over (handed over) / interrupt stops: early PtraceEvent(Pid(6000), SIGTRAP, 128), running [] {}",
+        "handed over (handed over) / reaches exit: handed over, running [] {continue 6000 None}",
+        "handed over (handed over) / exits: vanished, running [] {}",
+        "handed over (handed over) / is killed: vanished, running [] {}",
+        "handed over (handed over) / is cloned: live, running [] {continue 5000 None}",
+        "handed over (handed over) / is forked: fork child of 1 sites, running [] {continue 5000 None}",
         "handed over (handed over) / parent exits: nothing, idle [exited] {continue 5000 None}",
     ];
     assert_eq!(actual, expected, "\n{}", actual.join("\n"));

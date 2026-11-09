@@ -24,8 +24,8 @@ use super::session::{Session, Shutdown, Startup, Traced};
 use super::{
     ActiveExecution, ActiveKind, BREAKPOINT_OPCODE, ClassifiedStop, Controller, ExpectedStop,
     Inferior, InferiorOrigin, LinuxError, MemoryAccessError, NativeThreadState, Orphans, Start,
-    StopBarrier, Terminating, TraceThread, VforkWindow, Waiter, backend_error, debug_thread_id,
-    exception_info, is_superseded, process_id,
+    StopBarrier, Terminating, TraceThread, Tracked, VforkWindow, Waiter, backend_error,
+    debug_thread_id, exception_info, is_superseded, process_id,
 };
 
 /// How many times an attach may find threads it has not traced before it
@@ -335,7 +335,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             Some(waiter),
             RunPhase::idle(),
         );
-        inferior.unseized_threads = unseized;
+        inferior
+            .tracked
+            .extend(unseized.into_iter().map(|tid| (tid, Tracked::Unseized)));
         inferior.observer = observe;
         self.trace(inferior, Startup::Attach { reply, rescans: 0 });
 
@@ -405,7 +407,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if !self.ptrace.interrupt(tid)? {
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.threads.remove(&tid);
-            inferior.retired_threads.insert(tid);
+            inferior.tracked.insert(tid, Tracked::Retired);
         }
 
         Ok(())
@@ -757,11 +759,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .process_threads(inferior.tgid)?
                 .into_iter()
                 .filter(|tid| {
-                    !inferior.threads.contains_key(tid)
-                        && !inferior.retired_threads.contains(tid)
-                        && !inferior.vanished_threads.contains(tid)
-                        && !inferior.unseized_threads.contains(tid)
-                        && !inferior.unowned_stops.contains_key(tid)
+                    !inferior.threads.contains_key(tid) && !inferior.tracked.contains_key(tid)
                 })
                 .collect::<Vec<_>>();
 
@@ -779,7 +777,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             for tid in untraced {
                 if !self.ptrace.seize(tid, false)? {
-                    inferior.unseized_threads.insert(tid);
+                    inferior.tracked.insert(tid, Tracked::Unseized);
                     continue;
                 }
 
@@ -790,7 +788,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     waiting = true;
                 } else {
                     // The thread is exiting; its exit status retires it.
-                    inferior.retired_threads.insert(tid);
+                    inferior.tracked.insert(tid, Tracked::Retired);
                 }
             }
 
@@ -1039,16 +1037,16 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
 
         // A sibling's exit_group can end the new thread before this event
-        // announces it.
-        let ended = inferior.vanished_threads.remove(&child);
-        let child_tgid = if ended {
+        // announces it, and its first stop can come before the event.
+        let record = inferior.tracked.remove(&child);
+        let child_tgid = if record == Some(Tracked::Vanished) {
             None
         } else {
             match self.ptrace.thread_group_id(child) {
                 Ok(tgid) => Some(tgid),
                 Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     // The thread is already gone; its exit status follows.
-                    inferior.retired_threads.insert(child);
+                    inferior.tracked.insert(child, Tracked::Retired);
                     None
                 }
                 Err(error) => return Err(error),
@@ -1056,14 +1054,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
 
         let Some(child_tgid) = child_tgid else {
-            inferior.unowned_stops.remove(&child);
             return self.restart_after_internal(parent);
         };
 
         if child_tgid != inferior.tgid {
             // The killed child's exit status is still delivered.
-            inferior.unowned_stops.remove(&child);
-            inferior.retired_threads.insert(child);
+            inferior.tracked.insert(child, Tracked::Retired);
             let _ = self.ptrace.kill(child, Signal::SIGKILL);
             return self.begin_visible_stop(
                 parent,
@@ -1093,7 +1089,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             active.resume_threads.insert(child);
         }
 
-        let pending = inferior.unowned_stops.remove(&child);
+        let pending = match record {
+            Some(Tracked::EarlyStop(status)) => Some(status),
+            _ => None,
+        };
 
         // The new thread, still starting, keeps a barrier from completing.
         self.restart_after_internal(parent)?;
@@ -1119,33 +1118,27 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or(Error::NotRunning)?
             .inherited_sites();
 
-        self.track_fork_child(child, sites);
+        self.track_fork_child(child, sites, false);
         self.restart_after_internal(parent)
     }
 
     /// Settles a fork child whose initial stop already arrived, or records
-    /// it to be settled at that stop.
-    fn track_fork_child(&mut self, child: Pid, sites: Vec<(VirtualAddress, u8)>) {
+    /// it to be settled at that stop. A `vfork` child shares its parent's
+    /// memory, whose traps are lifted, so it inherits none and is always
+    /// released.
+    fn track_fork_child(&mut self, child: Pid, sites: Vec<(VirtualAddress, u8)>, vfork: bool) {
         let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
 
-        if inferior.unowned_stops.remove(&child).is_some() {
-            self.settle_fork_child(child, &sites);
-        } else {
-            inferior.fork_children.insert(child, sites);
+        match inferior.tracked.remove(&child) {
+            Some(Tracked::EarlyStop(_)) => self.settle_fork_child(child, &sites, vfork),
+            _ => {
+                inferior
+                    .tracked
+                    .insert(child, Tracked::ForkChild { sites, vfork });
+            }
         }
-    }
-
-    /// Settles a vfork child as [`Self::track_fork_child`] does a fork
-    /// child, except that it is always released. It inherits no traps of
-    /// its own: they are lifted from the memory it shares.
-    fn track_vfork_child(&mut self, child: Pid) {
-        if let Some(inferior) = self.session.inferior_mut() {
-            inferior.vfork_children.insert(child);
-        }
-
-        self.track_fork_child(child, Vec::new());
     }
 
     /// Releases a stopped fork child of the inferior, or holds it for
@@ -1153,19 +1146,20 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// `sites`, which would otherwise kill it with SIGTRAP once untraced.
     /// Debug registers are not inherited across fork. A child that cannot
     /// be cleaned is killed rather than released with traps in place.
-    pub(super) fn settle_fork_child(&mut self, child: Pid, sites: &[(VirtualAddress, u8)]) {
+    pub(super) fn settle_fork_child(
+        &mut self,
+        child: Pid,
+        sites: &[(VirtualAddress, u8)],
+        vfork: bool,
+    ) {
         let Some(parent) = self.session.inferior().map(|inferior| inferior.tgid) else {
             return;
         };
 
-        let vfork = self
-            .session
-            .inferior_mut()
-            .is_some_and(|inferior| inferior.vfork_children.remove(&child));
         if !self.scrub_and_settle(parent, child, sites, vfork)
             && let Some(inferior) = self.session.inferior_mut()
         {
-            inferior.killed_children.insert(child);
+            inferior.tracked.insert(child, Tracked::Killed);
         }
     }
 
@@ -1193,7 +1187,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
 
             if let Some(inferior) = self.session.inferior_mut() {
-                inferior.handed_over.insert(child);
+                inferior.tracked.insert(child, Tracked::HandedOver);
             }
             following.transfer(super::follow::Transfer {
                 child,
@@ -1288,12 +1282,12 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return;
             };
 
-            if !inferior.fork_children.contains_key(&child)
-                && !inferior.killed_children.contains(&child)
-                && !inferior.handed_over.contains(&child)
-                && !inferior.threads.contains_key(&child)
-            {
-                self.track_fork_child(child, sites.clone());
+            let settled = matches!(
+                inferior.tracked.get(&child),
+                Some(Tracked::ForkChild { .. } | Tracked::Killed | Tracked::HandedOver)
+            );
+            if !settled && !inferior.threads.contains_key(&child) {
+                self.track_fork_child(child, sites.clone(), false);
             }
         }
     }
@@ -1393,10 +1387,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.handle_initial_stop(pid);
         }
 
-        inferior
-            .retired_threads
-            .extend(inferior.threads.keys().copied());
-        inferior.threads.clear();
+        for pid in std::mem::take(&mut inferior.threads).into_keys() {
+            inferior.tracked.insert(pid, Tracked::Retired);
+        }
         survivor.state = NativeThreadState::Stopped;
         survivor.expected = ExpectedStop::None;
         survivor.pending_signal = None;
@@ -1412,7 +1405,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // The execing thread takes over the leader's TID, whose exit the
         // kernel never reports.
-        inferior.retired_threads.remove(&pid);
+        inferior.tracked.remove(&pid);
         inferior.threads.insert(pid, survivor);
         inferior.breakpoints.clear();
         inferior.former_sites.clear();
@@ -1633,8 +1626,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         if pid == inferior.tgid {
             // The kernel reports the leader's exit only once every other
             // thread is gone, even those whose own exits went unseen.
-            let others = std::mem::take(&mut inferior.threads);
-            inferior.retired_threads.extend(others.into_keys());
+            for other in std::mem::take(&mut inferior.threads).into_keys() {
+                inferior.tracked.insert(other, Tracked::Retired);
+            }
         }
 
         let process_id = process_id(inferior.tgid);
@@ -1656,7 +1650,9 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if inferior.threads.is_empty() {
             self.discard_watchpoints();
-            let pending = self.settle_stopped_fork_children();
+            let orphans = self
+                .settle_stopped_fork_children()
+                .ok_or(Error::NotRunning)?;
             let Traced {
                 mut inferior,
                 startup,
@@ -1665,23 +1661,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             Self::abandon_assignment(&mut inferior);
             let mut cleanup_error = inferior.retire_agents_after_exit().err();
             let edits = inferior.take_pending_edits();
-            let killed = std::mem::take(&mut inferior.killed_children);
-            let waiter = inferior.waiter.take();
 
-            let (joined, orphans) = if pending.is_empty() && killed.is_empty() {
+            let (joined, orphans) = if orphans.children.is_empty() && orphans.killed.is_empty() {
                 // Nothing is left to wait for, though the debugger's
                 // process may have children from outside the session.
-                let joined = waiter.map_or(Ok(()), |waiter| self.join_waiter(waiter));
+                let joined = (orphans.waiter).map_or(Ok(()), |waiter| self.join_waiter(waiter));
                 (joined, None)
             } else {
                 // The waiter reports the children's first stops, at which
                 // they are settled, and the exits of those killed.
-                let orphans = Orphans {
-                    parent: inferior.tgid,
-                    children: pending,
-                    killed,
-                    waiter,
-                };
                 (Ok(()), Some(orphans))
             };
 
@@ -1921,30 +1909,32 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         match status {
             WaitEvent::Exited(..) | WaitEvent::Signaled(..) => {
-                // A thread no event announced yet exited; one may still come.
-                // Every record of the pid ends with it.
-                let retired = inferior.retired_threads.remove(&pid);
-                let killed = inferior.killed_children.remove(&pid);
-                let forked = inferior.fork_children.remove(&pid).is_some();
-                inferior.vfork_children.remove(&pid);
-
-                if !(retired || killed || forked) {
-                    inferior.vanished_threads.insert(pid);
+                // The exit of a pid whose exit was due ends its record. Any
+                // other is a thread no event announced yet; one may still come.
+                match inferior.tracked.remove(&pid) {
+                    Some(Tracked::Retired | Tracked::Killed | Tracked::ForkChild { .. }) => {}
+                    _ => {
+                        inferior.tracked.insert(pid, Tracked::Vanished);
+                    }
                 }
-
-                inferior.unowned_stops.remove(&pid);
             }
             WaitEvent::PtraceEvent(_, _, libc::PTRACE_EVENT_EXIT) => {
-                // A thread no event announced yet is exiting; let it go.
-                inferior.unowned_stops.remove(&pid);
-                inferior.vanished_threads.insert(pid);
+                // Let it go. A pid known otherwise keeps its record until
+                // its exit status.
+                let record = inferior.tracked.entry(pid).or_insert(Tracked::Vanished);
+                if matches!(record, Tracked::EarlyStop(_)) {
+                    *record = Tracked::Vanished;
+                }
                 return self.release_exiting_thread(pid).is_ok();
             }
             WaitEvent::Stopped(..) | WaitEvent::PtraceEvent(_, _, libc::PTRACE_EVENT_STOP) => {
-                if let Some(sites) = inferior.fork_children.remove(&pid) {
-                    self.settle_fork_child(pid, &sites);
-                } else {
-                    inferior.unowned_stops.insert(pid, *status);
+                match inferior.tracked.remove(&pid) {
+                    Some(Tracked::ForkChild { sites, vfork }) => {
+                        self.settle_fork_child(pid, &sites, vfork);
+                    }
+                    _ => {
+                        inferior.tracked.insert(pid, Tracked::EarlyStop(*status));
+                    }
                 }
             }
             _ => return false,
@@ -1954,27 +1944,45 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     /// Settles the fork children whose initial stop arrived, and returns
-    /// those still on their way to it. Once the process has exited no
-    /// event will announce them, and a traced child left stopped would keep
-    /// the waiter from ever finishing.
-    fn settle_stopped_fork_children(&mut self) -> BTreeMap<Pid, Vec<(VirtualAddress, u8)>> {
-        let Some(inferior) = self.session.inferior_mut() else {
-            return BTreeMap::new();
-        };
+    /// those still on their way to it and those killed whose exit is still
+    /// due, with the waiter that reports them. Once the process has exited
+    /// no event will announce them, and a traced child left stopped would
+    /// keep the waiter from ever finishing.
+    fn settle_stopped_fork_children(&mut self) -> Option<Orphans> {
+        let inferior = self.session.inferior_mut()?;
 
-        let stopped = std::mem::take(&mut inferior.unowned_stops);
-        let pending = std::mem::take(&mut inferior.fork_children);
         let sites = inferior.inherited_sites();
+        let mut stopped = Vec::new();
+        let mut pending = BTreeMap::new();
+        inferior.tracked.retain(|&pid, record| match record {
+            Tracked::EarlyStop(_) => {
+                stopped.push(pid);
+                false
+            }
+            Tracked::ForkChild { sites, .. } => {
+                pending.insert(pid, std::mem::take(sites));
+                false
+            }
+            _ => true,
+        });
 
         // Their parent is gone, so a vfork child no longer blocks it, and
         // an orphan is settled as any other.
-        inferior.vfork_children.clear();
-
-        for &pid in stopped.keys() {
-            self.settle_fork_child(pid, &sites);
+        for pid in stopped {
+            self.settle_fork_child(pid, &sites, false);
         }
 
-        pending
+        let inferior = self.session.inferior_mut()?;
+        let killed = (inferior.tracked.iter())
+            .filter(|(_, record)| **record == Tracked::Killed)
+            .map(|(&pid, _)| pid)
+            .collect();
+        Some(Orphans {
+            parent: inferior.tgid,
+            children: pending,
+            killed,
+            waiter: inferior.waiter.take(),
+        })
     }
 
     pub(super) fn handle_shutdown_wait(&mut self, status: WaitEvent) -> bool {
@@ -2116,14 +2124,17 @@ impl<P: LinuxTraceOps> Controller<P> {
         if inferior.threads.is_empty() {
             // Every thread exited while the session ended; once their exits
             // are collected nothing remains to release.
-            if inferior.retired_threads.is_empty() && inferior.fork_children.is_empty() {
+            let due = (inferior.tracked.values())
+                .any(|record| matches!(record, Tracked::Retired | Tracked::ForkChild { .. }));
+            if !due {
                 self.forget_vanished_inferior();
             }
 
             return Ok(());
         }
 
-        let ready = inferior.fork_children.is_empty()
+        let ready = !(inferior.tracked.values())
+            .any(|record| matches!(record, Tracked::ForkChild { .. }))
             && inferior
                 .threads
                 .iter()
@@ -2199,7 +2210,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Ends the session of an attached process whose threads all exited.
     /// Its children still due are left to the orphans, as at its exit.
     fn forget_vanished_inferior(&mut self) {
-        let pending = self.settle_stopped_fork_children();
+        let Some(orphans) = self.settle_stopped_fork_children() else {
+            return;
+        };
         let Some(Traced {
             mut inferior,
             startup,
@@ -2210,18 +2223,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         debug_assert!(startup.is_none(), "a shutdown cancels the startup");
 
-        let killed = std::mem::take(&mut inferior.killed_children);
-        let waiter = inferior.waiter.take();
-        let outcome = if pending.is_empty() && killed.is_empty() {
-            waiter.map_or(Ok(()), |waiter| self.join_waiter(waiter))
+        let outcome = if orphans.children.is_empty() && orphans.killed.is_empty() {
+            (orphans.waiter).map_or(Ok(()), |waiter| self.join_waiter(waiter))
         } else {
             self.session = Session::Draining {
-                orphans: Orphans {
-                    parent: inferior.tgid,
-                    children: pending,
-                    killed,
-                    waiter,
-                },
+                orphans,
                 deferred: None,
                 cleanup_error: None,
             };
@@ -2253,7 +2259,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         inferior.thread_mut(parent)?.state = NativeThreadState::Stopped;
         let sites = inferior.inherited_sites();
-        self.track_fork_child(child, sites);
+        self.track_fork_child(child, sites, false);
         Ok(())
     }
 
@@ -2372,7 +2378,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 },
             );
 
-            self.track_vfork_child(window.child);
+            self.track_fork_child(window.child, Vec::new(), true);
             self.continue_thread(parent)?;
         }
 
@@ -2392,7 +2398,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         inferior.thread_mut(parent)?.state = NativeThreadState::Stopped;
         lift_all_traps(&self.ptrace, inferior)?;
-        self.track_vfork_child(child);
+        self.track_fork_child(child, Vec::new(), true);
         Ok(())
     }
 
@@ -2409,7 +2415,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.thread_mut(parent)?.state = NativeThreadState::Stopped;
 
         // The child's first stop may already have arrived.
-        let stopped = inferior.unowned_stops.remove(&child).is_some();
+        let stopped = matches!(inferior.tracked.remove(&child), Some(Tracked::EarlyStop(_)));
         let thread = inferior
             .threads
             .entry(child)

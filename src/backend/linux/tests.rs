@@ -3442,7 +3442,7 @@ fn an_attach_whose_seized_threads_die_traces_the_threads_left_before_ending() {
     // thread before its attach stop, while the new thread still runs.
     let inferior = harness.inferior();
     inferior.threads.remove(&leader);
-    inferior.unseized_threads.insert(leader);
+    inferior.tracked.insert(leader, Tracked::Unseized);
     inferior.run = RunPhase::gathering(None, StopBarrier::visible(seized, StopReason::Attach));
     let untraced = Pid::from_raw(5100);
     harness
@@ -4043,7 +4043,7 @@ fn a_vanished_attached_process_leaves_its_killed_child_to_be_reaped() {
     harness.attached();
     let child = Pid::from_raw(6000);
     let inferior = harness.inferior();
-    inferior.killed_children.insert(child);
+    inferior.tracked.insert(child, Tracked::Killed);
     inferior.threads.clear();
     harness.controller.shutdown = Some(Shutdown::default());
     harness.controller.detach_when_stopped().expect("detach");
@@ -4203,7 +4203,10 @@ fn a_panic_releases_the_fork_children_of_a_launched_process_it_kills() {
         Signal::SIGTRAP,
         libc::PTRACE_EVENT_FORK,
     )));
-    assert!(harness.inferior().fork_children.contains_key(&child));
+    assert!(matches!(
+        harness.inferior().tracked.get(&child),
+        Some(Tracked::ForkChild { .. })
+    ));
     harness.store(HIT_SITE, u64::from(BREAKPOINT_OPCODE));
     harness.trace().take_actions();
 
@@ -4458,9 +4461,9 @@ fn a_fork_event_whose_thread_is_killed_as_its_message_is_read_is_superseded() {
     assert!(harness.trace().kill_point.borrow().is_none());
     let inferior = harness.controller.session.inferior().expect("inferior");
     assert!(
-        inferior.fork_children.is_empty(),
+        !(inferior.tracked.values()).any(|record| matches!(record, Tracked::ForkChild { .. })),
         "no child is expected: {:?}",
-        inferior.fork_children.keys().collect::<Vec<_>>()
+        inferior.tracked
     );
     assert_eq!(harness.thread(parent).state, NativeThreadState::Running);
 }
