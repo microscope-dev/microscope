@@ -10,8 +10,8 @@ use std::sync::Arc;
 use proptest::prelude::*;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 
-use super::{MemberNumber, StopAction, Stops};
-use crate::{StopReason, StopScope, VirtualAddress};
+use super::{MemberNumber, MemberStop, StopAction, Stops};
+use crate::{StopId, StopReason, StopScope, VirtualAddress};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Member {
@@ -74,8 +74,9 @@ struct Reference {
     members: Vec<Member>,
     phase: Phase,
 
-    /// How many stops wait to be reported at continues.
-    pending: usize,
+    /// The members whose stops wait to be reported at continues, in
+    /// order. A member that moves on or goes leaves its stop behind.
+    pending: Vec<MemberNumber>,
     deferred: Vec<Command>,
 }
 
@@ -153,10 +154,10 @@ impl Reference {
             return;
         }
         if command == Command::Resume {
-            self.pending = 0;
+            self.pending.clear();
         }
-        if self.pending > 0 {
-            self.pending -= 1;
+        if !self.pending.is_empty() {
+            self.pending.remove(0);
             self.phase = Phase::Stopped;
             return;
         }
@@ -185,7 +186,7 @@ impl ReferenceStateMachine for Model {
                 scope,
                 members: vec![Member::Running; members],
                 phase: Phase::Running,
-                pending: 0,
+                pending: Vec::new(),
                 deferred: Vec::new(),
             })
             .boxed()
@@ -286,7 +287,7 @@ impl ReferenceStateMachine for Model {
                     Phase::Stopping { first, .. } => {
                         if !pause {
                             if *first {
-                                state.pending += 1;
+                                state.pending.push(member);
                             } else {
                                 *first = true;
                             }
@@ -299,6 +300,7 @@ impl ReferenceStateMachine for Model {
             Event::PauseFailed(member) => state.settled(member),
             Event::Gone(member) => {
                 state.set(member, Member::Gone);
+                state.pending.retain(|&waiting| waiting != member);
                 state.settled(member);
             }
 
@@ -306,6 +308,7 @@ impl ReferenceStateMachine for Model {
             // stopped as a whole once a member runs again.
             Event::ContinueMember(member) => {
                 state.set(member, Member::Running);
+                state.pending.retain(|&waiting| waiting != member);
                 if !group && state.phase == Phase::Stopped {
                     state.phase = Phase::Running;
                 }
@@ -336,24 +339,34 @@ struct Harness {
     /// Whether a member stopped for the stop under way.
     stopped_for_stop: bool,
 
-    /// Breakpoint stops not yet reported, which a resume may discard.
-    owed: Vec<(MemberNumber, StopReason)>,
+    /// Each member's stop while it is stopped, as its session would say.
+    current: Vec<Option<StopId>>,
+
+    /// Breakpoint stops not yet reported, which a resume may discard, and
+    /// a member that moves on or goes leaves behind.
+    owed: Vec<MemberStop>,
 
     /// Client commands sent and not yet served.
     unserved: BTreeSet<u32>,
     next_command: u32,
     next_breakpoint: u64,
+    next_stop: u64,
 }
 
 impl Harness {
-    fn report(&mut self, member: MemberNumber, reason: &StopReason) {
-        self.owed
-            .retain(|(owed, owed_reason)| (*owed, owed_reason) != (member, reason));
+    fn report(&mut self, stop: &MemberStop) {
+        self.owed.retain(|owed| owed != stop);
+    }
+
+    /// Forgets what member `member` owed, as it moved on or went.
+    fn left(&mut self, member: MemberNumber) {
+        self.current[member as usize - 1] = None;
+        self.owed.retain(|owed| owed.member != member);
     }
 
     /// A group stop the rule reports as it completes.
-    fn completed(&mut self, stop: Option<(MemberNumber, StopReason)>) {
-        let Some((member, reason)) = stop else {
+    fn completed(&mut self, stop: Option<MemberStop>) {
+        let Some(stop) = stop else {
             if self.awaited.as_ref().is_some_and(BTreeSet::is_empty) {
                 assert!(
                     self.scope == StopScope::Process || !self.stopped_for_stop,
@@ -363,6 +376,8 @@ impl Harness {
             }
             return;
         };
+
+        let (member, reason) = (stop.member, &stop.reason);
 
         // Each member's stop was reported as its own.
         assert_eq!(
@@ -382,7 +397,7 @@ impl Harness {
             Member::Running,
             "the group stop names member {member}, which runs"
         );
-        self.report(member, &reason);
+        self.report(&stop);
     }
 
     fn settled(&mut self, member: MemberNumber) {
@@ -392,8 +407,8 @@ impl Harness {
     }
 
     /// Pauses the running members but `except`, as the driver does.
-    fn pause_all(&mut self, first: Option<(MemberNumber, StopReason)>) {
-        let except = first.as_ref().map(|(member, _)| *member);
+    fn pause_all(&mut self, first: Option<MemberStop>) {
+        let except = first.as_ref().map(|first| first.member);
         let waiting = (1..)
             .zip(&self.members)
             .filter(|(number, member)| **member == Member::Running && Some(*number) != except)
@@ -424,12 +439,24 @@ impl Harness {
             self.stops.discard_pending();
             self.owed.clear();
         }
-        match self.stops.continue_all() {
-            Some((member, reason)) => self.report(member, &reason),
+        let current = &self.current;
+        let reported = self
+            .stops
+            .continue_all(|stop| current[stop.member as usize - 1] == Some(stop.stop));
+        match reported {
+            Some(stop) => {
+                assert_eq!(
+                    self.members[stop.member as usize - 1],
+                    Member::Stopped,
+                    "a continue reported {stop:?}, which its member left"
+                );
+                self.report(&stop);
+            }
             None => {
-                for member in &mut self.members {
+                for (member, current) in self.members.iter_mut().zip(&mut self.current) {
                     if *member == Member::Stopped {
                         *member = Member::Running;
+                        *current = None;
                     }
                 }
             }
@@ -455,9 +482,16 @@ impl Harness {
                         hits: Arc::from([]),
                     }
                 };
+                self.next_stop += 1;
+                let stop = MemberStop {
+                    member,
+                    stop: StopId::new(self.next_stop),
+                    reason,
+                };
                 self.members[member as usize - 1] = Member::Stopped;
+                self.current[member as usize - 1] = Some(stop.stop);
                 if !pause {
-                    self.owed.push((member, reason.clone()));
+                    self.owed.push(stop.clone());
                 }
 
                 let under_way = self.awaited.is_some() && self.scope == StopScope::Group;
@@ -470,19 +504,19 @@ impl Harness {
                 {
                     self.awaited = None;
                 }
-                match self.stops.stopped(member, reason.clone()) {
-                    Some(StopAction::Report(reported, why)) if under_way => {
-                        self.completed(Some((reported, why)));
+                match self.stops.stopped(stop.clone()) {
+                    Some(StopAction::Report(reported)) if under_way => {
+                        self.completed(Some(reported));
                     }
 
                     // Outside a group stop, a member's stop is its own.
-                    Some(StopAction::Report(reported, why)) => {
-                        assert_eq!((reported, &why), (member, &reason), "a stop of its own");
-                        self.report(reported, &why);
+                    Some(StopAction::Report(reported)) => {
+                        assert_eq!(reported, stop, "a stop of its own");
+                        self.report(&reported);
                     }
-                    Some(StopAction::PauseOthers(first, why)) => {
+                    Some(StopAction::PauseOthers(first)) => {
                         assert!(!under_way, "member {member} began a stop inside another");
-                        self.pause_all(Some((first, why)));
+                        self.pause_all(Some(first));
                     }
                     None => assert!(under_way, "member {member}'s stop was ignored"),
                 }
@@ -496,6 +530,7 @@ impl Harness {
             }
             Event::Gone(member) => {
                 self.members[member as usize - 1] = Member::Gone;
+                self.left(member);
                 self.settled(member);
                 let completed = self.stops.paused(member, None);
                 self.completed(completed);
@@ -503,6 +538,7 @@ impl Harness {
             }
             Event::ContinueMember(member) => {
                 self.members[member as usize - 1] = Member::Running;
+                self.left(member);
                 self.stops.continued();
             }
             Event::PauseAll => self.pause_all(None),
@@ -527,12 +563,14 @@ impl StateMachineTest for Harness {
             scope: reference.scope,
             stops: Stops::new(reference.scope),
             members: reference.members.clone(),
+            current: vec![None; reference.members.len()],
             awaited: None,
             stopped_for_stop: false,
             owed: Vec::new(),
             unserved: BTreeSet::new(),
             next_command: 0,
             next_breakpoint: 0,
+            next_stop: 0,
         }
     }
 

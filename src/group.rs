@@ -498,15 +498,23 @@ enum Phase {
 
     /// Members are being paused for `first`'s stop, or for a pause of the
     /// whole group when it is none. `paused` is the first member that
-    /// stopped for it, and `was_stopped` whether the group was stopped
-    /// before: a stop nobody stopped for leaves the group as it was.
+    /// stopped for it, at its stop, and `was_stopped` whether the group was
+    /// stopped before: a stop nobody stopped for leaves the group as it was.
     Stopping {
-        first: Option<(MemberNumber, StopReason)>,
+        first: Option<MemberStop>,
         waiting: BTreeSet<MemberNumber>,
-        paused: Option<MemberNumber>,
+        paused: Option<(MemberNumber, crate::StopId)>,
         was_stopped: bool,
     },
     Stopped,
+}
+
+/// A stop a member published: the member, the stop, and why it stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemberStop {
+    member: MemberNumber,
+    stop: crate::StopId,
+    reason: StopReason,
 }
 
 /// The group's stop rule, apart from the members it pauses and resumes:
@@ -519,8 +527,9 @@ struct Stops<C> {
     phase: Phase,
 
     /// Stops members made while the group stopped for another's, each
-    /// reported at a later continue instead of resuming.
-    pending: VecDeque<(MemberNumber, StopReason)>,
+    /// reported at a later continue instead of resuming, if its member is
+    /// still there.
+    pending: VecDeque<MemberStop>,
 
     /// Continues and resumes a client asked for while the group stopped,
     /// served once it has: the pauses under way are part of that stop.
@@ -531,10 +540,10 @@ struct Stops<C> {
 #[derive(Debug, PartialEq, Eq)]
 enum StopAction {
     /// Report a group stop.
-    Report(MemberNumber, StopReason),
+    Report(MemberStop),
 
     /// Pause every other running member for this stop.
-    PauseOthers(MemberNumber, StopReason),
+    PauseOthers(MemberStop),
 }
 
 impl<C> Stops<C> {
@@ -556,22 +565,20 @@ impl<C> Stops<C> {
     }
 
     /// Applies the group's stop rule to a stop member `number` published.
-    fn stopped(&mut self, number: MemberNumber, reason: StopReason) -> Option<StopAction> {
+    fn stopped(&mut self, stop: MemberStop) -> Option<StopAction> {
         // Each member's stop is its own, and one of those a pause of the
         // whole group waits for.
         if self.scope == StopScope::Process {
-            let _ = self.paused(number, Some(reason.clone()));
-            return Some(StopAction::Report(number, reason));
+            let _ = self.paused(stop.member, Some(stop.clone()));
+            return Some(StopAction::Report(stop));
         }
 
         match &mut self.phase {
-            Phase::Running => Some(StopAction::PauseOthers(number, reason)),
-            Phase::Stopping { .. } => self
-                .paused(number, Some(reason))
-                .map(|(member, reason)| StopAction::Report(member, reason)),
+            Phase::Running => Some(StopAction::PauseOthers(stop)),
+            Phase::Stopping { .. } => self.paused(stop.member, Some(stop)).map(StopAction::Report),
             // A member a client resumed alone, as a step resumes it, stops
             // again while the rest of the group stays stopped.
-            Phase::Stopped => Some(StopAction::Report(number, reason)),
+            Phase::Stopped => Some(StopAction::Report(stop)),
         }
     }
 
@@ -580,9 +587,9 @@ impl<C> Stops<C> {
     /// stop to report if none is.
     fn pause_all(
         &mut self,
-        first: Option<(MemberNumber, StopReason)>,
+        first: Option<MemberStop>,
         waiting: BTreeSet<MemberNumber>,
-    ) -> Option<(MemberNumber, StopReason)> {
+    ) -> Option<MemberStop> {
         // A client's pause while the group stops joins the stop under way,
         // which keeps the stop it is for.
         if let Phase::Stopping {
@@ -598,7 +605,7 @@ impl<C> Stops<C> {
         }
 
         self.phase = Phase::Stopping {
-            paused: first.as_ref().map(|(number, _)| *number),
+            paused: first.as_ref().map(|first| (first.member, first.stop)),
             first,
             waiting,
             was_stopped: matches!(self.phase, Phase::Stopped),
@@ -615,14 +622,10 @@ impl<C> Stops<C> {
         }
     }
 
-    /// Notes that member `number` stopped for `reason`, or will not stop
+    /// Notes that member `number` stopped at `stop`, or will not stop
     /// when it is none, while the group stops, and returns the group stop
     /// to report once none is left running.
-    fn paused(
-        &mut self,
-        number: MemberNumber,
-        reason: Option<StopReason>,
-    ) -> Option<(MemberNumber, StopReason)> {
+    fn paused(&mut self, number: MemberNumber, stop: Option<MemberStop>) -> Option<MemberStop> {
         let Phase::Stopping {
             first,
             waiting,
@@ -634,16 +637,16 @@ impl<C> Stops<C> {
         };
 
         waiting.remove(&number);
-        if let Some(reason) = reason {
-            paused.get_or_insert(number);
+        if let Some(stop) = stop {
+            paused.get_or_insert((stop.member, stop.stop));
 
             // Where each member's stop is reported as its own, none is
             // the group's.
-            if self.scope == StopScope::Group && reason != StopReason::Pause {
+            if self.scope == StopScope::Group && stop.reason != StopReason::Pause {
                 if first.is_none() {
-                    *first = Some((number, reason));
+                    *first = Some(stop);
                 } else {
-                    self.pending.push_back((number, reason));
+                    self.pending.push_back(stop);
                 }
             }
         }
@@ -652,9 +655,13 @@ impl<C> Stops<C> {
             return None;
         }
 
-        let stop = first
-            .take()
-            .or_else(|| paused.map(|number| (number, StopReason::Pause)));
+        let stop = first.take().or_else(|| {
+            paused.map(|(member, stop)| MemberStop {
+                member,
+                stop,
+                reason: StopReason::Pause,
+            })
+        });
         self.phase = if stop.is_some() || *was_stopped {
             Phase::Stopped
         } else {
@@ -694,6 +701,11 @@ impl<C> Stops<C> {
         !self.pending.is_empty()
     }
 
+    /// The members whose stops wait to be reported.
+    fn pending_members(&self) -> BTreeSet<MemberNumber> {
+        self.pending.iter().map(|stop| stop.member).collect()
+    }
+
     /// Forgets the stops yet to report, for a client that showed them.
     fn discard_pending(&mut self) {
         self.pending.clear();
@@ -701,10 +713,14 @@ impl<C> Stops<C> {
 
     /// Begins a continue of the group: returns a stop to report instead,
     /// or sets the group running, for the driver to resume its members.
-    fn continue_all(&mut self) -> Option<(MemberNumber, StopReason)> {
-        if let Some(stop) = self.pending.pop_front() {
-            self.phase = Phase::Stopped;
-            return Some(stop);
+    /// A waiting stop is reported only if `current` says its member is
+    /// still there; one whose member a client moved on is dropped.
+    fn continue_all(&mut self, current: impl Fn(&MemberStop) -> bool) -> Option<MemberStop> {
+        while let Some(stop) = self.pending.pop_front() {
+            if current(&stop) {
+                self.phase = Phase::Stopped;
+                return Some(stop);
+            }
         }
 
         self.phase = Phase::Running;
@@ -1201,7 +1217,11 @@ impl Driver {
         let state = MemberState::Stopped(reason.clone());
         self.shared.update(number, |member| member.state = state);
         self.end_temporaries(number, &reason).await;
-        self.stopped(number, reason);
+        self.stopped(MemberStop {
+            member: number,
+            stop: stop_id,
+            reason,
+        });
     }
 
     fn started(&mut self, number: MemberNumber, process: ProcessId) {
@@ -1226,22 +1246,25 @@ impl Driver {
         }
     }
 
-    /// Applies the group's stop rule to a stop member `number` published.
-    fn stopped(&mut self, number: MemberNumber, reason: StopReason) {
-        match self.stops.stopped(number, reason) {
-            Some(StopAction::Report(member, reason)) => {
-                self.emit(GroupEvent::GroupStopped { member, reason });
-            }
-            Some(StopAction::PauseOthers(number, reason)) => {
-                self.pause_all(Some((number, reason)));
-            }
+    /// Applies the group's stop rule to a stop a member published.
+    fn stopped(&mut self, stop: MemberStop) {
+        match self.stops.stopped(stop) {
+            Some(StopAction::Report(stop)) => self.report(stop),
+            Some(StopAction::PauseOthers(stop)) => self.pause_all(Some(stop)),
             None => {}
         }
     }
 
+    fn report(&self, stop: MemberStop) {
+        self.emit(GroupEvent::GroupStopped {
+            member: stop.member,
+            reason: stop.reason,
+        });
+    }
+
     /// Pauses every running member but the one whose stop `first` is.
-    fn pause_all(&mut self, first: Option<(MemberNumber, StopReason)>) {
-        let stopped = first.as_ref().map(|(number, _)| *number);
+    fn pause_all(&mut self, first: Option<MemberStop>) {
+        let stopped = first.as_ref().map(|first| first.member);
         let mut waiting = BTreeSet::new();
         for (&number, live) in &self.members {
             if Some(number) == stopped || live.gone || !live.running {
@@ -1262,16 +1285,16 @@ impl Driver {
             });
         }
 
-        if let Some((member, reason)) = self.stops.pause_all(first, waiting) {
-            self.emit(GroupEvent::GroupStopped { member, reason });
+        if let Some(stop) = self.stops.pause_all(first, waiting) {
+            self.report(stop);
         }
     }
 
     /// Notes that member `number` stopped, or will not, while the group
     /// stops, and reports the group stop once none is left running.
-    fn paused(&mut self, number: MemberNumber, reason: Option<StopReason>) {
-        if let Some((member, reason)) = self.stops.paused(number, reason) {
-            self.emit(GroupEvent::GroupStopped { member, reason });
+    fn paused(&mut self, number: MemberNumber, stop: Option<MemberStop>) {
+        if let Some(stop) = self.stops.paused(number, stop) {
+            self.report(stop);
         }
     }
 
@@ -1385,8 +1408,23 @@ impl Driver {
     }
 
     async fn continue_all(&mut self) -> Result<()> {
-        if let Some((member, reason)) = self.stops.continue_all() {
-            self.emit(GroupEvent::GroupStopped { member, reason });
+        // A waiting stop is reported only where its member still is: a
+        // client may have moved it on through its own session since, and
+        // the group may not have seen that yet.
+        let mut current = BTreeMap::new();
+        for number in self.stops.pending_members() {
+            if let Some(live) = self.members.get(&number).filter(|live| !live.gone)
+                && let Ok(snapshot) = live.handle.snapshot().await
+                && let InferiorState::Stopped { stop_id, .. } = snapshot.inferior
+            {
+                current.insert(number, stop_id);
+            }
+        }
+        if let Some(stop) = self
+            .stops
+            .continue_all(|stop| current.get(&stop.member) == Some(&stop.stop))
+        {
+            self.report(stop);
             return Ok(());
         }
 
@@ -1734,6 +1772,15 @@ mod tests {
             .expect("the group stops in time")
     }
 
+    /// Member `member`'s stop numbered `stop`, for `reason`.
+    fn at(member: MemberNumber, stop: u64, reason: StopReason) -> MemberStop {
+        MemberStop {
+            member,
+            stop: crate::StopId::new(stop),
+            reason,
+        }
+    }
+
     fn breakpoint_stop() -> StopReason {
         StopReason::Breakpoint {
             address: Some(crate::VirtualAddress::new(0x1234)),
@@ -1751,15 +1798,15 @@ mod tests {
     async fn a_resume_while_the_group_stops_waits_for_the_pauses_under_way() {
         let (mut driver, mut received) = driver(StopScope::Group);
         driver.stops.phase = Phase::Stopping {
-            first: Some((2, breakpoint_stop())),
+            first: Some(at(2, 1, breakpoint_stop())),
             waiting: BTreeSet::from([1]),
-            paused: Some(2),
+            paused: Some((2, crate::StopId::new(1))),
             was_stopped: false,
         };
         let (reply, resumed) = oneshot::channel();
 
         driver.resume(Command::ResumeAll(None, reply)).await;
-        driver.stopped(1, StopReason::Pause);
+        driver.stopped(at(1, 1, StopReason::Pause));
         driver.after_internal().await;
 
         assert_eq!(
@@ -1856,6 +1903,83 @@ mod tests {
             .expect("end the root session");
     }
 
+    /// A stop queued for a later continue is reported only while its
+    /// member is still there. A client that moved the member on through
+    /// its own session, as a step does, leaves the queued stop behind:
+    /// the continue reports the step's stop, not the one the member left.
+    #[tokio::test]
+    async fn a_continue_drops_a_queued_stop_its_member_has_left() {
+        let (mut driver, mut received) = driver_of("basic", StopScope::Group);
+        let root = driver.root.clone();
+        let breakpoint = root
+            .add_breakpoint(crate::BreakpointSpec::Function(
+                "breakpoint_target".to_owned(),
+            ))
+            .await
+            .expect("add the breakpoint");
+        root.launch_with(crate::LaunchOptions::default())
+            .await
+            .expect("launch the root");
+        let GroupEvent::GroupStopped { reason: hit, .. } =
+            next_group_stop(&mut driver, &mut received).await
+        else {
+            panic!("the root did not stop");
+        };
+        let InferiorState::Stopped {
+            process_id,
+            thread_id,
+            stop_id: shown,
+            ..
+        } = root.snapshot().await.expect("the root's state").inferior
+        else {
+            panic!("the root is not at its breakpoint");
+        };
+        root.remove_breakpoint(breakpoint.id)
+            .await
+            .expect("remove the breakpoint");
+
+        // The root's stop waits to be reported, as one does when another
+        // member's stop was the group's.
+        driver.stops.pending.push_back(MemberStop {
+            member: 1,
+            stop: shown,
+            reason: hit,
+        });
+
+        // The client steps the root alone, and the group sees it stop.
+        root.start_step(
+            shown,
+            thread_id,
+            crate::StackFrameId::INNERMOST,
+            crate::StepKind::Instruction,
+            ResumeScope::Process(process_id),
+            ExceptionDisposition::Pass,
+        )
+        .await
+        .expect("step the root");
+        let stepped = next_group_stop(&mut driver, &mut received).await;
+        let step = GroupEvent::GroupStopped {
+            member: 1,
+            reason: StopReason::Step {
+                kind: crate::StepKind::Instruction,
+            },
+        };
+        assert_eq!(stepped, step);
+
+        // A continue reports no stop the root has left; it resumes the
+        // root, which runs to its exit.
+        driver.continue_all().await.expect("continue the group");
+        assert_eq!(
+            next_group_stop(&mut driver, &mut received).await,
+            GroupEvent::GroupExited,
+            "the queued breakpoint stop was reported though the root left it"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
+            .await
+            .expect("end the root session in time")
+            .expect("end the root session");
+    }
+
     /// A client that shows a member's stops from its own events can
     /// resume it through the group twice before the group sees the first
     /// of them. Both stops are behind the group then, and neither may stop
@@ -1932,8 +2056,8 @@ mod tests {
         let mut stops = Stops::new(StopScope::Process);
         assert_eq!(stops.pause_all(None, BTreeSet::from([1, 2])), None);
         assert_eq!(
-            stops.stopped(1, StopReason::Pause),
-            Some(StopAction::Report(1, StopReason::Pause))
+            stops.stopped(at(1, 1, StopReason::Pause)),
+            Some(StopAction::Report(at(1, 1, StopReason::Pause)))
         );
         assert_eq!(stops.paused(2, None), None, "member 2 never stopped");
         assert_eq!(
@@ -1957,8 +2081,8 @@ mod tests {
         assert_eq!(stops.pause_all(None, BTreeSet::from([1, 2])), None);
         assert_eq!(stops.paused(1, None), None, "member 1's pause failed");
         assert_eq!(
-            stops.stopped(2, StopReason::Pause),
-            Some(StopAction::Report(2, StopReason::Pause))
+            stops.stopped(at(2, 1, StopReason::Pause)),
+            Some(StopAction::Report(at(2, 1, StopReason::Pause)))
         );
 
         let mut stops = Stops::<()>::new(StopScope::Group);
@@ -1998,36 +2122,56 @@ mod tests {
     #[test]
     fn a_pause_during_a_group_stop_keeps_the_stop_it_is_for() {
         let mut stops = Stops::<()>::new(StopScope::Group);
-        let breakpoint = breakpoint_stop();
+        let breakpoint = at(1, 1, breakpoint_stop());
         assert_eq!(
-            stops.stopped(1, breakpoint.clone()),
-            Some(StopAction::PauseOthers(1, breakpoint.clone()))
+            stops.stopped(breakpoint.clone()),
+            Some(StopAction::PauseOthers(breakpoint.clone()))
         );
         assert_eq!(
-            stops.pause_all(Some((1, breakpoint.clone())), BTreeSet::from([2, 4])),
+            stops.pause_all(Some(breakpoint.clone()), BTreeSet::from([2, 4])),
             None
         );
         assert_eq!(stops.pause_all(None, BTreeSet::from([2, 4])), None);
-        assert_eq!(stops.stopped(2, StopReason::Pause), None);
+        assert_eq!(stops.stopped(at(2, 1, StopReason::Pause)), None);
         assert_eq!(
-            stops.stopped(4, StopReason::Pause),
-            Some(StopAction::Report(1, breakpoint))
+            stops.stopped(at(4, 1, StopReason::Pause)),
+            Some(StopAction::Report(breakpoint))
         );
     }
 
     #[tokio::test]
     async fn a_stop_arriving_after_a_pause_failure_is_still_reported() {
-        let (mut driver, mut received) = driver(StopScope::Group);
+        let (mut driver, mut received) = driver_of("basic", StopScope::Group);
+        let root = driver.root.clone();
+        root.add_breakpoint(crate::BreakpointSpec::Function(
+            "breakpoint_target".to_owned(),
+        ))
+        .await
+        .expect("add the breakpoint");
         driver.stops.phase = Phase::Stopping {
-            first: Some((2, StopReason::Pause)),
+            first: Some(at(2, 1, StopReason::Pause)),
             waiting: BTreeSet::from([1, 3]),
-            paused: Some(2),
+            paused: Some((2, crate::StopId::new(1))),
             was_stopped: false,
         };
-        let breakpoint = breakpoint_stop();
 
+        // The root's pause fails, and then it stops at its breakpoint.
         driver.paused(1, None);
-        driver.stopped(1, breakpoint.clone());
+        root.launch_with(crate::LaunchOptions::default())
+            .await
+            .expect("launch the root");
+        loop {
+            let Internal::Event(member, event) =
+                driver.internal.1.recv().await.expect("the root's events")
+            else {
+                panic!("the root's session ended");
+            };
+            let stopped = matches!(event, DebuggerEvent::InferiorStopped { .. });
+            driver.event(member, event).await;
+            if stopped {
+                break;
+            }
+        }
         driver.paused(3, None);
         assert_eq!(
             received.try_recv().expect("the first group stop"),
@@ -2041,12 +2185,16 @@ mod tests {
             .await
             .expect("report the queued stop in time")
             .expect("report the queued stop");
-        assert_eq!(
-            received.try_recv().expect("the coincident breakpoint"),
-            GroupEvent::GroupStopped {
-                member: 1,
-                reason: breakpoint,
-            }
+        let coincident = received.try_recv().expect("the coincident breakpoint");
+        assert!(
+            matches!(
+                coincident,
+                GroupEvent::GroupStopped {
+                    member: 1,
+                    reason: StopReason::Breakpoint { .. },
+                }
+            ),
+            "{coincident:?}"
         );
         tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
             .await
