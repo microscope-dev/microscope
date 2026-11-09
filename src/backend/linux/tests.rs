@@ -1,4 +1,5 @@
 mod lifecycle;
+mod run_phase;
 mod session_model;
 
 use crate::debug_info::{VariableContext, VariableRuntime};

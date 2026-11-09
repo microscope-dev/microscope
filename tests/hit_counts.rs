@@ -804,6 +804,132 @@ async fn pause_amend_and_shutdown_interrupt_endless_skipped_hits() {
     scenario.shutdown().await;
 }
 
+/// Continues the whole process from `stop`.
+async fn continue_from(
+    handle: &microscope::DebuggerHandle,
+    stop: microscope::StopId,
+    process: microscope::ProcessId,
+) -> microscope::Result<microscope::ExecutionId> {
+    handle
+        .continue_execution(
+            stop,
+            ResumeScope::Process(process),
+            ExceptionDisposition::Pass,
+        )
+        .await
+}
+
+/// Each of many pauses among skipped hits, landing wherever the threads
+/// are in their repairs, ends the execution it interrupts in one stop
+/// where every thread is stopped. The stop names that execution, its id
+/// is new, and the old stop can no longer resume anything.
+#[tokio::test]
+async fn repeated_pauses_among_skipped_hits_each_end_their_execution_in_one_stop() {
+    let mut scenario = Scenario::launch("hit-count-spin");
+    let spun = add(&scenario, "spun", "==1000000000").await;
+    let handle = scenario.handle().clone();
+    let mut events = handle.subscribe();
+    let mut running = scenario.start_running().await;
+    let mut previous: Option<microscope::StopId> = None;
+    let mut hits_before = 0;
+
+    for round in 0..8 {
+        wait_for_hits(&scenario, spun.id, hits_before + 50).await;
+        let InferiorState::Running {
+            execution_id: Some(execution),
+            ..
+        } = scenario.snapshot().await.inferior
+        else {
+            panic!("round {round}: the inferior is not running");
+        };
+
+        assert_eq!(
+            scenario.operation("pause", handle.pause()).await,
+            StopReason::Pause,
+            "round {round}"
+        );
+        assert_eq!(
+            running.await.expect("run task").expect("run"),
+            StopReason::Pause
+        );
+
+        let snapshot = scenario.snapshot().await;
+        let InferiorState::Stopped {
+            process_id: process,
+            stop_id,
+            reason: StopReason::Pause,
+            ..
+        } = snapshot.inferior
+        else {
+            panic!("round {round}: not paused: {:?}", snapshot.inferior);
+        };
+        assert_eq!(snapshot.threads.len(), 4, "round {round}");
+        assert!(
+            snapshot
+                .threads
+                .iter()
+                .all(|thread| matches!(thread.state, ThreadState::Stopped { .. })),
+            "round {round}: {:?}",
+            snapshot.threads
+        );
+        assert!(
+            previous < Some(stop_id),
+            "round {round}: {previous:?} then {stop_id:?}"
+        );
+
+        // The broadcast may have dropped older events under the hits'
+        // revisions; the stop's own event is among the newest.
+        let mut stopped = None;
+        loop {
+            match events.try_recv() {
+                Ok(microscope::DebuggerEvent::InferiorStopped {
+                    stop_id: event_stop,
+                    execution_id,
+                    ..
+                }) if event_stop == stop_id => stopped = Some(execution_id),
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        assert_eq!(stopped, Some(Some(execution)), "round {round}");
+
+        // A thread stopped at the site has a counted hit it has not
+        // executed.
+        let hits = breakpoint(&mut scenario, spun.id).await.hit_count;
+        let spins = global(&scenario, "spins").await;
+        assert!(
+            spins <= hits && hits <= spins + 4,
+            "round {round}: {spins} spins, {hits} hits"
+        );
+
+        if let Some(stale) = previous {
+            assert!(
+                matches!(
+                    continue_from(&handle, stale, process).await,
+                    Err(microscope::Error::StaleStop)
+                ),
+                "round {round}: the previous stop resumed"
+            );
+        }
+
+        previous = Some(stop_id);
+        hits_before = hits;
+        running = scenario.start_resuming().await;
+
+        // Once running, the stop it left is no stop to resume or pause from.
+        assert!(
+            matches!(
+                continue_from(&handle, stop_id, process).await,
+                Err(microscope::Error::NotStopped)
+            ),
+            "round {round}: a running program resumed"
+        );
+    }
+
+    drop(running);
+    scenario.shutdown().await;
+}
+
 #[tokio::test]
 async fn attached_processes_skip_hits_and_detach_mid_run_unharmed() {
     let child = support::ExternalProcess::spawn_running(&Scenario::fixture("hit-count-spin"));
