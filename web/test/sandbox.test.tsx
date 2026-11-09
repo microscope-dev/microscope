@@ -3,14 +3,30 @@
 // and draw. These run the real scripts in Chromium. The served frame, its
 // policy, and Firefox are covered by e2e/sandbox.spec.ts.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validate } from "../src/visualize/picture";
-import { type DrawContext, type Outcome, palette as pagePalette } from "../src/visualize/sandbox";
+import {
+  DRAW_TIMEOUT,
+  type DrawContext,
+  type Outcome,
+  palette as pagePalette,
+  READY_TIMEOUT,
+} from "../src/visualize/sandbox";
 import { buildSvg } from "../src/visualize/svg";
 import workerSource from "../src/visualize/worker.js?raw";
 import { palette } from "./palette";
-import { renderer, sandbox } from "./sandboxes";
+import {
+  framed,
+  framePage,
+  lastFrame,
+  pageUrl,
+  renderer,
+  SILENT_PAGE,
+  sandbox,
+  settled,
+  Watched,
+} from "./sandboxes";
 
 const context: DrawContext = { previous: null, paths: {}, width: 400, theme: "light", palette };
 
@@ -367,6 +383,77 @@ describe("the sandbox", () => {
       kind: "failed",
       failure: { message: expect.stringMatching(/^SyntaxError/u), file: "broken.js" },
     });
+  });
+});
+
+const failed = (message: string) => ({
+  kind: "failed",
+  failure: { message, file: null, line: null, column: null },
+});
+
+describe("the sandbox's frame", () => {
+  // Only timers are fake: the frame still loads and talks as it would.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const notStarted = failed("the renderer frame did not start");
+  const lost = failed("the renderer frame was lost");
+  const never = renderer("never", "microscope.draw(() => new Promise(() => {}));");
+
+  it("fails every card's draw when the frame never says it is ready", async () => {
+    const box = framed(SILENT_PAGE);
+    const draws = ["a", "b", "c", "d", "e", "f"].map((card) =>
+      settled(box.draw(card, { ...counting, digest: `count-${card}` }, { label: card }, context)),
+    );
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT);
+    expect(draws.map((draw) => draw.value)).toEqual(draws.map(() => notStarted));
+  });
+
+  it("fails a live session when the frame never says it is ready", async () => {
+    const live = new Watched(framed(SILENT_PAGE), "card", "microscope.live(() => ({}));");
+    const heard = settled(live.next());
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT);
+    expect(heard.value).toEqual({ type: "failed", failure: notStarted });
+  });
+
+  it("fails a draw as lost when its frame loads again, without waiting it out", async () => {
+    const box = framed();
+    expect(textOf(await box.draw("a", counting, { label: "a" }, context))).toBe("a 1");
+    const running = settled(box.draw("b", never, {}, context));
+    const frame = lastFrame();
+    const reloaded = new Promise<void>((resolve) => {
+      frame.addEventListener("load", () => resolve(), { once: true });
+    });
+    frame.src = pageUrl(framePage());
+    await reloaded;
+    await vi.advanceTimersByTimeAsync(DRAW_TIMEOUT - 1);
+    expect(running.value).toEqual(lost);
+    // The page replaces a sandbox that failed; this one stays failed.
+    expect(await box.draw("a", counting, { label: "a" }, context)).toEqual(lost);
+  });
+
+  it("fails a draw as lost when its frame is removed while it runs, not as a timeout", async () => {
+    const box = framed();
+    expect(textOf(await box.draw("a", counting, { label: "a" }, context))).toBe("a 1");
+    const running = settled(box.draw("b", never, {}, context));
+    // The draw reaches the frame before it goes.
+    await vi.advanceTimersByTimeAsync(0);
+    lastFrame().remove();
+    await vi.advanceTimersByTimeAsync(DRAW_TIMEOUT);
+    expect(running.value).toEqual(lost);
+  });
+
+  it("fails a draw at once when its frame was removed", async () => {
+    const box = framed();
+    expect(textOf(await box.draw("a", counting, { label: "a" }, context))).toBe("a 1");
+    lastFrame().remove();
+    const next = settled(box.draw("a", counting, { label: "a" }, context));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(next.value).toEqual(lost);
   });
 });
 

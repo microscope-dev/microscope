@@ -5,7 +5,9 @@
 // longer than two seconds by ending its worker. A live renderer keeps a
 // worker of its own while its card is on screen, at most four at once, and
 // draws the frames the page asks for; one that stops answering, or floods
-// the page with messages, is ended.
+// the page with messages, is ended. A frame that does not start within
+// five seconds, or is reloaded or removed, fails every draw and live
+// session it holds, and the page starts another sandbox for the next.
 
 import { assert } from "../assert";
 
@@ -130,6 +132,10 @@ export interface LiveSession {
 
 /** How long a draw may take before its worker is ended. */
 export const DRAW_TIMEOUT = 2_000;
+/** How long the frame may take to say it is ready. Its page is small and
+ * served by microscope, so this is long only for a slow remote server; a
+ * frame that misses it is replaced on the next draw. */
+export const READY_TIMEOUT = 5_000;
 /** How many draws run at once. */
 const PARALLEL = 4;
 /** How many live renderers run at once. */
@@ -145,6 +151,25 @@ const WATCH_EVERY = 100;
 /** How many messages besides frames a live worker may send between two of
  * the watchdog's looks. Its worker sends a few per message from the page. */
 const MOST_TOLD = 1_000;
+
+/** Where the frame is. A failed frame never recovers: the page starts a new
+ * sandbox instead. */
+type FrameState =
+  | { kind: "loading" }
+  | { kind: "ready"; port: MessagePort }
+  | { kind: "failed"; failure: RendererFailure }
+  | { kind: "closed" };
+
+const problem = (message: string): RendererFailure => ({
+  message,
+  file: null,
+  line: null,
+  column: null,
+});
+
+const NOT_STARTED = "the renderer frame did not start";
+const LOST = "the renderer frame was lost";
+const CLOSED = "the page closed the sandbox";
 
 interface Pending {
   card: string;
@@ -180,9 +205,11 @@ interface Live {
 
 export class Sandbox {
   private readonly frame: HTMLIFrameElement;
-  /** The frame's port once it is ready, or null once the page closes it. */
-  private readonly port: Promise<MessagePort | null>;
-  private closePort: () => void = () => {};
+  private state: FrameState = { kind: "loading" };
+  /** Settles once the frame is no longer loading. */
+  private readonly loaded: Promise<void>;
+  private settle: () => void = () => {};
+  private readonly readyTimer: ReturnType<typeof setTimeout>;
   private readonly pending = new Map<number, Pending>();
   /** Draws waiting for a turn, told whether they may go ahead. */
   private readonly waiting: ((go: boolean) => void)[] = [];
@@ -204,29 +231,43 @@ export class Sandbox {
     this.frame.setAttribute("sandbox", "allow-scripts");
     this.frame.hidden = true;
     this.frame.title = "renderers";
-    this.port = new Promise((resolve) => {
-      this.closePort = () => resolve(null);
-      this.frame.addEventListener(
-        "load",
-        () => {
-          const channel = new MessageChannel();
-          channel.port1.addEventListener("message", (event) => {
-            const message = event.data as FrameMessage;
-            if (message.type === "ready") {
-              resolve(channel.port1);
-            } else {
-              this.receive(message);
-            }
-          });
-          channel.port1.start();
-          // The frame's origin is opaque, so it has no name to post to.
-          this.frame.contentWindow?.postMessage({ type: "hello" }, "*", [channel.port2]);
-        },
-        { once: true },
-      );
+    this.loaded = new Promise((resolve) => {
+      this.settle = resolve;
+    });
+    // A frame that loads without saying ready, or never loads, would hold
+    // every draw on the page.
+    this.readyTimer = setTimeout(() => this.lose(NOT_STARTED), READY_TIMEOUT);
+    let greeted = false;
+    this.frame.addEventListener("load", () => {
+      // A second load is a navigation or reload: the workers and the port
+      // the first document held are gone.
+      if (greeted) {
+        this.lose(LOST);
+        return;
+      }
+      greeted = true;
+      const channel = new MessageChannel();
+      channel.port1.addEventListener("message", (event) => {
+        const message = event.data as FrameMessage;
+        if (message.type !== "ready") {
+          this.receive(message);
+        } else if (this.state.kind === "loading") {
+          clearTimeout(this.readyTimer);
+          this.state = { kind: "ready", port: channel.port1 };
+          this.settle();
+        }
+      });
+      channel.port1.start();
+      // The frame's origin is opaque, so it has no name to post to.
+      this.frame.contentWindow?.postMessage({ type: "hello" }, "*", [channel.port2]);
     });
     this.frame.src = url;
     document.body.append(this.frame);
+  }
+
+  /** Whether the sandbox failed or was closed, so the page needs another. */
+  get spent(): boolean {
+    return this.state.kind === "failed" || this.state.kind === "closed";
   }
 
   /** Draws `input` with `renderer` in the worker of `card`, starting one
@@ -237,25 +278,22 @@ export class Sandbox {
     input: unknown,
     context: DrawContext,
   ): Promise<Outcome> {
-    const closed: Outcome = {
-      kind: "failed",
-      failure: { message: "the page closed the sandbox", file: null, line: null, column: null },
-    };
     if (this.liveDigests.has(renderer.digest)) {
       return { kind: "live" };
     }
     if (!(await this.turn())) {
-      return closed;
+      return { kind: "failed", failure: problem(CLOSED) };
     }
     assert(
       this.running >= 1 && this.running <= PARALLEL,
       `${this.running} draws run, not 1 to ${PARALLEL}`,
     );
-    const port = await this.port;
-    if (port === null || this.disposed) {
+    const state = await this.opened();
+    if (state.kind !== "ready") {
       this.leave();
-      return closed;
+      return { kind: "failed", failure: this.failure(state) };
     }
+    const { port } = state;
     const id = this.next++;
     assert(!this.pending.has(id), `draw ${id} is already pending`);
     return new Promise<Outcome>((resolve) => {
@@ -264,6 +302,11 @@ export class Sandbox {
         digest: renderer.digest,
         resolve,
         timer: setTimeout(() => {
+          // A removed frame says nothing; its draws are not the renderer's fault.
+          if (!this.frame.isConnected) {
+            this.lose(LOST);
+            return;
+          }
           this.finish(id, { kind: "timeout" });
           this.release(card);
         }, DRAW_TIMEOUT),
@@ -347,14 +390,17 @@ export class Sandbox {
         this.liveRunning >= 1 && this.liveRunning <= LIVE_PARALLEL,
         `${this.liveRunning} live sessions run, not 1 to ${LIVE_PARALLEL}`,
       );
-      const opened = await this.port;
-      if (opened === null || this.disposed || ended) {
+      const opened = await this.opened();
+      if (opened.kind !== "ready" || ended) {
         this.liveRunning -= 1;
         assert(this.liveRunning >= 0, `${this.liveRunning} live sessions run`);
         this.liveWaiting.shift()?.(true);
+        if (opened.kind === "failed" && finish()) {
+          listener.failed({ kind: "failed", failure: opened.failure });
+        }
         return;
       }
-      port = opened;
+      port = opened.port;
       assert(!this.lives.has(key), `live session ${key} is already in lives`);
       this.lives.set(key, live);
       send({ type: "live-start", renderer, ...current });
@@ -413,13 +459,21 @@ export class Sandbox {
       line: null,
       column: null,
     });
-    void this.port.then((port) => port?.postMessage({ type: "release", card }));
+    void (async () => {
+      const state = await this.opened();
+      if (state.kind === "ready") {
+        const { port } = state;
+        port.postMessage({ type: "release", card });
+      }
+    })();
   }
 
   /** Removes the frame, ending every worker. */
   dispose(): void {
     this.disposed = true;
-    this.closePort();
+    clearTimeout(this.readyTimer);
+    this.state = { kind: "closed" };
+    this.settle();
     for (const waiting of [...this.waiting.splice(0), ...this.liveWaiting.splice(0)]) {
       waiting(false);
     }
@@ -438,6 +492,38 @@ export class Sandbox {
     assert(this.lives.size === 0, `${this.lives.size} live sessions outlive the sandbox`);
     assert(this.pending.size === 0, `${this.pending.size} draws outlive the sandbox`);
     this.frame.remove();
+  }
+
+  /** The frame's state once it is no longer loading. A frame that is gone
+   * from the page is lost, though nothing tells the page. */
+  private async opened(): Promise<FrameState> {
+    await this.loaded;
+    if (this.state.kind === "ready" && !this.frame.isConnected) {
+      this.lose(LOST);
+    }
+    return this.state;
+  }
+
+  private failure(state: FrameState): RendererFailure {
+    return state.kind === "failed" ? state.failure : problem(CLOSED);
+  }
+
+  /** Fails the frame, every draw it holds, and every live session. */
+  private lose(message: string): void {
+    if (this.state.kind === "failed" || this.state.kind === "closed") {
+      return;
+    }
+    clearTimeout(this.readyTimer);
+    const failure = problem(message);
+    this.state = { kind: "failed", failure };
+    this.settle();
+    // Not `lost`: to a live card that means its WebGL context.
+    for (const live of this.lives.values()) {
+      live.end({ kind: "failed", failure });
+    }
+    for (const id of this.pending.keys()) {
+      this.finish(id, { kind: "failed", failure });
+    }
   }
 
   private receive(message: FrameMessage): void {

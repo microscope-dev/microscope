@@ -21,15 +21,50 @@ afterEach(() => {
   }
 });
 
-/** A sandbox whose workers run `worker`, the real worker script unless a
- * test stands in one of its own. */
-export function sandbox(worker: string = workerSource): Sandbox {
-  const page = `<!doctype html><script>const WORKER_SOURCE = ${JSON.stringify(worker).replaceAll("<", "\\u003c")};\n${frameSource}</script>`;
-  const url = URL.createObjectURL(new Blob([page], { type: "text/html" }));
-  const created = new Sandbox(url);
+/** The URL of a frame page, as the server would serve it. */
+export const pageUrl = (page: string) =>
+  URL.createObjectURL(new Blob([page], { type: "text/html" }));
+
+/** The real frame's page, its workers running `worker`. */
+export const framePage = (worker: string = workerSource) =>
+  `<!doctype html><script>const WORKER_SOURCE = ${JSON.stringify(worker).replaceAll("<", "\\u003c")};\n${frameSource}</script>`;
+
+/** A sandbox whose frame is `page`, the real frame unless a test stands in
+ * one of its own. */
+export function framed(page: string = framePage()): Sandbox {
+  const created = new Sandbox(pageUrl(page));
   sandboxes.push(created);
   return created;
 }
+
+/** A sandbox whose workers run `worker`, the real worker script unless a
+ * test stands in one of its own. */
+export function sandbox(worker: string = workerSource): Sandbox {
+  return framed(framePage(worker));
+}
+
+/** The frame of the sandbox made last. */
+export function lastFrame(): HTMLIFrameElement {
+  const frames = document.querySelectorAll<HTMLIFrameElement>('iframe[title="renderers"]');
+  const frame = frames.item(frames.length - 1);
+  if (frame === null) {
+    throw new Error("no sandbox frame");
+  }
+  return frame;
+}
+
+/** What `promise` has settled with so far: undefined until it does, so a
+ * test can check a draw without waiting on one that never ends. */
+export function settled<T>(promise: Promise<T>): { value: T | undefined } {
+  const state = { value: undefined as T | undefined };
+  void (async () => {
+    state.value = await promise;
+  })();
+  return state;
+}
+
+/** A frame's page that loads but never says it is ready. */
+export const SILENT_PAGE = "<!doctype html><title>silent</title>";
 
 export const renderer = (name: string, source: string) => ({ name, digest: name, source });
 

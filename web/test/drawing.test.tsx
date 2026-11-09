@@ -5,17 +5,27 @@
 
 import { cleanup, render } from "@testing-library/react";
 import { useCallback, useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
 import { cache } from "../src/data";
 import type { Look } from "../src/focus";
 import { SessionContext } from "../src/store";
-import { DrawAs, Drawings, Selected } from "../src/ui/Drawings";
+import { DrawAs, Drawings, Selected, sandbox } from "../src/ui/Drawings";
 import type { Focus } from "../src/ui/Workspace";
 import { buildPicture } from "../src/visualize/draw";
 import { closeImages, type Picture, validate } from "../src/visualize/picture";
+import { READY_TIMEOUT } from "../src/visualize/sandbox";
 import { type FakeServer, fakeServer } from "./fake-server";
+import {
+  context,
+  framePage,
+  lastFrame,
+  pageUrl,
+  renderer,
+  SILENT_PAGE,
+  settled,
+} from "./sandboxes";
 
 // Cards read the tab's focus, and change its look, through these.
 const focus = vi.hoisted(() => ({ current: null as unknown }));
@@ -25,6 +35,16 @@ vi.mock("../src/ui/navigation", async (original) => ({
   ...(await original<typeof import("../src/ui/navigation")>()),
   useLook: () => (change: unknown) => looked.push(change),
 }));
+// The renderer frame the server would serve, as the test chooses.
+const served = vi.hoisted(() => ({ frame: "" }));
+vi.mock("../src/target", async (original) => {
+  const target = await original<typeof import("../src/target")>();
+  return {
+    ...target,
+    serverUrl: (path: string) =>
+      path === "visualizer-frame" ? served.frame : target.serverUrl(path),
+  };
+});
 
 const shown: HTMLElement[] = [];
 
@@ -226,6 +246,39 @@ describe("buildPicture", () => {
     expect(tip(large)?.textContent).toBe("board: column 0, row 0");
     hover(canvas, 300, 259, 19);
     expect(tip(large)?.textContent).toBe("board: column 3, row 1");
+  });
+});
+
+describe("the page's sandbox", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    sandbox().dispose();
+  });
+
+  it("is replaced on the next draw once its frame fails", async () => {
+    const blank = renderer(
+      "blank",
+      "microscope.draw(() => microscope.picture({ width: 1, height: 1, shapes: [] }));",
+    );
+    served.frame = pageUrl(SILENT_PAGE);
+    const first = sandbox();
+    const frame = lastFrame();
+    const draw = settled(first.draw("a", blank, {}, context));
+    await vi.advanceTimersByTimeAsync(READY_TIMEOUT);
+    expect(draw.value).toMatchObject({
+      kind: "failed",
+      failure: { message: "the renderer frame did not start" },
+    });
+
+    served.frame = pageUrl(framePage());
+    const second = sandbox();
+    expect(second).not.toBe(first);
+    expect(frame.isConnected).toBe(false);
+    expect(await second.draw("a", blank, {}, context)).toMatchObject({ kind: "picture" });
+    expect(sandbox()).toBe(second);
   });
 });
 

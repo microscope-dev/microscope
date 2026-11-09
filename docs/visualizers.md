@@ -104,7 +104,8 @@ Drawings is the card count.
 - If drawing fails, the card shows the reason instead: an unreadable input
   and why it failed; a renderer error with file, line, and message; a
   renderer stopped after 2 seconds; a rejected picture with the invalid
-  shape and reason; or a missing renderer.
+  shape and reason; a missing renderer; or a renderer frame that did not
+  start within 5 seconds or was lost, which the next draw replaces.
 - Live drawings, such as meshes, respond to the pointer while on screen
   (see Live renderers). Clicking the canvas gives it keyboard focus except
   for debugger function keys; Escape returns focus. A live renderer stops

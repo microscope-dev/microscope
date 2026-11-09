@@ -64,8 +64,13 @@ export function pin(pinned: Pinned): (look: Look) => Look {
   return (look) => drawing(look, pinned);
 }
 
-/** The tab's sandbox, started the first time something is drawn. */
-function sandbox(): Sandbox {
+/** The tab's sandbox, started the first time something is drawn, and
+ * started afresh after its frame fails, as when the server was down. */
+export function sandbox(): Sandbox {
+  if (shared?.spent) {
+    shared.dispose();
+    shared = null;
+  }
   shared ??= new Sandbox(serverUrl("visualizer-frame"));
   return shared;
 }
