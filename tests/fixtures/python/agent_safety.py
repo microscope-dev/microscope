@@ -341,12 +341,20 @@ elif mode == 'fork':
     go, held = _thread.allocate_lock(), _thread.allocate_lock()
     go.acquire()
     held.acquire()
+    forker, waited = threading.get_ident(), []
 
     def holder():
         go.acquire()
         with agent.lock:
             held.release()
-            time.sleep(0.2)
+            # Holds the lock until the fork waits for it in the agent's
+            # handler.
+            deadline = time.monotonic() + 30
+            while sys._current_frames()[forker].f_code.co_name != 'forking':
+                if time.monotonic() > deadline:
+                    return
+                time.sleep(0.001)
+            waited.append(True)
 
     thread = threading.Thread(target=holder)
     thread.start()
@@ -373,6 +381,7 @@ elif mode == 'fork':
             os._exit(0)
     os.close(writing)
     thread.join()
+    assert waited, 'the fork never waited for the lock'
     ready, _, _ = select.select([reading], [], [], 10)
     if not ready:
         os.kill(child, 9)
