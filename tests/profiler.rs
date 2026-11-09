@@ -10,8 +10,8 @@ use microscope::profiler::budget::Budget;
 use microscope::profiler::{
     Attachment, CallNode, CommandIdentity, DEEP_STACK_COPY, GapReason, Granularity, MarkerKind,
     Preset, ProbeSelection, Profile, Query, RecordError, RecordOptions, SMALL_STACK_COPY,
-    SampleSource, SampledStack, Save, StackCopy, StackEnding, StackView, Watch, record,
-    record_attached, record_watched,
+    SampleSource, SampledStack, Save, StackCopy, StackEnding, StackView, Watch, ZONE_BEGAN_UNSEEN,
+    ZONE_ENDED_UNSEEN, record, record_attached, record_watched,
 };
 use nix::sys::time::TimeValLike as _;
 use support::Scenario;
@@ -2875,7 +2875,7 @@ fn instrumented_zones_nest_exactly_as_the_program_ran_them() {
 
 /// A thread that writes faster than microscope reads overwrites its oldest
 /// records. Every record is read or counted lost, and every event read is
-/// in a zone: a whole one, or one flagged for the end it lost.
+/// an end of a zone it reads.
 #[test]
 fn every_instrumentation_record_is_read_or_counted_lost() {
     let options = RecordOptions {
@@ -2891,10 +2891,18 @@ fn every_instrumentation_record_is_read_or_counted_lost() {
         (0, 0, 0)
     );
 
+    // Each zone holds the ends of it that were read: a zone that records
+    // were lost inside, as when a drain fell between its begin and its end,
+    // holds both.
     let zones = profile.zones();
-    let whole = zones.iter().filter(|zone| zone.flags == 0).count() as u64;
-    let flagged = zones.len() as u64 - whole;
-    assert_eq!(2 * whole + flagged, counts.events, "{counts:?}");
+    let ends: u64 = zones
+        .iter()
+        .map(|zone| {
+            u64::from(zone.flags & ZONE_BEGAN_UNSEEN == 0)
+                + u64::from(zone.flags & ZONE_ENDED_UNSEEN == 0)
+        })
+        .sum();
+    assert_eq!(ends, counts.events, "{counts:?}");
     assert!(zones.iter().all(|zone| zone.name == "tick"));
 }
 
