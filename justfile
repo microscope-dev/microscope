@@ -117,10 +117,12 @@ deny *ARGS:
     done
 
 # Checks that every dependency of microscope has an audit in supply-chain/,
-# imported or our own, or an exemption, without the network. A new or bumped
-# crate needs one: `cargo vet` says how to record it.
+# imported or our own, or an exemption, using the imports recorded in
+# imports.lock. A new or bumped crate needs one: `cargo vet` says how to record
+# it. No --frozen: cargo metadata must download crates for every target, which
+# a fresh cargo cache lacks.
 vet:
-    cargo vet --locked --frozen
+    cargo vet --locked
 
 # Arguments go to nextest, e.g. `just test print_` or `just test --test cli`.
 # Doc tests only run with the full suite. Tests run inside a memory cap, and
