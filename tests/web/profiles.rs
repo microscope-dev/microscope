@@ -867,21 +867,9 @@ fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32, bool)> {
         .collect()
 }
 
-#[tokio::test]
-async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
-    let scratch = ScratchDir::new("web-zones");
-    let path = record_zones(&scratch);
-    let web = Web::start("profile", &[path.to_str().expect("a path")]);
-    let mut tab = web.control("tab").await;
-    let listed = tab
-        .expect("the profiles", |message| message["type"] == "profiles")
-        .await;
-    let id = listed["profiles"][0]["id"]
-        .as_str()
-        .expect("an id")
-        .to_owned();
-
-    let summary = tab.ok("profile", json!({"profile": id})).await;
+/// The zone recording's summary lists each of its zone and label sites,
+/// with how many times each ran, and lost none of them.
+fn assert_zone_sites(summary: &Value) {
     assert_eq!(summary["probes"]["overwritten"], 0, "{summary}");
     assert_eq!(summary["labelKeys"], json!(["round"]));
     let sites: Vec<(&str, bool, u64)> = summary["zoneSites"]
@@ -904,6 +892,24 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
     ] {
         assert!(sites.contains(&expected), "{expected:?} in {sites:?}");
     }
+}
+
+#[tokio::test]
+async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
+    let scratch = ScratchDir::new("web-zones");
+    let path = record_zones(&scratch);
+    let web = Web::start("profile", &[path.to_str().expect("a path")]);
+    let mut tab = web.control("tab").await;
+    let listed = tab
+        .expect("the profiles", |message| message["type"] == "profiles")
+        .await;
+    let id = listed["profiles"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+
+    let summary = tab.ok("profile", json!({"profile": id})).await;
+    assert_zone_sites(&summary);
 
     // Wide enough, every zone is a block of its own, at its depth.
     let (answer, bytes) = tab
