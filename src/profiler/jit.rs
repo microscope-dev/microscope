@@ -588,6 +588,11 @@ mod tests {
     use super::*;
     use crate::debug_info::perf_map::Entry;
 
+    /// Code for a test's perf map to name, aligned so that no chunk
+    /// boundary falls inside it at whatever address the program is loaded.
+    #[repr(align(64))]
+    struct Code<const N: usize>([u8; N]);
+
     /// A perf map a test wrote, removed once it ends.
     struct Removed(String);
 
@@ -844,10 +849,10 @@ mod tests {
     /// function has none. A line longer than a read takes is a problem.
     #[test]
     fn a_read_of_the_map_is_bounded() {
-        static CODE: [u8; 32] = [0xcc; 32];
+        static CODE: Code<32> = Code([0xcc; 32]);
         let pid = std::process::id();
         let path = format!("/tmp/perf-{pid}.map");
-        let start = CODE.as_ptr() as u64;
+        let start = CODE.0.as_ptr() as u64;
         let map = format!("{start:x} 10 first\n{:x} 10 second\n", start + 0x10);
         std::fs::write(&path, &map).expect("write the map");
         let _removed = Removed(path);
@@ -887,10 +892,10 @@ mod tests {
     /// that carries V8 the map gives only names, so no code is read.
     #[test]
     fn a_range_is_made_again_only_for_a_function_its_module_lacks() {
-        static CODE: [u8; 64] = [0xcc; 64];
+        static CODE: Code<64> = Code([0xcc; 64]);
         let pid = std::process::id();
         let path = format!("/tmp/perf-{pid}.map");
-        let start = CODE.as_ptr() as u64;
+        let start = CODE.0.as_ptr() as u64;
         let other = start + 0x20;
         std::fs::write(&path, format!("{start:x} 10 a\n")).expect("write the map");
         let _removed = Removed(path.clone());
@@ -1043,10 +1048,10 @@ mod tests {
     /// only those a sample lands in have their modules made again.
     #[test]
     fn the_map_is_read_on_only_for_samples_taken_after_it_was_last_read() {
-        static CODE: [u8; 64] = [0xcc; 64];
+        static CODE: Code<64> = Code([0xcc; 64]);
         let pid = std::process::id();
         let path = format!("/tmp/perf-{pid}.map");
-        let start = CODE.as_ptr() as u64;
+        let start = CODE.0.as_ptr() as u64;
         let second = start + 0x20;
         std::fs::write(&path, format!("{start:x} 10 a\n{second:x} 10 b\n")).expect("write the map");
         let _removed = Removed(path.clone());
