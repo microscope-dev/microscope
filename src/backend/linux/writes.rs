@@ -199,8 +199,17 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.ptrace.set_registers(pid, registers)?;
 
         // A moved thread is published under a new stop, which moves the
-        // revision on itself.
+        // revision on itself. Any other register may be one unwinding
+        // starts from, so a selected frame may now be gone or another
+        // function's; the innermost is selected again, as after a jump.
         if !moves {
+            if let Some(stop) = self
+                .session
+                .inferior_mut()
+                .and_then(|inferior| inferior.public_stop.as_mut())
+            {
+                stop.selected_frames.clear();
+            }
             self.bump_revision();
         }
 

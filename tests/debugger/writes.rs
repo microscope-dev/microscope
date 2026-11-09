@@ -699,3 +699,72 @@ async fn writes_move_the_revision_on_at_the_same_stop() {
     assert_eq!(stored.stop_id, first.stop_id);
     scenario.shutdown().await;
 }
+
+/// A register other than the program counter may be one unwinding starts
+/// from, so writing it can leave a selected caller gone or another
+/// function's frame at its level. The thread's selection goes back to the
+/// innermost frame, which the write leaves where it was.
+#[tokio::test]
+async fn a_register_write_selects_the_innermost_frame_again() {
+    let mut scenario = Scenario::launch("jump");
+    scenario.add_breakpoint("elsewhere").await;
+    assert!(matches!(
+        scenario.run_to_stop().await,
+        StopReason::Breakpoint { .. }
+    ));
+    let before = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    let selected = scenario
+        .operation(
+            "select main",
+            scenario.handle().select_frame(before.frames[1].id),
+        )
+        .await;
+    assert_eq!(
+        selected
+            .function
+            .map(|function| function.name.to_string())
+            .as_deref(),
+        Some("main")
+    );
+
+    // `main`'s own frame pointer, saved by `elsewhere`, makes `main`'s
+    // caller the frame at level 1.
+    let context = frame_view(&mut scenario, 0).await;
+    let handle = scenario.handle().clone();
+    let view = handle.at(context);
+    let registers = scenario.operation("registers", view.registers()).await;
+    let frame_pointer = register_u64(&registers, RegisterRole::FramePointer);
+    let saved = scenario
+        .operation(
+            "saved frame pointer",
+            scenario
+                .handle()
+                .read_word(VirtualAddress::new(frame_pointer)),
+        )
+        .await;
+    scenario
+        .operation("assign $rbp", assign(&view, "$rbp", &format!("{saved:#x}")))
+        .await;
+
+    let after = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    assert!(
+        after
+            .frames
+            .get(1)
+            .is_some_and(|frame| frame.instruction != before.frames[1].instruction),
+        "{after:#?}"
+    );
+    assert_eq!(
+        scenario.snapshot().await.selected_frame,
+        Some(microscope::StackFrameId::INNERMOST)
+    );
+    let location = scenario
+        .operation("location", scenario.handle().current_location())
+        .await;
+    assert_eq!(Some(location.address), before.frames[0].instruction);
+    scenario.shutdown().await;
+}
