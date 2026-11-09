@@ -1360,7 +1360,9 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
 
     // Zones under three pixels wide fold together.
     let fold = (range.1 - range.0) * 3 / i64::from(query.width.max(1));
-    let blocks = profile.zone_blocks(range, query.threads.as_deref(), fold.max(1));
+    let band = query.band.map(Into::into);
+    let chosen = query.site.as_deref().map(|site| (site, band));
+    let blocks = profile.zone_blocks(range, query.threads.as_deref(), fold.max(1), chosen);
     let mut names: Vec<String> = Vec::new();
     let mut indices: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut name = |site: u32, value: u32| {
@@ -1370,7 +1372,7 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
         })
     };
 
-    let mut bytes = Vec::with_capacity(blocks.len() * 60);
+    let mut bytes = Vec::with_capacity(blocks.len() * 64);
     let times: [&dyn Fn(&microscope::profiler::ZoneBlock) -> i64; 5] = [
         &|block| block.start - start,
         &|block| block.end - start,
@@ -1396,12 +1398,14 @@ fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<
         bytes.extend_from_slice(&name(block.site, block.value).to_le_bytes());
     }
 
-    for block in &blocks {
-        bytes.extend_from_slice(&block.count.to_le_bytes());
-    }
-
-    for block in &blocks {
-        bytes.extend_from_slice(&block.flags.to_le_bytes());
+    let columns: [&dyn Fn(&microscope::profiler::ZoneBlock) -> u32; 3] =
+        [&|block| block.count, &|block| block.flags, &|block| {
+            u32::from(block.chosen)
+        }];
+    for column in columns {
+        for block in &blocks {
+            bytes.extend_from_slice(&column(block).to_le_bytes());
+        }
     }
 
     let marks = profile

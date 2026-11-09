@@ -272,15 +272,25 @@ impl Profile {
     }
 
     /// The zones in `range` of the threads `threads` names by row, each
-    /// run narrower than `fold` nanoseconds drawn as one.
+    /// run narrower than `fold` nanoseconds drawn as one. Those of the site
+    /// or label key `chosen` names, of a length within its band, are
+    /// marked, and fold only with each other.
     #[must_use]
     pub fn zone_blocks(
         &self,
         range: (i64, i64),
         threads: Option<&[u32]>,
         fold: i64,
+        chosen: Option<(&str, Option<(u64, u64)>)>,
     ) -> Vec<ZoneBlock> {
-        crate::analysis::zone_blocks(&self.capture, range, threads, fold)
+        let sites = chosen
+            .map(|(name, _)| self.sites_named(name))
+            .unwrap_or_default();
+        let chosen = chosen.map(|(_, band)| crate::analysis::ChosenZones {
+            sites: &sites,
+            band,
+        });
+        crate::analysis::zone_blocks(&self.capture, range, threads, fold, chosen)
     }
 
     /// The spread of the lengths of the zones a site name, or label key,

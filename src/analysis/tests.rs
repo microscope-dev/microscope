@@ -1429,7 +1429,7 @@ proptest! {
             .collect();
         let capture = labeled_off(&spans, &[], &off);
         let range = (range.0, range.0 + range.1);
-        let blocks = zone_blocks(&capture, range, None, fold);
+        let blocks = zone_blocks(&capture, range, None, fold, None);
 
         let mut drawn: BTreeMap<u32, (i64, i64, i64)> = BTreeMap::new();
         for block in &blocks {
@@ -1462,6 +1462,43 @@ proptest! {
         prop_assert_eq!(rows, expected);
     }
 
+    /// A run never mixes chosen zones with others, so the chosen ones are
+    /// marked at every width: the blocks marked hold exactly the zones of a
+    /// length in the band, and the rest exactly the others.
+    #[test]
+    fn zone_blocks_fold_chosen_zones_only_with_each_other(
+        spans in proptest::collection::vec((0..2_u32, 0..400_i64, 0..60_i64, 0..3_u32), 0..40),
+        range in (0..300_i64, 1..300_i64),
+        fold in 1..400_i64,
+        band in (0..60_u64, 0..60_u64),
+    ) {
+        let capture = labeled(&spans, &[]);
+        let range = (range.0, range.0 + range.1);
+        let band = (band.0.min(band.1), band.0.max(band.1));
+        let sites = sites_named(&capture, "route");
+        let chosen = ChosenZones { sites: &sites, band: Some(band) };
+        let blocks = zone_blocks(&capture, range, None, fold, Some(chosen));
+
+        let marked: u32 = blocks.iter().filter(|block| block.chosen).map(|block| block.count).sum();
+        let rest: u32 = blocks.iter().filter(|block| !block.chosen).map(|block| block.count).sum();
+        let (mut inside, mut outside) = (0, 0);
+        for &(_, start, length, _) in &spans {
+            if start + length > range.0 && start < range.1 {
+                if (band.0..=band.1).contains(&length.cast_unsigned()) {
+                    inside += 1;
+                } else {
+                    outside += 1;
+                }
+            }
+        }
+        prop_assert_eq!((marked, rest), (inside, outside));
+
+        // Nothing is chosen of a site the profile does not have.
+        let none = ChosenZones { sites: &[], band: None };
+        let blocks = zone_blocks(&capture, range, None, fold, Some(none));
+        prop_assert!(blocks.iter().all(|block| !block.chosen));
+    }
+
     #[test]
     fn zone_blocks_draw_each_zone_once_and_fold_only_narrow_ones(
         spans in proptest::collection::vec((0..2_u32, 0..400_i64, 0..60_i64, 0..3_u32), 0..40),
@@ -1470,7 +1507,7 @@ proptest! {
     ) {
         let capture = labeled(&spans, &[]);
         let range = (range.0, range.0 + range.1);
-        let blocks = zone_blocks(&capture, range, None, fold);
+        let blocks = zone_blocks(&capture, range, None, fold, None);
         let mut drawn: BTreeMap<u32, u32> = BTreeMap::new();
 
         for pair in blocks.windows(2) {

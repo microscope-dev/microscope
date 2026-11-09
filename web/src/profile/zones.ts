@@ -21,6 +21,8 @@ export interface ZoneBlocks {
   /** How many zones each block draws: more than one is a fold. */
   zones: Uint32Array;
   flags: Uint32Array;
+  /** 1 where its zones are of the site asked for, else 0. */
+  chosen: Uint32Array;
   names: string[];
   /** Whether time off the CPU was traced, without which it reads zero. */
   offCpu: boolean;
@@ -32,8 +34,8 @@ export interface ZoneBlocks {
 export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefined): ZoneBlocks {
   const count = answer.blocks;
   const bytes = payload ?? new Uint8Array();
-  if (bytes.byteLength !== count * 60) {
-    throw new Error(`${count} zone blocks need ${count * 60} bytes, not ${bytes.byteLength}`);
+  if (bytes.byteLength !== count * 64) {
+    throw new Error(`${count} zone blocks need ${count * 64} bytes, not ${bytes.byteLength}`);
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const floats = (column: number) =>
@@ -56,6 +58,7 @@ export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefine
     name: words(2),
     zones: words(3),
     flags: words(4),
+    chosen: words(5),
     names: answer.names,
     offCpu: answer.offCpu,
   };

@@ -1473,14 +1473,24 @@ pub struct ProfileZonesQuery {
     /// The pixels the range is drawn across: zones under three pixels wide
     /// fold together.
     pub width: u32,
+
+    /// A zone site's name, or a label's key, whose zones to mark.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub site: Option<String>,
+
+    /// Of the site's zones, those of these lengths, in nanoseconds.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub band: Option<[u64; 2]>,
 }
 
 /// Zones as a view draws them: the binary frame before it holds, for each
 /// block, its start and end as `f64` nanoseconds from the profile's start,
 /// the nanoseconds inside its zones, and of those, how many its thread
 /// spent blocked and preempted, also as `f64`s; then its thread, depth,
-/// name (an index into `names`), zone count, and flags as `u32`s, column
-/// by column.
+/// name (an index into `names`), zone count, flags, and whether its zones
+/// are of the site asked for (1) or not (0) as `u32`s, column by column.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]

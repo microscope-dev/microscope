@@ -403,15 +403,15 @@ describe("a real server's call trees", () => {
 
 describe("a zones answer", () => {
   it("decodes its columns, and finds the block at a time in each thread's row", () => {
-    // [start, end, covered, blocked, preempted, thread, depth, name, count, flags]
+    // [start, end, covered, blocked, preempted, thread, depth, name, count, flags, chosen]
     const blocks: number[][] = [
-      [0, 100, 100, 60, 10, 4, 0, 0, 1, 0],
-      [10, 40, 30, 0, 0, 4, 1, 1, 1, 2],
-      [50, 52, 1.5, 0, 0.5, 4, 1, 2, 7, 0],
-      [5, 30, 25, 0, 0, 9, 0, 0, 1, 0],
+      [0, 100, 100, 60, 10, 4, 0, 0, 1, 0, 0],
+      [10, 40, 30, 0, 0, 4, 1, 1, 1, 2, 0],
+      [50, 52, 1.5, 0, 0.5, 4, 1, 2, 7, 0, 1],
+      [5, 30, 25, 0, 0, 9, 0, 0, 1, 0, 0],
     ];
     const count = blocks.length;
-    const bytes = new Uint8Array(count * 60);
+    const bytes = new Uint8Array(count * 64);
     const view = new DataView(bytes.buffer);
     for (const [at, block] of blocks.entries()) {
       for (const [column, value] of block.entries()) {
@@ -441,6 +441,7 @@ describe("a zones answer", () => {
     expect([...zones.thread]).toEqual([4, 4, 4, 9]);
     expect([...zones.zones]).toEqual([1, 1, 7, 1]);
     expect([...zones.flags]).toEqual([0, 2, 0, 0]);
+    expect([...zones.chosen]).toEqual([0, 0, 1, 0]);
     const index = indexBlocks(zones);
     expect([...index.depths]).toEqual([
       [4, 2],
@@ -463,14 +464,14 @@ describe("a zones answer", () => {
         { range: [0, 1], blocks: 2, names: [], marks: [], plots: [], offCpu: false },
         bytes,
       ),
-    ).toThrow("2 zone blocks need 120 bytes, not 240");
+    ).toThrow("2 zone blocks need 128 bytes, not 256");
   });
 
   it("finds the block at a time by bisection, whatever order the blocks came in", () => {
     // One row of a thousand blocks, each 10 long with a gap of 10, sent
     // in reverse; a linear oracle agrees at every time and slack.
     const count = 1000;
-    const bytes = new Uint8Array(count * 60);
+    const bytes = new Uint8Array(count * 64);
     const view = new DataView(bytes.buffer);
     for (let at = 0; at < count; at += 1) {
       const start = (count - 1 - at) * 20;

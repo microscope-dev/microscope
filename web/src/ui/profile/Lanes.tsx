@@ -190,13 +190,21 @@ export function Lanes() {
   const timeline = useAnswer("profileTimeline", timelineParams);
 
   const zoned = !byTask && (summary.zoneSites.length > 0 || summary.probes.events > 0);
-  const zonesParams = useMemo(
-    () =>
-      zoned && plot > 0
-        ? { profile, revision: query.revision ?? 0, range: asked, width: Math.round(plot) }
-        : null,
-    [zoned, plot, profile, query.revision, asked],
-  );
+  // The zones of the site chosen, of a length in its band, come marked,
+  // folded apart from the rest so they show at every zoom.
+  const zonesParams = useMemo(() => {
+    const band = look.zs && look.zb ? parseBand(look.zb) : null;
+    return zoned && plot > 0
+      ? {
+          profile,
+          revision: query.revision ?? 0,
+          range: asked,
+          width: Math.round(plot),
+          site: look.zs ?? null,
+          band,
+        }
+      : null;
+  }, [zoned, plot, profile, query.revision, asked, look.zs, look.zb]);
   const zones = useAnswer("profileZones", zonesParams);
   const blocks = useMemo(
     () => (zones.data ? decodeZones(zones.data, zones.data.payload) : null),
@@ -246,7 +254,6 @@ export function Lanes() {
 
   const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
   const instance = useMemo(() => (look.zi ? parseInstance(look.zi) : null), [look.zi]);
-  const band = useMemo(() => (look.zb ? parseBand(look.zb) : null), [look.zb]);
   const [dragging, setDragging] = useState<[number, number] | null>(null);
   const [pointer, setPointer] = useState<{ time: number; x: number; y: number } | null>(null);
   const [hit, setHit] = useState<Hit | null>(null);
@@ -404,16 +411,7 @@ export function Lanes() {
       const found = token("--accent");
       const ink = token("--ink");
       const glyph = context.measureText("0").width;
-      const lit = (at: number) => {
-        if (!look.zs) {
-          return true;
-        }
-        if ((blocks.zones[at] ?? 1) > 1 || palette.sites[blocks.name[at] ?? 0] !== look.zs) {
-          return false;
-        }
-        const length = (blocks.end[at] ?? 0) - (blocks.start[at] ?? 0);
-        return !band || (length >= band[0] && length <= band[1]);
-      };
+      const lit = (at: number) => !look.zs || blocks.chosen[at] === 1;
       for (let at = 0; at < blocks.count; at += 1) {
         const thread = blocks.thread[at] ?? 0;
         const lane = laneOf.get(thread);
@@ -561,7 +559,6 @@ export function Lanes() {
     range,
     instance,
     dragging,
-    band,
     look.zs,
     palette,
     summary.gaps,

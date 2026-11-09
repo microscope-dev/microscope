@@ -780,10 +780,11 @@ fn record_zones(scratch: &ScratchDir) -> std::path::PathBuf {
     path
 }
 
-/// A zones answer's blocks: thread, depth, name, and zone count.
-fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32)> {
+/// A zones answer's blocks: thread, depth, name, zone count, and whether
+/// its zones are the ones asked for.
+fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32, bool)> {
     let count = usize::try_from(answer["blocks"].as_u64().expect("a count")).expect("small");
-    assert_eq!(bytes.len(), count * 60);
+    assert_eq!(bytes.len(), count * 64);
     let time = |column: usize, at: usize| {
         let offset = (column * count + at) * 8;
         f64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("eight bytes"))
@@ -816,6 +817,7 @@ fn blocks(answer: &Value, bytes: &[u8]) -> Vec<(u64, u32, String, u32)> {
                 word(1, at),
                 name.to_owned(),
                 word(3, at),
+                word(5, at) == 1,
             )
         })
         .collect()
@@ -869,12 +871,12 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         .expect("zones");
     let drawn = blocks(&answer, &bytes);
     assert_eq!(drawn.len(), 18, "{drawn:?}");
-    assert!(drawn.iter().all(|(_, _, _, count)| *count == 1));
+    assert!(drawn.iter().all(|(_, _, _, count, _)| *count == 1));
     let depth_of = |name: &str| {
         drawn
             .iter()
-            .filter(|(_, _, drawn, _)| drawn == name)
-            .map(|(_, depth, _, _)| *depth)
+            .filter(|(_, _, drawn, _, _)| drawn == name)
+            .map(|(_, depth, _, _, _)| *depth)
             .collect::<Vec<_>>()
     };
 
@@ -909,6 +911,31 @@ async fn a_profile_serves_its_zones_folded_to_a_width_and_measured() {
         "{folded:?}"
     );
     assert!(folded.len() < drawn.len());
+    assert!(folded.iter().all(|block| !block.4), "none asked for");
+
+    // The zones of a site asked for fold only with each other, so as
+    // narrow as the rest they are still told apart; a band narrows them.
+    let zones_of = |site: &str, band: Option<[u64; 2]>| json!({"profile": id, "width": 10, "site": site, "band": band});
+    let (answer, bytes) = tab
+        .with_bytes("profileZones", zones_of("leaf", None))
+        .await
+        .expect("zones");
+    let marked = blocks(&answer, &bytes);
+    let count = |chosen: bool| -> u32 {
+        marked
+            .iter()
+            .filter(|block| block.4 == chosen)
+            .map(|block| block.3)
+            .sum()
+    };
+    assert_eq!((count(true), count(false)), (3, 15), "{marked:?}");
+    assert!(marked.iter().all(|block| !block.4 || block.2 == "leaf"));
+
+    let (answer, bytes) = tab
+        .with_bytes("profileZones", zones_of("leaf", Some([0, 0])))
+        .await
+        .expect("zones");
+    assert!(blocks(&answer, &bytes).iter().all(|block| !block.4));
 
     let stats = tab
         .ok("profileZoneStats", json!({"profile": id, "name": "round"}))

@@ -24,8 +24,8 @@ pub use query::{
 };
 
 pub use zones::{
-    PlotBin, PlotSeries, ZoneAt, ZoneBlock, ZoneStats, plot_series, sites_named, zone_blocks,
-    zone_stats,
+    ChosenZones, PlotBin, PlotSeries, ZoneAt, ZoneBlock, ZoneStats, plot_series, sites_named,
+    zone_blocks, zone_stats,
 };
 
 /// A position in a capture's tables, which validation keeps within `u32`.

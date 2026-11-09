@@ -19,7 +19,7 @@ pub struct ZoneBlock {
     /// they are of several.
     pub site: u32,
 
-    /// A label's value, or [`NONE`].
+    /// A label's value, or [`NONE`], as for a run of several values.
     pub value: u32,
 
     /// How many zones it draws.
@@ -33,6 +33,18 @@ pub struct ZoneBlock {
     pub covered: i64,
     pub blocked: i64,
     pub preempted: i64,
+
+    /// Whether its zones are the ones chosen. A run never holds zones
+    /// chosen and not, so a fold of chosen zones shows as one.
+    pub chosen: bool,
+}
+
+/// The zones a view picks out: those of `sites`, and of a length within
+/// `band` when there is one.
+#[derive(Debug, Clone, Copy)]
+pub struct ChosenZones<'a> {
+    pub sites: &'a [u32],
+    pub band: Option<(u64, u64)>,
 }
 
 /// A thread's time off its CPU inside `[start, end)`: blocked, then
@@ -61,12 +73,14 @@ fn off_cpu_within(spans: &[OffCpu], (start, end): (i64, i64)) -> (i64, i64) {
 /// The zones in `range` of the threads `threads` selects, by thread and
 /// depth, each run of zones narrower than `fold` that fits in `fold` drawn
 /// as one block. A run never grows wider, so a thousand short zones in a
-/// row still show where they are dense.
+/// row still show where they are dense, and never mixes zones `chosen`
+/// picks out with others, so they show at every width.
 pub fn zone_blocks(
     capture: &Capture,
     range: (i64, i64),
     threads: Option<&[u32]>,
     fold: i64,
+    chosen: Option<ChosenZones<'_>>,
 ) -> Vec<ZoneBlock> {
     let mut blocks = Vec::new();
     let off_cpu: BTreeMap<u32, &[OffCpu]> = capture
@@ -102,6 +116,13 @@ pub fn zone_blocks(
         let mut run: Option<ZoneBlock> = None;
         for zone in row {
             let (blocked, preempted) = off_cpu_within(spans, (zone.start.get(), zone.end.get()));
+            let length = zone.end.get() - zone.start.get();
+            let picked = chosen.is_some_and(|chosen| {
+                chosen.sites.contains(&zone.site.get())
+                    && chosen.band.is_none_or(|(low, high)| {
+                        u64::try_from(length).is_ok_and(|length| (low..=high).contains(&length))
+                    })
+            });
             let block = ZoneBlock {
                 thread,
                 depth: zones.depth.get(),
@@ -111,9 +132,10 @@ pub fn zone_blocks(
                 value: zone.value.get(),
                 count: 1,
                 flags: zone.flags.get(),
-                covered: zone.end.get() - zone.start.get(),
+                covered: length,
                 blocked,
                 preempted,
+                chosen: picked,
             };
 
             if block.end - block.start >= fold {
@@ -123,15 +145,17 @@ pub fn zone_blocks(
             }
 
             match &mut run {
-                Some(run) if block.end - run.start <= fold => {
+                Some(run) if block.end - run.start <= fold && run.chosen == block.chosen => {
                     run.end = block.end;
                     run.count += 1;
                     run.flags |= block.flags;
                     run.covered += block.covered;
                     run.blocked += block.blocked;
                     run.preempted += block.preempted;
-                    if (run.site, run.value) != (block.site, block.value) {
+                    if run.site != block.site {
                         (run.site, run.value) = (NONE, NONE);
+                    } else if run.value != block.value {
+                        run.value = NONE;
                     }
                 }
                 _ => blocks.extend(run.replace(block)),

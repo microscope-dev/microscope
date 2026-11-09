@@ -1425,7 +1425,15 @@ threads?: Array<number> | null,
  * The pixels the range is drawn across: zones under three pixels wide
  * fold together.
  */
-width: number, };
+width: number, 
+/**
+ * A zone site's name, or a label's key, whose zones to mark.
+ */
+site?: string | null, 
+/**
+ * Of the site's zones, those of these lengths, in nanoseconds.
+ */
+band?: [number, number] | null, };
 
 export type ProfileZones = { range: [number, number], blocks: number, 
 /**

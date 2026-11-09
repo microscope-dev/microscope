@@ -1439,10 +1439,11 @@ it("says why the timeline could not be read", async () => {
 });
 
 /** A zones answer and its columns, each block [start, end, thread, depth,
- * name, zones, flags, blocked, preempted], covering all of its span. */
+ * name, zones, flags, blocked, preempted, chosen], covering all of its
+ * span. */
 function zonesOf(names: string[], blocks: number[][], offCpu = false): [unknown, Uint8Array] {
   const count = blocks.length;
-  const bytes = new Uint8Array(count * 60);
+  const bytes = new Uint8Array(count * 64);
   const view = new DataView(bytes.buffer);
   for (const [at, block] of blocks.entries()) {
     const [start = 0, end = 0, blocked = 0, preempted = 0] = [
@@ -1454,7 +1455,7 @@ function zonesOf(names: string[], blocks: number[][], offCpu = false): [unknown,
     for (const [column, value] of [start, end, end - start, blocked, preempted].entries()) {
       view.setFloat64((column * count + at) * 8, value, true);
     }
-    for (const [column, value] of block.slice(2, 7).entries()) {
+    for (const [column, value] of [...block.slice(2, 7), block[9] ?? 0].entries()) {
       view.setUint32(count * 40 + (column * count + at) * 4, value, true);
     }
   }
@@ -1707,13 +1708,58 @@ it("selects a zone and its site from a click, leaving the threads alone, and let
   expect(lookShown().zi).toBe("1:150000000-200000000");
 });
 
+it("outlines the chosen site's zones even where they fold, and asks for them by site and band", async () => {
+  const outlined: number[] = [];
+  const strokeRect = CanvasRenderingContext2D.prototype.strokeRect;
+  vi.spyOn(CanvasRenderingContext2D.prototype, "strokeRect").mockImplementation(function (
+    this: CanvasRenderingContext2D,
+    x,
+    ...rest
+  ) {
+    if (this.lineWidth === 1.5) {
+      outlined.push(Math.floor(x));
+    }
+    strokeRect.call(this, x, ...rest);
+  });
+  const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
+  const server = await mount(
+    <div style={SECOND_WIDE}>
+      <Lanes />
+    </div>,
+    { summary, look: { zs: "drain", zb: "1000-2000" } },
+  );
+  server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
+  const asked = await server.next("profileZones");
+  expect(asked.params).toMatchObject({ site: "drain", band: [1000, 2000] });
+  // Two folds of seven zones each: the first of the drains chosen, the
+  // second of zones that are not.
+  const [answer, columns] = zonesOf(
+    ["drain"],
+    [
+      [100e6, 101e6, 1, 0, 0, 7, 0, 0, 0, 1],
+      [500e6, 501e6, 1, 0, 0, 7, 0, 0, 0, 0],
+    ],
+  );
+  server.answer(asked, answer, columns);
+  await vi.waitFor(() => expect(outlined.length).toBeGreaterThan(0), POLL);
+  expect(new Set(outlined)).toEqual(new Set([100]));
+  vi.restoreAllMocks();
+});
+
 it("brings a zone chosen elsewhere into view, asking for it in whole nanoseconds", async () => {
   const server = await zonedLanes();
   // Under a pixel wide, so the lanes zoom to it, a third of its length
   // either side: not a whole number of nanoseconds.
   changeLook((look) => ({ ...look, zs: "drain", zi: "1:500000000-500300001" }));
-  const asked = await server.next("profileZones");
-  const range = (asked.params as { range: [number, number] }).range;
+  // Choosing the site asks for the zones again; the last ask is the zoom.
+  const range = await vi.waitFor(() => {
+    const ranges = server.requests
+      .filter((request) => request.method === "profileZones")
+      .map((request) => (request.params as { range: [number, number] }).range);
+    const last = ranges.at(-1) ?? [0, 0];
+    expect(last[1] - last[0]).toBeLessThan(1_000_000);
+    return last;
+  }, POLL);
   expect(range.every((time) => Number.isInteger(time))).toBe(true);
   expect(range[0]).toBeLessThan(500_000_000);
   expect(range[1]).toBeGreaterThan(500_300_001);
