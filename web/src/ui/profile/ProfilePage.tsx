@@ -23,6 +23,7 @@ import {
   validateProfileLook,
   withInstance,
   withLook,
+  withoutSite,
 } from "../../profile/look";
 import {
   formatCount,
@@ -339,12 +340,14 @@ const DIFF_MEASURES = [
   ["share", "share", "Each function's share of its own profile"],
 ] as const;
 
-/** What the zones chosen keep of the samples: one zone's span, the
- * zones of a site or its band, or a diff of the band with the rest. */
+/** The zone site chosen, then what it keeps of the samples: one zone's
+ * span, the site's zones or its band's, or a diff of the band with the
+ * rest. Each part clears on its own; clearing the site clears them all. */
 function ZoneChips() {
   const { summary, look, setLook } = useProfile();
   const instance = look.zi ? parseInstance(look.zi) : null;
   const scope = scopeOf(look);
+  const dropSite = useCallback(() => setLook(withoutSite, true), [setLook]);
   const dropInstance = useCallback(
     () => setLook((prev) => withInstance(prev, null), true),
     [setLook],
@@ -364,16 +367,23 @@ function ZoneChips() {
   const banded = band ? ` ${formatDuration(band[0])} – ${formatDuration(band[1])}` : "";
   return (
     <>
+      {look.zs ? (
+        <Chip
+          label={`zone: ${look.zs}${banded}`}
+          title="The zone site chosen; removing it clears the zone selection"
+          remove={dropSite}
+        />
+      ) : null}
       {instance ? (
         <Chip
-          label={`${look.zs ?? "zone"} ${formatDuration(instance.span[1] - instance.span[0])}, ${threadName(summary.threads, instance.thread)}`}
+          label={`${formatDuration(instance.span[1] - instance.span[0])}, ${threadName(summary.threads, instance.thread)}`}
           title="Samples of the threads selected during this zone"
           remove={dropInstance}
         />
       ) : null}
       {scope && look.bz !== "rest" ? (
         <Chip
-          label={`inside ${scope.name}${scope.band ? banded : ""}`}
+          label={scope.band ? "inside the band" : "inside every one"}
           title="Samples inside these zones, nested ones included"
           remove={dropScope}
         />
@@ -381,7 +391,7 @@ function ZoneChips() {
       {scope && look.bz === "rest" ? (
         <>
           <Chip
-            label={`${scope.name}${banded} vs the rest`}
+            label="the band vs the rest"
             title="Red grew and blue shrank in the band's zones against the site's others"
             remove={dropRest}
           />

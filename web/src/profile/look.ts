@@ -309,6 +309,12 @@ export function cleared(look: ProfileLook): ProfileLook {
   return look.zs ? rest : look;
 }
 
+/** The look with no zone site chosen, nor anything that refines one. */
+export function withoutSite(look: ProfileLook): ProfileLook {
+  const { zs: _zs, zb: _zb, zf: _zf, bz: _bz, zi: _zi, ...rest } = look;
+  return rest;
+}
+
 /** The zones a look's samples must be inside, if any. */
 export function scopeOf(look: ProfileLook): ProfileZoneScope | null {
   // Zones are a thread's, never a wait's; an instance stands in for them.

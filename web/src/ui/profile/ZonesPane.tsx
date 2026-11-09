@@ -16,6 +16,7 @@ import {
   rangeOf,
   withInstance,
   withLook,
+  withoutSite,
 } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant, largest } from "../../profile/paint";
 import { bandOf, bucketSpans, threadName } from "../../profile/zones";
@@ -45,8 +46,8 @@ export function ZonesPane({ close }: { close: () => void }) {
     (name: string) =>
       setLook((prev) => {
         // The zone selected, if any, is one of the old site's.
-        const { zs, zb: _zb, zf: _zf, bz: _bz, zi: _zi, ...rest } = prev;
-        return zs === name ? rest : { ...rest, zs: name };
+        const rest = withoutSite(prev);
+        return prev.zs === name ? rest : { ...rest, zs: name };
       }, true),
     [setLook],
   );

@@ -389,7 +389,8 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(stats.locator("dd").first()).toHaveText("2");
   await pane.getByRole("button", { name: "Inside every one" }).click();
   await expect(page).toHaveURL(/zf=all/u);
-  await expect(page.getByRole("button", { name: "Remove inside step" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove zone: step", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove inside every one" })).toBeVisible();
 
   // A band from the histogram; then only its zones' samples, then a diff
   // of them against the site's others.
@@ -398,10 +399,11 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page.getByTestId("zone-band")).toContainText(/of 2/u);
   await pane.getByRole("button", { name: "Inside the band" }).click();
   await expect(page).toHaveURL(/zf=band/u);
-  await expect(page.getByRole("button", { name: /^Remove inside step .* – /u })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Remove zone: step .* – /u })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove inside the band" })).toBeVisible();
   await pane.getByRole("button", { name: "Compare the band with the rest" }).click();
   await expect(page).toHaveURL(/bz=rest/u);
-  await expect(page.getByRole("button", { name: /^Remove step .* vs the rest$/u })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove the band vs the rest" })).toBeVisible();
   // The band and the rest hold different numbers of zones, so the diff
   // can compare each side's share instead.
   await page.getByRole("button", { name: "share", exact: true }).click();
@@ -444,6 +446,21 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page).toHaveURL(/zs=step/u);
   await page.keyboard.press("Escape");
   await expect(page).not.toHaveURL(/zs=/u);
+
+  // The chips let go of the same parts: the zone's keeps its site, and
+  // the site's takes the zone with it.
+  await pane.getByRole("button", { name: "step", exact: true }).click();
+  const longest = stats.getByRole("listitem").first().getByRole("button").first();
+  const zoneChip = page.getByRole("button", { name: /^Remove [\d.]+ m?s, /u });
+  await longest.click();
+  await zoneChip.click();
+  await expect(page).not.toHaveURL(/zi=/u);
+  await expect(page).toHaveURL(/zs=step/u);
+  await longest.click();
+  await expect(zoneChip).toBeVisible();
+  await page.getByRole("button", { name: "Remove zone: step", exact: true }).click();
+  await expect(page).not.toHaveURL(/zs=|zi=/u);
+  await expect(zoneChip).toHaveCount(0);
 
   // Ctrl and the wheel zoom anywhere in the lanes, their names too, and
   // dragging with ctrl held pans; neither changes the range the views read.
@@ -535,7 +552,7 @@ test("a recording without zones has no Zones pane, and its lanes ask for none", 
   await page.goto(address.href);
   await page.goto(address.href);
   await expect(page.getByText("no zones are named nowhere")).toBeVisible();
-  await page.getByRole("button", { name: "Remove inside nowhere" }).click();
+  await page.getByRole("button", { name: "Remove inside every one" }).click();
   await expect(page.getByText("no zones are named nowhere")).toBeHidden();
 });
 
