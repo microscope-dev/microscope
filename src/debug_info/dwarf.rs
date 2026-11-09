@@ -2248,10 +2248,10 @@ fn proved_frames(
 
     // Hand-written code, as assembly kernels and the C runtime's `_init`,
     // has no call-frame information even where everything compiled has.
-    // Unless most of the module is undescribed, only the functions that
-    // symbols and relocations name are proved: finding what every
+    // Unless the module is small or mostly undescribed, only the functions
+    // that symbols and relocations name are proved: finding what every
     // instruction calls costs as much as the rest of a load.
-    let scan = sparsely_described(object, unwind);
+    let scan = scanned(object, unwind);
     undescribed_frames(
         (object, debug_object),
         unwind,
@@ -2362,16 +2362,31 @@ fn v8_frames(
     }
 }
 
-/// Whether call-frame information describes less than half of the code
-/// of `object`'s executable sections.
+/// The most code a module may hold and still have every call and address
+/// load of it scanned for the functions they reach, as the vDSO's few
+/// kilobytes are.
 #[cfg(target_arch = "x86_64")]
-fn sparsely_described(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> bool {
+const SCANNED_CODE: u64 = 64 * 1024;
+
+/// Whether to scan all of `object`'s code for the functions it reaches:
+/// when it is small, or when call-frame information describes less than
+/// half of its executable sections.
+#[cfg(target_arch = "x86_64")]
+fn scanned(object: &object::File<'_>, unwind: &crate::image::unwind::Unwind) -> bool {
     // Section sizes are input, and may claim more than a number holds.
     let code = object
         .sections()
         .filter(|section| section.kind() == object::SectionKind::Text)
         .map(|section| section.size())
         .fold(0, u64::saturating_add);
+
+    // A module this small costs nothing to scan. The vDSO is one: its
+    // hand-written ChaCha20 code has neither a symbol nor call-frame
+    // information, and only getrandom's call names it.
+    if code <= SCANNED_CODE {
+        return true;
+    }
+
     let described = [&unwind.eh_frame_index, &unwind.debug_frame_index]
         .iter()
         .flat_map(|index| index.entries.iter())

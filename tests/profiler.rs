@@ -1513,6 +1513,45 @@ fn a_stack_through_the_vdso_goes_on_to_its_callers() {
     );
 }
 
+/// The vDSO's `getrandom` makes its bytes in hand-written cipher code that
+/// has neither a symbol nor call-frame information, and only `getrandom`'s
+/// call reaches it. A stack sampled there still goes on to its callers.
+#[test]
+fn a_stack_in_the_vdsos_undescribed_code_goes_on_to_its_callers() {
+    let mut command = Command::new(Scenario::fixture("profile-vdso"));
+    command.args(["20000", "random"]);
+    let recording = record(command, &RecordOptions::preset(Preset::Maximum)).expect("record");
+    assert!(recording.status.success());
+    let stacks = recording.profile.stacks();
+    let main = [
+        "draw_random",
+        "main",
+        "__libc_start_call_main",
+        "__libc_start_main",
+        "_start",
+    ];
+    let mut through = 0;
+
+    for stack in stacks
+        .iter()
+        .filter(|stack| stack.functions[0].contains("vdso"))
+    {
+        let context = format!("{stack:?}");
+        assert_eq!(stack.ending, StackEnding::Complete, "{context}");
+        let tail = &stack.functions[stack.functions.len().saturating_sub(main.len())..];
+        assert_eq!(tail, main, "{context}");
+        through += 1;
+    }
+
+    // Making random bytes is all the program does.
+    assert!(
+        through > 0,
+        "{} samples, {} lost",
+        stacks.len(),
+        recording.profile.lost_samples()
+    );
+}
+
 /// Removes a process's perf map when dropped: CPython leaves its own.
 struct PerfMap(Option<u32>);
 
