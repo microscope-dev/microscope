@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "advisory-db": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794179022,
+        "narHash": "sha256-m/OcNnkO28qsTrG16ErpZCK7TL4AwCzdc/xigHP101s=",
+        "owner": "rustsec",
+        "repo": "advisory-db",
+        "rev": "7a40350e1b8ba5b656d909f88222a8059a83d88d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rustsec",
+        "repo": "advisory-db",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1783856661,
@@ -50,6 +66,7 @@
     },
     "root": {
       "inputs": {
+        "advisory-db": "advisory-db",
         "nixpkgs": "nixpkgs",
         "nixpkgs-js": "nixpkgs-js",
         "rust-overlay": "rust-overlay"

@@ -27,7 +27,7 @@ check: lint test miri loom web-test docs
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
 # only between seeds 48 and 61.
-all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-props web-e2e stress sim bench-smoke build-static
+all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-props web-e2e stress sim bench-smoke (audit-bin "debug")
 
 # Enters the pinned Nix development shell, or runs a command in it, with
 # nothing of the host's environment but the user and their terminal.
@@ -70,7 +70,8 @@ build-debug *ARGS="":
 build-static PROFILE="debug" *ARGS: web-build
     # Unset, the musl target's own flags apply instead of the glibc ones.
     unset RUSTFLAGS
-    cargo build --target x86_64-unknown-linux-musl --bin microscope \
+    # cargo-auditable embeds the dependency list, for `just audit-bin`.
+    cargo auditable build --target x86_64-unknown-linux-musl --bin microscope \
         --profile "$([[ "$1" == debug ]] && echo dev || echo "$1")" "${@:2}"
     binary="target/x86_64-unknown-linux-musl/$1/microscope"
     if readelf -lW "$binary" | grep -q INTERP || readelf -dW "$binary" | grep -q NEEDED; then
@@ -78,6 +79,12 @@ build-static PROFILE="debug" *ARGS: web-build
         exit 1
     fi
     echo "$binary (static, musl $MICROSCOPE_MUSL_VERSION)"
+
+# Builds the static binary as `build-static PROFILE` does and checks the
+# dependency list it carries against the advisory database the flake pins,
+# as `cargo audit bin` would check the binary on a customer's host.
+audit-bin PROFILE="release": (build-static PROFILE)
+    cargo audit --db "$(./scripts/advisory-db.sh)" --no-fetch --deny warnings bin "target/x86_64-unknown-linux-musl/$1/microscope"
 
 # Builds microscope and runs it with the supplied arguments.
 run *ARGS: build
@@ -88,7 +95,7 @@ run *ARGS: build
 # release lint after an edit and leaves release builds as they are. The Rust
 # probe SDK is its own crate, with its own target directory. Unsafe code stays
 # in the files scripts/unsafe-sites.sh lists.
-lint:
+lint: deny vet
     ./scripts/unsafe-sites.sh
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
@@ -98,6 +105,22 @@ lint:
     CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo clippy --quiet --manifest-path sdk/rust-probes/Cargo.toml --all-targets --features c -- -D warnings
     cargo fmt --check --manifest-path loom/Cargo.toml
     CARGO_TARGET_DIR="$PWD/target/loom" cargo clippy --quiet --manifest-path loom/Cargo.toml --all-targets -- -D warnings
+
+# Checks every crate each manifest builds against deny.toml: advisories from
+# the database the flake pins, licenses, duplicate versions, and sources.
+# Arguments go to `cargo deny check`, e.g. `just deny licenses`.
+[script]
+deny *ARGS:
+    ./scripts/advisory-db.sh >/dev/null
+    for manifest in Cargo.toml fuzz/Cargo.toml loom/Cargo.toml sdk/rust/Cargo.toml sdk/rust-probes/Cargo.toml; do
+        cargo deny --locked --manifest-path "$manifest" check --config deny.toml --disable-fetch "$@"
+    done
+
+# Checks that every dependency of microscope has an audit in supply-chain/,
+# imported or our own, or an exemption, without the network. A new or bumped
+# crate needs one: `cargo vet` says how to record it.
+vet:
+    cargo vet --locked --frozen
 
 # Arguments go to nextest, e.g. `just test print_` or `just test --test cli`.
 # Doc tests only run with the full suite. Tests run inside a memory cap, and

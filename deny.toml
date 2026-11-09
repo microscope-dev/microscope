@@ -1,0 +1,61 @@
+# cargo-deny's checks of every crate microscope builds: `just deny` runs them
+# for each manifest, and `just lint` runs `just deny`.
+
+[graph]
+# microscope runs only on x86-64 Linux, so crates other targets bring in
+# never build.
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+all-features = true
+
+[advisories]
+# The advisory database the flake pins, which `just deny` links here so the
+# check runs offline. `nix flake update advisory-db` takes the newest.
+db-path = "target/advisory-dbs"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Unmaintained crates and unsound ones are findings too, not only
+# vulnerabilities.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Licenses that let a crate ship inside an MIT OR Apache-2.0 binary.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    # webpki-roots' certificate data.
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# One list serves every manifest, and most use only some of it.
+unused-allowed-license = "allow"
+
+# fuzz/ and loom/ are never published, so they need no license.
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies of our own, such as sdk/rust-probes, have no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# C++20 manglings Chromium emits; MICROSCOPE.md in the fork says which
+# upstream commit it follows.
+allow-git = ["https://github.com/microscope-dev/cpp_demangle"]
+# The SDKs and loom/ build without the fork.
+unused-allowed-source = "allow"

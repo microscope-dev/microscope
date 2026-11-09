@@ -7,9 +7,15 @@
     # build test fixtures so they can follow the other microscope-dev repos.
     nixpkgs-js.url = "github:NixOS/nixpkgs/nixos-26.05";
     rust-overlay.url = "github:oxalica/rust-overlay";
+    # RustSec's advisories, which cargo-deny and cargo-audit read offline.
+    # `nix flake update advisory-db` takes the newest.
+    advisory-db = {
+      url = "github:rustsec/advisory-db";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, nixpkgs-js, rust-overlay }:
+  outputs = { self, nixpkgs, nixpkgs-js, rust-overlay, advisory-db }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs {
@@ -1120,11 +1126,21 @@
         # Turns on the Node and Python packages' assertions in the programs
         # the tests run. They are off in everyone else's programs.
         MICROSCOPE_SDK_CHECKS = "1";
+        # The advisory database `just deny` and `just audit-bin` check against.
+        MICROSCOPE_ADVISORY_DB = "${advisory-db}";
+        MICROSCOPE_ADVISORY_DB_DATE = toString advisory-db.lastModified;
         packages = with pkgs; [
           rust
           cargo-fuzz
           cargo-mutants
           cargo-nextest
+          # Supply chain: advisories, licenses, and sources (`just deny`),
+          # audits of every dependency (`just vet`), and the dependency list
+          # the static binary carries (`just audit-bin`).
+          cargo-deny
+          cargo-vet
+          cargo-auditable
+          cargo-audit
           just
           gcc
           mold

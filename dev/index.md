@@ -215,6 +215,28 @@ package with the requested name when the locked dependency is missing.
 Recipes that intentionally drive a host application say so. Keep that
 exception narrow; builds and tests remain pure.
 
+## Dependencies
+
+Ask the human before adding a dependency. `just lint` then runs two
+checks offline:
+
+- `just deny` checks the crates of every manifest against `deny.toml`:
+  RustSec advisories, licenses that fit MIT OR Apache-2.0, and sources, which
+  are crates.io and the `cpp_demangle` fork only. It reads the advisory
+  database the flake pins. `nix flake update advisory-db` takes the newest, in
+  a commit of its own. An advisory we accept goes in `deny.toml`'s `ignore`,
+  with the reason.
+- `just vet` needs an audit or an exemption in `supply-chain/` for each crate
+  microscope builds. Mozilla's and Google's audits are imported, and the
+  exemptions are what is left to audit. For a new or bumped crate, run
+  `cargo vet` in the dev shell, which fetches the imports and says what is
+  missing. Record an audit with `cargo vet certify`, or, if the human agrees,
+  an exemption with `cargo vet add-exemption`.
+
+`just build-static` builds with cargo-auditable, which embeds the dependency
+list in the binary. `just audit-bin` checks that list as `cargo audit bin`
+would on a customer's host.
+
 ## Build profiles and features
 
 The ordinary development build and test artifacts share the test profile,
