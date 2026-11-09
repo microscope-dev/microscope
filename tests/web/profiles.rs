@@ -432,6 +432,8 @@ async fn collapsing_cycles_cuts_each_path_back_to_its_first_call() {
             symbol: "work".into(),
         },
         function_period: 1,
+        // The fixture keeps frame pointers, as record_calls_of's does.
+        stack: StackCopy::Bytes(SMALL_STACK_COPY),
         ..RecordOptions::default()
     };
     let recording = record(command, &options).expect("record");

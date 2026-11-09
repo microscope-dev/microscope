@@ -53,6 +53,16 @@ const OTHER_VARIANTS: [(&str, [&str; 3]); 5] = [
     ),
 ];
 
+/// The stack a sample of `variant` copies: a build without frame pointers
+/// unwinds by call-frame information alone, which needs the deep copy.
+fn copy_for(variant: &str) -> StackCopy {
+    StackCopy::Bytes(if variant.ends_with("nofp") {
+        DEEP_STACK_COPY
+    } else {
+        SMALL_STACK_COPY
+    })
+}
+
 fn command(variant: &str, iterations: u64) -> Command {
     let mut command = Command::new(Scenario::fixture(&format!("profile-stacks-{variant}")));
     command
@@ -63,7 +73,10 @@ fn command(variant: &str, iterations: u64) -> Command {
     command
 }
 
-/// Samples every call so the stack-conformance tests see every caller.
+/// Samples every call so the stack-conformance tests see every caller,
+/// copying the small stack that frame pointers unwind: the deep copy fills
+/// a ring that other recordings shrank with a few samples. A test that
+/// unwinds by call-frame information alone asks for more.
 fn calls_of(symbol: &str) -> RecordOptions {
     RecordOptions {
         source: SampleSource::Function {
@@ -71,6 +84,7 @@ fn calls_of(symbol: &str) -> RecordOptions {
         },
         function_period: 1,
         off_cpu: false,
+        stack: StackCopy::Bytes(SMALL_STACK_COPY),
         ..RecordOptions::default()
     }
 }
@@ -418,7 +432,10 @@ fn a_sample_in_the_worker_itself_is_one_of_the_fixtures_chains() {
 #[test]
 fn function_breakpoints_name_every_language_and_layout_exactly() {
     for (variant, [middle, outer, main]) in OTHER_VARIANTS {
-        let options = calls_of("leaf");
+        let options = RecordOptions {
+            stack: copy_for(variant),
+            ..calls_of("leaf")
+        };
         let recording = record(command(variant, 1), &options).expect("record");
         assert!(recording.status.success());
         let stacks = recording.profile.stacks();
@@ -473,9 +490,11 @@ fn an_async_tasks_samples_show_its_own_stack_of_awaits() {
         let mut command = Command::new(Scenario::fixture(&format!("tokio-profile-{variant}")));
         command.stdout(Stdio::null());
 
-        // Rings too small for more than a few samples lose most calls.
+        // Rings too small for more than a few samples lose most calls. Rust
+        // keeps no frame pointers, so its tasks unwind from the deep copy.
         let options = RecordOptions {
             ring_pages: 1,
+            stack: StackCopy::Bytes(DEEP_STACK_COPY),
             ..calls_of("profile::work")
         };
 
@@ -1253,7 +1272,11 @@ fn a_signal_handlers_stack_goes_on_through_what_the_signal_interrupted() {
     for variant in ["gcc-o0", "clang-o2-nofp"] {
         let mut command = Command::new(Scenario::fixture(&format!("profile-signals-{variant}")));
         command.arg("3").stdout(Stdio::null());
-        let recording = record(command, &calls_of("on_signal")).expect("record");
+        let options = RecordOptions {
+            stack: copy_for(variant),
+            ..calls_of("on_signal")
+        };
+        let recording = record(command, &options).expect("record");
         assert!(recording.status.success(), "{variant}");
         let stacks = recording.profile.stacks();
         assert_eq!(stacks.len(), 3, "{variant}");
