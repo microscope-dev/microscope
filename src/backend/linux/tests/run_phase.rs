@@ -14,38 +14,38 @@ use super::lifecycle::{ATTACHED, LAUNCHED, Reader, attach, idle, launch, reader,
 use super::*;
 
 /// The second thread, which hits and exits while the first runs.
-const OTHER: Pid = Pid::from_raw(5001);
+pub(super) const OTHER: Pid = Pid::from_raw(5001);
 
 /// Where a breakpoint is added while the program runs.
-const ADDED_SITE: u64 = 0x50;
+pub(super) const ADDED_SITE: u64 = 0x50;
 
 /// What the fake kernel knows of each thread.
 #[derive(Default)]
-struct Kernel {
-    running: BTreeSet<Pid>,
-    stepping: BTreeSet<Pid>,
+pub(super) struct Kernel {
+    pub(super) running: BTreeSet<Pid>,
+    pub(super) stepping: BTreeSet<Pid>,
 
     /// Threads sent a SIGSTOP not yet delivered.
-    stop_requested: BTreeSet<Pid>,
+    pub(super) stop_requested: BTreeSet<Pid>,
 
     /// Threads interrupted and not yet stopped.
-    interrupted: BTreeSet<Pid>,
+    pub(super) interrupted: BTreeSet<Pid>,
 
     /// Threads at their exit event, which exit once let go.
-    exiting: BTreeSet<Pid>,
+    pub(super) exiting: BTreeSet<Pid>,
 }
 
-struct Run {
-    harness: WatchHarness,
-    kernel: Kernel,
+pub(super) struct Run {
+    pub(super) harness: WatchHarness,
+    pub(super) kernel: Kernel,
 
     /// The native calls the controller made, other than debug-register
     /// and memory traffic.
-    calls: Vec<String>,
+    pub(super) calls: Vec<String>,
 }
 
 impl Run {
-    fn new(harness: WatchHarness) -> Self {
+    pub(super) fn new(harness: WatchHarness) -> Self {
         Self {
             harness,
             kernel: Kernel::default(),
@@ -54,7 +54,7 @@ impl Run {
     }
 
     /// Reads the calls the controller made since last asked.
-    fn take_calls(&mut self) {
+    pub(super) fn take_calls(&mut self) {
         for call in self.harness.trace().take_actions() {
             let mut words = call.split(' ');
             let verb = words.next().unwrap_or_default();
@@ -83,7 +83,7 @@ impl Run {
         }
     }
 
-    fn wait(&mut self, status: WaitEvent) {
+    pub(super) fn wait(&mut self, status: WaitEvent) {
         let pid = status.pid();
         self.kernel.running.remove(&pid);
         self.kernel.stepping.remove(&pid);
@@ -94,7 +94,7 @@ impl Run {
 
     /// Reports a stop of `pid` the program made itself. A SIGSTOP sent to
     /// it waits behind the stop, as Linux queues it.
-    fn program_stop(&mut self, status: WaitEvent) {
+    pub(super) fn program_stop(&mut self, status: WaitEvent) {
         let pid = status.pid();
         if self.kernel.stop_requested.remove(&pid) {
             self.harness.trace().queued_stops.borrow_mut().insert(pid);
@@ -103,14 +103,14 @@ impl Run {
     }
 
     /// `pid` executes the trap at [`HIT_SITE`].
-    fn hit(&mut self, pid: Pid) {
+    pub(super) fn hit(&mut self, pid: Pid) {
         self.harness.trace().set_pc(pid, HIT_SITE + 1);
         self.signal_info(pid, libc::SI_KERNEL);
         self.program_stop(WaitEvent::Stopped(pid, Signal::SIGTRAP));
     }
 
     /// `pid` reaches its exit, where a SIGSTOP sent to it dies with it.
-    fn exit(&mut self, pid: Pid) {
+    pub(super) fn exit(&mut self, pid: Pid) {
         self.kernel.stop_requested.remove(&pid);
         self.harness.trace().queued_stops.borrow_mut().remove(&pid);
         self.kernel.exiting.insert(pid);
@@ -121,7 +121,7 @@ impl Run {
         ));
     }
 
-    fn signal_info(&self, pid: Pid, code: i32) {
+    pub(super) fn signal_info(&self, pid: Pid, code: i32) {
         let mut registers = self.harness.trace().registers_of(pid);
         registers[debug_registers::STATUS_REGISTER] = debug_registers::STATUS_IDLE;
         self.harness
@@ -144,7 +144,7 @@ impl Run {
     /// Answers what the controller asked of the kernel until it asks for
     /// nothing more, delivering one status at a time. Steps finish only
     /// when `steps` says so.
-    fn settle(&mut self, steps: bool) {
+    pub(super) fn settle(&mut self, steps: bool) {
         self.take_calls();
         for _ in 0..64 {
             let queued = self.harness.trace().unreaped.borrow_mut().pop_first();
@@ -182,18 +182,18 @@ impl Run {
         panic!("the controller never settles: {:#?}", self.calls);
     }
 
-    fn snapshot(&self) -> StateSnapshot {
+    pub(super) fn snapshot(&self) -> StateSnapshot {
         self.harness.controller.snapshot()
     }
 
-    fn stop_id(&self) -> StopId {
+    pub(super) fn stop_id(&self) -> StopId {
         match self.snapshot().inferior {
             InferiorState::Stopped { stop_id, .. } => stop_id,
             _ => StopId::new(1),
         }
     }
 
-    fn process(&self) -> ProcessId {
+    pub(super) fn process(&self) -> ProcessId {
         match self.snapshot().inferior {
             InferiorState::Stopped { process_id, .. }
             | InferiorState::Running { process_id, .. } => process_id,
@@ -201,14 +201,14 @@ impl Run {
         }
     }
 
-    fn pause(&mut self) -> Reader {
+    pub(super) fn pause(&mut self) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let process_id = self.process();
         send(&mut self.harness, Request::Pause { process_id, reply });
         reader(receiver)
     }
 
-    fn resume(&mut self) -> Reader {
+    pub(super) fn resume(&mut self) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let process_id = self.process();
         let stop_id = self.stop_id();
@@ -225,7 +225,7 @@ impl Run {
         reader(receiver)
     }
 
-    fn add(&mut self, address: u64, hit_condition: Option<&str>) -> Reader {
+    pub(super) fn add(&mut self, address: u64, hit_condition: Option<&str>) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         send(
             &mut self.harness,
@@ -241,7 +241,7 @@ impl Run {
         reader(receiver)
     }
 
-    fn remove(&mut self) -> Reader {
+    pub(super) fn remove(&mut self) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         send(
             &mut self.harness,
@@ -254,7 +254,7 @@ impl Run {
     }
 
     /// The run's state, and what it published, since last asked.
-    fn describe(&mut self) -> String {
+    pub(super) fn describe(&mut self) -> String {
         let state = match self.snapshot().inferior {
             InferiorState::NotRunning => "not running".to_owned(),
             InferiorState::Running { execution_id, .. } => {
@@ -322,7 +322,7 @@ fn reason_text(reason: &StopReason) -> String {
 
 /// Two threads stopped at a pause, with a breakpoint at [`HIT_SITE`] that
 /// stops every hit, or none when `declining`.
-fn stopped(declining: bool) -> Run {
+pub(super) fn stopped(declining: bool) -> Run {
     let mut run = Run::new(watch_harness(2));
     let mut added = run.add(HIT_SITE, declining.then_some("==1000"));
     assert!(added().starts_with("ok"), "the setup's breakpoint");
@@ -330,7 +330,7 @@ fn stopped(declining: bool) -> Run {
     run
 }
 
-fn running(declining: bool) -> Run {
+pub(super) fn running(declining: bool) -> Run {
     let mut run = stopped(declining);
     let mut resumed = run.resume();
     run.settle(true);

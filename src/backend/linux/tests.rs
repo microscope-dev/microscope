@@ -2,6 +2,7 @@ mod lifecycle;
 mod pids;
 mod run_phase;
 mod session_model;
+mod traps;
 
 use crate::debug_info::{VariableContext, VariableRuntime};
 use crate::inspection::InspectionBudget;
