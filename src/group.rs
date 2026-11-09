@@ -1087,7 +1087,7 @@ impl Driver {
         };
         let resume = !live.gone && self.stops.is_running();
         if resume {
-            live.running = continue_stopped(&handle).await.is_ok();
+            live.running = continue_stopped(&handle, |_| true).await.is_ok();
         } else if let Ok(snapshot) = handle.snapshot().await
             && let InferiorState::Stopped { reason, .. } = snapshot.inferior
         {
@@ -1398,7 +1398,8 @@ impl Driver {
                 continue;
             }
 
-            match continue_stopped(&live.handle).await {
+            let known = [live.joined_at, live.stopped_at];
+            match continue_stopped(&live.handle, |stop| known.contains(&Some(stop))).await {
                 Ok(()) => {
                     live.running = true;
                     result = Ok(());
@@ -1520,8 +1521,13 @@ impl Driver {
     }
 }
 
-/// Continues a member stopped at its current stop.
-async fn continue_stopped(handle: &DebuggerHandle) -> Result<()> {
+/// Continues a member at its current stop, if `resumable` says it may.
+/// A stop the group has not seen is not resumed: its event is still on
+/// its way, and the group reports the stop when it arrives.
+async fn continue_stopped(
+    handle: &DebuggerHandle,
+    resumable: impl Fn(crate::StopId) -> bool,
+) -> Result<()> {
     let snapshot = handle.snapshot().await?;
     let InferiorState::Stopped {
         process_id,
@@ -1531,6 +1537,9 @@ async fn continue_stopped(handle: &DebuggerHandle) -> Result<()> {
     else {
         return Err(Error::NotStopped);
     };
+    if !resumable(stop_id) {
+        return Err(Error::NotStopped);
+    }
 
     handle
         .continue_execution(
@@ -1678,8 +1687,15 @@ mod tests {
 
     /// A driver for an unlaunched root, and the group's events.
     fn driver(scope: StopScope) -> (Driver, broadcast::Receiver<GroupEvent>) {
+        driver_of("fork", scope)
+    }
+
+    /// A driver for an unlaunched root running test program `program`.
+    fn driver_of(program: &str, scope: StopScope) -> (Driver, broadcast::Receiver<GroupEvent>) {
         let root = Debugger::new(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/fork"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("build/test-programs")
+                .join(program),
         )
         .expect("make the root session");
         let shared = Arc::new(Shared {
@@ -1689,6 +1705,32 @@ mod tests {
         });
         let (events, received) = broadcast::channel(GROUP_EVENT_CAPACITY);
         (Driver::new(shared, events, root, scope), received)
+    }
+
+    /// Serves the members' events as the driver's loop does, until the
+    /// group reports a stop.
+    async fn next_group_stop(
+        driver: &mut Driver,
+        received: &mut broadcast::Receiver<GroupEvent>,
+    ) -> GroupEvent {
+        let served = async {
+            loop {
+                while let Ok(event) = received.try_recv() {
+                    if matches!(event, GroupEvent::GroupStopped { .. }) {
+                        return event;
+                    }
+                }
+                match driver.internal.1.recv().await.expect("the members' events") {
+                    Internal::Event(member, event) => driver.event(member, event).await,
+                    Internal::PauseFailed(member) => driver.paused(member, None),
+                    Internal::Lagged(member) => driver.resync(member).await,
+                    Internal::Ended(member) => driver.ended(member),
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), served)
+            .await
+            .expect("the group stops in time")
     }
 
     fn breakpoint_stop() -> StopReason {
@@ -1732,6 +1774,81 @@ mod tests {
         );
         assert!(resumed.await.is_ok(), "the resume is answered");
         assert!(driver.stops.is_running(), "the group runs");
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
+            .await
+            .expect("end the root session in time")
+            .expect("end the root session");
+    }
+
+    /// A member stepped through its own session can stop again before
+    /// the group sees its events. A continue of the group must leave that
+    /// stop for its event to report, not resume it and then report it
+    /// while the member runs.
+    #[tokio::test]
+    async fn a_continue_leaves_a_stop_the_group_has_not_seen() {
+        let (mut driver, mut received) = driver_of("basic", StopScope::Group);
+        let root = driver.root.clone();
+        let breakpoint = root
+            .add_breakpoint(crate::BreakpointSpec::Function(
+                "breakpoint_target".to_owned(),
+            ))
+            .await
+            .expect("add the breakpoint");
+        root.launch_with(crate::LaunchOptions::default())
+            .await
+            .expect("launch the root");
+        next_group_stop(&mut driver, &mut received).await;
+
+        let InferiorState::Stopped {
+            process_id,
+            thread_id,
+            stop_id: shown,
+            ..
+        } = root.snapshot().await.expect("the root's state").inferior
+        else {
+            panic!("the root is not at its breakpoint");
+        };
+        root.remove_breakpoint(breakpoint.id)
+            .await
+            .expect("remove the breakpoint");
+
+        // The step's events wait for the driver until after the continue.
+        let mut own = root.subscribe();
+        root.start_step(
+            shown,
+            thread_id,
+            crate::StackFrameId::INNERMOST,
+            crate::StepKind::Instruction,
+            ResumeScope::Process(process_id),
+            ExceptionDisposition::Pass,
+        )
+        .await
+        .expect("step the root");
+        let stepped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(DebuggerEvent::InferiorStopped { stop_id, .. }) = own.recv().await {
+                    return stop_id;
+                }
+            }
+        })
+        .await
+        .expect("the step stops in time");
+        let _ = driver.continue_all().await;
+
+        assert_eq!(
+            next_group_stop(&mut driver, &mut received).await,
+            GroupEvent::GroupStopped {
+                member: 1,
+                reason: StopReason::Step {
+                    kind: crate::StepKind::Instruction,
+                },
+            }
+        );
+        let now = root.snapshot().await.expect("the root's state").inferior;
+        assert!(
+            matches!(now, InferiorState::Stopped { stop_id, .. } if stop_id == stepped),
+            "the group reports the step's stop {stepped:?}, and the root is {now:?}"
+        );
         tokio::time::timeout(std::time::Duration::from_secs(5), driver.shutdown())
             .await
             .expect("end the root session in time")
