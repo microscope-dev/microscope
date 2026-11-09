@@ -347,6 +347,37 @@ test("closed panes reopen as they looked, Back and Forward step through looks, a
   await expect(tab(page, "calls.usprof")).toHaveCount(0);
 });
 
+test("a closed overview reopens on its profile's selection, from View and from Explorer, and adds no views", async ({
+  page,
+  microscope,
+}, info) => {
+  const served = await microscope.start([calls(info, "leaf", "calls.usprof")]);
+  await join(page, served.link);
+  await showView(page, "Functions");
+  await chooseFunction(page, "middle");
+  await expect(page).toHaveURL(/fn=middle/u);
+  const closeOverview = async () => {
+    await page.getByRole("button", { name: "Close calls.usprof", exact: true }).click();
+    await expect(tab(page, "calls.usprof")).toHaveCount(0);
+  };
+
+  await closeOverview();
+  await showView(page, "Functions");
+  await menu(page, "View", "Profile overview");
+  await expect(tab(page, "calls.usprof")).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/fn=middle/u);
+  await expect(page).not.toHaveURL(/view=/u);
+
+  await closeOverview();
+  await tab(page, "Explorer").click();
+  await page.getByRole("button", { name: "calls.usprof", exact: true }).click();
+  await expect(tab(page, "calls.usprof")).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/fn=middle/u);
+  for (const title of ["Flame graph", "Call tree", "Functions"]) {
+    await expect(tab(page, title)).toHaveCount(1);
+  }
+});
+
 test("two profiles side by side each keep their zones, and Escape lets go only in the one it is in", async ({
   page,
   microscope,

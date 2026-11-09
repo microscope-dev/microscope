@@ -46,7 +46,10 @@ const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {
         }
         const params = found.params as { name?: unknown; look?: unknown };
         const link = `l${next++}`;
-        links[link] = { profile: found.key, name: params.name ?? "", look: params.look ?? {} };
+        const look = (params.look ?? {}) as { view?: unknown };
+        // What it showed opens as that view's pane, looking as it did.
+        const show = look.view ? { view: look.view, own: look } : null;
+        links[link] = { profile: found.key, name: params.name ?? "", look, show };
         return [id, { ...found, params: { name: params.name ?? "", link } }];
       }),
     );

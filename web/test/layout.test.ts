@@ -7,6 +7,7 @@ import { join } from "node:path";
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
+import { readLink } from "../src/ui/profile/link";
 import {
   activate,
   build,
@@ -524,7 +525,11 @@ describe("a link", () => {
         links: undefined,
         root: { type: "group", id: "g0", tabs: ["p1"], active: "p1" },
         panes: {
-          p1: { kind: "profile", key: "ab12", params: { name: "x.usprof", look: { fn: "leaf" } } },
+          p1: {
+            kind: "profile",
+            key: "ab12",
+            params: { name: "x.usprof", look: { fn: "leaf", view: "tree", invert: "1" } },
+          },
         },
         next: 2,
       },
@@ -534,8 +539,13 @@ describe("a link", () => {
       throw new Error(loaded.why);
     }
     expect(loaded.layout.panes["p1" as PaneId]?.params).toEqual({ name: "x.usprof", link: "l2" });
-    expect(loaded.layout.links).toEqual({
-      l2: { profile: "ab12", name: "x.usprof", look: { fn: "leaf" } },
+    // The view it showed opens, drawing as it did, once the profile is read.
+    expect(readLink(loaded.layout.links["l2" as LinkId])).toEqual({
+      profile: "ab12",
+      name: "x.usprof",
+      look: { fn: "leaf" },
+      offered: null,
+      show: { view: "tree", own: { invert: "1" } },
     });
     expect(loaded.layout.next).toBe(3);
   });

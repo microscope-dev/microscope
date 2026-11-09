@@ -45,7 +45,7 @@ import { Output, OutputBadge } from "./Output";
 import { fileName } from "./paths";
 import { StartBody } from "./Picker";
 import { Processes, ProcessesBadge } from "./Processes";
-import { overview, paneParams, readLink, showProfile as openOverview } from "./profile/link";
+import { overview, paneParams, showOverview } from "./profile/link";
 import { ProfilePaneBody } from "./profile/ProfilePage";
 import { Registers, RegistersBadge } from "./Registers";
 import { KeysBody, SettingsBody } from "./Settings";
@@ -166,7 +166,10 @@ function profileKind(id: KindId, title: Kind["title"]): Kind {
 
 function ProfileBadge({ pane }: PaneProps) {
   const link = paneParams(pane).link;
-  const name = useLink(link, (value) => readLink(value)?.name ?? "");
+  const name = useLink(link, (value) => {
+    const held = value as { name?: unknown } | null | undefined;
+    return typeof held?.name === "string" ? held.name : "";
+  });
   // The space keeps the tab's name "Flame graph go.usprof" for a screen
   // reader; the tab's gap spaces them on screen.
   return name ? <span className="muted"> {fileName(name)}</span> : null;
@@ -256,7 +259,7 @@ export function showPane(kind: KindId): void {
  * not open. */
 export function showProfile(id: string, name: string): void {
   change(
-    (layout) => openOverview(layout, id, name, documentsGroup(layout, tab.getState().files)).layout,
+    (layout) => showOverview(layout, id, name, documentsGroup(layout, tab.getState().files)).layout,
   );
 }
 

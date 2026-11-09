@@ -55,7 +55,8 @@ export function useTreeSearch(
 /** One row that searches a view's frames and holds the selected one's
  * details, the same in every view, and ends in its Options. A click on a
  * frame puts its name in the search; typing lets it go, and emptying the
- * search clears, as Clear does. `reset` also clears what else the view keeps, such as a zoom. */
+ * search clears, as Clear does. `reset` also clears what else the view
+ * keeps, such as a zoom. */
 export function SearchRow({
   search,
   onSearch,

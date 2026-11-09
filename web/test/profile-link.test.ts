@@ -13,6 +13,7 @@ import {
   openProfile,
   readLink,
   showAddress,
+  showOverview,
   showView,
   storeLook,
   viewOf,
@@ -172,15 +173,42 @@ describe("a profile's panes", () => {
     expect(lookOf(stored.layout, flame)?.z).toEqual(["2"]);
   });
 
-  it("move a look of another view to that view's pane", () => {
+  it("show another view's pane as it draws, with the selection shared", () => {
     const { layout } = arranged();
     const flame = only(layout, "flame");
-    const stored = storeLook(layout, flame, { view: "functions", invert: "1" });
-    const functions = only(stored.layout, "functions");
+    const functions = only(layout, "functions");
+    const byAddress = storeLook(layout, functions, { view: "functions", by: "address" }).layout;
+    const inverted = storeLook(byAddress, flame, { view: "flame", invert: "1" }).layout;
+    const stored = storeLook(inverted, flame, { view: "functions", invert: "1", fn: "work" });
     expect(stored.pane).toBe(functions);
     expect(groupOf(stored.layout, functions)?.active).toBe(functions);
-    expect(lookOf(stored.layout, functions)?.invert).toBe("1");
-    expect(lookOf(stored.layout, flame)?.invert).toBeUndefined();
+    expect(lookOf(stored.layout, functions)).toEqual({
+      view: "functions",
+      by: "address",
+      fn: "work",
+    });
+    expect(lookOf(stored.layout, flame)?.invert).toBe("1");
+  });
+
+  it("reopen a closed overview, and show it from Explorer on the same link", () => {
+    const { layout, link } = arranged();
+    const flame = only(layout, "flame");
+    const withFn = storeLook(layout, flame, { view: "flame", fn: "work" }).layout;
+    const closed = close(withFn, only(withFn, null));
+
+    const shown = showView(closed, link, null);
+    expect(shown.pane).toBe(only(shown.layout, null));
+    expect(focusedPane(shown.layout)).toBe(shown.pane);
+    expect(lookOf(shown.layout, shown.pane as PaneId)?.fn).toBe("work");
+    expect(checkLayout(shown.layout)).toEqual([]);
+
+    const explored = showOverview(closed, "p1", "x.usprof", G0);
+    expect(Object.keys(explored.layout.links)).toEqual([link]);
+    expect(linkOf(explored.layout.panes[explored.pane] as Pane)).toBe(link);
+    expect(viewOf(explored.layout.panes[explored.pane] as Pane)).toBeNull();
+    // Arranging it again opens nothing new.
+    const again = arrange(explored.layout, link, summary());
+    expect(Object.keys(again.panes)).toHaveLength(Object.keys(explored.layout.panes).length);
   });
 
   it("reopen a closed view where its sort is", () => {
@@ -258,6 +286,22 @@ describe("an address", () => {
     const changed = showAddress(fork.layout, "p1", "x.usprof", { view: "flame", fn: "f" }, G0);
     expect(lookOf(changed, fork.pane)?.fn).toBe("f");
     expect(lookOf(changed, flame)?.fn).toBeUndefined();
+  });
+
+  it("changes the link whose look it is when no profile pane is focused", () => {
+    const { layout } = arranged();
+    const flame = only(layout, "flame");
+    const fork = duplicate(layout, flame, true);
+    if (!fork) {
+      throw new Error("a profile pane duplicates");
+    }
+    const look = { view: "flame", fn: "f", range: "1-5" } as const;
+    const forked = storeLook(fork.layout, fork.pane, look).layout;
+    const explorer = open(forked, { kind: KIND.explorer, key: "", params: null }).layout;
+
+    const reloaded = showAddress(explorer, "p1", "x.usprof", look, G0);
+    expect(lookOf(reloaded, fork.pane)).toEqual(look);
+    expect(lookOf(reloaded, flame)).toEqual({ view: "flame" });
   });
 
   it("names the profile's overview once its name is known", () => {

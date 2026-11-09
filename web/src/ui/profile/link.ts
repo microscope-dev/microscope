@@ -244,6 +244,25 @@ function place(
   return beside ? openBeside(layout, pane, beside, "right") : open(layout, pane);
 }
 
+/** Opens a link's overview above the first of its panes, or alone. */
+function placeOverview(
+  layout: Layout,
+  link: LinkId,
+  name: string,
+): { layout: Layout; pane: PaneId } {
+  const pane = profilePane(null, link, link, {}, name);
+  const first = panesOn(layout, link)[0];
+  const group = first ? groupOf(layout, first) : null;
+  if (!group) {
+    return open(layout, pane);
+  }
+  const opened = open(layout, pane, group.id);
+  return {
+    layout: move(opened.layout, opened.pane, { type: "side", group: group.id, side: "top" }),
+    pane: opened.pane,
+  };
+}
+
 /** Shows the pane of a view on `link`, opening it where it belongs when
  * there is none, and focuses it. Before its views are offered, it asks for
  * the view to be shown once they are, and shows the overview. */
@@ -264,9 +283,14 @@ export function showView(
     const show = view === null ? null : { view, own: {} };
     const asked = setLink(layout, link, linkValue({ ...held, show }));
     const front = paneOfView(asked, link, null);
-    return front ? { layout: activate(asked, front), pane: front } : { layout: asked, pane: null };
+    if (front) {
+      return { layout: activate(asked, front), pane: front };
+    }
+    if (view !== null) {
+      return { layout: asked, pane: null };
+    }
   }
-  const placed = place(layout, link, view);
+  const placed = view === null ? placeOverview(layout, link, held.name) : place(layout, link, view);
   return { layout: activate(placed.layout, placed.pane), pane: placed.pane };
 }
 
@@ -286,20 +310,19 @@ export function overview(
   };
 }
 
-/** Shows a profile's overview, opening it in `group` reading a new link
- * when no overview shows the profile. */
-export function showProfile(
+/** Shows a profile's overview, reopening it on its link when it was
+ * closed, or opening it in `group` reading a new link when no pane shows
+ * the profile. */
+export function showOverview(
   layout: Layout,
   profile: string,
   name: string,
   group: GroupId,
 ): { layout: Layout; pane: PaneId } {
-  const found = (Object.keys(layout.panes) as PaneId[]).find((id) => {
-    const pane = layout.panes[id] as Pane;
-    return viewOf(pane) === null && profileOf(layout, pane) === profile;
-  });
-  return found
-    ? { layout: activate(layout, found), pane: found }
+  const link = linkTo(layout, profile, {});
+  const shown = link ? showView(layout, link, null) : null;
+  return shown?.pane
+    ? { layout: shown.layout, pane: shown.pane }
     : openProfile(layout, profile, name, {}, group);
 }
 
@@ -337,7 +360,7 @@ function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
 
 /** Whether a profile's overview draws its timeline: not when it keeps no
  * times, nor for a trace alone, whose Syscalls pane draws its lanes. */
-export function timeline(summary: ProfileSummary): boolean {
+export function drawsTimeline(summary: ProfileSummary): boolean {
   const traceOnly = summary.samples === 0 && summary.syscalls > 0 && summary.zoneSites.length === 0;
   return summary.timed && !traceOnly;
 }
@@ -406,7 +429,7 @@ export function arrange(
     const kept = shownBefore.get(group);
     next = activate(next, !first && kept && next.panes[kept] ? kept : pane);
   }
-  if (firsts.size > 0 && !timeline(summary)) {
+  if (firsts.size > 0 && !drawsTimeline(summary)) {
     next = shrinkOverview(next, link);
   }
 
@@ -424,11 +447,13 @@ export function arrange(
 
 /** Keeps the look a profile's pane shows: what its panes share in its
  * link, what it keeps to itself in its params. A look of another view
- * shows that view's pane, which keeps it, and the pane shown is returned. */
+ * shows that view's pane, which is returned; that pane keeps how it draws
+ * unless `carry`, as when an address says how. */
 export function storeLook(
   layout: Layout,
   id: PaneId,
   look: ProfileLook,
+  carry = false,
 ): { layout: Layout; pane: PaneId } {
   const pane = layout.panes[id];
   const view = pane ? viewOf(pane) : undefined;
@@ -450,13 +475,15 @@ export function storeLook(
     // Its view opens once the views are offered, keeping what it keeps.
     const pending = readLink(shown.layout.links[params.link]);
     const asked =
-      pending && wanted !== null
+      pending && wanted !== null && carry
         ? setLink(shown.layout, params.link, linkValue({ ...pending, show: { view: wanted, own } }))
         : shown.layout;
     return { layout: asked, pane: target ?? id };
   }
   return {
-    layout: setParams(shown.layout, target, toParams({ ...paneParams(into), own })),
+    layout: carry
+      ? setParams(shown.layout, target, toParams({ ...paneParams(into), own }))
+      : shown.layout,
     pane: target,
   };
 }
@@ -477,18 +504,21 @@ export function shownProfilePane(layout: Layout): PaneId | null {
   return shown.find((id) => viewOf(layout.panes[id] as Pane) !== undefined) ?? null;
 }
 
-/** The link the address's profile is shown through: the leading pane's if
- * it shows that profile, else the first link to it. */
-function linkTo(layout: Layout, profile: string): LinkId | null {
+/** The link a look at a profile is shown through: the leading pane's if
+ * it shows that profile, else the first link to it already looking as
+ * `look` does, as after a reload, else the first link to it. */
+function linkTo(layout: Layout, profile: string, look: ProfileLook): LinkId | null {
   const lead = leadingPane(layout);
   const leadLink = lead ? linkOf(layout.panes[lead] as Pane) : null;
   if (leadLink && readLink(layout.links[leadLink])?.profile === profile) {
     return leadLink;
   }
-  const links = (Object.keys(layout.links) as LinkId[]).filter(
-    (link) => readLink(layout.links[link])?.profile === profile,
-  );
-  return links.toSorted((a, b) => Number(a.slice(1)) - Number(b.slice(1)))[0] ?? null;
+  const shared = JSON.stringify(splitLook(validateProfileLook({ ...look })).shared);
+  const links = (Object.keys(layout.links) as LinkId[])
+    .filter((link) => readLink(layout.links[link])?.profile === profile)
+    .toSorted((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  const same = links.find((link) => JSON.stringify(readLink(layout.links[link])?.look) === shared);
+  return same ?? links[0] ?? null;
 }
 
 /** Shows what an address names: the profile's pane of its view, looking
@@ -501,30 +531,36 @@ export function showAddress(
   look: ProfileLook,
   documents: GroupId,
 ): Layout {
-  const link = linkTo(layout, profile);
+  const link = linkTo(layout, profile, look);
   if (!link) {
     return openProfile(layout, profile, name, look, documents).layout;
   }
-  const named = name ? nameProfile(layout, link, name) : layout;
+  const named = name ? nameProfile(layout, profile, name) : layout;
   const lead = leadingPane(named);
   const from =
     lead && linkOf(named.panes[lead] as Pane) === link ? lead : paneOfView(named, link, null);
   if (from) {
-    return storeLook(named, from, look).layout;
+    return storeLook(named, from, look, true).layout;
   }
   const shown = showView(named, link, look.view ?? null);
-  return shown.pane ? storeLook(shown.layout, shown.pane, look).layout : shown.layout;
+  return shown.pane ? storeLook(shown.layout, shown.pane, look, true).layout : shown.layout;
 }
 
-/** Names a link's profile, as its overview's tab and its views' badges
- * show it. */
-function nameProfile(layout: Layout, link: LinkId, name: string): Layout {
-  const held = readLink(layout.links[link]);
-  let named = held ? setLink(layout, link, linkValue({ ...held, name })) : layout;
-  for (const id of panesOn(named, link)) {
-    const pane = named.panes[id] as Pane;
-    if (viewOf(pane) === null) {
-      named = setParams(named, id, toParams({ ...paneParams(pane), name }));
+/** Names a profile in each link to it, as its overviews' tabs and its
+ * views' badges show it. */
+function nameProfile(layout: Layout, profile: string, name: string): Layout {
+  let named = layout;
+  for (const link of Object.keys(layout.links) as LinkId[]) {
+    const held = readLink(layout.links[link]);
+    if (held?.profile !== profile || held.name === name) {
+      continue;
+    }
+    named = setLink(named, link, linkValue({ ...held, name }));
+    for (const id of panesOn(named, link)) {
+      const pane = named.panes[id] as Pane;
+      if (viewOf(pane) === null) {
+        named = setParams(named, id, toParams({ ...paneParams(pane), name }));
+      }
     }
   }
   return named;

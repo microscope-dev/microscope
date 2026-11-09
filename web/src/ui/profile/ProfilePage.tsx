@@ -52,7 +52,15 @@ import { CommandBlock, FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
 import { Lanes } from "./Lanes";
-import { arrange, lookOf, paneParams, readLink, storeLook, timeline, viewOf } from "./link";
+import {
+  arrange,
+  drawsTimeline,
+  lookOf,
+  paneParams,
+  readLink,
+  storeLook,
+  viewOf,
+} from "./link";
 import { Chip, ClearChip, LaneChip, LookButton, ShareBar } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { TreeView } from "./TreeView";
@@ -144,7 +152,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
       look={look}
       setLook={setLook}
       leads={leads}
-      onSummary={view === null ? offer : undefined}
+      onSummary={offer}
     />
   );
 }
@@ -312,7 +320,7 @@ function Overview() {
       {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
       <ProfileHead info={info} />
       {summary.timed ? (
-        timeline(summary) ? (
+        drawsTimeline(summary) ? (
           <Lanes />
         ) : null
       ) : (
@@ -325,8 +333,8 @@ function Overview() {
   );
 }
 
-/** The profile's name, the views, and everything the query holds, each
- * removable where it shows. */
+/** The profile's name, and everything the query holds, each removable
+ * where it shows. */
 function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
   const { summary, look, setLook } = useProfile();
   const [detailing, setDetailing] = useState(false);
