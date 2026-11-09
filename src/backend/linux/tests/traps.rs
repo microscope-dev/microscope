@@ -341,8 +341,8 @@ fn each_trap_event_settles_the_same_in_each_phase() {
         "stopped by a signal in a step over a trap / pause: AlreadyStopped -> stopped Exception(ExceptionInfo { code: 10, description: \"SIGUSR1 (SI_USER)\" }) by 5001 [] {} (b1:1 b2:0)",
         "stopped by a signal in a step over a trap / remove: ok, continue ok -> running e3 [breakpoints, continued e3] {remove_site 0x40, continue 5000 None, continue 5001 Some(SIGUSR1)} (b2:0)",
         "stopped by a signal in a step over a trap / add at the hit: ok, continue ok -> running e3 [breakpoints, continued e3] {continue 5001 Some(SIGUSR1)} (b1:1 b2:0 b3:0)",
-        "stopped by a signal in a step over a trap / jump: ok, continue ok -> running e4 [stopped e3 Jump by 5001, continued e4] {set_registers 5001 rip=0x60, continue 5001 Some(SIGUSR1)} (b1:1 b2:0)",
-        "stopped by a signal in a step over a trap / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, continue 5001 Some(SIGUSR1)} (b1:1 b2:0 b3:0)",
+        "stopped by a signal in a step over a trap / jump: ok, continue ok -> running e4 [stopped e3 Jump by 5001, continued e4] {set_registers 5001 rip=0x60, continue 5000 None, continue 5001 Some(SIGUSR1)} (b1:1 b2:0)",
+        "stopped by a signal in a step over a trap / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, continue 5000 None, continue 5001 Some(SIGUSR1)} (b1:1 b2:0 b3:0)",
         "running a handler that interrupted a step over a trap / continue: NotStopped -> running e2 [] {} (b1:1 b2:0)",
         "running a handler that interrupted a step over a trap / pause: ok -> stopped Pause by 5001 [stopped e2 Pause by 5001] {request_stop 5001} (b1:1 b2:0)",
         "running a handler that interrupted a step over a trap / remove: ok -> running e2 [breakpoints] {request_stop 5001, remove_site 0x40, continue 5000 None, continue 5001 None} (b2:0)",
@@ -397,6 +397,27 @@ fn a_hit_in_a_handler_that_interrupted_a_step_over_a_trap_counts_that_trap_once(
     assert!(
         run.runs(THREAD) && run.runs(SIBLING),
         "both threads run once the trap is stepped over: {}",
+        run.describe()
+    );
+}
+
+/// A thread stopped by a signal before it stepped over a trap would
+/// execute that trap again once its handler returns, so it runs alone to
+/// it. Moved elsewhere, its handler returns there instead, and it runs
+/// with its sibling.
+#[test]
+fn a_thread_moved_off_a_trap_a_signal_kept_it_from_stepping_over_runs_with_its_siblings() {
+    let mut run = phase("stopped by a signal in a step over a trap");
+    let mut jumped = run.jump(THREAD);
+    run.settle(true);
+    assert!(jumped().starts_with("ok"), "the jump");
+
+    let mut resumed = run.resume();
+    run.settle(true);
+    assert_eq!(resumed(), "ok");
+    assert!(
+        run.runs(THREAD) && run.runs(SIBLING),
+        "both threads run: {}",
         run.describe()
     );
 }

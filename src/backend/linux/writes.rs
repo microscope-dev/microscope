@@ -315,6 +315,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.next_execution = execution.get();
         let thread = inferior.thread_mut(pid)?;
         thread.stopped_at_breakpoint = thread.stopped_at_breakpoint.filter(|trap| *trap == pc);
+
+        // A signal's handler returns where the thread now stands, not to
+        // the trap it would have executed again.
+        thread.awaiting_breakpoint = thread.awaiting_breakpoint.filter(|trap| *trap == pc);
         thread.reason = Some(reason.clone());
         let stop = inferior.run.stop_mut().ok_or(Error::NotStopped)?;
         stop.id = stop_id;
