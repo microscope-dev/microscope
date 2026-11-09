@@ -247,6 +247,73 @@ struct Gate {
     spans: Vec<(u64, u64)>,
 }
 
+impl Gate {
+    /// The recording wants sampling `on`: whether the sampling events are
+    /// to be on, which they are not while the reader is behind.
+    const fn want(&mut self, on: bool) -> bool {
+        self.off = !on;
+        on && self.behind.is_none()
+    }
+
+    /// The reader fell `behind`, or caught up, at `now`: what the sampling
+    /// events are to become, if anything. Sampling stays off for the
+    /// recording while it wants it off.
+    fn fall_behind(&mut self, behind: bool, now: u64) -> Option<bool> {
+        if behind {
+            assert!(self.behind.is_none(), "the reader fell behind twice");
+            self.behind = Some(now);
+            return (!self.off).then_some(false);
+        }
+
+        let since = self.behind.take()?;
+        self.spans.push((since, now));
+        (!self.off).then_some(true)
+    }
+
+    /// Each span the reader was behind that no earlier call took. A span
+    /// still going ends at `until` if given, and is otherwise left for
+    /// later.
+    fn take_spans(&mut self, until: Option<u64>) -> Vec<(u64, u64)> {
+        if let Some(until) = until
+            && let Some(since) = self.behind.take()
+        {
+            self.spans.push((since, until.max(since)));
+        }
+
+        std::mem::take(&mut self.spans)
+    }
+}
+
+/// What the reader does on one pass, with `queued` bytes held for
+/// processing of at most `limit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// Wait for processing to take some. Breakpoints keep counting
+    /// meanwhile, and the kernel counts the samples the rings cannot hold.
+    Wait,
+
+    /// Drain the rings, behind or not, keeping only the top of each
+    /// sample's stack copy when `shorten`.
+    Drain { behind: bool, shorten: bool },
+}
+
+impl Pass {
+    /// A clock's sampling can pause at a full queue, whose samples
+    /// `shortens` says can be cut short as it nears full. Breakpoints
+    /// cannot pause, or they would lose counts.
+    const fn of(queued: usize, limit: usize, pause_on_full: bool, shortens: bool) -> Self {
+        let full = queued >= limit;
+        if full && !pause_on_full {
+            return Self::Wait;
+        }
+
+        Self::Drain {
+            behind: full,
+            shorten: shortens && queued >= limit / 4 * 3,
+        }
+    }
+}
+
 /// What a recording's events counted and lost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -636,22 +703,28 @@ impl Events {
                     let mut queue = queue
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if !self.pause_on_full && queue.bytes >= self.queue_bytes {
+                    let pass = Pass::of(
+                        queue.bytes,
+                        self.queue_bytes,
+                        self.pause_on_full,
+                        !sampling.is_empty(),
+                    );
+                    let Pass::Drain {
+                        behind: now_behind,
+                        shorten,
+                    } = pass
+                    else {
                         drop(queue);
                         // A full ring is readable at once, so polling it
                         // here would spin until processing takes the queue.
                         std::thread::sleep(self.reader_wait);
                         continue;
-                    }
-                    if (queue.bytes >= self.queue_bytes) != behind {
-                        behind = !behind;
+                    };
+                    if now_behind != behind {
+                        behind = now_behind;
                         self.fall_behind(behind);
                     }
-                    if sampling.is_empty() || queue.bytes < self.queue_bytes / 4 * 3 {
-                        for ring in &self.rings {
-                            queue.drain_ring(ring, ring_bytes, block);
-                        }
-                    } else {
+                    if shorten {
                         // Processing is behind, so a sample keeps only the
                         // top of its stack, rather than sampling stop.
                         for ring in &self.rings {
@@ -668,6 +741,10 @@ impl Events {
                             );
                             queue.bytes += into.len() - before;
                             self.shortened.fetch_add(shortened, Ordering::Relaxed);
+                        }
+                    } else {
+                        for ring in &self.rings {
+                            queue.drain_ring(ring, ring_bytes, block);
                         }
                     }
                     drop(queue);
@@ -697,20 +774,14 @@ impl Events {
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(on) = gate.fall_behind(behind, sys::monotonic()) {
+            self.enable_sampling(on);
+        }
+        drop(gate);
         if behind {
-            if !gate.off {
-                self.enable_sampling(false);
-            }
-            gate.behind = Some(sys::monotonic());
-            drop(gate);
             record!("perf: the reader is behind, sampling is off");
-        } else if let Some(since) = gate.behind.take() {
-            gate.spans.push((since, sys::monotonic()));
-            if !gate.off {
-                self.enable_sampling(true);
-            }
-            drop(gate);
-            record!("perf: the reader caught up, sampling is on");
+        } else {
+            record!("perf: the reader caught up");
         }
     }
 
@@ -719,17 +790,10 @@ impl Events {
     /// still going ends at `until` if given, and is otherwise left for
     /// later.
     pub fn behind(&self, until: Option<u64>) -> Vec<(u64, u64)> {
-        let mut gate = self
-            .gate
+        self.gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(until) = until
-            && let Some(since) = gate.behind.take()
-        {
-            gate.spans.push((since, until.max(since)));
-        }
-
-        std::mem::take(&mut gate.spans)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take_spans(until)
     }
 
     /// Makes the queue full at `bytes`, so that a test fills it in a few
@@ -807,8 +871,7 @@ impl Events {
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        gate.off = !on;
-        self.enable_sampling(on && gate.behind.is_none());
+        self.enable_sampling(gate.want(on));
     }
 
     /// Starts or stops the sampling events alone.
@@ -1736,6 +1799,96 @@ pub fn tsc_anchor() -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A full queue makes the reader wait for a breakpoint, which must keep
+    /// counting, and fall behind for a clock, whose sampling turns off. A
+    /// clock's samples are cut short from three quarters full on.
+    #[test]
+    fn a_full_queue_pauses_a_clocks_sampling_but_never_a_breakpoints() {
+        const LIMIT: usize = 64;
+        let drain = |behind, shorten| Pass::Drain { behind, shorten };
+
+        let breakpoint = |queued| Pass::of(queued, LIMIT, false, false);
+        assert_eq!(breakpoint(0), drain(false, false));
+        assert_eq!(breakpoint(LIMIT - 1), drain(false, false));
+        assert_eq!(breakpoint(LIMIT), Pass::Wait);
+        assert_eq!(breakpoint(2 * LIMIT), Pass::Wait);
+
+        let clock = |queued| Pass::of(queued, LIMIT, true, true);
+        assert_eq!(clock(47), drain(false, false));
+        assert_eq!(clock(48), drain(false, true));
+        assert_eq!(clock(LIMIT - 1), drain(false, true));
+        assert_eq!(clock(LIMIT), drain(true, true));
+
+        // Samples whose events cannot be told apart are kept whole.
+        assert_eq!(Pass::of(LIMIT, LIMIT, true, false), drain(true, false));
+    }
+
+    /// A reader starved for a while keeps sampling off from when its queue
+    /// filled until it caught up, whatever the budget asks meanwhile, and a
+    /// budget pause outlasts a catch-up. Each span it was behind is taken
+    /// once, and one still going when the recording ends ends there.
+    #[test]
+    fn a_starved_reader_keeps_sampling_off_until_it_catches_up_whatever_the_budget_asks() {
+        enum Step {
+            Queued(usize),
+            Budget(bool),
+        }
+        use Step::{Budget, Queued};
+        const LIMIT: usize = 64;
+
+        let mut gate = Gate::default();
+        let (mut on, mut behind) = (true, false);
+        let mut seen = Vec::new();
+        for (time, step) in [
+            (10, Queued(50)),
+            (20, Queued(LIMIT)),
+            (30, Budget(false)),
+            (40, Queued(0)),
+            (50, Budget(true)),
+            (60, Queued(LIMIT + 6)),
+            (70, Budget(true)),
+            (75, Budget(false)),
+            (78, Budget(true)),
+            (80, Queued(10)),
+            (90, Queued(LIMIT)),
+        ] {
+            match step {
+                Budget(wanted) => on = gate.want(wanted),
+                Queued(queued) => {
+                    let Pass::Drain { behind: now, .. } = Pass::of(queued, LIMIT, true, true)
+                    else {
+                        panic!("a clock's reader never waits");
+                    };
+                    if now != behind {
+                        behind = now;
+                        on = gate.fall_behind(now, time).unwrap_or(on);
+                    }
+                }
+            }
+            seen.push((time, on));
+        }
+
+        assert_eq!(
+            seen,
+            [
+                (10, true),
+                (20, false),
+                (30, false),
+                (40, false),
+                (50, true),
+                (60, false),
+                (70, false),
+                (75, false),
+                (78, false),
+                (80, true),
+                (90, false),
+            ]
+        );
+        assert_eq!(gate.take_spans(None), [(20, 40), (60, 80)]);
+        assert_eq!(gate.take_spans(Some(100)), [(90, 100)]);
+        assert_eq!(gate.take_spans(Some(120)), []);
+    }
 
     /// The end of a readable mapping of this process with nothing mapped
     /// just past it.
