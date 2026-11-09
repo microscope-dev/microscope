@@ -1,8 +1,9 @@
 //! A program instrumented with microscope's probes SDK. Each mode waits until
 //! microscope listens, does its work, and exits. A mode a test records waits
 //! for a line on its standard input, which the test writes once the profile
-//! shows microscope has read the program's instrumentation; the modes whose
-//! subject is `found` itself, or that a person runs, wait for that instead.
+//! shows microscope has read the program's instrumentation, or, given no
+//! input, until microscope has found it; the modes whose subject is `found`
+//! itself, or that a person runs, wait for `found`.
 //!
 //! - `zones`: three rounds of nested zones, each in a label, with a plot,
 //!   a message, and a frame, while a worker thread runs zones of its own,
@@ -88,10 +89,11 @@ fn main() {
     }
 }
 
-/// Waits for the test to say microscope has read the program, with a line,
-/// or the end of its input once the test gives up. It reads a byte at a
-/// time, past any buffer, so that a line meant for the program it executes
-/// stays for it.
+/// Waits for the test to say microscope has read the program, with a line.
+/// Input that ends with no line, as a recording from the command line
+/// gives, leaves it to wait until microscope has found it. It reads a byte
+/// at a time, past any buffer, so that a line meant for the program it
+/// executes stays for it.
 fn wait_for_release() {
     use std::io::Read as _;
     use std::os::fd::FromRawFd as _;
@@ -100,7 +102,15 @@ fn wait_for_release() {
     // is never dropped, so it is never closed.
     let mut input = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut byte = [0];
-    while input.read(&mut byte).expect("a line") == 1 && byte[0] != b'\n' {}
+    loop {
+        if input.read(&mut byte).expect("a line") == 0 {
+            wait_until_found();
+            return;
+        }
+        if byte[0] == b'\n' {
+            return;
+        }
+    }
 }
 
 /// Waits until microscope has found the program and switched the sites on.
