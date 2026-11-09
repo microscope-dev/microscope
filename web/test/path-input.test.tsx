@@ -114,3 +114,166 @@ it("passes Tab through an empty field and stops descending at a directory", asyn
   await userEvent.keyboard("{ArrowDown}{Tab}");
   await expect.element(field()).toHaveValue("build/web/");
 });
+
+it("forgets a waiting Tab when the field loses focus", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  const early = await asked(server, "b");
+  await userEvent.keyboard("{Tab}");
+  await expect.element(field()).toHaveFocus();
+
+  await userEvent.click(next());
+  server.answer(early, entries({ text: "build/", kind: "directory" }));
+  await userEvent.click(field());
+  server.answer(await asked(server, "b"), entries({ text: "build/", kind: "directory" }));
+  await expect.element(page.getByRole("option", { name: /build/u })).toBeVisible();
+  await expect.element(field()).toHaveValue("b");
+});
+
+it("forgets a waiting Tab on Escape", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  const early = await asked(server, "b");
+  await userEvent.keyboard("{Tab}{Escape}");
+  server.answer(early, entries({ text: "build/", kind: "directory" }));
+
+  await userEvent.click(next());
+  await userEvent.click(field());
+  server.answer(await asked(server, "b"), entries({ text: "build/", kind: "directory" }));
+  await expect.element(page.getByRole("option", { name: /build/u })).toBeVisible();
+  await expect.element(field()).toHaveValue("b");
+});
+
+it("ignores the answer Escape closed on, and lets the next Tab leave", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  const early = await asked(server, "b");
+  await userEvent.keyboard("{Tab}{Escape}");
+  server.answer(early, entries({ text: "build/", kind: "directory" }));
+  await userEvent.keyboard("{Tab}");
+  await expect.element(next()).toHaveFocus();
+  await expect.element(field()).toHaveValue("b");
+});
+
+it("drops a waiting Tab when the text changes before its answer", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  const early = await asked(server, "b");
+  await userEvent.keyboard("{Tab}");
+  await userEvent.type(field(), "u");
+  server.answer(early, entries({ text: "build/", kind: "directory" }));
+  server.answer(await asked(server, "bu"), entries({ text: "bus/", kind: "directory" }));
+  await expect.element(page.getByRole("option", { name: /bus/u })).toBeVisible();
+  await expect.element(field()).toHaveValue("bu");
+});
+
+it("keeps an arrow choice when the same text's suggestions come again", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  server.answer(
+    await asked(server, "b"),
+    entries({ text: "bin/", kind: "directory" }, { text: "basic", kind: "executable" }),
+  );
+  await expect.element(page.getByRole("option", { name: /basic/u })).toBeVisible();
+
+  // Coming back shows the old suggestions while new ones are fetched.
+  await userEvent.click(next());
+  await userEvent.click(field());
+  await expect.element(page.getByRole("option", { name: /basic/u })).toBeVisible();
+  await userEvent.keyboard("{ArrowDown}");
+  await expect
+    .element(page.getByRole("option", { name: /basic/u }))
+    .toHaveAttribute("aria-selected", "true");
+  server.answer(
+    await asked(server, "b"),
+    entries(
+      { text: "bin/", kind: "directory" },
+      { text: "basic", kind: "executable" },
+      { text: "bump", kind: "executable" },
+    ),
+  );
+  await expect.element(page.getByRole("option", { name: /bump/u })).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(field()).toHaveValue("basic");
+});
+
+it("lets Tab take an arrow choice after a directory when its suggestions come again", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "build/");
+  server.answer(await asked(server, "build/"), entries({ text: "build/web/", kind: "directory" }));
+  await expect.element(page.getByRole("option", { name: /web/u })).toBeVisible();
+
+  await userEvent.click(next());
+  await userEvent.click(field());
+  await userEvent.keyboard("{ArrowDown}");
+  server.answer(
+    await asked(server, "build/"),
+    entries({ text: "build/web/", kind: "directory" }, { text: "build/wasm/", kind: "directory" }),
+  );
+  await expect.element(page.getByRole("option", { name: /wasm/u })).toBeVisible();
+  await userEvent.keyboard("{Tab}");
+  await expect.element(field()).toHaveValue("build/web/");
+});
+
+it("moves an arrow choice onto the last suggestion when fewer come again", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  server.answer(
+    await asked(server, "b"),
+    entries({ text: "bin/", kind: "directory" }, { text: "basic", kind: "executable" }),
+  );
+  await userEvent.keyboard("{ArrowDown}");
+  await expect
+    .element(page.getByRole("option", { name: /basic/u }))
+    .toHaveAttribute("aria-selected", "true");
+
+  await userEvent.click(next());
+  await userEvent.click(field());
+  server.answer(await asked(server, "b"), entries({ text: "bin/", kind: "directory" }));
+  await expect.element(page.getByRole("option", { name: /basic/u })).not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("option", { name: /bin/u }))
+    .toHaveAttribute("aria-selected", "true");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(field()).toHaveValue("bin/");
+});
+
+it("starts the suggestions for newly typed text at the first", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  server.answer(
+    await asked(server, "b"),
+    entries({ text: "bin/", kind: "directory" }, { text: "basic", kind: "executable" }),
+  );
+  await userEvent.keyboard("{ArrowDown}");
+  await expect
+    .element(page.getByRole("option", { name: /basic/u }))
+    .toHaveAttribute("aria-selected", "true");
+
+  await userEvent.type(field(), "a");
+  server.answer(
+    await asked(server, "ba"),
+    entries({ text: "bar/", kind: "directory" }, { text: "basic", kind: "executable" }),
+  );
+  await expect
+    .element(page.getByRole("option", { name: /bar/u }))
+    .toHaveAttribute("aria-selected", "true");
+});
+
+it("starts a chosen directory's suggestions at the first", async () => {
+  const server = await mount();
+  await userEvent.type(field(), "b");
+  server.answer(
+    await asked(server, "b"),
+    entries({ text: "bin/", kind: "directory" }, { text: "build/", kind: "directory" }),
+  );
+  await userEvent.keyboard("{ArrowDown}{Enter}");
+  await expect.element(field()).toHaveValue("build/");
+  server.answer(
+    await asked(server, "build/"),
+    entries({ text: "build/app/", kind: "directory" }, { text: "build/web/", kind: "directory" }),
+  );
+  await expect
+    .element(page.getByRole("option", { name: /app/u }))
+    .toHaveAttribute("aria-selected", "true");
+});

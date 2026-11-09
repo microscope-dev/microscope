@@ -838,16 +838,14 @@ export function PathInput({
       try {
         const answer = await connection.request("completePath", { text: value });
         if (current) {
-          setCompletion({
-            text: value,
-            entries: answer.entries.filter(
-              (entry) =>
-                entry.kind === "directory" ||
-                (!onlyDirectories && (!onlyExecutables || entry.kind === "executable")),
-            ),
-          });
-          setSelected(0);
-          setPicked(false);
+          const entries = answer.entries.filter(
+            (entry) =>
+              entry.kind === "directory" ||
+              (!onlyDirectories && (!onlyExecutables || entry.kind === "executable")),
+          );
+          setCompletion({ text: value, entries });
+          // The same text fetched again on focus keeps what the arrow keys chose.
+          setSelected((index) => Math.min(index, Math.max(entries.length - 1, 0)));
         }
       } catch {
         // No suggestions, rather than none yet, so Tab is not held back.
@@ -869,6 +867,7 @@ export function PathInput({
         return;
       }
       onChange(entry.text);
+      setSelected(0);
       setPicked(false);
       // A directory opens onto its contents; a file is chosen.
       setOpen(entry.kind === "directory");
@@ -895,12 +894,18 @@ export function PathInput({
       onChange(event.target.value);
       setOpen(true);
       setTabbed(false);
+      setSelected(0);
       setPicked(false);
     },
     [onChange],
   );
   const focus = useCallback(() => setOpen(true), []);
-  const blur = useCallback(() => setOpen(false), []);
+  // A waiting Tab belongs to this opening; left alone, it would complete the
+  // path when the field is next focused.
+  const dismiss = useCallback(() => {
+    setOpen(false);
+    setTabbed(false);
+  }, []);
   const key = useCallback(
     (event: KeyboardEvent) => {
       const tab = event.key === "Tab" && !event.shiftKey && completes;
@@ -919,13 +924,13 @@ export function PathInput({
         setSelected(Math.max(selected - 1, 0));
         setPicked(true);
       } else if (event.key === "Escape") {
-        setOpen(false);
+        dismiss();
       } else if (event.key === "Enter" && shown.length > 0 && shown[selected]?.text !== value) {
         event.preventDefault();
         accept(shown[selected]);
       }
     },
-    [completes, open, current, shown, selected, accept, value],
+    [completes, open, current, shown, selected, accept, value, dismiss],
   );
 
   return (
@@ -944,7 +949,7 @@ export function PathInput({
         aria-controls={listId}
         onChange={type}
         onFocus={focus}
-        onBlur={blur}
+        onBlur={dismiss}
         onKeyDown={key}
       />
       {shown.length > 0 && (
