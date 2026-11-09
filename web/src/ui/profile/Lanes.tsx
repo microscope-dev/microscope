@@ -399,6 +399,20 @@ export function Lanes() {
       }
     }
 
+    // What the views read: outside it shaded, under the zones so their
+    // labels read as well there as inside it.
+    const marked = dragging ?? (instance ? instance.span : range);
+    if (marked) {
+      const [from, to] = [x(marked[0]), x(marked[1])];
+      // The soft accent is all but the page's own color on a light one.
+      const light = scheme === "light";
+      context.fillStyle = token(light ? "--accent" : "--accent-soft");
+      context.globalAlpha = light ? 0.12 : 0.6;
+      context.fillRect(0, 0, Math.max(from, 0), height);
+      context.fillRect(to, 0, Math.max(plot - to, 0), height);
+      context.globalAlpha = 1;
+    }
+
     const answered = new Map(
       (timeline.data?.lanes ?? []).map((lane) => [(byTask ? lane.task : lane.thread) ?? -1, lane]),
     );
@@ -509,15 +523,9 @@ export function Lanes() {
     }
     context.globalAlpha = 1;
 
-    // What the views read: outside it shaded, and the zone chosen outlined.
-    const marked = dragging ?? (instance ? instance.span : range);
+    // The range's edges, and the zone chosen outlined.
     if (marked) {
       const [from, to] = [x(marked[0]), x(marked[1])];
-      context.fillStyle = token("--accent-soft");
-      context.globalAlpha = 0.6;
-      context.fillRect(0, 0, Math.max(from, 0), height);
-      context.fillRect(to, 0, Math.max(plot - to, 0), height);
-      context.globalAlpha = 1;
       const wide = Math.max(to - from, 3);
       context.fillStyle = token("--accent");
       context.fillRect((from + to) / 2 - wide / 2, 0, wide, 2);
