@@ -59,6 +59,10 @@ pub struct Responses {
 
     /// Callers by the `seq` of their request.
     sent: HashMap<u64, oneshot::Sender<Response>>,
+
+    /// Whether the connection is gone, so a new request would never be
+    /// answered.
+    closed: bool,
 }
 
 impl Responses {
@@ -76,8 +80,9 @@ impl Responses {
         }
     }
 
-    /// Fails every caller once the connection is gone.
+    /// Fails every caller once the connection is gone, and every later one.
     pub fn close(&mut self) {
+        self.closed = true;
         self.unsent.clear();
         self.sent.clear();
     }
@@ -115,6 +120,10 @@ impl Client {
         let (caller, response) = oneshot::channel();
         let ticket = {
             let mut responses = self.responses.lock().map_err(|_| Closed)?;
+            if responses.closed {
+                return Err(Closed);
+            }
+
             responses.next_ticket += 1;
             let ticket = responses.next_ticket;
             responses.unsent.insert(ticket, caller);
@@ -1353,6 +1362,14 @@ impl Session {
     /// and its breakpoints. The new arguments may change how the program is
     /// started, but not which program.
     async fn restart(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
+        // Configuration done starts the program, so restarting it before
+        // would start it twice.
+        if self.starting.is_some() {
+            return Err(ErrorBody::new(
+                "the program has not started yet, so there is nothing to restart",
+            ));
+        }
+
         let target = self
             .target
             .as_mut()
@@ -1474,6 +1491,20 @@ impl Session {
     /// asked, detaches from the rest, and reports the program's end.
     async fn end(&mut self, terminate: Option<bool>) -> Result<(), Closed> {
         self.ended = true;
+
+        // Every request gets a response, also a start still waiting for
+        // configuration.
+        if let Some(header) = self.starting.take() {
+            self.client
+                .respond(
+                    &header,
+                    Err(ErrorBody::new(
+                        "the session ended before its configuration was done",
+                    )),
+                )
+                .await?;
+        }
+
         let Some(target) = self.target.as_mut() else {
             return Ok(());
         };
@@ -1525,7 +1556,22 @@ impl Session {
         Ok(())
     }
 
-    async fn terminate(&self) -> Result<Value, ErrorBody> {
+    async fn terminate(&mut self) -> Result<Value, ErrorBody> {
+        // A start still waiting for configuration has no program to end, so
+        // it fails now and never starts.
+        if let Some(header) = self.starting.take() {
+            self.client
+                .respond(
+                    &header,
+                    Err(ErrorBody::new(
+                        "the session was terminated before its configuration was done",
+                    )),
+                )
+                .await?;
+            self.ended_target().await?;
+            return Ok(json!({}));
+        }
+
         let Some(handle) = self.handle() else {
             return Ok(json!({}));
         };
@@ -3320,6 +3366,18 @@ mod tests {
             command: command.to_owned(),
             arguments,
         }
+    }
+
+    #[tokio::test]
+    async fn a_reverse_request_after_the_connection_closed_fails_at_once() {
+        let (outgoing, _messages) = mpsc::channel(8);
+        let client = Client::new(outgoing);
+        client.responses().lock().expect("responses").close();
+        let request = client.request("runInTerminal", json!({}));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), request)
+            .await
+            .expect("the request fails without waiting for an answer");
+        assert!(result.is_err());
     }
 
     #[tokio::test]

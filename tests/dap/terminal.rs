@@ -163,6 +163,31 @@ fn a_terminal_launch_fails_when_the_client_cannot_run_one() {
     dap.finish();
 }
 
+/// A client that closes its stream while the adapter would ask it for a
+/// terminal ends the session, whether the request goes out after the close
+/// or was already waiting for the client's answer.
+#[test]
+fn closing_the_stream_around_a_terminal_request_ends_the_session() {
+    for close_first in [true, false] {
+        let mut dap = Dap::start(format!("terminal, closed first={close_first}"));
+        dap.hold_terminals();
+        dap.initialize(Profile::VsCode);
+        let launch = dap.send(
+            "launch",
+            json!({"program": fixture("basic"), "console": "integratedTerminal"}),
+        );
+        dap.send("configurationDone", Value::Null);
+        if !close_first {
+            dap.held_terminal();
+        }
+
+        dap.close_stdin();
+        assert_eq!(dap.failure(launch), "the connection to the client closed");
+        dap.wait_for_exit();
+        dap.finish();
+    }
+}
+
 /// A program that executes another is followed into it whether it runs in
 /// the adapter or in the client's terminal: the terminal runs the program
 /// the user named, not the one it executes, and the breakpoint only the

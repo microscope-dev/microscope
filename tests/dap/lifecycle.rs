@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::dap::{Configuration, Dap, Profile, fixture, line_of, source};
+use crate::dap::{Configuration, Dap, Profile, Sent, fixture, line_of, source};
 use crate::support::{ExternalProcess, ScratchDir};
 
 #[test]
@@ -312,6 +312,92 @@ fn ending_input_or_signaling_the_adapter_ends_the_session_and_the_program() {
 
         dap.wait_for_exit();
         dap.close_stdin();
+        dap.finish();
+    }
+}
+
+/// Sends `launch` or `attach` and waits until the session holds it for
+/// `configurationDone`: requests are handled in order, so the answer to
+/// the `threads` sent after it means the start is waiting.
+fn send_and_hold_start(dap: &mut Dap, command: &str, arguments: Value) -> Sent {
+    dap.initialize(Profile::VsCode);
+    let start = dap.send(command, arguments);
+    dap.request("threads", Value::Null);
+    start
+}
+
+#[test]
+fn a_session_that_ends_before_configuration_is_done_fails_its_launch_or_attach() {
+    for (command, by_closing) in [("launch", false), ("attach", false), ("launch", true)] {
+        let process = (command == "attach").then(|| ExternalProcess::spawn(&fixture("attach")));
+        let arguments = process.as_ref().map_or_else(
+            || json!({"program": fixture("basic")}),
+            |process| json!({"pid": process.process_id().get()}),
+        );
+        let mut dap = Dap::start(format!("{command} ended by closing={by_closing}"));
+        let start = send_and_hold_start(&mut dap, command, arguments);
+        if !by_closing {
+            let sent = dap.send("disconnect", json!({}));
+            dap.success(sent);
+        }
+
+        dap.close_stdin();
+        assert_eq!(
+            dap.failure(start),
+            "the session ended before its configuration was done"
+        );
+        dap.finish();
+
+        // The attached process was released, not left traced and stopped.
+        if let Some(mut process) = process {
+            process.release();
+            assert_eq!(process.wait().code(), Some(23));
+        }
+    }
+}
+
+#[test]
+fn terminating_before_configuration_is_done_fails_the_launch_and_launches_nothing() {
+    let mut dap = Dap::start("terminate before configuration");
+    let launch = send_and_hold_start(&mut dap, "launch", json!({"program": fixture("basic")}));
+    let terminate = dap.send("terminate", json!({}));
+    dap.success(terminate);
+    assert_eq!(
+        dap.failure(launch),
+        "the session was terminated before its configuration was done"
+    );
+    dap.event(terminate.mark, "terminated", |_| true);
+
+    // A client that configures anyway starts nothing.
+    let done = dap.send("configurationDone", Value::Null);
+    dap.success(done);
+    dap.request("threads", Value::Null);
+    assert_eq!(dap.events(done.mark, "process"), Vec::<Value>::new());
+    dap.finish();
+}
+
+#[test]
+fn restarting_before_configuration_is_done_is_refused() {
+    for stop_on_entry in [false, true] {
+        let mut dap = Dap::start(format!("early restart stopOnEntry={stop_on_entry}"));
+        let launch = send_and_hold_start(
+            &mut dap,
+            "launch",
+            json!({"program": fixture("basic"), "stopOnEntry": stop_on_entry}),
+        );
+        assert_eq!(
+            dap.request_error("restart", json!({})),
+            "the program has not started yet, so there is nothing to restart"
+        );
+        dap.request("configurationDone", Value::Null);
+        dap.success(launch);
+        if stop_on_entry {
+            assert_eq!(dap.stopped(launch.mark).reason, "entry");
+        } else {
+            dap.event(launch.mark, "terminated", |_| true);
+        }
+
+        assert_eq!(dap.events(launch.mark, "process").len(), 1);
         dap.finish();
     }
 }

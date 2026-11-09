@@ -554,14 +554,19 @@ impl Dap {
     /// Waits for a held `runInTerminal` request, then answers every held
     /// one and stops holding them.
     pub fn release_terminals(&mut self) {
+        self.held_terminal();
+
+        for request in self.held_terminals.take().unwrap_or_default() {
+            self.run_in_terminal(&request);
+        }
+    }
+
+    /// Waits for a held `runInTerminal` request without answering it.
+    pub fn held_terminal(&mut self) {
         let deadline = Instant::now() + EVENT_TIMEOUT;
 
         while self.held_terminals.as_ref().is_some_and(Vec::is_empty) {
             self.receive(deadline, "a runInTerminal request");
-        }
-
-        for request in self.held_terminals.take().unwrap_or_default() {
-            self.run_in_terminal(&request);
         }
     }
 
