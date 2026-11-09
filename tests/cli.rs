@@ -6904,33 +6904,40 @@ fn stack_copies_reach_past_large_frames_or_say_how_far_to_copy() {
 
 /// The report of a recording of CPython 3.14 running `source`, recorded
 /// with `options`, with the `microscope` package and its library at hand.
-fn python_report(
+/// The program parks on its standard input until the recording has taken
+/// two snapshots of it and the profile is `ready` otherwise.
+fn snapshotted_python_report(
     scratch: &support::ScratchDir,
     name: &str,
-    options: &[&str],
+    options: &microscope::profiler::RecordOptions,
     source: &str,
+    mut ready: impl FnMut(&microscope::profiler::Profile) -> bool,
 ) -> String {
     let python = PathBuf::from(
         std::env::var_os("MICROSCOPE_CPYTHON").expect("MICROSCOPE_CPYTHON names the interpreters"),
     )
     .join("3.14/python");
-    let profile = scratch.path().join(name);
-    let recorded = microscope_command()
-        .args(["record", "-o"])
-        .arg(&profile)
-        .args(options)
-        .arg("--")
-        .arg(&python)
+    let mut command = Command::new(python);
+    command
         .args(["-c", source])
         .env("PYTHONPATH", fixture("sdk/python"))
         .env(
             "MICROSCOPE_PROBES_LIBRARY",
             fixture("build/test-programs/libmicroscope_probes_c.so"),
-        )
-        .output()
-        .expect("run microscope record");
-    assert!(recorded.status.success(), "{recorded:?}");
-    assert_probes_read(&recorded);
+        );
+    let recording = support::released::record_released(
+        command,
+        options,
+        support::released::when(|profile| profile.task_snapshots().0 >= 2 && ready(profile)),
+    );
+    assert!(recording.status.success(), "{}", recording.status);
+    support::assert_probes_read(&recording.profile);
+
+    let profile = scratch.path().join(name);
+    recording
+        .profile
+        .write(&profile)
+        .expect("write the profile");
     assert_success(microscope(&["report", &profile.to_string_lossy()]))
 }
 
@@ -6940,41 +6947,43 @@ fn python_report(
 #[test]
 fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     let scratch = support::ScratchDir::new("cli-thread-snapshots");
-    // Each program runs half a second of its own CPU time once microscope
-    // has found it. Until then microscope may be loading debug information,
-    // a second of it on a busy machine, and takes no snapshot; and a
-    // snapshot that stops the program for most of a second would end half
-    // a second of the clock's. A program imports what it maps before it
-    // loads microscope's library, so that microscope has read it once it
-    // has found the program: reading the modules asyncio maps took it half
-    // a second, without snapshots, which the program spent its time in.
-    let found = "import time, microscope\ndeadline = time.monotonic() + 30\n\
-        while not microscope.found(): assert time.monotonic() < deadline; time.sleep(0.001)\n";
-    let spin =
-        format!("{found}end = time.process_time() + 0.5\nwhile time.process_time() < end: pass\n");
+    let every = Duration::from_millis(50);
 
-    let threads = python_report(
+    // Each program runs half a second of its own CPU time once the
+    // recording has taken two snapshots of it, so that microscope has
+    // loaded what it needs and goes on taking them as the program runs.
+    let threads = snapshotted_python_report(
         &scratch,
         "threads.usprof",
-        &["--python", "snapshot=0.05"],
-        &spin,
+        &microscope::profiler::RecordOptions {
+            python: Some(microscope::profiler::PythonEngine::Snapshot { every }),
+            ..Default::default()
+        },
+        "import sys, time\nsys.stdin.readline()\n\
+         end = time.process_time() + 0.5\nwhile time.process_time() < end: pass\n",
+        |_| true,
     );
-    // A loaded machine may take only one snapshot of the half second.
     assert!(
         threads.contains(" held the program stopped for "),
         "{threads}"
     );
     assert!(!threads.contains("ran a task"), "{threads}");
 
-    let tasks = python_report(
+    // The tasks park in a thread, so that the snapshots before the
+    // release read the loop and its tasks.
+    let tasks = snapshotted_python_report(
         &scratch,
         "tasks.usprof",
-        &["--task-snapshots", "0.05"],
-        &format!(
-            "import asyncio\n{found}async def spin():\n    end = time.process_time() + 0.5\n    \
-             while time.process_time() < end: await asyncio.sleep(0)\n\
-             async def main(): await asyncio.gather(spin(), spin())\nasyncio.run(main())\n"
-        ),
+        &microscope::profiler::RecordOptions {
+            task_snapshots: Some(every),
+            ..Default::default()
+        },
+        "import asyncio, sys, time\n\
+         async def spin():\n    end = time.process_time() + 0.5\n    \
+         while time.process_time() < end: await asyncio.sleep(0)\n\
+         async def main():\n    await asyncio.to_thread(sys.stdin.readline)\n    \
+         await asyncio.gather(spin(), spin())\nasyncio.run(main())\n",
+        |_| true,
     );
     assert!(
         tasks
@@ -6991,18 +7000,23 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
 #[test]
 fn runtime_labels_stay_out_of_the_programs_zones() {
     let scratch = support::ScratchDir::new("cli-runtime-labels");
-    // The program is listening as soon as it defines a site, but its marks
-    // are safe only once microscope has found it.
-    let program = "import time, microscope\nwork = microscope.zone('work')\n\
-        deadline = time.monotonic() + 30\n\
-        while not microscope.found(): assert time.monotonic() < deadline; time.sleep(0.001)\n\
+    // The program runs its zone once microscope has read its sites, as
+    // its marks are recorded only from then.
+    let program = "import sys, time, microscope\nwork = microscope.zone('work')\n\
+        sys.stdin.readline()\n\
         with work:\n    end = time.monotonic() + 0.5\n    \
         while time.monotonic() < end: pass\n";
-    let report = python_report(
+    let report = snapshotted_python_report(
         &scratch,
         "labels.usprof",
-        &["--python", "snapshot=0.05"],
+        &microscope::profiler::RecordOptions {
+            python: Some(microscope::profiler::PythonEngine::Snapshot {
+                every: Duration::from_millis(50),
+            }),
+            ..Default::default()
+        },
         program,
+        support::released::probes_read,
     );
 
     let lines: Vec<&str> = report.lines().collect();
