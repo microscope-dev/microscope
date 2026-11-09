@@ -184,17 +184,25 @@ function useArranged(wants: Wants, start: () => Layout) {
 
 /** Brings Connect forward when microscope refuses the page's link, or has
  * not been reached since the page started, which is the pane that can fix
- * it: opened if it is closed, and in front of its group's others. */
+ * it: opened if it is closed, and in front of its group's others. A page
+ * being left loses its socket before it goes, so not reaching microscope
+ * counts only once it lasts. */
 function useConnectWhenRefused() {
-  const refused = useModel(
-    (model) => model.link === "unauthorized" || model.link === "unreachable",
-  );
+  const link = useModel((model) => model.link);
   useEffect(() => {
-    if (refused) {
-      showPane(KIND.connect);
-    }
-  }, [refused]);
+    const refused = link === "unauthorized" || link === "unreachable";
+    const timer = refused
+      ? setTimeout(() => showPane(KIND.connect), link === "unreachable" ? UNREACHABLE_FOR_MS : 0)
+      : null;
+    return () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    };
+  }, [link]);
 }
+
+const UNREACHABLE_FOR_MS = 1000;
 
 /** Moves a following tab to each new stop, replacing the address (D3). */
 function useFollowing(session: string, at: At | null, look: Look) {
