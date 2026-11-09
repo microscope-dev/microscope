@@ -73,9 +73,11 @@ test("a profile is explored, and its address opens the same view", async ({
   // The address opens the same view.
   await page.reload();
   await expect(page.getByText("merge middle")).toBeVisible();
-  await page.getByRole("button", { name: "Options" }).click();
-  await expect(page.getByRole("combobox", { name: "View" })).toHaveValue("tree");
-  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tab", { name: /^Call tree/u })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("tree", { name: "Call tree" })).toBeVisible();
 
   // A frame of the flame graph zooms, and says what it costs, beside a
   // search as wide as before.
@@ -312,19 +314,26 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   await showView(page, "Functions");
   const functions = page.getByRole("listbox", { name: "Functions" });
   await expect(functions.getByRole("option").filter({ hasText: "main.receive" })).toHaveCount(1);
+  // By task is the call tree's own: the functions stay as they were.
+  await showView(page, "Call tree");
   const options = page.getByRole("dialog", { name: "Options" });
   await page.getByRole("button", { name: "Options" }).click();
   await options.getByRole("checkbox", { name: "By task" }).check();
-  await showView(page, "Call tree");
+  await page.keyboard.press("Escape");
   const tree = page.getByRole("tree", { name: "Call tree" }).getByRole("treeitem");
   await expect(tree.first()).toContainText("goroutine");
+  await expect(page).toHaveURL(/bt=1/u);
+  await showView(page, "Functions");
+  await expect(page).not.toHaveURL(/bt=/u);
+  await showView(page, "Call tree");
 
   // The CPU's lanes by task: the spinner's, which selects its samples.
   await page.getByRole("button", { name: "CPU" }).click();
   await page.getByRole("button", { name: "Options" }).click();
   await options.getByRole("checkbox", { name: "By task" }).uncheck();
-  await options.getByRole("checkbox", { name: "Task lanes" }).check();
   await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Task lanes", exact: true }).click();
+  await expect(page).toHaveURL(/lanes=tasks/u);
   const spinner = page.getByTestId("timeline").getByRole("button", { name: /phase=spin/u });
   await spinner.click();
   await expect(page).toHaveURL(/tk=\d+/u);
@@ -352,20 +361,15 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await expect(page.getByRole("img", { name: "Plot round, 3 values from 0 – 2" })).toBeVisible();
   const pane = page.getByTestId("zones-pane");
   await expect(pane).toBeVisible();
-  // The flame graph stays beside the zones; there is no Zones view.
+  // The flame graph shows beside the zones, each a pane of its own.
   await expect(page.getByRole("img", { name: /flame graph/iu }).first()).toBeVisible();
-  await page.getByRole("button", { name: "Options" }).click();
-  await expect(
-    page.getByRole("combobox", { name: "View" }).locator("option", { hasText: "Zones" }),
-  ).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  // An old link to the Zones view opens the flame graph.
-  const old = new URL(page.url());
-  old.searchParams.set("view", "zones");
-  await page.goto(old.href);
-  await page.goto(old.href);
+  await expect(page.getByRole("tab", { name: /^Zones/u })).toHaveAttribute("aria-selected", "true");
+  // A link to the Zones view shows its pane.
+  const zonesLink = new URL(page.url());
+  zonesLink.searchParams.set("view", "zones");
+  await page.goto(zonesLink.href);
   await expect(pane).toBeVisible();
-  await expect(page).not.toHaveURL(/view=/u);
+  await expect(page).toHaveURL(/view=zones/u);
 
   const look = () => new URL(page.url()).searchParams;
 
@@ -510,11 +514,16 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   await stats.getByRole("button", { name: "By round" }).click();
   await expect(page).toHaveURL(/bl=round/u);
 
-  // The pane closes, and opens again from the toolbar.
-  await pane.getByRole("button", { name: "Close the Zones pane" }).click();
+  // The pane closes, and opens again from the overview, as it was.
+  await page.getByRole("button", { name: "Close Zones", exact: true }).click();
   await expect(pane).toBeHidden();
   await page.getByRole("button", { name: "Zones", exact: true }).click();
   await expect(pane).toBeVisible();
+  await expect(page).toHaveURL(/view=zones/u);
+  await expect(pane.getByRole("button", { name: "round", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 test("a recording without zones has no Zones pane, and its lanes ask for none", async ({
@@ -660,6 +669,8 @@ test("a function's samples show on its source lines and its instructions", async
   const served = await microscope.start([file]);
   await join(page, served.link);
   await showView(page, "Functions");
+  // The window to itself, for room to move the panel's bar in.
+  await page.keyboard.press("Alt+Enter");
   await page
     .getByRole("listbox", { name: "Functions" })
     .getByRole("option")

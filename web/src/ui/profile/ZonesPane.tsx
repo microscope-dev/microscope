@@ -34,7 +34,7 @@ const ORDERS: { order: Order; label: string }[] = [
 
 /** Every zone site and label key, and the chosen one's spread of lengths,
  * which picks the samples the views read. */
-export function ZonesPane({ close }: { close: () => void }) {
+export function ZonesPane() {
   const { summary, look, setLook } = useProfile();
   const [order, setOrder] = useState<Order>("total");
   const sites = useMemo(
@@ -53,17 +53,6 @@ export function ZonesPane({ close }: { close: () => void }) {
   );
   return (
     <aside className="pane zones-pane" data-testid="zones-pane" aria-label="Zones">
-      <div className="pane-head">
-        Zones<span className="count">{formatCount(summary.zoneSites.length)}</span>
-        <button
-          type="button"
-          className="tb ghost end"
-          aria-label="Close the Zones pane"
-          onClick={close}
-        >
-          ×
-        </button>
-      </div>
       <div className="pane-body">
         {sites.length === 0 ? (
           <div className="muted">This recording has no zones.</div>

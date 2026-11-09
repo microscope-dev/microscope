@@ -14,6 +14,7 @@ import type { Connection } from "../connection";
 import { documentsGroup, KIND } from "../documents";
 import { type At, inView, type View, watching } from "../focus";
 import type { Model } from "../model";
+import type { ProfileView } from "../profile/look";
 import { useConnection, useStoreApi } from "../store";
 import { flash, type TabState, tab } from "../tab";
 import { setRemote, standalone } from "../target";
@@ -48,7 +49,10 @@ import {
   type Group,
   groups,
   type KindId,
+  type LinkId,
+  linkOf,
   maximize,
+  type Pane,
   type PaneId,
   restore,
   toggleHidden,
@@ -59,6 +63,7 @@ import { chooseTab, closeTab, reopenTab } from "../workbench/tabs";
 import { go } from "./navigation";
 import { asked } from "./Orgs";
 import { applyLayout, debugLayout, KINDS, showPane, startLayout } from "./panes";
+import { duplicate, leadingPane, showView } from "./profile/link";
 
 interface Context {
   model: Model;
@@ -116,6 +121,59 @@ function debugPane(kind: KindId, label: string, number?: number): Spec {
     keys: number === undefined ? [] : [{ key: String(number), alt: true }],
     available: ({ current }) => (current.session ? READY : ABSENT),
     run: () => showPane(kind),
+  };
+}
+
+/** The focused profile pane and the link it reads. */
+function profileFocus(): { id: PaneId; link: LinkId } | null {
+  const layout = workbench.getState().layout;
+  const id = leadingPane(layout);
+  const link = id ? linkOf(layout.panes[id] as Pane) : null;
+  return id && link ? { id, link } : null;
+}
+
+/** Shows the focused profile's pane of a view, opening it when it is not
+ * open. */
+function profileView(view: ProfileView | null, label: string): Spec {
+  return {
+    label,
+    menu: "View",
+    keys: [],
+    available: () => (profileFocus() ? READY : ABSENT),
+    run: () => {
+      const focused = profileFocus();
+      if (!focused) {
+        return;
+      }
+      const shown = showView(workbench.getState().layout, focused.link, view);
+      change(() => shown.layout);
+      if (shown.pane) {
+        const target = shown.pane;
+        requestAnimationFrame(() => focusTab(target));
+      }
+    },
+  };
+}
+
+/** Opens another pane like the focused profile pane, sharing its
+ * selection or starting from a copy of it. */
+function duplicatePane(apart: boolean, label: string): Spec {
+  return {
+    label,
+    menu: "Window",
+    keys: [],
+    available: () => (profileFocus() ? READY : ABSENT),
+    run: () => {
+      const focused = profileFocus();
+      if (!focused) {
+        return;
+      }
+      const opened = duplicate(workbench.getState().layout, focused.id, apart);
+      if (opened) {
+        change(() => opened.layout);
+        requestAnimationFrame(() => focusTab(opened.pane));
+      }
+    },
   };
 }
 
@@ -409,6 +467,14 @@ export const COMMANDS = registry({
   core: start(KIND.core, "Open a core dump…"),
   record: start(KIND.record, "Record a profile…"),
   explorer: pane(KIND.explorer, "Explorer", "View"),
+  profileOverview: profileView(null, "Profile overview"),
+  profileFlame: profileView("flame", "Flame graph"),
+  profileTree: profileView("tree", "Call tree"),
+  profileFunctions: profileView("functions", "Functions"),
+  profileSyscalls: profileView("syscalls", "Syscalls"),
+  profileZones: profileView("zones", "Zones"),
+  duplicateLinked: duplicatePane(false, "New pane like this"),
+  duplicateApart: duplicatePane(true, "Copy to a new selection"),
   // A page microscope web serves is connected to it, with no accounts.
   connect: {
     ...pane(KIND.connect, "Connect…", "File"),

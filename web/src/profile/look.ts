@@ -13,13 +13,14 @@ import type {
 } from "../protocol";
 import type { DiffMode } from "./paint";
 
-export type ProfileView = "flame" | "tree" | "functions" | "syscalls";
+/** A profile's panes other than its overview, which holds its timeline. */
+export type ProfileView = "flame" | "tree" | "functions" | "syscalls" | "zones";
 
 /** The Syscalls view's tabs; the summary when absent. */
 export type SyscallTab = "log" | "files" | "network" | "processes";
 
 export interface ProfileLook {
-  /** The view shown; the flame graph when absent. */
+  /** The pane shown; the overview when absent. */
   view?: ProfileView;
   /** `START-END`, nanoseconds from the profile's start. */
   range?: string;
@@ -90,7 +91,7 @@ export interface ProfileLook {
   sl?: string;
 }
 
-const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "syscalls"];
+const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "syscalls", "zones"];
 const SYSCALL_GROUPS: ReadonlySet<string> = new Set(["class", "process", "thread", "path", "site"]);
 const SYSCALL_TABS: ReadonlySet<string> = new Set(["log", "files", "network", "processes"]);
 const GRANULARITIES: ReadonlySet<string> = new Set(["physical", "line", "address"]);
@@ -112,7 +113,7 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
     return strings.length > 0 ? strings : undefined;
   };
   const view = text("view");
-  if (view && (VIEWS as readonly string[]).includes(view) && view !== "flame") {
+  if (view && (VIEWS as readonly string[]).includes(view)) {
     look.view = view as ProfileView;
   }
   const range = text("range");
@@ -417,6 +418,42 @@ export function untransformed(look: ProfileLook, index: number): ProfileLook {
   );
   const kept = (tf ?? []).toSpliced(index, 1);
   return kept.length > 0 ? { ...rest, tf: kept } : rest;
+}
+
+/** What one pane keeps to itself: how it draws the samples, not which
+ * they are. The rest of a look its profile's panes share. */
+const OWN = [
+  "z",
+  "invert",
+  "by",
+  "native",
+  "py",
+  "bt",
+  "ann",
+  "lanes",
+  "st",
+  "sg",
+  "sc",
+  "sr",
+  "ev",
+  "sl",
+] as const satisfies readonly (keyof ProfileLook)[];
+
+export type OwnLook = Pick<ProfileLook, (typeof OWN)[number]>;
+
+/** A look's parts: what its profile's panes share, and what the pane shown
+ * keeps to itself. The view is which pane, so neither keeps it. */
+export function splitLook(look: ProfileLook): { shared: ProfileLook; own: OwnLook } {
+  const { view: _view, ...rest } = look;
+  const shared: Record<string, unknown> = { ...rest };
+  const own: Record<string, unknown> = {};
+  for (const key of OWN) {
+    if (key in shared) {
+      own[key] = shared[key];
+      delete shared[key];
+    }
+  }
+  return { shared: shared as ProfileLook, own: own as OwnLook };
 }
 
 /** The same look with only `key` changed, or removed when undefined. */

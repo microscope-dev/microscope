@@ -12,6 +12,7 @@ import {
 import {
   cleared,
   type ProfileLook,
+  type ProfileView,
   parseBand,
   parseInstance,
   parseRange,
@@ -37,7 +38,7 @@ import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
 import type { PaneProps } from "../../workbench/kinds";
-import { groups, type Json, type LinkId, linkOf, type Pane, setLink } from "../../workbench/layout";
+import { groups } from "../../workbench/layout";
 import { change, useLayout, useLink, workbench } from "../../workbench/store";
 import { useDialogFocus, useDismiss } from "../dialog";
 import {
@@ -51,60 +52,28 @@ import { CommandBlock, FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
 import { Lanes } from "./Lanes";
-import { defaultView, Options } from "./Options";
+import { arrange, lookOf, paneParams, readLink, storeLook, timeline, viewOf } from "./link";
 import { Chip, ClearChip, LaneChip, LookButton, ShareBar } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { TreeView } from "./TreeView";
 import { ZonesPane } from "./ZonesPane";
 
-/** What a profile pane keeps: the profile's name, for its tab, and the
- * link it reads how it looks at the profile from. */
-export interface ProfileParams {
-  readonly name: string;
-  readonly link: LinkId | null;
-}
-
-export function profileParams(pane: Pane): ProfileParams {
-  const params = (pane.params ?? {}) as { name?: unknown };
-  return { name: typeof params.name === "string" ? params.name : "", link: linkOf(pane) };
-}
-
-/** What a profile's link holds: the profile, and how its panes look at it. */
-export interface ProfileLink {
-  readonly profile: string;
-  readonly look: ProfileLook;
-}
-
-export function readProfileLink(value: Json | undefined): ProfileLink | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const { profile, look } = value as { profile?: unknown; look?: unknown };
-  return typeof profile === "string"
-    ? {
-        profile,
-        look: validateProfileLook(
-          typeof look === "object" && look !== null ? (look as Record<string, unknown>) : {},
-        ),
-      }
-    : null;
-}
-
-export const profileLink = (profile: string, look: ProfileLook): Json =>
-  ({ profile, look }) as unknown as Json;
-
 const sameLook = (a: ProfileLook, b: ProfileLook) => JSON.stringify(a) === JSON.stringify(b);
 
-const EMPTY_LOOK: ProfileLook = {};
-
-/** A profile pane. Its link keeps the look; while its tab is the one shown
- * in the focused group and no session's focus is in the address, the
- * address follows it, so a link opens the same view. */
-export function ProfileBody({ id, pane }: PaneProps) {
-  const profile = pane.key;
-  const { link } = profileParams(pane);
+/** Any of a profile's panes: its overview, or one of its views. It reads
+ * how it looks at the profile from its link and its own params; while its
+ * tab is the one shown in the focused group and no session's focus is in
+ * the address, the address follows it, so a link opens the same view. */
+export function ProfilePaneBody({ id, pane }: PaneProps) {
+  const view = viewOf(pane) ?? null;
+  const { link } = paneParams(pane);
   const held = useLink(link, (value) => value);
-  const look = useMemo(() => readProfileLink(held)?.look ?? EMPTY_LOOK, [held]);
+  const linked = useMemo(() => readLink(held), [held]);
+  const look = useMemo<ProfileLook>(
+    () => ({ ...linked?.look, ...paneParams(pane).own, ...(view === null ? {} : { view }) }),
+    [linked, pane, view],
+  );
+  const profile = linked?.profile ?? "";
   const navigate = useNavigate();
   const location = useLocation();
   const inSession = location.pathname.startsWith("/s/");
@@ -115,15 +84,12 @@ export function ProfileBody({ id, pane }: PaneProps) {
 
   const setLook = useCallback(
     (by: (look: ProfileLook) => ProfileLook, push = false) => {
-      if (link === null) {
-        return;
-      }
-      const now = readProfileLink(workbench.getState().layout.links[link]);
+      const now = lookOf(workbench.getState().layout, id);
       if (!now) {
         return;
       }
-      const next = by(now.look);
-      change((layout) => setLink(layout, link, profileLink(profile, next)));
+      const next = by(now);
+      change((layout) => storeLook(layout, id, next).layout);
       if (leads) {
         void navigate({
           to: "/profile/$profile",
@@ -133,7 +99,7 @@ export function ProfileBody({ id, pane }: PaneProps) {
         });
       }
     },
-    [link, leads, navigate, profile],
+    [id, leads, navigate, profile],
   );
 
   // The address names the profile this pane shows, as it changes.
@@ -147,6 +113,9 @@ export function ProfileBody({ id, pane }: PaneProps) {
     // out of the address too.
     const took = leads && !led.current;
     led.current = leads;
+    if (!linked) {
+      return;
+    }
     const kept = validateProfileLook(search);
     const dropped = Object.keys(search).some((key) => !(key in kept));
     const stale = took && !sameLook(kept, look);
@@ -154,23 +123,77 @@ export function ProfileBody({ id, pane }: PaneProps) {
       const shown = !addressed || took ? look : kept;
       void navigate({ to: "/profile/$profile", params: { profile }, search: shown, replace: true });
     }
-  }, [leads, addressed, search, look, navigate, profile]);
+  }, [linked, leads, addressed, search, look, navigate, profile]);
 
-  return <Profile profile={profile} look={look} setLook={setLook} />;
+  const offer = useCallback(
+    (summary: ProfileSummary, live: boolean) => {
+      if (link !== null) {
+        change((layout) => arrange(layout, link, summary, live));
+      }
+    },
+    [link],
+  );
+
+  if (!linked) {
+    return <div className="page muted">This pane has lost its profile. Close it.</div>;
+  }
+  return (
+    <Profile
+      view={view}
+      profile={profile}
+      look={look}
+      setLook={setLook}
+      leads={leads}
+      onSummary={view === null ? offer : undefined}
+    />
+  );
+}
+
+/** A view's body, in a pane of its own. */
+function ViewBody({ view }: { view: ProfileView }) {
+  return view === "zones" ? (
+    <ZonesPane />
+  ) : (
+    <div className="profile-view">
+      {view === "syscalls" ? (
+        <SyscallsView />
+      ) : view === "functions" ? (
+        <FunctionsView />
+      ) : view === "tree" ? (
+        <TreeView />
+      ) : (
+        <FlameView />
+      )}
+    </div>
+  );
 }
 
 const MISSING_CARD = { width: "min(560px, 100%)" };
 const NO_MARGIN = { margin: 0 };
 
-/** A profile as `look` looks at it. */
-export function Profile({
-  profile,
-  look,
-  setLook,
-}: {
+interface FrameProps {
   profile: string;
   look: ProfileLook;
   setLook: ProfileFocus["setLook"];
+  /** Whether Escape on what holds the pane, such as the page, is for it:
+   * a pane only takes keys that land in it, but the one leading takes
+   * those too. */
+  leads?: boolean;
+}
+
+/** Reads a profile's summary and lends it, with the look, to what is in
+ * the frame; says why it cannot instead. Escape in it lets go of the most
+ * specific zone selection first. */
+function ProfileFrame({
+  profile,
+  look,
+  setLook,
+  leads = true,
+  onSummary,
+  children,
+}: FrameProps & {
+  onSummary?: ((summary: ProfileSummary, live: boolean) => void) | undefined;
+  children: ReactNode;
 }) {
   const info = useModel((model) => model.profiles.find((each) => each.id === profile));
   // Each revision of a growing profile is asked for anew; the last one's
@@ -178,20 +201,24 @@ export function Profile({
   const revision = info?.revision ?? 0;
   const summary = useAnswer("profile", { profile, revision });
   const disconnected = useDisconnected();
-  const [zonesOpen, setZonesOpen] = useState(true);
-  const toggleZones = useCallback(() => setZonesOpen((was) => !was), []);
-  const closeZones = useCallback(() => setZonesOpen(false), []);
-  // Escape lets go of the most specific zone selection first, except where
-  // a field or a dialog has it. A click on the lanes, which take no focus,
-  // leaves it on what holds the profile, such as its tab, which counts.
+  const live = info?.recording ?? false;
+  useEffect(() => {
+    if (summary.data && onSummary) {
+      onSummary(summary.data, live);
+    }
+  }, [summary.data, onSummary, live]);
+  // Except where a field or a dialog has it. A click on the lanes, which
+  // take no focus, leaves it on what holds the pane, which counts for the
+  // pane leading.
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       const target = event.target as Element;
+      const inside = root.current?.contains(target) ?? false;
       if (
         event.key !== "Escape" ||
         event.defaultPrevented ||
-        !(root.current?.contains(target) || target.contains(root.current)) ||
+        !(inside || (leads && target.contains(root.current))) ||
         target.closest("input, textarea, select, [role=dialog]")
       ) {
         return;
@@ -244,66 +271,64 @@ export function Profile({
   if (!focus) {
     return <div className="page muted">Reading the profile…</div>;
   }
-  const view = look.view ?? defaultView(focus.summary);
-  const zoned = focus.summary.timed && focus.summary.zoneSites.length > 0;
   return (
     <ProfileContext.Provider value={focus}>
       <div className="profile" data-testid="profile" ref={root}>
-        <Accounting summary={focus.summary} />
         {disconnected ? (
           // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a notice, not a form's result
           <div className="profile-untimed profile-disconnected" role="status">
-            Disconnected. The views keep what they last read until microscope answers again.
+            Disconnected. This pane keeps what it last read until microscope answers again.
           </div>
         ) : null}
-        {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
-        <div className={`profile-body ${zoned && zonesOpen ? "zoned" : ""}`}>
-          <div className="profile-main">
-            {focus.summary.timed ? (
-              <Lanes />
-            ) : (
-              <div className="profile-untimed muted" data-testid="untimed">
-                Read from {focus.summary.source ?? "a file"}, which keeps no times or threads: this
-                profile has no timeline.
-              </div>
-            )}
-            <ProfileHead
-              info={info}
-              zonesOpen={zoned ? zonesOpen : null}
-              toggleZones={toggleZones}
-            />
-            <div className="profile-view">
-              {view === "syscalls" ? (
-                <SyscallsView />
-              ) : view === "functions" ? (
-                <FunctionsView />
-              ) : view === "tree" ? (
-                <TreeView />
-              ) : (
-                <FlameView />
-              )}
-            </div>
-          </div>
-          {zoned && zonesOpen ? <ZonesPane close={closeZones} /> : null}
-        </div>
+        {children}
       </div>
     </ProfileContext.Provider>
   );
 }
 
+/** A profile's pane of `view`, or its overview, as `look` looks at it.
+ * `onSummary` hears of its summary, to open the panes it calls for. */
+export function Profile({
+  view = null,
+  onSummary,
+  ...frame
+}: FrameProps & {
+  view?: ProfileView | null;
+  onSummary?: ((summary: ProfileSummary, live: boolean) => void) | undefined;
+}) {
+  return (
+    <ProfileFrame {...frame} onSummary={onSummary}>
+      {view === null ? <Overview /> : <ViewBody view={view} />}
+    </ProfileFrame>
+  );
+}
+
+function Overview() {
+  const { profile, summary } = useProfile();
+  const info = useModel((model) => model.profiles.find((each) => each.id === profile));
+  return (
+    <>
+      <Accounting summary={summary} />
+      {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
+      <ProfileHead info={info} />
+      {summary.timed ? (
+        timeline(summary) ? (
+          <Lanes />
+        ) : null
+      ) : (
+        <div className="profile-untimed muted" data-testid="untimed">
+          Read from {summary.source ?? "a file"}, which keeps no times or threads: this profile has
+          no timeline.
+        </div>
+      )}
+    </>
+  );
+}
+
 /** The profile's name, the views, and everything the query holds, each
  * removable where it shows. */
-function ProfileHead({
-  info,
-  zonesOpen,
-  toggleZones,
-}: {
-  info: ProfileInfo | undefined;
-  /** Whether the Zones pane shows, or null with no zones to show. */
-  zonesOpen: boolean | null;
-  toggleZones: () => void;
-}) {
-  const { summary, look } = useProfile();
+function ProfileHead({ info }: { info: ProfileInfo | undefined }) {
+  const { summary, look, setLook } = useProfile();
   const [detailing, setDetailing] = useState(false);
   const showDetails = useCallback(() => setDetailing(true), []);
   const hideDetails = useCallback(() => setDetailing(false), []);
@@ -311,6 +336,11 @@ function ProfileHead({
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to compare.
   const sampled = summary.samples > 0 || summary.syscalls === 0;
+  const zoned = summary.timed && summary.zoneSites.length > 0;
+  const showZones = useCallback(
+    () => setLook((prev) => withLook(prev, "view", "zones"), true),
+    [setLook],
+  );
 
   return (
     <div className="profile-head">
@@ -333,18 +363,25 @@ function ProfileHead({
           ))}
         </div>
       ) : null}
-      <Options />
-      {zonesOpen === null ? null : (
+      {snapshots && look.src !== "waits" ? (
+        <div className="segmented" title="What the timeline has a lane for">
+          {LANES.map(([lanes, label]) => (
+            <LookButton key={label} field="lanes" value={lanes} pressed={look.lanes === lanes}>
+              {label}
+            </LookButton>
+          ))}
+        </div>
+      ) : null}
+      {zoned ? (
         <button
           type="button"
           className="tb ghost"
-          aria-pressed={zonesOpen}
           title="Every zone site, and one's lengths"
-          onClick={toggleZones}
+          onClick={showZones}
         >
           Zones
         </button>
-      )}
+      ) : null}
       <div className="profile-query">
         {range && !look.zi ? (
           <ClearChip field="range" label={formatSpan(range)} title="Samples in this time range" />
@@ -362,6 +399,11 @@ function ProfileHead({
     </div>
   );
 }
+
+const LANES = [
+  [undefined, "Thread lanes"],
+  ["tasks", "Task lanes"],
+] as const;
 
 const SOURCES = [
   [undefined, "CPU", "Where the program ran"],

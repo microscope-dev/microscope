@@ -46,7 +46,7 @@ const MIGRATIONS: Readonly<Record<number, (old: unknown) => unknown>> = {
         }
         const params = found.params as { name?: unknown; look?: unknown };
         const link = `l${next++}`;
-        links[link] = { profile: found.key, look: params.look ?? {} };
+        links[link] = { profile: found.key, name: params.name ?? "", look: params.look ?? {} };
         return [id, { ...found, params: { name: params.name ?? "", link } }];
       }),
     );

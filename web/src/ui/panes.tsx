@@ -12,7 +12,7 @@ import { useModel } from "../store";
 import { tab } from "../tab";
 import { remote, standalone } from "../target";
 import { focusPane } from "../workbench/arrange";
-import { kinds, type PaneKind } from "../workbench/kinds";
+import { kinds, type PaneKind, type PaneProps } from "../workbench/kinds";
 import {
   activate,
   build,
@@ -21,13 +21,11 @@ import {
   type Layout,
   type LinkId,
   open,
-  openLinked,
-  type Pane,
   type PaneId,
   paneOf,
 } from "../workbench/layout";
 import { lastLayout } from "../workbench/persist";
-import { change, workbench } from "../workbench/store";
+import { change, useLink, workbench } from "../workbench/store";
 import { AccountBody, ConnectBody } from "./Account";
 import { Breakpoints, BreakpointsBadge } from "./Breakpoints";
 import { Console } from "./Console";
@@ -47,7 +45,8 @@ import { Output, OutputBadge } from "./Output";
 import { fileName } from "./paths";
 import { StartBody } from "./Picker";
 import { Processes, ProcessesBadge } from "./Processes";
-import { ProfileBody, profileLink, profileParams } from "./profile/ProfilePage";
+import { overview, paneParams, readLink, showProfile as openOverview } from "./profile/link";
+import { ProfilePaneBody } from "./profile/ProfilePage";
 import { Registers, RegistersBadge } from "./Registers";
 import { KeysBody, SettingsBody } from "./Settings";
 import { Modules, Signals } from "./Signals";
@@ -142,16 +141,36 @@ export const KINDS = kinds<Need>([
   view(KIND.record, "Record", StartBody, { needs: "control" }),
   view(KIND.settings, "Settings", SettingsBody, { needs: null }),
   view(KIND.keys, "Keyboard shortcuts", KeysBody, { needs: null }),
-  {
-    id: KIND.profile,
-    title: (pane) => fileName(profileParams(pane).name) || "Profile",
-    Body: ProfileBody,
+  profileKind(KIND.profile, (pane) => fileName(paneParams(pane).name) || "Profile"),
+  profileKind(KIND.profileFlame, () => "Flame graph"),
+  profileKind(KIND.profileTree, () => "Call tree"),
+  profileKind(KIND.profileFunctions, () => "Functions"),
+  profileKind(KIND.profileSyscalls, () => "Syscalls"),
+  profileKind(KIND.profileZones, () => "Zones"),
+]);
+
+/** One of a profile's panes. Each of its views names its profile's file,
+ * so the panes of one profile read as one group wherever they sit. */
+function profileKind(id: KindId, title: Kind["title"]): Kind {
+  return {
+    id,
+    title,
+    Body: ProfilePaneBody,
+    ...(id === KIND.profile ? {} : { Badge: ProfileBadge }),
     needs: "connection",
-    // Its canvases and timeline are costly to keep hidden.
+    // Their canvases and timeline are costly to keep hidden.
     keepAlive: false,
     closable: () => true,
-  },
-]);
+  };
+}
+
+function ProfileBadge({ pane }: PaneProps) {
+  const link = paneParams(pane).link;
+  const name = useLink(link, (value) => readLink(value)?.name ?? "");
+  // The space keeps the tab's name "Flame graph go.usprof" for a screen
+  // reader; the tab's gap spaces them on screen.
+  return name ? <span className="muted"> {fileName(name)}</span> : null;
+}
 
 /** What the dock shows panes with. */
 export const DOCK = { kinds: KINDS, useMissing };
@@ -233,25 +252,12 @@ export function showPane(kind: KindId): void {
   requestAnimationFrame(() => shown && focusPane(shown));
 }
 
-/** A profile's pane, reading how it looks at the profile from `link`. */
-const profilePane = (id: string, name: string, link: LinkId): Pane => ({
-  kind: KIND.profile,
-  key: id,
-  params: { name, link },
-});
-
-/** Shows a profile's pane, opening it among the documents when it is not
- * open, and says which pane it is. */
-export function showProfile(id: string, name: string, look: ProfileLook = {}): PaneId {
-  const before = workbench.getState().layout;
-  const opened = openLinked(
-    before,
-    (link) => profilePane(id, name, link),
-    profileLink(id, look),
-    documentsGroup(before, tab.getState().files),
+/** Shows a profile's overview, opening it among the documents when it is
+ * not open. */
+export function showProfile(id: string, name: string): void {
+  change(
+    (layout) => openOverview(layout, id, name, documentsGroup(layout, tab.getState().files)).layout,
   );
-  change(() => activate(opened.layout, opened.pane));
-  return opened.pane;
 }
 
 /** Shows a shared organization's pane, opening it where there is room
@@ -393,14 +399,15 @@ export function restoreLayout(): string | null {
 /** A profile, with Explorer beside it to open another. */
 export function profileLayout(id: string, name: string, look: ProfileLook): Layout {
   const link = "l0" as LinkId;
+  const { pane, value } = overview(id, name, look, link);
   return build(
     {
       axis: "row",
       children: [
-        [0.78, [profilePane(id, name, link)]],
+        [0.78, [pane]],
         [0.22, [single(KIND.explorer), single(KIND.account)]],
       ],
     },
-    { [link]: profileLink(id, look) },
+    { [link]: value },
   );
 }

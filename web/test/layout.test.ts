@@ -534,7 +534,9 @@ describe("a link", () => {
       throw new Error(loaded.why);
     }
     expect(loaded.layout.panes["p1" as PaneId]?.params).toEqual({ name: "x.usprof", link: "l2" });
-    expect(loaded.layout.links).toEqual({ l2: { profile: "ab12", look: { fn: "leaf" } } });
+    expect(loaded.layout.links).toEqual({
+      l2: { profile: "ab12", name: "x.usprof", look: { fn: "leaf" } },
+    });
     expect(loaded.layout.next).toBe(3);
   });
 });

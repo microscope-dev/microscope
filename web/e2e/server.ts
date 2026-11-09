@@ -6,7 +6,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { createInterface } from "node:readline";
 
-import { test as base, expect, type Locator, type Page } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 
 export { expect };
 
@@ -200,18 +200,17 @@ export async function join(page: Page, link: string): Promise<void> {
   }).toPass();
 }
 
-/** Shows a view from Options, opening it if it is closed, and puts it
- * away. `within` is the profile's group when several profiles show. */
-export async function showView(
-  page: Page,
-  label: string,
-  within: Page | Locator = page,
-): Promise<void> {
-  const options = page.getByRole("dialog", { name: "Options" });
-  if (!(await options.isVisible())) {
-    await within.getByRole("button", { name: "Options" }).click();
+/** Shows a profile's view by its tab, opening it from the View menu if
+ * it is closed. `profile` names the file when several profiles show. */
+export async function showView(page: Page, label: string, profile?: string): Promise<void> {
+  const titled = page.getByRole("tab").filter({
+    has: page.locator("[data-part=tab-title]", { hasText: new RegExp(`^${label}$`, "u") }),
+  });
+  const chosen = profile === undefined ? titled : titled.filter({ hasText: profile });
+  if ((await chosen.count()) === 0) {
+    await menu(page, "View", label);
+  } else {
+    await chosen.click();
   }
-  await options.getByRole("combobox", { name: "View" }).selectOption({ label });
-  await page.keyboard.press("Escape");
-  await expect(options).toBeHidden();
+  await expect(chosen).toHaveAttribute("aria-selected", "true");
 }

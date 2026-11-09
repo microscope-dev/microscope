@@ -14,15 +14,16 @@ import {
 } from "react";
 
 import { followEmailLink, followSignIn } from "../account";
-import { KIND } from "../documents";
+import { documentsGroup, KIND } from "../documents";
 import { type Note, targetName } from "../model";
+import { validateProfileLook } from "../profile/look";
 import { useModel } from "../store";
-import { activate, groups, linkOf, paneOf, setLink, setParams } from "../workbench/layout";
+import { tab as tabState } from "../tab";
 import { change, useLayout, workbench } from "../workbench/store";
 import { SessionLink } from "./Explorer";
-import { profileLayout, showPane, showProfile, startLayout } from "./panes";
+import { profileLayout, showPane, startLayout } from "./panes";
 import { PICKED } from "./Picker";
-import { profileLink, profileParams, readProfileLink } from "./profile/ProfilePage";
+import { lookOf, profileOf, showAddress, shownProfilePane, viewOpen } from "./profile/link";
 import { orgLink } from "./SingleSignOn";
 import { Workbench } from "./Workspace";
 
@@ -107,56 +108,49 @@ export function OrgSignIn() {
   return <Workbench focus={null} wants="start" />;
 }
 
-/** `/profile/$profile`: the profile's pane, as the address looks at it.
- * Back and forward move through the looks it had. */
+/** `/profile/$profile`: the profile's pane of the address's view, looking
+ * as it says. Back and forward move through the looks it had. */
 export function ProfileRoute() {
   const { profile } = useParams({ from: "/profile/$profile" });
-  const look = useSearch({ from: "/profile/$profile" });
+  // The router keeps what the address says beside what it validated, such
+  // as an old link's view, so the look is only what validates.
+  const search = useSearch({ from: "/profile/$profile" });
+  const look = useMemo(() => validateProfileLook(search), [search]);
   const name = useModel((model) => model.profiles.find((each) => each.id === profile)?.name ?? "");
   // After the workbench is arranged, before it paints.
   useLayoutEffect(() => {
-    const id = paneOf(workbench.getState().layout, KIND.profile, profile);
-    if (!id) {
-      showProfile(profile, name, look);
-      return;
-    }
-    change((layout) => {
-      const now = layout.panes[id];
-      const params = now ? profileParams(now) : { name, link: null };
-      const named = setParams(layout, id, { name: name || params.name, link: params.link });
-      const looked =
-        params.link === null ? named : setLink(named, params.link, profileLink(profile, look));
-      return activate(looked, id);
-    });
+    change((layout) =>
+      showAddress(layout, profile, name, look, documentsGroup(layout, tabState.getState().files)),
+    );
   }, [profile, name, look]);
-  // Once its pane closes, the address names a profile still shown, or none.
+  // Once the pane it names closes, the address names a profile's pane
+  // still shown, or none.
   const navigate = useNavigate();
-  const open = useLayout((layout) => paneOf(layout, KIND.profile, profile) !== null);
-  const was = useRef({ profile, open });
+  const view = look.view ?? null;
+  const open = useLayout((layout) => viewOpen(layout, profile, view));
+  const was = useRef({ profile, view, open });
   useEffect(() => {
-    const closed = was.current.profile === profile && was.current.open && !open;
-    was.current = { profile, open };
-    if (!closed) {
+    const before = was.current;
+    was.current = { profile, view, open };
+    if (before.profile !== profile || before.view !== view || !before.open || open) {
       return;
     }
-    // The focused group's profile, else one shown in another group.
     const layout = workbench.getState().layout;
-    const shown = groups(layout)
-      .toSorted((a, b) => Number(b.id === layout.focused) - Number(a.id === layout.focused))
-      .flatMap((group) => (group.active ? [layout.panes[group.active]] : []));
-    const next = shown.find((pane) => pane?.kind === KIND.profile);
-    if (next) {
-      const link = linkOf(next);
+    const next = shownProfilePane(layout);
+    const pane = next ? layout.panes[next] : undefined;
+    const shown = next ? lookOf(layout, next) : null;
+    const of = pane ? profileOf(layout, pane) : null;
+    if (shown && of) {
       void navigate({
         to: "/profile/$profile",
-        params: { profile: next.key },
-        search: (link && readProfileLink(layout.links[link])?.look) ?? {},
+        params: { profile: of },
+        search: shown,
         replace: true,
       });
     } else {
       void navigate({ to: "/", replace: true });
     }
-  }, [profile, open, navigate]);
+  }, [profile, view, open, navigate]);
   const start = useCallback(() => profileLayout(profile, name, look), [profile, name, look]);
   return <Workbench focus={null} wants="start" start={start} />;
 }

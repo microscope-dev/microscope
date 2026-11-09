@@ -10,7 +10,7 @@ import { page, userEvent } from "vitest/browser";
 import "../src/styles.css";
 import { assert } from "../src/assert";
 import type { TransportHandlers } from "../src/connection";
-import { type ProfileLook, queryOf } from "../src/profile/look";
+import { type ProfileLook, type ProfileView, queryOf } from "../src/profile/look";
 import {
   type ErrorKind,
   PROTOCOL_VERSION,
@@ -173,6 +173,8 @@ const HARNESS_SIZE = { width: 900, height: 800, display: "grid" };
 const WIDE = { width: 5000 };
 /** 180 pixels of lane names leave 1000 for the lanes. */
 const SECOND_WIDE = { width: 1180 };
+/** The lanes fill their pane, scrolling past its height. */
+const SECOND_WIDE_SHORT = { width: 1180, height: 400, display: "flex" };
 // Narrower than the lanes' names, leaving no room to draw.
 const NAMES_WIDE = { width: 150 };
 const NO_LOOK: ProfileLook = {};
@@ -1393,12 +1395,8 @@ it("sets how frames are drawn from Options, and puts it away on Escape or a pres
   const options = page.getByRole("dialog", { name: "Options" });
   await expect.element(options).toBeVisible();
 
-  // The default view leaves the address alone.
-  const view = options.getByRole("combobox", { name: "View" });
-  await view.selectOptions("Call tree");
-  expect(lookShown().view).toBe("tree");
-  await view.selectOptions("Flame graph");
-  expect(lookShown().view).toBeUndefined();
+  // Each view is a pane of its own, chosen by its tab, not here.
+  expect(options.getByRole("combobox", { name: "View" }).query()).toBeNull();
 
   await options.getByRole("combobox", { name: "Frames" }).selectOptions("lines");
   await options.getByRole("checkbox", { name: "Async stacks" }).click();
@@ -1742,7 +1740,7 @@ it("scrolls a zone chosen elsewhere into view, once, so the lanes scroll away fr
     preempted: 0,
   }));
   const server = await mount(
-    <div style={SECOND_WIDE}>
+    <div style={SECOND_WIDE_SHORT}>
       <Lanes />
     </div>,
     { summary: summaryOf({ timed: true, threads, zoneSites: [DRAIN] }) },
@@ -2046,7 +2044,7 @@ it("lists sites by total, and sorts them by another column", async () => {
       { ...DRAIN, name: "many", count: 50, total: 100, longest: 10 },
     ],
   });
-  await mount(<ZonesPane close={NOTHING} />, { summary });
+  await mount(<ZonesPane />, { summary });
   expect(listedSites()).toEqual(["few", "many"]);
   await page.getByRole("button", { name: "count", exact: true }).click();
   expect(listedSites()).toEqual(["many", "few"]);
@@ -2057,13 +2055,13 @@ it("lists sites by total, and sorts them by another column", async () => {
 });
 
 it("says a recording has no zones", async () => {
-  await mount(<ZonesPane close={NOTHING} />);
+  await mount(<ZonesPane />);
   await expect.element(page.getByText("This recording has no zones.")).toBeVisible();
 });
 
 it("picks a band from the histogram, scopes the views to it, compares it, and lets it go", async () => {
   vi.spyOn(Element.prototype, "setPointerCapture").mockImplementation(() => {});
-  const server = await mount(<ZonesPane close={NOTHING} />, {
+  const server = await mount(<ZonesPane />, {
     summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
     look: { zs: "drain", th: ["0"] },
   });
@@ -2107,7 +2105,7 @@ it("picks a band from the histogram, scopes the views to it, compares it, and le
 });
 
 it("selects one of the longest, ranks it, and never touches the threads", async () => {
-  const server = await mount(<ZonesPane close={NOTHING} />, {
+  const server = await mount(<ZonesPane />, {
     summary: summaryOf({
       zoneSites: [DRAIN_SITE, { ...DRAIN_SITE, name: "parse" }],
       threads: ZONED_THREADS,
@@ -2136,7 +2134,7 @@ it("selects one of the longest, ranks it, and never touches the threads", async 
 });
 
 it("says why a site could not be measured, and when none of its zones are in the range", async () => {
-  const server = await mount(<ZonesPane close={NOTHING} />, {
+  const server = await mount(<ZonesPane />, {
     summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
     look: { zs: "drain" },
   });
@@ -2170,7 +2168,7 @@ it("says why a site could not be measured, and when none of its zones are in the
 });
 
 it("offers no zone scope of waits, which zones never hold", async () => {
-  const server = await mount(<ZonesPane close={NOTHING} />, {
+  const server = await mount(<ZonesPane />, {
     summary: summaryOf({ zoneSites: [DRAIN_SITE] }),
     look: { zs: "drain", zb: "100-199", src: "waits" },
   });
@@ -2329,8 +2327,12 @@ it("says it is reading blocked threads, and why it could not", async () => {
   await expect.element(page.getByText("the threads are gone")).toBeVisible();
 });
 
-/** Mounts the whole page of a profile. */
-async function mountPage(summary: ProfileSummary, known: boolean): Promise<Server> {
+/** Mounts a profile's pane of `view`, or its overview. */
+async function mountPage(
+  summary: ProfileSummary,
+  known: boolean,
+  view: ProfileView | null = null,
+): Promise<Server> {
   const server = new Server();
   await server.open();
   if (known) {
@@ -2343,7 +2345,7 @@ async function mountPage(summary: ProfileSummary, known: boolean): Promise<Serve
   }
   function Page() {
     const [look, setLook] = useState<ProfileLook>({});
-    return <Profile profile={summary.id} look={look} setLook={setLook} />;
+    return <Profile view={view} profile={summary.id} look={look} setLook={setLook} />;
   }
   render(
     <SessionContext value={server.session}>
@@ -2687,7 +2689,7 @@ it("says why File details failed", async () => {
 
 it("keeps what it shows while disconnected, and says so", async () => {
   const summary = summaryOf();
-  const server = await mountPage(summary, true);
+  const server = await mountPage(summary, true, "flame");
   server.answer(await server.next("profile"), summary);
   server.answer(await server.next("profileTree"), ...TREE);
   const search = page.getByRole("searchbox", { name: "Search frames" });

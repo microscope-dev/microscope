@@ -127,7 +127,7 @@ describe("a profile's address", () => {
   it("drops what it cannot mean", () => {
     expect(
       validateProfileLook({
-        view: "flame",
+        view: "sankey",
         range: "9-3",
         th: ["x"],
         src: "cpu",
@@ -794,8 +794,12 @@ describe("zones in the address", () => {
     expect(cleared(thrice)).toBe(thrice);
   });
 
-  it("maps the old Zones view to the flame graph", () => {
-    expect(validateProfileLook({ view: "zones", zs: "drain" })).toEqual({ zs: "drain" });
+  it("keeps every view a pane shows, the flame graph's too", () => {
+    expect(validateProfileLook({ view: "zones", zs: "drain" })).toEqual({
+      view: "zones",
+      zs: "drain",
+    });
+    expect(validateProfileLook({ view: "flame" })).toEqual({ view: "flame" });
   });
 });
 

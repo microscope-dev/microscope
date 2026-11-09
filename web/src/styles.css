@@ -3351,12 +3351,20 @@ textarea.input {
 .profile-timeline {
   position: relative;
   display: flex;
-  flex: none;
+  flex: 1;
   flex-direction: column;
-  max-height: 40vh;
+  min-height: 0;
   overflow: auto;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
+}
+
+/* A trace's lanes, names beside the plot, leave most of its pane to its
+ * calls. */
+.syscalls .profile-timeline {
+  flex: 0 1 auto;
+  flex-direction: row;
+  max-height: 40%;
 }
 
 /* Round times over the lanes, kept in view as they scroll, with the
@@ -3611,11 +3619,17 @@ textarea.input {
   display: grid;
   flex: 1;
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
 .profile-view > .pane {
   min-height: 0;
+}
+
+/* How the view draws its frames, at the end of its search row. */
+.profile-options {
+  margin-left: auto;
 }
 
 .flame {
@@ -3892,32 +3906,9 @@ textarea.input {
 
 /* Zones */
 
-/* The lanes and the view on the left, the Zones pane on the right. */
-.profile-body {
-  display: grid;
-  flex: 1;
-  grid-template-columns: minmax(0, 1fr);
-  min-height: 0;
-}
-
-.profile-body.zoned {
-  grid-template-columns: minmax(0, 1fr) 340px;
-}
-
-.profile-main {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
 .zones-pane {
+  flex: 1;
   min-height: 0;
-  border-left: 1px solid var(--line);
-}
-
-.zones-pane .pane-head .end {
-  margin-left: auto;
 }
 
 .zones-pane .pane-body {
@@ -3931,6 +3922,12 @@ textarea.input {
   max-height: 260px;
   overflow: auto;
   border-bottom: 1px solid var(--line);
+}
+
+/* With no site chosen, the list has the pane to itself. */
+.zone-sites-list:last-child {
+  max-height: none;
+  border-bottom: none;
 }
 
 .zone-sites thead th {
@@ -4612,8 +4609,7 @@ textarea.input {
 }
 
 @media (max-width: 760px) {
-  .syscalls-split,
-  .profile-body.zoned {
+  .syscalls-split {
     grid-template-columns: minmax(0, 1fr);
   }
 }

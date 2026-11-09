@@ -5,6 +5,7 @@ import { formatPercent, formatWeight } from "../../profile/paint";
 import { type CallTree, matching } from "../../profile/tree";
 import type { TransformOp } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
+import { Options } from "./Options";
 
 const ACTIONS: { op: TransformOp; label: string; title: string }[] = [
   {
@@ -52,9 +53,9 @@ export function useTreeSearch(
 }
 
 /** One row that searches a view's frames and holds the selected one's
- * details, the same in every view. A click on a frame puts its name in
- * the search; typing lets it go, and emptying the search clears, as Clear
- * does. `reset` also clears what else the view keeps, such as a zoom. */
+ * details, the same in every view, and ends in its Options. A click on a
+ * frame puts its name in the search; typing lets it go, and emptying the
+ * search clears, as Clear does. `reset` also clears what else the view keeps, such as a zoom. */
 export function SearchRow({
   search,
   onSearch,
@@ -125,6 +126,9 @@ export function SearchRow({
       ) : (
         <Selected name={fn} />
       )}
+      <span className="profile-options">
+        <Options />
+      </span>
     </div>
   );
 }

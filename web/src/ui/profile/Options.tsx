@@ -1,36 +1,12 @@
 // How the profile's frames are drawn, out of the toolbar's way: a button
 // that counts what differs from the defaults, and a popover that sets it.
 
-import { type ChangeEvent, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type ReactNode, useCallback, useRef, useState } from "react";
 
-import { type ProfileLook, type ProfileView, transformed, withLook } from "../../profile/look";
+import { type ProfileLook, transformed, withLook } from "../../profile/look";
 import type { ProfileGranularity, ProfileSummary } from "../../protocol";
 import { useDialogFocus, useDismiss } from "../dialog";
 import { useProfile } from "./context";
-
-const VIEWS: { view: ProfileView; label: string }[] = [
-  { view: "flame", label: "Flame graph" },
-  { view: "tree", label: "Call tree" },
-  { view: "functions", label: "Functions" },
-  { view: "syscalls", label: "Syscalls" },
-];
-
-/** A trace with no samples opens on its calls; anything else on its
- * flame graph. */
-export function defaultView(summary: ProfileSummary): ProfileView {
-  return summary.samples === 0 && summary.syscalls > 0 ? "syscalls" : "flame";
-}
-
-/** Whether Options offers a view: sample views when there are samples or
- * nothing else, calls when traced. */
-function offers(summary: ProfileSummary, view: ProfileView): boolean {
-  switch (view) {
-    case "syscalls":
-      return summary.syscalls > 0;
-    default:
-      return summary.samples > 0 || summary.syscalls === 0;
-  }
-}
 
 const COLLAPSE_CYCLES = "collapseCycles";
 
@@ -44,8 +20,8 @@ const GRANULARITIES: { by: ProfileGranularity; label: string }[] = [
 /** A trace of system calls alone has no frames to invert, fold, or compare. */
 const sampled = (summary: ProfileSummary) => summary.samples > 0 || summary.syscalls === 0;
 
-/** The Options button and its popover, or nothing for a profile with
- * nothing to set. */
+/** The Options button and its popover, which set how a pane draws its
+ * frames, or nothing for a profile with nothing to set. */
 export function Options() {
   const { summary } = useProfile();
   const [open, setOpen] = useState(false);
@@ -54,13 +30,7 @@ export function Options() {
   const away = useCallback(() => setOpen(false), []);
   useDismiss(anchor, open, away);
 
-  const views = useMemo(() => VIEWS.filter(({ view }) => offers(summary, view)), [summary]);
-  if (
-    views.length < 2 &&
-    !sampled(summary) &&
-    summary.snapshots === 0 &&
-    summary.labelKeys.length === 0
-  ) {
+  if (!sampled(summary) && summary.snapshots === 0 && summary.labelKeys.length === 0) {
     return null;
   }
   return (
@@ -74,28 +44,18 @@ export function Options() {
       >
         Options
       </button>
-      {open ? <Popover views={views} /> : null}
+      {open ? <Popover /> : null}
     </div>
   );
 }
 
 /** Its focus goes back to the Options button when it closes. */
-function Popover({ views }: { views: typeof VIEWS }) {
+function Popover() {
   const { summary, look, setLook } = useProfile();
   const dialog = useRef<HTMLDivElement>(null);
   useDialogFocus(dialog);
   const snapshots = summary.snapshots > 0;
 
-  const showView = useCallback(
-    (event: ChangeEvent<HTMLSelectElement>) => {
-      const view = event.target.value as ProfileView;
-      setLook(
-        (prev) => withLook(prev, "view", view === defaultView(summary) ? undefined : view),
-        true,
-      );
-    },
-    [setLook, summary],
-  );
   const framesBy = useCallback(
     (event: ChangeEvent<HTMLSelectElement>) => {
       const by = event.target.value as ProfileGranularity;
@@ -134,18 +94,6 @@ function Popover({ views }: { views: typeof VIEWS }) {
       // Escape closes it rather than leave the view.
       data-keys="escape"
     >
-      {views.length > 1 ? (
-        <label className="options-field">
-          View
-          <select className="input" value={look.view ?? defaultView(summary)} onChange={showView}>
-            {views.map(({ view, label }) => (
-              <option key={view} value={view}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
       {sampled(summary) ? (
         <label className="options-field">
           Frames
@@ -199,28 +147,15 @@ function Popover({ views }: { views: typeof VIEWS }) {
         </>
       ) : null}
       {snapshots ? (
-        <>
-          <LookCheck
-            field="bt"
-            title="Group stacks by the task they ran or waited in"
-            checked={look.bt === "1"}
-            on="1"
-            off={undefined}
-          >
-            By task
-          </LookCheck>
-          {look.src === "waits" ? null : (
-            <LookCheck
-              field="lanes"
-              title="A timeline lane per task, not per thread"
-              checked={look.lanes === "tasks"}
-              on="tasks"
-              off={undefined}
-            >
-              Task lanes
-            </LookCheck>
-          )}
-        </>
+        <LookCheck
+          field="bt"
+          title="Group stacks by the task they ran or waited in"
+          checked={look.bt === "1"}
+          on="1"
+          off={undefined}
+        >
+          By task
+        </LookCheck>
       ) : null}
       {sampled(summary) ? (
         <label

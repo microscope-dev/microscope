@@ -48,6 +48,11 @@ export const KIND = {
   core: kind("core"),
   record: kind("record"),
   profile: kind("profile"),
+  profileFlame: kind("profile-flame"),
+  profileTree: kind("profile-tree"),
+  profileFunctions: kind("profile-functions"),
+  profileSyscalls: kind("profile-syscalls"),
+  profileZones: kind("profile-zones"),
   settings: kind("settings"),
   keys: kind("keys"),
 } as const;
