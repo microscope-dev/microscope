@@ -14,6 +14,7 @@
 
 mod future;
 mod layout;
+mod sets;
 mod tasks;
 
 use std::collections::BTreeMap;
@@ -175,6 +176,10 @@ struct TokioRuntime {
     /// Where the function that runs each coroutine type begins.
     bodies: Mutex<BTreeMap<crate::TypeReference, Option<ImageAddress>>>,
 
+    /// Whether a value of each type, held by a box or pin or not, may lead
+    /// to a `LocalSet`.
+    holds_sets: Mutex<BTreeMap<(crate::TypeReference, bool), bool>>,
+
     /// Where each function that starts tasks begins, and whether it also
     /// schedules woken tasks.
     starters: Vec<(ImageAddress, bool)>,
@@ -302,6 +307,7 @@ impl TokioRuntime {
             vtables: Mutex::new(BTreeMap::new()),
             futures: Mutex::new(BTreeMap::new()),
             bodies: Mutex::new(BTreeMap::new()),
+            holds_sets: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -788,44 +794,20 @@ impl RuntimeModel for TokioRuntime {
         TASK_NOUN.0
     }
 
-    /// A `LocalSet` a thread drives, as `LocalSet::block_on` and
-    /// `run_until` do through `RunUntil`, or as the set itself is awaited.
-    fn task_set(
+    /// The `LocalSet`s the futures a thread drives hold: as
+    /// `LocalSet::block_on` and `run_until` drive one through `RunUntil`,
+    /// as the set itself is awaited, or wherever within them a combinator
+    /// such as `join!` keeps one.
+    fn held_task_sets(
         &self,
         stop: &dyn RuntimeStop,
-        future: VirtualAddress,
-        ty: crate::TypeReference,
-    ) -> Option<u64> {
-        let locals = self.locals().ok().flatten()?;
-        let info = self.image.type_info(ty)?;
-
-        let set = match local_type(info)? {
-            "LocalSet" => future,
-            "RunUntil" => {
-                let crate::TypeKind::Record { members, .. } = &info.kind else {
-                    return None;
-                };
-
-                let member = members
-                    .iter()
-                    .find(|member| member.name.as_deref() == Some("local_set"))?;
-                let crate::RecordMemberLayout::ByteOffset(offset) = member.layout else {
-                    return None;
-                };
-
-                records::pointer(stop, future.wrapping_add(offset))?
-            }
-            _ => return None,
-        };
-
-        let context = records::pointer(stop, set.wrapping_add(locals.set))?;
-        Self::set_shared(stop, locals, context)
-            .ok()
-            .map(VirtualAddress::get)
+        driven: &super::DrivenFuture,
+    ) -> Partial<Vec<u64>> {
+        self.held_sets(stop, driven)
     }
 
     fn may_run_task_set(&self, ty: crate::TypeReference) -> bool {
-        self.has_task_sets() && may_hold_set(self.image.as_ref(), ty)
+        self.has_task_sets() && self.may_hold(ty, false)
     }
 
     fn has_task_sets(&self) -> bool {
@@ -991,7 +973,9 @@ fn holds_pointee(info: &crate::TypeInfo) -> bool {
 /// type says without its value: whether it holds a set, a `RunUntil`, or
 /// a reference to a set, in place or through a box or pin, or a future
 /// whose type only its value says.
-fn may_hold_set(image: &dyn RuntimeImage, ty: crate::TypeReference) -> bool {
+///
+/// A value a box or pin holds, when `boxed`, leads on through its pointer.
+fn may_hold_set(image: &dyn RuntimeImage, ty: crate::TypeReference, boxed: bool) -> bool {
     use crate::TypeKind;
     fn members(
         fields: &[crate::RecordMember],
@@ -1001,7 +985,7 @@ fn may_hold_set(image: &dyn RuntimeImage, ty: crate::TypeReference) -> bool {
     }
 
     let mut seen = std::collections::BTreeSet::new();
-    let mut pending = vec![(ty, false)];
+    let mut pending = vec![(ty, boxed)];
     while let Some((ty, boxed)) = pending.pop() {
         if !seen.insert((ty.id, boxed)) {
             continue;

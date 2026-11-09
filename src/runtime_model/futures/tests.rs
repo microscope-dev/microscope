@@ -611,7 +611,7 @@ fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
         &memory,
         VirtualAddress::new(outer),
         reference(OUTER),
-        &mut |at, _| {
+        &mut |at, _, _| {
             asked.push(at);
             if at == 0 {
                 super::StateChoice::Chosen(3)
@@ -639,7 +639,7 @@ fn a_chain_reads_each_coroutine_in_the_state_its_caller_chooses() {
         &memory,
         VirtualAddress::new(outer),
         reference(OUTER),
-        &mut |_, _| super::StateChoice::Unknown,
+        &mut |_, _, _| super::StateChoice::Unknown,
     );
     assert!(chain.frames.is_empty(), "{chain:?}");
     assert!(

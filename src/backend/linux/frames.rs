@@ -1152,9 +1152,6 @@ pub(super) struct Expanded {
     /// The interpreted frames the trace shows.
     pub(super) interpreted: Vec<super::interpreted::Placed>,
 
-    /// The declared types of the futures frames drive that cannot be read.
-    pub(super) lost: Vec<crate::TypeReference>,
-
     /// The await chains a runtime's frames resumed, each by the frame of
     /// the trace that resumed it, innermost first, which splicing shows
     /// before it.
@@ -1277,7 +1274,6 @@ fn expand_inline_backtrace(
         origins,
         futures: Vec::new(),
         interpreted: Vec::new(),
-        lost: Vec::new(),
         awaiting: Vec::new(),
     };
 

@@ -14,8 +14,8 @@ use crate::eval::target::Machine;
 use crate::inspection::InspectionBudget;
 use crate::model::{FrameMetadata, ValueStorage};
 use crate::protocol::{PresentedFrame, StopId};
-use crate::runtime_model::Driven;
 use crate::runtime_model::futures::{self, AsyncFrameKind, ChainEnd};
+use crate::runtime_model::{Driven, DrivenFuture};
 
 use crate::{
     Backtrace, CallFrameUnavailableReason, CodeInstanceKind, CodeRole, CoroutineInfo, DrivenFrames,
@@ -59,8 +59,8 @@ pub(super) struct AsyncStack {
 /// Why the future a frame drives cannot be read, and its declared type
 /// when the debug information says it.
 pub(super) struct Unread {
-    reason: Arc<str>,
-    declared: Option<TypeReference>,
+    pub(super) reason: Arc<str>,
+    pub(super) declared: Option<TypeReference>,
 }
 
 impl Unread {
@@ -309,10 +309,6 @@ impl<P: InspectionOps> Controller<P> {
     /// (see [`super::interpreted`]). A future being polled runs on the
     /// stack itself, so a driver below a frame that runs a coroutine is
     /// left as it is.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one pass splices each kind of driven frame in the stack's order"
-    )]
     pub(super) fn splice_driven(
         &self,
         inferior: &Inferior,
@@ -364,7 +360,6 @@ impl<P: InspectionOps> Controller<P> {
         // cannot read its future is noted only if no other frame shows one.
         let mut shown = BTreeSet::new();
         let mut unread = None;
-        let mut lost = Vec::new();
         let origins = expanded.trace.frames.iter().zip(&expanded.origins);
         for (index, (frame, &origin)) in origins.enumerate() {
             let activation = origin.activation;
@@ -403,7 +398,7 @@ impl<P: InspectionOps> Controller<P> {
                             }
                         }
                     }
-                    Err(Unread { reason, declared }) => {
+                    Err(Unread { reason, .. }) => {
                         if unread.is_none() {
                             unread = Some(Unfollowed {
                                 driver: spliced.here()?,
@@ -411,8 +406,6 @@ impl<P: InspectionOps> Controller<P> {
                                 reason,
                             });
                         }
-
-                        lost.extend(declared);
                     }
                 }
             }
@@ -423,8 +416,6 @@ impl<P: InspectionOps> Controller<P> {
 
         if shown.is_empty() {
             spliced.unfollowed.extend(unread);
-        } else {
-            lost.clear();
         }
 
         // Frames whose place is unknown follow every frame of the stack,
@@ -439,7 +430,7 @@ impl<P: InspectionOps> Controller<P> {
             }
         }
 
-        let spliced = spliced.expanded(expanded.trace, lost)?;
+        let spliced = spliced.expanded(expanded.trace)?;
         spliced.check_invariants(stack.frames.len());
         Ok(spliced)
     }
@@ -571,7 +562,7 @@ impl<P: InspectionOps> Controller<P> {
                 stop,
                 object,
                 ty,
-                &mut |at, coroutine| {
+                &mut |at, _, coroutine| {
                     lines.get(at).map_or(futures::StateChoice::Stored, |line| {
                         awaiting_at(coroutine, line.as_ref())
                     })
@@ -586,6 +577,166 @@ impl<P: InspectionOps> Controller<P> {
                 .coroutine_functions(future.ty.id)
                 .iter()
                 .any(|candidate| candidate.id() == function)
+        })
+    }
+
+    /// Each future the runtimes' frames of a stack drive, once however many
+    /// frames drive it, read whether or not the frames inner to its driver
+    /// poll it now; and why a future some frame drives cannot be read.
+    ///
+    /// Its chain of awaits is read as [`Self::polled_future`] reads one:
+    /// each frame out to the driver that runs a coroutine, up to the
+    /// frame that polls a task, runs the next coroutine of the chain, in
+    /// the await its line is at. Where the line names no one await, as a
+    /// macro's await is described at the macro's line but run at its
+    /// caller's, the await is the one whose future the frame inner to it
+    /// polls. Coroutines the chain does not reach, as a combinator such as
+    /// `join!` polls them, are running in a state that none says.
+    pub(super) fn driven_futures(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        stack: &PhysicalStack,
+        modules: &[UnwindModule<'_>],
+        expanded: &Expanded,
+    ) -> (Vec<(&RuntimeModule, DrivenFuture)>, Vec<Unread>) {
+        let frames = &expanded.trace.frames;
+        let runtimes = self.runtimes(inferior);
+        let in_role = |frame: &StackFrame| {
+            runtimes
+                .iter()
+                .filter(move |runtime| {
+                    Some(runtime.module.id) == frame.module
+                        && runtime.model.driver_role() == Some(frame.role)
+                })
+                .collect::<Vec<_>>()
+        };
+        let runs = |frame: &StackFrame| {
+            frame
+                .function
+                .as_ref()
+                .filter(|_| {
+                    frame.module == Some(inferior.loaded_module.id)
+                        && frame.segment != StackSegment::Future
+                })
+                .and_then(|function| Some((function.id, function.coroutine?)))
+        };
+
+        let mut driven: Vec<(&RuntimeModule, DrivenFuture)> = Vec::new();
+        let mut unread = Vec::new();
+        for (index, frame) in frames.iter().enumerate() {
+            let inner = index.checked_sub(1).and_then(|inner| frames.get(inner));
+            let Some(variable) = in_role(frame).iter().find_map(|runtime| {
+                match runtime.model.driven(frame, inner) {
+                    Some(Driven::Future { variable }) => Some(variable),
+                    _ => None,
+                }
+            }) else {
+                continue;
+            };
+
+            let polls = |frame: &StackFrame| {
+                in_role(frame)
+                    .iter()
+                    .any(|runtime| runtime.model.polling(frame).is_some())
+            };
+            let bodies = bodies(frames, index, polls, runs);
+
+            let Ok(at_driver) = frame_u32(index).map(StackFrameId::new) else {
+                continue;
+            };
+            let (module, object, ty) = match self.driven_root(
+                inferior, root, stack, modules, expanded, at_driver, variable,
+            ) {
+                Ok(found) => found,
+                Err(why) => {
+                    unread.push(why);
+                    continue;
+                }
+            };
+
+            let chain = self.bodies_chain(
+                inferior,
+                root,
+                stack,
+                modules,
+                expanded,
+                (module, object, ty),
+                &bodies,
+            );
+            let outermost = chain.frames.last().map_or(object, |future| future.object);
+            if driven.iter().any(|(_, future)| {
+                future.chain.last().map_or(future.object, |f| f.object) == outermost
+            }) {
+                continue;
+            }
+
+            let Some(running) = running_beside(module, &chain, &bodies) else {
+                unread.push(Unread::new(
+                    "the frames that poll it run other coroutines than it awaits".into(),
+                    Some(ty),
+                ));
+                continue;
+            };
+
+            driven.push((
+                module,
+                DrivenFuture {
+                    object,
+                    ty,
+                    chain: chain.frames,
+                    running,
+                },
+            ));
+        }
+
+        (driven, unread)
+    }
+
+    /// The chain of awaits of the future `driven` holds, whose coroutines
+    /// `bodies` run, outermost first, each in the await its frame is at.
+    #[expect(clippy::too_many_arguments, reason = "a stack's parts and the future")]
+    fn bodies_chain(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        stack: &PhysicalStack,
+        modules: &[UnwindModule<'_>],
+        expanded: &Expanded,
+        (module, object, ty): (&RuntimeModule, VirtualAddress, TypeReference),
+        bodies: &[Body],
+    ) -> futures::AwaitChain {
+        // The future each body's inner frame polls, as its `self`.
+        let polled: Vec<_> = bodies
+            .iter()
+            .map(|body| {
+                let inner = StackFrameId::new(frame_u32(body.frame.checked_sub(1)?).ok()?);
+                self.polled_self(inferior, root, stack, modules, expanded, inner)
+            })
+            .collect();
+
+        self.with_module_stop(inferior, &module.loaded, root.reader(), |stop| {
+            futures::walk_choosing(
+                module.image.as_ref(),
+                stop,
+                object,
+                ty,
+                &mut |at, object, coroutine| {
+                    let Some(body) = bodies.get(at) else {
+                        return futures::StateChoice::Stored;
+                    };
+                    match awaiting_at(coroutine, body.line.as_ref()) {
+                        futures::StateChoice::Unknown => polled
+                            .get(at)
+                            .copied()
+                            .flatten()
+                            .map_or(futures::StateChoice::Unknown, |polled| {
+                                awaiting(coroutine, object, polled)
+                            }),
+                        choice => choice,
+                    }
+                },
+            )
         })
     }
 
@@ -625,6 +776,83 @@ impl<P: InspectionOps> Controller<P> {
         driver: StackFrameId,
         variable: &str,
     ) -> std::result::Result<(&RuntimeModule, VirtualAddress, TypeReference), Unread> {
+        let unread = |why: &dyn std::fmt::Display| -> Arc<str> {
+            format!("`{variable}`, which holds the future, {why}").into()
+        };
+        let (module, storage, ty, declared) =
+            self.frame_variable(inferior, root, stack, modules, expanded, driver, variable)?;
+
+        let ValueStorage::Memory(object) = storage else {
+            return Err(Unread::new(unread(&"is not in memory"), declared));
+        };
+
+        // The future a function was passed moves to be pinned, and where
+        // it was still reads as a future that never began.
+        if !futures::pinned(module.image.as_ref(), ty) {
+            return Err(Unread::new(
+                unread(&"is not the pinned future here"),
+                declared,
+            ));
+        }
+
+        Ok((module, object, ty))
+    }
+
+    /// The future the frame `frame` polls through its pinned `self`, as a
+    /// future's `poll` does, wherever the pointer is kept.
+    fn polled_self(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        stack: &PhysicalStack,
+        modules: &[UnwindModule<'_>],
+        expanded: &Expanded,
+        frame: StackFrameId,
+    ) -> Option<VirtualAddress> {
+        let (module, storage, ty, _) = self
+            .frame_variable(inferior, root, stack, modules, expanded, frame, "self")
+            .ok()?;
+        if !futures::pinned(module.image.as_ref(), ty) {
+            return None;
+        }
+
+        let word = match storage {
+            ValueStorage::Memory(at) => {
+                self.with_module_stop(inferior, &module.loaded, root.reader(), |stop| {
+                    let mut word = [0; 8];
+                    stop.read(at, &mut word).then_some(word)
+                })?
+            }
+            ValueStorage::Bytes {
+                raw, start, end, ..
+            } => raw.get(start..end)?.try_into().ok()?,
+            _ => return None,
+        };
+        Some(VirtualAddress::new(u64::from_le_bytes(word)))
+    }
+
+    /// Where the variable `variable` of the frame `frame` is, its type,
+    /// and the module that describes it; or why it cannot be read, and its
+    /// declared type when known.
+    #[expect(clippy::too_many_arguments, reason = "a stack's parts and the frame")]
+    fn frame_variable(
+        &self,
+        inferior: &Inferior,
+        root: &StackRoot,
+        stack: &PhysicalStack,
+        modules: &[UnwindModule<'_>],
+        expanded: &Expanded,
+        driver: StackFrameId,
+        variable: &str,
+    ) -> std::result::Result<
+        (
+            &RuntimeModule,
+            ValueStorage,
+            TypeReference,
+            Option<TypeReference>,
+        ),
+        Unread,
+    > {
         let unread = |why: &dyn std::fmt::Display| -> Arc<str> {
             format!("`{variable}`, which holds the future, {why}").into()
         };
@@ -675,25 +903,11 @@ impl<P: InspectionOps> Controller<P> {
             }
         };
 
-        let ValueStorage::Memory(object) = located.storage else {
-            return Err(Unread::new(unread(&"is not in memory"), declared));
-        };
-
         let ty = TypeReference {
             image: module.loaded.image,
             id: located.ty,
         };
-
-        // The future a function was passed moves to be pinned, and where
-        // it was still reads as a future that never began.
-        if !futures::pinned(module.image.as_ref(), ty) {
-            return Err(Unread::new(
-                unread(&"is not the pinned future here"),
-                declared,
-            ));
-        }
-
-        Ok((module, object, ty))
+        Ok((module, located.storage, ty, declared))
     }
 
     /// The variables a suspended async frame shows, each read from its
@@ -915,7 +1129,7 @@ impl Spliced {
     }
 
     /// The finished trace, its frames numbered by their levels.
-    fn expanded(mut self, trace: Backtrace, lost: Vec<TypeReference>) -> Result<Expanded> {
+    fn expanded(mut self, trace: Backtrace) -> Result<Expanded> {
         self.hide_inside_agent();
         for (level, frame) in self.frames.iter_mut().enumerate() {
             let level = frame_u32(level)?;
@@ -932,7 +1146,6 @@ impl Spliced {
             origins: self.origins,
             futures: self.futures,
             interpreted: self.interpreted,
-            lost,
             awaiting: Vec::new(),
         })
     }
@@ -986,6 +1199,98 @@ fn awaiting_at(
                 .location
                 .as_ref()
                 .is_some_and(|location| location.file == line.file && location.line == line.line)
+    });
+    match (at.next(), at.next()) {
+        (Some(state), None) => futures::StateChoice::Chosen(state.value),
+        _ => futures::StateChoice::Unknown,
+    }
+}
+
+/// The frames inner to the driver `frames[driver]` that run coroutines, as
+/// `runs` says, outermost first, up to one that `polls` a task's future,
+/// whose frames run that task.
+fn bodies(
+    frames: &[StackFrame],
+    driver: usize,
+    polls: impl Fn(&StackFrame) -> bool,
+    runs: impl Fn(&StackFrame) -> Option<(crate::FunctionId, crate::TypeId)>,
+) -> Vec<Body> {
+    frames
+        .get(..driver)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .take_while(|frame| !polls(frame))
+        .enumerate()
+        .filter_map(|(outward, frame)| {
+            let (function, coroutine) = runs(frame)?;
+            Some(Body {
+                function,
+                coroutine,
+                line: frame.source.clone(),
+                frame: driver.checked_sub(outward + 1)?,
+            })
+        })
+        .collect()
+}
+
+/// The coroutines of `bodies` that `chain` does not reach, which run in a
+/// state none says; `None` unless each coroutine it does reach, outermost
+/// first, is the one its body runs.
+fn running_beside(
+    module: &RuntimeModule,
+    chain: &futures::AwaitChain,
+    bodies: &[Body],
+) -> Option<Vec<TypeReference>> {
+    let coroutines: Vec<_> = chain
+        .frames
+        .iter()
+        .rev()
+        .filter(|future| matches!(future.kind, AsyncFrameKind::Coroutine { .. }))
+        .collect();
+    let agrees = coroutines.iter().zip(bodies).all(|(future, body)| {
+        module
+            .image
+            .coroutine_functions(future.ty.id)
+            .iter()
+            .any(|candidate| candidate.id() == body.function)
+    });
+
+    agrees.then(|| {
+        bodies
+            .iter()
+            .skip(coroutines.len())
+            .map(|body| TypeReference {
+                image: module.loaded.image,
+                id: body.coroutine,
+            })
+            .collect()
+    })
+}
+
+/// A frame that runs a coroutine, inner to the frame that drives it.
+struct Body {
+    function: crate::FunctionId,
+    coroutine: crate::TypeId,
+    line: Option<crate::SourceLocation>,
+
+    /// Its index in the stack's frames.
+    frame: usize,
+}
+
+/// The state of `coroutine`, at `object`, whose awaited future is at
+/// `polled`: the one suspension that awaits there, or unknown.
+fn awaiting(
+    coroutine: &CoroutineInfo,
+    object: VirtualAddress,
+    polled: VirtualAddress,
+) -> futures::StateChoice {
+    let mut at = coroutine.states.iter().filter(|state| {
+        matches!(state.kind, crate::CoroutineStateKind::Suspended { .. })
+            && state.awaitee().is_some_and(|awaitee| {
+                matches!(awaitee.layout, RecordMemberLayout::ByteOffset(offset)
+                    if object.checked_add(offset) == Some(polled))
+            })
     });
     match (at.next(), at.next()) {
         (Some(state), None) => futures::StateChoice::Chosen(state.value),

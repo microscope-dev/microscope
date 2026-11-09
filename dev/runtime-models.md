@@ -286,7 +286,18 @@ entered, or an inactive `LocalSet` no known future reaches, may hold tasks
 that cannot be discovered. An empty enumeration is not proof that the process
 has no tasks. A `LocalSet` is found from the stack of the thread that drives
 it, so a task list reports a gap for each such thread whose stack does not
-unwind to its end. A thread stopped in glibc's `clone3` unwinds whole too:
+unwind to its end. A set runs only while its future is polled, so while a
+`join!` polls its other branch, no context names it. Discovery reads the
+future each `block_on` frame drives, even while frames poll it, and walks
+its values by type (`tokio/sets.rs`): members, the active variant, a
+coroutine's state, `Box`, `Pin`, and `dyn Future`. It goes only where a type
+may lead to a set, and stops at 4096 values per thread. A coroutine that a
+frame runs stores the state it last suspended in, so its state comes from
+its frame: the await at the frame's line, or the await whose future the
+inner frame polls as `self`. A macro's await, such as `join!`'s, is
+described at the macro's line, so only the second rule finds it. A
+coroutine that neither rule places, but that may hold a set, is reported as
+a gap. A thread stopped in glibc's `clone3` unwinds whole too:
 its frame is proved from its instructions (see
 [`debug-information.md`](debug-information.md)). The debugger permits an
 empty list before runtime startup; an explicitly requested profile snapshot

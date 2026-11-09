@@ -57,8 +57,11 @@ fn thread(name: &str, body: impl FnOnce() + Send + 'static) -> (i32, std::thread
 
 fn main() {
     // With the argument `clone`, the thread that runs the first set also
-    // starts a thread from it.
-    let clone = std::env::args().nth(1).as_deref() == Some("clone");
+    // starts a thread from it. With `join`, that thread runs the set in a
+    // `join!` whose other branch calls `join_sibling` while the set waits.
+    let argument = std::env::args().nth(1);
+    let clone = argument.as_deref() == Some("clone");
+    let join = argument.as_deref() == Some("join");
     let multi = Builder::new_multi_thread()
         .worker_threads(2)
         .enable_time()
@@ -100,7 +103,8 @@ fn main() {
         let spawned = spawned.clone();
         move || {
             let local = LocalSet::new();
-            local.block_on(&current(), async move {
+            let after_sibling = spawned.clone();
+            let body = async move {
                 let notify = Arc::new(Notify::new());
                 tokio::task::spawn_local(parked("local", "notify", {
                     let notify = Arc::clone(&notify);
@@ -110,9 +114,30 @@ fn main() {
                 if clone {
                     std::thread::spawn(|| ()).join().expect("the thread ends");
                 }
-                spawned.send(()).expect("the program waits");
+                if !join {
+                    spawned.send(()).expect("the program waits");
+                }
                 let _ = local_released.await;
-            });
+            };
+            if join {
+                #[inline(never)]
+                fn join_sibling() {
+                    std::hint::black_box(());
+                }
+
+                // The block holds the set only through the branch the
+                // `join!` keeps. No other thread starts until the sibling
+                // has run.
+                let mut branch = std::pin::pin!(local.run_until(body));
+                current().block_on(async {
+                    tokio::join!(biased; branch.as_mut(), async {
+                        join_sibling();
+                        after_sibling.send(()).expect("the program waits");
+                    });
+                });
+            } else {
+                local.block_on(&current(), body);
+            }
         }
     });
     all_spawned.recv().expect("the thread spawns");

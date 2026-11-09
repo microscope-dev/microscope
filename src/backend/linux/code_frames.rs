@@ -332,7 +332,6 @@ mod tests {
             origins: origins.into(),
             futures: Vec::new(),
             interpreted: Vec::new(),
-            lost: Vec::new(),
             awaiting: Vec::new(),
         }
     }

@@ -455,3 +455,63 @@ async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
         scenario.shutdown().await;
     }
 }
+
+/// A set run in one branch of a `join!` is idle while the other branch
+/// runs, so no thread's context names it. It is found in the future the
+/// thread drives, where the `join!` holds it.
+#[tokio::test]
+async fn a_set_a_join_holds_is_listed_while_its_sibling_runs() {
+    for fixture in BUILDS {
+        let mut scenario = Scenario::launch(fixture);
+        scenario
+            .add_breakpoint_spec(BreakpointSpec::Function("join_sibling".into()))
+            .await;
+        let reason = scenario
+            .run_with_to_stop(LaunchOptions {
+                arguments: vec!["join".into()],
+                stdout: Some(Stdio::null()),
+                ..LaunchOptions::default()
+            })
+            .await;
+        assert!(
+            matches!(reason, StopReason::Breakpoint { .. }),
+            "{fixture}: {reason:?}"
+        );
+
+        let snapshot = scenario.snapshot().await;
+        let InferiorState::Stopped { thread_id, .. } = snapshot.inferior else {
+            panic!("{fixture}: not stopped");
+        };
+        assert_eq!(
+            snapshot
+                .threads
+                .iter()
+                .find(|thread| thread.id == thread_id)
+                .and_then(|thread| thread.name.as_deref()),
+            Some("local"),
+            "{fixture}"
+        );
+
+        let (tasks, gaps) = tasks(&scenario, 4096).await;
+        assert!(gaps.is_empty(), "{fixture}: thread {thread_id}: {gaps:?}");
+        let in_set = tasks
+            .iter()
+            .filter(|task| {
+                task.labels
+                    .iter()
+                    .any(|(key, value)| &**key == "runtime" && value.to_string().contains("local"))
+            })
+            .count();
+        assert_eq!(in_set, 2, "{fixture}: {tasks:#?}");
+
+        // The set runs none of its tasks while the other branch runs.
+        let activities = activities(&mut scenario).await;
+        assert!(
+            activities
+                .values()
+                .all(|activity| !matches!(activity, ThreadActivity::Task { .. })),
+            "{fixture}: {activities:?}"
+        );
+        scenario.shutdown().await;
+    }
+}

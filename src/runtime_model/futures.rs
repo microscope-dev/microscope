@@ -140,7 +140,7 @@ pub fn walk(
     future: VirtualAddress,
     ty: TypeReference,
 ) -> AwaitChain {
-    walk_choosing(image, stop, future, ty, &mut |_, _| StateChoice::Stored)
+    walk_choosing(image, stop, future, ty, &mut |_, _, _| StateChoice::Stored)
 }
 
 /// Which state the walk reads a coroutine in.
@@ -158,8 +158,8 @@ pub enum StateChoice {
 }
 
 /// The chain of awaits of the future at `future`, as [`walk`] reads it,
-/// with the state of the `n`th coroutine from the outermost read as
-/// `choose(n, coroutine)` says.
+/// with the state of the `n`th coroutine from the outermost, at `object`,
+/// read as `choose(n, object, coroutine)` says.
 ///
 /// A coroutine that is running stores the state it last suspended in, not
 /// the await it has gone on to, until it suspends there; one whose frame
@@ -171,7 +171,7 @@ pub fn walk_choosing(
     stop: &dyn RuntimeStop,
     future: VirtualAddress,
     ty: TypeReference,
-    choose: &mut dyn FnMut(usize, &crate::CoroutineInfo) -> StateChoice,
+    choose: &mut dyn FnMut(usize, VirtualAddress, &crate::CoroutineInfo) -> StateChoice,
 ) -> AwaitChain {
     let mut frames = Vec::new();
     let end = follow(image, stop, future, ty, &mut frames, choose);
@@ -185,7 +185,7 @@ fn follow(
     mut object: VirtualAddress,
     mut ty: TypeReference,
     frames: &mut Vec<AsyncFrame>,
-    choose: &mut dyn FnMut(usize, &crate::CoroutineInfo) -> StateChoice,
+    choose: &mut dyn FnMut(usize, VirtualAddress, &crate::CoroutineInfo) -> StateChoice,
 ) -> ChainEnd {
     let mut seen = BTreeSet::new();
     let mut coroutines = 0;
@@ -205,8 +205,8 @@ fn follow(
                 Err(reason) => return ChainEnd::Broken(Arc::clone(reason)),
             };
 
-            let number = match state_number(stop, object, coroutine, choose(coroutines, coroutine))
-            {
+            let choice = choose(coroutines, object, coroutine);
+            let number = match state_number(stop, object, coroutine, choice) {
                 Ok(number) => number,
                 Err(end) => return end,
             };

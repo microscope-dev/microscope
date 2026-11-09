@@ -62,6 +62,25 @@ pub struct Partial<T> {
     pub gaps: Vec<Arc<str>>,
 }
 
+/// A future a runtime's frame drives, as `block_on` drives one no task
+/// holds, read whether or not the frames inner to that frame poll it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrivenFuture {
+    /// Where the future is, and its type.
+    pub object: VirtualAddress,
+    pub ty: crate::TypeReference,
+
+    /// Its chain of awaits, each coroutine in the state it is read in: the
+    /// await its running frame is at, or else the one it stores.
+    pub chain: Vec<futures::AsyncFrame>,
+
+    /// The coroutines frames inner to the driver run that the chain does
+    /// not reach, as a combinator such as `join!` polls them. Each stores
+    /// the state it last suspended in, not the one it runs in, so their
+    /// state is unknown.
+    pub running: Vec<crate::TypeReference>,
+}
+
 /// Where a member lies within a named type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Member {
@@ -352,7 +371,7 @@ pub trait RuntimeStop {
     }
 
     /// The sets of tasks the futures the stop's threads drive run, by
-    /// where the runtime keeps them, as [`RuntimeModel::task_set`] named
+    /// where the runtime keeps them, as [`RuntimeModel::held_task_sets`] named
     /// them: tasks that no runtime lists while their set waits.
     fn task_sets(&self) -> Vec<u64> {
         Vec::new()
@@ -1315,30 +1334,27 @@ pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     /// What the runtime calls one of its tasks.
     fn task_noun(&self) -> &'static str;
 
-    /// Where the runtime keeps the set of tasks that the future at
-    /// `future`, of type `ty`, runs when a thread drives it, as a set of
-    /// tasks no runtime lists runs while its future is polled; `None` for
-    /// a future that runs no such set.
-    fn task_set(
-        &self,
-        stop: &dyn RuntimeStop,
-        future: VirtualAddress,
-        ty: crate::TypeReference,
-    ) -> Option<u64> {
-        let _ = (stop, future, ty);
-        None
+    /// Where the runtime keeps each set of tasks no runtime lists that a
+    /// future a thread drives holds, as such a set runs while a future
+    /// that holds it is polled, and why one it may hold cannot be found.
+    fn held_task_sets(&self, stop: &dyn RuntimeStop, driven: &DrivenFuture) -> Partial<Vec<u64>> {
+        let _ = (stop, driven);
+        Partial {
+            value: Vec::new(),
+            gaps: Vec::new(),
+        }
     }
 
     /// Whether a future of type `ty`, which a thread drives where its
     /// value cannot be read, may run a set of tasks that only
-    /// [`Self::task_set`] finds.
+    /// [`Self::held_task_sets`] finds.
     fn may_run_task_set(&self, ty: crate::TypeReference) -> bool {
         let _ = ty;
         false
     }
 
     /// Whether the program may have sets of tasks that only
-    /// [`Self::task_set`] finds, from the stacks of the threads that drive
+    /// [`Self::held_task_sets`] finds, from the stacks of the threads that drive
     /// them.
     fn has_task_sets(&self) -> bool {
         false

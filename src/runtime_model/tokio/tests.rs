@@ -1468,7 +1468,7 @@ fn a_futures_type_says_whether_it_may_run_a_set() {
         assert!(!types.is_empty(), "no {what}");
         for ty in types {
             assert_eq!(
-                super::may_hold_set(image.as_ref(), ty),
+                super::may_hold_set(image.as_ref(), ty, false),
                 expected,
                 "{what}: {:?}",
                 image.type_info(ty).map(|info| &info.name)

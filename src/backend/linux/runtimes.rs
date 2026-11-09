@@ -538,16 +538,17 @@ impl<P: InspectionOps> Controller<P> {
             let root = StackRoot::of_thread(pid);
             let expanded = self.root_presentation(&root).and_then(|presentation| {
                 let stack = self.physical_stack(inferior, &root, DEFAULT_MAX_FRAMES)?;
-                self.expand_backtrace(
+                let expanded = self.expand_backtrace(
                     inferior,
                     &root,
                     &stack,
                     DEFAULT_MAX_FRAMES,
                     &modules,
                     presentation.as_ref(),
-                )
+                )?;
+                Ok((stack, expanded))
             });
-            let expanded = match expanded {
+            let (stack, expanded) = match expanded {
                 Ok(expanded) => expanded,
                 Err(error) => {
                     gaps.push(
@@ -575,36 +576,49 @@ impl<P: InspectionOps> Controller<P> {
                 );
             }
 
-            // A set that a future that cannot be read runs is not found.
-            if let Some(unread) = expanded.trace.unfollowed.first()
-                && expanded.lost.iter().any(|ty| {
-                    runtimes.iter().any(|runtime| {
-                        runtime.module.image == ty.image && runtime.model.may_run_task_set(*ty)
-                    })
+            // Several frames may drive one future, and some of them not
+            // read it: a set is lost only when none does.
+            let unread_set = |gaps: &mut Vec<Arc<str>>, reason: &str| {
+                let gap: Arc<str> = format!(
+                    "thread {} drives a future that may run a local set, whose tasks are not listed: {reason}",
+                    debug_thread_id(pid),
+                )
+                .into();
+                if !gaps.contains(&gap) {
+                    gaps.push(gap);
+                }
+            };
+            let (driven, unread) =
+                self.driven_futures(inferior, &root, &stack, &modules, &expanded);
+            let may_run = |ty: &crate::TypeReference| {
+                runtimes.iter().any(|runtime| {
+                    runtime.module.image == ty.image && runtime.model.may_run_task_set(*ty)
                 })
+            };
+            if driven.is_empty()
+                && let Some(lost) = unread
+                    .iter()
+                    .find(|unread| unread.declared.as_ref().is_some_and(may_run))
             {
-                gaps.push(
-                    format!(
-                        "thread {} drives a future that may run a local set, whose tasks are not listed: {}",
-                        debug_thread_id(pid),
-                        unread.reason
-                    )
-                    .into(),
-                );
+                unread_set(&mut gaps, &lost.reason);
             }
 
-            for future in &expanded.futures {
+            for (module, future) in &driven {
                 for runtime in runtimes
                     .iter()
-                    .filter(|runtime| runtime.module.image == future.ty.image)
+                    .filter(|runtime| runtime.module.image == module.loaded.image)
                 {
-                    let set = self.with_runtime_stop(inferior, runtime, reader, |stop| {
-                        runtime.model.task_set(stop, future.object, future.ty)
+                    let held = self.with_runtime_stop(inferior, runtime, reader, |stop| {
+                        runtime.model.held_task_sets(stop, future)
                     });
-                    if let Some(set) = set
-                        && !sets.contains(&set)
-                    {
-                        sets.push(set);
+                    for reason in &held.gaps {
+                        unread_set(&mut gaps, reason);
+                    }
+
+                    for set in held.value {
+                        if !sets.contains(&set) {
+                            sets.push(set);
+                        }
                     }
                 }
             }

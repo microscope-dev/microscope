@@ -28,10 +28,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::inspection::InspectionBudget;
 use crate::runtime_model::{
-    Arming, CodeAt, CodeFrame, HookPlace, ImageSymbol, InterpretedChild, InterpretedFrameRef,
-    InterpretedHandle, InterpretedKey, InterpretedName, InterpretedSlot, InterpretedStep,
-    LiveThread, Member, RuntimeImage, RuntimeModel, RuntimeStop, SampledCode, SampledCodeFrame,
-    SampledFrame, StopMemory, StoredValue, TargetThreadId, TaskContext, TaskRef, futures,
+    Arming, CodeAt, CodeFrame, DrivenFuture, HookPlace, ImageSymbol, InterpretedChild,
+    InterpretedFrameRef, InterpretedHandle, InterpretedKey, InterpretedName, InterpretedSlot,
+    InterpretedStep, LiveThread, Member, RuntimeImage, RuntimeModel, RuntimeStop, SampledCode,
+    SampledCodeFrame, SampledFrame, StopMemory, StoredValue, TargetThreadId, TaskContext, TaskRef,
+    futures,
 };
 use crate::unwind::{DwarfRegister, FS_BASE, RETURN_ADDRESS, RSP, RegisterFile};
 use crate::{
@@ -1105,7 +1106,20 @@ fn drive(fixture: &Fixture, model: &dyn RuntimeModel, stop: &Stop<'_>, query: &Q
 
     for &ty in fixture.futures.iter().take(8) {
         let future = stop.anchor(query.byte(6), 0);
-        let _ = model.task_set(stop, future, ty);
+        let chain = futures::walk(fixture.image.as_ref(), stop, future, ty);
+        let _ = model.held_task_sets(
+            stop,
+            &DrivenFuture {
+                object: future,
+                ty,
+                chain: chain.frames,
+                running: if query.byte(7) & 1 == 0 {
+                    Vec::new()
+                } else {
+                    vec![ty]
+                },
+            },
+        );
         let _ = model.may_run_task_set(ty);
     }
 
@@ -1177,14 +1191,19 @@ fn context_of(fixture: &Fixture, stop: &Stop<'_>, context: &TaskContext) {
         TaskContext::Suspended { future, ty } => {
             let chain = futures::walk(fixture.image.as_ref(), stop, *future, *ty);
             debug_assert!(chain.frames.len() <= futures::MAX_DEPTH);
-            let chosen =
-                futures::walk_choosing(fixture.image.as_ref(), stop, *future, *ty, &mut |n, _| {
+            let chosen = futures::walk_choosing(
+                fixture.image.as_ref(),
+                stop,
+                *future,
+                *ty,
+                &mut |n, _, _| {
                     if n % 2 == 0 {
                         futures::StateChoice::Chosen(n as u64)
                     } else {
                         futures::StateChoice::Unknown
                     }
-                });
+                },
+            );
             debug_assert!(chosen.frames.len() <= futures::MAX_DEPTH);
         }
         TaskContext::OnThread(_) | TaskContext::Saved { .. } | TaskContext::Interpreted { .. } => {}
