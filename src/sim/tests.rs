@@ -629,6 +629,14 @@ fn skipped_linked_nodes_fail_the_views_oracle() {
     );
 }
 
+/// A kernel that returns from a call before its event stop leaves the
+/// controller holding a thread inside a call that is over, which the calls
+/// oracle catches.
+#[test]
+fn a_call_returned_before_its_event_fails_calls() {
+    assert_eq!(first_failure_with(Sabotage::ReturnBeforeEvents), "calls");
+}
+
 /// A kernel that lets a call a catchpoint stops run past its entry, though
 /// the thread was resumed to stop there, hides it from the debugger, which
 /// catch accounting catches.

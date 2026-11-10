@@ -201,6 +201,9 @@ An oracle states one invariant and compares independent facts. Among them:
 - at every step, a thread the controller holds stopped is in a ptrace-stop,
   and one it waits to stop has a stop on its way: an interrupt or SIGSTOP
   pending, a stop already, or an exit;
+- until the controller shuts down, a thread it holds stopped is inside a
+  system call in its eyes exactly when the kernel holds the thread at a
+  call's entry or stopped inside a call that returns when it runs;
 - code holds the program's bytes, or a trap the controller says it
   installed, and every site has an owner;
 - a memory read of code shows the program's bytes, never a planted trap,

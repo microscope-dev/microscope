@@ -803,6 +803,10 @@ pub struct Truth {
     /// The threads the controller asked to stop and waits to hear stop.
     pub stop_requested: BTreeSet<Tid>,
 
+    /// The threads the controller has inside a system call, unless it is
+    /// shutting down, when it takes each thread's stop as it comes.
+    pub in_call: Option<BTreeSet<Tid>>,
+
     /// The user's breakpoints, by identifier.
     pub breakpoints: BTreeMap<u64, UserBreakpoint>,
 
@@ -1086,6 +1090,7 @@ impl SimController {
             threads: inferior.threads.keys().map(|pid| pid.as_raw()).collect(),
             stopped: threads_in(inferior, super::NativeThreadState::Stopped),
             stop_requested: threads_in(inferior, super::NativeThreadState::StopRequested),
+            in_call: in_calls(inferior, self.controller.shutdown.is_some()),
             reasons: inferior
                 .threads
                 .iter()
@@ -1103,6 +1108,22 @@ impl SimController {
 }
 
 /// The inferior's threads the controller holds in `state`.
+/// The threads the controller has inside a system call, unless it is
+/// `shutting_down`.
+fn in_calls(inferior: &super::Inferior, shutting_down: bool) -> Option<BTreeSet<Tid>> {
+    let inside = |thread: &super::TraceThread| {
+        !matches!(thread.call, super::catchpoints::CallPosition::Outside)
+    };
+    (!shutting_down).then(|| {
+        inferior
+            .threads
+            .iter()
+            .filter(|(_, thread)| inside(thread))
+            .map(|(pid, _)| pid.as_raw())
+            .collect()
+    })
+}
+
 fn threads_in(inferior: &super::Inferior, state: super::NativeThreadState) -> BTreeSet<Tid> {
     inferior
         .threads

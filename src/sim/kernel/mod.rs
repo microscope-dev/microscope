@@ -1713,6 +1713,12 @@ impl Kernel {
         let thread = self.threads.get_mut(&tid).expect("stopping thread exists");
         thread.registers.general[RAX] = ENOSYS_RESULT;
         thread.call = CallPhase::Returning(result);
+        #[cfg(test)]
+        if self.sabotage == Some(Sabotage::ReturnBeforeEvents) {
+            thread.registers.general[RAX] = result;
+            thread.call = CallPhase::Outside;
+        }
+
         thread.enter_stop(
             StopKind::Event(event, message),
             SigInfo::event(tid, event),

@@ -181,6 +181,10 @@ pub enum Sabotage {
     /// stops without stopping at its entry.
     SkipCallStops,
 
+    /// A `PTRACE_EVENT_*` stop inside a system call comes after the call
+    /// returned, rather than before.
+    ReturnBeforeEvents,
+
     /// `PTRACE_GET_SYSCALL_INFO` reports a call's second argument one
     /// greater.
     MisreportCallArguments,
@@ -1662,6 +1666,8 @@ impl<'a> World<'a> {
                 .map_err(|message| Failure::debugger("held stops", message))?;
             oracles::requested_stops(&kernel, &truth)
                 .map_err(|message| Failure::debugger("requested stops", message))?;
+            oracles::calls(&kernel, &truth)
+                .map_err(|message| Failure::debugger("calls", message))?;
             if id == FIRST {
                 oracles::user_breakpoints(
                     &kernel,

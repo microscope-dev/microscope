@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::corpus::Run;
 use super::kernel::signals::SIGSTOP;
-use super::kernel::{ExitStatus, Kernel, Parent, State, Tgid, Tid, Tracing};
+use super::kernel::{CallPhase, ExitStatus, Kernel, Parent, State, Tgid, Tid, Tracing};
 use super::loader::Image;
 use crate::backend::sim_edge::Truth;
 
@@ -201,6 +201,38 @@ pub fn held_stops(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
         if !matches!(state, Some(State::Stopped { .. })) {
             return Err(format!(
                 "the controller holds thread {tid} stopped, but the kernel has it {state:?}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Calls: a thread the controller holds stopped is at a system call's
+/// entry, or stopped inside a call that returns when it runs, exactly when
+/// the controller has it inside a call. A call failed to be made again is
+/// not one: the controller reads that from the thread's registers.
+pub fn calls(kernel: &Kernel, truth: &Truth) -> Result<(), String> {
+    let Some(in_call) = &truth.in_call else {
+        return Ok(());
+    };
+    if truth.inferior.is_none_or(|tgid| ending(kernel, tgid)) {
+        return Ok(());
+    }
+
+    for &tid in &truth.stopped {
+        let Some(thread) = kernel.threads.get(&tid) else {
+            continue;
+        };
+
+        let inside = matches!(thread.call, CallPhase::AtEntry | CallPhase::Returning(_));
+        if inside != in_call.contains(&tid) {
+            return Err(format!(
+                "the controller has thread {tid} {} a system call, but the kernel has it {:?} \
+                 at {:?}",
+                if inside { "outside" } else { "inside" },
+                thread.call,
+                thread.state
             ));
         }
     }
