@@ -595,13 +595,14 @@ enum Phase {
     Running,
 
     /// Members are being paused for `first`'s stop, or for a pause of the
-    /// whole group when it is none. `paused` is the first member that
-    /// stopped for it, at its stop, and `was_stopped` whether the group was
-    /// stopped before: a stop nobody stopped for leaves the group as it was.
+    /// whole group when it is none. `paused` holds the members that stopped
+    /// for it, at their stops, in order, and `was_stopped` whether the
+    /// group was stopped before: a stop nobody stopped for leaves the group
+    /// as it was. A member that moves on is no longer stopped for it.
     Stopping {
         first: Option<MemberStop>,
         waiting: BTreeSet<MemberNumber>,
-        paused: Option<(MemberNumber, crate::StopId)>,
+        paused: Vec<(MemberNumber, crate::StopId)>,
         was_stopped: bool,
     },
     Stopped,
@@ -703,7 +704,11 @@ impl<C> Stops<C> {
         }
 
         self.phase = Phase::Stopping {
-            paused: first.as_ref().map(|first| (first.member, first.stop)),
+            paused: first
+                .as_ref()
+                .map(|first| (first.member, first.stop))
+                .into_iter()
+                .collect(),
             first,
             waiting,
             was_stopped: matches!(self.phase, Phase::Stopped),
@@ -711,12 +716,25 @@ impl<C> Stops<C> {
         self.paused(0, None)
     }
 
-    /// Notes that a member was continued through its own session. Where
-    /// each member's stop is its own, the group is then no longer stopped
-    /// as a whole, so members that join are resumed.
-    fn continued(&mut self) {
-        if self.scope == StopScope::Process && matches!(self.phase, Phase::Stopped) {
-            self.phase = Phase::Running;
+    /// Notes that member `number` was continued through its own session.
+    /// Where each member's stop is its own, the group is then no longer
+    /// stopped as a whole, so members that join are resumed. A stop under
+    /// way no longer stops for it, and names another member's stop: the
+    /// earliest of their own stops made for it, if any.
+    fn continued(&mut self, number: MemberNumber) {
+        match &mut self.phase {
+            Phase::Stopped if self.scope == StopScope::Process => self.phase = Phase::Running,
+            Phase::Stopping { first, paused, .. } => {
+                paused.retain(|(member, _)| *member != number);
+                if first.as_ref().is_some_and(|first| first.member == number) {
+                    *first = self
+                        .pending
+                        .iter()
+                        .position(|stop| paused.contains(&(stop.member, stop.stop)))
+                        .and_then(|next| self.pending.remove(next));
+                }
+            }
+            Phase::Running | Phase::Stopped => {}
         }
     }
 
@@ -724,6 +742,12 @@ impl<C> Stops<C> {
     /// when it is none, while the group stops, and returns the group stop
     /// to report once none is left running.
     fn paused(&mut self, number: MemberNumber, stop: Option<MemberStop>) -> Option<MemberStop> {
+        // A member that will not stop has moved on from, or gone from,
+        // any stop it left waiting.
+        if stop.is_none() {
+            self.pending.retain(|waiting| waiting.member != number);
+        }
+
         let Phase::Stopping {
             first,
             waiting,
@@ -736,7 +760,7 @@ impl<C> Stops<C> {
 
         waiting.remove(&number);
         if let Some(stop) = stop {
-            paused.get_or_insert((stop.member, stop.stop));
+            paused.push((stop.member, stop.stop));
 
             // Where each member's stop is reported as its own, none is
             // the group's.
@@ -754,7 +778,7 @@ impl<C> Stops<C> {
         }
 
         let stop = first.take().or_else(|| {
-            paused.map(|(member, stop)| MemberStop {
+            paused.first().map(|&(member, stop)| MemberStop {
                 member,
                 stop,
                 reason: StopReason::Pause,
@@ -1027,7 +1051,7 @@ impl Driver {
             InferiorState::Running { process_id, .. } => {
                 self.adopt_process(number, process_id);
                 self.set_running(number, true);
-                self.stops.continued();
+                self.stops.continued(number);
                 self.shared
                     .update(number, |member| member.state = MemberState::Running);
             }
@@ -1284,7 +1308,7 @@ impl Driver {
             }
             DebuggerEvent::InferiorContinued { .. } => {
                 self.set_running(number, true);
-                self.stops.continued();
+                self.stops.continued(number);
                 self.shared
                     .update(number, |member| member.state = MemberState::Running);
             }
@@ -2102,7 +2126,7 @@ mod tests {
         driver.stops.phase = Phase::Stopping {
             first: Some(at(2, 1, breakpoint_stop())),
             waiting: BTreeSet::from([1]),
-            paused: Some((2, crate::StopId::new(1))),
+            paused: vec![(2, crate::StopId::new(1))],
             was_stopped: false,
         };
         let (reply, resumed) = oneshot::channel();
@@ -2464,7 +2488,7 @@ mod tests {
         driver.stops.phase = Phase::Stopping {
             first: Some(at(2, 1, StopReason::Pause)),
             waiting: BTreeSet::from([1, 3]),
-            paused: Some((2, crate::StopId::new(1))),
+            paused: vec![(2, crate::StopId::new(1))],
             was_stopped: false,
         };
 

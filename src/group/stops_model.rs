@@ -55,13 +55,14 @@ enum Event {
 enum Phase {
     Running,
 
-    /// Waiting for `awaited`; `first` says whether the stop already has
-    /// the stop it reports, `stopped` whether any member stopped for it,
-    /// and `was_stopped` whether the group was stopped before it began.
+    /// Waiting for `awaited`; `first` is the member whose stop the stop
+    /// reports, `stopped` the members that stopped for it, and
+    /// `was_stopped` whether the group was stopped before it began. A
+    /// member that moves on is no longer either.
     Stopping {
         awaited: BTreeSet<MemberNumber>,
-        first: bool,
-        stopped: bool,
+        first: Option<MemberNumber>,
+        stopped: BTreeSet<MemberNumber>,
         was_stopped: bool,
     },
     Stopped,
@@ -115,7 +116,7 @@ impl Reference {
         };
         awaited.remove(&number);
         if awaited.is_empty() {
-            self.phase = if *first || *stopped || *was_stopped {
+            self.phase = if first.is_some() || !stopped.is_empty() || *was_stopped {
                 Phase::Stopped
             } else {
                 Phase::Running
@@ -139,8 +140,8 @@ impl Reference {
         } else {
             self.phase = Phase::Stopping {
                 awaited: running,
-                first: first.is_some(),
-                stopped: false,
+                first,
+                stopped: BTreeSet::new(),
                 was_stopped: self.phase == Phase::Stopped,
             };
             self.settled(0);
@@ -236,7 +237,7 @@ impl ReferenceStateMachine for Model {
             ));
         }
         let stopped = state.numbered(Member::Stopped);
-        if state.awaited().is_none() && !stopped.is_empty() {
+        if !stopped.is_empty() {
             events.push((
                 1,
                 prop::sample::select(stopped)
@@ -260,9 +261,7 @@ impl ReferenceStateMachine for Model {
                         .is_some_and(|awaited| awaited.contains(member))
             }
             Event::Gone(member) => !is(*member, Member::Gone),
-            Event::ContinueMember(member) => {
-                is(*member, Member::Stopped) && state.awaited().is_none()
-            }
+            Event::ContinueMember(member) => is(*member, Member::Stopped),
             Event::PauseAll => !state.numbered(Member::Running).is_empty(),
             Event::Client(_) => true,
         }
@@ -274,7 +273,7 @@ impl ReferenceStateMachine for Model {
             Event::Stopped { member, pause } => {
                 state.set(member, Member::Stopped);
                 if let Phase::Stopping { stopped, .. } = &mut state.phase {
-                    *stopped = true;
+                    stopped.insert(member);
                 }
 
                 // A member's stop is its own, but settles a pause of all.
@@ -286,10 +285,10 @@ impl ReferenceStateMachine for Model {
                     Phase::Running => state.begin_stop(Some(member)),
                     Phase::Stopping { first, .. } => {
                         if !pause {
-                            if *first {
+                            if first.is_some() {
                                 state.pending.push(member);
                             } else {
-                                *first = true;
+                                *first = Some(member);
                             }
                         }
                         state.settled(member);
@@ -305,12 +304,24 @@ impl ReferenceStateMachine for Model {
             }
 
             // Where each member's stop is its own, the group is no longer
-            // stopped as a whole once a member runs again.
+            // stopped as a whole once a member runs again. A stop under way
+            // no longer stops for a member that moved on.
             Event::ContinueMember(member) => {
                 state.set(member, Member::Running);
                 state.pending.retain(|&waiting| waiting != member);
-                if !group && state.phase == Phase::Stopped {
-                    state.phase = Phase::Running;
+                match &mut state.phase {
+                    Phase::Stopped if !group => state.phase = Phase::Running,
+                    Phase::Stopping { first, stopped, .. } => {
+                        stopped.remove(&member);
+                        if *first == Some(member) {
+                            *first = state
+                                .pending
+                                .iter()
+                                .position(|waiting| stopped.contains(waiting))
+                                .map(|next| state.pending.remove(next));
+                        }
+                    }
+                    _ => {}
                 }
             }
             Event::PauseAll => state.begin_stop(None),
@@ -339,8 +350,9 @@ struct Harness {
     /// stopped, failed to pause, or gone since.
     awaited: Option<BTreeSet<MemberNumber>>,
 
-    /// Whether a member stopped for the stop under way.
-    stopped_for_stop: bool,
+    /// The members that stopped for the stop under way, and are still
+    /// there.
+    stopped_for_stop: BTreeSet<MemberNumber>,
 
     /// Each member's stop while it is stopped, as its session would say.
     current: Vec<Option<StopId>>,
@@ -372,7 +384,7 @@ impl Harness {
         let Some(stop) = stop else {
             if self.awaited.as_ref().is_some_and(BTreeSet::is_empty) {
                 assert!(
-                    self.scope == StopScope::Process || !self.stopped_for_stop,
+                    self.scope == StopScope::Process || self.stopped_for_stop.is_empty(),
                     "a group stop that stopped a member reported nothing"
                 );
                 self.awaited = None;
@@ -418,7 +430,7 @@ impl Harness {
             .map(|(number, _)| number)
             .collect::<BTreeSet<_>>();
         if self.awaited.is_none() {
-            self.stopped_for_stop = except.is_some();
+            self.stopped_for_stop = except.into_iter().collect();
         }
         self.awaited = Some(waiting.clone());
         let completed = self.stops.pause_all(first, waiting);
@@ -499,7 +511,7 @@ impl Harness {
 
                 let under_way = self.awaited.is_some() && self.scope == StopScope::Group;
                 if self.awaited.is_some() {
-                    self.stopped_for_stop = true;
+                    self.stopped_for_stop.insert(member);
                 }
                 self.settled(member);
                 if self.awaited.as_ref().is_some_and(BTreeSet::is_empty)
@@ -557,7 +569,8 @@ impl Harness {
                 };
                 self.members[member as usize - 1] = Member::Running;
                 self.left(member);
-                self.stops.continued();
+                self.stopped_for_stop.remove(&member);
+                self.stops.continued(member);
             }
             // The CLI pauses the whole group only with its member stopped.
             Event::PauseAll => {
@@ -588,7 +601,7 @@ impl StateMachineTest for Harness {
             members: reference.members.clone(),
             current: vec![None; reference.members.len()],
             awaited: None,
-            stopped_for_stop: false,
+            stopped_for_stop: BTreeSet::new(),
             owed: Vec::new(),
             unserved: BTreeSet::new(),
             next_command: 0,
