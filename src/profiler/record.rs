@@ -2,6 +2,7 @@
 //! process's mappings and threads, unwinds each sample through the modules
 //! mapped when it was taken, and symbolizes the frames once at the end.
 
+mod cuts;
 mod held;
 mod modules;
 

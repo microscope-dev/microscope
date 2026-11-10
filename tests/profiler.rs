@@ -1157,6 +1157,98 @@ fn segments_tile_a_recording_and_read_back_as_one() {
     assert!(functions.contains("second"), "{functions:?}");
 }
 
+/// A whole recording saves all it has at once when asked before anything
+/// was recorded, and goes on to record all of the program.
+#[test]
+fn a_whole_recording_takes_a_save_asked_for_at_once_and_records_on() {
+    save_asked_for_at_once((None, None), "all", "off");
+}
+
+/// A window longer than the program saves all so far once the counts
+/// asked for are in, and goes on to keep all of the program.
+#[test]
+fn a_window_takes_a_save_asked_for_at_once_and_records_on() {
+    save_asked_for_at_once(
+        (Some(Duration::from_secs(10)), None),
+        "the last 10.000 s",
+        "off",
+    );
+}
+
+/// A segmented recording ends its first segment where a save asked for at
+/// once is taken, and the recording's own profile begins there.
+#[test]
+fn segments_take_a_save_asked_for_at_once_and_record_on() {
+    save_asked_for_at_once(
+        (None, Some(Duration::from_secs(10))),
+        "all",
+        "every 10.000 s",
+    );
+}
+
+/// Records the phases program cut as `cuts` says, with a save asked for
+/// before anything was recorded, which releases the program to its second
+/// phase: the save is taken once, as soon as it can be, and the recording
+/// says how it was cut in its `window` and `segments` settings.
+fn save_asked_for_at_once(
+    cuts: (Option<Duration>, Option<Duration>),
+    window: &str,
+    segments: &str,
+) {
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let mut command = Command::new(Scenario::fixture("profile-phases"));
+    command
+        .stdin(reader)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let options = RecordOptions {
+        window: cuts.0,
+        segment: cuts.1,
+        ..RecordOptions::default()
+    };
+
+    let (trigger, stop) = (AtomicBool::new(true), AtomicBool::new(false));
+    let mut saved = Vec::new();
+    let recording = record_watched(
+        command,
+        &options,
+        &mut Watch {
+            every: Duration::MAX,
+            publish: &mut |_| {},
+            stop: &stop,
+            save: Some(Save {
+                trigger: &trigger,
+                to: &mut |profile| {
+                    writer.write_all(b"x").expect("release the program");
+                    saved.push(profile);
+                },
+            }),
+        },
+    )
+    .expect("record");
+    assert!(recording.status.success(), "{}", recording.status);
+
+    let profile = &recording.profile;
+    assert_eq!(profile.setting("window"), Some(window));
+    assert_eq!(profile.setting("segments"), Some(segments));
+    assert_eq!(saved.len(), 1);
+    assert_cpu_accounting(&saved[0]);
+    assert_cpu_accounting(profile);
+    assert!(on_stacks(profile).contains("second"));
+
+    let (early, all) = (saved[0].span(), profile.span());
+    if cuts.1.is_some() {
+        assert_eq!(early.1, all.0, "the recording begins at the cut");
+        assert!(profile.stacks().iter().all(|stack| stack.time >= all.0));
+    } else {
+        // A whole recording saves at once, perhaps before any record
+        // came: then the save is empty.
+        assert!(early == (0, 0) || early.0 == all.0, "{early:?} {all:?}");
+        assert!(early.1 <= all.1, "{early:?} {all:?}");
+        assert!(on_stacks(profile).contains("first"));
+    }
+}
+
 /// Writing a segment deletes each segment that ended longer ago than is
 /// kept, and nothing else in the directory.
 #[test]
