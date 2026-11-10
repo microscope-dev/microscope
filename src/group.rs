@@ -28,6 +28,11 @@ use crate::{
 /// A member's number in its group, stable for the group's life.
 pub type MemberNumber = u32;
 
+/// One continue or resume of a whole group. The group stop that ends it
+/// names it, so a client can tell its own stop from an older one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupExecutionId(u64);
+
 /// What a group reports about its processes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupEvent {
@@ -89,10 +94,12 @@ pub enum GroupEvent {
 
     /// A member stopped, and every other member is stopped too. `stop` is
     /// the member's stop, as its own session names it, so a client can
-    /// tell this stop from an earlier one with the same reason.
+    /// tell this stop from an earlier one with the same reason. `execution`
+    /// is the continue or resume this stop ends, if it ends one.
     GroupStopped {
         member: MemberNumber,
         stop: crate::StopId,
+        execution: Option<GroupExecutionId>,
         reason: StopReason,
     },
 
@@ -185,11 +192,11 @@ impl Shared {
 enum Command {
     ContinueAll(
         Option<(MemberNumber, crate::StopId)>,
-        oneshot::Sender<Result<()>>,
+        oneshot::Sender<Result<GroupExecutionId>>,
     ),
     ResumeAll(
         Option<(MemberNumber, crate::StopId)>,
-        oneshot::Sender<Result<()>>,
+        oneshot::Sender<Result<GroupExecutionId>>,
     ),
     PauseAll(oneshot::Sender<Result<()>>),
     Detach(MemberNumber, oneshot::Sender<Result<()>>),
@@ -373,7 +380,9 @@ impl GroupHandle {
     /// This resumes whatever stop each member is at now. A client that
     /// showed a stop continues from it with
     /// [`continue_from`](Self::continue_from) instead.
-    pub async fn continue_all(&self) -> Result<()> {
+    ///
+    /// Returns the execution the group stop that ends it names.
+    pub async fn continue_all(&self) -> Result<GroupExecutionId> {
         self.command(|reply| Command::ContinueAll(None, reply))
             .await
     }
@@ -383,7 +392,10 @@ impl GroupHandle {
     /// resumes first, at that stop; when the stop is no longer current, or
     /// the member is not stopped, the continue fails with its error and
     /// resumes nothing.
-    pub async fn continue_from(&self, observed: (MemberNumber, crate::StopId)) -> Result<()> {
+    pub async fn continue_from(
+        &self,
+        observed: (MemberNumber, crate::StopId),
+    ) -> Result<GroupExecutionId> {
         self.command(|reply| Command::ContinueAll(Some(observed), reply))
             .await
     }
@@ -400,7 +412,10 @@ impl GroupHandle {
     /// stop the client showed, from the member's own events, which the
     /// group may not have seen yet; it is resumed all the same, first. When
     /// it is no longer current, the resume fails and resumes nothing.
-    pub async fn resume_all(&self, observed: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
+    pub async fn resume_all(
+        &self,
+        observed: Option<(MemberNumber, crate::StopId)>,
+    ) -> Result<GroupExecutionId> {
         self.command(|reply| Command::ResumeAll(observed, reply))
             .await
     }
@@ -433,10 +448,10 @@ impl GroupHandle {
         self.command(|reply| Command::Detach(number, reply)).await
     }
 
-    async fn command(
+    async fn command<T>(
         &self,
-        command: impl FnOnce(oneshot::Sender<Result<()>>) -> Command,
-    ) -> Result<()> {
+        command: impl FnOnce(oneshot::Sender<Result<T>>) -> Command,
+    ) -> Result<T> {
         let (reply, answer) = oneshot::channel();
         self.commands
             .send(command(reply))
@@ -752,6 +767,10 @@ struct Driver {
     members: BTreeMap<MemberNumber, Live>,
     next_number: MemberNumber,
     stops: Stops<Command>,
+
+    /// The continue or resume under way, which the next group stop ends.
+    execution: Option<GroupExecutionId>,
+    next_execution: u64,
     internal: (
         mpsc::UnboundedSender<Internal>,
         mpsc::UnboundedReceiver<Internal>,
@@ -773,6 +792,8 @@ impl Driver {
             members: BTreeMap::new(),
             next_number: 2,
             stops: Stops::new(stops),
+            execution: None,
+            next_execution: 0,
             internal: mpsc::unbounded_channel(),
         };
         driver.forward(1, &handle);
@@ -1258,10 +1279,12 @@ impl Driver {
         }
     }
 
-    fn report(&self, stop: MemberStop) {
+    fn report(&mut self, stop: MemberStop) {
+        let execution = self.execution.take();
         self.emit(GroupEvent::GroupStopped {
             member: stop.member,
             stop: stop.stop,
+            execution,
             reason: stop.reason,
         });
     }
@@ -1364,9 +1387,23 @@ impl Driver {
         let Some(command) = self.stops.defer(command) else {
             return;
         };
+
+        // The execution begins before the members resume, as a stop waiting
+        // to be reported ends it at once.
+        self.next_execution += 1;
+        let execution = GroupExecutionId(self.next_execution);
+        self.execution = Some(execution);
+        let begun = |driver: &mut Self, result: Result<()>| {
+            if result.is_err() && driver.execution == Some(execution) {
+                driver.execution = None;
+            }
+            result.map(|()| execution)
+        };
+
         match command {
             Command::ContinueAll(None, reply) => {
-                let _ = reply.send(self.continue_all().await);
+                let continued = self.continue_all().await;
+                let _ = reply.send(begun(self, continued));
             }
             Command::ContinueAll(Some((number, stop)), reply) => {
                 // A stop to report resumes nothing, but the client must
@@ -1376,10 +1413,11 @@ impl Driver {
                 } else {
                     self.resume_observed(number, stop).await
                 };
-                let _ = reply.send(match observed {
+                let continued = match observed {
                     Ok(()) => self.continue_rest().await,
                     Err(error) => Err(error),
-                });
+                };
+                let _ = reply.send(begun(self, continued));
             }
             Command::ResumeAll(observed, reply) => {
                 let resumed = match observed {
@@ -1387,16 +1425,17 @@ impl Driver {
                     None => Ok(()),
                 };
                 if let Err(error) = resumed {
-                    let _ = reply.send(Err(error));
+                    let _ = reply.send(begun(self, Err(error)));
                     return;
                 }
 
                 self.stops.discard_pending();
-                let _ = reply.send(if observed.is_some() {
+                let continued = if observed.is_some() {
                     self.continue_rest().await
                 } else {
                     self.continue_all().await
-                });
+                };
+                let _ = reply.send(begun(self, continued));
             }
             _ => {}
         }
@@ -1818,6 +1857,7 @@ mod tests {
             GroupEvent::GroupStopped {
                 member: 2,
                 stop: crate::StopId::new(1),
+                execution: None,
                 reason: breakpoint_stop(),
             }
         );
@@ -1893,6 +1933,7 @@ mod tests {
             GroupEvent::GroupStopped {
                 member: 1,
                 stop: stepped,
+                execution: None,
                 reason: StopReason::Step {
                     kind: crate::StepKind::Instruction,
                 },
@@ -1970,6 +2011,7 @@ mod tests {
                 GroupEvent::GroupStopped {
                     member: 1,
                     stop,
+                    execution: None,
                     reason: StopReason::Step {
                         kind: crate::StepKind::Instruction,
                     },
@@ -2190,6 +2232,7 @@ mod tests {
             GroupEvent::GroupStopped {
                 member: 2,
                 stop: crate::StopId::new(1),
+                execution: None,
                 reason: StopReason::Pause,
             }
         );

@@ -2332,7 +2332,8 @@ async fn resume_attached(
     handle: &DebuggerHandle,
 ) -> Result<(), Failure> {
     if let Some(group) = group {
-        return Ok(group.continue_all().await?);
+        group.continue_all().await?;
+        return Ok(());
     }
 
     if let InferiorState::Stopped {

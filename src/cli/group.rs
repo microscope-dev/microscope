@@ -235,16 +235,21 @@ impl Cli {
         self.earlier_notices(&mut events, &mut lines);
         let mut member_events = MemberEvents::of(&group.handle);
         let started = Instant::now();
-        match start {
+
+        // A continue ends at the group stop that names it. A launch's run
+        // takes the first group stop: no member is left from before it to
+        // stop late.
+        let execution = match start {
             Start::Launch => {
                 group
                     .handle
                     .root()
                     .launch_with(self.launch.options())
                     .await?;
+                None
             }
-            Start::Continue => group.handle.continue_all().await?,
-        }
+            Start::Continue => Some(group.handle.continue_all().await?),
+        };
 
         // Development builds panic on request once the group runs, to test
         // what a panic in the CLI leaves of the processes it debugs.
@@ -280,7 +285,12 @@ impl Cli {
             };
 
             match event {
-                GroupEvent::GroupStopped { member, reason, .. } => break (member, reason),
+                GroupEvent::GroupStopped {
+                    member,
+                    execution: ended,
+                    reason,
+                    ..
+                } if execution.is_none() || ended == execution => break (member, reason),
                 GroupEvent::MemberLost { member } => {
                     bail!(
                         "the session of [{member}] failed, so its process was released or killed"
@@ -520,6 +530,7 @@ impl MemberEvents {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use microscope::{
@@ -532,12 +543,21 @@ mod tests {
     /// A CLI session of a group, driven by calling its commands directly,
     /// with no terminal. The group's events reach the session through a
     /// channel the test owns, so a test can add its own events to it.
-    /// `forwarded` counts the group stops copied into it so far.
+    /// `forwarded` counts the group stops and exits copied into it so far,
+    /// and an event put in `slipped` is sent just before the next of them.
     struct Session {
         cli: Cli,
         group: ProcessGroup,
         sender: broadcast::Sender<GroupEvent>,
         forwarded: watch::Receiver<usize>,
+        slipped: Arc<Mutex<Option<GroupEvent>>>,
+    }
+
+    fn ends_a_run(event: &GroupEvent) -> bool {
+        matches!(
+            event,
+            GroupEvent::GroupStopped { .. } | GroupEvent::GroupExited
+        )
     }
 
     impl Session {
@@ -560,13 +580,18 @@ mod tests {
 
             let (sender, received) = broadcast::channel(64);
             let (count, forwarded) = watch::channel(0);
+            let slipped = Arc::new(Mutex::new(None));
             let mut events = group.handle().subscribe();
             let forward = sender.clone();
+            let slip = Arc::clone(&slipped);
             tokio::spawn(async move {
                 while let Ok(event) = events.recv().await {
-                    let stop = matches!(event, GroupEvent::GroupStopped { .. });
+                    let ends = ends_a_run(&event);
+                    if ends && let Some(early) = slip.lock().expect("the slipped event").take() {
+                        let _ = forward.send(early);
+                    }
                     let _ = forward.send(event);
-                    if stop {
+                    if ends {
                         count.send_modify(|count| *count += 1);
                     }
                 }
@@ -580,6 +605,7 @@ mod tests {
                 group,
                 sender,
                 forwarded,
+                slipped,
             }
         }
 
@@ -590,8 +616,8 @@ mod tests {
                 .unwrap_or_else(|error| panic!("`{line}` failed: {error:#}"));
         }
 
-        /// Waits until `count` of the group's stops have reached the
-        /// session.
+        /// Waits until `count` of the group's stops and exits have reached
+        /// the session.
         async fn forwarded(&mut self, count: usize) {
             tokio::time::timeout(
                 Duration::from_secs(10),
@@ -602,13 +628,37 @@ mod tests {
             .expect("the group runs");
         }
 
-        /// The group stops the session received and no command read.
+        /// The group stops and exits the session received and no command
+        /// read.
         async fn unread_stops(&self) -> Vec<GroupEvent> {
             let group = self.cli.group.as_ref().expect("a group session");
             let mut events = group.events.lock().await;
             std::iter::from_fn(|| events.try_recv().ok())
-                .filter(|event| matches!(event, GroupEvent::GroupStopped { .. }))
+                .filter(ends_a_run)
                 .collect()
+        }
+
+        /// A copy of the root's current stop, as if nothing read it yet.
+        async fn stale_root_stop(&self) -> GroupEvent {
+            let InferiorState::Stopped {
+                stop_id, reason, ..
+            } = self
+                .group
+                .handle()
+                .root()
+                .snapshot()
+                .await
+                .expect("the root's state")
+                .inferior
+            else {
+                panic!("the root is not stopped");
+            };
+            GroupEvent::GroupStopped {
+                member: 1,
+                stop: stop_id,
+                execution: None,
+                reason,
+            }
         }
 
         async fn end(self) {
@@ -632,25 +682,7 @@ mod tests {
         session.forwarded(1).await;
         assert_eq!(session.unread_stops().await, [], "the run read its stop");
 
-        // A copy of the breakpoint stop, as if nothing read it yet.
-        let InferiorState::Stopped {
-            stop_id, reason, ..
-        } = session
-            .group
-            .handle()
-            .root()
-            .snapshot()
-            .await
-            .expect("the root's state")
-            .inferior
-        else {
-            panic!("the root is not at its breakpoint");
-        };
-        let stale = GroupEvent::GroupStopped {
-            member: 1,
-            stop: stop_id,
-            reason,
-        };
+        let stale = session.stale_root_stop().await;
         session.sender.send(stale).expect("send the stale stop");
 
         session.run("stepi").await;
@@ -659,6 +691,29 @@ mod tests {
             session.unread_stops().await,
             [],
             "the step ended at the old stop and left its own unread"
+        );
+
+        session.end().await;
+    }
+
+    /// A continue ends at the group stop or exit it caused. An older group
+    /// stop that arrives while it runs, after the notices from before the
+    /// continue were printed, must not end it early.
+    #[tokio::test]
+    async fn a_continue_ends_at_its_own_end_not_an_older_stop() {
+        let mut session = Session::of("basic");
+        session.run("break breakpoint_target").await;
+        session.run("run").await;
+        session.forwarded(1).await;
+
+        let stale = session.stale_root_stop().await;
+        *session.slipped.lock().expect("the slipped event") = Some(stale);
+        session.run("continue").await;
+        session.forwarded(2).await;
+        assert_eq!(
+            session.unread_stops().await,
+            [],
+            "the continue ended at the old stop and left its own end unread"
         );
 
         session.end().await;
