@@ -310,25 +310,25 @@ fn each_trap_event_settles_the_same_in_each_phase() {
         "at a hit / remove: ok, continue ok -> running e3 [breakpoints, continued e3] {remove_site 0x40, continue 5000 None, continue 5001 None} ()",
         "at a hit / add at the hit: ok, continue ok -> running e3 [continued e3] {remove_site 0x40, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None} (b1:1)",
         "at a hit / jump: ok, continue ok -> running e4 [stopped e3 Jump by 5001, continued e4] {set_registers 5001 rip=0x60, continue 5000 None, continue 5001 None} (b1:1)",
-        "at a hit / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, remove_site 0x40, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None} (b1:1 b2:0)",
+        "at a hit / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, continue 5000 None, continue 5001 None} (b1:1 b2:0)",
         "at a co-hit / continue: ok -> running e3 [continued e3] {remove_site 0x40, step 5000, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None, continue 5000 None} (b1:2)",
         "at a co-hit / pause: AlreadyStopped -> stopped hit b1#1 by 5001 [] {} (b1:2)",
         "at a co-hit / remove: ok, continue ok -> running e3 [breakpoints, continued e3] {remove_site 0x40, continue 5000 None, continue 5001 None, continue 5000 None} ()",
         "at a co-hit / add at the hit: ok, continue ok -> running e3 [continued e3] {remove_site 0x40, step 5000, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None, continue 5000 None} (b1:2)",
         "at a co-hit / jump: ok, continue ok -> running e4 [stopped e3 Jump by 5001, continued e4] {set_registers 5001 rip=0x60, remove_site 0x40, step 5000, reinstall_site 0x40, continue 5000 None, continue 5001 None, continue 5000 None} (b1:2)",
-        "at a co-hit / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, remove_site 0x40, step 5000, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None, continue 5000 None} (b1:2 b2:0)",
+        "at a co-hit / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, remove_site 0x40, step 5000, reinstall_site 0x40, continue 5000 None, continue 5001 None, continue 5000 None} (b1:2 b2:0)",
         "at hits of two sites / continue: ok -> running e3 [continued e3] {remove_site 0x40, step 5001, reinstall_site 0x40, remove_site 0x50, step 5000, reinstall_site 0x50, continue 5000 None, continue 5001 None, continue 5000 None} (b1:1 b2:1)",
         "at hits of two sites / pause: AlreadyStopped -> stopped hit b1#1 by 5001 [] {} (b1:1 b2:1)",
         "at hits of two sites / remove: ok, continue ok -> running e3 [breakpoints, continued e3] {remove_site 0x40, remove_site 0x50, step 5000, reinstall_site 0x50, continue 5000 None, continue 5001 None, continue 5000 None} (b2:1)",
         "at hits of two sites / add at the hit: ok, continue ok -> running e3 [continued e3] {remove_site 0x40, step 5001, reinstall_site 0x40, remove_site 0x50, step 5000, reinstall_site 0x50, continue 5000 None, continue 5001 None, continue 5000 None} (b1:1 b2:1)",
         "at hits of two sites / jump: ok, continue ok -> running e4 [stopped e3 Jump by 5001, continued e4] {set_registers 5001 rip=0x60, remove_site 0x50, step 5000, reinstall_site 0x50, continue 5000 None, continue 5001 None, continue 5000 None} (b1:1 b2:1)",
-        "at hits of two sites / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, remove_site 0x40, step 5001, reinstall_site 0x40, remove_site 0x50, step 5000, reinstall_site 0x50, continue 5000 None, continue 5001 None, continue 5000 None} (b1:1 b2:1 b3:0)",
+        "at hits of two sites / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, remove_site 0x50, step 5000, reinstall_site 0x50, continue 5000 None, continue 5001 None, continue 5000 None} (b1:1 b2:1 b3:0)",
         "at a hit since removed / continue: ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} ()",
         "at a hit since removed / pause: AlreadyStopped -> stopped hit b1#1 by 5001 [] {} ()",
         "at a hit since removed / remove: BreakpointNotFound(1), continue ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} ()",
         "at a hit since removed / add at the hit: ok, continue ok -> running e3 [breakpoints, continued e3] {install_site 0x40, remove_site 0x40, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None} (b2:0)",
         "at a hit since removed / jump: ok, continue ok -> running e4 [stopped e3 Jump by 5001, continued e4] {set_registers 5001 rip=0x60, continue 5000 None, continue 5001 None} ()",
-        "at a hit since removed / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, install_site 0x40, remove_site 0x40, step 5001, reinstall_site 0x40, continue 5000 None, continue 5001 None} (b2:0)",
+        "at a hit since removed / jump, then add at the hit: ok, continue ok -> running e4 [stopped e3 Jump by 5001, breakpoints, continued e4] {set_registers 5001 rip=0x60, install_site 0x40, continue 5000 None, continue 5001 None} (b2:0)",
         "stepping over a trap / continue: NotStopped -> running e2 [] {reinstall_site 0x40, continue 5000 None, continue 5001 None} (b1:1 b2:0)",
         "stepping over a trap / pause: ok -> stopped Pause by 5001 [stopped e2 Pause by 5001] {request_stop 5001, reinstall_site 0x40} (b1:1 b2:0)",
         "stepping over a trap / remove: ok -> running e2 [breakpoints] {request_stop 5001, reinstall_site 0x40, remove_site 0x40, continue 5000 None, continue 5001 None, continue 5001 None} (b2:0)",
@@ -418,6 +418,31 @@ fn a_thread_moved_off_a_trap_a_signal_kept_it_from_stepping_over_runs_with_its_s
     assert!(
         run.runs(THREAD) && run.runs(SIBLING),
         "both threads run: {}",
+        run.describe()
+    );
+}
+
+/// A thread moved off the trap it hit owes that trap nothing, even once a
+/// breakpoint is added there again: it continues without stepping over it.
+#[test]
+fn a_thread_moved_off_its_hit_does_not_step_over_a_breakpoint_added_there() {
+    let mut run = phase("at a hit");
+    let mut jumped = run.jump(THREAD);
+    run.settle(true);
+    assert!(jumped().starts_with("ok"), "the jump");
+
+    // A hit condition makes it a breakpoint of its own, not the first again.
+    let mut added = run.add(HIT_SITE, Some(">=1"));
+    run.settle(true);
+    assert!(added().starts_with("ok"), "the breakpoint");
+    run.calls.clear();
+
+    let mut resumed = run.resume();
+    run.settle(true);
+    assert_eq!(resumed(), "ok");
+    assert!(
+        !run.calls.iter().any(|call| call.starts_with("step")),
+        "nothing steps over a trap: {}",
         run.describe()
     );
 }

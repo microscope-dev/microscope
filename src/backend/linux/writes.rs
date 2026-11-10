@@ -315,6 +315,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.next_execution = execution.get();
         let thread = inferior.thread_mut(pid)?;
         thread.stopped_at_breakpoint = thread.stopped_at_breakpoint.filter(|trap| *trap == pc);
+        thread.trapped_at = thread.trapped_at.filter(|trap| *trap == pc);
 
         // A signal's handler returns where the thread now stands, not to
         // the trap it would have executed again.
