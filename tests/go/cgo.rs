@@ -109,9 +109,9 @@ async fn a_backtrace_from_c_reaches_the_go_that_called_it() {
 }
 
 #[tokio::test]
-async fn a_backtrace_from_go_that_c_called_shows_the_c_between() {
+async fn go_that_c_called_shows_the_c_between_and_finishes_into_it() {
     for fixture in BUILDS {
-        let scenario = stopped_at(fixture, "main.callback").await;
+        let mut scenario = stopped_at(fixture, "main.callback").await;
         let found = segments(&scenario).await;
         let context = format!("{fixture}: {found:#?}");
         let [
@@ -159,6 +159,21 @@ async fn a_backtrace_from_go_that_c_called_shows_the_c_between() {
             ]),
             "{context}"
         );
+
+        // Finishing the callback returns to the C that called it. Optimized,
+        // the instruction after the call may begin the next line.
+        let reason = scenario.step_to_stop(StepKind::Out).await;
+        assert_eq!(
+            reason,
+            StopReason::Step {
+                kind: StepKind::Out
+            },
+            "{fixture}"
+        );
+        let line = support::source_line(SOURCE, "// CGO: calls");
+        let (function, at) = place(&scenario).await;
+        assert_eq!(function, "calls", "{fixture}");
+        assert!([line, line + 1].contains(&at), "{fixture}: line {at}");
         scenario.shutdown().await;
     }
 }
@@ -217,28 +232,6 @@ async fn steps_c_into_the_go_it_calls() {
             ("main.callback".to_owned(), callback),
             "{fixture}"
         );
-        scenario.shutdown().await;
-    }
-}
-
-#[tokio::test]
-async fn finishing_go_that_c_called_returns_to_the_c() {
-    for fixture in BUILDS {
-        let mut scenario = stopped_at(fixture, "main.callback").await;
-        let reason = scenario.step_to_stop(StepKind::Out).await;
-        assert_eq!(
-            reason,
-            StopReason::Step {
-                kind: StepKind::Out
-            },
-            "{fixture}"
-        );
-
-        // Optimized, the instruction after the call may begin the next line.
-        let line = support::source_line(SOURCE, "// CGO: calls");
-        let (function, at) = place(&scenario).await;
-        assert_eq!(function, "calls", "{fixture}");
-        assert!([line, line + 1].contains(&at), "{fixture}: line {at}");
         scenario.shutdown().await;
     }
 }

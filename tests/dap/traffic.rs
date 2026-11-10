@@ -102,6 +102,12 @@ fn await_live(
             "{} answered differently than when recorded:\nrecorded {recorded}\nlive {live}",
             recorded["command"]
         );
+        assert_eq!(
+            shown(&live["body"]),
+            shown(&recorded["body"]),
+            "{} showed something else than when recorded:\nrecorded {recorded}\nlive {live}",
+            recorded["command"]
+        );
         ids.learn(&recorded["body"], &live["body"], "", "");
     } else {
         let event = recorded["event"].as_str().expect("event");
@@ -114,8 +120,38 @@ fn await_live(
         }
 
         let live = dap.event(crate::dap::Mark::START, event, |_| true);
+        assert_eq!(
+            shown(&live),
+            shown(&recorded["body"]),
+            "{event} showed something else than when recorded:\nrecorded {recorded}\nlive {live}"
+        );
         ids.learn(&recorded["body"], &live, "", "");
     }
+}
+
+/// What a client shows of a message: where a stop is and why, each
+/// frame's function and line, each variable's name and value, and what an
+/// expression evaluated to. Ids, which differ from run to run, are left out.
+fn shown(body: &Value) -> Vec<String> {
+    let mut shown = Vec::new();
+    for key in ["reason", "result"] {
+        if let Some(text) = body[key].as_str() {
+            shown.push(format!("{key} {text}"));
+        }
+    }
+
+    for frame in body["stackFrames"].as_array().into_iter().flatten() {
+        shown.push(format!("frame {} {}", frame["name"], frame["line"]));
+    }
+
+    for variable in body["variables"].as_array().into_iter().flatten() {
+        shown.push(format!(
+            "variable {} {}",
+            variable["name"], variable["value"]
+        ));
+    }
+
+    shown
 }
 
 fn replay(name: &str) {

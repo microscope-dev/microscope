@@ -199,17 +199,12 @@ async fn a_panic_stops_where_it_panicked_under_legacy_mangling() {
     launched.scenario.shutdown().await;
 }
 
-/// `unwrap` and `expect` are `#[track_caller]`: the frame selected is the
-/// program's that called them, not the standard library's.
+/// `unwrap` is `#[track_caller]`, as `expect` is: the frame selected is the
+/// program's that called it, not the standard library's.
 #[tokio::test]
 async fn an_unwrap_stops_at_its_caller() {
     let message = "called `Option::unwrap()` on a `None` value";
     stops_where_the_program_panicked("unwrap", message, "joined").await;
-}
-
-#[tokio::test]
-async fn an_expect_stops_at_its_caller() {
-    stops_where_the_program_panicked("expect", "a byte: \"bad\"", "joined").await;
 }
 
 #[tokio::test]

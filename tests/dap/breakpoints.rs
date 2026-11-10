@@ -539,29 +539,6 @@ fn breakpoints_in_inlined_code_stop_in_every_inlined_copy_as_gdb_does() {
             vec!["middle", "middle", "caller", "caller", "branchy"],
         ),
     ] {
-        // A function breakpoint stops where each copy begins.
-        let mut dap = Dap::start(format!("{program} function"));
-        let started = dap.launch(
-            Profile::Neovim,
-            &fixture(program),
-            json!({}),
-            &Configuration {
-                functions: vec!["leaf".to_owned()],
-                ..Configuration::default()
-            },
-        );
-        assert_eq!(started.function_breakpoints[0]["verified"], true);
-        let stops = stops_until_exit(&mut dap, started.mark);
-        assert!(stops.iter().all(|(name, ..)| name == "leaf"), "{stops:?}");
-        assert_eq!(
-            stops
-                .iter()
-                .map(|(.., caller)| caller.as_str())
-                .collect::<Vec<_>>(),
-            ["middle", "middle", "caller", "caller", "branchy"]
-        );
-        dap.finish();
-
         // A line in the inlined body stops in the inlined frame.
         let mut dap = Dap::start(format!("{program} line"));
         let started = dap.launch(

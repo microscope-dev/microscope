@@ -7,6 +7,8 @@
 //! other seeds, `CHAOS_SEED=hex` reruns one, and `CHAOS_ROUNDS=n` sends
 //! more bursts, for longer runs.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use crate::dap::{Dap, Profile, fixture, source};
@@ -42,9 +44,80 @@ impl Random {
     }
 }
 
-fn request(random: &mut Random, thread: Option<i64>, started: bool) -> (&'static str, Value) {
-    let thread = thread.map_or_else(|| random.number(), Value::from);
+/// Ids the adapter has handed out, which requests use most of the time so
+/// that they reach a stopped program's frames and variables.
+#[derive(Default)]
+struct Known {
+    threads: Vec<i64>,
+    frames: Vec<i64>,
+    references: Vec<i64>,
+}
+
+impl Known {
+    /// Learns the ids in a successful response.
+    fn learn(&mut self, command: &str, body: &Value) {
+        let (list, field, ids) = match command {
+            "threads" => (&body["threads"], "id", &mut self.threads),
+            "stackTrace" => (&body["stackFrames"], "id", &mut self.frames),
+            "scopes" => (&body["scopes"], "variablesReference", &mut self.references),
+            "variables" => (
+                &body["variables"],
+                "variablesReference",
+                &mut self.references,
+            ),
+            _ => return,
+        };
+        let found = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item[field].as_i64())
+            .filter(|&id| id > 0)
+            .collect::<Vec<_>>();
+        if !found.is_empty() {
+            *ids = found;
+        }
+    }
+}
+
+impl Random {
+    /// One of `known`, three times in four, or else any number.
+    fn id(&mut self, known: &[i64]) -> Value {
+        if known.is_empty() || self.below(4) == 0 {
+            self.number()
+        } else {
+            json!(*self.pick(known))
+        }
+    }
+}
+
+/// A request that reads a stopped program's stack, frames, or variables.
+fn inspection(random: &mut Random, known: &Known) -> (&'static str, Value) {
+    match random.below(4) {
+        0 => (
+            "stackTrace",
+            json!({"threadId": random.id(&known.threads), "startFrame": 0, "levels": 20}),
+        ),
+        1 => ("scopes", json!({"frameId": random.id(&known.frames)})),
+        2 => (
+            "variables",
+            json!({"variablesReference": random.id(&known.references)}),
+        ),
+        _ => (
+            "evaluate",
+            json!({"expression": random.pick(&["hot_count", "hot_stop"]), "context": "watch", "frameId": random.id(&known.frames)}),
+        ),
+    }
+}
+
+fn request(random: &mut Random, known: &Known, started: bool) -> (&'static str, Value) {
+    let thread = random.id(&known.threads);
     let path = source("c/hot-calls.c");
+
+    // One request in four inspects, as an editor does at each stop.
+    if random.below(4) == 0 {
+        return inspection(random, known);
+    }
 
     // Before a program starts, a launch or attach would wait for
     // configurationDone like any other.
@@ -54,14 +127,14 @@ fn request(random: &mut Random, thread: Option<i64>, started: bool) -> (&'static
             "stackTrace",
             json!({"threadId": thread, "startFrame": random.number(), "levels": random.number()}),
         ),
-        2 => ("scopes", json!({"frameId": random.number()})),
+        2 => ("scopes", json!({"frameId": random.id(&known.frames)})),
         3 => (
             "variables",
-            json!({"variablesReference": random.number(), "start": random.number(), "count": random.number()}),
+            json!({"variablesReference": random.id(&known.references), "start": random.number(), "count": random.number()}),
         ),
         4 => (
             "evaluate",
-            json!({"expression": random.pick(&["hot_count", "hot_stop", "bt", "info signals", "x 0x0", "((", "threads"]), "context": random.pick(&["watch", "repl", "hover"]), "frameId": random.number()}),
+            json!({"expression": random.pick(&["hot_count", "hot_stop", "bt", "info signals", "x 0x0", "((", "threads"]), "context": random.pick(&["watch", "repl", "hover"]), "frameId": random.id(&known.frames)}),
         ),
         5 => ("continue", json!({"threadId": thread})),
         6 => (
@@ -97,7 +170,7 @@ fn request(random: &mut Random, thread: Option<i64>, started: bool) -> (&'static
         18 => ("completions", json!({"text": "inf", "column": 4})),
         19 => (
             "dataBreakpointInfo",
-            json!({"name": "hot_count", "frameId": random.number()}),
+            json!({"name": "hot_count", "frameId": random.id(&known.frames)}),
         ),
         20 => (
             "setDataBreakpoints",
@@ -105,15 +178,18 @@ fn request(random: &mut Random, thread: Option<i64>, started: bool) -> (&'static
         ),
         21 => ("exceptionInfo", json!({"threadId": thread})),
         22 => ("configurationDone", Value::Null),
+        // Ending the program now and then, not so often that it is rarely
+        // stopped.
+        23 | 24 if random.below(4) != 0 => ("pause", json!({"threadId": thread})),
         23 => ("terminate", Value::Null),
         24 => ("restart", Value::Null),
         25 => (
             "setVariable",
-            json!({"variablesReference": random.number(), "name": random.pick(&["hot_stop", "nope"]), "value": random.pick(&["0", "1", "((", "-1"])}),
+            json!({"variablesReference": random.id(&known.references), "name": random.pick(&["hot_stop", "nope"]), "value": random.pick(&["0", "1", "((", "-1"])}),
         ),
         26 => (
             "setExpression",
-            json!({"expression": random.pick(&["hot_count", "hot_stop", "3"]), "value": random.pick(&["0", "7", "x"]), "frameId": random.number()}),
+            json!({"expression": random.pick(&["hot_count", "hot_stop", "3"]), "value": random.pick(&["0", "7", "x"]), "frameId": random.id(&known.frames)}),
         ),
         27 => (
             "writeMemory",
@@ -127,7 +203,7 @@ fn request(random: &mut Random, thread: Option<i64>, started: bool) -> (&'static
         ),
         31 => (
             "completions",
-            json!({"text": random.pick(&["hot_count.", "$r", "x->", "::h", "info "]), "column": random.number(), "frameId": random.number()}),
+            json!({"text": random.pick(&["hot_count.", "$r", "x->", "::h", "info "]), "column": random.number(), "frameId": random.id(&known.frames)}),
         ),
         32 => ("launch", json!({"program": fixture("spin")})),
         33 => ("attach", json!({"pid": random.number()})),
@@ -157,6 +233,7 @@ fn random_requests_in_every_state_are_answered_once_and_harm_nothing() {
         |seed| vec![seed],
     );
 
+    let mut answered = BTreeMap::new();
     for seed in seeds {
         let mut random = Random(seed);
         let mut dap = Dap::start(format!("chaos seed {seed:#x}"));
@@ -164,47 +241,70 @@ fn random_requests_in_every_state_are_answered_once_and_harm_nothing() {
         let rounds =
             std::env::var("CHAOS_ROUNDS").map_or(60, |rounds| rounds.parse().expect("rounds"));
         dap.initialize(Profile::VsCode);
+        let mut known = Known::default();
 
         // Before anything is launched.
-        bursts(&mut dap, &mut random, 10, false);
+        bursts(&mut dap, &mut random, 10, false, &mut known, &mut answered);
 
         // While the launch waits for configuration and starts the program.
         let launch = dap.send("launch", json!({"program": fixture("hot-calls")}));
         let done = dap.send("configurationDone", Value::Null);
-        bursts(&mut dap, &mut random, 10, true);
+        bursts(&mut dap, &mut random, 10, true, &mut known, &mut answered);
         dap.response(launch);
         dap.response(done);
 
         // While it runs and stops, restarts, or ends.
-        bursts(&mut dap, &mut random, rounds, true);
+        bursts(
+            &mut dap,
+            &mut random,
+            rounds,
+            true,
+            &mut known,
+            &mut answered,
+        );
 
         // After it has ended.
         end_program(&mut dap);
-        bursts(&mut dap, &mut random, 10, true);
+        bursts(&mut dap, &mut random, 10, true, &mut known, &mut answered);
 
-        // The adapter still works after all of that.
-        let threads = dap.request("threads", Value::Null);
-        assert!(!threads["threads"].as_array().expect("threads").is_empty());
         dap.finish();
+    }
+
+    // The requests reached a stopped program, read its stack, and resumed
+    // it, rather than only being refused while it ran or after it ended.
+    for command in ["stackTrace", "continue"] {
+        assert!(
+            answered.get(command).is_some_and(|&count| count > 0),
+            "no {command} succeeded: {answered:?}"
+        );
     }
 }
 
 /// Sends bursts of random requests without waiting, as editors send them,
 /// and checks each is answered once.
-fn bursts(dap: &mut Dap, random: &mut Random, rounds: usize, started: bool) {
+fn bursts(
+    dap: &mut Dap,
+    random: &mut Random,
+    rounds: usize,
+    started: bool,
+    known: &mut Known,
+    answered: &mut BTreeMap<&'static str, u32>,
+) {
     for _ in 0..rounds {
-        let main_thread = dap.process_id().map(i64::from);
         let burst = (0..=random.below(3))
             .map(|_| {
-                let thread = (random.below(2) == 0).then_some(main_thread).flatten();
-                let (command, arguments) = request(random, thread, started);
-                dap.send(command, arguments)
+                let (command, arguments) = request(random, known, started);
+                (command, dap.send(command, arguments))
             })
             .collect::<Vec<_>>();
 
-        for sent in burst {
+        for (command, sent) in burst {
             let response = dap.response(sent);
             assert!(response["success"].is_boolean(), "{response}");
+            if response["success"] == true {
+                known.learn(command, &response["body"]);
+                *answered.entry(command).or_default() += 1;
+            }
         }
     }
 }

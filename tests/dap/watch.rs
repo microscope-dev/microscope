@@ -40,6 +40,7 @@ fn write_data_breakpoints_stop_when_the_value_changes_and_say_how() {
     let mut dap = Dap::start("data breakpoints");
     let (stop, frame) = stopped_in(&mut dap, "watch-gcc-o0", "scalar_stores");
     dap.request("setFunctionBreakpoints", json!({"breakpoints": []}));
+    unwatchable_values_say_why(&mut dap, &frame);
     let info = dap.request(
         "dataBreakpointInfo",
         json!({"name": "watch_i32", "frameId": frame["id"]}),
@@ -171,10 +172,9 @@ fn watching_a_local_from_the_variables_view_ends_with_its_frame() {
     dap.finish();
 }
 
-#[test]
-fn values_that_cannot_be_watched_say_why_without_failing() {
-    let mut dap = Dap::start("unwatchable");
-    let (_, frame) = stopped_in(&mut dap, "watch-gcc-o0", "scalar_stores");
+/// Values that cannot be watched say why without failing the request, and
+/// leave no data breakpoint set.
+fn unwatchable_values_say_why(dap: &mut Dap, frame: &Value) {
     let missing = dap.request(
         "dataBreakpointInfo",
         json!({"name": "no_such_value", "frameId": frame["id"]}),
@@ -223,7 +223,6 @@ fn values_that_cannot_be_watched_say_why_without_failing() {
         set[2]["message"],
         "invalid condition: conditions and log messages cannot assign; compare with `==`"
     );
-    dap.finish();
 }
 
 #[test]

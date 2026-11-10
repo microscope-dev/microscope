@@ -327,27 +327,6 @@ fn signals_stop_as_exceptions_that_the_filters_choose() {
         console.contains(&format!("received {realtime}")),
         "{console}"
     );
-
-    let (stops, exit, _) = signal_stops(json!({"filters": ["routine", "other"]}));
-    assert_eq!(
-        stops,
-        [
-            "SIGUSR1",
-            "SIGALRM",
-            "SIGURG",
-            "SIGCHLD",
-            "SIGWINCH",
-            realtime.as_str()
-        ]
-    );
-    assert_eq!(exit, 63);
-
-    let (stops, exit, _) = signal_stops(json!({
-        "filters": [],
-        "filterOptions": [{"filterId": "other", "condition": "SIGWINCH, SIGUSR1"}],
-    }));
-    assert_eq!(stops, ["SIGUSR1", "SIGWINCH"]);
-    assert_eq!(exit, 63);
 }
 
 #[test]

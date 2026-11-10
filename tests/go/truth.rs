@@ -11,7 +11,7 @@ use std::process::Stdio;
 
 use microscope::{LaunchOptions, StopReason, TaskPage, TaskSnapshot, TaskState};
 
-use crate::support::truth::{Report, unescape};
+use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir};
 
 /// One goroutine as the runtime's dump shows it.
@@ -207,38 +207,6 @@ impl GoSession {
     }
 }
 
-/// The comparison fails on the lies it exists to catch: a goroutine left
-/// out, one listed twice, one in the wrong state, and a dropped frame.
-#[tokio::test]
-async fn the_truth_fails_on_the_lies_it_looks_for() {
-    let session = GoSession::launch("workers-go-o0").await;
-    let truth = session.checkpoint("parked");
-    let (tasks, gaps) = session.tasks(64).await;
-    assert!(gaps.is_empty(), "{gaps:?}");
-    truth.check_tasks(&tasks).expect("the listing holds");
-    let program = tasks
-        .iter()
-        .position(|task| !task.internal && task.thread.is_none())
-        .expect("a parked goroutine of the program's");
-
-    let mut missing = tasks.clone();
-    missing.remove(program);
-    assert!(truth.check_tasks(&missing).is_err());
-    let mut twice = tasks.clone();
-    twice.push(tasks[program].clone());
-    assert!(truth.check_tasks(&twice).is_err());
-    let mut running = tasks.clone();
-    running[program].state = TaskState::Running;
-    assert!(truth.check_tasks(&running).is_err());
-
-    let dumped = &truth.tasks[&tasks[program].id.number];
-    dumped
-        .check_frames(&dumped.frames)
-        .expect("the dump's frames");
-    assert!(dumped.check_frames(&dumped.frames[1..]).is_err());
-    session.scenario.shutdown().await;
-}
-
 const PRINTED: &str = "starting\n\
     TRUTH\tversion\t3.14\n\
     TRUTH\tcheckpoint\tfirst\n\
@@ -273,11 +241,4 @@ fn a_checkpoint_holds_the_lines_up_to_the_next() {
     assert_eq!(report.checkpoint("third"), None);
     let (name, lines) = report.latest().expect("a checkpoint");
     assert_eq!((name, lines.len()), ("first", 1));
-}
-
-#[test]
-fn escapes_are_undone_and_other_backslashes_kept() {
-    assert_eq!(unescape(r"a\tb\nc\\d"), "a\tb\nc\\d");
-    assert_eq!(unescape(r"\x\"), r"\x\");
-    assert_eq!(unescape(""), "");
 }

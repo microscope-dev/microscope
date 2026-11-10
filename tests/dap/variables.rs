@@ -70,8 +70,10 @@ fn values(variables: &[Value]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Every check here reads one stop; the last two change the session's
+/// format and resume the program.
 #[test]
-fn variables_show_values_and_types_and_expand_aggregates() {
+fn a_stop_shows_its_variables_expressions_and_formats() {
     let mut dap = Dap::start("variables");
     let stop = stopped_at(
         &mut dap,
@@ -79,14 +81,24 @@ fn variables_show_values_and_types_and_expand_aggregates() {
         "c/variables.c",
         "return **pointer_pointer",
     );
-    let frame = frames(&mut dap, stop.thread)[0].clone();
+    variables_show_values_and_types_and_expand_aggregates(&mut dap, &stop);
+    pointers_expand_to_what_they_point_to_or_say_why_not(&mut dap, &stop);
+    caller_frames_registers_and_hexadecimal_values(&mut dap, &stop);
+    expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame(&mut dap, &stop);
+    hexadecimal_is_a_session_default_each_request_may_override(&mut dap, &stop);
+    function_pointers_link_to_the_function_they_point_to(&mut dap, &stop);
+    dap.finish();
+}
+
+fn variables_show_values_and_types_and_expand_aggregates(dap: &mut Dap, stop: &Stopped) {
+    let frame = frames(dap, stop.thread)[0].clone();
     assert_eq!(frame["name"], "pointer_target");
-    let scopes = scopes(&mut dap, &frame);
+    let scopes = scopes(dap, &frame);
     assert_eq!(scopes["Arguments"]["presentationHint"], "arguments");
     assert_eq!(scopes["Locals"]["presentationHint"], "locals");
     assert_eq!(scopes["Registers"]["expensive"], true);
 
-    let arguments = variables(&mut dap, &scopes["Arguments"]["variablesReference"]);
+    let arguments = variables(dap, &scopes["Arguments"]["variablesReference"]);
     assert_eq!(
         values(&arguments)[0],
         ("parameter".to_owned(), "40".to_owned())
@@ -102,11 +114,11 @@ fn variables_show_values_and_types_and_expand_aggregates() {
     let pointer = named(&arguments, "pointer_parameter");
     assert_eq!(pointer["type"], "int *");
     assert_eq!(
-        values(&variables(&mut dap, &pointer["variablesReference"])),
+        values(&variables(dap, &pointer["variablesReference"])),
         [("*pointer_parameter".to_owned(), "42".to_owned())]
     );
 
-    let locals = variables(&mut dap, &scopes["Locals"]["variablesReference"]);
+    let locals = variables(dap, &scopes["Locals"]["variablesReference"]);
 
     // Records and arrays say how many children they have.
     let pair = named(&locals, "pair");
@@ -114,7 +126,7 @@ fn variables_show_values_and_types_and_expand_aggregates() {
         (&pair["value"], &pair["namedVariables"]),
         (&json!("{<2 fields>}"), &json!(2))
     );
-    let fields = variables(&mut dap, &pair["variablesReference"]);
+    let fields = variables(dap, &pair["variablesReference"]);
     assert_eq!(
         values(&fields),
         [
@@ -128,7 +140,7 @@ fn variables_show_values_and_types_and_expand_aggregates() {
         (&array["value"], &array["indexedVariables"]),
         (&json!("[<2 elements>]"), &json!(2))
     );
-    let elements = variables(&mut dap, &array["variablesReference"]);
+    let elements = variables(dap, &array["variablesReference"]);
     assert_eq!(
         values(&elements),
         [
@@ -138,7 +150,7 @@ fn variables_show_values_and_types_and_expand_aggregates() {
     );
     assert_eq!(elements[1]["evaluateName"], "array[1]");
     for child in fields.iter().chain(&elements) {
-        assert_evaluates(&mut dap, &frame, child);
+        assert_evaluates(dap, &frame, child);
     }
 
     // A client paging by kind gets only rows of that kind.
@@ -160,26 +172,16 @@ fn variables_show_values_and_types_and_expand_aggregates() {
         filtered(&scopes["Locals"]["variablesReference"], "indexed"),
         0
     );
-
-    dap.finish();
 }
 
-#[test]
-fn pointers_expand_to_what_they_point_to_or_say_why_not() {
-    let mut dap = Dap::start("pointers");
-    let stop = stopped_at(
-        &mut dap,
-        "variables-gcc-o0",
-        "c/variables.c",
-        "return **pointer_pointer",
-    );
-    let frame = frames(&mut dap, stop.thread)[0].clone();
-    let reference = scopes(&mut dap, &frame)["Locals"]["variablesReference"].clone();
-    let locals = variables(&mut dap, &reference);
+fn pointers_expand_to_what_they_point_to_or_say_why_not(dap: &mut Dap, stop: &Stopped) {
+    let frame = frames(dap, stop.thread)[0].clone();
+    let reference = scopes(dap, &frame)["Locals"]["variablesReference"].clone();
+    let locals = variables(dap, &reference);
 
     // A pointer to a record expands straight to the record's members.
     let structure = named(&locals, "structure_pointer");
-    let members = variables(&mut dap, &structure["variablesReference"]);
+    let members = variables(dap, &structure["variablesReference"]);
     assert_eq!(
         values(&members),
         [
@@ -192,7 +194,7 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not() {
     // A list can be walked node by node.
     let mut node = named(&locals, "recursive_pointer").clone();
     for expected in ["40", "41", "42"] {
-        let fields = variables(&mut dap, &node["variablesReference"]);
+        let fields = variables(dap, &node["variablesReference"]);
         assert_eq!(named(&fields, "value")["value"], expected);
         node = named(&fields, "next").clone();
     }
@@ -209,7 +211,7 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not() {
         (&json!("0x0000000000000000"), &json!(0))
     );
     let invalid = named(&locals, "invalid_pointer");
-    let target = variables(&mut dap, &invalid["variablesReference"]);
+    let target = variables(dap, &invalid["variablesReference"]);
     assert_eq!(target[0]["name"], "*invalid_pointer");
     assert!(
         target[0]["value"]
@@ -220,10 +222,8 @@ fn pointers_expand_to_what_they_point_to_or_say_why_not() {
 
     // Every child's evaluate name evaluates to the same value.
     for child in &members {
-        assert_evaluates(&mut dap, &frame, child);
+        assert_evaluates(dap, &frame, child);
     }
-
-    dap.finish();
 }
 
 /// Checks that a variable's evaluate name evaluates to its value.
@@ -235,20 +235,12 @@ fn assert_evaluates(dap: &mut Dap, frame: &Value, variable: &Value) {
     assert_eq!(result["result"], variable["value"], "{variable}");
 }
 
-#[test]
-fn caller_frames_registers_and_hexadecimal_values() {
-    let mut dap = Dap::start("caller frames");
-    let stop = stopped_at(
-        &mut dap,
-        "variables-gcc-o0",
-        "c/variables.c",
-        "return **pointer_pointer",
-    );
-    let frames = frames(&mut dap, stop.thread);
+fn caller_frames_registers_and_hexadecimal_values(dap: &mut Dap, stop: &Stopped) {
+    let frames = frames(dap, stop.thread);
     assert_eq!(frames[1]["name"], "main");
-    let caller = scopes(&mut dap, &frames[1]);
+    let caller = scopes(dap, &frames[1]);
     assert!(!caller.contains_key("Arguments"), "main takes no arguments");
-    let locals = variables(&mut dap, &caller["Locals"]["variablesReference"]);
+    let locals = variables(dap, &caller["Locals"]["variablesReference"]);
     for (name, value, type_name) in [
         ("boolean", "true", "_Bool"),
         ("character", "65 'A'", "char"),
@@ -265,8 +257,8 @@ fn caller_frames_registers_and_hexadecimal_values() {
     }
 
     // The innermost frame's program counter is its instruction pointer.
-    let innermost = scopes(&mut dap, &frames[0]);
-    let registers = variables(&mut dap, &innermost["Registers"]["variablesReference"]);
+    let innermost = scopes(dap, &frames[0]);
+    let registers = variables(dap, &innermost["Registers"]["variablesReference"]);
     let rip = named(&registers, "rip")["value"]
         .as_str()
         .expect("rip")
@@ -293,7 +285,7 @@ fn caller_frames_registers_and_hexadecimal_values() {
     );
 
     // A caller's registers that its callees may change are unknown.
-    let caller_registers = variables(&mut dap, &caller["Registers"]["variablesReference"]);
+    let caller_registers = variables(dap, &caller["Registers"]["variablesReference"]);
     assert_eq!(named(&caller_registers, "rax")["value"], "<not saved>");
 
     // Values can be shown in hexadecimal.
@@ -303,8 +295,6 @@ fn caller_frames_registers_and_hexadecimal_values() {
         json!({"variablesReference": reference, "format": {"hex": true}}),
     );
     assert_eq!(arguments["variables"][0]["value"], "0x28");
-
-    dap.finish();
 }
 
 #[test]
@@ -405,16 +395,11 @@ fn optimized_out_values_explain_themselves_as_values() {
     dap.finish();
 }
 
-#[test]
-fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame() {
-    let mut dap = Dap::start("evaluate");
-    let stop = stopped_at(
-        &mut dap,
-        "variables-gcc-o0",
-        "c/variables.c",
-        "return **pointer_pointer",
-    );
-    let frame = frames(&mut dap, stop.thread)[0]["id"].clone();
+fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame(
+    dap: &mut Dap,
+    stop: &Stopped,
+) {
+    let frame = frames(dap, stop.thread)[0]["id"].clone();
     for context in ["watch", "hover", "clipboard", "variables"] {
         let result = dap.request(
             "evaluate",
@@ -473,7 +458,7 @@ fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame() {
         (&json!("[<2 elements>]"), &json!(2))
     );
     assert_eq!(
-        values(&variables(&mut dap, &range["variablesReference"])),
+        values(&variables(dap, &range["variablesReference"])),
         [
             ("[0]".to_owned(), "20".to_owned()),
             ("[1]".to_owned(), "22".to_owned())
@@ -492,7 +477,6 @@ fn expressions_evaluate_for_watches_hovers_ranges_and_without_a_frame() {
         json!({"expression": "nonexistent", "frameId": frame, "context": "hover"}),
     );
     assert!(unknown.contains("nonexistent"), "{unknown}");
-    dap.finish();
 }
 
 #[test]
@@ -596,9 +580,12 @@ fn strings_show_their_text_and_still_expand() {
     dap.finish();
 }
 
+/// Rows lead to where their variables are declared, and a static's row
+/// reaches the static, not a local that shadows it.
 #[test]
-fn statics_a_local_shadows_still_name_the_static() {
-    let mut dap = Dap::start("shadowed statics");
+fn rows_lead_to_their_declarations_and_statics_past_a_shadowing_local() {
+    let path = source("c/command-names.c");
+    let mut dap = Dap::start("declarations and statics");
     let stop = stopped_at(
         &mut dap,
         "command-names",
@@ -607,6 +594,34 @@ fn statics_a_local_shadows_still_name_the_static() {
     );
     let frame = frames(&mut dap, stop.thread)[0].clone();
     let scopes = scopes(&mut dap, &frame);
+    let mut rows = variables(&mut dap, &scopes["Arguments"]["variablesReference"]);
+    rows.extend(variables(&mut dap, &scopes["Locals"]["variablesReference"]));
+    rows.extend(variables(
+        &mut dap,
+        &scopes["Statics"]["variablesReference"],
+    ));
+
+    for (name, marker) in [
+        ("n", "static int names(int n)"),
+        ("x", "int x = n * 2"),
+        ("where", "struct point *where"),
+        ("counter", "static int counter"),
+    ] {
+        let row = named(&rows, name);
+        let location = dap.request(
+            "locations",
+            json!({"locationReference": row["declarationLocationReference"]}),
+        );
+        assert_eq!(location["source"]["path"], json!(path), "{name}");
+        assert_eq!(location["line"], line_of(&path, marker), "{name}");
+    }
+
+    // A member's declaration is its type's, which is not where the value
+    // lives, so it has none.
+    let origin = named(&rows, "origin")["variablesReference"].clone();
+    let members = variables(&mut dap, &origin);
+    assert!(members[0].get("declarationLocationReference").is_none());
+
     let statics = variables(&mut dap, &scopes["Statics"]["variablesReference"]);
     let row = named(&statics, "shadowed");
     assert_eq!(row["value"], "7");
@@ -685,18 +700,10 @@ fn statics_that_files_share_a_name_with_evaluate_to_their_own_files_value() {
     dap.finish();
 }
 
-#[test]
-fn function_pointers_link_to_the_function_they_point_to() {
-    let mut dap = Dap::start("value locations");
-    let stop = stopped_at(
-        &mut dap,
-        "variables-gcc-o0",
-        "c/variables.c",
-        "return **pointer_pointer",
-    );
-    let frame = frames(&mut dap, stop.thread)[0].clone();
-    let scopes = scopes(&mut dap, &frame);
-    let locals = variables(&mut dap, &scopes["Locals"]["variablesReference"]);
+fn function_pointers_link_to_the_function_they_point_to(dap: &mut Dap, stop: &Stopped) {
+    let frame = frames(dap, stop.thread)[0].clone();
+    let scopes = scopes(dap, &frame);
+    let locals = variables(dap, &scopes["Locals"]["variablesReference"]);
     let function = named(&locals, "function_pointer");
     assert_eq!(function["type"], json!("int (*)(int)"), "{function}");
     assert!(
@@ -742,19 +749,10 @@ fn function_pointers_link_to_the_function_they_point_to() {
     dap.stopped(resumed.mark);
     let message = dap.request_error("locations", json!({"locationReference": reference}));
     assert!(message.contains("stale"), "{message}");
-    dap.finish();
 }
 
-#[test]
-fn hexadecimal_is_a_session_default_each_request_may_override() {
-    let mut dap = Dap::start("hexadecimal");
-    let stop = stopped_at(
-        &mut dap,
-        "variables-gcc-o0",
-        "c/variables.c",
-        "return **pointer_pointer",
-    );
-    let frame = frames(&mut dap, stop.thread)[0].clone();
+fn hexadecimal_is_a_session_default_each_request_may_override(dap: &mut Dap, stop: &Stopped) {
+    let frame = frames(dap, stop.thread)[0].clone();
     let parameters = |dap: &mut Dap, hex: bool| {
         dap.request(
             "stackTrace",
@@ -771,11 +769,11 @@ fn hexadecimal_is_a_session_default_each_request_may_override() {
     };
 
     starts(
-        parameters(&mut dap, true),
+        parameters(dap, true),
         "pointer_target(parameter = 0x28, pointer_parameter = 0x",
     );
 
-    let scopes = scopes(&mut dap, &frame);
+    let scopes = scopes(dap, &frame);
     let arguments = scopes["Arguments"]["variablesReference"].clone();
     let parameter = |dap: &mut Dap, format: Value| {
         let mut arguments = json!({"variablesReference": arguments});
@@ -794,7 +792,7 @@ fn hexadecimal_is_a_session_default_each_request_may_override() {
             .clone()
     };
 
-    assert_eq!(parameter(&mut dap, Value::Null), "40");
+    assert_eq!(parameter(dap, Value::Null), "40");
 
     let mark = dap.mark();
     assert_eq!(
@@ -805,11 +803,11 @@ fn hexadecimal_is_a_session_default_each_request_may_override() {
         dap.event(mark, "invalidated", |_| true),
         json!({"areas": ["variables"]})
     );
-    assert_eq!(parameter(&mut dap, Value::Null), "0x28");
-    assert_eq!(watched(&mut dap), "0x29");
-    assert_eq!(parameter(&mut dap, json!({"hex": false})), "40");
+    assert_eq!(parameter(dap, Value::Null), "0x28");
+    assert_eq!(watched(dap), "0x29");
+    assert_eq!(parameter(dap, json!({"hex": false})), "40");
     starts(
-        parameters(&mut dap, false),
+        parameters(dap, false),
         "pointer_target(parameter = 40, pointer_parameter = 0x",
     );
 
@@ -819,54 +817,11 @@ fn hexadecimal_is_a_session_default_each_request_may_override() {
     dap.request("threads", Value::Null);
     assert!(dap.events(mark, "invalidated").is_empty());
     dap.request("microscope/setValueFormat", json!({"hex": false}));
-    assert_eq!(parameter(&mut dap, Value::Null), "40");
+    assert_eq!(parameter(dap, Value::Null), "40");
     assert!(
         dap.request_error("microscope/setValueFormat", json!({"hex": "yes"}))
             .contains("hex")
     );
-    dap.finish();
-}
-
-#[test]
-fn variables_lead_to_where_they_are_declared() {
-    let path = source("c/command-names.c");
-    let mut dap = Dap::start("declarations");
-    let stop = stopped_at(
-        &mut dap,
-        "command-names",
-        "c/command-names.c",
-        "volatile int sink",
-    );
-    let frame = frames(&mut dap, stop.thread)[0].clone();
-    let scopes = scopes(&mut dap, &frame);
-    let mut rows = variables(&mut dap, &scopes["Arguments"]["variablesReference"]);
-    rows.extend(variables(&mut dap, &scopes["Locals"]["variablesReference"]));
-    rows.extend(variables(
-        &mut dap,
-        &scopes["Statics"]["variablesReference"],
-    ));
-
-    for (name, marker) in [
-        ("n", "static int names(int n)"),
-        ("x", "int x = n * 2"),
-        ("where", "struct point *where"),
-        ("counter", "static int counter"),
-    ] {
-        let row = named(&rows, name);
-        let location = dap.request(
-            "locations",
-            json!({"locationReference": row["declarationLocationReference"]}),
-        );
-        assert_eq!(location["source"]["path"], json!(path), "{name}");
-        assert_eq!(location["line"], line_of(&path, marker), "{name}");
-    }
-
-    // A member's declaration is its type's, which is not where the value
-    // lives, so it has none.
-    let origin = named(&rows, "origin")["variablesReference"].clone();
-    let members = variables(&mut dap, &origin);
-    assert!(members[0].get("declarationLocationReference").is_none());
-    dap.finish();
 }
 
 #[test]

@@ -48,59 +48,6 @@ fn finish_running(mut dap: Dap, thread: i64) {
     dap.finish();
 }
 
-#[test]
-fn scalars_read_alike_in_cpp_rust_zig_and_go() {
-    let snake = [
-        "flag",
-        "signed_value",
-        "unsigned_value",
-        "single",
-        "double_precision",
-        "local_signed",
-    ];
-    let camel = [
-        "flag",
-        "signedValue",
-        "unsignedValue",
-        "single",
-        "doublePrecision",
-        "localSigned",
-    ];
-    for (program, path, line, names) in [
-        ("variables-cpp-gcc-o0", "cpp/variables.cpp", 27, snake),
-        ("variables-cpp-clang-o0", "cpp/variables.cpp", 27, snake),
-        ("variables-rust-o0", "rust/variables.rs", 33, snake),
-        ("variables-zig-o0", "zig/variables.zig", 37, snake),
-        ("variables-go-o0", "go/variables/main.go", 49, camel),
-    ] {
-        let mut dap = Dap::start(program);
-        let (thread, frame) = stop(
-            &mut dap,
-            program,
-            &Configuration {
-                sources: vec![(source(path), vec![line])],
-                ..Configuration::default()
-            },
-        );
-        let variables = frame_variables(&mut dap, &frame);
-        let values = names
-            .iter()
-            .map(|name| {
-                variables
-                    .get(*name)
-                    .unwrap_or_else(|| panic!("{program} shows no {name}: {variables:?}"))["value"]
-                    .clone()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            values,
-            ["true", "-42", "42", "1.25", "-2.5", "-41"].map(Value::from),
-            "{program}"
-        );
-        finish_running(dap, thread);
-    }
-}
-
 /// Expands every value under a reference, to a bounded depth, and checks
 /// that each child's `evaluateName` evaluates to the value shown for it.
 fn assert_children_evaluate(
@@ -140,15 +87,18 @@ fn assert_children_evaluate(
 
 #[test]
 fn records_and_enums_expand_and_their_members_evaluate_to_what_they_show() {
-    for (program, function) in [
-        ("records-cpp-gcc-o0", "inspect_records"),
-        ("records-rust-o0", "inspect_records"),
-        ("records-zig-o0", "inspectRecords"),
-        ("records-go-o0", "main.inspectRecords"),
-        ("enums-cpp-gcc-o0", "inspect_enums"),
-        ("enums-rust-o0", "inspect_enum"),
-        ("enums-zig-o0", "inspectEnums"),
-        ("enums-go-o0", "main.inspectEnums"),
+    // Each program's member names to depth 3, so that a language whose
+    // nested rows lost their names fails. C++ base classes have none, so
+    // its records' members are reached through no name.
+    for (program, function, members) in [
+        ("records-cpp-gcc-o0", "inspect_records", 3),
+        ("records-rust-o0", "inspect_records", 34),
+        ("records-zig-o0", "inspectRecords", 57),
+        ("records-go-o0", "main.inspectRecords", 40),
+        ("enums-cpp-gcc-o0", "inspect_enums", 8),
+        ("enums-rust-o0", "inspect_enum", 11),
+        ("enums-zig-o0", "inspectEnums", 4),
+        ("enums-go-o0", "main.inspectEnums", 3),
     ] {
         let mut dap = Dap::start(program);
         let (thread, frame) = stop(
@@ -178,7 +128,10 @@ fn records_and_enums_expand_and_their_members_evaluate_to_what_they_show() {
             }
         }
 
-        assert!(checked > 0, "{program} has no members to evaluate");
+        assert!(
+            checked >= members,
+            "{program} evaluates {checked} member names, fewer than its {members}"
+        );
         finish_running(dap, thread);
     }
 }

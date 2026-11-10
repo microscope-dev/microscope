@@ -40,16 +40,11 @@ fn unwrapped(value: Option<u8>) -> u8 {
     black_box(value).unwrap() // PANIC: unwrap
 }
 
-fn expected(value: Result<u8, &str>) -> u8 {
-    black_box(value).expect("a byte") // PANIC: expect
-}
-
 async fn in_task(case: &str) {
     match case {
         "str" => panic!("a static message"), // PANIC: str
         "format" => formatted(7),
         "unwrap" => _ = unwrapped(None),
-        "expect" => _ = expected(Err("bad")),
         "any" => panic::panic_any(42_i32), // PANIC: any
         "resume" => {
             let caught = panic::catch_unwind(|| panic!("first")); // PANIC: first

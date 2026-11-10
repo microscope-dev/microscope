@@ -15,6 +15,8 @@ use crate::truth::GoSession;
 
 const BUILDS: [&str; 2] = ["workers-go-o0", "workers-go-o2"];
 
+/// One stop at the parked checkpoint per build: the goroutines are listed,
+/// their frames read, and, last, one is selected.
 #[tokio::test]
 async fn goroutines_are_listed_as_the_runtime_lists_them() {
     for fixture in BUILDS {
@@ -33,18 +35,21 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
             "{fixture}: the runtime's own goroutines are listed too"
         );
 
-        // The check fails on a goroutine left out, or in another state.
-        let mut sabotaged = tasks.clone();
-        let dropped = sabotaged
+        // The check fails on the lies it exists to catch: a goroutine left
+        // out, one listed twice, and one in the wrong state.
+        let program = tasks
             .iter()
-            .position(|task| !task.internal && task.id.number != truth.main.0)
-            .expect("a goroutine besides main");
-        sabotaged.remove(dropped);
-        assert!(truth.check_tasks(&sabotaged).is_err(), "{fixture}");
-
-        let mut sabotaged = tasks.clone();
-        sabotaged[dropped].detail = Some("running".into());
-        assert!(truth.check_tasks(&sabotaged).is_err(), "{fixture}");
+            .position(|task| !task.internal && task.thread.is_none())
+            .expect("a parked goroutine of the program's");
+        let mut missing = tasks.clone();
+        missing.remove(program);
+        assert!(truth.check_tasks(&missing).is_err(), "{fixture}");
+        let mut twice = tasks.clone();
+        twice.push(tasks[program].clone());
+        assert!(truth.check_tasks(&twice).is_err(), "{fixture}");
+        let mut running = tasks.clone();
+        running[program].state = TaskState::Running;
+        assert!(truth.check_tasks(&running).is_err(), "{fixture}");
 
         for task in &tasks {
             let context = format!("{fixture}: {task:#?}");
@@ -95,6 +100,11 @@ async fn goroutines_are_listed_as_the_runtime_lists_them() {
         }
 
         check_threads(&mut session, &tasks, truth.main.0).await;
+        check_parked_frames(&mut session, fixture).await;
+        if fixture == "workers-go-o0" {
+            check_selection(&mut session).await;
+        }
+
         session.scenario.shutdown().await;
     }
 }
@@ -142,100 +152,92 @@ async fn check_threads(session: &mut GoSession, tasks: &[TaskSnapshot], main: u6
     }
 }
 
-#[tokio::test]
-async fn parked_goroutines_show_the_frames_the_runtime_dumps() {
-    for fixture in BUILDS {
-        let mut session = GoSession::launch(fixture).await;
-        let truth = session.checkpoint("parked");
-        let (tasks, _) = session.tasks(64).await;
-        let InferiorState::Stopped { stop_id, .. } = session.scenario.snapshot().await.inferior
-        else {
-            panic!("{fixture}: not stopped");
+/// Each parked goroutine's frames are those the runtime dumps.
+async fn check_parked_frames(session: &mut GoSession, fixture: &str) {
+    let truth = session.checkpoint("parked");
+    let (tasks, _) = session.tasks(64).await;
+    let InferiorState::Stopped { stop_id, .. } = session.scenario.snapshot().await.inferior else {
+        panic!("{fixture}: not stopped");
+    };
+
+    let image = session.scenario.handle().module_image();
+    let mut workers = 0;
+    let mut compared = 0;
+
+    for task in tasks.iter().filter(|task| task.thread.is_none()) {
+        let Some(dumped) = truth.tasks.get(&task.id.number) else {
+            continue;
         };
 
-        let image = session.scenario.handle().module_image();
-        let mut workers = 0;
-        let mut compared = 0;
+        let context = ExecutionContext::Task(task.id);
+        let view = |frame| StopContext {
+            stop: stop_id,
+            execution: context,
+            frame,
+        };
 
-        for task in tasks.iter().filter(|task| task.thread.is_none()) {
-            let Some(dumped) = truth.tasks.get(&task.id.number) else {
-                continue;
-            };
+        let trace = session
+            .scenario
+            .operation(
+                "task backtrace",
+                session
+                    .scenario
+                    .handle()
+                    .at(view(StackFrameId::INNERMOST))
+                    .backtrace(),
+            )
+            .await;
+        assert_eq!(trace.context, context, "{fixture}");
+        check_saved_registers(session, view(StackFrameId::INNERMOST), &trace).await;
 
-            let context = ExecutionContext::Task(task.id);
-            let view = |frame| StopContext {
-                stop: stop_id,
-                execution: context,
-                frame,
-            };
+        let shown = trace
+            .frames
+            .iter()
+            .filter_map(|frame| {
+                let name = frame.function.as_ref()?.name.to_string();
+                let source = frame.source.as_ref()?;
+                let file = image.source_file(source.file)?.path.display().to_string();
+                (!runtime_hides(&name)).then(|| (name, format!("{file}:{}", source.line)))
+            })
+            .collect::<Vec<_>>();
 
-            let trace = session
-                .scenario
-                .operation(
-                    "task backtrace",
-                    session
-                        .scenario
-                        .handle()
-                        .at(view(StackFrameId::INNERMOST))
-                        .backtrace(),
-                )
-                .await;
-            assert_eq!(trace.context, context, "{fixture}");
-            check_saved_registers(&session, view(StackFrameId::INNERMOST), &trace).await;
+        dumped
+            .check_frames(&shown)
+            .unwrap_or_else(|problem| panic!("{fixture}: {problem}: {task:#?}\n{trace:#?}"));
 
-            let shown = trace
-                .frames
-                .iter()
-                .filter_map(|frame| {
-                    let name = frame.function.as_ref()?.name.to_string();
-                    let source = frame.source.as_ref()?;
-                    let file = image.source_file(source.file)?.path.display().to_string();
-                    (!runtime_hides(&name)).then(|| (name, format!("{file}:{}", source.line)))
-                })
-                .collect::<Vec<_>>();
+        // The check fails on a frame left out.
+        assert!(dumped.check_frames(&shown[1..]).is_err(), "{fixture}");
+        compared += 1;
 
-            dumped
-                .check_frames(&shown)
-                .unwrap_or_else(|problem| panic!("{fixture}: {problem}: {task:#?}\n{trace:#?}"));
+        // A parked worker's arguments are on its own stack.
+        let worker = trace.frames.iter().find(|frame| {
+            frame
+                .function
+                .as_ref()
+                .is_some_and(|function| function.name.as_ref() == "main.worker")
+        });
 
-            // The check fails on a frame left out.
-            assert!(dumped.check_frames(&shown[1..]).is_err(), "{fixture}");
-            compared += 1;
-
-            // A parked worker's arguments are on its own stack.
-            let worker = trace.frames.iter().find(|frame| {
-                frame
-                    .function
-                    .as_ref()
-                    .is_some_and(|function| function.name.as_ref() == "main.worker")
-            });
-
-            if fixture.ends_with("o0")
-                && let Some(frame) = worker
-            {
-                check_worker_arguments(&session, view(frame.id)).await;
-                workers += 1;
-            }
+        if fixture.ends_with("o0")
+            && let Some(frame) = worker
+        {
+            check_worker_arguments(session, view(frame.id)).await;
+            workers += 1;
         }
+    }
 
-        let parked = truth
-            .tasks
-            .values()
-            .filter(|task| !matches!(task.status.as_str(), "running" | "syscall"))
-            .count();
-        assert_eq!(compared, parked, "{fixture}");
-        if fixture.ends_with("o0") {
-            assert_eq!(workers, 4, "{fixture}");
-        }
-
-        session.scenario.shutdown().await;
+    let parked = truth
+        .tasks
+        .values()
+        .filter(|task| !matches!(task.status.as_str(), "running" | "syscall"))
+        .count();
+    assert_eq!(compared, parked, "{fixture}");
+    if fixture.ends_with("o0") {
+        assert_eq!(workers, 4, "{fixture}");
     }
 }
 
-#[tokio::test]
-async fn a_parked_goroutine_can_be_selected() {
-    let fixture = "workers-go-o0";
-    let mut session = GoSession::launch(fixture).await;
+/// A parked goroutine can be selected, and inspection follows it.
+async fn check_selection(session: &mut GoSession) {
     let truth = session.checkpoint("parked");
     let (tasks, _) = session.tasks(64).await;
     let worker = tasks
@@ -345,7 +347,6 @@ async fn a_parked_goroutine_can_be_selected() {
         .operation("reselect task", handle.select_context(worker))
         .await;
     assert_eq!(session.scenario.snapshot().await.selected_frame, Some(id));
-    session.scenario.shutdown().await;
 }
 
 #[tokio::test]

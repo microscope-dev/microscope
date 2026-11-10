@@ -367,7 +367,8 @@ impl Truth {
 
 /// Every task of either runtime flavor is listed once, in its state, with
 /// nothing missing, across pages of any size. A build that records where
-/// each task was spawned says so; no other says anything.
+/// each task was spawned says so; no other says anything. Each task began
+/// in the function it spawned, and a suspended one shows its awaits.
 async fn tasks_are_listed_exactly(current: bool) {
     for fixture in BUILDS
         .into_iter()
@@ -406,6 +407,17 @@ async fn tasks_are_listed_exactly(current: bool) {
         }
 
         check_threads(&mut workers.scenario, current, &truth, &tasks).await;
+        if ![LEGACY, UNSTABLE, PARKING_LOT].contains(&fixture) {
+            check_entries(&truth, &tasks, &format!("{fixture} {current}"));
+            check_awaits(
+                &mut workers.scenario,
+                &truth,
+                &tasks,
+                &format!("{fixture} {current}"),
+            )
+            .await;
+        }
+
         workers.scenario.shutdown().await;
     }
 }
@@ -484,6 +496,7 @@ async fn a_current_thread_runtimes_tasks_are_listed_exactly() {
 
 /// A task stopped at a breakpoint runs on the thread that hit it, whose
 /// own id, `me`, is the task's number, and the thread runs that task.
+/// Its backtrace marks tokio's machinery.
 async fn a_task_at_a_breakpoint_runs_on_its_thread(current: bool) {
     let at = BreakpointSpec::Function("task_reached".into());
     for fixture in BUILDS {
@@ -519,6 +532,7 @@ async fn a_task_at_a_breakpoint_runs_on_its_thread(current: bool) {
             matches!(&activities[&stopped], ThreadActivity::Task { task, .. } if task.number == me),
             "{fixture}: {activities:#?}"
         );
+        check_machinery(&workers, fixture).await;
         workers.scenario.shutdown().await;
     }
 }
@@ -536,68 +550,52 @@ async fn a_task_at_a_breakpoint_runs_on_the_current_thread() {
 /// tokio's runtime is its machinery in a backtrace, and a task's frames
 /// begin where its scheduler polls it; the program's own frames are
 /// ordinary.
-async fn tokios_machinery_is_marked(current: bool) {
-    let at = BreakpointSpec::Function("task_reached".into());
-    for fixture in BUILDS {
-        let workers = Workers::stopped_at(fixture, current, at.clone()).await;
-        let trace = backtrace(&workers.scenario).await;
-        let image = workers.scenario.handle().module_image();
-        let path = |frame: &microscope::StackFrame| {
-            frame
-                .source
-                .as_ref()
-                .and_then(|source| image.source_file(source.file))
-                .map(|file| file.path.display().to_string())
-                .unwrap_or_default()
-        };
+async fn check_machinery(workers: &Workers, fixture: &str) {
+    let trace = backtrace(&workers.scenario).await;
+    let image = workers.scenario.handle().module_image();
+    let path = |frame: &microscope::StackFrame| {
+        frame
+            .source
+            .as_ref()
+            .and_then(|source| image.source_file(source.file))
+            .map(|file| file.path.display().to_string())
+            .unwrap_or_default()
+    };
 
-        let mut dispatch = None;
+    let mut dispatch = None;
 
-        for (index, frame) in trace.frames.iter().enumerate() {
-            let (path, role) = (path(frame), frame.role);
-            let context = format!("{fixture}: {path} {:?}", frame.function);
-            if path.ends_with("workers/src/main.rs") || path.ends_with("truth/src/lib.rs") {
-                assert_eq!(role, CodeRole::Ordinary, "{context}");
-            } else if path.contains(&format!("/tokio-{}/src/runtime/", release(fixture))) {
-                assert!(
-                    matches!(role, CodeRole::RuntimeInternal | CodeRole::Dispatch),
-                    "{context}: {role:?}"
-                );
-                if role == CodeRole::Dispatch {
-                    dispatch = dispatch.or(Some(index));
-                }
+    for (index, frame) in trace.frames.iter().enumerate() {
+        let (path, role) = (path(frame), frame.role);
+        let context = format!("{fixture}: {path} {:?}", frame.function);
+        if path.ends_with("workers/src/main.rs") || path.ends_with("truth/src/lib.rs") {
+            assert_eq!(role, CodeRole::Ordinary, "{context}");
+        } else if path.contains(&format!("/tokio-{}/src/runtime/", release(fixture))) {
+            assert!(
+                matches!(role, CodeRole::RuntimeInternal | CodeRole::Dispatch),
+                "{context}: {role:?}"
+            );
+            if role == CodeRole::Dispatch {
+                dispatch = dispatch.or(Some(index));
             }
         }
-
-        // The innermost poll of a task is this task's: its own functions
-        // lie within it. A worker is itself a blocking task, polled below.
-        let dispatch = dispatch.unwrap_or_else(|| panic!("{fixture}: no dispatch: {trace:#?}"));
-
-        for name in ["leaf", "middle", "top"] {
-            let at = trace.frames.iter().position(|frame| {
-                frame
-                    .function
-                    .as_ref()
-                    .is_some_and(|function| &*function.name == name)
-            });
-            assert!(
-                at.is_some_and(|at| at < dispatch),
-                "{fixture}: {name} {at:?} {dispatch}"
-            );
-        }
-
-        workers.scenario.shutdown().await;
     }
-}
 
-#[tokio::test]
-async fn tokios_machinery_is_marked_on_a_worker() {
-    tokios_machinery_is_marked(false).await;
-}
+    // The innermost poll of a task is this task's: its own functions
+    // lie within it. A worker is itself a blocking task, polled below.
+    let dispatch = dispatch.unwrap_or_else(|| panic!("{fixture}: no dispatch: {trace:#?}"));
 
-#[tokio::test]
-async fn tokios_machinery_is_marked_on_the_current_thread() {
-    tokios_machinery_is_marked(true).await;
+    for name in ["leaf", "middle", "top"] {
+        let at = trace.frames.iter().position(|frame| {
+            frame
+                .function
+                .as_ref()
+                .is_some_and(|function| &*function.name == name)
+        });
+        assert!(
+            at.is_some_and(|at| at < dispatch),
+            "{fixture}: {name} {at:?} {dispatch}"
+        );
+    }
 }
 
 /// Before `main` builds a runtime, no thread has entered one, and there
@@ -618,68 +616,25 @@ async fn before_any_runtime_there_are_no_tasks() {
 
 /// Each of the program's async tasks began in the async function it
 /// spawned, `top`, at the line that declares it.
-#[tokio::test]
-async fn each_task_began_in_the_function_it_spawned() {
+fn check_entries(truth: &Truth, tasks: &[TaskSnapshot], context: &str) {
     let header = line("workers/src/main.rs", "async fn top(");
-    for fixture in BUILDS.into_iter().chain([TRACED, WRAPPED]) {
-        for current in [false, true] {
-            let workers = Workers::parked(fixture, current).await;
-            let truth = workers.truth();
-            let (tasks, _) = workers.tasks(4096).await;
-
-            for id in truth.tasks.keys() {
-                let task = tasks
-                    .iter()
-                    .find(|task| task.id.number == *id)
-                    .unwrap_or_else(|| panic!("{fixture}: task {id} is not listed"));
-                let entry = task.entry.as_ref();
-                assert_eq!(
-                    (
-                        entry.and_then(|entry| entry.function.as_deref()),
-                        entry
-                            .and_then(|entry| entry.source.as_ref())
-                            .map(|source| source.line.get()),
-                    ),
-                    (Some("top"), Some(header)),
-                    "{fixture} {current}: {task:#?}"
-                );
-            }
-
-            workers.scenario.shutdown().await;
-        }
+    for id in truth.tasks.keys() {
+        let task = tasks
+            .iter()
+            .find(|task| task.id.number == *id)
+            .unwrap_or_else(|| panic!("{context}: task {id} is not listed"));
+        let entry = task.entry.as_ref();
+        assert_eq!(
+            (
+                entry.and_then(|entry| entry.function.as_deref()),
+                entry
+                    .and_then(|entry| entry.source.as_ref())
+                    .map(|source| source.line.get()),
+            ),
+            (Some("top"), Some(header)),
+            "{context}: {task:#?}"
+        );
     }
-}
-
-/// A suspended task's backtrace is its chain of awaits, innermost first:
-/// the future it waits on, then each async function at the await it is
-/// suspended at, down to the one it began in. Each async function's frame
-/// shows the variables it keeps across that await, with the values the
-/// task recorded. A task spawned but never polled is its one function,
-/// at its header.
-async fn suspended_tasks_show_their_awaits(current: bool) {
-    for fixture in BUILDS.into_iter().chain([TRACED, WRAPPED]) {
-        let mut workers = Workers::parked(fixture, current).await;
-        let truth = workers.truth();
-        let (tasks, _) = workers.tasks(4096).await;
-        check_awaits(
-            &mut workers.scenario,
-            &truth,
-            &tasks,
-            &format!("{fixture} {current}"),
-        )
-        .await;
-        workers.scenario.shutdown().await;
-    }
-}
-
-#[tokio::test]
-async fn suspended_tasks_show_their_awaits_on_a_worker() {
-    suspended_tasks_show_their_awaits(false).await;
-}
-
-#[tokio::test]
-async fn suspended_tasks_show_their_awaits_on_the_current_thread() {
-    suspended_tasks_show_their_awaits(true).await;
 }
 
 /// Each suspended task's backtrace is its async functions, as the

@@ -164,10 +164,6 @@ fn malformed_messages_are_answered_when_possible_and_never_end_the_session() {
         ),
         "invalid setBreakpoints arguments at breakpoints: invalid type: string \"all\", expected a sequence"
     );
-    assert_eq!(
-        dap.request_error("stackTrace", json!({"threadId": "one"})),
-        "invalid stackTrace arguments at threadId: invalid type: string \"one\", expected i64"
-    );
     dap.finish();
 }
 

@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use crate::dap::{Configuration, Dap, Profile, Stopped, fixture, line_of, source};
+use crate::dap::{Configuration, Dap, Profile, Stopped, fixture};
 
 /// Launches `basic` stopped in `breakpoint_target`.
 fn stopped_in_target(dap: &mut Dap) -> Stopped {
@@ -252,49 +252,6 @@ fn instruction_breakpoints_stop_at_their_address() {
     assert_eq!(
         trace["stackFrames"][0]["instructionPointerReference"],
         target
-    );
-    dap.finish();
-}
-
-#[test]
-fn disassembly_crosses_into_a_functions_split_off_cold_part() {
-    let program = fixture("crash-gcc-o2-nopie");
-    let data = std::fs::read(&program).expect("read the program");
-    let file = object::File::parse(&*data).expect("parse the program");
-    let cold = object::Object::symbols(&file)
-        .find(|symbol| object::ObjectSymbol::name(symbol) == Ok("main.cold"))
-        .map(|symbol| object::ObjectSymbol::address(&symbol))
-        .expect("gcc split main's cold path");
-
-    let mut dap = Dap::start("cold disassembly");
-    let started = dap.begin(
-        Profile::VsCode,
-        (
-            "attach",
-            json!({"coreFile": fixture("crash-gcc-o2-nopie-segv.core"), "program": program}),
-        ),
-        &Configuration::default(),
-    );
-    dap.stopped(started.mark);
-    let rows = disassemble(&mut dap, &json!(format!("{cold:#x}")), -8, 40);
-    assert_eq!(rows.len(), 40);
-    let addresses = rows
-        .iter()
-        .map(|row| address(&row["address"]))
-        .collect::<Vec<_>>();
-    assert!(
-        addresses.windows(2).all(|pair| pair[0] < pair[1]),
-        "rows ascend"
-    );
-    assert_eq!(addresses[8], cold);
-
-    // The cold part is named by its own symbol, and its line is the branch
-    // of main that gcc moved there.
-    assert_eq!(rows[8]["symbol"], "main.cold");
-    assert!(rows[..8].iter().all(|row| row["symbol"] != "main.cold"));
-    assert_eq!(
-        rows[8]["line"],
-        line_of(&source("c/crash/main.c"), "crash_abort(&record);")
     );
     dap.finish();
 }

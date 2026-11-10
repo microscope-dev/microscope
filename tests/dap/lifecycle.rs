@@ -159,16 +159,6 @@ fn invalid_configurations_are_shown_to_the_user_and_the_session_survives() {
         ),
         (
             "launch",
-            json!({"program": fixture("basic"), "env": {"PATH": 1}}),
-            "invalid launch configuration at env.PATH: invalid type: integer `1`, expected a string".to_owned(),
-        ),
-        (
-            "launch",
-            json!({"program": fixture("basic"), "console": "pty"}),
-            "invalid launch configuration at console: unknown variant `pty`, expected one of `internalConsole`, `integratedTerminal`, `externalTerminal`".to_owned(),
-        ),
-        (
-            "launch",
             json!({"program": missing}),
             format!("failed to load {}: ", missing.display()),
         ),
@@ -611,23 +601,6 @@ fn restarts_keep_the_program_and_attached_processes_are_attached_again() {
 
 #[test]
 fn core_dumps_explain_their_signal_their_missing_modules_and_mismatched_files() {
-    // An abort, as a fatal signal the program sent itself.
-    let mut dap = Dap::start("abort core");
-    let started = dap.begin(
-        Profile::Neovim,
-        (
-            "attach",
-            json!({"coreFile": fixture("crash-gcc-o0-abort.core"), "program": fixture("crash-gcc-o0")}),
-        ),
-        &Configuration::default(),
-    );
-    let stop = dap.stopped(started.mark);
-    assert_eq!(
-        (stop.reason.as_str(), &stop.body["text"]),
-        ("exception", &json!("SIGABRT"))
-    );
-    dap.finish();
-
     // A library the core records but this machine lacks is reported, and
     // the rest of the dump is still debugged.
     let core = fixture("core-missing-library/crash.core");

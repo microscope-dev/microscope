@@ -67,7 +67,7 @@ fn goroutines_are_threads_named_where_the_program_has_them() {
     );
 
     // A parked worker's stack is its own, with the runtime's frames
-    // subdued, and its arguments are there.
+    // subdued, and its frame evaluates in its goroutine.
     let worker = workers[0].0;
     let trace = dap.request("stackTrace", json!({"threadId": worker}));
     let frames = trace["stackFrames"].as_array().expect("frames");
@@ -78,17 +78,6 @@ fn goroutines_are_threads_named_where_the_program_has_them() {
         .find(|frame| frame["name"] == "main.worker")
         .unwrap_or_else(|| panic!("{trace}"));
     assert!(frame.get("presentationHint").is_none(), "{frame}");
-    let jobs = dap.request(
-        "evaluate",
-        json!({"expression": "jobs", "frameId": frame["id"], "context": "watch"}),
-    );
-    assert!(
-        jobs["result"]
-            .as_str()
-            .is_some_and(|result| !result.is_empty()),
-        "{jobs}"
-    );
-
     let task = dap.request(
         "evaluate",
         json!({"expression": "$task", "frameId": frame["id"], "context": "watch"}),
@@ -167,42 +156,6 @@ fn goroutines_are_cut_with_a_count_of_the_rest() {
     assert_eq!(
         listed[1000].1,
         "7194 more goroutines not shown; maxTasks lists 1000"
-    );
-    dap.finish();
-}
-
-/// A panic nothing recovers stops in the runtime, with the program's frame
-/// that panicked selected. Clients focus the first frame whose source is
-/// not deemphasized, so the runtime's frames above it are.
-#[test]
-fn an_unrecovered_panic_is_shown_where_the_program_panicked() {
-    let mut dap = Dap::start("panic");
-    let started = dap.launch(
-        Profile::VsCode,
-        &fixture("panic-go-o0"),
-        json!({}),
-        &Configuration::default(),
-    );
-    let stop = dap.stopped(started.mark);
-    assert_eq!(stop.reason, "exception", "{stop:?}");
-    let trace = dap.request("stackTrace", json!({"threadId": stop.thread}));
-    let frames = trace["stackFrames"].as_array().expect("frames");
-    let focused = frames
-        .iter()
-        .find(|frame| {
-            frame["source"].is_object() && frame["source"]["presentationHint"] != "deemphasize"
-        })
-        .unwrap_or_else(|| panic!("{trace}"));
-    assert_eq!(focused["name"], "main.explode", "{trace}");
-
-    // Below it, the program's callers are shown as they are.
-    let caller = frames
-        .iter()
-        .find(|frame| frame["name"] == "main.main")
-        .unwrap_or_else(|| panic!("{trace}"));
-    assert!(
-        caller["source"].get("presentationHint").is_none(),
-        "{trace}"
     );
     dap.finish();
 }

@@ -38,5 +38,12 @@ fn the_default_filters_stop_on_a_task_panic_at_its_caller() {
         "{frames:#?}"
     );
 
+    // Only the frames above it are; its callers are shown as they are.
+    let caller = &frames[panicked + 1]["source"];
+    assert!(
+        caller.is_object() && caller.get("presentationHint").is_none(),
+        "{frames:#?}"
+    );
+
     dap.finish();
 }
