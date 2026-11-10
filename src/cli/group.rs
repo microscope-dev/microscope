@@ -181,7 +181,38 @@ impl Cli {
 
         let mut events = group.events.lock().await;
         loop {
-            let event = events.recv().await?;
+            let event = match events.recv().await {
+                Ok(event) => event,
+
+                // The events lost may have held the command's end, which
+                // the group's state shows.
+                Err(RecvError::Lagged(missed)) => {
+                    lines.push(missed_warning(missed, self.renderers.stdout));
+                    let members = group.handle.members();
+                    let state = members
+                        .iter()
+                        .find(|candidate| candidate.number == member)
+                        .map(|member| &member.state);
+                    if state == Some(&MemberState::Lost) {
+                        bail!(
+                            "the session of [{member}] failed, so its process was released or killed"
+                        );
+                    }
+                    let stopped = group
+                        .handle
+                        .last_stop()
+                        .is_some_and(|last| last.member == member && Some(last.stop) == stop);
+                    let ended = matches!(
+                        state,
+                        Some(MemberState::Exited(_) | MemberState::Watched(_))
+                    );
+                    if stopped || ended || !members.iter().any(|member| live(&member.state)) {
+                        break;
+                    }
+                    continue;
+                }
+                Err(RecvError::Closed) => bail!("the group ended"),
+            };
             match event {
                 GroupEvent::GroupStopped {
                     member: stopped,
@@ -192,14 +223,12 @@ impl Cli {
                 | GroupEvent::MemberWatched { member: ended, .. }
                     if ended == member =>
                 {
-                    if group.handle.members().iter().any(|member| {
-                        matches!(
-                            member.state,
-                            MemberState::NotStarted
-                                | MemberState::Running
-                                | MemberState::Stopped(_)
-                        )
-                    }) {
+                    if group
+                        .handle
+                        .members()
+                        .iter()
+                        .any(|member| live(&member.state))
+                    {
                         break;
                     }
                 }
@@ -234,6 +263,11 @@ impl Cli {
         let mut lines = RunLines::default();
         self.earlier_notices(&mut events, &mut lines);
         let mut member_events = MemberEvents::of(&group.handle);
+
+        // What the group's state held as the run began, which a run that
+        // misses events compares it with.
+        let before = group.handle.last_stop();
+        let lost_before = lost(&group.handle);
         let started = Instant::now();
 
         // A continue ends at the group stop that names it. A launch's run
@@ -274,11 +308,34 @@ impl Cli {
             };
             let event = match received {
                 Ok(event) => event,
+                // The events lost may have held the run's end, a member
+                // it lost, or members that joined, which the group's state
+                // shows.
                 Err(RecvError::Lagged(missed)) => {
-                    lines.push(format!(
-                        "{}: missed {missed} events of the group, so lines about its processes may be missing",
-                        renderer.paint(Role::Warning, "warning"),
-                    ));
+                    lines.push(missed_warning(missed, renderer));
+                    member_events.catch_up(&group.handle);
+                    if let Some(member) = lost(&group.handle)
+                        .into_iter()
+                        .find(|member| !lost_before.contains(member))
+                    {
+                        bail!(
+                            "the session of [{member}] failed, so its process was released or killed"
+                        );
+                    }
+                    if let Some(stop) = group.handle.last_stop()
+                        && Some(&stop) != before.as_ref()
+                        && (execution.is_none() || stop.execution == execution)
+                    {
+                        break (stop.member, stop.reason);
+                    }
+                    if !group
+                        .handle
+                        .members()
+                        .iter()
+                        .any(|member| live(&member.state))
+                    {
+                        break group_exit(&group.handle);
+                    }
                     continue;
                 }
                 Err(RecvError::Closed) => bail!("the group ended"),
@@ -296,13 +353,7 @@ impl Cli {
                         "the session of [{member}] failed, so its process was released or killed"
                     );
                 }
-                GroupEvent::GroupExited => {
-                    let status = match group.handle.members().first().map(|member| &member.state) {
-                        Some(MemberState::Exited(status)) => status.clone(),
-                        _ => ExitStatus::Code(0),
-                    };
-                    break (1, StopReason::Exited(status));
-                }
+                GroupEvent::GroupExited => break group_exit(&group.handle),
                 // The root's exit reports as the run's end when the
                 // group's follows it, so it waits to see which.
                 GroupEvent::MemberExited { member: 1, .. } => {
@@ -315,7 +366,7 @@ impl Cli {
                     if let GroupEvent::MemberJoined { member, .. } = &event
                         && let Some(debugger) = group.handle.member(*member)
                     {
-                        member_events.watch(debugger);
+                        member_events.watch(*member, debugger);
                     }
                     if let Some(line) =
                         format::group_event(&event, &group.handle.members(), renderer)
@@ -405,6 +456,40 @@ impl Cli {
     }
 }
 
+/// Whether a member has a process microscope debugs, or will.
+const fn live(state: &MemberState) -> bool {
+    matches!(
+        state,
+        MemberState::NotStarted | MemberState::Running | MemberState::Stopped(_)
+    )
+}
+
+/// The members whose sessions failed.
+fn lost(group: &GroupHandle) -> Vec<MemberNumber> {
+    group
+        .members()
+        .iter()
+        .filter(|member| member.state == MemberState::Lost)
+        .map(|member| member.number)
+        .collect()
+}
+
+/// A run's end once every member is gone, reported as the root's exit.
+fn group_exit(group: &GroupHandle) -> (MemberNumber, StopReason) {
+    let status = match group.members().first().map(|member| &member.state) {
+        Some(MemberState::Exited(status)) => status.clone(),
+        _ => ExitStatus::Code(0),
+    };
+    (1, StopReason::Exited(status))
+}
+
+fn missed_warning(missed: u64, renderer: super::terminal::Renderer) -> String {
+    format!(
+        "{}: missed {missed} events of the group, so lines about its processes may be missing",
+        renderer.paint(Role::Warning, "warning"),
+    )
+}
+
 /// A member's stop with the group's breakpoint ids in place of its copies'.
 fn group_reason(group: &GroupHandle, member: MemberNumber, reason: StopReason) -> StopReason {
     match reason {
@@ -450,6 +535,9 @@ struct MemberEvents {
     /// Tells the forwarders to pass on what their members already sent,
     /// and end.
     stop: tokio::sync::watch::Sender<bool>,
+
+    /// The members whose events are forwarded.
+    watched: std::collections::BTreeSet<MemberNumber>,
 }
 
 impl MemberEvents {
@@ -461,17 +549,26 @@ impl MemberEvents {
             received,
             forwarders: tokio::task::JoinSet::new(),
             stop: tokio::sync::watch::Sender::new(false),
+            watched: std::collections::BTreeSet::new(),
         };
-        for member in group.members() {
-            if let Some(debugger) = group.member(member.number) {
-                events.watch(debugger);
-            }
-        }
+        events.catch_up(group);
         events
     }
 
-    /// Forwards `debugger`'s events too.
-    fn watch(&mut self, debugger: microscope::DebuggerHandle) {
+    /// Forwards the events of every member of `group` not yet watched.
+    fn catch_up(&mut self, group: &GroupHandle) {
+        for member in group.members() {
+            if let Some(debugger) = group.member(member.number) {
+                self.watch(member.number, debugger);
+            }
+        }
+    }
+
+    /// Forwards member `number`'s events too, through `debugger`.
+    fn watch(&mut self, number: MemberNumber, debugger: microscope::DebuggerHandle) {
+        if !self.watched.insert(number) {
+            return;
+        }
         let mut events = debugger.subscribe();
         let forward = self.forward.clone();
         let mut stop = self.stop.subscribe();
@@ -516,6 +613,7 @@ impl MemberEvents {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -531,13 +629,20 @@ mod tests {
     /// channel the test owns, so a test can add its own events to it.
     /// `forwarded` counts the group stops and exits copied into it so far,
     /// and an event put in `slipped` is sent just before the next of them.
+    /// When `flood` is set, the next stop or exit is followed by enough
+    /// other events to push it out of the session's channel, as a burst
+    /// of events would.
     struct Session {
         cli: Cli,
         group: ProcessGroup,
         sender: broadcast::Sender<GroupEvent>,
         forwarded: watch::Receiver<usize>,
         slipped: Arc<Mutex<Option<GroupEvent>>>,
+        flood: Arc<AtomicBool>,
     }
+
+    /// How many events the session's channel holds.
+    const CAPACITY: usize = 64;
 
     fn ends_a_run(event: &GroupEvent) -> bool {
         matches!(
@@ -564,12 +669,14 @@ mod tests {
             )
             .with_group(group.handle(), microscope::SourcePathMap::default());
 
-            let (sender, received) = broadcast::channel(64);
+            let (sender, received) = broadcast::channel(CAPACITY);
             let (count, forwarded) = watch::channel(0);
             let slipped = Arc::new(Mutex::new(None));
             let mut events = group.handle().subscribe();
             let forward = sender.clone();
             let slip = Arc::clone(&slipped);
+            let flood = Arc::new(AtomicBool::new(false));
+            let flooding = Arc::clone(&flood);
             tokio::spawn(async move {
                 while let Ok(event) = events.recv().await {
                     let ends = ends_a_run(&event);
@@ -577,6 +684,11 @@ mod tests {
                         let _ = forward.send(early);
                     }
                     let _ = forward.send(event);
+                    if ends && flooding.swap(false, Ordering::Relaxed) {
+                        for _ in 0..CAPACITY {
+                            let _ = forward.send(GroupEvent::MemberDetached { member: 99 });
+                        }
+                    }
                     if ends {
                         count.send_modify(|count| *count += 1);
                     }
@@ -592,14 +704,20 @@ mod tests {
                 sender,
                 forwarded,
                 slipped,
+                flood,
             }
         }
 
-        async fn run(&self, line: &str) {
-            tokio::time::timeout(Duration::from_secs(10), self.cli.execute(line))
+        /// Runs command `line`, and returns what it printed.
+        async fn run(&self, line: &str) -> String {
+            let control = tokio::time::timeout(Duration::from_secs(10), self.cli.execute(line))
                 .await
                 .unwrap_or_else(|_| panic!("`{line}` did not finish"))
                 .unwrap_or_else(|error| panic!("`{line}` failed: {error:#}"));
+            match control {
+                super::super::Control::Continue(output) => output,
+                _ => String::new(),
+            }
         }
 
         /// Waits until `count` of the group's stops and exits have reached
@@ -719,6 +837,47 @@ mod tests {
         session.sender.send(lost).expect("send the old loss");
         session.run("continue").await;
         session.forwarded(2).await;
+
+        session.end().await;
+    }
+
+    /// A step whose group stop was pushed out of the session's events by
+    /// a burst learns of it from the group, and ends at it.
+    #[tokio::test]
+    async fn a_step_whose_group_stop_was_lost_ends_at_it() {
+        let mut session = Session::of("basic");
+        session.run("break breakpoint_target").await;
+        session.run("run").await;
+        session.forwarded(1).await;
+
+        session.flood.store(true, Ordering::Relaxed);
+        let stepped = session.run("stepi").await;
+        session.forwarded(2).await;
+        assert!(stepped.contains("missed"), "{stepped}");
+        assert!(session.unread_stops().await.is_empty());
+
+        session.end().await;
+    }
+
+    /// A continue whose group stop, and then whose exit, was pushed out
+    /// of the session's events learns of it from the group, and ends.
+    #[tokio::test]
+    async fn a_continue_whose_end_was_lost_ends_at_it() {
+        let mut session = Session::of("basic");
+        session.run("break breakpoint_target").await;
+        session.run("run").await;
+        session.forwarded(1).await;
+
+        session.flood.store(true, Ordering::Relaxed);
+        let stopped = session.run("continue").await;
+        session.forwarded(2).await;
+        assert!(stopped.contains("breakpoint 1"), "{stopped}");
+
+        session.run("delete 1").await;
+        session.flood.store(true, Ordering::Relaxed);
+        let exited = session.run("continue").await;
+        session.forwarded(3).await;
+        assert!(exited.contains("exited"), "{exited}");
 
         session.end().await;
     }

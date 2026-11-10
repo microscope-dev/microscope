@@ -29,6 +29,15 @@ use crate::{
 /// A member's number in its group, stable for the group's life.
 pub type MemberNumber = u32;
 
+/// A group stop, as [`GroupEvent::GroupStopped`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupStop {
+    pub member: MemberNumber,
+    pub stop: crate::StopId,
+    pub execution: Option<GroupExecutionId>,
+    pub reason: StopReason,
+}
+
 /// One continue or resume of a whole group. The group stop that ends it
 /// names it, so a client can tell its own stop from an older one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +194,10 @@ struct Shared {
     /// whose events fell behind reads these instead.
     unfollowed: AtomicBool,
     unmirrored: AtomicBool,
+
+    /// The last group stop reported, for a client whose events fell
+    /// behind.
+    last_stop: Mutex<Option<GroupStop>>,
 }
 
 impl Shared {
@@ -232,6 +245,7 @@ impl ProcessGroup {
             copies: Mutex::default(),
             unfollowed: AtomicBool::default(),
             unmirrored: AtomicBool::default(),
+            last_stop: Mutex::default(),
         });
         let (commands, received) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(crate::event_capacity());
@@ -360,6 +374,17 @@ impl GroupHandle {
     pub fn members(&self) -> Vec<Member> {
         self.shared
             .members
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The last group stop the group reported, which a client whose events
+    /// fell behind may have missed.
+    #[must_use]
+    pub fn last_stop(&self) -> Option<GroupStop> {
+        self.shared
+            .last_stop
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -1344,12 +1369,22 @@ impl Driver {
     }
 
     fn report(&mut self, stop: MemberStop) {
-        let execution = self.execution.take();
-        self.emit(GroupEvent::GroupStopped {
+        let reported = GroupStop {
             member: stop.member,
             stop: stop.stop,
-            execution,
+            execution: self.execution.take(),
             reason: stop.reason,
+        };
+        *self
+            .shared
+            .last_stop
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(reported.clone());
+        self.emit(GroupEvent::GroupStopped {
+            member: reported.member,
+            stop: reported.stop,
+            execution: reported.execution,
+            reason: reported.reason,
         });
     }
 
@@ -1843,6 +1878,7 @@ mod tests {
             copies: Mutex::default(),
             unfollowed: AtomicBool::default(),
             unmirrored: AtomicBool::default(),
+            last_stop: Mutex::default(),
         }
     }
 
@@ -1990,6 +2026,7 @@ mod tests {
             copies: Mutex::default(),
             unfollowed: AtomicBool::default(),
             unmirrored: AtomicBool::default(),
+            last_stop: Mutex::default(),
         });
         let (events, received) = broadcast::channel(crate::event_capacity());
         (Driver::new(shared, events, root, scope), received)

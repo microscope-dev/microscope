@@ -161,7 +161,8 @@ pub use model::{
 };
 
 pub use group::{
-    GroupEvent, GroupExecutionId, GroupHandle, Member, MemberNumber, MemberState, ProcessGroup,
+    GroupEvent, GroupExecutionId, GroupHandle, GroupStop, Member, MemberNumber, MemberState,
+    ProcessGroup,
 };
 pub use protocol::{
     Breakpoint, BreakpointHit, BreakpointId, BreakpointOptions, BreakpointSpec, CatchPhase,
