@@ -29,6 +29,7 @@ use super::protocol::{
     self, ErrorBody, GotoArguments, Outgoing, SetBreakpointsArguments,
     SetExceptionBreakpointsArguments, SetFunctionBreakpointsArguments, ThreadArguments,
 };
+use super::run::{News, Run, Stop};
 
 use super::signals::Selection;
 use super::sources::source_json;
@@ -213,18 +214,6 @@ struct Header {
     command: String,
 }
 
-/// What the session does after answering a request.
-enum After {
-    /// Tell the client it may configure the session.
-    Initialized,
-
-    /// Start the target, as launch and configuration both arrived.
-    Start,
-
-    /// End the session.
-    End,
-}
-
 /// What the client said it supports.
 #[derive(Debug, Clone, Copy)]
 #[allow(
@@ -315,13 +304,24 @@ impl Owner {
     }
 }
 
-/// The program being debugged.
 /// A member no session shows, and why.
 type Unshown = (MemberNumber, String);
 
+/// The program being debugged.
 struct Target {
     owner: Owner,
     handle: DebuggerHandle,
+
+    /// What the debugger and the group report, until each closes.
+    events: Option<broadcast::Receiver<DebuggerEvent>>,
+    group_events: Option<broadcast::Receiver<GroupEvent>>,
+
+    /// What the client was told of the program.
+    run: Run,
+
+    /// The revision of the snapshot that last brought `run` up to date, so
+    /// that the events it already reflects are not told again.
+    resynced: u64,
     start: Start,
     stop_on_entry: bool,
     source_paths: microscope::SourcePathMap,
@@ -344,7 +344,6 @@ struct Target {
 
     /// Recorded source paths by the canonical local path they map to.
     recorded_paths: Option<HashMap<PathBuf, PathBuf>>,
-    process: Option<ProcessId>,
     pumps: Vec<output::Forwarder>,
 
     /// The settings child sessions carry over.
@@ -352,54 +351,62 @@ struct Target {
     threads: config::ThreadListing,
 }
 
-/// The stop the client was last told about.
-#[derive(Debug, Clone)]
-pub(super) struct Stop {
-    pub id: StopId,
-    pub thread: ThreadId,
+/// Where a session is in its life.
+enum Phase {
+    /// Waiting for `initialize`.
+    New,
 
-    /// What the client knows as the thread that stopped: the task the
-    /// thread runs, when the client's threads are tasks, or the thread.
-    pub context: ExecutionContext,
-    pub reason: StopReason,
+    /// Initialized, with no program yet. `configured` once
+    /// `configurationDone` came first, so the program starts as it loads.
+    Initialized { configured: bool },
 
-    /// The reason the client was told, as its stopped event named it.
-    pub told: &'static str,
+    /// The program is loaded, and its `launch` or `attach`, whose answer
+    /// `reply` is, waits for `configurationDone` to start it.
+    Adopted { target: Target, reply: Header },
 
-    /// The frame of the stopped context the debugger selected, as at an
-    /// exception the frame that raised it; the innermost otherwise.
-    pub selected: StackFrameId,
+    /// The program started, or its start failed or was terminated before
+    /// it began, in which case `configured` is false until the client
+    /// sends `configurationDone` anyway.
+    Started { target: Target, configured: bool },
+
+    /// The session is over.
+    Ended,
 }
 
-impl Stop {
-    /// The innermost frame of the stopped thread.
-    pub const fn innermost(&self) -> StopContext {
-        StopContext {
-            stop: self.id,
-            execution: ExecutionContext::Thread(self.thread),
-            frame: StackFrameId::INNERMOST,
+impl Phase {
+    const fn target(&self) -> Option<&Target> {
+        match self {
+            Self::Adopted { target, .. } | Self::Started { target, .. } => Some(target),
+            Self::New | Self::Initialized { .. } | Self::Ended => None,
+        }
+    }
+
+    const fn target_mut(&mut self) -> Option<&mut Target> {
+        match self {
+            Self::Adopted { target, .. } | Self::Started { target, .. } => Some(target),
+            Self::New | Self::Initialized { .. } | Self::Ended => None,
+        }
+    }
+
+    fn into_target(self) -> Option<Target> {
+        match self {
+            Self::Adopted { target, .. } | Self::Started { target, .. } => Some(target),
+            Self::New | Self::Initialized { .. } | Self::Ended => None,
         }
     }
 }
 
 pub struct Session {
     pub(super) client: Client,
-    support: Option<ClientSupport>,
-    after: Option<After>,
-    configured: bool,
+    phase: Phase,
 
-    /// The deferred `launch` or `attach` response.
-    starting: Option<Header>,
-    target: Option<Target>,
-    events: Option<broadcast::Receiver<DebuggerEvent>>,
+    /// What the client said it supports, once it initialized.
+    support: ClientSupport,
 
     /// The group this session's adapter hosts and this session shows a
     /// member of, when the client connected it to the group's socket.
     route: Option<super::group::Route>,
     log: super::Log,
-
-    /// What the group whose root this session shows reports.
-    group_events: Option<broadcast::Receiver<GroupEvent>>,
 
     /// The requests for members' sessions still waiting for the client.
     follows: Vec<JoinHandle<()>>,
@@ -416,8 +423,9 @@ pub struct Session {
     pub(super) breakpoints: Breakpoints,
     pub(super) data: super::watch::Data,
     exceptions: Selection,
+    /// The handles and reads of the stop the client shows, which go with
+    /// it.
     pub(super) references: References,
-    pub(super) stop: Option<Stop>,
     backtraces: HashMap<ExecutionContext, Arc<Backtrace>>,
     variables: HashMap<(ExecutionContext, StackFrameId), Arc<VariableSnapshot>>,
 
@@ -436,13 +444,6 @@ pub struct Session {
     /// The modules the client was told are loaded.
     pub(super) modules: BTreeMap<ModuleId, microscope::LoadedModuleRecord>,
 
-    /// The execution the client last started, whose resume it already knows.
-    resumed: Option<microscope::ExecutionId>,
-
-    /// Whether the program is being restarted, so its end does not end the
-    /// session.
-    restarting: bool,
-
     /// How values show when a request does not say.
     pub(super) display: super::values::Display,
 
@@ -455,7 +456,6 @@ pub struct Session {
 
     /// The `seq` of each request the client cancelled, as text.
     cancelled: Cancelled,
-    ended: bool,
 }
 
 impl Session {
@@ -463,15 +463,10 @@ impl Session {
         Self {
             cancelled,
             client,
-            support: None,
-            after: None,
-            configured: false,
-            starting: None,
-            target: None,
-            events: None,
+            phase: Phase::New,
+            support: ClientSupport::UNDECLARED,
             route: None,
             log: super::Log::default(),
-            group_events: None,
             follows: Vec::new(),
             unshown: mpsc::unbounded_channel(),
             hidden: BTreeSet::new(),
@@ -479,7 +474,6 @@ impl Session {
             data: super::watch::Data::default(),
             exceptions: Selection::default(),
             references: References::default(),
-            stop: None,
             backtraces: HashMap::new(),
             variables: HashMap::new(),
             thread_ids: ThreadHandles::default(),
@@ -487,12 +481,9 @@ impl Session {
             tasks: BTreeMap::new(),
             stackless: BTreeSet::new(),
             modules: BTreeMap::new(),
-            resumed: None,
-            restarting: false,
             display: super::values::Display::default(),
             loaded_sources: None,
             queue: VecDeque::new(),
-            ended: false,
         }
     }
 
@@ -522,12 +513,16 @@ impl Session {
             let input = if let Some(message) = self.queue.pop_front() {
                 Some(Input::Message(message))
             } else {
+                let (events, group_events) = match self.phase.target_mut() {
+                    Some(target) => (&mut target.events, &mut target.group_events),
+                    None => (&mut None, &mut None),
+                };
                 tokio::select! {
                     biased;
                     () = &mut shutdown => None,
                     message = inbox.recv() => message.map(Input::Message),
-                    event = next_event(&mut self.events) => Some(Input::Event(event)),
-                    event = next_group_event(&mut self.group_events) => Some(Input::Group(event)),
+                    event = next_event(events) => Some(Input::Event(event)),
+                    event = next_group_event(group_events) => Some(Input::Group(event)),
                     Some(unshown) = self.unshown.1.recv() => Some(Input::Unshown(unshown)),
                 }
             };
@@ -545,7 +540,9 @@ impl Session {
                         .await
                 }
                 Some(Input::Group(Err(broadcast::error::RecvError::Closed))) => {
-                    self.group_events = None;
+                    if let Some(target) = self.phase.target_mut() {
+                        target.group_events = None;
+                    }
                     Ok(())
                 }
                 Some(Input::Unshown((member, reason))) => self.unshown(member, reason).await,
@@ -554,17 +551,19 @@ impl Session {
                     self.resync().await
                 }
                 Some(Input::Event(Err(broadcast::error::RecvError::Closed))) => {
-                    self.events = None;
+                    if let Some(target) = self.phase.target_mut() {
+                        target.events = None;
+                    }
                     Ok(())
                 }
             };
 
-            if result.is_err() || self.ended {
+            if result.is_err() || matches!(self.phase, Phase::Ended) {
                 break;
             }
         }
 
-        if !self.ended {
+        if !matches!(self.phase, Phase::Ended) {
             let _ = self.end(None).await;
         }
 
@@ -605,40 +604,31 @@ impl Session {
         };
 
         match self.dispatch(&header, arguments).await {
-            Ok(Some(body)) => self.client.respond(&header, Ok(body)).await?,
-            Ok(None) => {}
-            Err(error) => self.client.respond(&header, Err(error)).await?,
-        }
-
-        match self.after.take() {
-            Some(After::Initialized) => self.client.event("initialized", Value::Null).await,
-            Some(After::Start) => self.start().await,
-            Some(After::End) => {
-                self.ended = true;
-                Ok(())
-            }
-            None => Ok(()),
+            Ok(Some(body)) => self.client.respond(&header, Ok(body)).await,
+            Ok(None) => Ok(()),
+            Err(error) => self.client.respond(&header, Err(error)).await,
         }
     }
 
-    /// Handles one request. `Ok(None)` defers the response.
+    /// Handles one request. `Ok(None)` means the request answers itself,
+    /// as one that acts after its answer does, or defers it.
     async fn dispatch(
         &mut self,
         header: &Header,
         arguments: Value,
     ) -> Result<Option<Value>, ErrorBody> {
         let command = header.command.as_str();
-        if self.support.is_none() && command != "initialize" {
+        if matches!(self.phase, Phase::New) && command != "initialize" {
             return Err(ErrorBody::new(format!(
                 "the client must send initialize before {command}"
             )));
         }
 
         let body = match command {
-            "initialize" => self.initialize(arguments)?,
+            "initialize" => return self.initialize(header, arguments).await,
             "launch" => return self.launch(header, arguments).await,
             "attach" => return self.attach(header, arguments).await,
-            "configurationDone" => self.configuration_done()?,
+            "configurationDone" => return self.configuration_done(header).await,
             "disconnect" => self.disconnect(arguments).await?,
             "terminate" => self.terminate().await?,
             "restart" => self.restart(arguments).await?,
@@ -695,13 +685,19 @@ impl Session {
         Ok(Some(body))
     }
 
-    fn initialize(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
-        if self.support.is_some() {
+    /// Answers with the capabilities, then tells the client it may
+    /// configure the session.
+    async fn initialize(
+        &mut self,
+        header: &Header,
+        arguments: Value,
+    ) -> Result<Option<Value>, ErrorBody> {
+        if !matches!(self.phase, Phase::New) {
             return Err(ErrorBody::new("the session is already initialized"));
         }
 
         let arguments = parse::<protocol::InitializeArguments>(arguments, "initialize arguments")?;
-        self.support = Some(ClientSupport {
+        self.support = ClientSupport {
             lines_start_at1: arguments.lines_start_at1.unwrap_or(true),
             columns_start_at1: arguments.columns_start_at1.unwrap_or(true),
             progress: arguments.supports_progress_reporting.unwrap_or(false),
@@ -712,19 +708,17 @@ impl Session {
             memory_events: arguments.supports_memory_event.unwrap_or(false),
             run_in_terminal: arguments.supports_run_in_terminal_request.unwrap_or(false),
             start_debugging: arguments.supports_start_debugging_request.unwrap_or(false),
-        });
-        self.after = Some(After::Initialized);
-
-        Ok(capabilities())
+        };
+        self.phase = Phase::Initialized { configured: false };
+        self.client.respond(header, Ok(capabilities())).await?;
+        self.client.event("initialized", Value::Null).await?;
+        Ok(None)
     }
 
     /// What the client supports. Requests wait for `initialize`, so only a
     /// request that somehow came before it sees the protocol defaults.
     pub(super) const fn support(&self) -> ClientSupport {
-        match self.support {
-            Some(support) => support,
-            None => ClientSupport::UNDECLARED,
-        }
+        self.support
     }
 
     async fn launch(
@@ -896,7 +890,7 @@ impl Session {
     }
 
     fn check_unstarted(&self) -> Result<(), ErrorBody> {
-        if self.target.is_some() || self.starting.is_some() {
+        if self.phase.target().is_some() {
             return Err(ErrorBody::new(
                 "the session already has a program; start a new session for another",
             ));
@@ -905,8 +899,8 @@ impl Session {
         Ok(())
     }
 
-    /// Makes a loaded debugger the session's target and defers the
-    /// `launch` or `attach` response until configuration is done.
+    /// Makes a loaded debugger the session's target, and starts it once
+    /// configuration is done, which answers the `launch` or `attach`.
     async fn adopt(
         &mut self,
         owner: Owner,
@@ -929,10 +923,13 @@ impl Session {
             step_into_runtime,
             step_skips,
         } = configuration;
+        let Phase::Initialized { configured } = self.phase else {
+            return Err(ErrorBody::new("internal: a program loaded twice"));
+        };
         let launched = matches!(start, Start::Launch(_));
         let core = matches!(start, Start::Core(_));
         let handle = handle.with_source_paths(source_paths.clone());
-        self.events = Some(handle.subscribe());
+        let events = Some(handle.subscribe());
 
         // The console's commands read no settings files: an editor's
         // sessions take their settings from its launch arguments.
@@ -951,25 +948,18 @@ impl Session {
             settings,
             LaunchSettings::default(),
         );
-        let mut default_policies = HashMap::new();
-
-        for code in microscope::signal_codes() {
-            default_policies.insert(code, handle.signal_policy(code).await.map_err(error)?);
-        }
-
-        if step_into_runtime {
-            handle.set_step_into_runtime(true).await.map_err(error)?;
-        }
-        if !step_skips.patterns().is_empty() {
-            handle.set_step_skips(step_skips).await.map_err(error)?;
-        }
-
-        if let Owner::Group { group, .. } = &owner {
-            self.group_events = Some(group.subscribe());
-        }
-        self.target = Some(Target {
+        let default_policies = step_settings(&handle, step_into_runtime, step_skips).await?;
+        let group_events = match &owner {
+            Owner::Group { group, .. } => Some(group.subscribe()),
+            Owner::Single(_) | Owner::Member(..) | Owner::Ended => None,
+        };
+        let target = Target {
             owner,
             handle,
+            events,
+            group_events,
+            run: Run::NoProcess,
+            resynced: 0,
             start,
             stop_on_entry,
             source_paths,
@@ -982,14 +972,24 @@ impl Session {
             syntax,
             images: HashMap::new(),
             recorded_paths: None,
-            process: None,
             pumps: Vec::new(),
             inherited,
             threads,
-        });
+        };
+        self.phase = Phase::Adopted {
+            target,
+            reply: header.clone(),
+        };
         self.warn_debug_information().await?;
         self.load_views(working_directory, &view_files).await?;
-        self.apply_signal_policies().await?;
+        if let Err(error) = self.apply_signal_policies().await {
+            // The program cannot start as configured: the session has none.
+            let phase = std::mem::replace(&mut self.phase, Phase::Initialized { configured });
+            if let Some(mut target) = phase.into_target() {
+                let _ = target.owner.end().await;
+            }
+            return Err(error);
+        }
 
         if !launched {
             // A client restarts a core dump by opening it again, and an
@@ -1007,9 +1007,8 @@ impl Session {
         }
 
         self.resolve_unresolved().await?;
-        self.starting = Some(header.clone());
-        if self.configured {
-            self.after = Some(After::Start);
+        if configured {
+            self.start().await?;
         }
 
         Ok(None)
@@ -1082,7 +1081,7 @@ impl Session {
     async fn show_member(&mut self, number: MemberNumber) -> Result<(), Closed> {
         let start_debugging = self.support().start_debugging;
         let log = self.log.clone();
-        let Some(target) = self.target.as_mut() else {
+        let Some(target) = self.phase.target_mut() else {
             return Ok(());
         };
         let Owner::Group { group, routes } = &mut target.owner else {
@@ -1152,7 +1151,7 @@ impl Session {
         working_directory: Option<PathBuf>,
         view_files: &[PathBuf],
     ) -> Result<(), Closed> {
-        let Some(target) = self.target.as_ref() else {
+        let Some(target) = self.phase.target() else {
             return Ok(());
         };
 
@@ -1200,101 +1199,113 @@ impl Session {
         Ok(())
     }
 
-    fn configuration_done(&mut self) -> Result<Value, ErrorBody> {
-        if self.configured {
-            return Err(ErrorBody::new("configuration is already done"));
+    async fn configuration_done(&mut self, header: &Header) -> Result<Option<Value>, ErrorBody> {
+        match &mut self.phase {
+            Phase::Initialized { configured } | Phase::Started { configured, .. }
+                if !*configured =>
+            {
+                *configured = true;
+                Ok(Some(json!({})))
+            }
+            Phase::Adopted { .. } => {
+                self.client.respond(header, Ok(json!({}))).await?;
+                self.start().await?;
+                Ok(None)
+            }
+            _ => Err(ErrorBody::new("configuration is already done")),
         }
-
-        self.configured = true;
-        if self.starting.is_some() {
-            self.after = Some(After::Start);
-        }
-
-        Ok(json!({}))
     }
 
-    /// Starts the target once both its configuration and `launch` or
-    /// `attach` arrived: answers the deferred request, announces the
+    /// Starts the adopted target, as both its configuration and `launch`
+    /// or `attach` arrived: answers the deferred request, announces the
     /// process, and lets it run or reports its first stop.
     async fn start(&mut self) -> Result<(), Closed> {
-        let Some(header) = self.starting.take() else {
-            return Ok(());
+        let reply = match std::mem::replace(&mut self.phase, Phase::Ended) {
+            Phase::Adopted { target, reply } => {
+                self.phase = Phase::Started {
+                    target,
+                    configured: true,
+                };
+                reply
+            }
+            other => {
+                self.phase = other;
+                return Ok(());
+            }
         };
 
         let (method, pipes) = match self.begin().await {
             Ok(begun) => begun,
             Err(error) => {
-                self.client.respond(&header, Err(error)).await?;
+                self.client.respond(&reply, Err(error)).await?;
                 self.ended_target().await?;
                 return Ok(());
             }
         };
 
-        self.client.respond(&header, Ok(json!({}))).await?;
+        self.client.respond(&reply, Ok(json!({}))).await?;
         let Some(snapshot) = self.announce_process(method, pipes).await? else {
             return Ok(());
         };
 
+        let Some(target) = self.phase.target_mut() else {
+            return Ok(());
+        };
+
+        // A launched program is shown from its events, which began before
+        // it. Anything else is shown from the snapshot, which reflects the
+        // events up to it.
+        if matches!(target.start, Start::Launch(_)) {
+            return Ok(());
+        }
+
+        target.resynced = snapshot.revision;
         let InferiorState::Stopped {
+            process_id,
             stop_id,
             thread_id,
             reason,
-            ..
         } = snapshot.inferior
         else {
             return Ok(());
         };
 
-        let Some(target) = self.target.as_ref() else {
-            self.client
-                .important("internal: the started target is gone")
-                .await?;
-            return Ok(());
-        };
-
-        match &target.start {
-            Start::Core(_) => self.stopped(stop_id, thread_id, reason).await?,
-            // The group runs and stops its members together. The member's
-            // own event may have reported the stop while it was announced.
-            Start::Attach { .. } if matches!(target.owner, Owner::Member(..)) => {
-                if self.stop.as_ref().map(|stop| stop.id) != Some(stop_id) {
-                    self.stopped(stop_id, thread_id, reason).await?;
-                }
-            }
-            Start::Attach { .. } if target.stop_on_entry => {
-                self.stopped(stop_id, thread_id, StopReason::Entry).await?;
-            }
-            Start::Attach { .. } => {
-                let Some(process) = target.process else {
-                    self.client
-                        .important("internal: the attached process is unknown")
-                        .await?;
-                    self.stopped(stop_id, thread_id, StopReason::Attach).await?;
-                    return Ok(());
-                };
-
-                let resumed = target
-                    .handle
-                    .continue_execution(
-                        stop_id,
-                        ResumeScope::Process(process),
-                        ExceptionDisposition::Pass,
-                    )
-                    .await;
-                match resumed {
-                    Ok(execution) => self.resumed = Some(execution),
-                    Err(error) => {
-                        self.client
-                            .important(format!("cannot resume the process: {error}"))
-                            .await?;
-                        self.stopped(stop_id, thread_id, StopReason::Attach).await?;
-                    }
-                }
-            }
-            Start::Launch(_) => {}
+        // The group runs and stops its members together, and a core dump
+        // is stopped for good: each shows its stop. A process attached to
+        // runs, unless the client asked to see it stopped.
+        let attached = matches!(target.start, Start::Attach { .. })
+            && !matches!(target.owner, Owner::Member(..));
+        if !attached {
+            return self.show_stop(process_id, stop_id, thread_id, reason).await;
         }
 
-        Ok(())
+        if target.stop_on_entry {
+            return self
+                .stopped(process_id, stop_id, thread_id, StopReason::Entry)
+                .await;
+        }
+
+        let resumed = target
+            .handle
+            .continue_execution(
+                stop_id,
+                ResumeScope::Process(process_id),
+                ExceptionDisposition::Pass,
+            )
+            .await;
+        match resumed {
+            Ok(_) => {
+                self.set_run(Run::Running(process_id));
+                Ok(())
+            }
+            Err(error) => {
+                self.client
+                    .important(format!("cannot resume the process: {error}"))
+                    .await?;
+                self.stopped(process_id, stop_id, thread_id, StopReason::Attach)
+                    .await
+            }
+        }
     }
 
     /// Announces a started process: the `process` event, its output, its
@@ -1308,14 +1319,14 @@ impl Session {
         method: &'static str,
         pipes: Vec<(OwnedFd, &'static str)>,
     ) -> Result<Option<microscope::StateSnapshot>, Closed> {
-        let Some(target) = self.target.as_mut() else {
+        let Some(handle) = self.handle().cloned() else {
             self.client
                 .important("internal: the started target is gone")
                 .await?;
             return Ok(None);
         };
 
-        let snapshot = target.handle.snapshot().await.ok();
+        let snapshot = handle.snapshot().await.ok();
         let process = snapshot
             .as_ref()
             .and_then(|snapshot| match snapshot.inferior {
@@ -1323,8 +1334,17 @@ impl Session {
                 | InferiorState::Stopped { process_id, .. } => Some(process_id),
                 InferiorState::NotRunning => None,
             });
-        let process = process.or_else(|| target.handle.core_dump().map(|core| core.process_id));
-        target.process = process;
+        let process = process.or_else(|| handle.core_dump().map(|core| core.process_id));
+
+        // A stop the program's events showed while it started stays.
+        if let (None, Some(process)) = (self.shown().process(), process) {
+            self.set_run(Run::Running(process));
+        }
+
+        let Some(target) = self.phase.target_mut() else {
+            return Ok(None);
+        };
+
         let mut body = json!({
             "name": target.handle.executable().display().to_string(),
             "isLocalProcess": true,
@@ -1362,18 +1382,19 @@ impl Session {
     /// and its breakpoints. The new arguments may change how the program is
     /// started, but not which program.
     async fn restart(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
-        // Configuration done starts the program, so restarting it before
-        // would start it twice.
-        if self.starting.is_some() {
-            return Err(ErrorBody::new(
-                "the program has not started yet, so there is nothing to restart",
-            ));
-        }
-
-        let target = self
-            .target
-            .as_mut()
-            .ok_or_else(|| ErrorBody::new("no program is loaded"))?;
+        let target = match &mut self.phase {
+            Phase::Started { target, .. } => target,
+            // Configuration done starts the program, so restarting it before
+            // would start it twice.
+            Phase::Adopted { .. } => {
+                return Err(ErrorBody::new(
+                    "the program has not started yet, so there is nothing to restart",
+                ));
+            }
+            Phase::New | Phase::Initialized { .. } | Phase::Ended => {
+                return Err(ErrorBody::new("no program is loaded"));
+            }
+        };
         let Start::Launch(launch) = &mut target.start else {
             return Err(ErrorBody::new(
                 "only a launched program can be restarted; start a new session instead",
@@ -1399,15 +1420,21 @@ impl Session {
         }
 
         let handle = target.handle.clone();
-        self.restarting = true;
         let killed = match handle.kill().await {
             Ok(()) | Err(Error::NotRunning) => Ok(()),
             Err(error) => Err(self::error(error)),
         };
 
         // Report the old process's end, without ending the session.
-        let _ = self.drain_events().await;
-        self.restarting = false;
+        while let Some(event) = self.queued_event() {
+            match event {
+                DebuggerEvent::InferiorExited { status, .. } => {
+                    self.exited(&status, false).await?;
+                }
+                event => self.event(event).await?,
+            }
+        }
+
         killed?;
         let (method, pipes) = self.begin().await?;
         self.announce_process(method, pipes).await?;
@@ -1418,7 +1445,7 @@ impl Session {
     /// returning the `process` event's start method and output pipes.
     async fn begin(&mut self) -> Result<(&'static str, Vec<(OwnedFd, &'static str)>), ErrorBody> {
         let supported = self.support().run_in_terminal;
-        let Some(target) = self.target.as_mut() else {
+        let Some(target) = self.phase.target_mut() else {
             return Err(ErrorBody::new("internal: no target is ready to start"));
         };
 
@@ -1428,7 +1455,7 @@ impl Session {
 
         if launch.console != config::Console::Internal {
             // The program's streams belong to the terminal.
-            let execution = super::terminal::launch(
+            super::terminal::launch(
                 &self.client,
                 supported,
                 &target.handle,
@@ -1436,7 +1463,6 @@ impl Session {
                 target.stop_on_entry,
             )
             .await?;
-            self.resumed = Some(execution);
             return Ok(("launch", Vec::new()));
         }
 
@@ -1454,13 +1480,12 @@ impl Session {
             stop_at_entry: target.stop_on_entry,
         };
 
-        let execution = target.handle.launch_with(options).await.map_err(|error| {
+        target.handle.launch_with(options).await.map_err(|error| {
             ErrorBody::shown(format!(
                 "failed to launch {}: {error}",
                 launch.program.display()
             ))
         })?;
-        self.resumed = Some(execution);
         Ok((
             "launch",
             vec![(stdout_read, "stdout"), (stderr_read, "stderr")],
@@ -1473,7 +1498,7 @@ impl Session {
         // A restart attaches to the process again, so it must survive the
         // disconnect that begins the restart, whatever else that asks.
         let attached = matches!(
-            self.target.as_ref().map(|target| &target.start),
+            self.phase.target().map(|target| &target.start),
             Some(Start::Attach { .. })
         );
         let terminate = if attached && arguments.restart == Some(true) {
@@ -1483,21 +1508,18 @@ impl Session {
         };
 
         self.end(terminate).await?;
-        self.after = Some(After::End);
         Ok(json!({}))
     }
 
     /// Ends the session: kills a launched program, or one attached to when
     /// asked, detaches from the rest, and reports the program's end.
     async fn end(&mut self, terminate: Option<bool>) -> Result<(), Closed> {
-        self.ended = true;
-
         // Every request gets a response, also a start still waiting for
         // configuration.
-        if let Some(header) = self.starting.take() {
+        if let Some(reply) = self.abandon_start() {
             self.client
                 .respond(
-                    &header,
+                    &reply,
                     Err(ErrorBody::new(
                         "the session ended before its configuration was done",
                     )),
@@ -1505,64 +1527,74 @@ impl Session {
                 .await?;
         }
 
-        let Some(target) = self.target.as_mut() else {
-            return Ok(());
-        };
-
-        let launched = matches!(target.start, Start::Launch(_));
-        // A member's session ends with its group, unless asked to end its
-        // process.
-        let member = matches!(target.owner, Owner::Member(..));
-        if terminate.unwrap_or(launched && !member)
-            && target.process.is_some()
-            && target.handle.core_dump().is_none()
-            && let Err(error) = target.handle.kill().await
-            && !matches!(error, Error::NotRunning)
-        {
-            self.client
-                .important(format!("cannot kill the program: {error}"))
-                .await?;
+        if let Some(target) = self.phase.target_mut() {
+            let launched = matches!(target.start, Start::Launch(_));
+            // A member's session ends with its group, unless asked to end its
+            // process.
+            let member = matches!(target.owner, Owner::Member(..));
+            if terminate.unwrap_or(launched && !member)
+                && target.run.process().is_some()
+                && target.handle.core_dump().is_none()
+                && let Err(error) = target.handle.kill().await
+                && !matches!(error, Error::NotRunning)
+            {
+                self.client
+                    .important(format!("cannot kill the program: {error}"))
+                    .await?;
+            }
         }
 
-        if let Err(error) = target.owner.end().await {
+        if let Some(target) = self.phase.target_mut()
+            && let Err(error) = target.owner.end().await
+        {
             self.client
                 .important(format!("the debugger did not shut down cleanly: {error}"))
                 .await?;
         }
 
         // Report the exit the kill caused, then the session's end.
-        self.drain_events().await?;
-        if self
-            .target
-            .as_ref()
-            .is_some_and(|target| target.process.is_some())
-        {
-            self.ended_target().await?;
-        }
-
-        Ok(())
-    }
-
-    /// Reports the debugger events already received.
-    async fn drain_events(&mut self) -> Result<(), Closed> {
-        while let Some(event) = self
-            .events
-            .as_mut()
-            .and_then(|events| events.try_recv().ok())
-        {
+        while let Some(event) = self.queued_event() {
             self.event(event).await?;
         }
 
+        if self.shown().process().is_some() {
+            self.ended_target().await?;
+        }
+
+        self.release().await;
         Ok(())
+    }
+
+    /// The next debugger event already received.
+    fn queued_event(&mut self) -> Option<DebuggerEvent> {
+        self.phase.target_mut()?.events.as_mut()?.try_recv().ok()
+    }
+
+    /// Fails a start still waiting for configuration, which leaves the
+    /// session started with no program, and returns the request to answer.
+    fn abandon_start(&mut self) -> Option<Header> {
+        match std::mem::replace(&mut self.phase, Phase::Ended) {
+            Phase::Adopted { target, reply } => {
+                self.phase = Phase::Started {
+                    target,
+                    configured: false,
+                };
+                Some(reply)
+            }
+            other => {
+                self.phase = other;
+                None
+            }
+        }
     }
 
     async fn terminate(&mut self) -> Result<Value, ErrorBody> {
         // A start still waiting for configuration has no program to end, so
         // it fails now and never starts.
-        if let Some(header) = self.starting.take() {
+        if let Some(reply) = self.abandon_start() {
             self.client
                 .respond(
-                    &header,
+                    &reply,
                     Err(ErrorBody::new(
                         "the session was terminated before its configuration was done",
                     )),
@@ -1582,11 +1614,11 @@ impl Session {
         }
     }
 
-    /// Releases what the session holds once it is over. Children held but
-    /// not yet offered to the client are released; those offered wait for
-    /// its answer.
+    /// Releases what the session holds once it is over, which ends it.
+    /// Children held but not yet offered to the client are released; those
+    /// offered wait for its answer.
     async fn release(&mut self) {
-        if let Some(target) = self.target.as_mut() {
+        if let Some(mut target) = std::mem::replace(&mut self.phase, Phase::Ended).into_target() {
             let _ = target.owner.end().await;
             for pump in target.pumps.drain(..) {
                 pump.stop();
@@ -1604,7 +1636,7 @@ impl Session {
     }
 
     fn handle(&self) -> Option<&DebuggerHandle> {
-        self.target.as_ref().map(|target| &target.handle)
+        self.phase.target().map(|target| &target.handle)
     }
 
     /// The target's debugger, for requests that need a program.
@@ -1614,19 +1646,47 @@ impl Session {
             .ok_or_else(|| ErrorBody::new("no program is loaded"))
     }
 
+    /// What the client was told of the program.
+    fn shown(&self) -> &Run {
+        const NO_PROCESS: &Run = &Run::NoProcess;
+        self.phase.target().map_or(NO_PROCESS, |target| &target.run)
+    }
+
+    fn events_queued(&self) -> bool {
+        self.phase
+            .target()
+            .and_then(|target| target.events.as_ref())
+            .is_some_and(|events| !events.is_empty())
+    }
+
+    /// The stop the client was told about, if it shows one.
+    pub(super) fn stop(&self) -> Option<&Stop> {
+        self.shown().stop()
+    }
+
+    /// Moves what the client was shown of the program to `run`. A stop it
+    /// leaves takes its handles and reads with it.
+    fn set_run(&mut self, run: Run) {
+        let Some(target) = self.phase.target_mut() else {
+            return;
+        };
+
+        if target.run.stop().map(|stop| stop.id) != run.stop().map(|stop| stop.id) {
+            self.references.clear();
+            self.backtraces.clear();
+            self.variables.clear();
+        }
+
+        target.run = run;
+    }
+
     /// The stop the client was told about, for requests that need one.
     pub(super) fn current_stop(&self) -> Result<Stop, ErrorBody> {
-        self.stop.clone().ok_or_else(|| {
-            if self
-                .target
-                .as_ref()
-                .is_some_and(|target| target.process.is_some())
-            {
-                ErrorBody::not_stopped()
-            } else {
-                ErrorBody::new("the program is not running")
-            }
-        })
+        match self.shown() {
+            Run::Stopped(_, stop) => Ok(stop.clone()),
+            Run::Running(_) => Err(ErrorBody::not_stopped()),
+            Run::NoProcess => Err(ErrorBody::new("the program is not running")),
+        }
     }
 
     /// Whether the client cancelled the request with this `seq`.
@@ -1671,8 +1731,8 @@ impl Session {
         let single = arguments.single_thread.unwrap_or(false);
         let scope = self.resume_scope(single, &arguments)?;
         let group = self
-            .target
-            .as_ref()
+            .phase
+            .target()
             .and_then(|target| target.owner.group())
             .filter(|group| !single && group.stops() == microscope::StopScope::Group)
             .cloned();
@@ -1681,20 +1741,19 @@ impl Session {
             // client already shows each one's stop.
             // The group may not have seen the stop the client shows yet.
             let observed = self
-                .target
-                .as_ref()
+                .phase
+                .target()
                 .and_then(|target| target.owner.member())
                 .map(|member| (member, stop.id));
             group.resume_all(observed).await.map_err(error)?;
         } else {
             let handle = self.target_handle()?;
-            let execution = handle
+            handle
                 .continue_execution(stop.id, scope, ExceptionDisposition::Pass)
                 .await
                 .map_err(error)?;
-            self.resumed = Some(execution);
         }
-        self.leave_stop();
+        self.set_run(self.shown().resumed());
         self.cancel_inspections();
 
         Ok(json!({"allThreadsContinued": !single}))
@@ -1713,9 +1772,8 @@ impl Session {
                 .ok_or_else(|| ErrorBody::new(format!("{context} cannot run alone")));
         }
 
-        self.target
-            .as_ref()
-            .and_then(|target| target.process)
+        self.shown()
+            .process()
             .map(ResumeScope::Process)
             .ok_or_else(|| ErrorBody::new("the program is not running"))
     }
@@ -1749,7 +1807,7 @@ impl Session {
             _ => None,
         };
 
-        let execution = match call {
+        match call {
             Some(call) => {
                 handle
                     .start_step_into(stop.id, context, call, scope, ExceptionDisposition::Pass)
@@ -1769,8 +1827,7 @@ impl Session {
             }
         }
         .map_err(error)?;
-        self.resumed = Some(execution);
-        self.leave_stop();
+        self.set_run(self.shown().resumed());
         self.cancel_inspections();
 
         // Without this, clients assume only the stepping thread runs.
@@ -1837,8 +1894,8 @@ impl Session {
 
     async fn pause(&self) -> Result<Value, ErrorBody> {
         let paused = if let Some(group) = self
-            .target
-            .as_ref()
+            .phase
+            .target()
             .and_then(|target| target.owner.group())
             .filter(|group| group.stops() == microscope::StopScope::Group)
         {
@@ -1861,7 +1918,7 @@ impl Session {
         process: Option<microscope::ProcessId>,
         program: &Path,
     ) -> Result<(), Closed> {
-        if let Some(target) = self.target.as_mut() {
+        if let Some(target) = self.phase.target_mut() {
             target.recorded_paths = None;
         }
 
@@ -1879,47 +1936,14 @@ impl Session {
             .await
     }
 
-    /// Forgets the current stop and everything that referred to it.
-    fn leave_stop(&mut self) {
-        self.stop = None;
-        self.references.clear();
-        self.backtraces.clear();
-        self.variables.clear();
-    }
-
     async fn event(&mut self, event: DebuggerEvent) -> Result<(), Closed> {
         match event {
-            DebuggerEvent::InferiorLaunched { process_id, .. } => {
-                if let Some(target) = self.target.as_mut() {
-                    target.process = Some(process_id);
-                }
-
-                // The first thread's id is the process id.
-                self.announce_thread(ThreadId::new(process_id.get()))
-                    .await?;
-            }
-            DebuggerEvent::InferiorAttached { process_id, .. } => {
-                if let Some(target) = self.target.as_mut() {
-                    target.process = Some(process_id);
-                }
-            }
-            DebuggerEvent::InferiorContinued { execution_id, .. } => {
-                if self.resumed != Some(execution_id) {
-                    self.resumed_elsewhere().await?;
-                }
-            }
-
-            DebuggerEvent::InferiorStopped {
-                stop_id,
-                thread_id,
-                reason,
-                ..
-            } => {
-                // Catching up after missed events may have reported it.
-                if self.stop.as_ref().map(|stop| stop.id) != Some(stop_id) {
-                    self.stopped(stop_id, thread_id, reason).await?;
-                }
-            }
+            DebuggerEvent::InferiorLaunched { .. }
+            | DebuggerEvent::InferiorAttached { .. }
+            | DebuggerEvent::InferiorContinued { .. }
+            | DebuggerEvent::InferiorStopped { .. }
+            | DebuggerEvent::InferiorExited { .. }
+            | DebuggerEvent::InferiorDetached { .. } => self.run_event(event).await?,
             DebuggerEvent::ThreadStarted { thread_id, .. } => {
                 self.announce_thread(thread_id).await?;
             }
@@ -1932,16 +1956,6 @@ impl Session {
             DebuggerEvent::ModuleUnloaded { module, .. } => {
                 self.forget_module(module.module.id).await?;
             }
-            DebuggerEvent::InferiorExited { status, .. } => self.exited(&status).await?,
-            DebuggerEvent::InferiorDetached { .. } => {
-                if let Some(target) = self.target.as_mut() {
-                    target.process = None;
-                }
-
-                self.leave_stop();
-                self.client.event("terminated", json!({})).await?;
-            }
-
             DebuggerEvent::SignalReceived {
                 thread_id,
                 exception,
@@ -1990,14 +2004,50 @@ impl Session {
         Ok(())
     }
 
+    /// Tells the client what an event says of where the program is, unless
+    /// it was told already.
+    async fn run_event(&mut self, event: DebuggerEvent) -> Result<(), Closed> {
+        let news = self.phase.target().map_or(News::None, |target| {
+            super::run::news(&target.run, target.resynced, &event)
+        });
+
+        match (news, event) {
+            (News::Started(process), _) => {
+                self.set_run(Run::Running(process));
+
+                // The first thread's id is the process id.
+                self.announce_thread(ThreadId::new(process.get())).await
+            }
+            (
+                News::Stopped,
+                DebuggerEvent::InferiorStopped {
+                    process_id,
+                    stop_id,
+                    thread_id,
+                    reason,
+                    ..
+                },
+            ) => self.stopped(process_id, stop_id, thread_id, reason).await,
+            (News::ResumedElsewhere, _) => self.resumed_elsewhere().await,
+            (News::Exited, DebuggerEvent::InferiorExited { status, .. }) => {
+                self.exited(&status, true).await
+            }
+            (News::Detached, _) => {
+                self.set_run(Run::NoProcess);
+                self.client.event("terminated", json!({})).await
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Tells the client the program resumed without its asking, such as
     /// to receive a termination signal.
     async fn resumed_elsewhere(&mut self) -> Result<(), Closed> {
-        let Some(stop) = self.stop.take() else {
+        let Some(stop) = self.stop().cloned() else {
             return Ok(());
         };
 
-        self.leave_stop();
+        self.set_run(self.shown().resumed());
         let Some(id) = self.client_id(stop.context) else {
             return Ok(());
         };
@@ -2054,11 +2104,12 @@ impl Session {
     )]
     async fn stopped(
         &mut self,
+        process: ProcessId,
         stop: StopId,
         thread: ThreadId,
         reason: StopReason,
     ) -> Result<(), Closed> {
-        self.leave_stop();
+        self.set_run(Run::Running(process));
         let snapshot = match self.target_handle() {
             Ok(handle) => handle.snapshot().await.ok(),
             Err(_) => None,
@@ -2127,27 +2178,32 @@ impl Session {
             body["text"] = text.into();
         }
 
-        self.stop = Some(Stop {
-            id: stop,
-            thread,
-            context,
-            reason,
-            told,
-            selected,
-        });
+        self.set_run(Run::Stopped(
+            process,
+            Stop {
+                id: stop,
+                thread,
+                context,
+                reason,
+                told,
+                selected,
+            },
+        ));
 
         self.client.event("stopped", body).await
     }
 
-    async fn exited(&mut self, status: &ExitStatus) -> Result<(), Closed> {
-        if let Some(target) = self.target.as_mut() {
+    /// Reports the program's exit, and the session's end unless the
+    /// program is restarting.
+    async fn exited(&mut self, status: &ExitStatus, ends_session: bool) -> Result<(), Closed> {
+        if let Some(target) = self.phase.target_mut() {
             // The program's last output comes before its exit.
             for pump in target.pumps.drain(..) {
                 pump.finish(OUTPUT_DRAIN).await;
             }
         }
 
-        self.leave_stop();
+        self.set_run(Run::NoProcess);
         if let ExitStatus::Terminated(info) = status {
             self.client
                 .important(format!(
@@ -2162,28 +2218,29 @@ impl Session {
             .event("exited", json!({"exitCode": exit_code(status)}))
             .await?;
 
-        self.ended_target().await
+        if ends_session {
+            self.ended_target().await
+        } else {
+            self.forget_program().await
+        }
     }
 
-    /// Reports that the program is gone.
+    /// Reports that the program is gone, and with it the session.
     async fn ended_target(&mut self) -> Result<(), Closed> {
-        if let Some(target) = self.target.as_mut() {
-            target.process = None;
-        }
+        self.forget_program().await?;
+        self.client.event("terminated", json!({})).await
+    }
 
-        // The program's threads end with it, also for a client that keeps
-        // the session for a restart.
+    /// Reports that the program is gone, and its threads with it.
+    async fn forget_program(&mut self) -> Result<(), Closed> {
+        self.set_run(Run::NoProcess);
         let tasks = std::mem::take(&mut self.tasks).into_values();
 
         for id in std::mem::take(&mut self.threads).into_values().chain(tasks) {
             self.client.thread("exited", id).await?;
         }
 
-        if self.restarting {
-            return Ok(());
-        }
-
-        self.client.event("terminated", json!({})).await
+        Ok(())
     }
 
     /// Tells the client which tasks it was told about have ended.
@@ -2210,7 +2267,7 @@ impl Session {
 
     /// What the client's threads are, once a program is loaded.
     pub(super) fn thread_listing(&self) -> Option<config::ThreadListing> {
-        self.target.as_ref().map(|target| target.threads)
+        self.phase.target().map(|target| target.threads)
     }
 
     /// What the client knows as a stopped thread: the task it runs, when
@@ -2221,8 +2278,8 @@ impl Session {
         thread: ThreadId,
     ) -> ExecutionContext {
         let lists_tasks = self
-            .target
-            .as_ref()
+            .phase
+            .target()
             .is_some_and(|target| target.threads.tasks);
         snapshot
             .filter(|_| lists_tasks)
@@ -2316,7 +2373,7 @@ impl Session {
 
     /// Tells the client a module is gone.
     pub(super) async fn forget_module(&mut self, id: ModuleId) -> Result<(), Closed> {
-        if let Some(target) = self.target.as_mut() {
+        if let Some(target) = self.phase.target_mut() {
             target.images.remove(&id);
         }
 
@@ -2346,36 +2403,55 @@ impl Session {
             return Ok(());
         };
 
+        if let Some(target) = self.phase.target_mut() {
+            target.resynced = snapshot.revision;
+        }
+
         self.announce_threads(&snapshot).await?;
         self.announce_modules().await?;
         match snapshot.inferior {
             InferiorState::Stopped {
+                process_id,
                 stop_id,
                 thread_id,
                 reason,
-                ..
-            } => {
-                if self.stop.as_ref().map(|stop| stop.id) != Some(stop_id) {
-                    self.stopped(stop_id, thread_id, reason).await?;
+            } => self.show_stop(process_id, stop_id, thread_id, reason).await,
+            InferiorState::Running { process_id, .. } => match self.shown() {
+                Run::NoProcess => {
+                    self.set_run(Run::Running(process_id));
+                    Ok(())
                 }
+                Run::Running(_) => Ok(()),
+                Run::Stopped(..) => self.resumed_elsewhere().await,
+            },
+
+            // The exit event comes after the gap, as the newest events stay
+            // queued. Only when none is queued was it missed.
+            InferiorState::NotRunning
+                if self.shown().process().is_some() && !self.events_queued() =>
+            {
+                self.client
+                    .important("the program ended, but its exit status was missed")
+                    .await?;
+                self.ended_target().await
             }
-            InferiorState::Running { .. } => self.resumed_elsewhere().await?,
-            InferiorState::NotRunning => {
-                if self
-                    .target
-                    .as_ref()
-                    .is_some_and(|target| target.process.is_some())
-                {
-                    self.leave_stop();
-                    self.client
-                        .important("the program ended, but its exit status was missed")
-                        .await?;
-                    self.ended_target().await?;
-                }
-            }
+            InferiorState::NotRunning => Ok(()),
+        }
+    }
+
+    /// Reports a stop a snapshot showed, unless the client shows it.
+    async fn show_stop(
+        &mut self,
+        process: ProcessId,
+        stop: StopId,
+        thread: ThreadId,
+        reason: StopReason,
+    ) -> Result<(), Closed> {
+        if self.stop().is_some_and(|shown| shown.id == stop) {
+            return Ok(());
         }
 
-        Ok(())
+        self.stopped(process, stop, thread, reason).await
     }
 
     // Breakpoints.
@@ -2737,7 +2813,7 @@ impl Session {
     /// filters select, with the configuration's per-signal handling
     /// applied over them.
     async fn apply_signal_policies(&mut self) -> Result<(), ErrorBody> {
-        let Some(target) = self.target.as_mut() else {
+        let Some(target) = self.phase.target_mut() else {
             return Ok(());
         };
 
@@ -2805,7 +2881,7 @@ impl Session {
     /// Where a recorded source file is on this machine: the first place
     /// the source map finds it, or its recorded path.
     pub(super) fn local_path(&self, recorded: &Path) -> PathBuf {
-        let Some(target) = &self.target else {
+        let Some(target) = self.phase.target() else {
             return recorded.to_owned();
         };
 
@@ -2821,7 +2897,7 @@ impl Session {
     /// whose local copy it is, or else the only one ending with the most of
     /// its trailing components.
     pub(super) fn recorded_path(&mut self, client: &Path) -> PathBuf {
-        let Some(target) = self.target.as_mut() else {
+        let Some(target) = self.phase.target_mut() else {
             return client.to_owned();
         };
 
@@ -2865,7 +2941,7 @@ impl Session {
     }
 
     pub(super) async fn image(&mut self, module: ModuleId) -> Option<Arc<ModuleImage>> {
-        let target = self.target.as_mut()?;
+        let target = self.phase.target_mut()?;
         if let Some(image) = target.images.get(&module) {
             return Some(Arc::clone(image));
         }
@@ -2909,7 +2985,7 @@ impl Session {
         )?;
         if self.display.hex != arguments.hex {
             self.display.hex = arguments.hex;
-            if self.stop.is_some() {
+            if self.stop().is_some() {
                 self.invalidate_values().await;
             }
         }
@@ -2952,12 +3028,12 @@ impl Session {
 
     /// The image of a module the client was told is loaded.
     pub(super) fn loaded_image(&self, module: ModuleId) -> Option<Arc<ModuleImage>> {
-        self.target.as_ref()?.images.get(&module).cloned()
+        self.phase.target()?.images.get(&module).cloned()
     }
 
     /// The code of the modules the client was told are loaded.
     pub(super) fn code(&self) -> crate::present::Code {
-        let Some(target) = &self.target else {
+        let Some(target) = self.phase.target() else {
             return crate::present::Code::default();
         };
 
@@ -2974,14 +3050,14 @@ impl Session {
 
     /// The assembly syntax the configuration chose.
     pub(super) fn syntax(&self) -> microscope::AssemblySyntax {
-        self.target
-            .as_ref()
+        self.phase
+            .target()
             .map_or_else(microscope::AssemblySyntax::default, |target| target.syntax)
     }
 
     pub(super) fn console(&self) -> Result<&Cli, ErrorBody> {
-        self.target
-            .as_ref()
+        self.phase
+            .target()
             .map(|target| &target.console)
             .ok_or_else(|| ErrorBody::new("no program is loaded"))
     }
@@ -3083,6 +3159,29 @@ async fn next_event(
         Some(events) => events.recv().await,
         None => std::future::pending().await,
     }
+}
+
+/// Applies a configuration's stepping settings to a new debugger, and
+/// returns the policy each signal had before the session changes it.
+async fn step_settings(
+    handle: &DebuggerHandle,
+    step_into_runtime: bool,
+    step_skips: microscope::StepSkips,
+) -> Result<HashMap<u64, SignalPolicy>, ErrorBody> {
+    let mut default_policies = HashMap::new();
+
+    for code in microscope::signal_codes() {
+        default_policies.insert(code, handle.signal_policy(code).await.map_err(error)?);
+    }
+
+    if step_into_runtime {
+        handle.set_step_into_runtime(true).await.map_err(error)?;
+    }
+    if !step_skips.patterns().is_empty() {
+        handle.set_step_skips(step_skips).await.map_err(error)?;
+    }
+
+    Ok(default_policies)
 }
 
 /// The debugger's options for a client breakpoint, or why it has none.

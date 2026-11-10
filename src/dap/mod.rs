@@ -13,6 +13,7 @@ pub mod launcher;
 mod memory;
 pub mod output;
 mod protocol;
+mod run;
 mod session;
 mod signals;
 mod sources;

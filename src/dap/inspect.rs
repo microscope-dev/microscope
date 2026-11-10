@@ -15,7 +15,8 @@ use super::protocol::{
     StackTraceArguments, ValueFormat, VariablesArguments,
 };
 
-use super::session::{Session, Stop, error, parse, signal_text};
+use super::run::Stop;
+use super::session::{Session, error, parse, signal_text};
 use super::values::{self, Options};
 use crate::present::{self, Filter, Item, ListError, Listed, Presenter, Window, complete};
 
@@ -73,7 +74,7 @@ const FOCUSED_REGARDLESS: [&str; 3] = ["breakpoint", "step", "function breakpoin
 
 impl Session {
     pub(super) async fn threads(&mut self) -> Result<Value, ErrorBody> {
-        if let Some(stop) = self.stop.clone()
+        if let Some(stop) = self.stop().cloned()
             && let Some(threads) = self.task_threads(&stop).await?
         {
             return Ok(json!({"threads": threads}));
@@ -94,7 +95,7 @@ impl Session {
                 let stopped = match &thread.state {
                     microscope::ThreadState::Stopped {
                         reason: Some(reason),
-                    } if self.stop.is_some() => Some(self.stopped_detail(reason)),
+                    } if self.stop().is_some() => Some(self.stopped_detail(reason)),
                     _ => None,
                 };
 
@@ -913,7 +914,7 @@ impl Session {
         let arguments = parse::<EvaluateArguments>(arguments, "evaluate arguments")?;
         let context = match arguments.frame_id {
             Some(frame) => Some(self.frame_context(frame)?),
-            None => self.stop.as_ref().map(Stop::innermost),
+            None => self.stop().map(Stop::innermost),
         };
 
         let expression = arguments.expression.trim();
@@ -1326,7 +1327,7 @@ impl Session {
             });
         let context = match arguments.frame_id {
             Some(frame) => self.references.frame_context(frame),
-            None => self.stop.as_ref().map(Stop::innermost),
+            None => self.stop().map(Stop::innermost),
         };
 
         let (completing, partial, start) = complete::completing(typed);
