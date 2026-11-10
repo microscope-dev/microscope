@@ -1842,7 +1842,7 @@ impl Session {
             .and_then(|target| target.owner.group())
             .filter(|group| group.stops() == microscope::StopScope::Group)
         {
-            group.pause_all().await
+            group.pause_all().await.map(drop)
         } else {
             self.target_handle()?.pause().await.map(drop)
         };

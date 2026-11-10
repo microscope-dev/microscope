@@ -631,7 +631,7 @@ impl Cli {
         let paused = match &self.group {
             Some(group) => match self.debugger().pause().await {
                 Err(Error::NotRunning | Error::AlreadyStopped) => {
-                    group.handle.pause_all().await.map(|()| StopReason::Pause)
+                    group.handle.pause_all().await.map(|_| StopReason::Pause)
                 }
                 paused => paused,
             },

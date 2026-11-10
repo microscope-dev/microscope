@@ -543,6 +543,7 @@ fn op() -> impl Strategy<Value = Op> {
 enum Answer {
     Execution(oneshot::Receiver<crate::Result<GroupExecutionId>>),
     Done(oneshot::Receiver<crate::Result<()>>),
+    Paused(oneshot::Receiver<crate::Result<Option<GroupExecutionId>>>),
 }
 
 /// A command waiting for its answer.
@@ -895,7 +896,7 @@ impl Harness {
             }
             Op::Pause => {
                 let (reply, answer) = oneshot::channel();
-                (Command::PauseAll(reply), Answer::Done(answer))
+                (Command::PauseAll(reply), Answer::Paused(answer))
             }
             Op::Detach(index) => {
                 let (reply, answer) = oneshot::channel();
@@ -931,6 +932,7 @@ impl Harness {
             let answer = match &mut asked.answer {
                 Answer::Execution(answer) => answer.try_recv().map(|result| result.map(drop)),
                 Answer::Done(answer) => answer.try_recv(),
+                Answer::Paused(answer) => answer.try_recv().map(|result| result.map(drop)),
             };
             let result = match answer {
                 Ok(result) => result,
@@ -1174,4 +1176,36 @@ proptest! {
         let (again, _) = run(scope, &ops);
         prop_assert_eq!(trace, again, "rule 6: the same inputs gave other group events");
     }
+}
+
+/// A pause's group stop names the execution the pause returned. Found by
+/// the model: when every member the pause waited for went without
+/// stopping, the pause ended with no stop, and a member that joined later
+/// stopped the group under the pause's execution, so a client credited the
+/// pause with a stop it never made.
+#[test]
+fn a_pause_that_ended_with_no_stop_names_no_later_stop() {
+    let ops = [
+        Op::Deliver(0),
+        Op::Lose(0),
+        Op::Pause,
+        Op::Deliver(0),
+        Op::Deliver(0),
+        Op::Join { late: false },
+        Op::Stop {
+            member: 1,
+            own: true,
+        },
+        Op::Deliver(0),
+        Op::Deliver(0),
+    ];
+    let (trace, failures) = run(StopScope::Group, &ops);
+    assert!(failures.is_empty(), "{failures:#?}");
+
+    let stopped = trace
+        .iter()
+        .find(|event| event.starts_with("GroupStopped"))
+        .expect("the new member's stop");
+    assert!(stopped.contains("member: 2"), "{trace:#?}");
+    assert!(stopped.contains("execution: None"), "{trace:#?}");
 }

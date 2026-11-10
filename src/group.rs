@@ -218,7 +218,7 @@ enum Command {
         Option<(MemberNumber, crate::StopId)>,
         oneshot::Sender<Result<GroupExecutionId>>,
     ),
-    PauseAll(oneshot::Sender<Result<()>>),
+    PauseAll(oneshot::Sender<Result<Option<GroupExecutionId>>>),
     Detach(MemberNumber, oneshot::Sender<Result<()>>),
     Shutdown(oneshot::Sender<Result<()>>),
 }
@@ -458,7 +458,12 @@ impl GroupHandle {
 
     /// Pauses every running member, and reports the group stop once they
     /// are stopped.
-    pub async fn pause_all(&self) -> Result<()> {
+    ///
+    /// Returns the execution that group stop names: the continue under way,
+    /// or one the pause begins. It is none where the group has no stop of
+    /// its own to report, as when a member's stop already stops the group,
+    /// or nothing runs yet.
+    pub async fn pause_all(&self) -> Result<Option<GroupExecutionId>> {
         self.command(Command::PauseAll).await
     }
 
@@ -971,15 +976,20 @@ impl Driver {
             }
             Command::PauseAll(reply) => {
                 if self.members.values().any(|live| live.running && !live.gone) {
+                    if self.execution.is_none() && self.stops.is_running() {
+                        self.next_execution += 1;
+                        self.execution = Some(GroupExecutionId(self.next_execution));
+                    }
+                    let execution = self.execution;
                     self.pause_all(None);
-                    let _ = reply.send(Ok(()));
+                    let _ = reply.send(Ok(execution));
                 } else {
                     // With nothing running yet, the root pauses as it
                     // starts, or says it is not running.
                     let root = self.root.clone();
                     tokio::spawn(async move {
                         let paused = match root.pause().await {
-                            Ok(_) | Err(Error::AlreadyStopped) => Ok(()),
+                            Ok(_) | Err(Error::AlreadyStopped) => Ok(None),
                             Err(error) => Err(error),
                         };
                         let _ = reply.send(paused);
@@ -1461,8 +1471,19 @@ impl Driver {
             self.pause(number, &live.handle);
         }
 
-        if let Some(stop) = self.stops.pause_all(first, waiting) {
-            self.report(stop);
+        let stop = self.stops.pause_all(first, waiting);
+        self.settled(stop);
+    }
+
+    /// Reports the group stop that just completed, if any. One that ended
+    /// with nothing to report, as when every member it waited for went,
+    /// leaves the group running, and the execution it would have ended is
+    /// over: a later stop must not name it.
+    fn settled(&mut self, stop: Option<MemberStop>) {
+        match stop {
+            Some(stop) => self.report(stop),
+            None if self.stops.is_running() => self.execution = None,
+            None => {}
         }
     }
 
@@ -1485,8 +1506,10 @@ impl Driver {
     /// Notes that member `number` stopped, or will not, while the group
     /// stops, and reports the group stop once none is left running.
     fn paused(&mut self, number: MemberNumber, stop: Option<MemberStop>) {
-        if let Some(stop) = self.stops.paused(number, stop) {
-            self.report(stop);
+        let was_stopping = self.stops.is_stopping();
+        let stop = self.stops.paused(number, stop);
+        if was_stopping {
+            self.settled(stop);
         }
     }
 
