@@ -19,7 +19,7 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::{Notify, broadcast, mpsc, watch};
 use tokio::task::JoinSet;
 
-use super::describe::{Describer, Images, plain};
+use super::describe::{Credits, Describer, Images, Run, plain};
 use super::protocol::{self, Joined, State, Stream};
 use super::session::{Outlet, observe, publish};
 use crate::cli::format;
@@ -130,6 +130,9 @@ pub struct Pump {
 
     /// The tasks that forward members' events, which end with the pump.
     forwarders: JoinSet<()>,
+
+    /// Who started each run, which the root's describer shares.
+    credits: Arc<Credits>,
 }
 
 impl Pump {
@@ -144,6 +147,7 @@ impl Pump {
         let (forward, received) = mpsc::unbounded_channel();
         // An attached group starts stopped where its root was attached.
         let stopped = (joined == Joined::Attached && group.is_some()).then_some(1);
+        let credits = Arc::clone(&root.credits);
         Self {
             state,
             outlet,
@@ -158,6 +162,7 @@ impl Pump {
             forward,
             received,
             forwarders: JoinSet::new(),
+            credits,
         }
     }
 
@@ -199,6 +204,9 @@ impl Pump {
                     None => group = None,
                 },
                 () = self.selection.changed.notified() => {}
+
+                // A run credited after its stop was shown shows it now.
+                () = self.credits.landed.notified() => {}
             }
 
             // Take every event already queued, so the burst publishes once.
@@ -288,7 +296,7 @@ impl Pump {
                 root.id.clone(),
                 root.target.clone(),
                 handle.clone(),
-                Arc::clone(&root.cause),
+                Arc::clone(&root.credits),
             );
             describer.writes = Arc::clone(&root.writes);
             describer.settings = Arc::clone(&root.settings);
@@ -377,6 +385,14 @@ impl Pump {
         };
         let outlet = self.outlet.clone();
         if let Some(describer) = self.describer(member, &handle) {
+            if let DebuggerEvent::InferiorStopped {
+                stop_id,
+                execution_id: Some(execution),
+                ..
+            } = &event
+            {
+                describer.ran_to(*stop_id, Run::Member(member, *execution));
+            }
             observe(describer, &outlet, &event, &tag);
         }
     }
@@ -400,9 +416,15 @@ impl Pump {
             GroupEvent::GroupStopped {
                 member,
                 stop,
+                execution,
                 reason,
-                ..
             } => {
+                if let Some(execution) = execution
+                    && let Some(handle) = group.member(member)
+                    && let Some(describer) = self.describer(member, &handle)
+                {
+                    describer.ran_to(stop, Run::Group(execution));
+                }
                 self.stopped = Some(member);
                 self.seen_stop = Some((member, stop));
                 // A pause stops no member in particular, so the selection

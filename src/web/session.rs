@@ -36,8 +36,8 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::auth::{Tokens, random_hex};
-use super::describe::{Cause, Describer, Images};
-use super::group::{Pump, Selection};
+use super::describe::{Cause, Credits, Describer, Images, Run};
+use super::group::{Pump, Selection, View};
 use super::protocol::{
     self, Added, ConsoleResult, ErrorBody, ErrorKind, FrameAt, Inferior, Output, PathCompletions,
     Person, Presence, Processes, Request, Role, ServerMessage, ShareLink, State, StepKind, Stream,
@@ -197,8 +197,8 @@ pub struct Session {
     people: Mutex<BTreeMap<u32, Person>>,
     next_connection: AtomicU32,
 
-    /// Who last ran the program, for the stop the run ends at.
-    cause: Arc<Mutex<Option<Cause>>>,
+    /// Who started each recent run, for the stop the run ends at.
+    credits: Arc<Credits>,
 
     /// Each connection's handles to values it was shown.
     handles: values::Handles,
@@ -343,7 +343,7 @@ impl Session {
             history: Arc::default(),
             people: Mutex::default(),
             next_connection: AtomicU32::new(1),
-            cause: Arc::default(),
+            credits: Arc::default(),
             handles: values::Handles::default(),
             resume_attached: AtomicBool::new(false),
             follow: Mutex::default(),
@@ -928,16 +928,22 @@ impl Session {
         Ok(Value::Null)
     }
 
-    /// Records who runs the program next, and how.
-    fn caused(&self, connection: u32, action: &str) {
-        *self.cause.lock().unwrap_or_else(PoisonError::into_inner) = Some(Cause {
+    /// Credits `run`, which connection `connection`'s request started, to
+    /// it, for the stop the run ends at.
+    fn credit(&self, connection: u32, run: Run, action: &str) {
+        self.credits.started(run, self.cause(connection, action));
+    }
+
+    /// Who did `action`, as the stops they cause say.
+    fn cause(&self, connection: u32, action: &str) -> Cause {
+        Cause {
             name: self.name_of(connection),
             action: action.to_owned(),
-        });
+        }
     }
 
     async fn step(&self, connection: u32, step: protocol::Step) -> Result<String, Failure> {
-        let handle = self.current_handle().await?;
+        let View { member, handle, .. } = self.current_view().await?;
         let InferiorState::Stopped { process_id, .. } = handle.snapshot().await?.inferior else {
             return Err(Failure::new(
                 ErrorKind::NotStopped,
@@ -974,8 +980,7 @@ impl Session {
         if let Some(call) = step.call.as_deref().filter(|_| step.kind == StepKind::Into) {
             let call = lowlevel::address(call)?;
             let action = format!("stepped into the call at {call}");
-            self.caused(connection, &action);
-            handle
+            let execution = handle
                 .start_step_into(
                     context.stop,
                     context.execution,
@@ -984,11 +989,11 @@ impl Session {
                     ExceptionDisposition::Pass,
                 )
                 .await?;
+            self.credit(connection, Run::Member(member, execution), &action);
             return Ok(action);
         }
 
-        self.caused(connection, action);
-        handle
+        let execution = handle
             .start_step(
                 context.stop,
                 context.execution,
@@ -998,11 +1003,12 @@ impl Session {
                 ExceptionDisposition::Pass,
             )
             .await?;
+        self.credit(connection, Run::Member(member, execution), action);
         Ok(action.to_owned())
     }
 
     async fn jump(&self, connection: u32, jump: protocol::Jump) -> Result<String, Failure> {
-        let handle = self.current_handle().await?;
+        let View { member, handle, .. } = self.current_view().await?;
         let location = jump.location.trim();
         let spec = crate::cli::commands::parse_breakpoint_location(location)
             .map_err(|error| Failure::new(ErrorKind::Invalid, format!("{error:#}")))?
@@ -1020,11 +1026,10 @@ impl Session {
         )
         .await?;
         let action = format!("moved thread {} to {location}", jump.thread);
-        self.caused(connection, &action);
-
-        handle
+        let execution = handle
             .start_jump(context.stop, context.execution, spec)
             .await?;
+        self.credit(connection, Run::Member(member, execution), &action);
 
         Ok(action)
     }
@@ -1034,7 +1039,7 @@ impl Session {
         connection: u32,
         advance: protocol::Advance,
     ) -> Result<String, Failure> {
-        let handle = self.current_handle().await?;
+        let View { member, handle, .. } = self.current_view().await?;
         let InferiorState::Stopped { process_id, .. } = handle.snapshot().await?.inferior else {
             return Err(Failure::new(
                 ErrorKind::NotStopped,
@@ -1060,9 +1065,7 @@ impl Session {
         )
         .await?;
         let action = format!("advanced thread {} to {location}", advance.thread);
-        self.caused(connection, &action);
-
-        handle
+        let execution = handle
             .start_advance(
                 context.stop,
                 context.execution,
@@ -1072,6 +1075,7 @@ impl Session {
                 ExceptionDisposition::Pass,
             )
             .await?;
+        self.credit(connection, Run::Member(member, execution), &action);
 
         Ok(action)
     }
@@ -1224,10 +1228,10 @@ impl Session {
             // The group resumes the member shown at the stop the tab saw,
             // or nothing: another tab may have moved it on since.
             if let Some(group) = group {
-                self.caused(connection, "continued");
-                group
+                let execution = group
                     .continue_from((view.member, StopId::new(stop)))
                     .await?;
+                self.credit(connection, Run::Group(execution), "continued");
                 return Ok("continued".to_owned());
             }
 
@@ -1239,14 +1243,15 @@ impl Session {
                 ));
             };
 
-            self.caused(connection, "continued");
-            view.handle
+            let execution = view
+                .handle
                 .continue_execution(
                     StopId::new(stop),
                     ResumeScope::Process(process_id),
                     ExceptionDisposition::Pass,
                 )
                 .await?;
+            self.credit(connection, Run::Member(view.member, execution), "continued");
             return Ok("continued".to_owned());
         }
 
@@ -1264,8 +1269,8 @@ impl Session {
             ));
         }
 
-        self.caused(connection, "started the program");
-        self.run(&handle, &spec).await?;
+        let execution = self.run(&handle, &spec).await?;
+        self.credit(connection, Run::Member(1, execution), "started the program");
         Ok("started the program".to_owned())
     }
 
@@ -1293,16 +1298,30 @@ impl Session {
             }
         }
 
-        self.caused(connection, "restarted the program");
-        self.run(&handle, &spec).await
+        let execution = self.run(&handle, &spec).await?;
+        self.credit(
+            connection,
+            Run::Member(1, execution),
+            "restarted the program",
+        );
+        Ok(())
     }
 
     /// Pauses the program: in a group, every process, once one is running.
     async fn pause(&self, connection: u32) -> Result<(), Failure> {
+        // A pause is credited with the stop it ends a run at, which its
+        // answer may come after.
         let Some(group) = self.group_handle().await else {
-            let handle = self.current_handle().await?;
-            self.caused(connection, "paused");
+            let View { member, handle, .. } = self.current_view().await?;
+            let running = match handle.snapshot().await?.inferior {
+                InferiorState::Running { execution_id, .. } => execution_id,
+                _ => None,
+            };
             handle.pause().await?;
+            if let Some(execution) = running {
+                let run = Run::Member(member, execution);
+                self.credits.paused(run, self.cause(connection, "paused"));
+            }
             return Ok(());
         };
 
@@ -1314,8 +1333,10 @@ impl Session {
             return Err(microscope::Error::NotRunning.into());
         }
 
-        self.caused(connection, "paused");
-        group.pause_all().await?;
+        if let Some(execution) = group.pause_all().await? {
+            let run = Run::Group(execution);
+            self.credits.paused(run, self.cause(connection, "paused"));
+        }
         Ok(())
     }
 
@@ -1461,11 +1482,16 @@ impl Session {
 
     /// The selected member's handle, which requests act on.
     async fn current_handle(&self) -> Result<DebuggerHandle, Failure> {
+        self.current_view().await.map(|view| view.handle)
+    }
+
+    /// The selected member, which requests about the program act on.
+    async fn current_view(&self) -> Result<View, Failure> {
         self.target
             .lock()
             .await
             .as_ref()
-            .map(|target| target.selection.view().handle)
+            .map(|target| target.selection.view())
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, "nothing is being debugged"))
     }
 
@@ -1929,12 +1955,9 @@ impl Session {
         // The new session's state goes out before the request is answered,
         // so a page can open it; the pump takes every later change.
         let events = handle.subscribe();
-        self.cause
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        self.credits.clear();
 
-        let describer = Describer::new(id, info, handle.clone(), Arc::clone(&self.cause));
+        let describer = Describer::new(id, info, handle.clone(), Arc::clone(&self.credits));
         let selection = Arc::new(Selection::new(
             handle.clone(),
             Arc::clone(&describer.images),
@@ -1993,7 +2016,7 @@ impl Session {
         }
 
         if run && let Some(spec) = launch {
-            let (readers, input) = self.launch(&handle, &spec).await?;
+            let (readers, input, _) = self.launch(&handle, &spec).await?;
             if let Some(target) = target.as_mut() {
                 target.readers = readers;
                 target.input = Some(input);
@@ -2038,22 +2061,27 @@ impl Session {
     }
 
     /// Starts a launched program, recording its output readers and input.
-    async fn run(&self, handle: &DebuggerHandle, spec: &LaunchSpec) -> Result<(), Failure> {
-        let (readers, input) = self.launch(handle, spec).await?;
+    /// Launches `spec`, returning the execution its first stop ends.
+    async fn run(
+        &self,
+        handle: &DebuggerHandle,
+        spec: &LaunchSpec,
+    ) -> Result<microscope::ExecutionId, Failure> {
+        let (readers, input, execution) = self.launch(handle, spec).await?;
 
         if let Some(target) = self.target.lock().await.as_mut() {
             target.readers.extend(readers);
             target.input = Some(input);
         }
 
-        Ok(())
+        Ok(execution)
     }
 
     async fn launch(
         &self,
         handle: &DebuggerHandle,
         spec: &LaunchSpec,
-    ) -> Result<(Vec<output::Forwarder>, Input), Failure> {
+    ) -> Result<(Vec<output::Forwarder>, Input, microscope::ExecutionId), Failure> {
         let failed = |error: std::io::Error| Failure::new(ErrorKind::Failed, error.to_string());
         let (stdin_read, stdin_write) = output::pipe().map_err(failed)?;
         let (stdout_read, stdout_write) = output::pipe().map_err(failed)?;
@@ -2073,7 +2101,7 @@ impl Session {
             stop_at_entry: spec.stop_at_entry,
         };
 
-        handle.launch_with(options).await.map_err(|error| {
+        let execution = handle.launch_with(options).await.map_err(|error| {
             Failure::new(
                 ErrorKind::Failed,
                 format!("failed to launch {}: {error}", spec.program.display()),
@@ -2085,7 +2113,7 @@ impl Session {
             .filter_map(|(read, stream)| self.read_output(read, stream).ok())
             .collect();
 
-        Ok((readers, Input::new(input, self.outlet())))
+        Ok((readers, Input::new(input, self.outlet()), execution))
     }
 
     fn outlet(&self) -> Outlet {

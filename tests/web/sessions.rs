@@ -508,3 +508,84 @@ async fn a_core_from_another_machine_opens_with_its_files_from_a_sysroot() {
         .await;
     assert_eq!(opened["target"]["kind"], "core");
 }
+
+/// Each stop is credited to the tab whose request started the run it
+/// ended. A request that fails starts nothing, so the stop that ends
+/// another tab's run is not credited to it; a pause is credited with the
+/// run it stops.
+#[tokio::test]
+async fn each_stop_is_credited_to_the_tab_that_ran_the_program_to_it() {
+    let program = fixture("stdin-digest");
+    let web = Web::start("credit", &["--stop-at-entry", &program]);
+    let mut first = web.control("first").await;
+    let mut second = web.control("second").await;
+    first.ok("setName", json!({"name": "alice"})).await;
+    second.ok("setName", json!({"name": "bob"})).await;
+    first.ok("continue", json!({})).await;
+    let entry = first.inferior("stopped").await["inferior"]["stop"].clone();
+    first
+        .ok("addBreakpoint", json!({"location": "stdin-digest.c:13"}))
+        .await;
+
+    // The program waits for input while alice's run is under way.
+    first.ok("continue", json!({"stop": entry})).await;
+    first.inferior("running").await;
+    second.ok("pause", json!(null)).await;
+    let paused = first
+        .state("the pause", |state| {
+            state["inferior"]["state"] == "stopped" && state["inferior"]["stop"] != entry
+        })
+        .await;
+    assert_eq!(paused["inferior"]["reason"]["kind"], "pause", "{paused}");
+    let pause = paused["inferior"]["stop"].clone();
+    let credited = |state: &Value, stop: &Value| {
+        state["stops"]
+            .as_array()
+            .and_then(|stops| stops.iter().find(|entry| entry["stop"] == *stop))
+            .map(|entry| (entry["by"].clone(), entry["action"].clone()))
+    };
+    let state = first
+        .state("the pause credited", |state| {
+            credited(state, &pause).is_some_and(|(by, _)| !by.is_null())
+        })
+        .await;
+    assert_eq!(
+        credited(&state, &pause),
+        Some((json!("bob"), json!("paused"))),
+        "{state}"
+    );
+
+    // Bob's continue from the stop the program has left fails, and runs
+    // nothing of the program alice continued.
+    first.ok("continue", json!({"stop": pause})).await;
+    first.inferior("running").await;
+    let (kind, _) = second
+        .request("continue", json!({"stop": pause}))
+        .await
+        .expect_err("a continue from a stop the program left");
+    assert!(
+        matches!(kind.as_str(), "staleStop" | "notStopped"),
+        "{kind}"
+    );
+    first.ok("input", json!({"text": "", "eof": true})).await;
+    let stopped = first
+        .state("the breakpoint", |state| {
+            state["inferior"]["state"] == "stopped" && state["inferior"]["stop"] != pause
+        })
+        .await;
+    assert_eq!(
+        stopped["inferior"]["reason"]["kind"], "breakpoint",
+        "{stopped}"
+    );
+    let breakpoint = stopped["inferior"]["stop"].clone();
+    let state = first
+        .state("the breakpoint credited", |state| {
+            credited(state, &breakpoint).is_some_and(|(by, _)| !by.is_null())
+        })
+        .await;
+    assert_eq!(
+        credited(&state, &breakpoint),
+        Some((json!("alice"), json!("continued"))),
+        "{state}"
+    );
+}

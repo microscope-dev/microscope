@@ -1,16 +1,17 @@
 //! The debugger's state as the page receives it: where the program stopped,
 //! its breakpoints and where they landed, and the stops so far.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use microscope::{
-    BreakpointLocation, BreakpointSpec, DebuggerHandle, ExecutionContext, ImageAddress,
-    InferiorState, LoadBias, ModuleId, ModuleImage, StackFrame, StackFrameId, StateSnapshot,
-    StopContext, StopReason, VirtualAddress,
+    BreakpointLocation, BreakpointSpec, DebuggerHandle, ExecutionContext, ExecutionId,
+    GroupExecutionId, ImageAddress, InferiorState, LoadBias, MemberNumber, ModuleId, ModuleImage,
+    StackFrame, StackFrameId, StateSnapshot, StopContext, StopReason, VirtualAddress,
 };
+use tokio::sync::Notify;
 
 use super::protocol::{self, Inferior, Place, State, StopEntry, Thread};
 use crate::cli::format;
@@ -202,11 +203,93 @@ pub const fn watch_access(access: microscope::WatchAccess) -> protocol::WatchAcc
     }
 }
 
-/// Who last ran the program, and how, for the stop that run ends at.
+/// Who ran the program, and how, for the stop that run ends at.
 #[derive(Debug, Clone)]
 pub struct Cause {
     pub name: String,
     pub action: String,
+}
+
+/// A run a tab started: one member's execution, or one of the whole group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Run {
+    Member(MemberNumber, ExecutionId),
+    Group(GroupExecutionId),
+}
+
+/// The most runs whose causes are kept, for stops not yet shown.
+const CREDITS: usize = 64;
+
+/// Who started each recent run, and who paused it. A tab's run is
+/// credited once its request succeeds, under the execution the request
+/// returned; a stop is credited from the runs its own events say it ended.
+/// A request that fails starts nothing, so it is credited with nothing.
+#[derive(Default)]
+pub struct Credits {
+    runs: Mutex<VecDeque<(Run, Credit)>>,
+
+    /// Wakes the pump when a run is credited, as its stop may already be
+    /// shown.
+    pub landed: Notify,
+}
+
+/// Who started a run, and who paused it.
+#[derive(Default)]
+struct Credit {
+    started: Option<Cause>,
+    paused: Option<Cause>,
+}
+
+impl Credits {
+    /// Credits `run` to `cause`, who started it.
+    pub fn started(&self, run: Run, cause: Cause) {
+        self.update(run, |credit| credit.started = Some(cause));
+    }
+
+    /// Credits the stop a pause ended `run` at to `cause`.
+    pub fn paused(&self, run: Run, cause: Cause) {
+        self.update(run, |credit| credit.paused = Some(cause));
+    }
+
+    fn update(&self, run: Run, change: impl FnOnce(&mut Credit)) {
+        let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
+        let index = runs.iter().position(|(credited, _)| *credited == run);
+        let mut credit = index
+            .and_then(|index| runs.remove(index))
+            .map_or_else(Credit::default, |(_, credit)| credit);
+        change(&mut credit);
+        runs.push_back((run, credit));
+        if runs.len() > CREDITS {
+            runs.pop_front();
+        }
+        drop(runs);
+        self.landed.notify_one();
+    }
+
+    /// Who ran `run` to a stop: whoever paused it, for a pause's stop,
+    /// and whoever started it, for any other.
+    fn of(&self, run: Run, pause: bool) -> Option<Cause> {
+        self.runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(credited, _)| *credited == run)
+            .and_then(|(_, credit)| {
+                if pause {
+                    credit.paused.clone()
+                } else {
+                    credit.started.clone()
+                }
+            })
+    }
+
+    /// Forgets every run, for a new session, whose executions are its own.
+    pub fn clear(&self) {
+        self.runs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
 }
 
 /// Builds each [`State`] for one debugger, remembering its stops.
@@ -216,9 +299,11 @@ pub struct Describer {
     pub images: Arc<Images>,
     pub handle: DebuggerHandle,
 
-    /// Set as a tab runs the program; taken by the stop that ends the run.
-    pub cause: Arc<Mutex<Option<Cause>>>,
+    pub credits: Arc<Credits>,
     stops: Vec<StopEntry>,
+
+    /// The runs each stop ended, by the stop, as its events said.
+    ran_to: BTreeMap<u64, Vec<Run>>,
     pub ended: Ended,
 
     /// Counts the changes tabs make to the program's values.
@@ -234,18 +319,48 @@ impl Describer {
         id: String,
         target: protocol::Target,
         handle: DebuggerHandle,
-        cause: Arc<Mutex<Option<Cause>>>,
+        credits: Arc<Credits>,
     ) -> Self {
         Self {
             id,
             target,
             images: Arc::new(Images::new(handle.clone())),
             handle,
-            cause,
+            credits,
             stops: Vec::new(),
+            ran_to: BTreeMap::new(),
             ended: Ended::default(),
             writes: Arc::default(),
             settings: Arc::default(),
+        }
+    }
+
+    /// Notes that `stop` ended `run`.
+    pub fn ran_to(&mut self, stop: microscope::StopId, run: Run) {
+        let runs = self.ran_to.entry(stop.get()).or_default();
+        if !runs.contains(&run) {
+            runs.push(run);
+        }
+        while self.ran_to.len() > STOP_HISTORY {
+            self.ran_to.pop_first();
+        }
+    }
+
+    /// Credits each stop listed with the run it ended, once that run's
+    /// credit is known. A member's own run is the one a tab stepped it
+    /// by, and comes before the group's.
+    fn credit_stops(&mut self) {
+        for entry in self.stops.iter_mut().filter(|entry| entry.by.is_none()) {
+            let Some(runs) = self.ran_to.get(&entry.stop) else {
+                continue;
+            };
+            let pause = entry.reason.kind == reason_kind(&StopReason::Pause);
+            let mut runs = runs.clone();
+            runs.sort_by_key(|run| matches!(run, Run::Group(_)));
+            if let Some(cause) = runs.into_iter().find_map(|run| self.credits.of(run, pause)) {
+                entry.by = Some(cause.name);
+                entry.action = Some(cause.action);
+            }
         }
     }
 
@@ -290,6 +405,7 @@ impl Describer {
             }
         };
 
+        self.credit_stops();
         let mut breakpoints = Vec::with_capacity(snapshot.breakpoints.len());
         for breakpoint in snapshot.breakpoints.iter() {
             breakpoints.push(self.breakpoint(breakpoint).await);
@@ -356,11 +472,6 @@ impl Describer {
             Err(_) => (0, None),
         };
 
-        let cause = self
-            .cause
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
         let entry = StopEntry {
             stop,
             thread,
@@ -370,8 +481,8 @@ impl Describer {
             },
             frame,
             place,
-            by: cause.as_ref().map(|cause| cause.name.clone()),
-            action: cause.map(|cause| cause.action),
+            by: None,
+            action: None,
         };
 
         self.stops.push(entry.clone());

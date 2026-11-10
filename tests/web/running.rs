@@ -85,9 +85,25 @@ async fn a_breakpoint_set_before_running_stops_there_and_steps_walk_the_source()
         entry.as_ref().map(|entry| &entry["stop"]),
         Some(&inferior["stop"])
     );
+
+    // A run is credited once its request is answered, which a quick stop
+    // can come before.
+    let stop = inferior["stop"].clone();
+    let credited = tab
+        .state("the stop credited", |state| {
+            state["stops"].as_array().is_some_and(|stops| {
+                stops
+                    .iter()
+                    .any(|entry| entry["stop"] == stop && !entry["by"].is_null())
+            })
+        })
+        .await;
+    let entry = credited["stops"]
+        .as_array()
+        .and_then(|stops| stops.iter().find(|entry| entry["stop"] == stop));
     assert_eq!(
-        entry.as_ref().map(|entry| &entry["by"]),
-        Some(&json!("tester"))
+        entry.map(|entry| (&entry["by"], &entry["action"])),
+        Some((&json!("tester"), &json!("started the program")))
     );
 
     let (stop, thread) = (inferior["stop"].clone(), inferior["thread"].clone());
