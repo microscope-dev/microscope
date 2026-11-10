@@ -299,7 +299,7 @@ pub(super) fn write_logical_memory_with(
         };
 
         let mut physical = current.to_ne_bytes();
-        let mut hidden = Vec::new();
+        let mut saved = Vec::new();
         let mut count = 0;
 
         for (offset, byte) in physical.iter_mut().enumerate() {
@@ -315,9 +315,16 @@ pub(super) fn write_logical_memory_with(
                 .ok_or_else(|| Error::internal("a write covers the bytes it stores"))?;
             count += 1;
 
+            // A site keeps the byte its trap covers, which a lifted trap
+            // leaves in memory too.
             match sites.get(&VirtualAddress::new(target)) {
-                Some(site) if site.trap == Trap::Installed => hidden.push((target, user)),
-                _ => *byte = user,
+                Some(site) => {
+                    saved.push((target, user));
+                    if site.trap != Trap::Installed {
+                        *byte = user;
+                    }
+                }
+                None => *byte = user,
             }
         }
 
@@ -325,7 +332,7 @@ pub(super) fn write_logical_memory_with(
             break;
         }
 
-        for (target, byte) in hidden {
+        for (target, byte) in saved {
             if let Some(site) = sites.get_mut(&VirtualAddress::new(target)) {
                 site.original_byte = byte;
             }

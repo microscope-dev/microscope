@@ -253,21 +253,31 @@ proptest! {
     }
 }
 
-/// The user's view of memory and the owners of each site, for a live
-/// process: readability changes only between words.
+/// The user's view of memory, the owners of each site, and why each
+/// lifted site's trap is out, for a live process: readability changes
+/// only between words.
 #[derive(Clone, Debug)]
 struct World {
     user: Bytes,
     sites: BTreeMap<u64, BTreeSet<BreakpointOwner>>,
+    lifted: BTreeMap<u64, Lift>,
 }
 
 impl World {
     fn physical(&self) -> Bytes {
         let mut physical = self.user.clone();
         for &address in self.sites.keys() {
-            physical.set(address, BREAKPOINT_OPCODE);
+            if !self.lifted.contains_key(&address) {
+                physical.set(address, BREAKPOINT_OPCODE);
+            }
         }
         physical
+    }
+
+    fn trap(&self, address: u64) -> Trap {
+        self.lifted
+            .get(&address)
+            .map_or(Trap::Installed, |&lift| Trap::Lifted(lift))
     }
 
     /// Whether a trap can go at `address`: any readable byte takes one.
@@ -289,6 +299,7 @@ impl World {
         let last = owners.is_empty();
         if last {
             self.sites.remove(&address);
+            self.lifted.remove(&address);
         }
         last
     }
@@ -326,8 +337,10 @@ enum Step {
     Write(u64, Vec<u8>),
     Read(u64, usize),
 
-    /// Lifts a site's trap and writes it back, as a repair does.
-    Repair(u64),
+    /// Lifts a site's trap, keeping the site. A lifted trap stays out for
+    /// its first reason.
+    Lift(u64, Lift),
+    Reinstall(u64),
 }
 
 fn owner() -> impl Strategy<Value = BreakpointOwner> {
@@ -348,6 +361,7 @@ impl ReferenceStateMachine for Breakpoints {
             .prop_map(|user| World {
                 user,
                 sites: BTreeMap::new(),
+                lifted: BTreeMap::new(),
             })
             .boxed()
     }
@@ -372,13 +386,16 @@ impl ReferenceStateMachine for Breakpoints {
         }
 
         let addresses = world.sites.keys().copied().collect::<Vec<_>>();
+        let lift = prop_oneof![Just(Lift::Repair), Just(Lift::Vfork)];
         prop_oneof![
             3 => install,
             2 => prop::sample::select(owned)
                 .prop_map(|(address, owner)| Step::RemoveOwner(address, owner)),
             2 => write,
             1 => read,
-            1 => prop::sample::select(addresses).prop_map(Step::Repair),
+            1 => (prop::sample::select(addresses.clone()), lift)
+                .prop_map(|(address, lift)| Step::Lift(address, lift)),
+            1 => prop::sample::select(addresses).prop_map(Step::Reinstall),
         ]
         .boxed()
     }
@@ -389,7 +406,7 @@ impl ReferenceStateMachine for Breakpoints {
                 .sites
                 .get(address)
                 .is_some_and(|owners| owners.contains(owner)),
-            Step::Repair(address) => world.sites.contains_key(address),
+            Step::Lift(address, _) | Step::Reinstall(address) => world.sites.contains_key(address),
             Step::Install(..) | Step::Write(..) | Step::Read(..) => true,
         }
     }
@@ -405,7 +422,13 @@ impl ReferenceStateMachine for Breakpoints {
             Step::Write(address, bytes) => {
                 world.write(*address, bytes);
             }
-            Step::Read(..) | Step::Repair(..) => {}
+            Step::Lift(address, lift) => {
+                world.lifted.entry(*address).or_insert(*lift);
+            }
+            Step::Reinstall(address) => {
+                world.lifted.remove(address);
+            }
+            Step::Read(..) => {}
         }
         world
     }
@@ -510,24 +533,20 @@ impl StateMachineTest for Process {
                     expected_read(&expected.user, |_, byte| byte, address, size).as_ref(),
                 );
             }
-            Step::Repair(address) => {
-                let address = VirtualAddress::new(address);
+            Step::Lift(address, lift) => {
                 lift_site(
                     &mut process.sites,
-                    address,
-                    Lift::Repair,
+                    VirtualAddress::new(address),
+                    lift,
                     peek(&process.memory),
                     poke(&process.memory),
                 )
                 .expect("lifting a trap");
-                assert_eq!(
-                    process.memory.borrow().get(address.get()),
-                    expected.user.get(address.get()),
-                    "a lifted trap restores the user's byte at {address}"
-                );
+            }
+            Step::Reinstall(address) => {
                 reinstall_site(
                     &mut process.sites,
-                    address,
+                    VirtualAddress::new(address),
                     peek(&process.memory),
                     poke(&process.memory),
                 )
@@ -559,8 +578,8 @@ impl StateMachineTest for Process {
             .map(|(address, site)| {
                 assert_eq!(
                     site.trap,
-                    Trap::Installed,
-                    "the site at {address} is installed"
+                    world.trap(address.get()),
+                    "the site at {address} is installed or lifted as it was left"
                 );
                 assert_eq!(
                     Some(site.original_byte),
@@ -581,8 +600,9 @@ impl StateMachineTest for Process {
 prop_state_machine! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// Installs, removals, repairs, and writes keep traps exactly at the
-    /// sites, and every read shows the bytes the user wrote.
+    /// Installs, removals, lifts, reinstalls, and writes keep traps exactly
+    /// at the sites whose traps are in, and every read shows the bytes the
+    /// user wrote.
     #[test]
     fn traps_and_writes_keep_the_users_view(sequential 1..24 => Process);
 }
@@ -614,8 +634,14 @@ fn a_trap_goes_in_the_last_bytes_before_unmapped_memory() {
     );
     assert_eq!(sites[&address].original_byte, 0x90);
 
-    lift_site(&mut sites, address, Lift::Repair, peek(&memory), poke(&memory))
-        .expect("lifting the trap");
+    lift_site(
+        &mut sites,
+        address,
+        Lift::Repair,
+        peek(&memory),
+        poke(&memory),
+    )
+    .expect("lifting the trap");
     assert_eq!(memory.borrow().bytes[..WORD], [Some(0x90); WORD]);
 }
 
