@@ -405,7 +405,9 @@ impl Cli {
                         lines.push(line);
                     }
                 }
-                Err(TryRecvError::Lagged(_)) => {}
+                Err(TryRecvError::Lagged(missed)) => {
+                    lines.push(missed_warning(missed, self.renderers.stdout));
+                }
                 Err(TryRecvError::Empty | TryRecvError::Closed) => break,
             }
         }
@@ -433,19 +435,17 @@ impl Cli {
         Ok(stop)
     }
 
-    /// The group's next event that no run reported, which never comes for
-    /// a session of one.
-    pub(super) async fn next_group_event(&self) -> GroupEvent {
+    /// The line the group's next event that no run reported prints between
+    /// commands, if any. It never comes for a session of one.
+    pub(super) async fn next_group_notice(&self) -> Option<String> {
         let Some(group) = self.group.as_ref() else {
             return std::future::pending().await;
         };
         let mut events = group.events.lock().await;
-        loop {
-            match events.recv().await {
-                Ok(event) => return event,
-                Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => return std::future::pending().await,
-            }
+        match events.recv().await {
+            Ok(event) => self.group_notice(&event),
+            Err(RecvError::Lagged(missed)) => Some(missed_warning(missed, self.renderers.stdout)),
+            Err(RecvError::Closed) => std::future::pending().await,
         }
     }
 
@@ -878,6 +878,29 @@ mod tests {
         let exited = session.run("continue").await;
         session.forwarded(3).await;
         assert!(exited.contains("exited"), "{exited}");
+
+        session.end().await;
+    }
+
+    /// The prompt says when it missed some of the group's events, rather
+    /// than printing what came after as if nothing was lost.
+    #[tokio::test]
+    async fn the_prompt_says_it_missed_group_events() {
+        let session = Session::of("basic");
+        for _ in 0..2 * CAPACITY {
+            session
+                .sender
+                .send(GroupEvent::MemberDetached { member: 99 })
+                .expect("send an event");
+        }
+
+        let notice = tokio::time::timeout(Duration::from_secs(5), session.cli.next_group_notice())
+            .await
+            .expect("a notice");
+        assert!(
+            notice.as_ref().is_some_and(|line| line.contains("missed")),
+            "{notice:?}"
+        );
 
         session.end().await;
     }

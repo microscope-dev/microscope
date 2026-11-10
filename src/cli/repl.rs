@@ -184,9 +184,9 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
                 Some(input) => input,
                 None => break,
             },
-            event = cli.next_group_event() => {
+            notice = cli.next_group_notice() => {
                 if at_prompt
-                    && let Some(line) = cli.group_notice(&event)
+                    && let Some(line) = notice
                 {
                     notices.push(line);
                 }
