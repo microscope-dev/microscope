@@ -1590,19 +1590,19 @@ impl Driver {
 
         match command {
             Command::ContinueAll(None, reply) => {
-                let continued = self.continue_all().await;
+                let continued = self.continue_all(None).await;
                 let _ = reply.send(begun(self, continued));
             }
             Command::ContinueAll(Some((number, stop)), reply) => {
                 // A stop to report resumes nothing, but the client must
                 // still be continuing from the stop it showed.
-                let observed = if self.stops.has_pending() {
-                    self.still_at(number, stop).await
+                let (observed, shown) = if self.stops.has_pending() {
+                    (self.still_at(number, stop).await, Some((number, stop)))
                 } else {
-                    self.resume_observed(number, stop).await
+                    (self.resume_observed(number, stop).await, None)
                 };
                 let continued = match observed {
-                    Ok(()) => self.continue_rest().await,
+                    Ok(()) => self.continue_rest(shown).await,
                     Err(error) => Err(error),
                 };
                 let _ = reply.send(begun(self, continued));
@@ -1619,9 +1619,9 @@ impl Driver {
 
                 self.stops.discard_pending();
                 let continued = if observed.is_some() {
-                    self.continue_rest().await
+                    self.continue_rest(None).await
                 } else {
-                    self.continue_all().await
+                    self.continue_all(None).await
                 };
                 let _ = reply.send(begun(self, continued));
             }
@@ -1631,14 +1631,17 @@ impl Driver {
 
     /// Continues the group once the member a client showed has resumed,
     /// which is enough even with no other member stopped.
-    async fn continue_rest(&mut self) -> Result<()> {
-        match self.continue_all().await {
+    async fn continue_rest(&mut self, shown: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
+        match self.continue_all(shown).await {
             Err(Error::NotStopped) => Ok(()),
             result => result,
         }
     }
 
-    async fn continue_all(&mut self) -> Result<()> {
+    /// Reports a stop that waited, or resumes each stopped member at the
+    /// stop the group knows, or, for member `shown.0`, at the stop
+    /// `shown.1` a client showed, which the group may not have read.
+    async fn continue_all(&mut self, shown: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
         // A waiting stop is reported only where its member still is: a
         // client may have moved it on through its own session since, and
         // the group may not have seen that yet.
@@ -1660,14 +1663,23 @@ impl Driver {
         }
 
         let mut result = Err(Error::NotStopped);
-        for live in self.members.values_mut() {
-            if live.gone || live.running {
+        for (&number, live) in &mut self.members {
+            // The member a client showed stopped may be stopped though the
+            // group has yet to read it.
+            let shown = shown
+                .filter(|(member, _)| *member == number)
+                .map(|(_, stop)| stop);
+            if live.gone || (live.running && shown.is_none()) {
                 continue;
             }
 
             let seen = live.seen;
-            match continue_stopped(&live.handle, |stop| Some(stop) == seen).await {
-                Ok(()) => {
+            let resumable = |stop| Some(stop) == seen || Some(stop) == shown;
+            match continue_stopped(&live.handle, resumable).await {
+                Ok(stop) => {
+                    // Its events for the stop it left are now behind the
+                    // group, as resume_observed notes.
+                    live.seen = live.seen.max(Some(stop));
                     live.running = true;
                     result = Ok(());
                 }
@@ -1792,11 +1804,12 @@ impl Driver {
 
 /// Continues a member at its current stop, if `resumable` says it may.
 /// A stop the group has not seen is not resumed: its event is still on
-/// its way, and the group reports the stop when it arrives.
+/// its way, and the group reports the stop when it arrives. Returns the
+/// stop it resumed from.
 async fn continue_stopped(
     handle: &DebuggerHandle,
     resumable: impl Fn(crate::StopId) -> bool,
-) -> Result<()> {
+) -> Result<crate::StopId> {
     let snapshot = handle.snapshot().await?;
     let InferiorState::Stopped {
         process_id,
@@ -1817,7 +1830,7 @@ async fn continue_stopped(
             ExceptionDisposition::Pass,
         )
         .await
-        .map(drop)
+        .map(|_| stop_id)
 }
 
 /// Makes a member's breakpoints the root's `breakpoints`: each one the
@@ -2266,7 +2279,7 @@ mod tests {
         })
         .await
         .expect("the step stops in time");
-        let _ = driver.continue_all().await;
+        let _ = driver.continue_all(None).await;
 
         assert_eq!(
             next_group_stop(&mut driver, &mut received).await,
@@ -2362,7 +2375,7 @@ mod tests {
 
         // A continue reports no stop the root has left; it resumes the
         // root, which runs to its exit.
-        driver.continue_all().await.expect("continue the group");
+        driver.continue_all(None).await.expect("continue the group");
         assert_eq!(
             next_group_stop(&mut driver, &mut received).await,
             GroupEvent::GroupExited,
@@ -2577,7 +2590,7 @@ mod tests {
             }
         );
 
-        tokio::time::timeout(std::time::Duration::from_secs(5), driver.continue_all())
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver.continue_all(None))
             .await
             .expect("report the queued stop in time")
             .expect("report the queued stop");

@@ -1209,3 +1209,66 @@ fn a_pause_that_ended_with_no_stop_names_no_later_stop() {
     assert!(stopped.contains("member: 2"), "{trace:#?}");
     assert!(stopped.contains("execution: None"), "{trace:#?}");
 }
+
+/// A continue from a stop a client showed resumes the member from it, even
+/// with another stop waiting to be reported. Found by the model: the
+/// waiting stop was the member's own older one, which the continue
+/// dropped, and the member stayed at the stop the client continued from,
+/// whose event the group had not read.
+#[test]
+fn a_continue_from_a_shown_stop_resumes_it_past_a_dropped_waiting_stop() {
+    let ops = [
+        Op::Join { late: false },
+        Op::Deliver(0),
+        Op::Deliver(0),
+        Op::Stop {
+            member: 0,
+            own: false,
+        },
+        Op::Step(0),
+        Op::Stop {
+            member: 1,
+            own: false,
+        },
+        Op::Deliver(1),
+        Op::Stop {
+            member: 0,
+            own: false,
+        },
+        Op::Deliver(0),
+        Op::ContinueFrom(Named::Current(0)),
+    ];
+    let (trace, failures) = run(StopScope::Group, &ops);
+    assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
+}
+
+/// As above, where the group has read the step that moved the member on,
+/// but not the stop the step ended at, so it thinks the member runs.
+#[test]
+fn a_continue_from_a_shown_stop_resumes_a_member_the_group_thinks_runs() {
+    let ops = [
+        Op::Join { late: false },
+        Op::Deliver(0),
+        Op::Stop {
+            member: 1,
+            own: false,
+        },
+        Op::Deliver(0),
+        Op::Stop {
+            member: 0,
+            own: false,
+        },
+        Op::Deliver(1),
+        Op::Step(0),
+        Op::Deliver(0),
+        Op::Deliver(0),
+        Op::Deliver(0),
+        Op::Stop {
+            member: 0,
+            own: false,
+        },
+        Op::ContinueFrom(Named::Current(0)),
+    ];
+    let (trace, failures) = run(StopScope::Group, &ops);
+    assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
+}
