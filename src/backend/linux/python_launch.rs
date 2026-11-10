@@ -154,7 +154,7 @@ impl PythonLaunch {
         }))
     }
 
-    fn create() -> Result<Self, Arc<str>> {
+    pub(super) fn create() -> Result<Self, Arc<str>> {
         let parent = Path::new("/tmp");
         let mut random = [0; 16];
 

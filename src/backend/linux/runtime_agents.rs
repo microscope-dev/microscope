@@ -1,5 +1,6 @@
 //! Controller-owned agent files, outstanding requests and acknowledgements.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,8 @@ const BOOTSTRAP_TIMED_OUT: &str = "the Python launch bootstrap did not take the 
 const TIMED_OUT: &str =
     "runtime agent acknowledgement timed out; configuration remains unconfirmed";
 
+const AWAITING: &str = "waiting for the runtime agent to acknowledge its configuration";
+
 use super::agent_files::AgentFiles;
 use super::native::LinuxTraceOps;
 use super::runtimes::BoundRuntime;
@@ -26,43 +29,97 @@ use crate::runtime_model::{
     TargetProcessId,
 };
 
+/// One runtime's agent: its files, the requests the controller made of
+/// it, and how the newest stands.
 #[derive(Debug)]
 pub(super) struct Installation {
     files: Option<Box<dyn AgentFiles>>,
     library: Option<Arc<str>>,
-    ticket: Option<Arc<dyn AgentRequestTicket>>,
+
+    /// The generation the next request takes.
     next: u64,
-    sequence: u64,
-    state: State,
-    sent: Option<Desired>,
+
+    /// The newest generation that may have reached the agent. Only its
+    /// reports count.
     generation: Option<u64>,
-    deadline: Option<Instant>,
-    expired: bool,
-    request_thread: Option<crate::ThreadId>,
-    remaining: Duration,
 
-    /// The script path of the outstanding request the launch bootstrap
-    /// takes, which no thread of the program's runs.
-    bootstrap: Option<String>,
+    /// The newest generation the command slot is known to publish.
+    sequence: u64,
 
-    /// Whether any thread has run since the outstanding request was
-    /// published. A command no thread has run since is unread, and a newer
-    /// one can replace it, as a step begun at the stop that ended the last
-    /// replaces that stop's disarming.
-    exposed: bool,
+    /// What the newest request asked of the agent, or asks once a thread
+    /// can take it.
+    sent: Option<Desired>,
 
     /// The sites of the configuration the agent last acknowledged. While a
     /// newer one is outstanding, the agent holds one or the other, so a site
     /// both name stays armed.
-    confirmed: std::collections::BTreeSet<u64>,
+    confirmed: BTreeSet<u64>,
+
+    state: State,
 }
 
 #[derive(Debug)]
 enum State {
+    /// No thread could take a request. The runtime's entries are trapped
+    /// until one reaches them.
     Waiting,
-    Awaiting { generation: u64, source: bool },
+
+    /// The newest request awaits the agent's acknowledgement.
+    Awaiting(Request),
+
+    /// The agent acknowledged the newest request.
     Ready,
+
+    /// The newest configuration was refused, by the agent or before any
+    /// request reached the program.
     Refused(Arc<str>),
+}
+
+/// An outstanding request.
+#[derive(Debug)]
+struct Request {
+    /// What retires a source request. A command needs nothing.
+    source: Option<Source>,
+    timer: Timer,
+}
+
+/// A source request, which one thread runs as it enters the interpreter.
+#[derive(Debug)]
+struct Source {
+    ticket: Arc<dyn AgentRequestTicket>,
+    thread: crate::ThreadId,
+
+    /// The script path of a request the launch bootstrap takes, which no
+    /// thread of the program's runs.
+    bootstrap: Option<String>,
+}
+
+/// What is left of a request's acknowledgement budget, which counts only
+/// time the program runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Timer {
+    /// No thread has run since the request was published, so the agent
+    /// cannot have read it, and a newer command can replace it.
+    Unread,
+    Paused(Duration),
+    Running(Instant),
+    Expired,
+}
+
+impl Request {
+    /// Why arming waits for this request.
+    const fn waiting(&self) -> &'static str {
+        match (self.timer, &self.source) {
+            (
+                Timer::Expired,
+                Some(Source {
+                    bootstrap: Some(_), ..
+                }),
+            ) => BOOTSTRAP_TIMED_OUT,
+            (Timer::Expired, _) => TIMED_OUT,
+            _ => AWAITING,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,65 +146,108 @@ impl Installation {
         Self {
             files: None,
             library: None,
-            ticket: None,
             next: 1,
-            sequence: 0,
-            state: State::Waiting,
-            sent: None,
             generation: None,
-            deadline: None,
-            expired: false,
-            request_thread: None,
-            remaining: ACK_TIMEOUT,
-            bootstrap: None,
-            exposed: false,
-            confirmed: std::collections::BTreeSet::new(),
+            sequence: 0,
+            sent: None,
+            confirmed: BTreeSet::new(),
+            state: State::Waiting,
         }
+    }
+
+    /// Makes `generation` the newest request, outstanding.
+    fn publish(&mut self, generation: u64, source: Option<Source>) {
+        self.generation = Some(generation);
+        self.state = State::Awaiting(Request {
+            source,
+            timer: Timer::Unread,
+        });
     }
 
     pub(super) const fn deadline(&self) -> Option<Instant> {
-        self.deadline
+        match self.state {
+            State::Awaiting(Request {
+                timer: Timer::Running(deadline),
+                ..
+            }) => Some(deadline),
+            _ => None,
+        }
     }
 
+    /// The program runs: the outstanding request's budget runs with it.
     pub(super) fn start_deadline(&mut self, now: Instant) {
-        if !matches!(self.state, State::Awaiting { .. }) {
-            return;
+        if let State::Awaiting(request) = &mut self.state {
+            request.timer = match request.timer {
+                Timer::Unread => Timer::Running(now + ACK_TIMEOUT),
+                Timer::Paused(left) => Timer::Running(now + left),
+                running_or_expired => running_or_expired,
+            };
         }
-        self.exposed = true;
-        if !self.expired && self.deadline.is_none() {
-            self.deadline = Some(now + self.remaining);
+    }
+
+    pub(super) fn pause_deadline(&mut self, now: Instant) {
+        if let State::Awaiting(request) = &mut self.state
+            && let Timer::Running(deadline) = request.timer
+        {
+            request.timer = Timer::Paused(deadline.saturating_duration_since(now));
         }
+    }
+
+    /// Ends the outstanding request's budget if it ran out by `now`, and
+    /// says why arming now fails.
+    fn expire(&mut self, now: Instant) -> Option<&'static str> {
+        let State::Awaiting(request) = &mut self.state else {
+            return None;
+        };
+        if !matches!(request.timer, Timer::Running(deadline) if deadline <= now) {
+            return None;
+        }
+
+        request.timer = Timer::Expired;
+        Some(request.waiting())
+    }
+
+    const fn expired(&self) -> bool {
+        matches!(
+            self.state,
+            State::Awaiting(Request {
+                timer: Timer::Expired,
+                ..
+            })
+        )
     }
 
     /// Whether the outstanding request is a command no thread has run
     /// since it was published, which the agent cannot have read.
     const fn replaceable(&self) -> bool {
-        !self.exposed && matches!(self.state, State::Awaiting { source: false, .. })
+        matches!(
+            self.state,
+            State::Awaiting(Request {
+                source: None,
+                timer: Timer::Unread,
+            })
+        )
     }
 
     /// How arming with `wanted` stands without configuring the agent, or
     /// `None` when the agent is to be configured with it.
     fn settled(&self, wanted: &Desired) -> Option<Result<(), Arc<str>>> {
         let sent = self.sent.as_ref() == Some(wanted);
-        // A step back cannot wait for a command's acknowledgement, which
-        // comes only from a callback, none of which may run before the
-        // thread runs on past the step's end. Its source request carries
-        // the whole configuration, which the agent takes over the
-        // command's older generation.
-        let back = !self.expired
-            && matches!(self.state, State::Awaiting { source: false, .. })
-            && wanted.step.as_ref().is_some_and(|step| step.returning)
-            && self.sent.as_ref().and_then(|sent| sent.step.as_ref()) != wanted.step.as_ref();
 
         match &self.state {
-            State::Awaiting { .. } if (!self.replaceable() && !back) || sent => {
-                Some(Err(if self.expired && self.bootstrap.is_some() {
-                    BOOTSTRAP_TIMED_OUT.into()
-                } else if self.expired {
-                    TIMED_OUT.into()
-                } else {
-                    "waiting for the runtime agent to acknowledge its configuration".into()
-                }))
+            State::Awaiting(request) => {
+                // A step back cannot wait for a command's acknowledgement,
+                // which comes only from a callback, none of which may run
+                // before the thread runs on past the step's end. Its source
+                // request carries the whole configuration, which the agent
+                // takes over the command's older generation.
+                let back = request.source.is_none()
+                    && request.timer != Timer::Expired
+                    && wanted.step.as_ref().is_some_and(|step| step.returning)
+                    && self.sent.as_ref().and_then(|sent| sent.step.as_ref())
+                        != wanted.step.as_ref();
+
+                ((!self.replaceable() && !back) || sent).then(|| Err(request.waiting().into()))
             }
             State::Ready if sent => Some(Ok(())),
             State::Refused(reason) if sent => Some(Err(Arc::clone(reason))),
@@ -158,24 +258,20 @@ impl Installation {
     /// Whether the agent is configured through its command slot, which an
     /// active agent reads, rather than by injecting a whole-state script.
     fn commands(&self) -> bool {
-        let active = self
-            .sent
-            .as_ref()
-            .is_some_and(|sent| !sent.breakpoints.is_empty() || sent.step.is_some());
-
         // An unread command was published only to an active agent, which
         // still holds the configuration before it.
-        (matches!(self.state, State::Ready) && active) || self.replaceable()
+        (matches!(self.state, State::Ready) && self.active()) || self.replaceable()
+    }
+
+    /// Whether the agent was last sent anything to watch for.
+    fn active(&self) -> bool {
+        self.sent
+            .as_ref()
+            .is_some_and(|sent| !sent.breakpoints.is_empty() || sent.step.is_some())
     }
 
     const fn ready(&self) -> bool {
         matches!(self.state, State::Ready) && self.library.is_some()
-    }
-
-    pub(super) fn pause_deadline(&mut self, now: Instant) {
-        if let Some(deadline) = self.deadline.take() {
-            self.remaining = deadline.saturating_duration_since(now);
-        }
     }
 
     pub(super) const fn needs_entry(&self) -> bool {
@@ -186,9 +282,36 @@ impl Installation {
     /// the agent now holds: it acknowledged it, and has failed nothing
     /// since. A site the outstanding configuration drops is not asked about.
     pub(super) fn confirms(&self, number: u64) -> bool {
-        matches!(self.state, State::Ready | State::Awaiting { .. })
-            && !self.expired
-            && self.confirmed.contains(&number)
+        let holds = match &self.state {
+            State::Ready => true,
+            State::Awaiting(request) => request.timer != Timer::Expired,
+            State::Waiting | State::Refused(_) => false,
+        };
+        holds && self.confirmed.contains(&number)
+    }
+
+    /// Panics if the installation contradicts itself.
+    pub(super) fn check_invariants(&self, runtime: RuntimeId) {
+        debug_assert!(
+            matches!(self.state, State::Waiting | State::Refused(_)) || self.generation.is_some(),
+            "runtime {runtime}'s agent awaits or acknowledged a request never published"
+        );
+        debug_assert!(
+            self.generation
+                .is_none_or(|generation| generation < self.next)
+                && self.sequence < self.next,
+            "runtime {runtime}'s agent holds a generation it has yet to be given"
+        );
+        debug_assert!(
+            !matches!(
+                self.state,
+                State::Awaiting(Request {
+                    source: Some(_),
+                    ..
+                })
+            ) || (self.files.is_some() && self.library.is_some()),
+            "runtime {runtime}'s agent awaits a source request without its files"
+        );
     }
 }
 
@@ -218,17 +341,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut expired = None;
 
         for (&runtime, installation) in &mut inferior.agents {
-            if installation
-                .deadline
-                .is_some_and(|deadline| deadline <= now)
-            {
-                installation.expired = true;
-                installation.deadline = None;
-                let reason = if installation.bootstrap.is_some() {
-                    BOOTSTRAP_TIMED_OUT
-                } else {
-                    TIMED_OUT
-                };
+            if let Some(reason) = installation.expire(now) {
                 inferior.managed.unarmed.insert(runtime, reason.into());
                 expired = Some(reason);
             }
@@ -273,86 +386,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 continue;
             };
 
-            let outcome = (|| {
-                if installation.ticket.is_some() {
-                    self.withdraw_bootstrap(&mut installation, AgentRetirementProof::Cancel)?;
-                }
-
-                if let Some(ticket) = installation.ticket.as_ref() {
-                    let inferior = self.session.inferior().ok_or("the process is gone")?;
-                    let retirement = self.with_runtime_stop(
-                        inferior,
-                        &bound,
-                        inferior.memory_thread(),
-                        |stop| ticket.retire(stop, AgentRetirementProof::Cancel),
-                    )?;
-                    let AgentRetirement::Retired(writes) = retirement else {
-                        return Err(Arc::<str>::from(
-                            "preserving Python agent files: source consumption is unconfirmed at detach",
-                        ));
-                    };
-
-                    self.write_for_runtime(&writes)?;
-                    installation
-                        .files
-                        .as_mut()
-                        .ok_or("the agent files are missing")?
-                        .acknowledge(
-                            installation
-                                .generation
-                                .ok_or("the agent generation is missing")?,
-                        )?;
-                    installation.ticket = None;
-                } else if installation.library.is_some() {
-                    let inferior = self.session.inferior().ok_or("the process is gone")?;
-                    let agent = bound.model.agent().ok_or("the runtime has no agent")?;
-                    let control = self
-                        .owned_agent_symbol(
-                            inferior,
-                            installation
-                                .library
-                                .as_deref()
-                                .ok_or("the library is missing")?,
-                            agent.control_symbol(),
-                        )
-                        .ok_or("the owned agent control symbol is unavailable at detach")?;
-
-                    let arming = Arming {
-                        breakpoints: &[],
-                        step: None,
-                        assignment: None,
-                        exceptions: crate::ExceptionStops::default(),
-                    };
-
-                    let writes = self.with_runtime_stop(
-                        inferior,
-                        &bound,
-                        inferior.memory_thread(),
-                        |stop| {
-                            agent.command(
-                                stop,
-                                control,
-                                installation.sequence,
-                                installation.next,
-                                &arming,
-                            )
-                        },
-                    )?;
-                    self.write_for_runtime(&writes)?;
-                }
-
-                if let Some(files) = installation.files.as_mut() {
-                    files.close()?;
-                }
-                Ok(())
-            })();
-
-            if let Err(reason) = outcome {
+            if let Err(reason) = self.disarm_agent(&bound, &mut installation) {
                 problems.push(reason.to_string());
-            }
-
-            if let Some(inferior) = self.session.inferior_mut() {
-                inferior.agents.insert(bound.id, installation);
             }
         }
         if problems.is_empty() {
@@ -360,6 +395,54 @@ impl<P: LinuxTraceOps> Controller<P> {
         } else {
             Err(problems.join("; ").into())
         }
+    }
+
+    /// Withdraws the agent's outstanding source request, or sends it an
+    /// empty configuration, and closes its files.
+    fn disarm_agent(
+        &mut self,
+        bound: &BoundRuntime,
+        installation: &mut Installation,
+    ) -> Result<(), Arc<str>> {
+        if matches!(
+            installation.state,
+            State::Awaiting(Request {
+                source: Some(_),
+                ..
+            })
+        ) {
+            self.retire_agent_source(bound, installation, AgentRetirementProof::Cancel)?;
+        } else if let Some(library) = installation.library.as_deref() {
+            let inferior = self.session.inferior().ok_or("the process is gone")?;
+            let agent = bound.model.agent().ok_or("the runtime has no agent")?;
+            let control = self
+                .owned_agent_symbol(inferior, library, agent.control_symbol())
+                .ok_or("the owned agent control symbol is unavailable at detach")?;
+
+            let arming = Arming {
+                breakpoints: &[],
+                step: None,
+                assignment: None,
+                exceptions: crate::ExceptionStops::default(),
+            };
+
+            let writes =
+                self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
+                    agent.command(
+                        stop,
+                        control,
+                        installation.sequence,
+                        installation.next,
+                        &arming,
+                    )
+                })?;
+            self.write_for_runtime(&writes)?;
+        }
+
+        if let Some(files) = installation.files.as_mut() {
+            files.close()?;
+        }
+        Ok(())
     }
 
     pub(super) fn validate_agent_resume(&self, scope: crate::ResumeScope) -> crate::Result<()> {
@@ -372,11 +455,11 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         if let crate::ResumeScope::Thread(thread) = scope
             && inferior.agents.values().any(|installation| {
-                matches!(installation.state, State::Awaiting { source: true, .. })
-                    && (installation.bootstrap.is_some()
-                        || installation
-                            .request_thread
-                            .is_some_and(|consumer| consumer != thread))
+                matches!(
+                    &installation.state,
+                    State::Awaiting(Request { source: Some(source), .. })
+                        if source.bootstrap.is_some() || source.thread != thread
+                )
             })
         {
             return Err(crate::Error::RuntimeResumeUnsupported(
@@ -387,16 +470,18 @@ impl<P: LinuxTraceOps> Controller<P> {
         for bound in self.runtimes(inferior) {
             // A waiting or refused agent is idle: the target's agent clears
             // its monitoring on every failure.
-            if inferior.agents.get(&bound.id).is_some_and(|installation| {
-                matches!(installation.state, State::Awaiting { .. })
-                    || (matches!(installation.state, State::Ready)
-                        && installation.sent.as_ref().is_some_and(|sent| {
-                            !sent.breakpoints.is_empty() || sent.step.is_some()
-                        }))
-            }) && bound
-                .model
-                .agent()
-                .is_some_and(crate::runtime_model::RuntimeAgent::process_scope_required)
+            if inferior
+                .agents
+                .get(&bound.id)
+                .is_some_and(|installation| match installation.state {
+                    State::Awaiting(_) => true,
+                    State::Ready => installation.active(),
+                    State::Waiting | State::Refused(_) => false,
+                })
+                && bound
+                    .model
+                    .agent()
+                    .is_some_and(crate::runtime_model::RuntimeAgent::process_scope_required)
             {
                 return Err(crate::Error::RuntimeResumeUnsupported("free-threaded monitoring requires a process-wide resume for cooperation from every interpreter thread".into()));
             }
@@ -433,7 +518,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             None => match self.configure_agent(bound, arming, &mut installation) {
                 Ok(()) => {
                     installation.sent = Some(wanted);
-                    Err("waiting for the runtime agent to acknowledge its configuration".into())
+                    Err(AWAITING.into())
                 }
                 Err(AgentFailure::Initializing | AgentFailure::NoThread) => {
                     installation.sent = Some(wanted);
@@ -448,7 +533,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     // command it would have replaced outstanding.
                     if !matches!(installation.state, State::Ready) && !replaceable {
                         installation.sent = Some(wanted);
-                        if !matches!(installation.state, State::Awaiting { .. }) {
+                        if !matches!(installation.state, State::Awaiting(_)) {
                             installation.state = State::Refused(Arc::clone(&reason));
                         }
                     }
@@ -482,9 +567,6 @@ impl<P: LinuxTraceOps> Controller<P> {
     ) -> Result<(), AgentFailure> {
         let agent = bound.model.agent().ok_or("the runtime has no agent")?;
         let inferior = self.session.inferior().ok_or("the process is gone")?;
-        installation.expired = false;
-        installation.deadline = None;
-        installation.remaining = ACK_TIMEOUT;
         let generation = installation.next;
         let next = generation
             .checked_add(1)
@@ -575,7 +657,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         };
 
-        if prepared.bootstrapped {
+        let bootstrap = if prepared.bootstrapped {
             let requested = match inferior.python_launch.as_ref() {
                 Some(Ok(launch)) => launch.request(&path),
                 Some(Err(reason)) => Err(Arc::clone(reason)),
@@ -585,29 +667,28 @@ impl<P: LinuxTraceOps> Controller<P> {
                 files.acknowledge(generation)?;
                 return Err(AgentFailure::Refused(reason));
             }
-            installation.bootstrap = Some(path);
-        }
+            Some(path)
+        } else {
+            None
+        };
 
         installation.library = Some(library.into());
-        installation.request_thread = Some(thread);
-        installation.ticket = Some(prepared.ticket);
         installation.next = next;
-        installation.generation = Some(generation);
-        installation.state = State::Awaiting {
+        installation.publish(
             generation,
-            source: true,
-        };
-        installation.exposed = false;
+            Some(Source {
+                ticket: prepared.ticket,
+                thread,
+                bootstrap,
+            }),
+        );
 
         if let Err(reason) = self.write_for_runtime(&prepared.writes) {
             // No thread has resumed since preparation. Revalidate even a
             // partially written slot before retiring the unpublished source.
-            if let Err(cleanup) = self.retire_agent_source(
-                bound,
-                installation,
-                generation,
-                AgentRetirementProof::Unresumed,
-            ) {
+            if let Err(cleanup) =
+                self.retire_agent_source(bound, installation, AgentRetirementProof::Unresumed)
+            {
                 return Err(Arc::<str>::from(format!(
                     "{reason}; preserving the unconfirmed request: {cleanup}"
                 ))
@@ -640,7 +721,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or("the agent command has no publication write")?;
         let result = self.write_for_runtime(writes);
         installation.next = next;
-        installation.request_thread = None;
 
         if let Err(reason) = &result {
             let inferior = self.session.inferior().ok_or("the process is gone")?;
@@ -666,37 +746,43 @@ impl<P: LinuxTraceOps> Controller<P> {
             installation.sequence = generation;
         }
 
-        installation.generation = Some(generation);
-        installation.state = State::Awaiting {
-            generation,
-            source: false,
-        };
-        installation.exposed = false;
-
+        installation.publish(generation, None);
         result.map_err(AgentFailure::from)
     }
 
+    /// Retires the outstanding source request, whose files go once its
+    /// thread can no longer read them: the agent acknowledged it, no thread
+    /// ran since it was published, or it is still pending and is withdrawn.
     fn retire_agent_source(
         &mut self,
         bound: &BoundRuntime,
         installation: &mut Installation,
-        generation: u64,
         proof: AgentRetirementProof,
     ) -> Result<(), Arc<str>> {
-        self.withdraw_bootstrap(installation, proof)?;
-        let inferior = self.session.inferior().ok_or("the process is gone")?;
-        let ticket = installation
-            .ticket
-            .as_ref()
-            .ok_or("the source ownership ticket is missing")?;
+        let generation = installation
+            .generation
+            .ok_or("the agent generation is missing")?;
+        let State::Awaiting(Request {
+            source: Some(source),
+            ..
+        }) = &mut installation.state
+        else {
+            return Err("no source request is outstanding".into());
+        };
+        self.withdraw_bootstrap(source, proof)?;
 
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
         let retirement =
             self.with_runtime_stop(inferior, bound, inferior.memory_thread(), |stop| {
-                ticket.retire(stop, proof)
+                source.ticket.retire(stop, proof)
             })?;
-
         let AgentRetirement::Retired(writes) = retirement else {
-            return Err("the acknowledged source could not be retired".into());
+            return Err(if proof == AgentRetirementProof::Cancel {
+                "preserving Python agent files: source consumption is unconfirmed at detach"
+            } else {
+                "the acknowledged source could not be retired"
+            }
+            .into());
         };
 
         self.write_for_runtime(&writes)?;
@@ -704,9 +790,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .files
             .as_mut()
             .ok_or("the agent files are missing")?
-            .acknowledge(generation)?;
-        installation.ticket = None;
-        Ok(())
+            .acknowledge(generation)
     }
 
     /// Reads the outstanding bootstrap request back out of the launch's
@@ -714,10 +798,10 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// was written is there, and one the bootstrap took may yet run.
     fn withdraw_bootstrap(
         &self,
-        installation: &mut Installation,
+        source: &mut Source,
         proof: AgentRetirementProof,
     ) -> Result<(), Arc<str>> {
-        let Some(path) = installation.bootstrap.as_deref() else {
+        let Some(path) = source.bootstrap.as_deref() else {
             return Ok(());
         };
         if proof != AgentRetirementProof::Acknowledged {
@@ -739,7 +823,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
         }
 
-        installation.bootstrap = None;
+        source.bootstrap = None;
         Ok(())
     }
 
@@ -800,6 +884,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Takes the agent's report on `generation`: its acknowledgement of
+    /// the outstanding request, or its failure, which may come later, once
+    /// it holds the configuration. Returns whether the report counted.
     fn agent_report(
         &mut self,
         runtime: RuntimeId,
@@ -816,17 +903,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             if installation.generation != Some(generation) {
                 return Ok(false);
             }
-            let source = matches!(installation.state, State::Awaiting { generation: pending, source: true } if pending == generation);
-            let awaiting = matches!(installation.state, State::Awaiting { generation: pending, .. } if pending == generation);
+            let (awaiting, source) = match &installation.state {
+                State::Awaiting(request) => (true, request.source.is_some()),
+                _ => (false, false),
+            };
             if failure.is_none() && !awaiting {
                 return Ok(false);
             }
-            if awaiting && !source {
-                // Source acknowledgements do not publish the native slot.
-                // A matching native report does prove its consumed sequence,
-                // including after an uncertain publication write/read.
-                installation.sequence = generation;
-            }
+
             if source {
                 let inferior = self.session.inferior().ok_or("the process is gone")?;
                 let bound = self
@@ -837,7 +921,6 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.retire_agent_source(
                     &bound,
                     &mut installation,
-                    generation,
                     AgentRetirementProof::Acknowledged,
                 )
                 .map_err(|error| match failure {
@@ -845,20 +928,21 @@ impl<P: LinuxTraceOps> Controller<P> {
                     Some(reason) => Arc::from(format!("{reason}; {error}")),
                     None => error,
                 })?;
+            } else if awaiting {
+                // Source acknowledgements do not publish the native slot.
+                // A matching native report does prove its consumed sequence,
+                // including after an uncertain publication write/read.
+                installation.sequence = generation;
             }
 
-            installation.deadline = None;
-            installation.expired = false;
-            installation.request_thread = None;
             installation.confirmed = match failure {
                 None => installation
                     .sent
                     .iter()
                     .flat_map(|sent| sent.breakpoints.iter().map(|arm| arm.number))
                     .collect(),
-                Some(_) => std::collections::BTreeSet::new(),
+                Some(_) => BTreeSet::new(),
             };
-
             installation.state =
                 failure.map_or(State::Ready, |reason| State::Refused(Arc::clone(reason)));
 
@@ -901,8 +985,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             .map(|(_, assignment)| assignment);
 
         inferior.agents.get(&runtime).is_some_and(|installation| {
-            matches!(installation.state, State::Awaiting { source: false, .. })
-                && !installation.expired
+            matches!(
+                installation.state,
+                State::Awaiting(Request { source: None, .. })
+            ) && !installation.expired()
                 && assignment.is_some()
                 && installation
                     .sent
@@ -927,8 +1013,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A step back is sent by a source request, which its thread runs
         // as it returns to the interpreter; a command waits for a callback.
         inferior.agents.get(&runtime).is_some_and(|installation| {
-            matches!(installation.state, State::Awaiting { source, .. }
-                if source || !step.is_some_and(|step| step.returning))
+            matches!(&installation.state, State::Awaiting(request)
+                if request.source.is_some() || !step.is_some_and(|step| step.returning))
                 && step.is_some()
                 && installation
                     .sent
@@ -1062,15 +1148,41 @@ mod tests {
     use crate::{ExitStatus, StopReason};
     use std::sync::Mutex;
 
-    fn awaiting() -> Installation {
+    /// An installation whose command of generation 5 is outstanding, with
+    /// `timer` left of its budget.
+    fn awaiting_with(timer: Timer) -> Installation {
         let mut installation = Installation::new();
-        installation.state = State::Awaiting {
-            generation: 5,
-            source: false,
-        };
-        installation.generation = Some(5);
         installation.next = 6;
+        installation.publish(5, None);
+        let State::Awaiting(request) = &mut installation.state else {
+            unreachable!("just published")
+        };
+        request.timer = timer;
         installation
+    }
+
+    fn awaiting() -> Installation {
+        awaiting_with(Timer::Unread)
+    }
+
+    /// An outstanding source request's state, for `thread`.
+    fn source(ticket: Arc<dyn AgentRequestTicket>, thread: crate::ThreadId) -> State {
+        State::Awaiting(Request {
+            source: Some(Source {
+                ticket,
+                thread,
+                bootstrap: None,
+            }),
+            timer: Timer::Unread,
+        })
+    }
+
+    /// An unread command's state.
+    const fn command() -> State {
+        State::Awaiting(Request {
+            source: None,
+            timer: Timer::Unread,
+        })
     }
 
     #[test]
@@ -1086,7 +1198,7 @@ mod tests {
         let later = now + Duration::from_secs(3600);
         installation.start_deadline(later);
         assert_eq!(installation.deadline(), Some(later + ACK_TIMEOUT));
-        installation.expired = true;
+        let mut installation = awaiting_with(Timer::Expired);
         installation.pause_deadline(later);
         installation.start_deadline(later);
         assert_eq!(
@@ -1099,8 +1211,9 @@ mod tests {
     #[test]
     fn an_expired_agent_deadline_cannot_be_starved_by_queued_requests() {
         let mut harness = watch_harness(1);
-        let mut installation = awaiting();
-        installation.deadline = Some(Instant::now().checked_sub(Duration::from_secs(1)).unwrap());
+        let installation = awaiting_with(Timer::Running(
+            Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+        ));
         let inferior = harness.controller.session.inferior_mut().expect("inferior");
         let pid = inferior.tgid;
         inferior.agents.insert(RuntimeId::new(0), installation);
@@ -1125,15 +1238,14 @@ mod tests {
     fn a_stale_alarm_times_nothing_out() {
         let mut harness = watch_harness(1);
         let now = Instant::now();
-        let mut later = awaiting();
-        later.deadline = Some(now + Duration::from_secs(1));
+        let later = awaiting_with(Timer::Running(now + Duration::from_secs(1)));
         let inferior = harness.controller.session.inferior_mut().expect("inferior");
         inferior.agents.insert(RuntimeId::new(0), later);
         inferior.agents.insert(RuntimeId::new(1), awaiting());
         harness.controller.agent_timeout(now).expect("no timeout");
 
         let inferior = harness.controller.session.inferior().expect("inferior");
-        assert!(inferior.agents.values().all(|agent| !agent.expired));
+        assert!(inferior.agents.values().all(|agent| !agent.expired()));
         assert!(inferior.managed.unarmed.is_empty());
     }
 
@@ -1156,7 +1268,7 @@ mod tests {
         );
         assert!(matches!(
             harness.controller.session.inferior().unwrap().agents[&runtime].state,
-            State::Awaiting { .. }
+            State::Awaiting(_)
         ));
         assert!(
             harness
@@ -1347,11 +1459,11 @@ mod tests {
                 .id;
             let calls = Arc::new(Mutex::new(Vec::new()));
             let mut installation = awaiting();
-            installation.state = State::Awaiting {
-                generation: 5,
-                source: true,
-            };
-            installation.ticket = Some(Arc::new(Ticket { consumed }));
+            installation.library = Some("/tmp/test-agent/hook.so".into());
+            installation.state = source(
+                Arc::new(Ticket { consumed }),
+                super::super::debug_thread_id(harness.controller.session.inferior().unwrap().tgid),
+            );
             installation.files = Some(Box::new(Files {
                 calls: Arc::clone(&calls),
                 fail_exit: false,
@@ -1607,19 +1719,14 @@ mod tests {
         for (state, sent, restricted) in [
             (State::Ready, active.clone(), true),
             (State::Ready, idle.clone(), false),
-            (
-                State::Awaiting {
-                    generation: 5,
-                    source: false,
-                },
-                idle,
-                true,
-            ),
+            (command(), idle, true),
             (State::Waiting, active.clone(), false),
             (State::Refused("refused".into()), active, false),
         ] {
             let mut installation = Installation::new();
             let shown = format!("{state:?} {sent:?}");
+            installation.next = 6;
+            installation.generation = Some(5);
             installation.state = state;
             installation.sent = sent;
             harness
@@ -1692,11 +1799,13 @@ mod tests {
             if refuse {
                 assert!(error.to_string().contains("foreign slot change"));
                 assert_eq!(*calls.lock().unwrap(), ["script 1", "validate unresumed"]);
-                assert!(installation.ticket.is_some());
                 assert!(installation.files.is_some());
                 assert!(matches!(
                     installation.state,
-                    State::Awaiting { source: true, .. }
+                    State::Awaiting(Request {
+                        source: Some(_),
+                        ..
+                    })
                 ));
                 harness
                     .controller
@@ -1716,7 +1825,6 @@ mod tests {
                     *calls.lock().unwrap(),
                     ["script 1", "validate unresumed", "ack 1", "close"]
                 );
-                assert!(installation.ticket.is_none());
                 assert!(installation.files.is_none());
                 assert_eq!(
                     installation.sequence, 0,
@@ -1773,8 +1881,7 @@ mod tests {
     #[test]
     fn interrupted_running_periods_share_one_acknowledgement_budget() {
         let now = Instant::now();
-        let mut installation = awaiting();
-        installation.deadline = Some(now + Duration::from_secs(2));
+        let mut installation = awaiting_with(Timer::Running(now + Duration::from_secs(2)));
         installation.pause_deadline(now);
         let later = now + Duration::from_secs(3600);
         installation.start_deadline(later);
@@ -1811,11 +1918,12 @@ mod tests {
             .runtimes(harness.controller.session.inferior().unwrap())[0]
             .id;
         let mut installation = awaiting();
-        installation.state = State::Awaiting {
-            generation: 5,
-            source: true,
-        };
-        installation.request_thread = Some(second);
+        installation.library = Some("/tmp/test-agent/hook.so".into());
+        installation.files = Some(Box::new(Files {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail_exit: false,
+        }));
+        installation.state = source(Arc::new(Ticket { consumed: false }), second);
         harness
             .controller
             .session
@@ -1892,10 +2000,7 @@ mod tests {
                 assert_eq!(installation.generation, Some(2));
                 assert!(matches!(
                     installation.state,
-                    State::Awaiting {
-                        source: false,
-                        generation: 2
-                    }
+                    State::Awaiting(Request { source: None, .. })
                 ));
                 continue;
             }
@@ -1944,11 +2049,8 @@ mod tests {
             exceptions: crate::ExceptionStops::default(),
         };
         let mut installation = Installation::new();
-        installation.state = State::Awaiting {
-            generation: 3,
-            source: false,
-        };
-        installation.generation = Some(3);
+        installation.next = 4;
+        installation.publish(3, None);
         installation.sent = Some(disarmed.clone());
         assert!(installation.replaceable() && installation.commands());
         assert_eq!(installation.settled(&step), None, "the step replaces it");
@@ -1964,10 +2066,7 @@ mod tests {
         );
 
         let mut source = Installation::new();
-        source.state = State::Awaiting {
-            generation: 3,
-            source: true,
-        };
+        source.state = self::source(Arc::new(Ticket { consumed: false }), stepping(1).thread);
         source.sent = Some(disarmed.clone());
         assert!(!source.replaceable() && !source.commands());
         assert!(matches!(source.settled(&step), Some(Err(_))));
@@ -2042,10 +2141,8 @@ mod tests {
         let mut harness = watch_harness(1);
         let runtime = RuntimeId::new(0);
         let mut installation = Installation::new();
-        installation.state = State::Awaiting {
-            generation: 3,
-            source: false,
-        };
+        installation.next = 4;
+        installation.publish(3, None);
         installation.sent = Some(Desired {
             breakpoints: Vec::new(),
             step: Some(stepping(1)),

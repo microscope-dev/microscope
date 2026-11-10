@@ -1,3 +1,5 @@
+mod agent_model;
+mod agents;
 mod calls;
 mod lifecycle;
 mod pids;
@@ -1027,6 +1029,56 @@ pub(super) struct FakeTrace {
 
     /// The system-call stop each thread is at; others' cannot be read.
     syscall_stops: RefCell<BTreeMap<Pid, super::syscalls::info::SyscallInfo>>,
+
+    /// What was done with runtime agents' files, which a scripted agent
+    /// may share to log its own calls in order with them.
+    pub(super) agent_log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// The files of a runtime agent, which log what is done with them.
+#[derive(Debug)]
+pub(super) struct LoggedFiles {
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// Where [`LoggedFiles`] put the agent's library.
+pub(super) const AGENT_LIBRARY: &str = "/tmp/agent/hook.so";
+
+impl LoggedFiles {
+    fn log(&self, entry: String) {
+        self.log.lock().expect("the log").push(entry);
+    }
+}
+
+impl super::agent_files::AgentFiles for LoggedFiles {
+    fn library(&self) -> std::result::Result<&str, Arc<str>> {
+        Ok(AGENT_LIBRARY)
+    }
+
+    fn script(&mut self, generation: u64, _source: &str) -> std::result::Result<String, Arc<str>> {
+        self.log(format!("file {generation}"));
+        Ok(format!("/tmp/agent/agent-{generation}.py"))
+    }
+
+    fn anchor(&mut self, thread: Pid) -> std::result::Result<(), Arc<str>> {
+        self.log(format!("anchor {thread}"));
+        Ok(())
+    }
+
+    fn acknowledge(&mut self, generation: u64) -> std::result::Result<(), Arc<str>> {
+        self.log(format!("drop file {generation}"));
+        Ok(())
+    }
+
+    fn close(&mut self) -> std::result::Result<(), Arc<str>> {
+        self.log("close files".to_owned());
+        Ok(())
+    }
+
+    fn close_after_target_exit(&mut self) -> std::result::Result<(), Arc<str>> {
+        self.log("remove files".to_owned());
+        Ok(())
+    }
 }
 
 impl FakeTrace {
@@ -1223,6 +1275,18 @@ impl InspectionOps for FakeTrace {
 }
 
 impl LinuxTraceOps for FakeTrace {
+    fn agent_files(
+        &self,
+        pid: Pid,
+        _library: &[u8],
+    ) -> std::result::Result<Box<dyn super::agent_files::AgentFiles>, Arc<str>> {
+        let files = LoggedFiles {
+            log: Arc::clone(&self.agent_log),
+        };
+        files.log(format!("create files in {pid}"));
+        Ok(Box::new(files))
+    }
+
     fn spawn(&self, _executable: &Path, _options: LaunchOptions) -> Result<Pid> {
         self.record("spawn".to_owned());
         Ok(Pid::from_raw(7000))

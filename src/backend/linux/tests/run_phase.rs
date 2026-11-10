@@ -42,6 +42,9 @@ pub(super) struct Run {
     /// The native calls the controller made, other than debug-register
     /// and memory traffic.
     pub(super) calls: Vec<String>,
+
+    /// Addresses whose word writes are kept among the calls.
+    pub(super) shown_writes: BTreeSet<u64>,
 }
 
 impl Run {
@@ -50,6 +53,7 @@ impl Run {
             harness,
             kernel: Kernel::default(),
             calls: Vec::new(),
+            shown_writes: BTreeSet::new(),
         }
     }
 
@@ -76,6 +80,13 @@ impl Run {
                 ("interrupt", Some(pid)) => {
                     self.kernel.interrupted.insert(pid);
                 }
+                ("write_word", _)
+                    if words
+                        .next()
+                        .and_then(|address| {
+                            u64::from_str_radix(address.trim_start_matches("0x"), 16).ok()
+                        })
+                        .is_some_and(|address| self.shown_writes.contains(&address)) => {}
                 ("read" | "write" | "write_word", _) => continue,
                 _ => {}
             }
