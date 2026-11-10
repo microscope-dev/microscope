@@ -233,6 +233,14 @@ impl Scripted {
     /// A stopped process of `threads` threads, the first the main isolate's,
     /// whose inspector has just connected.
     fn connected(threads: i32) -> Self {
+        let mut scripted = Self::connecting(threads);
+        assert_eq!(scripted.pump(), Incoming::Connected);
+        scripted
+    }
+
+    /// As [`Scripted::connected`], with the controller yet to hear that
+    /// the handshake is done.
+    fn connecting(threads: i32) -> Self {
         let mut harness = watch_harness(threads);
         harness.controller.main.unwind = Arc::new(FlatUnwindInfo);
         let model = scripted_runtime(
@@ -248,7 +256,6 @@ impl Scripted {
             _model: model,
         };
         scripted.open();
-        assert_eq!(scripted.pump(), Incoming::Connected);
         scripted
     }
 
@@ -1470,6 +1477,98 @@ fn a_borrowed_inspector_answers_the_close_of_its_session_before_the_detach() {
     assert!(
         matches!(result.try_recv(), Ok(Ok(()))),
         "the answered close lets the detach finish: {:?}",
+        scripted.actions()
+    );
+}
+
+/// A detach that begins while the inspector's handshake is still under
+/// way sends nothing until the controller hears the connection is made,
+/// then readies the isolate, closes the borrowed inspector's session as
+/// any detach does, and finishes.
+#[test]
+fn a_detach_during_the_handshake_waits_for_the_connection_then_closes_it() {
+    use super::super::{Signal, WaitEvent};
+
+    let mut scripted = Scripted::connecting(1);
+    scripted.record().ownership = super::super::node_launch::Ownership::Borrowed;
+    scripted
+        .harness
+        .controller
+        .session
+        .inferior_mut()
+        .expect("inferior")
+        .origin = super::super::InferiorOrigin::Attached;
+
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    scripted.harness.controller.begin_shutdown(Some(reply));
+    let early = scripted.sent();
+    assert!(
+        early.is_empty(),
+        "nothing is sent over a connection still being made: {early:?}"
+    );
+    assert!(
+        result.try_recv().is_err(),
+        "the detach awaits the connection"
+    );
+
+    assert_eq!(scripted.pump(), Incoming::Connected);
+    let readied = scripted.sent();
+    assert_eq!(
+        readied.first().map(|request| request.method.as_str()),
+        Some(cdp::NOTIFY_END),
+        "the connection is readied before the cleanup: {readied:?}"
+    );
+    assert!(
+        !readied
+            .iter()
+            .any(|request| request.method == "Runtime.getIsolateId"),
+        "the cleanup waits for the inspector to answer: {readied:?}"
+    );
+
+    // The detach let the program run while it waited; the reply stops it
+    // again, and at that stop the cleanup begins.
+    scripted.inspector.reply(&readied[0], json!({}));
+    scripted.pump_reply();
+    let main = scripted.main();
+    let interrupted = scripted.actions();
+    assert!(
+        interrupted.contains(&format!("interrupt {main}")),
+        "{interrupted:?}"
+    );
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            main,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        ));
+    let release = scripted
+        .sent()
+        .into_iter()
+        .find(|request| request.method == "Runtime.getIsolateId")
+        .expect("the cleanup asks the borrowed inspector to acknowledge");
+    scripted.actions();
+
+    scripted.inspector.reply(&release, json!({"id": "isolate"}));
+    scripted.pump_reply();
+    scripted.inspector.wait_gone();
+    let closed = scripted.pump_closed();
+    assert!(
+        matches!(closed, Incoming::Closed { answered: true, .. }),
+        "{closed:?}"
+    );
+    scripted
+        .harness
+        .controller
+        .handle_wait(WaitEvent::PtraceEvent(
+            main,
+            Signal::SIGTRAP,
+            libc::PTRACE_EVENT_STOP,
+        ));
+    assert!(
+        matches!(result.try_recv(), Ok(Ok(()))),
+        "the detach finishes: {:?}",
         scripted.actions()
     );
 }
