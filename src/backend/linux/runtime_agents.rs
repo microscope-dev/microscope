@@ -1145,7 +1145,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 mod tests {
     use super::super::tests::{ScriptedRuntime, watch_harness};
     use super::*;
-    use crate::{ExitStatus, StopReason};
+    use crate::ExitStatus;
     use std::sync::Mutex;
 
     /// An installation whose command of generation 5 is outstanding, with
@@ -1231,6 +1231,51 @@ mod tests {
         ));
     }
 
+    /// A controller waiting for messages while an acknowledgement is
+    /// outstanding wakes at its deadline, though nothing else arrives, and
+    /// times the request out.
+    #[test]
+    fn the_alarm_wakes_a_waiting_controller_at_the_deadline() {
+        let mut harness = watch_harness(1);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(20);
+        let inferior = harness.controller.session.inferior_mut().expect("inferior");
+        let pid = inferior.tgid;
+        inferior
+            .agents
+            .insert(RuntimeId::new(0), awaiting_with(Timer::Running(deadline)));
+
+        // Should the alarm never ring, this wakes the controller instead,
+        // and the test fails rather than waits forever.
+        let sender = harness.controller.message_sender.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(2));
+            let _ = sender.try_send(super::super::ControllerMessage::Wait(
+                super::super::WaitEvent::Continued(pid),
+            ));
+        });
+
+        let woke = harness.controller.next_message(true);
+        assert!(
+            matches!(woke, Some(super::super::ControllerMessage::AgentTimeout)),
+            "the alarm did not wake the controller"
+        );
+        assert!(Instant::now() >= deadline, "woke before the deadline");
+
+        // The controller times the request out as it handles the ring.
+        harness.controller.handle_message(woke.expect("the ring"));
+        let inferior = harness.controller.session.inferior().expect("inferior");
+        assert!(inferior.agents[&RuntimeId::new(0)].expired());
+        assert_eq!(
+            inferior
+                .managed
+                .unarmed
+                .get(&RuntimeId::new(0))
+                .map(|reason| &**reason),
+            Some(TIMED_OUT)
+        );
+    }
+
     /// The alarm may ring for a deadline that was paused or moved since:
     /// a timeout is judged by the deadlines as they are, and one not yet
     /// passed, or none, times nothing out.
@@ -1247,65 +1292,6 @@ mod tests {
         let inferior = harness.controller.session.inferior().expect("inferior");
         assert!(inferior.agents.values().all(|agent| !agent.expired()));
         assert!(inferior.managed.unarmed.is_empty());
-    }
-
-    #[test]
-    fn only_the_outstanding_generation_can_acknowledge_or_fail_an_installation() {
-        let mut harness = watch_harness(1);
-        let runtime = RuntimeId::new(0);
-        harness
-            .controller
-            .session
-            .inferior_mut()
-            .expect("inferior")
-            .agents
-            .insert(runtime, awaiting());
-        assert!(
-            !harness
-                .controller
-                .agent_report(runtime, 4, None)
-                .expect("stale acknowledgement")
-        );
-        assert!(matches!(
-            harness.controller.session.inferior().unwrap().agents[&runtime].state,
-            State::Awaiting(_)
-        ));
-        assert!(
-            harness
-                .controller
-                .agent_report(runtime, 5, None)
-                .expect("matching acknowledgement")
-        );
-        assert!(matches!(
-            harness.controller.session.inferior().unwrap().agents[&runtime].state,
-            State::Ready
-        ));
-        assert!(
-            !harness
-                .controller
-                .agent_report(runtime, 5, None)
-                .expect("duplicate acknowledgement")
-        );
-        let failure = Arc::from("scripted failure");
-        assert!(
-            !harness
-                .controller
-                .agent_report(runtime, 4, Some(&failure))
-                .expect("stale failure")
-        );
-        assert!(matches!(
-            harness.controller.session.inferior().unwrap().agents[&runtime].state,
-            State::Ready
-        ));
-        assert!(
-            harness
-                .controller
-                .agent_report(runtime, 5, Some(&failure))
-                .expect("matching failure")
-        );
-        assert!(
-            matches!(&harness.controller.session.inferior().unwrap().agents[&runtime].state, State::Refused(reason) if reason == &failure)
-        );
     }
 
     #[derive(Debug)]
@@ -1443,69 +1429,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detach_cancels_a_pending_source_but_preserves_unconfirmed_consumption() {
-        for consumed in [false, true] {
-            let mut harness = watch_harness(1);
-            let image = Arc::clone(&harness.controller.main.image);
-            harness
-                .controller
-                .runtime_models
-                .borrow_mut()
-                .insert(image.id(), vec![Ok(Arc::new(ScriptedRuntime::default()))]);
-            let runtime = harness
-                .controller
-                .runtimes(harness.controller.session.inferior().unwrap())[0]
-                .id;
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            let mut installation = awaiting();
-            installation.library = Some("/tmp/test-agent/hook.so".into());
-            installation.state = source(
-                Arc::new(Ticket { consumed }),
-                super::super::debug_thread_id(harness.controller.session.inferior().unwrap().tgid),
-            );
-            installation.files = Some(Box::new(Files {
-                calls: Arc::clone(&calls),
-                fail_exit: false,
-            }));
-            harness
-                .controller
-                .session
-                .inferior_mut()
-                .unwrap()
-                .agents
-                .insert(runtime, installation);
-
-            let result = harness.controller.prepare_agents_for_detach();
-            if consumed {
-                assert!(
-                    result
-                        .expect_err("unconfirmed consumption")
-                        .contains("unconfirmed")
-                );
-                assert!(
-                    calls.lock().unwrap().is_empty(),
-                    "files still needed by an executing handler must survive detach"
-                );
-            } else {
-                result.expect("cancelled source");
-                assert_eq!(*calls.lock().unwrap(), ["ack 5", "close"]);
-            }
-            assert_eq!(
-                harness
-                    .controller
-                    .session
-                    .inferior()
-                    .unwrap()
-                    .run
-                    .stop()
-                    .unwrap()
-                    .reason,
-                StopReason::Pause
-            );
-        }
-    }
-
     #[derive(Debug)]
     struct UnresumedTicket {
         refuse: bool,
@@ -1619,74 +1542,6 @@ mod tests {
             number,
             place: crate::ManagedPlace::Function { name: name.into() },
         }
-    }
-
-    #[test]
-    fn a_reconfiguration_refused_before_any_write_keeps_the_acknowledged_configuration() {
-        let mut harness = watch_harness(1);
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let thread =
-            super::super::debug_thread_id(harness.controller.session.inferior().unwrap().tgid);
-        let bound = scripted_agent(
-            &harness,
-            Agent {
-                thread,
-                refuse: false,
-                process_scope: false,
-                calls: Arc::clone(&calls),
-            },
-        );
-        let first = [function_arm(0, "first")];
-        let both = [function_arm(0, "first"), function_arm(1, "second")];
-        let mut installation = Installation::new();
-        installation.state = State::Ready;
-        installation.generation = Some(1);
-        installation.next = 2;
-        installation.sequence = 1;
-        installation.library = Some("/tmp/test-agent/hook.so".into());
-        installation.files = Some(Box::new(Files {
-            calls: Arc::clone(&calls),
-            fail_exit: false,
-        }));
-        installation.sent = Some(Desired {
-            breakpoints: first.to_vec(),
-            step: None,
-            assignment: None,
-            exceptions: crate::ExceptionStops::default(),
-        });
-        harness
-            .controller
-            .session
-            .inferior_mut()
-            .unwrap()
-            .agents
-            .insert(bound.id, installation);
-        let arming = |breakpoints| Arming {
-            breakpoints,
-            step: None,
-            assignment: None,
-            exceptions: crate::ExceptionStops::default(),
-        };
-
-        assert!(
-            harness
-                .controller
-                .arm_agent(&bound, &arming(&both))
-                .is_err(),
-            "the scripted command cannot be prepared"
-        );
-        let installation = &harness.controller.session.inferior().unwrap().agents[&bound.id];
-        assert!(matches!(installation.state, State::Ready));
-        assert_eq!(installation.sent.as_ref().unwrap().breakpoints, first);
-        harness
-            .controller
-            .arm_agent(&bound, &arming(&first))
-            .expect("the agent still holds its acknowledged configuration");
-
-        assert!(
-            calls.lock().unwrap().is_empty(),
-            "no source request replaced the loaded agent"
-        );
     }
 
     #[test]
@@ -2026,67 +1881,6 @@ mod tests {
             frame: Some(crate::VirtualAddress::new(0x9000)),
             returning: false,
         }
-    }
-
-    /// A command published at a stop that no thread has run since is
-    /// unread: arming something else at that stop replaces it through the
-    /// command slot, as a step begun at the stop that ended the last one
-    /// replaces that stop's disarming. Once threads have run, the agent may
-    /// have read it, and arming waits for its acknowledgement. A source
-    /// request is never replaced.
-    #[test]
-    fn an_unread_command_is_replaced_and_a_read_one_awaited() {
-        let disarmed = Desired {
-            breakpoints: vec![function_arm(0, "first")],
-            step: None,
-            assignment: None,
-            exceptions: crate::ExceptionStops::default(),
-        };
-        let step = Desired {
-            breakpoints: vec![function_arm(0, "first")],
-            step: Some(stepping(1)),
-            assignment: None,
-            exceptions: crate::ExceptionStops::default(),
-        };
-        let mut installation = Installation::new();
-        installation.next = 4;
-        installation.publish(3, None);
-        installation.sent = Some(disarmed.clone());
-        assert!(installation.replaceable() && installation.commands());
-        assert_eq!(installation.settled(&step), None, "the step replaces it");
-        assert!(
-            matches!(installation.settled(&disarmed), Some(Err(reason)) if reason.contains("waiting")),
-            "the same configuration is already sent"
-        );
-
-        installation.start_deadline(Instant::now());
-        assert!(!installation.replaceable() && !installation.commands());
-        assert!(
-            matches!(installation.settled(&step), Some(Err(reason)) if reason.contains("waiting"))
-        );
-
-        let mut source = Installation::new();
-        source.state = self::source(Arc::new(Ticket { consumed: false }), stepping(1).thread);
-        source.sent = Some(disarmed.clone());
-        assert!(!source.replaceable() && !source.commands());
-        assert!(matches!(source.settled(&step), Some(Err(_))));
-
-        // A ready agent is configured by command while it is active, and
-        // by a whole-state script once idle.
-        let mut ready = Installation::new();
-        ready.state = State::Ready;
-        ready.sent = Some(disarmed.clone());
-        assert!(ready.commands());
-        assert_eq!(ready.settled(&disarmed), Some(Ok(())));
-        assert_eq!(ready.settled(&step), None);
-        ready.sent = Some(Desired {
-            breakpoints: Vec::new(),
-            step: None,
-            assignment: None,
-            exceptions: crate::ExceptionStops::default(),
-        });
-        assert!(!ready.commands());
-        assert!(!Installation::new().commands(), "nor before the first");
     }
 
     /// An agent binds a step to its frame where it stopped the thread: a

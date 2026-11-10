@@ -43,6 +43,9 @@ enum Step {
     /// The agent acknowledges the request before the newest.
     StaleAck,
 
+    /// The agent fails, running the request before the newest.
+    StaleFailure,
+
     /// The agent fails, running the newest request or later.
     Failure,
 
@@ -75,6 +78,7 @@ fn step() -> impl Strategy<Value = Step> {
         2 => Just(Step::Take),
         4 => Just(Step::Ack),
         1 => Just(Step::StaleAck),
+        1 => Just(Step::StaleFailure),
         1 => Just(Step::Failure),
         2 => Just(Step::Alarm),
         1 => Just(Step::Entry),
@@ -300,7 +304,9 @@ impl Case {
                 }
                 self.session.agent.pending.store(false, Ordering::SeqCst);
             }
-            Step::Ack | Step::StaleAck | Step::Failure => self.report(step, &before),
+            Step::Ack | Step::StaleAck | Step::Failure | Step::StaleFailure => {
+                self.report(step, &before);
+            }
             Step::Alarm => {
                 let expires = self.agent.state == Newest::Outstanding && self.running();
                 self.session.alarm();
@@ -362,12 +368,12 @@ impl Case {
 
     /// The agent reports on the newest request, or the one before it.
     fn report(&mut self, step: Step, before: &[(u64, u64, Option<String>)]) {
-        let failure = matches!(step, Step::Failure);
+        let failure = matches!(step, Step::Failure | Step::StaleFailure);
         if !self.agent_can_report(failure) {
             return;
         }
         let newest = self.agent.newest.expect("a request was published");
-        let stale = matches!(step, Step::StaleAck);
+        let stale = matches!(step, Step::StaleAck | Step::StaleFailure);
         if stale && !self.agent.published.contains_key(&(newest - 1)) {
             return;
         }
@@ -379,7 +385,7 @@ impl Case {
             assert_eq!(
                 self.pending(),
                 before,
-                "a stale acknowledgement changed what is pending"
+                "a stale report changed what is pending"
             );
         } else if failure {
             self.agent.live = false;
@@ -459,6 +465,14 @@ impl Case {
                     assert!(
                         said.contains("unconfirmed"),
                         "a detach after a thread took the source request: {said}"
+                    );
+                    // The thread may be running the request's handler, which
+                    // still reads the agent's files.
+                    assert!(
+                        !logged
+                            .iter()
+                            .any(|entry| entry.starts_with("drop file") || entry == "close files"),
+                        "a detach removed files a running handler needs: {logged:?}"
                     );
                 } else {
                     assert_eq!(said, "ok", "detaching: {logged:?}");

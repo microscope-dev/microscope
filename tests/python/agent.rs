@@ -899,7 +899,7 @@ async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_sessi
 #[tokio::test]
 async fn a_detach_withdraws_a_request_no_thread_has_taken() {
     use crate::session::PythonSession;
-    for interpreter in ["3.14", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, truth) = PythonSession::attach_with_at(
             interpreter,
             "control_spin.py",
@@ -1121,52 +1121,6 @@ async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tool
         assert!(session.output().contains("APPLICATION TOOLS ['application-0', 'application-1', 'application-2', 'application-3', 'application-4', 'application-5']"), "{interpreter}: {}", session.output());
         session.shutdown().await;
     }
-}
-
-#[tokio::test]
-async fn a_missing_agent_acknowledgement_has_a_bounded_visible_failure() {
-    use crate::session::PythonSession;
-    use microscope::StopReason;
-    let (mut session, _) = PythonSession::attach_at("3.14", "control_noack.py", "initial").await;
-    session
-        .scenario
-        .add_breakpoint_spec(control_line("control_noack.py", "# FIRST_LINE"))
-        .await;
-    session.go_on().await;
-    let reason = session.finish_run().await;
-    assert!(
-        matches!(reason, StopReason::Breakpoint { .. }),
-        "{reason:?}"
-    );
-    session.resume().await;
-    session.stop_at("faulted").await;
-    session
-        .scenario
-        .add_breakpoint_spec(control_line("control_noack.py", "# SECOND_LINE"))
-        .await;
-    session.go_on().await;
-    // The shared execution deadline allows scheduling under the stress
-    // gate; unit tests separately prove the exact five-second running budget.
-    let reason = session.finish_run().await;
-    assert!(
-        matches!(reason, StopReason::RuntimeEvent { ref description } if description.contains("acknowledgement") && description.contains("timed out")),
-        "{reason:?}"
-    );
-
-    let snapshot = session.scenario.snapshot().await;
-    assert!(
-        snapshot
-            .breakpoints
-            .iter()
-            .all(|site| !site.pending_locations.is_empty())
-    );
-    assert!(
-        snapshot
-            .breakpoints
-            .iter()
-            .all(|site| site.pending_locations[0].reason.contains("timed out"))
-    );
-    session.shutdown().await;
 }
 
 /// Outstanding acknowledgements must wait on messages with a deadline alarm, not poll.
