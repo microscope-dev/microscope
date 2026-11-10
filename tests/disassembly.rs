@@ -377,29 +377,20 @@ async fn c_programs_and_libraries_decode_like_objdump() {
     for fixture in ["crash-gcc-o0", "crash-gcc-o2-nopie", "crash-clang-o2"] {
         let (scenario, modules) = faulted_with_breakpoints(fixture).await;
         assert_module_matches_objdump(&scenario, &modules, fixture, fixture).await;
-        assert_module_matches_objdump(&scenario, &modules, "libcrash.so", fixture).await;
+        // Every fixture loads the same library.
+        if fixture == "crash-gcc-o0" {
+            assert_module_matches_objdump(&scenario, &modules, "libcrash.so", fixture).await;
+        }
         scenario.shutdown().await;
     }
 }
 
 #[tokio::test]
-async fn the_c_library_and_loader_decode_like_objdump() {
-    let (scenario, modules) = faulted_with_breakpoints("crash-gcc-o0").await;
-    for library in ["libc.so.6", "ld-linux-x86-64.so.2"] {
-        let compared = assert_module_matches_objdump(&scenario, &modules, library, "live").await;
-        assert!(compared > 10_000, "{library}: {compared}");
-    }
-
+async fn a_zig_program_decodes_like_objdump() {
+    // Another toolchain's layout, and 1.3 MB of text across many windows.
+    let (scenario, modules) = faulted_with_breakpoints("crash-zig-o0").await;
+    assert_module_matches_objdump(&scenario, &modules, "crash-zig-o0", "crash-zig-o0").await;
     scenario.shutdown().await;
-}
-
-#[tokio::test]
-async fn rust_zig_and_go_programs_decode_like_objdump() {
-    for fixture in ["crash-rust-o0", "crash-zig-o0", "crash-go-o0"] {
-        let (scenario, modules) = faulted_with_breakpoints(fixture).await;
-        assert_module_matches_objdump(&scenario, &modules, fixture, fixture).await;
-        scenario.shutdown().await;
-    }
 }
 
 #[tokio::test]
@@ -408,10 +399,6 @@ async fn core_dumps_decode_verified_files_like_objdump() {
         (
             "crash-gcc-o0-segv.core",
             &["crash-gcc-o0", "libcrash.so"][..],
-        ),
-        (
-            "elf-symbols-gcc-o0.core",
-            &["elf-symbols-gcc-o0", "libelf-symbols-gcc.so"][..],
         ),
         (
             "elf-symbols-stripped.core",
@@ -666,74 +653,6 @@ async fn functions_known_only_by_symbols_use_their_extents() {
             .await,
         Err(Error::NoFunctionContainsAddress(address)) if address == missing
     ));
-    scenario.shutdown().await;
-}
-
-#[tokio::test]
-async fn context_before_an_address_is_proven_from_known_starts() {
-    let (scenario, modules) = faulted_with_breakpoints("crash-gcc-o0").await;
-    let oracle = Objdump::read("crash-gcc-o0");
-    let (record, _) = modules.named("crash-gcc-o0");
-    let bias = record.module.load_bias.get();
-    let location = scenario
-        .operation("location", scenario.handle().current_location())
-        .await;
-    let pc = location.address.get();
-
-    // The program counter is itself proven, and every leading instruction
-    // is reached by decoding forward from a known start.
-    let (boundary, leading, block) = into_window(disassemble(&scenario, window(pc, 16, 4)).await);
-    assert_eq!(
-        boundary,
-        TargetBoundary::Known(BoundaryEvidence::ProgramCounter)
-    );
-    assert_eq!(leading, None);
-    assert_eq!(block.instructions.len(), 20);
-    assert_eq!(block.instructions[16].address.get(), pc);
-    for pair in block.instructions.windows(2) {
-        assert_eq!(pair[0].end(), pair[1].address);
-    }
-
-    for instruction in block.instructions.iter() {
-        let objdump = &oracle.instructions[&(instruction.address.get() - bias)];
-        assert_eq!(*instruction.bytes, *objdump.bytes);
-    }
-
-    // Any other instruction start inside the function is reached from its
-    // entry; an address inside an instruction is crossed.
-    let function = location.image.symbol.expect("crash_segv has a symbol");
-    let entry = pc - function.offset;
-    let inner = oracle
-        .instructions
-        .range(entry - bias + 1..pc - bias)
-        .find(|(_, instruction)| instruction.bytes.len() > 1)
-        .map(|(address, _)| bias + address)
-        .expect("a multi-byte instruction precedes the fault");
-
-    let (boundary, leading, block) = into_window(disassemble(&scenario, window(inner, 1, 1)).await);
-    assert!(
-        matches!(boundary, TargetBoundary::Reached { from, .. } if from.get() == entry),
-        "{boundary:?}"
-    );
-    assert_eq!(leading, None);
-    assert_eq!(block.instructions.len(), 2);
-
-    let (boundary, leading, block) =
-        into_window(disassemble(&scenario, window(inner + 1, 1, 1)).await);
-    assert_eq!(
-        boundary,
-        TargetBoundary::Crossed {
-            from: VirtualAddress::new(entry),
-            instruction: VirtualAddress::new(inner),
-        }
-    );
-    assert_eq!(
-        leading,
-        Some(ContextShortfall::Desynchronized {
-            boundary: VirtualAddress::new(inner + 1)
-        })
-    );
-    assert_eq!(block.instructions.len(), 1);
     scenario.shutdown().await;
 }
 

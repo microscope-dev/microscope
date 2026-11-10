@@ -447,7 +447,17 @@ fn open_core(executable: &str) -> Scenario {
 /// by ELF symbols, as readelf's tables do.
 #[tokio::test]
 async fn live_processes_name_code_and_data_by_elf_symbols() {
-    for (index, (executable, library)) in VARIANTS.into_iter().enumerate() {
+    // cores_agree_with_gdb_and_readelf checks every variant's chain against
+    // gdb and readelf; the nested symbols here are the same hand-written
+    // assembly in each, so one with symbols and one stripped suffice.
+    for (index, (executable, library)) in
+        VARIANTS
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (executable, _))| {
+                ["elf-symbols-gcc-o0", "elf-symbols-stripped"].contains(executable)
+            })
+    {
         let mut scenario = Scenario::launch(executable);
 
         assert!(matches!(
@@ -615,49 +625,52 @@ async fn cores_agree_with_gdb_and_readelf() {
 /// vDSO's unexported helper as unnamed.
 #[tokio::test]
 async fn vdso_cores_agree_with_gdb() {
-    for variant in ["gcc-o0", "gcc-o2", "clang-o2-nopie"] {
-        for mode in ["clock", "time"] {
-            let core = format!("vdso-{variant}-{mode}.core");
-            let scenario =
-                Scenario::open_core(&core, &CoreDumpOptions::new(Scenario::fixture(&core)));
+    // The vDSO is the same whatever the build; each mode is a different vDSO
+    // function, and one optimized caller is enough.
+    for (variant, mode) in [
+        ("gcc-o0", "clock"),
+        ("gcc-o0", "time"),
+        ("clang-o2-nopie", "clock"),
+    ] {
+        let core = format!("vdso-{variant}-{mode}.core");
+        let scenario = Scenario::open_core(&core, &CoreDumpOptions::new(Scenario::fixture(&core)));
 
-            let modules = Modules::load(&scenario).await;
-            let trace = scenario
-                .operation("backtrace", scenario.handle().backtrace())
-                .await;
+        let modules = Modules::load(&scenario).await;
+        let trace = scenario
+            .operation("backtrace", scenario.handle().backtrace())
+            .await;
 
-            assert_frame_symbols_are_consistent(&trace, &modules, &core);
+        assert_frame_symbols_are_consistent(&trace, &modules, &core);
 
-            let vdso = trace.frames[0].module.expect("the fault's module");
-            assert_eq!(modules.file_name(vdso), support::VDSO, "{core}");
-            assert_agrees_with_gdb(&trace, &modules, &gdb_backtrace(&core), &core);
-            assert_eq!(trace.termination, UnwindTermination::Complete, "{core}");
+        let vdso = trace.frames[0].module.expect("the fault's module");
+        assert_eq!(modules.file_name(vdso), support::VDSO, "{core}");
+        assert_agrees_with_gdb(&trace, &modules, &gdb_backtrace(&core), &core);
+        assert_eq!(trace.termination, UnwindTermination::Complete, "{core}");
 
-            let info = scenario.handle().core_dump().expect("a core session");
-            let recorded = info
-                .modules
-                .iter()
-                .find(|module| module.recorded_path.as_os_str() == support::VDSO)
-                .unwrap_or_else(|| panic!("{core}: no vDSO in {info:#?}"));
+        let info = scenario.handle().core_dump().expect("a core session");
+        let recorded = info
+            .modules
+            .iter()
+            .find(|module| module.recorded_path.as_os_str() == support::VDSO)
+            .unwrap_or_else(|| panic!("{core}: no vDSO in {info:#?}"));
 
-            assert!(
-                matches!(
-                    &recorded.state,
-                    CoreModuleState::Loaded { module, identity: ModuleIdentity::DumpedMemory }
-                        if module.module.id == vdso
-                            && module.module.load_bias.get() == recorded.start.get()
-                ),
-                "{core}: {recorded:#?}"
-            );
+        assert!(
+            matches!(
+                &recorded.state,
+                CoreModuleState::Loaded { module, identity: ModuleIdentity::DumpedMemory }
+                    if module.module.id == vdso
+                        && module.module.load_bias.get() == recorded.start.get()
+            ),
+            "{core}: {recorded:#?}"
+        );
 
-            assert_eq!(
-                recorded.build_id.as_ref().map(|build_id| build_id.len()),
-                Some(20),
-                "{core}: {recorded:#?}"
-            );
+        assert_eq!(
+            recorded.build_id.as_ref().map(|build_id| build_id.len()),
+            Some(20),
+            "{core}: {recorded:#?}"
+        );
 
-            scenario.shutdown().await;
-        }
+        scenario.shutdown().await;
     }
 }
 

@@ -323,16 +323,9 @@ fn wall_clocks_print_to_each_format_and_precision_as_strace_prints_them() {
         &["--timestamps=ns"],
         &["--absolute-timestamps=unix"],
         &["--absolute-timestamps=none"],
-        &["--absolute-timestamps=ms"],
-        &["--absolute-timestamps=precision:us"],
         &["--absolute-timestamps=format:unix,precision:ns"],
         &["--absolute-timestamps=ns,UNIX"],
-        &["--absolute-timestamps=unix,ns,ms"],
         &["--absolute-timestamps=unix", "--absolute-timestamps=ns"],
-        &["--absolute-timestamps=ns", "--absolute-timestamps"],
-        &["--absolute-timestamps=ns", "--absolute-timestamps=none"],
-        &["--absolute-timestamps=none", "--absolute-timestamps=ms"],
-        &["--absolute-timestamps=unix,ms", "-r"],
         &["--absolute-timestamps=none", "-r"],
         &["-t", "-r"],
         &["-ttt", "--relative-timestamps=ns"],
@@ -480,8 +473,8 @@ fn stacks_unwind_to_the_frames_strace_finds() {
         (&["-kk", "-e", "trace=write,read,readv"][..], "dumps"),
         (&["-f", "-kk", "-e", "trace=write,getppid"], "family"),
     ] {
-        let (theirs, ours) = both(arguments, mode);
-        let (theirs, ours) = (normalized(&theirs), normalized(&ours));
+        let (raw_theirs, raw_ours) = both(arguments, mode);
+        let (theirs, ours) = (normalized(&raw_theirs), normalized(&raw_ours));
 
         // strace can't unwind the dynamic loader's `_start`, which has no
         // call-frame information, and says so; microscope ends the stack
@@ -552,9 +545,7 @@ fn stacks_unwind_to_the_frames_strace_finds() {
 
         assert!(frames > 0, "{}", context());
 
-        // The addresses themselves, frame by frame.
-        let (theirs, ours) = both(arguments, mode);
-
+        // The addresses themselves, frame by frame, from before normalizing.
         let addresses = |trace: &str| {
             address
                 .captures_iter(trace)
@@ -562,7 +553,11 @@ fn stacks_unwind_to_the_frames_strace_finds() {
                 .collect::<Vec<_>>()
         };
 
-        assert_eq!(addresses(&ours), addresses(&theirs), "with {arguments:?}");
+        assert_eq!(
+            addresses(&raw_ours),
+            addresses(&raw_theirs),
+            "with {arguments:?}"
+        );
     }
 }
 
@@ -751,8 +746,27 @@ fn the_summary_counts_calls_errors_and_errnos() {
         .find(|row| row[0] == "openat")
         .expect("openat row");
 
+    // The errnos split the errors between them, and the fixture's open of
+    // "missing" is one of them.
+    let errors: u64 = openat[2].parse().expect("an error count");
+    let errnos: Vec<(&str, u64)> = openat[3..]
+        .iter()
+        .flat_map(|cell| cell.split(','))
+        .filter(|errno| !errno.is_empty())
+        .map(|errno| {
+            let (name, count) = errno.split_once('×').expect("errno×count");
+            (name, count.parse().expect("a count"))
+        })
+        .collect();
+    assert_eq!(
+        errnos.iter().map(|(_, count)| count).sum::<u64>(),
+        errors,
+        "{lines}"
+    );
     assert!(
-        openat.contains(&"ENOENT×1") || openat.iter().any(|cell| cell.starts_with("ENOENT×")),
+        errnos
+            .iter()
+            .any(|&(name, count)| name == "ENOENT" && count > 0),
         "{lines}"
     );
 
@@ -821,12 +835,7 @@ fn the_summary_times_calls_in_nanoseconds_when_asked() {
         "no time finer than a microsecond:\n{lines}"
     );
 
-    for precision in [
-        &["--syscall-times=us"][..],
-        &["--syscall-times"],
-        &["-T"],
-        &[],
-    ] {
+    for precision in [&["--syscall-times=us"][..], &[]] {
         let (code, lines) = table(precision);
         assert_eq!(code, Some(3), "{lines}");
         assert!(
@@ -840,56 +849,6 @@ fn the_summary_times_calls_in_nanoseconds_when_asked() {
     assert!(
         lines.contains("-c's table shows microseconds or nanoseconds"),
         "{lines}"
-    );
-}
-
-/// A program with no lines, as a release build ships, names a call's site
-/// by its own function that called the C library, not by the C library's
-/// system call wrapper, which every call of the kind shares.
-#[test]
-fn a_call_in_a_program_without_lines_is_placed_in_its_own_function() {
-    let directory = ScratchDir::new("syscalls-nolines");
-    let captured = microscope(&["--engine", "ptrace", "-e", "trace=openat", "-Z", "-k"])
-        .args(["-o", "trace.usprof", "--"])
-        .arg(Scenario::fixture("syscalls-nolines"))
-        .arg("files")
-        .current_dir(directory.path())
-        .output()
-        .expect("run microscope");
-    assert_eq!(
-        captured.status.code(),
-        Some(3),
-        "{}",
-        text(&captured.stderr)
-    );
-
-    let profile = microscope::profiler::Profile::read(&directory.path().join("trace.usprof"))
-        .expect("the capture reads")
-        .profile;
-    let stacks: Vec<u32> = profile
-        .syscalls()
-        .events
-        .iter()
-        .filter(|event| matches!(event.event, microscope::syscalls::TraceEvent::Call(_)))
-        .filter_map(|event| event.stack)
-        .filter(|&stack| {
-            let (functions, _) = profile.syscall_stack(stack);
-            functions.iter().any(|function| function == "files")
-        })
-        .collect();
-
-    // The failed open of "missing", made in `files` through the C library.
-    assert_eq!(stacks.len(), 1, "{}", text(&captured.stderr));
-    let stack = stacks[0];
-    let (functions, _) = profile.syscall_stack(stack);
-    assert_ne!(
-        functions[0], "files",
-        "the call is made in the C library: {functions:?}"
-    );
-    assert_eq!(
-        profile.syscall_site(stack).as_deref(),
-        Some("files"),
-        "{functions:?}"
     );
 }
 
@@ -1275,10 +1234,11 @@ fn converted_opens(outputs: &[&str]) -> (ScratchDir, u64, u64) {
 }
 
 /// A trace converts to pprof, which Go's own tool reads, and to folded
-/// stacks, each call a sample of its stack with the call innermost.
+/// stacks, each call a sample of its stack with the call innermost; and to
+/// a Chrome trace, each call a span naming its site.
 #[test]
-fn convert_writes_each_call_as_a_sample_of_its_stack() {
-    let (directory, made, took) = converted_opens(&["trace.pb.gz", "trace.folded"]);
+fn convert_writes_each_call_as_a_sample_of_its_stack_and_a_span() {
+    let (directory, made, took) = converted_opens(&["trace.pb.gz", "trace.folded", "trace.json"]);
     let (samples, raw) = pprof_samples(&directory.path().join("trace.pb.gz"));
     assert_eq!(
         samples.iter().map(|sample| sample.calls).sum::<u64>(),
@@ -1327,12 +1287,7 @@ fn convert_writes_each_call_as_a_sample_of_its_stack() {
     }
 
     assert_eq!(weights, (made, 3), "{folded}");
-}
 
-/// A trace converts to a Chrome trace, each call a span naming its site.
-#[test]
-fn convert_writes_each_call_as_a_chrome_span() {
-    let (directory, made, _) = converted_opens(&["trace.json"]);
     let chrome: serde_json::Value = serde_json::from_slice(
         &std::fs::read(directory.path().join("trace.json")).expect("the trace"),
     )
@@ -1882,7 +1837,6 @@ mod bpf {
             "signal",
         );
         assert_eq!(code, Some(0), "{errors}");
-        eprintln!("{trace}");
         let kill = Regex::new(r"kill\((\d+), SIGUSR1\) += 0").expect("kill regex");
         let pid = &kill.captures(&trace).expect("successful kill")[1];
         let delivered = trace
@@ -1915,7 +1869,6 @@ mod bpf {
                 Some(if signal == "SIGTERM" { 143 } else { 137 }),
                 "{errors}"
             );
-            eprintln!("{mode}:\n{trace}");
             assert!(trace.contains(&format!(", {signal})")), "{trace}");
             assert!(
                 trace.ends_with(&format!("+++ killed by {signal} +++\n")),

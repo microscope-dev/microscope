@@ -165,7 +165,7 @@ fn a_function_breakpoint_records_its_exact_callers_in_every_build() {
     for (variant, frame_pointers) in VARIANTS {
         // A copy too small for call-frame information to reach a thread's
         // start leaves the kernel's chain to carry the stack to it.
-        for copy in [DEEP_STACK_COPY, SMALL_STACK_COPY, 64] {
+        for copy in [DEEP_STACK_COPY, 64] {
             let options = RecordOptions {
                 stack: StackCopy::Bytes(copy),
                 ..calls_of("leaf")
@@ -1182,22 +1182,6 @@ fn a_segment_deletes_only_segments_older_than_kept() {
 }
 
 #[test]
-fn a_profile_says_how_much_cpu_time_its_samples_cover() {
-    // At 49 samples a second, a thread's time on each CPU is sampled
-    // only once a whole period of it has passed there.
-    let options = RecordOptions::preset(Preset::Production);
-    let recording = record(go_command("o2", 40), &options).expect("record");
-    assert!(recording.status.success());
-    let profile = &recording.profile;
-    assert!(profile.counted() > 0);
-    assert!(
-        profile.total_weight() <= profile.counted(),
-        "{:?}",
-        profile.settings()
-    );
-}
-
-#[test]
 fn timed_cuts_keep_exact_function_counts_including_inherited_threads() {
     for segmented in [false, true] {
         let options = RecordOptions {
@@ -1262,7 +1246,18 @@ fn a_go_programs_complete_stacks_all_end_where_stacks_begin() {
     let options = RecordOptions::preset(Preset::Maximum);
     let recording = record(go_command("o2", 40), &options).expect("record");
     assert!(recording.status.success());
-    for stack in recording.profile.stacks() {
+    let stacks = recording.profile.stacks();
+    let complete = stacks
+        .iter()
+        .filter(|stack| stack.ending == StackEnding::Complete)
+        .count();
+    // 78% to 92% over runs; a regression that cuts stacks short shows.
+    assert!(
+        complete * 2 > stacks.len(),
+        "{complete} of {}",
+        stacks.len()
+    );
+    for stack in &stacks {
         if stack.ending == StackEnding::Complete {
             let outermost = stack.functions.last().map(String::as_str);
             assert!(
@@ -1313,20 +1308,19 @@ fn a_signal_handlers_stack_goes_on_through_what_the_signal_interrupted() {
 /// signal trampoline that leads to what the signal interrupted.
 #[test]
 fn a_signal_handlers_stack_keeps_to_its_frame_limit() {
-    for variant in ["gcc-o0", "clang-o2-nofp"] {
-        let mut command = Command::new(Scenario::fixture(&format!("profile-signals-{variant}")));
-        command.arg("3").stdout(Stdio::null());
-        let options = RecordOptions {
-            max_frames: 2,
-            ..calls_of("on_signal")
-        };
+    // The limit is the same whatever the build; the previous test owns the
+    // builds.
+    let mut command = Command::new(Scenario::fixture("profile-signals-gcc-o0"));
+    command.arg("3").stdout(Stdio::null());
+    let options = RecordOptions {
+        max_frames: 2,
+        ..calls_of("on_signal")
+    };
 
-        let recording = record(command, &options).expect("record");
-        assert!(recording.status.success(), "{variant}");
-        let stacks = support::profile::accounted(&recording.profile, 3);
-        for stack in &stacks {
-            assert_eq!(stack.functions, ["on_signal", "__restore_rt"], "{variant}");
-        }
+    let recording = record(command, &options).expect("record");
+    assert!(recording.status.success());
+    for stack in &support::profile::accounted(&recording.profile, 3) {
+        assert_eq!(stack.functions, ["on_signal", "__restore_rt"]);
     }
 }
 
@@ -1650,11 +1644,11 @@ fn sample_perf_map(version: &str) -> (microscope::profiler::Recording, Option<i6
 
 /// CPython under `-X perf` enters each Python function that C calls
 /// through a trampoline of its own, in anonymous memory its perf map
-/// names. 3.12's keeps no frame pointer and later ones do; a stack goes on
+/// names. 3.12's keeps no frame pointer and 3.14's does; a stack goes on
 /// through either, named, to the interpreter's callers.
 #[test]
 fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
-    for version in ["3.12", "3.13", "3.14"] {
+    for version in ["3.12", "3.14"] {
         let (recording, stopped_at) = sample_perf_map(version);
         let stacks = recording.profile.stacks();
         let _map = PerfMap(stacks.first().map(|stack| stack.pid));

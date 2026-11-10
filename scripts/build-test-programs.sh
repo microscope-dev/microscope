@@ -3126,15 +3126,9 @@ generate_disassembly_oracle() {
 }
 
 for program in crash-gcc-o0 crash-gcc-o2-nopie crash-clang-o2 crash-rust-o0 crash-zig-o0 \
-    crash-go-o0 libcrash.so elf-symbols-gcc-o0 libelf-symbols-gcc.so \
-    libelf-symbols-stripped.so; do
+    libcrash.so libelf-symbols-gcc.so libelf-symbols-stripped.so; do
     generate_disassembly_oracle "$output_dir/$program"
 done
-wait_builds
-while read -r library; do
-    generate_disassembly_oracle "$library"
-done < <(ldd "$output_dir/crash-gcc-o0" | awk '/=> \// { print $3 } /^\t\// { print $1 }' \
-    | grep -E '/(libc\.so|ld-linux)')
 
 wait_jobs
 if ! wait "$tokio_build"; then

@@ -492,6 +492,7 @@ async fn every_dumped_thread_keeps_its_own_registers_stack_and_tls() {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "one row for each refused request")]
 async fn post_mortem_targets_reject_execution_modification_and_breakpoints() {
     let mut scenario = open_core("crash-gcc-o0-segv.core");
     let (stop, before) = stopped(&mut scenario).await;
@@ -541,6 +542,40 @@ async fn post_mortem_targets_reject_execution_modification_and_breakpoints() {
         (
             "delete all",
             handle.remove_all_breakpoints().await.map(drop),
+        ),
+        (
+            "watch",
+            handle
+                .watch(
+                    &microscope::Expression::parse("main").expect("an expression"),
+                    microscope::WatchAccess::Write,
+                )
+                .await
+                .map(drop),
+        ),
+        (
+            "watch address",
+            handle
+                .add_watchpoint(
+                    microscope::WatchpointSpec::Location {
+                        address: VirtualAddress::new(0x1000),
+                        byte_size: 8,
+                    },
+                    microscope::WatchAccess::Write,
+                )
+                .await
+                .map(drop),
+        ),
+        (
+            "delete watchpoint",
+            handle
+                .remove_watchpoint(microscope::WatchpointId::new(1))
+                .await
+                .map(drop),
+        ),
+        (
+            "delete all watchpoints",
+            handle.remove_all_watchpoints().await.map(drop),
         ),
         (
             "watch condition",
@@ -1703,38 +1738,6 @@ async fn cores_from_other_machines_load_every_module_from_a_sysroot() {
     // The other machine's C library describes its own structures, which
     // locate its TLS.
     assert_eq!(signed(&variable(&scenario, "crash_tls").await), 100);
-    scenario.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_sysroot_copy_of_this_machine_serves_tls_through_its_c_library() {
-    let name = "crash-gcc-o0-segv.core";
-    let recorded = open_core(name);
-    let info = core_info(&recorded);
-    recorded.shutdown().await;
-    let root = ScratchDir::new("host-sysroot");
-
-    for module in file_images(&info) {
-        place(root.path(), &module.recorded_path, &module.recorded_path);
-    }
-
-    let scenario = Scenario::open_core(
-        "host sysroot",
-        &CoreDumpOptions {
-            sysroot: Some(root.path().to_owned()),
-            ..CoreDumpOptions::new(core(name))
-        },
-    );
-
-    let canonical_root = root.path().canonicalize().expect("canonical sysroot");
-    let (libc, identity) = loaded_from(&core_info(&scenario), "libc.so.6");
-    assert!(libc.starts_with(&canonical_root), "{}", libc.display());
-    assert_eq!(identity, ModuleIdentity::BuildId);
-
-    // The C library's descriptors are found through the sysroot file, and
-    // the TLS blocks in the dump.
-    assert_eq!(signed(&variable(&scenario, "crash_tls").await), 100);
-    assert_eq!(signed(&variable(&scenario, "crash_library_tls").await), 654);
     scenario.shutdown().await;
 }
 
