@@ -275,15 +275,6 @@ pub struct Cli {
     /// Whether the inferior replaced its program with one microscope does
     /// not follow, which fails a batch run.
     unfollowed_exec: std::sync::atomic::AtomicBool,
-
-    /// Whether a process the group's policy would debug executed a program
-    /// microscope could not load, which fails a batch run too.
-    unfollowed_process: std::sync::atomic::AtomicBool,
-
-    /// Whether a member failed to take a change to the group's
-    /// breakpoints, so its stops may be missing, which fails a batch run
-    /// too.
-    unmirrored_breakpoint: std::sync::atomic::AtomicBool,
 }
 
 /// The member commands act on, and its handle.
@@ -342,8 +333,6 @@ impl Cli {
             completion_names: std::sync::Mutex::default(),
             profiling: std::sync::Mutex::default(),
             unfollowed_exec: std::sync::atomic::AtomicBool::new(false),
-            unfollowed_process: std::sync::atomic::AtomicBool::new(false),
-            unmirrored_breakpoint: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -608,8 +597,8 @@ impl Cli {
                         );
                     }
 
-                    if session_batch
-                        && self.unfollowed_process.load(std::sync::atomic::Ordering::Relaxed)
+                    let group = self.group.as_ref().map(|group| &group.handle);
+                    if session_batch && group.is_some_and(microscope::GroupHandle::missed_a_process)
                     {
                         bail!(
                             "a process the program started executed a program microscope \
@@ -618,9 +607,7 @@ impl Cli {
                     }
 
                     if session_batch
-                        && self
-                            .unmirrored_breakpoint
-                            .load(std::sync::atomic::Ordering::Relaxed)
+                        && group.is_some_and(microscope::GroupHandle::missed_a_breakpoint_change)
                     {
                         bail!(
                             "a process the program started did not take every change to its \

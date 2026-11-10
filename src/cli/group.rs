@@ -317,7 +317,6 @@ impl Cli {
                     {
                         member_events.watch(debugger);
                     }
-                    self.note_group_event(&event);
                     if let Some(line) =
                         format::group_event(&event, &group.handle.members(), renderer)
                     {
@@ -401,23 +400,8 @@ impl Cli {
 
     /// The line a group event prints between commands, if any.
     pub(super) fn group_notice(&self, event: &GroupEvent) -> Option<String> {
-        self.note_group_event(event);
         let group = self.group.as_ref()?;
         format::group_event(event, &group.handle.members(), self.renderers.stdout)
-    }
-
-    /// Notes what a group event means for the session's outcome: a process
-    /// the policy wanted that could not be followed fails a batch run, as
-    /// does a member that did not take a change to the breakpoints.
-    pub(super) fn note_group_event(&self, event: &GroupEvent) {
-        if matches!(event, GroupEvent::ProcessUnfollowed { .. }) {
-            self.unfollowed_process
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if matches!(event, GroupEvent::BreakpointNotMirrored { .. }) {
-            self.unmirrored_breakpoint
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
     }
 }
 

@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -178,6 +179,12 @@ struct Shared {
     /// The root's breakpoint each member's copy of one is, by the member
     /// and the copy's id.
     copies: Mutex<BTreeMap<(MemberNumber, BreakpointId), BreakpointId>>,
+
+    /// Whether the group reported a process it could not follow, or a
+    /// member that did not take a change to the breakpoints. A client
+    /// whose events fell behind reads these instead.
+    unfollowed: AtomicBool,
+    unmirrored: AtomicBool,
 }
 
 impl Shared {
@@ -223,6 +230,8 @@ impl ProcessGroup {
             }]),
             handles: Mutex::new(BTreeMap::from([(1, handle.clone())])),
             copies: Mutex::default(),
+            unfollowed: AtomicBool::default(),
+            unmirrored: AtomicBool::default(),
         });
         let (commands, received) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(crate::event_capacity());
@@ -354,6 +363,20 @@ impl GroupHandle {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Whether the group has reported a process it could not follow, as a
+    /// [`GroupEvent::ProcessUnfollowed`].
+    #[must_use]
+    pub fn missed_a_process(&self) -> bool {
+        self.shared.unfollowed.load(Ordering::Relaxed)
+    }
+
+    /// Whether the group has reported a member that did not take a change
+    /// to the breakpoints, as a [`GroupEvent::BreakpointNotMirrored`].
+    #[must_use]
+    pub fn missed_a_breakpoint_change(&self) -> bool {
+        self.shared.unmirrored.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -1026,6 +1049,15 @@ impl Driver {
 
     fn emit(&self, event: GroupEvent) {
         record!("group event {event:?}");
+        match event {
+            GroupEvent::ProcessUnfollowed { .. } => {
+                self.shared.unfollowed.store(true, Ordering::Relaxed);
+            }
+            GroupEvent::BreakpointNotMirrored { .. } => {
+                self.shared.unmirrored.store(true, Ordering::Relaxed);
+            }
+            _ => {}
+        }
         let _ = self.events.send(event);
     }
 
@@ -1809,7 +1841,41 @@ mod tests {
             }]),
             handles: Mutex::default(),
             copies: Mutex::default(),
+            unfollowed: AtomicBool::default(),
+            unmirrored: AtomicBool::default(),
         }
+    }
+
+    /// What fails a batch run is kept as the group's state, not only sent
+    /// as events, which a client that falls behind may never read.
+    #[tokio::test]
+    async fn a_group_keeps_what_it_could_not_follow() {
+        let (mut driver, _received) = driver(StopScope::Group);
+        let handle = GroupHandle {
+            shared: Arc::clone(&driver.shared),
+            commands: mpsc::unbounded_channel().0,
+            events: driver.events.clone(),
+            root: driver.root.clone(),
+            stops: StopScope::Group,
+        };
+        assert!(!handle.missed_a_process() && !handle.missed_a_breakpoint_change());
+
+        driver
+            .notice(GroupNotice::Unfollowed {
+                process: ProcessId::new(4321),
+                program: PathBuf::from("/bin/elsewhere"),
+                reason: "not an executable it can load".into(),
+            })
+            .await;
+        assert!(handle.missed_a_process());
+        assert!(!handle.missed_a_breakpoint_change());
+
+        driver.emit(GroupEvent::BreakpointNotMirrored {
+            member: 2,
+            breakpoint: BreakpointId::new(1),
+            reason: "the member ended".to_owned(),
+        });
+        assert!(handle.missed_a_breakpoint_change());
     }
 
     /// How an attach's wait ends without waiting for its timeout.
@@ -1922,6 +1988,8 @@ mod tests {
             members: Mutex::default(),
             handles: Mutex::default(),
             copies: Mutex::default(),
+            unfollowed: AtomicBool::default(),
+            unmirrored: AtomicBool::default(),
         });
         let (events, received) = broadcast::channel(crate::event_capacity());
         (Driver::new(shared, events, root, scope), received)
