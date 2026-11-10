@@ -12,7 +12,8 @@ use super::super::Controller;
 use super::super::cdp::{Connection, RequestId, Session};
 use super::super::native::{InspectionOps, LinuxTraceOps};
 use super::{
-    Inspector, Isolate, Placement, Sentinel, Site, SiteState, functions, maps, protocol, send,
+    Inspector, Isolate, Placement, Sentinel, Site, SiteState, Status, functions, maps, protocol,
+    send,
 };
 use crate::runtime_model::{Arming, ManagedArm, inspector_protocol};
 use crate::{ManagedPlace, RuntimeId};
@@ -20,8 +21,8 @@ use crate::{ManagedPlace, RuntimeId};
 impl Inspector {
     /// Whether the managed location `number` is set, or why it waits.
     pub(super) fn readiness(&self, number: u64) -> std::result::Result<(), Arc<str>> {
-        if let Some(problem) = &self.problem {
-            return Err(Arc::clone(problem));
+        if let Status::Failed { reason, .. } = &self.status {
+            return Err(Arc::clone(reason));
         }
         let states = || {
             self.isolates
@@ -61,13 +62,14 @@ impl Inspector {
                 },
             ));
         }
-        if self.target.is_none() {
-            Err(self.unstarted.map_or_else(
-                || "Node's inspector has not started yet".into(),
-                |why| format!("Node's inspector has not started; {why}").into(),
-            ))
-        } else {
-            Err("Node's inspector is not connected".into())
+        match self.status {
+            Status::Awaited {
+                unstarted: Some(why),
+            } => Err(format!("Node's inspector has not started; {why}").into()),
+            Status::Unknown | Status::Awaited { unstarted: None } => {
+                Err("Node's inspector has not started yet".into())
+            }
+            _ => Err("Node's inspector is not connected".into()),
         }
     }
 }
@@ -184,12 +186,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        let Some(link) = inspector.connection.as_ref().filter(|link| link.connected) else {
-            if inspector.connection.is_none()
-                && inspector.target.is_some()
-                && inspector.problem.is_none()
-            {
-                self.connect_inspector(runtime);
+        let Some(link) = inspector.status.connected() else {
+            if let Status::Listed(server) = &inspector.status {
+                let server = server.clone();
+                self.open_connection(runtime, server);
             }
             return;
         };
@@ -243,10 +243,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
-        let (Some(link), Some(isolate)) = (
-            inspector.connection.as_ref(),
-            inspector.isolates.get_mut(session),
-        ) else {
+        let (Some(link), Some(isolate)) =
+            (inspector.status.link(), inspector.isolates.get_mut(session))
+        else {
             return;
         };
         let target = Target {
@@ -290,7 +289,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let connection = inspector.connection.as_ref().map(|link| &link.connection);
+        let connection = inspector.status.link().map(|link| &link.connection);
         for (session, isolate) in &mut inspector.isolates {
             if isolate.withdrawn.remove(&id) {
                 if let (Some(connection), Ok(set)) = (connection, &result)

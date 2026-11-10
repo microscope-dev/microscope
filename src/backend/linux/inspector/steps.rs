@@ -73,7 +73,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let top = location["scriptId"]
             .as_str()
             .and_then(|id| inspector.isolates.get(session)?.scripts.get(id).cloned());
-        let Some(link) = inspector.connection.as_ref() else {
+        let Some(link) = inspector.status.link() else {
             return false;
         };
         let original = top.as_ref().and_then(|url| {
@@ -339,7 +339,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         .isolates
                         .get(&Session::main())
                         .is_some_and(|isolate| isolate.resuming);
-                    inspector.connection.is_some()
+                    inspector.status.link().is_some()
                         && inspector
                             .gate
                             .as_ref()
@@ -448,7 +448,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inspectors
             .records
             .values()
-            .filter(|inspector| inspector.connection.is_some())
+            .filter(|inspector| inspector.status.link().is_some())
             .filter_map(|inspector| inspector.gate.as_ref())
             .flat_map(Gate::sites)
             .collect::<std::collections::BTreeSet<_>>();

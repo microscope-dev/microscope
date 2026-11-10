@@ -572,11 +572,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .records
             .get(&runtime)
             .ok_or("the frame's runtime has no inspector")?;
-        if !inspector
-            .connection
-            .as_ref()
-            .is_some_and(|link| link.connected)
-        {
+        if inspector.status.connected().is_none() {
             return Err("Node's inspector is not connected".into());
         }
         let (session, index) = inspector
@@ -676,7 +672,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
         let (Some(link), Some(assignment)) =
-            (inspector.connection.as_ref(), inspector.assigning.as_mut())
+            (inspector.status.link(), inspector.assigning.as_mut())
         else {
             return Ok(());
         };

@@ -157,10 +157,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return false;
         };
-        let (Some(link), Some(isolate)) = (
-            inspector.connection.as_ref(),
-            inspector.isolates.get_mut(session),
-        ) else {
+        let (Some(link), Some(isolate)) =
+            (inspector.status.link(), inspector.isolates.get_mut(session))
+        else {
             return false;
         };
         if !wanted(&inspector.desired) {
@@ -200,7 +199,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let Some(link) = inspector.connection.as_ref() else {
+        let Some(link) = inspector.status.link() else {
             return Ok(());
         };
         let names = names(&inspector.desired);

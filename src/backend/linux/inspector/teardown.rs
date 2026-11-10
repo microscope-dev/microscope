@@ -105,7 +105,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             if inspector.ownership == Ownership::Borrowed || inspector.owned_agent.is_some() {
                 continue;
             }
-            let Some(target) = inspector.target.clone() else {
+            let Some(target) = inspector.status.target().cloned() else {
                 continue;
             };
             let created = inspector.ownership == Ownership::Created;
@@ -156,7 +156,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .records
             .iter()
             .filter(|(_, inspector)| {
-                inspector.ownership == Ownership::Created || inspector.connection.is_some()
+                inspector.ownership == Ownership::Created || inspector.status.link().is_some()
             })
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
@@ -181,12 +181,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or(Error::NotRunning)?;
         let created = inspector.ownership == Ownership::Created;
         let ready = inspector
-            .target
-            .clone()
-            .zip(inspector.connection.as_ref())
-            .filter(|(_, link)| {
-                link.connected
-                    && inspector.ownership != Ownership::Pending
+            .status
+            .target()
+            .cloned()
+            .zip(inspector.status.connected())
+            .filter(|_| {
+                inspector.ownership != Ownership::Pending
                     && (!created || inspector.owned_agent.is_some())
             });
         let Some((target, link)) = ready else {
@@ -253,7 +253,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         inspector.pausing = "none";
         if !matches!(cleanup.phase, Phase::Starting) {
             Self::release_for_cleanup(inspector)?;
-            let link = inspector.connection.as_ref().ok_or(Error::NotRunning)?;
+            let link = inspector.status.link().ok_or(Error::NotRunning)?;
             let mut nonce = [0; 16];
             getrandom::fill(&mut nonce).map_err(|error| {
                 Error::RuntimeAgent(format!("cannot identify inspector cleanup: {error}").into())
@@ -298,7 +298,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn release_for_cleanup(inspector: &mut super::Inspector) -> Result<()> {
-        let link = inspector.connection.as_ref().ok_or(Error::NotRunning)?;
+        let link = inspector.status.link().ok_or(Error::NotRunning)?;
         for (session, isolate) in &mut inspector.isolates {
             for (method, params) in [
                 (
@@ -419,7 +419,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .records
             .get(&runtime)
             .ok_or(Error::NotRunning)?;
-        let link = inspector.connection.as_ref().ok_or(Error::NotRunning)?;
+        let link = inspector.status.link().ok_or(Error::NotRunning)?;
         let cleanup = inferior
             .inspectors
             .cleanup
@@ -623,7 +623,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         match message.incoming {
             Incoming::Reply { result, .. } if borrowed_reply => {
-                let phase = match (result, inspector.connection.as_ref()) {
+                let phase = match (result, inspector.status.link()) {
                     (Ok(_), Some(link)) => {
                         link.connection.close();
                         Phase::Closing
@@ -650,7 +650,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 method,
                 params,
             } => {
-                if let Some(link) = inspector.connection.as_ref() {
+                if let Some(link) = inspector.status.link() {
                     if method.as_ref() == inspector_protocol::PAUSED {
                         let _ = send(
                             &link.connection,
@@ -678,7 +678,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
             Incoming::Closed { reason, answered } => {
-                inspector.connection = None;
+                inspector.status.disconnect();
                 inspector.isolates.clear();
                 if returning {
                     return Ok(());

@@ -294,10 +294,9 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let (Some(link), Some(isolate)) = (
-            inspector.connection.as_ref(),
-            inspector.isolates.get_mut(session),
-        ) else {
+        let (Some(link), Some(isolate)) =
+            (inspector.status.link(), inspector.isolates.get_mut(session))
+        else {
             return Ok(());
         };
         let mut listing = BTreeMap::new();
@@ -400,7 +399,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
-            .and_then(|inspector| inspector.connection.as_ref())
+            .and_then(|inspector| inspector.status.link())
         {
             let _ = send(
                 &link.connection,
@@ -785,7 +784,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let mut ended = false;
         for inspector in inferior.inspectors.records.values_mut() {
             let Inspector {
-                connection,
+                status,
                 isolates,
                 step,
                 gate,
@@ -799,7 +798,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 // the program runs, and is asked to make it.
                 if let (Some(assignment), Some(link)) = (
                     inspector_assigning(assigning, session, isolate, resumed),
-                    connection.as_ref(),
+                    status.link(),
                 ) {
                     super::assignments::begin(&link.connection, session, isolate, assignment);
                     // One that could not be begun ends at once.
@@ -807,7 +806,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     continue;
                 }
                 held |= resume_isolate(
-                    connection.as_ref().map(|link| &link.connection),
+                    status.link().map(|link| &link.connection),
                     session,
                     isolate,
                     (step, through),
@@ -816,13 +815,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             if resumed.contains(&main)
                 && let (Some(link), Some(isolate)) =
-                    (connection.as_ref(), isolates.get_mut(&Session::main()))
+                    (status.link(), isolates.get_mut(&Session::main()))
             {
                 pause_for_step(&link.connection, isolate, step.as_mut(), gate.as_mut());
             }
             // A function compiled while the program ran is found as it
             // runs on.
-            if let Some(link) = connection.as_ref()
+            if let Some(link) = status.link()
                 && super::functions::wanted(desired)
             {
                 for (session, isolate) in isolates.iter_mut() {

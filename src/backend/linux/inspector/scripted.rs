@@ -254,12 +254,13 @@ impl Scripted {
 
     /// Connects to the fake as the controller does once it found the target.
     fn open(&mut self) {
-        let address = self.inspector.address;
-        let record = self.record();
-        record.target = Some("0f2b5c1e-uuid".into());
-        record.address = Some(address);
-        record.problem = None;
-        self.harness.controller.connect_inspector(self.runtime);
+        let server = super::Server {
+            target: "0f2b5c1e-uuid".into(),
+            address: self.inspector.address,
+        };
+        self.harness
+            .controller
+            .open_connection(self.runtime, server);
     }
 
     fn record(&mut self) -> &mut super::Inspector {
@@ -337,7 +338,7 @@ impl Scripted {
     /// Every request the controller has sent since the last call: a marker
     /// sent after them arrives once they all have.
     fn sent(&mut self) -> Vec<Request> {
-        let link = self.record().connection.as_ref().expect("a connection");
+        let link = self.record().status.link().expect("a connection");
         link.connection
             .send(&Session::main(), "Test.marker", json!({}))
             .expect("the marker is sent");
@@ -955,8 +956,8 @@ fn a_disconnect_mid_request_leaves_the_breakpoint_pending() {
     );
     let ended = scripted
         .record()
-        .connection
-        .as_ref()
+        .status
+        .link()
         .expect("a connection")
         .generation;
 
@@ -1009,7 +1010,7 @@ fn a_disconnect_mid_request_leaves_the_breakpoint_pending() {
     }
     assert_eq!(scripted.actions(), Vec::<String>::new());
     let record = scripted.record();
-    assert!(record.connection.is_some(), "the new connection stays");
+    assert!(record.status.link().is_some(), "the new connection stays");
     assert!(record.isolates[&Session::main()].paused.is_none());
 }
 

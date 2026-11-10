@@ -22,7 +22,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let mut asked = false;
         for inspector in inferior.inspectors.records.values_mut() {
-            let Some(link) = inspector.connection.as_ref().filter(|link| link.connected) else {
+            let Some(link) = inspector.status.connected() else {
                 continue;
             };
             for (session, isolate) in &mut inspector.isolates {

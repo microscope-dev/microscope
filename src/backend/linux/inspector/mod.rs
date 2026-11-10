@@ -171,6 +171,17 @@ impl Inspectors {
         *frames = shown.into();
     }
 
+    /// Panics if an inspector contradicts itself.
+    pub(super) fn check_invariants(&self) {
+        for (runtime, inspector) in &self.records {
+            debug_assert!(
+                inspector.isolates.is_empty() || matches!(inspector.status, Status::Connected(..)),
+                "runtime {runtime}'s inspector holds isolates with no connection: {:?}",
+                inspector.status
+            );
+        }
+    }
+
     /// Every target, cleanup, and startup checkpoint planted.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
         self.entries
@@ -188,27 +199,12 @@ impl Inspectors {
 struct Inspector {
     ownership: Ownership,
     owned_agent: Option<VirtualAddress>,
-    /// The target's id, once its server listed it.
-    target: Option<Arc<str>>,
-
-    /// Where its server listens, once found.
-    address: Option<SocketAddr>,
 
     /// The loopback sockets the process listened on before microscope
     /// opened its inspector, none of which is the inspector's.
     listening: BTreeSet<SocketAddr>,
 
-    /// Whether microscope looked at how the inspector opens: by the
-    /// `SIGUSR1` it sends a node it attached to, or by the launch preload.
-    looked: bool,
-
-    /// Why the inspector of a launched node may never start, if its
-    /// command line and environment tell.
-    unstarted: Option<&'static str>,
-    connection: Option<Link>,
-
-    /// Why the inspector cannot be used, once that is known.
-    problem: Option<Arc<str>>,
+    status: Status,
 
     /// The managed locations the runtime is armed with, which every
     /// isolate is given.
@@ -347,11 +343,46 @@ enum SiteState {
     Withdrawn(RequestId),
 }
 
+/// How far microscope has got in reaching one runtime's inspector.
+#[derive(Debug, Default)]
+enum Status {
+    /// Microscope has not looked at how the inspector opens.
+    #[default]
+    Unknown,
+
+    /// Microscope looked, and waits for Node to list its target: after
+    /// the `SIGUSR1` it sent a node it attached to, or as the launch
+    /// preload opens it. A launched node's command line and environment
+    /// may tell why it never will.
+    Awaited {
+        unstarted: Option<&'static str>,
+    },
+
+    /// Node listed its target, and microscope is not connected to it.
+    Listed(Server),
+
+    Connecting(Server, Link),
+    Connected(Server, Link),
+
+    /// The inspector cannot be used. The target stays known, if Node
+    /// listed one, for detach to find the server by.
+    Failed {
+        reason: Arc<str>,
+        target: Option<Arc<str>>,
+    },
+}
+
+/// The inspector server Node listed.
+#[derive(Debug, Clone)]
+struct Server {
+    target: Arc<str>,
+    address: SocketAddr,
+}
+
 /// A connection and the generation its messages carry.
 struct Link {
     generation: u64,
     connection: Connection,
-    connected: bool,
 }
 
 impl std::fmt::Debug for Link {
@@ -359,8 +390,56 @@ impl std::fmt::Debug for Link {
         formatter
             .debug_struct("Link")
             .field("generation", &self.generation)
-            .field("connected", &self.connected)
             .finish_non_exhaustive()
+    }
+}
+
+impl Status {
+    /// The connection, made or being made.
+    const fn link(&self) -> Option<&Link> {
+        match self {
+            Self::Connecting(_, link) | Self::Connected(_, link) => Some(link),
+            _ => None,
+        }
+    }
+
+    /// The connection, once made.
+    const fn connected(&self) -> Option<&Link> {
+        match self {
+            Self::Connected(_, link) => Some(link),
+            _ => None,
+        }
+    }
+
+    /// The id of the target Node listed, if it did.
+    const fn target(&self) -> Option<&Arc<str>> {
+        match self {
+            Self::Listed(server) | Self::Connecting(server, _) | Self::Connected(server, _) => {
+                Some(&server.target)
+            }
+            Self::Failed { target, .. } => target.as_ref(),
+            Self::Unknown | Self::Awaited { .. } => None,
+        }
+    }
+
+    /// Ends the connection with no fault of its own, and returns it.
+    fn disconnect(&mut self) -> Option<Link> {
+        match std::mem::take(self) {
+            Self::Connecting(server, link) | Self::Connected(server, link) => {
+                *self = Self::Listed(server);
+                Some(link)
+            }
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    /// The inspector cannot be used, for `reason`.
+    fn fail(&mut self, reason: Arc<str>) {
+        let target = self.target().cloned();
+        *self = Self::Failed { reason, target };
     }
 }
 
@@ -468,9 +547,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             let inspectors = &mut inferior.inspectors;
             for &runtime in inspectors.entries.values() {
                 let inspector = inspectors.records.entry(runtime).or_default();
-                if !inspector.looked {
-                    inspector.looked = true;
-                    inspector.unstarted = super::node_launch::unstarted(pid.as_raw());
+                if matches!(inspector.status, Status::Unknown) {
+                    inspector.status = Status::Awaited {
+                        unstarted: super::node_launch::unstarted(pid.as_raw()),
+                    };
                 }
             }
             return;
@@ -494,7 +574,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                         .inspectors
                         .records
                         .get(&runtime)
-                        .is_some_and(|inspector| inspector.looked || inspector.target.is_some())
+                        .is_some_and(|inspector| !matches!(inspector.status, Status::Unknown))
                 })
             {
                 continue;
@@ -508,27 +588,16 @@ impl<P: LinuxTraceOps> Controller<P> {
             let existing = match existing {
                 Ok(existing) => existing,
                 Err(reason) => {
-                    self.inspector_problem(runtime, &reason);
+                    record!("the inspector of runtime {runtime} cannot be used: {reason}");
                     if let Some(inferior) = self.session.inferior_mut() {
-                        inferior
-                            .inspectors
-                            .records
-                            .entry(runtime)
-                            .or_default()
-                            .looked = true;
+                        let inspector = inferior.inspectors.records.entry(runtime).or_default();
+                        inspector.status.fail(reason);
                     }
                     continue;
                 }
             };
             if let Some((address, target)) = existing {
-                let Some(inferior) = self.session.inferior_mut() else {
-                    return;
-                };
-                let inspector = inferior.inspectors.records.entry(runtime).or_default();
-                inspector.looked = true;
-                inspector.address = Some(address);
-                inspector.target = Some(target);
-                self.open_connection(runtime, address);
+                self.open_connection(runtime, Server { target, address });
                 continue;
             }
             // Do not enqueue Node's asynchronous startup before the first
@@ -580,22 +649,20 @@ impl<P: LinuxTraceOps> Controller<P> {
             thread.pending_signal = Some(pending);
         }
         let inspector = inferior.inspectors.records.entry(bound.id).or_default();
-        inspector.looked = true;
+        inspector.status = Status::Awaited { unstarted: None };
         match opened {
             Ok(true) => {
                 inspector.ownership = Ownership::Created;
                 inspector.listening = listening.unwrap_or_default().into_iter().collect();
                 record!("SIGUSR1 opens the attached node's inspector");
             }
-            Ok(false) => {
-                inspector.problem = Some(
-                    "the node's SIGUSR1 disposition is not Node's native inspector handler; \
-                     microscope will not deliver SIGUSR1 to application code; start it with \
-                     --inspect=127.0.0.1:0"
-                        .into(),
-                );
-            }
-            Err(reason) => inspector.problem = Some(reason),
+            Ok(false) => inspector.status.fail(
+                "the node's SIGUSR1 disposition is not Node's native inspector handler; \
+                 microscope will not deliver SIGUSR1 to application code; start it with \
+                 --inspect=127.0.0.1:0"
+                    .into(),
+            ),
+            Err(reason) => inspector.status.fail(reason),
         }
     }
 
@@ -649,98 +716,69 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         inferior.trap_event(pid, TrapEvent::Moved(caller))?;
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
-        if inspector.target.is_none() {
-            inspector.target = Some(target);
+        if inspector.status.target().is_none() {
+            match self.inspector_address(runtime) {
+                Ok(address) => self.open_connection(runtime, Server { target, address }),
+                Err(reason) => {
+                    record!("the inspector of runtime {runtime} cannot be used: {reason}");
+                    let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+                    inferior
+                        .inspectors
+                        .records
+                        .entry(runtime)
+                        .or_default()
+                        .status = Status::Failed {
+                        reason,
+                        target: Some(target),
+                    };
+                }
+            }
+            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             inferior.managed.mark_stale(runtime);
             if self.sync_runtime_arming() {
                 self.publish_breakpoints_changed();
             }
-            self.connect_inspector(runtime);
         }
         self.queue_module_refresh()
     }
 
-    /// Connects to the inspector of `runtime`, whose target is known, at
-    /// the process's one loopback listener.
-    fn connect_inspector(&mut self, runtime: RuntimeId) {
-        let Some(inferior) = self.session.inferior() else {
-            return;
-        };
-        let known = inferior
+    /// Where the inspector of `runtime`, which just listed its target,
+    /// listens: the one loopback socket the process opened since
+    /// microscope looked.
+    fn inspector_address(&self, runtime: RuntimeId) -> std::result::Result<SocketAddr, Arc<str>> {
+        let inferior = self.session.inferior().ok_or("the process is gone")?;
+        let listening = inferior
             .inspectors
             .records
             .get(&runtime)
-            .and_then(|inspector| inspector.address);
-        let address = match known.map_or_else(
-            || self.ptrace.loopback_listeners(inferior.tgid),
-            |address| Ok(vec![address]),
-        ) {
-            Ok(listeners) => {
-                let listening = inferior
-                    .inspectors
-                    .records
-                    .get(&runtime)
-                    .map(|inspector| &inspector.listening);
-                let new = listeners
-                    .into_iter()
-                    .filter(|listener| {
-                        listening.is_none_or(|listening| !listening.contains(listener))
-                    })
-                    .collect::<Vec<_>>();
-                self.inspector_listener(runtime, &new)
-            }
-            Err(reason) => {
-                self.inspector_problem(runtime, &reason);
-                return;
-            }
-        };
-        let Some(address) = address else {
-            return;
-        };
-        self.open_connection(runtime, address);
-    }
-
-    /// The inspector's socket among `listeners`, the loopback sockets the
-    /// process opened since microscope looked, or `None` with the problem
-    /// noted.
-    fn inspector_listener(
-        &mut self,
-        runtime: RuntimeId,
-        listeners: &[SocketAddr],
-    ) -> Option<SocketAddr> {
-        match listeners {
-            [listener] => Some(*listener),
-            [] => {
-                self.inspector_problem(runtime, "the inspector's server has no listening socket");
-                None
-            }
-            _ => {
-                self.inspector_problem(
-                    runtime,
-                    "the process listens on more than one loopback socket, so microscope cannot \
-                     tell which is the inspector's",
-                );
-                None
-            }
+            .map(|inspector| &inspector.listening);
+        let listeners = self
+            .ptrace
+            .loopback_listeners(inferior.tgid)?
+            .into_iter()
+            .filter(|listener| listening.is_none_or(|listening| !listening.contains(listener)))
+            .collect::<Vec<_>>();
+        match listeners[..] {
+            [listener] => Ok(listener),
+            [] => Err("the inspector's server has no listening socket".into()),
+            _ => Err(
+                "the process listens on more than one loopback socket, so microscope \
+                      cannot tell which is the inspector's"
+                    .into(),
+            ),
         }
     }
 
-    /// Connects to the inspector of `runtime` listening at `address`.
-    fn open_connection(&mut self, runtime: RuntimeId, address: SocketAddr) {
-        let Some(inspector) = self
-            .session
-            .inferior_mut()
-            .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
-        else {
+    /// Connects to the inspector of `runtime` at `server`.
+    fn open_connection(&mut self, runtime: RuntimeId, server: Server) {
+        let Some(inferior) = self.session.inferior_mut() else {
             return;
         };
-        let Some(target) = inspector.target.clone() else {
-            return;
-        };
-        inspector.address = Some(address);
+        let inspector = inferior.inspectors.records.entry(runtime).or_default();
         let generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
         let sender = self.message_sender.clone();
-        let opened = Connection::open(address, &format!("/{target}"), move |incoming| {
+        let Server { target, address } = &server;
+        let opened = Connection::open(*address, &format!("/{target}"), move |incoming| {
             sender
                 .blocking_send(crate::backend::ControllerMessage::Inspector(
                     InspectorMessage {
@@ -755,31 +793,19 @@ impl<P: LinuxTraceOps> Controller<P> {
             "connecting to the inspector at {address}/{target}: {:?}",
             opened.as_ref().map(|_| ())
         );
-        match opened {
-            Ok(connection) => {
-                inspector.connection = Some(Link {
+        inspector.status = match opened {
+            Ok(connection) => Status::Connecting(
+                server,
+                Link {
                     generation,
                     connection,
-                    connected: false,
-                });
-            }
-            Err(error) => {
-                inspector.problem =
-                    Some(format!("cannot connect to the inspector: {error}").into());
-            }
-        }
-    }
-
-    fn inspector_problem(&mut self, runtime: RuntimeId, reason: &str) {
-        record!("the inspector of runtime {runtime} cannot be used: {reason}");
-        if let Some(inferior) = self.session.inferior_mut() {
-            inferior
-                .inspectors
-                .records
-                .entry(runtime)
-                .or_default()
-                .problem = Some(reason.into());
-        }
+                },
+            ),
+            Err(error) => Status::Failed {
+                reason: format!("cannot connect to the inspector: {error}").into(),
+                target: Some(server.target),
+            },
+        };
     }
 
     /// Serves a message from an inspector connection.
@@ -805,8 +831,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(());
         };
         if inspector
-            .connection
-            .as_ref()
+            .status
+            .link()
             .is_none_or(|link| link.generation != generation)
         {
             record!("a message from an ended inspector connection: {incoming:?}");
@@ -846,7 +872,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 params,
             } => {
                 if starting && method.as_ref() == inspector_protocol::PAUSED {
-                    if let Some(link) = inspector.connection.as_ref() {
+                    if let Some(link) = inspector.status.link() {
                         let _ = send(
                             &link.connection,
                             &session,
@@ -860,10 +886,10 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             Incoming::Closed { reason, .. } => {
                 record!("the inspector connection closed: {reason}");
-                inspector.connection = None;
+                inspector
+                    .status
+                    .fail(format!("the inspector connection closed: {reason}").into());
                 inspector.isolates.clear();
-                inspector.problem =
-                    Some(format!("the inspector connection closed: {reason}").into());
                 self.publish_breakpoints_changed();
                 // No pause is coming to hold the main thread for.
                 self.release_step_gate()?;
@@ -885,10 +911,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
-        let Some(link) = inspector.connection.as_mut() else {
+        inspector.status = match std::mem::take(&mut inspector.status) {
+            Status::Connecting(server, link) => Status::Connected(server, link),
+            other => other,
+        };
+        let Some(link) = inspector.status.connected() else {
             return;
         };
-        link.connected = true;
         // The connection stays while the process is debugged, so an
         // interrupt can pause its JavaScript (F20: it costs nothing while
         // it runs). Node then reports the program's end, rather than
@@ -909,7 +938,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
-            .and_then(|inspector| inspector.connection.as_ref())
+            .and_then(|inspector| inspector.status.link())
         {
             let _ = send(
                 &link.connection,
@@ -934,7 +963,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
-            .and_then(|inspector| inspector.connection.as_ref())
+            .and_then(|inspector| inspector.status.link())
         {
             let _ = send(
                 &link.connection,
@@ -962,7 +991,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         if inspector.ownership != Ownership::Pending {
             return Ok(());
         }
-        let Some(target) = inspector.target.as_ref() else {
+        let Some(target) = inspector.status.target() else {
             return Ok(());
         };
         let ownership = super::node_launch::acknowledge(inferior.tgid, target, params);
@@ -1041,7 +1070,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             inspector_protocol::RESUMED => {
                 isolate.resuming = false;
                 if isolate.pause == PauseRequest::Deferred
-                    && let Some(link) = inspector.connection.as_ref()
+                    && let Some(link) = inspector.status.link()
                 {
                     let sent = send(
                         &link.connection,
@@ -1067,7 +1096,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             inspector_protocol::WAITING => self.release_isolate(runtime, session),
             inspector_protocol::END if session.path().is_empty() => {
                 record!("the program ends; the debugger leaves its inspector");
-                if let Some(link) = inspector.connection.take() {
+                if let Some(link) = inspector.status.disconnect() {
                     link.connection.close();
                 }
                 inspector.isolates.clear();
@@ -1088,7 +1117,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
-        let Some(link) = inspector.connection.as_ref() else {
+        let Some(link) = inspector.status.link() else {
             return;
         };
         ready_isolate(&link.connection, session);
