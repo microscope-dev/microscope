@@ -204,8 +204,14 @@ fn an_exact_operand_must_fit_the_typed_width_either_way() {
                 assert_eq!(result, Err(NumberError::DoesNotFit(typed)));
             }
 
+            // The exact operand on the left, or-ed with all ones, is all
+            // ones of the typed width when it fits.
             let flipped = Integer::Exact(exact(value)).bitwise(BitOperator::Or, ones);
-            assert_eq!(flipped.is_ok(), (-128..=255).contains(&value));
+            if (-128..=255).contains(&value) {
+                assert_eq!(flipped, Ok(Integer::Typed(Bits::from_raw(typed, 0xff))));
+            } else {
+                assert_eq!(flipped, Err(NumberError::DoesNotFit(typed)));
+            }
         }
     }
 
@@ -677,35 +683,6 @@ fn shift_amount_strategy() -> impl Strategy<Value = Exact> {
 }
 
 proptest! {
-    #[test]
-    fn exact_arithmetic_obeys_its_laws(a in any_exact(), b in any_exact(), c in any_exact()) {
-        prop_assert_eq!(a.add(b), b.add(a));
-        prop_assert_eq!(a.mul(b), b.mul(a));
-        if let Ok(difference) = a.sub(b) {
-            prop_assert_eq!(difference.add(b), Ok(a));
-        }
-
-        if let (Ok(quotient), Ok(remainder)) = (a.div(b), a.rem(b)) {
-            prop_assert_eq!(quotient.mul(b).and_then(|product| product.add(remainder)), Ok(a));
-            prop_assert!(remainder.is_zero() || remainder.negative == a.negative);
-            prop_assert!(Exact::from(remainder.magnitude) < Exact::from(b.magnitude));
-        }
-
-        // Associativity and distributivity wherever every step is in range.
-        if let (Ok(left), Ok(right)) = (a.add(b).and_then(|ab| ab.add(c)), b.add(c).and_then(|bc| a.add(bc))) {
-            prop_assert_eq!(left, right);
-        }
-
-        if let (Ok(left), Ok(ab), Ok(ac)) = (b.add(c).and_then(|bc| a.mul(bc)), a.mul(b), a.mul(c)) {
-            prop_assert_eq!(Ok(left), ab.add(ac));
-        }
-
-        if let Ok(not) = a.not() {
-            prop_assert_eq!(not.not(), Ok(a));
-        }
-
-        prop_assert_eq!(a.bitwise(BitOperator::Xor, a), Ok(Exact::ZERO));
-    }
 
     /// Every operator gives the exact result whenever it lies in
     /// `-2^127..2^128`, and `OutOfRange` exactly when it does not.

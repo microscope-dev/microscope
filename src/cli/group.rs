@@ -847,7 +847,16 @@ mod tests {
 
         let lost = GroupEvent::MemberLost { member: 2 };
         session.sender.send(lost).expect("send the old loss");
-        session.run("continue").await;
+        let output = session.run("continue").await;
+        let (failure, stop) = output.split_once('\n').unwrap_or((&output, ""));
+        assert_eq!(
+            failure, "error: the session of [2] failed, so its process was released or killed",
+            "{output}"
+        );
+        assert!(
+            stop.starts_with("stopped at breakpoint 1 (hit 2) in breakpoint_target"),
+            "{output}"
+        );
         session.forwarded(2).await;
 
         session.end().await;

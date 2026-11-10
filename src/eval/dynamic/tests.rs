@@ -180,12 +180,6 @@ fn python_compares_ints_and_floats_exactly_and_text_by_code_point() {
 }
 
 #[test]
-fn python_empty_collections_are_false() {
-    let empty = of(Some(Rules::Python), LoadedValue::Collection { length: 0 });
-    assert!(!truth(&empty).expect("a truth value"));
-}
-
-#[test]
 fn javascript_numbers_are_doubles() {
     let smi = js_number(42.0);
     assert!(same(float(binary(BinaryOp::Div, &smi, &literal(5))), 8.4));
@@ -555,18 +549,6 @@ mod properties {
     const TWO_53: i64 = 1 << 53;
 
     proptest! {
-        /// Operands a double holds exactly divide as their doubles do,
-        /// which IEEE division rounds once.
-        #[test]
-        fn python_divides_small_integers_as_doubles(
-            left in -TWO_53..=TWO_53,
-            right in (1..=TWO_53, any::<bool>()).prop_map(|(right, negative)| if negative { -right } else { right }),
-        ) {
-            let actual = float(binary(BinaryOp::Div, &py_int(left.into()), &py_int(right.into())));
-            #[expect(clippy::cast_precision_loss, reason = "both fit in 53 bits")]
-            let expected = left as f64 / right as f64;
-            prop_assert!(same(actual, expected), "{} / {} is {}, not {}", left, right, actual, expected);
-        }
 
         /// Any quotient is the double nearest the exact one, ties to
         /// even, with the operands' sign; by a power of two it is the

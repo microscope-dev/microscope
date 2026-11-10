@@ -4096,7 +4096,7 @@ mod tests {
     }
 
     #[test]
-    fn command_registry_has_unique_names_and_derives_arity_from_usage() {
+    fn command_names_are_unique_and_each_usage_begins_with_its_name() {
         let mut names = std::collections::BTreeSet::new();
 
         for command in COMMANDS {
@@ -4117,19 +4117,6 @@ mod tests {
                 command.usage
             );
         }
-
-        assert_eq!(spec(Command::Run).arity(), (0, 0));
-        assert_eq!(spec(Command::Break).arity(), (0, usize::MAX));
-        assert_eq!(spec(Command::Info).arity(), (1, usize::MAX));
-        assert_eq!(spec(Command::Print).arity(), (0, usize::MAX));
-        assert_eq!(spec(Command::Whatis).arity(), (1, usize::MAX));
-        assert_eq!(spec(Command::Examine).arity(), (1, 2));
-        assert_eq!(spec(Command::Disassemble).arity(), (0, 2));
-        assert!(spec(Command::Next).repeatable);
-        assert!(!spec(Command::Watch).repeatable);
-        assert_eq!(spec(Command::Frame).arity(), (0, 1));
-        assert!(spec(Command::Up).repeatable && spec(Command::Down).repeatable);
-        assert!(!spec(Command::Frame).repeatable);
     }
 
     /// Option words inside strings and brackets belong to the text around

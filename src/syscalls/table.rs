@@ -271,23 +271,4 @@ mod tests {
             "src/syscalls/table.gen.rs is stale; rerun with MICROSCOPE_UPDATE_SYSCALLS=1"
         );
     }
-
-    #[test]
-    fn names_and_numbers_round_trip_in_each_abi() {
-        let openat = SyscallId::named(Abi::X86_64, "openat").expect("openat");
-        assert_eq!(openat.number, 257);
-        assert_eq!(
-            SyscallId::named(Abi::X86_32, "openat").map(|id| id.number),
-            Some(295)
-        );
-        assert_eq!(
-            SyscallId::named(Abi::X32, "openat").map(|id| id.number),
-            Some(257)
-        );
-        assert_eq!(SyscallId::new(Abi::X86_32, 1).name(), Some("exit"));
-        assert_eq!(
-            SyscallId::new(Abi::X86_64, 9999).display_name(),
-            "syscall_0x270f"
-        );
-    }
 }

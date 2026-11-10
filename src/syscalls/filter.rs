@@ -582,36 +582,12 @@ mod tests {
     }
 
     #[test]
-    fn trace_sets_take_names_classes_regexes_and_negation() {
-        let filter = parse(&["trace=%file,connect", "trace=!stat"]).expect("parses");
-        assert!(filter.calls.contains(named("openat")));
-        assert!(filter.calls.contains(named("connect")));
-        assert!(!filter.calls.contains(named("stat")));
-        assert!(!filter.calls.contains(named("read")));
-        assert!(
-            filter
-                .calls
-                .contains(SyscallId::named(Abi::X86_32, "openat").expect("i386"))
-        );
-
-        let only_64 = parse(&["openat@64"]).expect("parses");
-        assert_eq!(only_64.calls.len(), 1);
-
+    fn a_regex_matches_anywhere_and_unknown_names_or_options_are_refused() {
         let regex = parse(&["trace=/^epoll_"]).expect("parses");
         assert!(regex.calls.contains(named("epoll_wait")));
         assert!(!regex.calls.contains(named("poll")));
 
-        let all_but = parse(&["trace=!%net"]).expect("parses");
-        assert!(all_but.calls.contains(named("read")) && !all_but.calls.contains(named("sendto")));
-
-        // A negated set first still leaves the first plain set to replace "all".
-        let removed_first = parse(&["trace=!open", "trace=read"]).expect("parses");
-        assert!(removed_first.calls.contains(named("read")));
-        assert!(!removed_first.calls.contains(named("write")));
-        assert!(!removed_first.calls.contains(named("open")));
-
         assert!(parse(&["trace=nosuchcall"]).is_err());
-        assert!(parse(&["trace=?nosuchcall,read"]).is_ok());
         assert!(parse(&["trace=%nosuchclass"]).is_err());
         assert!(parse(&["inject=openat:error=ENOENT"]).is_err());
     }

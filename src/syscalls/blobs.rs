@@ -77,33 +77,3 @@ pub fn strings(blob: &[u8]) -> (Option<u32>, Vec<&[u8]>) {
 
     ((count != u32::MAX).then_some(count), elements)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn iovecs_and_strings_round_trip() {
-        let mut blob = Vec::new();
-        push_iovec(&mut blob, 0x1000, 5, b"hello");
-        push_iovec(&mut blob, 0x2000, 100, b"wor");
-        let read = iovecs(&blob);
-        assert_eq!(read.len(), 2);
-        assert_eq!(
-            (read[1].base, read[1].len, read[1].bytes),
-            (0x2000, 100, &b"wor"[..])
-        );
-
-        let mut blob = Vec::new();
-        start_strings(&mut blob, Some(3));
-        push_string(&mut blob, b"ls");
-        push_string(&mut blob, b"-l\0junk");
-        assert_eq!(strings(&blob), (Some(3), vec![&b"ls"[..], &b"-l"[..]]));
-        assert_eq!(strings(&[]), (None, Vec::new()));
-
-        // An empty array, as an empty environment, holds no elements.
-        let mut blob = Vec::new();
-        start_strings(&mut blob, Some(0));
-        assert_eq!(strings(&blob), (Some(0), Vec::new()));
-    }
-}

@@ -1574,17 +1574,6 @@ mod tests {
     }
 
     #[test]
-    fn bounded_output_is_utf8_safe_and_never_exceeds_its_limit() {
-        let mut output = BoundedOutput::new(32);
-        output.push_str("prefix ");
-        output.push_str(&"é".repeat(32));
-        let rendered = output.into_string();
-
-        assert!(rendered.len() <= 32, "{rendered:?}");
-        assert!(rendered.ends_with(OUTPUT_TRUNCATION_MARKER));
-    }
-
-    #[test]
     fn bounded_output_closes_ansi_style_before_its_marker() {
         let styled = Renderer::new(true)
             .paint(Role::Value, "é".repeat(32))

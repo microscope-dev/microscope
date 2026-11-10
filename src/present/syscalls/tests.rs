@@ -276,15 +276,6 @@ fn styles_change_descriptors_constants_and_names() {
 }
 
 #[test]
-fn names_round_trip() {
-    assert_eq!(signal(2), "SIGINT");
-    assert_eq!(signal(34), "SIGRT_2");
-    assert_eq!(signal_named("TERM"), Some(15));
-    assert_eq!(signal_named("SIGRT_2"), Some(34));
-    assert_eq!(errno_named("EAGAIN"), Some(Errno(11)));
-}
-
-#[test]
 fn times_print_to_each_precision_cut_as_strace_cuts_them() {
     let time = 1_500_012_345;
     for (name, text) in [

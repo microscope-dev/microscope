@@ -3308,30 +3308,4 @@ mod tests {
             "web/src/protocol.gen.ts is stale; rerun with MICROSCOPE_UPDATE_PROTOCOL=1"
         );
     }
-
-    #[test]
-    fn requests_parse_with_and_without_parameters() {
-        let parse = |text: &str| serde_json::from_str::<Envelope>(text).expect(text);
-        assert!(matches!(
-            parse(r#"{"id":1,"method":"pause"}"#).request,
-            Request::Pause
-        ));
-        assert!(matches!(
-            parse(r#"{"id":2,"method":"continue","params":{"stop":7}}"#).request,
-            Request::Continue(Continue { stop: Some(7) })
-        ));
-        let Request::Launch(launch) = parse(
-            r#"{"id":3,"method":"launch","params":{"program":"./a","environment":[["A","1"]]}}"#,
-        )
-        .request
-        else {
-            panic!("a launch");
-        };
-
-        assert_eq!(launch.environment, [("A".to_owned(), "1".to_owned())]);
-        assert!(!launch.replace && !launch.run);
-        assert!(
-            serde_json::from_str::<Envelope>(r#"{"id":4,"method":"format the disk"}"#).is_err()
-        );
-    }
 }

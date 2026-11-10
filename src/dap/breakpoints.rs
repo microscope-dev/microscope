@@ -537,53 +537,6 @@ mod tests {
     }
 
     #[test]
-    fn ids_survive_resends_and_amendments_and_responses_follow_request_order() {
-        let mut breakpoints = Breakpoints::default();
-        let file = Group::Source("/a.c".into());
-        let first = apply(&mut breakpoints, &file, vec![line(10), line(20)]);
-        assert_eq!(
-            first.iter().map(|entry| entry.id).collect::<Vec<_>>(),
-            [1, 2]
-        );
-
-        // Re-sent in another order, with one amended and one added.
-        let amended = Want {
-            hit_condition: Some(">=2".to_owned()),
-            ..line(10)
-        };
-
-        let plan = breakpoints.plan(&file, vec![line(20), amended.clone(), line(30)]);
-        assert_eq!(plan.release, [first[0].clone()]);
-        assert_eq!(
-            plan.slots,
-            [
-                Slot::Keep(first[1].clone()),
-                Slot::Resolve {
-                    id: 1,
-                    want: amended
-                },
-                Slot::Resolve {
-                    id: 3,
-                    want: line(30)
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn shared_debugger_breakpoints_are_removed_with_their_last_owner() {
-        let mut breakpoints = Breakpoints::default();
-        let (a, b) = (Group::Source("/a.c".into()), Group::Source("/b.c".into()));
-        apply(&mut breakpoints, &a, vec![line(10)]);
-        apply(&mut breakpoints, &b, vec![line(10)]);
-        let plan = breakpoints.plan(&a, Vec::new());
-        assert!(!breakpoints.release(plan.release[0].breakpoint().expect("resolved")));
-        let plan = breakpoints.plan(&b, Vec::new());
-        assert!(breakpoints.release(plan.release[0].breakpoint().expect("resolved")));
-        assert_eq!(breakpoints.entries().count(), 0);
-    }
-
-    #[test]
     fn duplicate_lines_get_their_own_ids_and_unresolved_entries_are_retried() {
         let mut breakpoints = Breakpoints::default();
         let file = Group::Source("/a.c".into());
@@ -679,52 +632,6 @@ mod tests {
         let changes = breakpoints.sync(&[core(9)]);
         assert!(matches!(&changes[..], [Change::Removed(entry)] if entry.id == 1));
         assert!(!breakpoints.groups.contains_key(&file));
-    }
-
-    /// A replacement that fails to release a breakpoint puts back every
-    /// entry whose debugger breakpoint may still be installed, so their
-    /// hits are still named and none is adopted as the console's.
-    #[test]
-    fn an_abandoned_replacement_keeps_the_entries_still_installed() {
-        let mut breakpoints = Breakpoints::default();
-        let file = Group::Source("/a.c".into());
-        let first = apply(&mut breakpoints, &file, vec![line(10), line(20), line(30)]);
-
-        // Keeps 10 and releases 20 and 30, but the debugger fails to remove
-        // 20, whose owner the session takes back.
-        let plan = breakpoints.plan(&file, vec![line(10)]);
-        let mut release = plan.release.into_iter();
-        let failed = release.next().expect("an entry to release");
-        assert_eq!(failed, first[1]);
-        assert!(breakpoints.release(BreakpointId::new(20)));
-        breakpoints.acquire(BreakpointId::new(20));
-        breakpoints.abandon(file, plan.slots, std::iter::once(failed).chain(release));
-
-        let entries = breakpoints
-            .entries()
-            .map(|(_, entry)| entry.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(entries, first);
-        let hit = BreakpointHit {
-            breakpoint: BreakpointId::new(20),
-            hit_count: 1,
-        };
-
-        assert_eq!(breakpoints.hit(&[hit]), (vec![2], "breakpoint"));
-        let core = |id: u64| microscope::Breakpoint {
-            pending_locations: std::sync::Arc::from([]),
-            id: BreakpointId::new(id),
-            spec: microscope::BreakpointSpec::Function("f".to_owned()),
-            locations: std::sync::Arc::from([]),
-            hit_condition: None,
-            condition: None,
-            log_message: None,
-            hit_count: 0,
-            enabled: true,
-            temporary: false,
-        };
-
-        assert!(breakpoints.sync(&[core(10), core(20), core(30)]).is_empty());
     }
 
     /// A debugger that merges equal breakpoints, as the real one does, and

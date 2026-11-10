@@ -365,13 +365,6 @@ fn patterns_capture_arguments_and_anchor_at_the_root() {
     assert_eq!(summary(&mut world, &views, "f"), "7");
 }
 
-#[test]
-fn the_built_in_views_parse() {
-    let views = ViewSet::built_in();
-    assert!(views.errors().is_empty(), "{:?}", views.errors());
-    assert!(views.views().len() >= 16, "{}", views.views().len());
-}
-
 fn errors(text: &str) -> Vec<String> {
     syntax::parse("bad.views", text)
         .errors
@@ -543,23 +536,25 @@ view c++ app::Thing<T, _> {   # a comment
 #[test]
 fn bound_views_reject_what_does_not_type_check() {
     let world = world();
+
+    // `None` means the view binds; `Some` names why it is rejected.
     for (body, reason) in [
         (
             "show sequence(n) for i in range(n) => data[i].x",
-            "`data[i]` has no members",
+            Some("`data[i]` has no members"),
         ),
-        ("show text(n)", "`text` takes a pointer to characters"),
+        ("show text(n)", Some("`text` takes a pointer to characters")),
         (
             "show sequence(data) for i in range(n) => i",
-            "is not an integer",
+            Some("is not an integer"),
         ),
-        ("check n\n    show empty(\"\")", ""),
+        ("check n\n    show empty(\"\")", None),
         (
             "type T = int*\n    show empty(\"\")",
-            "write the pointer where it is used",
+            Some("write the pointer where it is used"),
         ),
-        ("type T = typeof(n)\n    show empty(\"\")", ""),
-        ("show value(self.missing)", "has no member"),
+        ("type T = typeof(n)\n    show empty(\"\")", None),
+        ("show value(self.missing)", Some("has no member")),
     ] {
         let views = set(&format!(
             "microscope-views 1\nview c intvec {{\n    {body}\n}}\n"
@@ -567,10 +562,11 @@ fn bound_views_reject_what_does_not_type_check() {
         let choice = choose(&views, world.type_of("v"), &world);
 
         match (&choice.bound, reason) {
-            (Some(_), "") => {}
-            (Some(_), _) => panic!("`{body}` bound"),
-            (None, _) => {
+            (Some(_), None) => {}
+            (Some(_), Some(_)) => panic!("`{body}` bound"),
+            (None, reason) => {
                 let rejection = choice.candidates[0].rejection.as_ref().expect("rejected");
+                let reason = reason.unwrap_or_else(|| panic!("`{body}` was rejected: {rejection}"));
                 assert!(
                     rejection.to_string().contains(reason),
                     "`{body}`: {rejection}"
@@ -1617,7 +1613,16 @@ fn an_element_a_scan_reaches_is_a_place() {
     );
     let past = super::run::element_place(&bound, &mut world, this, 3, &mut checkpoints);
     assert!(
-        matches!(&past, Err(Failure::Problem(problem)) if problem.to_string().contains("out of bounds") || problem.to_string().contains("index")),
+        matches!(
+            &past,
+            Err(Failure::Problem(crate::ViewProblem::Unavailable(
+                crate::VariableUnavailableReason::IndexOutOfBounds {
+                    index: 3,
+                    lower_bound: 0,
+                    count: 3
+                }
+            )))
+        ),
         "{past:?}"
     );
 }

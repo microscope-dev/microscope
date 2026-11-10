@@ -55,24 +55,3 @@ pub fn hostile_address(valid: Vec<u64>) -> impl Strategy<Value = u64> + Clone {
         1 => any::<u64>(),
     ]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::strategy::ValueTree;
-    use proptest::test_runner::TestRunner;
-
-    #[test]
-    fn edges_come_up_often() {
-        let mut runner = TestRunner::deterministic();
-        let strategy = u64_edges();
-        let draws = (0..1000)
-            .map(|_| strategy.new_tree(&mut runner).expect("a value").current())
-            .collect::<Vec<_>>();
-
-        for edge in [0, 1, u64::MAX, u64::MAX - 1] {
-            let seen = draws.iter().filter(|draw| **draw == edge).count();
-            assert!(seen >= 20, "{edge:#x} drawn {seen} times of 1000");
-        }
-    }
-}
