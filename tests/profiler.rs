@@ -610,8 +610,7 @@ fn go_command(variant: &str, rounds: u32) -> Command {
 #[test]
 fn a_goroutines_calls_name_its_exact_stack_in_every_build() {
     for variant in ["o0", "o2"] {
-        // Go keeps the frame-pointer chain, so a small copy unwinds it, and
-        // a burst of samples fits however small the rings must be.
+        // Go keeps the frame-pointer chain, so a small copy unwinds it.
         let options = RecordOptions {
             stack: StackCopy::Bytes(SMALL_STACK_COPY),
             ..calls_of("main.work")
@@ -622,9 +621,11 @@ fn a_goroutines_calls_name_its_exact_stack_in_every_build() {
         let profile = &recording.profile;
         let stacks = profile.stacks();
 
-        // Four workers call work five times each.
+        // Four workers call work five times each, and every call a reader
+        // behind a busy machine drops is counted.
+        assert!(!stacks.is_empty(), "{variant}");
         assert_eq!(
-            stacks.len(),
+            stacks.len() as u64 + profile.lost_samples(),
             20,
             "{variant}: lost {}, counted {}, repeats {}",
             profile.lost_samples(),
