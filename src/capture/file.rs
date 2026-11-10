@@ -259,3 +259,46 @@ fn scan(bytes: &[u8]) -> Vec<(u64, u64)> {
 
     spans
 }
+
+/// Reads a capture file with every chunk's checksum made to match, and
+/// queries one it accepts. A capture read must write and read back the same.
+#[cfg(any(test, feature = "fuzzing"))]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "a fuzz oracle panics on what it finds"
+)]
+pub fn fuzz(data: &[u8]) {
+    let mut bytes = data.to_vec();
+    let mut at = HEADER;
+    while let Some(length) = bytes.get(at..).and_then(<[u8]>::first_chunk::<8>) {
+        let start = at + 8;
+        let Some(end) = usize::try_from(u64::from_le_bytes(*length))
+            .ok()
+            .and_then(|length| start.checked_add(length))
+            .filter(|&end| end <= bytes.len() && end - start >= 8)
+        else {
+            break;
+        };
+
+        crate::image::container::reseal(&mut bytes[start..end]);
+        at = end;
+    }
+
+    let Ok(first) = read(&bytes) else {
+        return;
+    };
+
+    let keys = crate::analysis::Keys::new(&first.capture, crate::analysis::Granularity::Function);
+    let everything = crate::analysis::Query::default();
+    let _ = crate::analysis::aggregate(&first.capture, &keys, &everything);
+    let _ = crate::analysis::functions(&first.capture, &keys, &everything);
+
+    let mut written = Vec::new();
+    write(&first.capture, &mut written).expect("a capture read is written");
+    let again = read(&written).expect("a capture written reads back");
+    assert!(
+        again.capture == first.capture,
+        "writing changed the capture"
+    );
+}

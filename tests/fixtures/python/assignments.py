@@ -15,6 +15,7 @@ def alone():
     other = [1, 2]
     held = None
     gone = "kept"
+    nested = [[3, 4]]
     print("ALONE", flush=True)  # ALONE_LINE
     print("COUNT", count, "RATIO", ratio, "NAME", name, "FLAG", flag,
           "HELD", held is other, "GONE", gone, "LIMIT", LIMIT, flush=True)

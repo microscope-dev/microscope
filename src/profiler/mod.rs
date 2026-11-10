@@ -39,6 +39,8 @@ pub use crate::unwind::sample::CHAIN_LIMIT;
 pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, LineCosts};
 pub use collector::ProbeSelection;
 pub use formats::Format;
+#[cfg(feature = "fuzzing")]
+pub use formats::fuzz_import;
 pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};
 pub use symbols::ModuleSymbols;
 pub use tasks::THREAD;

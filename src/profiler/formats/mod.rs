@@ -10,6 +10,30 @@ mod syscalls;
 #[cfg(test)]
 mod tests;
 
+/// Reads a profile in any format, and writes one it accepts in every
+/// format. Microscope's own format must read back as the same capture.
+#[cfg(any(test, feature = "fuzzing"))]
+#[allow(clippy::expect_used, reason = "a fuzz oracle panics on what it finds")]
+pub fn fuzz_import(data: &[u8]) {
+    let Ok(read) = Profile::import(data) else {
+        return;
+    };
+
+    for format in Format::ALL {
+        let _ = read.profile.export(format, StackView::Logical);
+    }
+
+    let usprof = read
+        .profile
+        .export(Format::Usprof, StackView::Logical)
+        .expect("usprof");
+    let again = Profile::import(&usprof).expect("an exported usprof reads back");
+    assert!(
+        again.profile.capture == read.profile.capture,
+        "usprof changed the capture"
+    );
+}
+
 use std::path::Path;
 
 use super::{Profile, ProfileFileError, ReadProfile, StackView, query};

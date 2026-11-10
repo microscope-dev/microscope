@@ -525,3 +525,14 @@ fn the_fuzzers_seed_is_a_capture_of_this_revision() {
         "the seed is stale: rerun with MICROSCOPE_UPDATE_SEED=1"
     );
 }
+
+proptest::proptest! {
+    /// The fuzz target's oracle on damaged copies of its corpus, resealed
+    /// so the damage reaches validation.
+    #[test]
+    fn damaged_files_are_refused_or_read_back_as_written(
+        data in crate::test_strategies::damaged_corpus("capture"),
+    ) {
+        file::fuzz(&data);
+    }
+}

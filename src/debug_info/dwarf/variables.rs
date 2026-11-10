@@ -2236,76 +2236,112 @@ impl TypeMetadataEntry for TypeNode {
 }
 
 #[cfg(feature = "fuzzing")]
+const FUZZ_MEMORY: u64 = 0x1000;
+
+#[cfg(feature = "fuzzing")]
+struct FuzzRuntime<'a> {
+    memory: &'a [u8],
+}
+
+#[cfg(feature = "fuzzing")]
+impl crate::debug_info::VariableRuntime for FuzzRuntime<'_> {
+    fn register(
+        &mut self,
+        register: crate::unwind::DwarfRegister,
+    ) -> std::result::Result<
+        crate::debug_info::VariableRegister,
+        crate::debug_info::VariableRuntimeError,
+    > {
+        let number = register.number();
+        if number > 32 {
+            return Err(crate::debug_info::VariableRuntimeError::Unavailable(
+                crate::VariableUnavailableReason::RegisterUnavailable(register.to_string().into()),
+            ));
+        }
+
+        let bits: u16 = if number < 17 { 64 } else { 128 };
+        let mut bytes = (FUZZ_MEMORY + u64::from(number) * 8).to_le_bytes().to_vec();
+        bytes.resize(usize::from(bits / 8), 0);
+        Ok(crate::debug_info::VariableRegister {
+            descriptor: crate::RegisterDescriptor {
+                id: crate::RegisterId::new(u32::from(number)),
+                name: format!("r{number}").into(),
+                bits,
+                role: None,
+            },
+            bytes: bytes.into(),
+        })
+    }
+
+    fn call_frame_cfa(
+        &self,
+    ) -> std::result::Result<crate::VirtualAddress, crate::debug_info::VariableRuntimeError> {
+        Ok(crate::VirtualAddress::new(FUZZ_MEMORY + 0x80))
+    }
+
+    fn tls_address(
+        &mut self,
+        offset: u64,
+    ) -> std::result::Result<crate::VirtualAddress, crate::VariableUnavailableReason> {
+        Ok(crate::VirtualAddress::new(FUZZ_MEMORY.wrapping_add(offset)))
+    }
+
+    fn relocate(
+        &self,
+        address: crate::ImageAddress,
+    ) -> std::result::Result<crate::VirtualAddress, Arc<str>> {
+        Ok(crate::VirtualAddress::new(address.get()))
+    }
+
+    fn image_address(&self, address: crate::VirtualAddress) -> Option<crate::ImageAddress> {
+        Some(crate::ImageAddress::new(address.get()))
+    }
+
+    fn read_memory(
+        &mut self,
+        address: crate::VirtualAddress,
+        size: usize,
+    ) -> std::result::Result<Arc<[u8]>, crate::debug_info::VariableRuntimeError> {
+        address
+            .get()
+            .checked_sub(FUZZ_MEMORY)
+            .and_then(|start| usize::try_from(start).ok())
+            .and_then(|start| self.memory.get(start..start.checked_add(size)?))
+            .map(Arc::from)
+            .ok_or_else(|| {
+                crate::debug_info::VariableRuntimeError::Unavailable(
+                    crate::VariableUnavailableReason::MemoryInaccessible {
+                        address,
+                        requested: u64::try_from(size).unwrap_or(u64::MAX),
+                        completed: 0,
+                        next_address: address,
+                    },
+                )
+            })
+    }
+
+    fn entry_value(
+        &mut self,
+        _parameter: crate::debug_info::EntryParameter,
+        _budget: &mut InspectionBudget,
+    ) -> std::result::Result<u64, crate::debug_info::VariableRuntimeError> {
+        Ok(FUZZ_MEMORY)
+    }
+}
+
+/// Evaluates a DWARF expression from the input's first byte's count of
+/// bytes, with the rest as memory at `FUZZ_MEMORY`, where each general
+/// register, the CFA and thread-local storage also point. Registers past
+/// 32 are unavailable, so expressions reach both values and refusals.
+#[cfg(feature = "fuzzing")]
 pub(super) fn fuzz_expression(data: &[u8]) {
     use evaluate::{FrameBase, evaluate};
 
-    use crate::debug_info::{EntryParameter, VariableRuntime, VariableRuntimeError};
-    use crate::{ImageAddress, VariableUnavailableReason, VirtualAddress};
+    let Some((&length, rest)) = data.split_first() else {
+        return;
+    };
 
-    struct FuzzRuntime;
-
-    impl VariableRuntime for FuzzRuntime {
-        fn register(
-            &mut self,
-            register: crate::unwind::DwarfRegister,
-        ) -> std::result::Result<crate::debug_info::VariableRegister, VariableRuntimeError>
-        {
-            Err(VariableRuntimeError::Unavailable(
-                VariableUnavailableReason::RegisterUnavailable(register.to_string().into()),
-            ))
-        }
-
-        fn call_frame_cfa(&self) -> std::result::Result<VirtualAddress, VariableRuntimeError> {
-            Err(VariableRuntimeError::Unavailable(
-                VariableUnavailableReason::CallFrameUnavailable(
-                    crate::CallFrameUnavailableReason::NoInstructionContext,
-                ),
-            ))
-        }
-
-        fn tls_address(
-            &mut self,
-            _offset: u64,
-        ) -> std::result::Result<VirtualAddress, VariableUnavailableReason> {
-            Err(VariableUnavailableReason::TlsUnavailable(
-                crate::TlsUnavailableReason::ProviderUnavailable,
-            ))
-        }
-
-        fn relocate(&self, address: ImageAddress) -> std::result::Result<VirtualAddress, Arc<str>> {
-            Ok(VirtualAddress::new(address.get()))
-        }
-
-        fn image_address(&self, address: VirtualAddress) -> Option<ImageAddress> {
-            Some(ImageAddress::new(address.get()))
-        }
-
-        fn read_memory(
-            &mut self,
-            address: VirtualAddress,
-            size: usize,
-        ) -> std::result::Result<Arc<[u8]>, VariableRuntimeError> {
-            Err(VariableRuntimeError::Unavailable(
-                VariableUnavailableReason::MemoryInaccessible {
-                    address,
-                    requested: u64::try_from(size).unwrap_or(u64::MAX),
-                    completed: 0,
-                    next_address: address,
-                },
-            ))
-        }
-
-        fn entry_value(
-            &mut self,
-            _parameter: EntryParameter,
-            _budget: &mut InspectionBudget,
-        ) -> std::result::Result<u64, VariableRuntimeError> {
-            Err(VariableRuntimeError::Unavailable(
-                VariableUnavailableReason::EntryValue(crate::EntryValueUnavailableReason::NoCaller),
-            ))
-        }
-    }
-
+    let (expression, memory) = rest.split_at(usize::from(length).min(rest.len()));
     let mut pool = LocationsBuilder::default();
     let encoding = gimli::Encoding {
         format: gimli::Format::Dwarf32,
@@ -2315,30 +2351,25 @@ pub(super) fn fuzz_expression(data: &[u8]) {
 
     let Ok(id) = pool
         .unit(&location::EvaluationUnit::default())
-        .and_then(|unit| {
-            pool.expression(
-                data.get(..MAX_EVALUATION_MEMORY_BYTES).unwrap_or(data),
-                unit,
-                encoding,
-                &[],
-                &[],
-            )
-        })
+        .and_then(|unit| pool.expression(expression, unit, encoding, &[], &[]))
     else {
         return;
     };
 
     let mut budget = InspectionBudget::default();
+    let mut runtime = FuzzRuntime {
+        memory: memory.get(..MAX_EVALUATION_MEMORY_BYTES).unwrap_or(memory),
+    };
 
     if let Ok(pieces) = evaluate(
         pool.tables().expression(id),
         RunTimeEndian::Little,
         None,
         &mut FrameBase::Unsupported,
-        &mut FuzzRuntime,
+        &mut runtime,
         &mut budget,
     ) {
-        fuzz_storage(&pieces, &mut FuzzRuntime, &mut budget);
+        fuzz_storage(&pieces, &mut runtime, &mut budget);
     }
 }
 

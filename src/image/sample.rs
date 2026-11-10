@@ -9,12 +9,9 @@
 
 use std::path::PathBuf;
 
-use zerocopy::IntoBytes as _;
-
 use super::calls::{self, CallSite, CallView, CallingFunction, Calls, SiteParameter, SiteTarget};
 use super::declarations::{self, DeclarationView};
 use super::facts::{self, FactsView};
-use super::format::Trailer;
 use super::functions::{self, FunctionView};
 use super::lines::{
     self, FileRecord, LineExtra, LineRange, LineRow, LineSequence, LineTables, Row, RowAddress,
@@ -1421,16 +1418,7 @@ fn read_families(image: &Image) -> u64 {
         + read_declarations(image)
 }
 
-pub(super) fn reseal(bytes: &mut [u8]) {
-    let end = bytes.len() - size_of::<Trailer>();
-    let checksum = twox_hash::XxHash3_64::oneshot(&bytes[..end]);
-    bytes[end..].copy_from_slice(
-        Trailer {
-            checksum: checksum.into(),
-        }
-        .as_bytes(),
-    );
-}
+pub(super) use super::container::reseal;
 
 /// Validates `data` as an image and reads everything a valid one holds.
 /// Odd-first-byte inputs are changes to the sample: (offset, byte) pairs
@@ -1458,7 +1446,7 @@ pub fn fuzz(data: &[u8]) {
         data.to_vec()
     };
 
-    if bytes.len() >= size_of::<Trailer>() {
+    if bytes.len() >= size_of::<super::format::Trailer>() {
         reseal(&mut bytes);
     }
 

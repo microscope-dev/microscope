@@ -327,6 +327,21 @@ impl<'a, F: Format> Tables<'a, F> {
     }
 }
 
+/// Rewrites the trailer of a whole image to match its body, so a fuzzer's
+/// changes reach the checks past the checksum.
+#[cfg(any(test, feature = "fuzzing"))]
+#[allow(clippy::indexing_slicing, reason = "callers pass a whole image")]
+pub fn reseal(bytes: &mut [u8]) {
+    let end = bytes.len() - size_of::<Trailer>();
+    let checksum = twox_hash::XxHash3_64::oneshot(&bytes[..end]);
+    bytes[end..].copy_from_slice(
+        Trailer {
+            checksum: checksum.into(),
+        }
+        .as_bytes(),
+    );
+}
+
 /// Copies `source` into `buffer` from `start`.
 #[expect(
     clippy::indexing_slicing,

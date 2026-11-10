@@ -563,3 +563,13 @@ fn a_mark_is_on_its_own_thread_when_a_tid_is_reused() {
 
     assert_eq!(marks, [(Some(10), Some(7))]);
 }
+
+proptest! {
+    /// The fuzz target's oracle on damaged copies of its corpus.
+    #[test]
+    fn damaged_profiles_read_back_through_usprof(
+        data in crate::test_strategies::damaged_corpus("profile-import"),
+    ) {
+        super::fuzz_import(&data);
+    }
+}

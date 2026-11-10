@@ -315,16 +315,12 @@ pub fn fuzz_perf_records(data: &[u8]) {
     backend::perf::decode::fuzz(data);
 }
 
-/// Reads a capture file, and queries one it accepts, for the fuzz harness.
+/// Reads a capture file with its chunks resealed, and queries one it
+/// accepts, for the fuzz harness.
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_capture(data: &[u8]) {
-    if let Ok(read) = capture::file::read(data) {
-        let keys = analysis::Keys::new(&read.capture, analysis::Granularity::Function);
-        let everything = analysis::Query::default();
-        let _ = analysis::aggregate(&read.capture, &keys, &everything);
-        let _ = analysis::functions(&read.capture, &keys, &everything);
-    }
+    capture::file::fuzz(data);
 }
 
 /// Reads a profile in any format microscope imports, and writes one it accepts
@@ -332,11 +328,7 @@ pub fn fuzz_capture(data: &[u8]) {
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub fn fuzz_profile_import(data: &[u8]) {
-    if let Ok(read) = profiler::Profile::import(data) {
-        for format in profiler::Format::ALL {
-            let _ = read.profile.export(format, profiler::StackView::Logical);
-        }
-    }
+    profiler::fuzz_import(data);
 }
 
 /// Decodes one message from Node's inspector, workers' tunnels included,

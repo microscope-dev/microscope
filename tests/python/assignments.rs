@@ -234,6 +234,14 @@ async fn each_value_reaches_the_program(interpreter: &str) {
         assert_eq!(summary, shown, "{context}: `{text}`");
     }
 
+    // The list `nested[0]` reads is the agent's object, but no name of the
+    // frame holds it, so the agent cannot find it to give.
+    let text = "gone = nested[0]";
+    match assign(&session, None, text).await {
+        Err(error) if error.to_string().contains("no name of the frame finds") => {}
+        other => panic!("{context}: `{text}` is not failed by the agent: {other:?}"),
+    }
+
     let kind = ExpressionErrorKind::Assignment;
     refused(&mut session, None, "LIMIT = 5", kind, "only a variable").await;
     refused(&mut session, None, "name = \"\\xff\"", kind, "UTF-8").await;
