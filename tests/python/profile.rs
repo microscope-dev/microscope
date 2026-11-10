@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
+use std::ops::RangeInclusive;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -207,6 +208,101 @@ fn naps(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
     path.contains(&nap)
 }
 
+/// The lines of each function `profiled.py` defines, its `def` line
+/// included, by name.
+fn bodies() -> BTreeMap<String, RangeInclusive<u32>> {
+    let source = std::fs::read_to_string(python::fixture("profiled.py")).expect("read the fixture");
+    let mut bodies = BTreeMap::new();
+    let mut open: Option<(String, u32)> = None;
+    let mut last = 0;
+    for (text, number) in source.lines().zip(1..) {
+        let top = !text.is_empty() && !text.starts_with([' ', '#']);
+        if top {
+            if let Some((name, start)) = open.take() {
+                bodies.insert(name, start..=last);
+            }
+            if let Some(name) = text
+                .strip_prefix("def ")
+                .and_then(|rest| rest.split_once('('))
+            {
+                open = Some((name.0.to_owned(), number));
+            }
+        }
+        if !text.trim().is_empty() {
+            last = number;
+        }
+    }
+    if let Some((name, start)) = open {
+        bodies.insert(name, start..=last);
+    }
+    bodies
+}
+
+/// The first frame of `path` the fixture could not have run: one of
+/// `profiled.py` at a line outside its function, or `work` called from
+/// anywhere but `spin`'s call of it.
+fn misplaced(
+    path: &[String],
+    lines: &BTreeMap<String, u32>,
+    bodies: &BTreeMap<String, RangeInclusive<u32>>,
+) -> Option<String> {
+    let spin = format!("spin profiled.py:{}", lines["spin"]);
+    path.iter().enumerate().find_map(|(at, frame)| {
+        let (function, line) = frame.split_once(" profiled.py:")?;
+        let line: u32 = line.parse().ok()?;
+        let placed = if function == "<module>" {
+            !bodies.values().any(|body| body.contains(&line))
+        } else {
+            bodies
+                .get(function)
+                .is_some_and(|body| body.contains(&line))
+        };
+        let called =
+            function != "work" || at.checked_sub(1).is_some_and(|caller| path[caller] == spin);
+        (!placed || !called).then(|| frame.clone())
+    })
+}
+
+/// The check finds a frame at a line of another function, of no function,
+/// and `work` called from elsewhere, and passes the fixture's own paths.
+#[test]
+fn misplaced_frames_are_found() {
+    let (lines, bodies) = (lines(), bodies());
+    let spin = format!("spin profiled.py:{}", lines["spin"]);
+    let work = format!("work profiled.py:{}", lines["work-add"]);
+    let nap = format!("nap profiled.py:{}", lines["nap"]);
+    let start = "_bootstrap_inner threading.py:1".to_owned();
+    for path in [
+        vec![start.clone(), spin.clone(), work.clone()],
+        vec![start.clone(), nap.clone(), "sleep".to_owned()],
+    ] {
+        assert_eq!(misplaced(&path, &lines, &bodies), None, "{path:?}");
+    }
+    for (path, wrong) in [
+        (
+            vec![
+                start.clone(),
+                spin,
+                format!("work profiled.py:{}", lines["nap"]),
+            ],
+            2,
+        ),
+        (
+            vec![start.clone(), format!("nap profiled.py:{}", lines["spin"])],
+            1,
+        ),
+        (vec![start, nap, work.clone()], 2),
+        (vec![work], 0),
+        (vec![format!("<module> profiled.py:{}", lines["spin"])], 0),
+    ] {
+        assert_eq!(
+            misplaced(&path, &lines, &bodies),
+            Some(path[wrong].clone()),
+            "{path:?}"
+        );
+    }
+}
+
 /// How a stack names a frame whose code could not be read.
 const UNREADABLE: &str = "[an interpreted frame whose code could not be read]";
 
@@ -314,10 +410,16 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(inter
         "{interpreter}: no napper in {paths:#?}"
     );
 
+    let bodies = bodies();
     for path in paths.keys() {
         assert!(
             !path.iter().any(|step| evaluates(step)),
             "{interpreter}: the Python look shows the interpreter: {path:?}"
+        );
+        assert_eq!(
+            misplaced(path, &lines, &bodies),
+            None,
+            "{interpreter}: a frame the fixture could not have run in {path:?}"
         );
     }
 
@@ -390,6 +492,15 @@ fn live_snapshots_read_each_python_thread_as_it_runs(interpreter: &str) {
         "{interpreter}: no napper in {paths:#?}"
     );
 
+    let bodies = bodies();
+    for path in paths.keys() {
+        assert_eq!(
+            misplaced(path, &lines, &bodies),
+            None,
+            "{interpreter}: a frame the fixture could not have run in {path:?}"
+        );
+    }
+
     // Every frame is the program's Python code or the library's.
     for wait in profile.task_waits() {
         assert_eq!(wait.noun, "thread");
@@ -440,6 +551,24 @@ fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: Py
         ready(&profile),
         "{interpreter}: {:?}",
         python_paths(&profile)
+    );
+
+    // The kernel keeps 15 bytes of the name, ending in part of a character,
+    // which reads as the replacement character. The spinners, the napper,
+    // and the main thread all take it.
+    let kept = String::from_utf8_lossy(&"🧬🧬🧬🧬".as_bytes()[..15]).into_owned();
+    let threads = profile.threads();
+    let named = threads
+        .iter()
+        .filter(|thread| thread.name.as_deref() == Some(kept.as_str()))
+        .count();
+    assert!(
+        named >= 3,
+        "{interpreter}: {named} threads named {kept:?}: {:?}",
+        threads
+            .iter()
+            .map(|thread| &thread.name)
+            .collect::<Vec<_>>()
     );
 
     if matches!(engine, PythonEngine::Snapshot { .. }) {

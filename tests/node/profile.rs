@@ -194,7 +194,8 @@ fn parked(text: &str, checkpoint: &str) -> Vec<Thread> {
 }
 
 /// Snapshots that stop the program find each thread where it parks, its
-/// JavaScript frames by line in the interpreted look, as V8 reported them.
+/// JavaScript frames by line in the interpreted look among that thread's
+/// own waits, as V8 reported them.
 #[test]
 fn stopped_snapshots_find_each_threads_javascript_lines() {
     let options = RecordOptions {
@@ -213,9 +214,28 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
 
     let (taken, paused, _) = profile.task_snapshots();
     assert!(taken > 0 && paused > 0, "{taken} {paused}");
-    let paths = paths(&profile, Source::Waits, Look::Python);
-    let missing = missing(&expected(&reported), &paths);
-    assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
+
+    // Each thread's own waits hold its frames: frames credited to another
+    // thread fail.
+    for (thread, frames) in reported.iter().zip(expected(&reported)) {
+        let rows: Vec<u32> = profile
+            .tasks()
+            .iter()
+            .filter(|task| task.noun == "thread" && task.number == thread.native)
+            .map(|task| task.row)
+            .collect();
+        let paths = paths_of(
+            &profile,
+            &Query {
+                source: Source::Waits,
+                look: Look::Python,
+                tasks: Some(rows),
+                ..Query::default()
+            },
+        );
+        let missing = missing(std::slice::from_ref(&frames), &paths);
+        assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
+    }
 
     // No file holds a JavaScript function's instructions; the Assembly
     // panel says so and points at its lines.
@@ -491,6 +511,13 @@ fn v8_without_its_debugger_constants_unwinds_through_its_code() {
     assert!(
         short * 100 <= total,
         "{short} of {total} ns begin with no thread's root:\n{rootless:#?}"
+    );
+    // Rooted stacks alone would pass with no JavaScript at all: most of
+    // the time must run in it, as for a build with its constants.
+    let (entered, at_builtins) = entered(&paths);
+    assert!(
+        (entered + at_builtins) * 2 >= total,
+        "{entered} of {total} ns entered JavaScript"
     );
 }
 
