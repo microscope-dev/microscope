@@ -65,6 +65,10 @@ pub(super) struct Agent {
 
     /// The newest generation published.
     pub(super) generation: Mutex<u64>,
+
+    /// The generation of the script last written, published only once
+    /// it is injected.
+    scripted: Mutex<u64>,
 }
 
 fn sites(arming: &Arming<'_>) -> String {
@@ -106,7 +110,7 @@ impl RuntimeAgent for Agent {
         _process: TargetProcessId,
         _arming: &Arming<'_>,
     ) -> std::result::Result<String, Arc<str>> {
-        *self.generation.lock().expect("the script") = generation;
+        *self.scripted.lock().expect("the script") = generation;
         Ok("source".to_owned())
     }
 
@@ -127,6 +131,7 @@ impl RuntimeAgent for Agent {
             &self.log,
             format!("inject {script} on {thread} [{}]", sites(arming)),
         );
+        *self.generation.lock().expect("the script") = *self.scripted.lock().expect("the script");
         if *self.bootstrap.lock().expect("the script") {
             return Ok(PreparedAgentRequest {
                 writes: Vec::new(),
@@ -245,6 +250,7 @@ impl Session {
             bootstrap: Mutex::new(false),
             pending: Arc::new(AtomicBool::new(false)),
             generation: Mutex::new(0),
+            scripted: Mutex::new(0),
         });
         let runtime = scripted_runtime(
             &run.harness,
@@ -452,6 +458,18 @@ impl Session {
             ""
         };
 
+        // How a report hook's hit is stepped over is the run-phase table's;
+        // this one names it.
+        let run = run
+            .replace(
+                &format!("set_registers {OTHER} rip={REPORT:#x}, request_stop {LEADER}"),
+                "report hit",
+            )
+            .replace(
+                &format!("remove_site {REPORT:#x}, step {OTHER}, reinstall_site {REPORT:#x}"),
+                "step over report",
+            );
+
         format!("{run} ({breakpoints}) <{}>{alarm}", logged.join(", "))
     }
 }
@@ -602,26 +620,29 @@ fn outcome(name: &str, event: &str) -> Option<String> {
         .breakpoints
         .contains_key(&VirtualAddress::new(ENTRY));
 
-    let said = match event {
-        "add" => session.add(3)(),
-        "refused add" => {
+    let said = match (name, event) {
+        // With no agent these are plain run control, which the run-phase
+        // table holds, or a breakpoint that is not there.
+        ("uninstalled", "remove" | "continue" | "alarm") | ("idle", "remove") => return None,
+        (_, "add") => session.add(3)(),
+        (_, "refused add") => {
             *session.agent.refusal.lock().expect("the script") = Some("scripted refusal".into());
             session.add(3)()
         }
-        "remove" => session.remove(1)(),
-        "continue" if stopped => session.resume()(),
-        "continue leader" if stopped => session.resume_leader()(),
-        "pause" if !stopped => session.pause()(),
-        "ack" => session.agent_reports(None, false),
-        "stale ack" => session.agent_reports(None, true),
-        "failure" => session.agent_reports(Some("scripted failure"), false),
-        "entry" if entry_trapped => {
+        (_, "remove") => session.remove(1)(),
+        (_, "continue") if stopped => session.resume()(),
+        (_, "continue leader") if stopped => session.resume_leader()(),
+        (_, "pause") if !stopped => session.pause()(),
+        (_, "ack") => session.agent_reports(None, false),
+        (_, "stale ack") => session.agent_reports(None, true),
+        (_, "failure") => session.agent_reports(Some("scripted failure"), false),
+        (_, "entry") if entry_trapped => {
             *session.agent.thread.lock().expect("the script") = Some(debug_thread_id(OTHER));
             session.report(ENTRY, HookEvent::AgentEntry)
         }
-        "alarm" => session.alarm(),
-        "detach" => session.detach()(),
-        "exit" => {
+        (_, "alarm") => session.alarm(),
+        (_, "detach") => session.detach()(),
+        (_, "exit") => {
             session.exit();
             "-".to_owned()
         }
@@ -640,6 +661,15 @@ fn outcome(name: &str, event: &str) -> Option<String> {
     )
 }
 
+/// Events that vary another, each with the one it varies. A variant's row
+/// is written only in phases where it settles differently, so a phase
+/// whose variant starts to differ, or stops differing, fails the table.
+const VARIANTS: [(&str, &str); 3] = [
+    ("refused add", "add"),
+    ("stale ack", "ack"),
+    ("failure", "ack"),
+];
+
 /// Each request, report and alarm, in each phase of an agent's
 /// installation, is answered and ends as it always has: which stop is
 /// published, which breakpoints are pending and why, what the agent and
@@ -647,10 +677,28 @@ fn outcome(name: &str, event: &str) -> Option<String> {
 /// whether an acknowledgement's alarm is set.
 #[test]
 fn each_agent_event_settles_the_same_in_each_phase() {
-    let actual: Vec<String> = PHASES
-        .iter()
-        .flat_map(|name| EVENTS.iter().filter_map(move |event| outcome(name, event)))
-        .collect();
+    let mut actual = Vec::new();
+    for name in PHASES {
+        let rows: Vec<(&str, String)> = EVENTS
+            .iter()
+            .filter_map(|event| Some((*event, outcome(name, event)?)))
+            .collect();
+        // What follows the event's name: how it was answered and settled.
+        let settled = |event: &str| {
+            rows.iter()
+                .find(|(written, _)| *written == event)
+                .and_then(|(_, row)| row.split_once(": ").map(|(_, rest)| rest.to_owned()))
+        };
+        for (event, row) in &rows {
+            let same = VARIANTS
+                .iter()
+                .find(|(variant, _)| variant == event)
+                .is_some_and(|(_, base)| settled(event) == settled(base));
+            if !same {
+                actual.push(row.clone());
+            }
+        }
+    }
 
     let rows = actual.join("\n");
     assert_eq!(
@@ -664,67 +712,54 @@ fn each_agent_event_settles_the_same_in_each_phase() {
 const EXPECTED: &[&str] = &[
     "uninstalled / add: ok -> stopped Pause by 5000 [breakpoints] {write_word 5000 0x9000 0x1} (b1 unacknowledged) <create files in 5001, file 1, inject /tmp/agent/agent-1.py on 5001 [0]>",
     "uninstalled / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 refused) <create files in 5001, file 1, inject refused, drop file 1>",
-    "uninstalled / remove: BreakpointNotFound(1) -> stopped Pause by 5000 [] {} () <>",
-    "uninstalled / continue: ok -> running e2 [continued e2] {continue 5000 None, continue 5001 None} () <>",
     "uninstalled / continue leader: ok -> running e2 [continued e2] {continue 5000 None} () <>",
-    "uninstalled / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} () <>",
-    "uninstalled / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} () <>",
-    "uninstalled / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} () <>",
-    "uninstalled / alarm: - -> stopped Pause by 5000 [] {} () <>",
+    "uninstalled / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} () <>",
+    "uninstalled / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} () <>",
     "uninstalled / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} () <>",
     "uninstalled / exit: - -> not running [5001 exited] {} () <>",
     "waiting / add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 no thread, b2 no thread) <>",
-    "waiting / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 no thread, b2 no thread) <>",
     "waiting / remove: ok -> stopped Pause by 5000 [breakpoints] {remove_site 0x60} () <>",
     "waiting / continue: ok -> running e2 [continued e2] {continue 5000 None, continue 5001 None} (b1 no thread) <>",
     "waiting / continue leader: ok -> running e2 [continued e2] {continue 5000 None} (b1 no thread) <>",
-    "waiting / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 no thread) <>",
-    "waiting / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 no thread) <>",
-    "waiting / failure: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 no thread) <>",
+    "waiting / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 no thread) <>",
     "waiting / entry: continue ok, - -> running e2 [continued e2, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x60, request_stop 5000, write_word 5000 0x9000 0x1, remove_site 0x60, continue 5000 None, continue 5001 None} (b1 unacknowledged) <create files in 5001, file 1, inject /tmp/agent/agent-1.py on 5001 [0]> alarm",
     "waiting / alarm: - -> stopped Pause by 5000 [] {} (b1 no thread) <>",
     "waiting / detach: ok -> not running [] {remove_site 0x60, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <>",
     "waiting / exit: - -> not running [5001 exited] {} (b1 ready) <>",
     "waiting, running / add: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 no thread, b2 no thread) <>",
-    "waiting, running / refused add: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 no thread, b2 no thread) <>",
     "waiting, running / remove: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, remove_site 0x60, continue 5000 None, continue 5001 None} () <>",
     "waiting, running / pause: ok -> stopped Pause by 5000 [stopped e2 Pause by 5000] {request_stop 5000, request_stop 5001} (b1 no thread) <>",
-    "waiting, running / ack: - -> running e2 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 no thread) <>",
-    "waiting, running / stale ack: - -> running e2 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 no thread) <>",
-    "waiting, running / failure: - -> running e2 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 no thread) <>",
+    "waiting, running / ack: - -> running e2 [] {report hit, step over report, continue 5000 None, continue 5001 None} (b1 no thread) <>",
     "waiting, running / entry: - -> running e2 [breakpoints] {set_registers 5001 rip=0x60, request_stop 5000, write_word 5000 0x9000 0x1, remove_site 0x60, continue 5000 None, continue 5001 None} (b1 unacknowledged) <create files in 5001, file 1, inject /tmp/agent/agent-1.py on 5001 [0]> alarm",
     "waiting, running / alarm: - -> running e2 [] {} (b1 no thread) <>",
     "waiting, running / detach: ok -> not running [] {interrupt 5000, interrupt 5001, remove_site 0x60, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <>",
     "waiting, running / exit: - -> not running [5001 exited] {} (b1 ready) <>",
     "source unread / add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 unacknowledged, b2 unacknowledged) <>",
-    "source unread / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 unacknowledged, b2 unacknowledged) <>",
     "source unread / remove: ok -> stopped Pause by 5000 [breakpoints] {} () <>",
     "source unread / continue: ok -> running e2 [continued e2] {continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
     "source unread / continue leader: RuntimeResumeUnsupported(\"the outstanding source request belongs to a different interpreter thread\") -> stopped Pause by 5000 [] {} (b1 unacknowledged) <>",
-    "source unread / ack: continue ok, - -> running e2 [continued e2, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <retire Acknowledged: retired, drop file 1>",
-    "source unread / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
-    "source unread / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <retire Acknowledged: retired, drop file 1>",
+    "source unread / ack: continue ok, - -> running e2 [continued e2, breakpoints] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <retire Acknowledged: retired, drop file 1>",
+    "source unread / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
+    "source unread / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed) <retire Acknowledged: retired, drop file 1>",
     "source unread / alarm: - -> stopped Pause by 5000 [] {} (b1 unacknowledged) <>",
     "source unread / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <retire Cancel: withdrawn, drop file 1, close files>",
     "source unread / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
     "source running / add: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 unacknowledged, b2 unacknowledged) <> alarm",
-    "source running / refused add: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 unacknowledged, b2 unacknowledged) <> alarm",
     "source running / remove: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} () <> alarm",
     "source running / pause: ok -> stopped Pause by 5000 [stopped e2 Pause by 5000] {request_stop 5000, request_stop 5001} (b1 unacknowledged) <>",
-    "source running / ack: - -> running e2 [breakpoints] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <retire Acknowledged: retired, drop file 1>",
-    "source running / stale ack: - -> running e2 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
-    "source running / failure: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <retire Acknowledged: retired, drop file 1>",
+    "source running / ack: - -> running e2 [breakpoints] {report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <retire Acknowledged: retired, drop file 1>",
+    "source running / stale ack: - -> running e2 [] {report hit, step over report, continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
+    "source running / failure: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {report hit} (b1 failed) <retire Acknowledged: retired, drop file 1>",
     "source running / alarm: - -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints, stopped e2 RuntimeEvent { description: \"timed out\" } by 5000] {request_stop 5000, request_stop 5001} (b1 timed out) <>",
     "source running / detach: ok -> not running [] {interrupt 5000, interrupt 5001, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <retire Cancel: withdrawn, drop file 1, close files>",
     "source running / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
     "source timed out / add: ok -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints] {} (b1 timed out, b2 timed out) <>",
-    "source timed out / refused add: ok -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints] {} (b1 timed out, b2 timed out) <>",
     "source timed out / remove: ok -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints] {} () <>",
     "source timed out / continue: ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} (b1 timed out) <>",
     "source timed out / continue leader: RuntimeResumeUnsupported(\"the outstanding source request belongs to a different interpreter thread\") -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [] {} (b1 timed out) <>",
-    "source timed out / ack: continue ok, - -> running e3 [continued e3, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <retire Acknowledged: retired, drop file 1>",
-    "source timed out / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 timed out) <>",
-    "source timed out / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <retire Acknowledged: retired, drop file 1>",
+    "source timed out / ack: continue ok, - -> running e3 [continued e3, breakpoints] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <retire Acknowledged: retired, drop file 1>",
+    "source timed out / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 timed out) <>",
+    "source timed out / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed) <retire Acknowledged: retired, drop file 1>",
     "source timed out / alarm: - -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [] {} (b1 timed out) <>",
     "source timed out / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <retire Cancel: withdrawn, drop file 1, close files>",
     "source timed out / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
@@ -733,9 +768,8 @@ const EXPECTED: &[&str] = &[
     "ready / remove: ok -> stopped Pause by 5000 [breakpoints] {write_word 5000 0x73000200 0x2} () <command 0->2 []>",
     "ready / continue: ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} (b1 ready) <>",
     "ready / continue leader: ok -> running e3 [continued e3] {continue 5000 None} (b1 ready) <>",
-    "ready / ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <>",
-    "ready / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <>",
-    "ready / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <>",
+    "ready / ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <>",
+    "ready / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed) <>",
     "ready / alarm: - -> stopped Pause by 5000 [] {} (b1 ready) <>",
     "ready / detach: ok -> not running [] {write_word 5000 0x73000200 0x2, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <command 0->2 [], close files>",
     "ready / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
@@ -743,20 +777,17 @@ const EXPECTED: &[&str] = &[
     "ready, running / refused add: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 ready, b2 refused) <command refused>",
     "ready, running / remove: ok -> running e2 [breakpoints] {request_stop 5000, request_stop 5001, write_word 5000 0x73000200 0x2, continue 5000 None, continue 5001 None} () <command 0->2 []> alarm",
     "ready, running / pause: ok -> stopped Pause by 5000 [stopped e2 Pause by 5000] {request_stop 5000, request_stop 5001} (b1 ready) <>",
-    "ready, running / ack: - -> running e2 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <>",
-    "ready, running / stale ack: - -> running e2 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <>",
-    "ready, running / failure: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <>",
+    "ready, running / ack: - -> running e2 [] {report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <>",
+    "ready, running / failure: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {report hit} (b1 failed) <>",
     "ready, running / alarm: - -> running e2 [] {} (b1 ready) <>",
     "ready, running / detach: ok -> not running [] {interrupt 5000, interrupt 5001, write_word 5000 0x73000200 0x2, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <command 0->2 [], close files>",
     "ready, running / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
     "idle / add: ok -> stopped Pause by 5000 [breakpoints] {write_word 5000 0x9000 0x1} (b2 unacknowledged) <anchor 5001, file 3, inject /tmp/agent/agent-3.py on 5001 [1]>",
     "idle / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b2 refused) <anchor 5001, file 3, inject refused, drop file 3>",
-    "idle / remove: BreakpointNotFound(1) -> stopped Pause by 5000 [] {} () <>",
     "idle / continue: ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} () <>",
     "idle / continue leader: ok -> running e3 [continued e3] {continue 5000 None} () <>",
-    "idle / ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} () <>",
-    "idle / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} () <>",
-    "idle / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} () <>",
+    "idle / ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} () <>",
+    "idle / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} () <>",
     "idle / alarm: - -> stopped Pause by 5000 [] {} () <>",
     "idle / detach: ok -> not running [] {write_word 5000 0x73000200 0x3, remove_site 0x73000100, detach 5000 None, detach 5001 None} () <command 2->3 [], close files>",
     "idle / exit: - -> not running [5001 exited] {} () <remove files>",
@@ -765,74 +796,66 @@ const EXPECTED: &[&str] = &[
     "command unread / remove: ok -> stopped Pause by 5000 [breakpoints] {write_word 5000 0x73000200 0x3} (b2 unacknowledged) <command 2->3 [1]>",
     "command unread / continue: ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged) <> alarm",
     "command unread / continue leader: ok -> running e3 [continued e3] {continue 5000 None} (b1 ready, b2 unacknowledged) <> alarm",
-    "command unread / ack: continue ok, - -> running e3 [continued e3, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready, b2 ready) <>",
-    "command unread / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged) <> alarm",
-    "command unread / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed, b2 failed) <>",
+    "command unread / ack: continue ok, - -> running e3 [continued e3, breakpoints] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready, b2 ready) <>",
+    "command unread / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged) <> alarm",
+    "command unread / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed, b2 failed) <>",
     "command unread / alarm: - -> stopped Pause by 5000 [] {} (b1 ready, b2 unacknowledged) <>",
     "command unread / detach: ok -> not running [] {write_word 5000 0x73000200 0x3, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready, b2 ready) <command 2->3 [], close files>",
     "command unread / exit: - -> not running [5001 exited] {} (b1 ready, b2 ready) <remove files>",
     "command running / add: ok -> running e3 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged, b3 unacknowledged) <> alarm",
-    "command running / refused add: ok -> running e3 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged, b3 unacknowledged) <> alarm",
     "command running / remove: ok -> running e3 [breakpoints] {request_stop 5000, request_stop 5001, continue 5000 None, continue 5001 None} (b2 unacknowledged) <> alarm",
     "command running / pause: ok -> stopped Pause by 5000 [stopped e3 Pause by 5000] {request_stop 5000, request_stop 5001} (b1 ready, b2 unacknowledged) <>",
-    "command running / ack: - -> running e3 [breakpoints] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready, b2 ready) <>",
-    "command running / stale ack: - -> running e3 [] {set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged) <> alarm",
-    "command running / failure: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed, b2 failed) <>",
+    "command running / ack: - -> running e3 [breakpoints] {report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready, b2 ready) <>",
+    "command running / stale ack: - -> running e3 [] {report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready, b2 unacknowledged) <> alarm",
+    "command running / failure: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {report hit} (b1 failed, b2 failed) <>",
     "command running / alarm: - -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints, stopped e3 RuntimeEvent { description: \"timed out\" } by 5000] {request_stop 5000, request_stop 5001} (b1 timed out, b2 timed out) <>",
     "command running / detach: ok -> not running [] {interrupt 5000, interrupt 5001, write_word 5000 0x73000200 0x3, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready, b2 ready) <command 2->3 [], close files>",
     "command running / exit: - -> not running [5001 exited] {} (b1 ready, b2 ready) <remove files>",
     "command timed out / add: ok -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints] {} (b1 timed out, b2 timed out, b3 timed out) <>",
-    "command timed out / refused add: ok -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints] {} (b1 timed out, b2 timed out, b3 timed out) <>",
     "command timed out / remove: ok -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [breakpoints] {} (b2 timed out) <>",
     "command timed out / continue: ok -> running e4 [continued e4] {continue 5000 None, continue 5001 None} (b1 timed out, b2 timed out) <>",
     "command timed out / continue leader: ok -> running e4 [continued e4] {continue 5000 None} (b1 timed out, b2 timed out) <>",
-    "command timed out / ack: continue ok, - -> running e4 [continued e4, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready, b2 ready) <>",
-    "command timed out / stale ack: continue ok, - -> running e4 [continued e4] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 timed out, b2 timed out) <>",
-    "command timed out / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e4, breakpoints, stopped e4 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed, b2 failed) <>",
+    "command timed out / ack: continue ok, - -> running e4 [continued e4, breakpoints] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready, b2 ready) <>",
+    "command timed out / stale ack: continue ok, - -> running e4 [continued e4] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 timed out, b2 timed out) <>",
+    "command timed out / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e4, breakpoints, stopped e4 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed, b2 failed) <>",
     "command timed out / alarm: - -> stopped RuntimeEvent { description: \"timed out\" } by 5000 [] {} (b1 timed out, b2 timed out) <>",
     "command timed out / detach: ok -> not running [] {write_word 5000 0x73000200 0x3, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready, b2 ready) <command 2->3 [], close files>",
     "command timed out / exit: - -> not running [5001 exited] {} (b1 ready, b2 ready) <remove files>",
     "refused by the agent / add: ok -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints] {write_word 5000 0x9000 0x1} (b1 unacknowledged, b2 unacknowledged) <anchor 5001, file 2, inject /tmp/agent/agent-2.py on 5001 [0 1]>",
     "refused by the agent / refused add: ok -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints] {} (b1 refused, b2 refused) <anchor 5001, file 2, inject refused, drop file 2>",
     "refused by the agent / remove: ok -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [breakpoints] {write_word 5000 0x9000 0x1} () <anchor 5001, file 2, inject /tmp/agent/agent-2.py on 5001 []>",
-    "refused by the agent / continue: ok -> running e3 [continued e3] {remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 failed) <>",
+    "refused by the agent / continue: ok -> running e3 [continued e3] {step over report, continue 5000 None, continue 5001 None} (b1 failed) <>",
     "refused by the agent / continue leader: ok -> running e3 [continued e3] {continue 5000 None} (b1 failed) <>",
-    "refused by the agent / ack: continue ok, - -> running e3 [continued e3] {remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 failed) <>",
-    "refused by the agent / stale ack: continue ok, - -> running e3 [continued e3] {remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 failed) <>",
-    "refused by the agent / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <>",
+    "refused by the agent / ack: continue ok, - -> running e3 [continued e3] {step over report, continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 failed) <>",
+    "refused by the agent / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {step over report, continue 5000 None, continue 5001 None, report hit} (b1 failed) <>",
     "refused by the agent / alarm: - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [] {} (b1 failed) <>",
     "refused by the agent / detach: ok -> not running [] {write_word 5000 0x73000200 0x2, remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <command 0->2 [], close files>",
     "refused by the agent / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
     "refused before any write / add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 refused, b2 refused) <anchor 5001, file 1, inject refused, drop file 1>",
-    "refused before any write / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 refused, b2 refused) <anchor 5001, file 1, inject refused, drop file 1>",
     "refused before any write / remove: ok -> stopped Pause by 5000 [breakpoints] {} () <anchor 5001, file 1, inject refused, drop file 1>",
     "refused before any write / continue: ok -> running e2 [continued e2] {continue 5000 None, continue 5001 None} (b1 refused) <>",
     "refused before any write / continue leader: ok -> running e2 [continued e2] {continue 5000 None} (b1 refused) <>",
-    "refused before any write / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 refused) <>",
-    "refused before any write / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 refused) <>",
-    "refused before any write / failure: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 refused) <>",
+    "refused before any write / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 refused) <>",
     "refused before any write / alarm: - -> stopped Pause by 5000 [] {} (b1 refused) <>",
     "refused before any write / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <close files>",
     "refused before any write / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
     "bootstrap unread / add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 unacknowledged, b2 unacknowledged) <>",
-    "bootstrap unread / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 unacknowledged, b2 unacknowledged) <>",
     "bootstrap unread / remove: ok -> stopped Pause by 5000 [breakpoints] {} () <>",
     "bootstrap unread / continue: ok -> running e2 [continued e2] {continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
     "bootstrap unread / continue leader: RuntimeResumeUnsupported(\"the outstanding source request belongs to a different interpreter thread\") -> stopped Pause by 5000 [] {} (b1 unacknowledged) <>",
-    "bootstrap unread / ack: continue ok, - -> running e2 [continued e2, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <drop file 1>",
-    "bootstrap unread / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
-    "bootstrap unread / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <drop file 1>",
+    "bootstrap unread / ack: continue ok, - -> running e2 [continued e2, breakpoints] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <drop file 1>",
+    "bootstrap unread / stale ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 unacknowledged) <> alarm",
+    "bootstrap unread / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, breakpoints, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed) <drop file 1>",
     "bootstrap unread / alarm: - -> stopped Pause by 5000 [] {} (b1 unacknowledged) <>",
     "bootstrap unread / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <drop file 1, close files>",
     "bootstrap unread / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
     "bootstrap timed out / add: ok -> stopped RuntimeEvent { description: \"bootstrap timed out\" } by 5000 [breakpoints] {} (b1 bootstrap timed out, b2 bootstrap timed out) <>",
-    "bootstrap timed out / refused add: ok -> stopped RuntimeEvent { description: \"bootstrap timed out\" } by 5000 [breakpoints] {} (b1 bootstrap timed out, b2 bootstrap timed out) <>",
     "bootstrap timed out / remove: ok -> stopped RuntimeEvent { description: \"bootstrap timed out\" } by 5000 [breakpoints] {} () <>",
     "bootstrap timed out / continue: ok -> running e3 [continued e3] {continue 5000 None, continue 5001 None} (b1 bootstrap timed out) <>",
     "bootstrap timed out / continue leader: RuntimeResumeUnsupported(\"the outstanding source request belongs to a different interpreter thread\") -> stopped RuntimeEvent { description: \"bootstrap timed out\" } by 5000 [] {} (b1 bootstrap timed out) <>",
-    "bootstrap timed out / ack: continue ok, - -> running e3 [continued e3, breakpoints] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 ready) <drop file 1>",
-    "bootstrap timed out / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000, remove_site 0x73000100, step 5001, reinstall_site 0x73000100, continue 5000 None, continue 5001 None} (b1 bootstrap timed out) <>",
-    "bootstrap timed out / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, set_registers 5001 rip=0x73000100, request_stop 5000} (b1 failed) <drop file 1>",
+    "bootstrap timed out / ack: continue ok, - -> running e3 [continued e3, breakpoints] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 ready) <drop file 1>",
+    "bootstrap timed out / stale ack: continue ok, - -> running e3 [continued e3] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} (b1 bootstrap timed out) <>",
+    "bootstrap timed out / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e3, breakpoints, stopped e3 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} (b1 failed) <drop file 1>",
     "bootstrap timed out / alarm: - -> stopped RuntimeEvent { description: \"bootstrap timed out\" } by 5000 [] {} (b1 bootstrap timed out) <>",
     "bootstrap timed out / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} (b1 ready) <drop file 1, close files>",
     "bootstrap timed out / exit: - -> not running [5001 exited] {} (b1 ready) <remove files>",
