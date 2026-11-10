@@ -611,35 +611,16 @@ async fn thin_pointers_and_references_dereference_across_the_language_matrix() {
 
 #[tokio::test]
 async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_printable() {
-    for (fixture, source, line, record_pointers, unsupported_pointers) in [
+    for (fixture, source, line, unsupported_pointers) in [
         (
             "variables-gcc-o0",
             "variables.c",
             68,
-            &["structure_pointer", "recursive_pointer"][..],
             &["function_pointer"][..],
         ),
-        (
-            "variables-cpp-gcc-o0",
-            "variables.cpp",
-            50,
-            &["structure_pointer", "recursive_pointer"][..],
-            &[][..],
-        ),
-        (
-            "variables-rust-o0",
-            "variables.rs",
-            67,
-            &["structure_pointer", "recursive_pointer"][..],
-            &[][..],
-        ),
-        (
-            "variables-zig-o0",
-            "variables.zig",
-            73,
-            &["structure_pointer", "recursive_pointer"][..],
-            &[][..],
-        ),
+        ("variables-cpp-gcc-o0", "variables.cpp", 50, &[][..]),
+        ("variables-rust-o0", "variables.rs", 67, &[][..]),
+        ("variables-zig-o0", "variables.zig", 73, &[][..]),
     ] {
         let mut scenario = Scenario::launch(fixture);
         scenario.add_source_breakpoint(source, line).await;
@@ -656,9 +637,26 @@ async fn record_pointees_are_bounded_values_and_unsupported_pointees_remain_prin
             record_page(&scenario, &pair.state, 2, &format!("{fixture} pair")).await;
         }
 
-        for name in record_pointers {
+        // Each pointee is read, not only shaped: the pair holds 20 and 22,
+        // and the node C's chain starts at 40 and the others' at 42.
+        let node_value = if fixture == "variables-gcc-o0" {
+            40
+        } else {
+            42
+        };
+        for (name, members) in [
+            ("structure_pointer", &[("first", 20), ("second", 22)][..]),
+            ("recursive_pointer", &[("value", node_value)]),
+        ] {
             let value = dereference_named(&scenario, name, 1).await;
-            record_page(&scenario, &value.state, 2, &format!("{fixture} {name}")).await;
+            let page = record_page(&scenario, &value.state, 2, &format!("{fixture} {name}")).await;
+            for &(member, expected) in members {
+                assert_eq!(
+                    available_value(&named_child(&page, member).state),
+                    &microscope::VariableValue::Scalar(microscope::ScalarValue::Signed(expected)),
+                    "{fixture} {name}.{member}"
+                );
+            }
         }
 
         for name in unsupported_pointers {

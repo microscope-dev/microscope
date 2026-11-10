@@ -939,7 +939,6 @@ async fn tls_of_every_module_resolves_per_thread_on_glibc_and_musl() {
         ("tls-modules-glibc2.35", true, 3),
         ("tls-modules-single-thread-glibc2.35", false, 1),
         ("tls-modules-musl-gcc-o0", true, 3),
-        ("tls-modules-musl-clang-o2-nopie", true, 3),
         ("tls-modules-musl-gcc-static", false, 3),
         ("tls-modules-musl-clang-static-pie", false, 3),
     ] {

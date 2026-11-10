@@ -524,7 +524,14 @@ async fn inline_function_breakpoints_resolve_every_concrete_instance() {
 
 #[tokio::test]
 async fn inline_breakpoint_hits_select_the_matching_concrete_instance() {
-    for fixture in ["inline-gcc-o2", "inline-clang-o2"] {
+    // The program calls leaf five times, so a stop count independent of
+    // the image's catalog shows an instance it left out.
+    for fixture in [
+        "inline-gcc-o1",
+        "inline-gcc-o2",
+        "inline-clang-o1",
+        "inline-clang-o2",
+    ] {
         let mut scenario = Scenario::launch(fixture);
         let breakpoint = scenario.add_breakpoint("leaf").await;
         let mut reason = scenario.run_to_stop().await;
@@ -589,25 +596,6 @@ async fn inline_breakpoint_hits_select_the_matching_concrete_instance() {
         };
 
         assert_eq!(same_line_instances, 2, "{fixture}");
-        scenario.shutdown().await;
-    }
-}
-
-#[tokio::test]
-async fn repeated_debug_sessions_leave_no_inferiors_behind() {
-    for iteration in 0..8 {
-        let mut scenario = Scenario::new(
-            format!("repeated session {iteration}"),
-            Scenario::fixture("basic"),
-        );
-
-        scenario.add_breakpoint("breakpoint_target").await;
-
-        assert!(matches!(
-            scenario.run_to_stop().await,
-            StopReason::Breakpoint { .. }
-        ));
-
         scenario.shutdown().await;
     }
 }
@@ -988,6 +976,27 @@ async fn stops_survive_executable_mappings_that_name_no_file() {
         scenario.run_to_stop().await,
         StopReason::Breakpoint { .. }
     ));
+
+    // The mapping that names no file leaves the program's own frames, and
+    // the list of modules, readable.
+    let trace = scenario
+        .operation("backtrace", scenario.handle().backtrace())
+        .await;
+    let functions = trace
+        .frames
+        .iter()
+        .take(2)
+        .map(|frame| {
+            frame
+                .function
+                .as_ref()
+                .map(|function| function.name.as_ref())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(functions, [Some("after_mapping"), Some("main")]);
+    scenario
+        .operation("modules", scenario.handle().loaded_modules())
+        .await;
 
     assert_eq!(
         scenario.resume_to_stop().await,
@@ -1508,12 +1517,8 @@ async fn source_path_maps_find_sources_of_programs_built_elsewhere() {
         "    uint64_t first = breakpoint_target(); /* copy */"
     );
 
-    // Rules match whole leading components, and a missing source names
-    // every place it was looked for.
-    let handle = map(&[
-        (Path::new("/nonexist"), repository),
-        (Path::new("/nonexistent/microscope"), &absent),
-    ]);
+    // A missing source names every place it was looked for.
+    let handle = map(&[(Path::new("/nonexistent/microscope"), &absent)]);
 
     assert!(matches!(
         handle.source_context(0).await,

@@ -85,6 +85,7 @@ async fn check_gallery(gallery: &Gallery<'_>) {
 
     let mut visited = Vec::new();
     let mut failures = Vec::new();
+    let (mut shown, mut checked) = (0, 0);
 
     loop {
         match reason {
@@ -146,6 +147,21 @@ async fn check_gallery(gallery: &Gallery<'_>) {
             {
                 failures.push(format!("{checkpoint}: {}: {failure}", truth.path));
             }
+
+            checked += 1;
+            let name = truth
+                .path
+                .split('.')
+                .next()
+                .expect("a path names a variable");
+            if variables
+                .iter()
+                .rev()
+                .find(|variable| variable.name.as_ref() == name)
+                .is_some_and(|variable| matches!(variable.state, VariableState::Available { .. }))
+            {
+                shown += 1;
+            }
         }
 
         visited.push(checkpoint);
@@ -153,6 +169,12 @@ async fn check_gallery(gallery: &Gallery<'_>) {
     }
 
     assert!(failures.is_empty(), "{fixture}:\n{}", failures.join("\n"));
+    // An optimized build may leave values out, but not most of them:
+    // Fortran's O2, the sparsest, shows 28 of 43.
+    assert!(
+        shown * 2 >= checked,
+        "{fixture} shows only {shown} of {checked} values"
+    );
     assert_eq!(visited, gallery.checkpoints, "{fixture}");
     assert_eq!(scenario.shutdown().await, Some(ExitStatus::Code(0)));
 }

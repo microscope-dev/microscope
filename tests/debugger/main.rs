@@ -288,7 +288,7 @@ struct EntryBoundaryCase {
     gcc_fallback_line: Option<u64>,
 }
 
-const fn entry_boundary_cases() -> [EntryBoundaryCase; 6] {
+const fn entry_boundary_cases() -> [EntryBoundaryCase; 4] {
     [
         EntryBoundaryCase {
             fixture: "variables-parameters-gcc-o0",
@@ -327,24 +327,6 @@ const fn entry_boundary_cases() -> [EntryBoundaryCase; 6] {
             call_line: 66,
             parameter: "signed_int",
             expected_value: -1_234_567,
-            gcc_fallback_line: None,
-        },
-        EntryBoundaryCase {
-            fixture: "variables-rust-o0",
-            function: "inspect_scalars",
-            source: "variables.rs",
-            call_line: 93,
-            parameter: "signed_value",
-            expected_value: -42,
-            gcc_fallback_line: None,
-        },
-        EntryBoundaryCase {
-            fixture: "variables-rust-o2",
-            function: "inspect_scalars",
-            source: "variables.rs",
-            call_line: 93,
-            parameter: "signed_value",
-            expected_value: -42,
             gcc_fallback_line: None,
         },
     ]

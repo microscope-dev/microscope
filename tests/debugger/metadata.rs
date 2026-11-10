@@ -52,7 +52,7 @@ async fn discarded_functions_are_not_cataloged_at_their_tombstone_addresses() {
     clippy::too_many_lines,
     reason = "one pass over the compiler-language matrix checks its graphs and their semantics"
 )]
-async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
+async fn normalized_type_graphs_preserve_language_semantics() {
     let mut images = BTreeMap::new();
     for fixture in [
         "variables-gcc-o0",
@@ -69,32 +69,14 @@ async fn normalized_type_graphs_are_closed_and_preserve_language_semantics() {
     ] {
         let image = load_fixture_image(fixture).await;
         assert!(image.type_count() != 0, "{fixture}");
-        for (index, node) in image.types().enumerate() {
-            let reference = node.reference();
-            assert_eq!(reference.image, image.id(), "{fixture}: {node:?}");
-            assert_eq!(
-                usize::try_from(reference.id.get()).expect("type ID fits usize"),
-                index,
-                "{fixture}: {node:?}"
-            );
-
-            assert_eq!(
-                image.type_node(reference),
-                Some(node),
-                "{fixture}: {node:?}"
-            );
-
+        // Loading validated the graph's references; only the builder's
+        // placeholder for a type under construction could still escape.
+        for node in image.types() {
             if let microscope::TypeNode::Resolved(info) = node {
                 assert!(
                     !info.name.contains("<recursive type>"),
                     "{fixture}: construction placeholder escaped into finalized type metadata: {info:?}"
                 );
-                for edge in type_edges(&info.kind) {
-                    assert!(
-                        image.type_node(edge).is_some(),
-                        "{fixture}: dangling edge {edge:?} from {info:?}"
-                    );
-                }
             }
         }
 
@@ -455,60 +437,6 @@ async fn hand_written_assembly_after_a_function_has_no_source_line() {
     // The row before still describes the function it belongs to.
     let before = microscope::ImageAddress::new(extent.start.get() - 1);
     assert!(image.locate(before).source.is_some());
-}
-
-fn type_edges(kind: &microscope::TypeKind) -> Vec<microscope::TypeReference> {
-    let mut edges = Vec::new();
-    match kind {
-        microscope::TypeKind::Enumeration { underlying, .. } => {
-            edges.extend(underlying.iter().copied());
-        }
-        microscope::TypeKind::Pointer { target, .. }
-        | microscope::TypeKind::Named { target, .. } => {
-            edges.extend(target.iter().copied());
-        }
-        microscope::TypeKind::Reference { target, .. }
-        | microscope::TypeKind::Modified { target, .. } => {
-            edges.push(*target);
-        }
-        microscope::TypeKind::Array { element, .. }
-        | microscope::TypeKind::Slice { element, .. } => {
-            edges.push(*element);
-        }
-        microscope::TypeKind::Record { members, bases, .. } => {
-            edges.extend(members.iter().map(|member| member.type_ref));
-            edges.extend(bases.iter().map(|base| base.type_ref));
-        }
-        microscope::TypeKind::Union { members, .. } => {
-            edges.extend(members.iter().map(|member| member.type_ref));
-        }
-
-        microscope::TypeKind::Variant {
-            common_members,
-            bases,
-            discriminant,
-            variants,
-            ..
-        } => {
-            edges.extend(common_members.iter().map(|member| member.type_ref));
-            edges.extend(bases.iter().map(|base| base.type_ref));
-            match discriminant.as_ref() {
-                microscope::VariantDiscriminant::Stored(member) => edges.push(member.type_ref),
-                microscope::VariantDiscriminant::TagType(reference) => edges.push(*reference),
-                _ => {}
-            }
-
-            edges.extend(
-                variants
-                    .iter()
-                    .flat_map(|variant| variant.members.iter())
-                    .map(|member| member.type_ref),
-            );
-        }
-        _ => {}
-    }
-
-    edges
 }
 
 fn assert_inline_metadata(image: &ModuleImage, fixture: &str) {

@@ -117,17 +117,33 @@ async fn indirect_functions_wait_again_after_exec() {
 
     assert_eq!(reason, StopReason::Exec { followed: true });
 
-    // Libraries load again, which places the waiting breakpoints anew.
+    // Libraries load again, which places the waiting breakpoints anew: the
+    // new image's puts calls strlen in the new C library.
+    let mut in_libc = 0;
     loop {
         match scenario.resume_to_stop().await {
             StopReason::Exited(status) => {
                 assert_eq!(status, ExitStatus::Code(2));
                 break;
             }
-            StopReason::Breakpoint { .. } => {}
+            StopReason::Breakpoint { .. } => {
+                let location = scenario
+                    .operation("location", scenario.handle().current_location())
+                    .await;
+                let modules = scenario
+                    .operation("modules", scenario.handle().loaded_modules())
+                    .await;
+                let module = modules
+                    .modules
+                    .iter()
+                    .find(|record| record.module.id == location.module)
+                    .expect("the stop's module is loaded");
+                in_libc += usize::from(module.path.ends_with("libc.so.6"));
+            }
             other => panic!("stopped for {other:?}"),
         }
     }
+    assert_ne!(in_libc, 0, "no breakpoint was placed in the new C library");
 
     scenario.shutdown().await;
 }

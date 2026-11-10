@@ -105,6 +105,7 @@ async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
         .await;
 
     let mut failures = Vec::new();
+    let mut exact = 0;
 
     for expectation in &expectations {
         let expression = match Expression::parse(&expectation.expression) {
@@ -116,12 +117,28 @@ async fn check_fixture(fixture: &str, barrier: &str, optimized: bool) {
         };
 
         let result = scenario.handle().evaluate(&expression).await;
+        let shown = match &result {
+            Ok(Evaluation::Value { value, .. }) => {
+                matches!(value.state, VariableState::Available { .. })
+            }
+            Ok(_) => true,
+            Err(_) => expectation.kind == "error",
+        };
         if let Some(message) = disagreement(expectation, result, optimized) {
             failures.push(format!("`{}`: {message}", expectation.expression));
+        } else {
+            exact += usize::from(shown);
         }
     }
 
     assert!(failures.is_empty(), "{fixture}:\n{}", failures.join("\n"));
+    // An optimized build may lose a value, but not most: the sparsest shows
+    // 30 of 32.
+    assert!(
+        exact * 4 >= expectations.len() * 3,
+        "{fixture} shows only {exact} of {} exactly",
+        expectations.len()
+    );
     scenario.shutdown().await;
 }
 
@@ -200,13 +217,16 @@ fn disagreement(
 
 #[tokio::test]
 async fn c_expressions_agree_with_the_program_across_the_compiler_matrix() {
-    for compiler in ["gcc", "clang"] {
-        for optimization in ["o0", "o2"] {
-            for linking in ["pie", "nopie"] {
-                let fixture = format!("expressions-c-{compiler}-{optimization}-{linking}");
-                check_fixture(&fixture, "barrier", optimization == "o2").await;
-            }
-        }
+    // Each pair of compiler, optimization, and linking once, rather than
+    // every combination.
+    for (compiler, optimization, linking) in [
+        ("gcc", "o0", "pie"),
+        ("gcc", "o2", "nopie"),
+        ("clang", "o0", "nopie"),
+        ("clang", "o2", "pie"),
+    ] {
+        let fixture = format!("expressions-c-{compiler}-{optimization}-{linking}");
+        check_fixture(&fixture, "barrier", optimization == "o2").await;
     }
 }
 

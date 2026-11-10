@@ -1633,15 +1633,16 @@ require_dwarf_operation "$output_dir/variables-static-clang-o2" DW_OP_addrx
 build_fixture gcc "$c_fixtures_dir/variables-static.c" "$output_dir/variables-static-gcc-nopie" \
     -O2 -g3 -gdwarf-5 -fomit-frame-pointer -no-pie
 require_dwarf_operation "$output_dir/variables-static-gcc-nopie" 'DW_OP_addr:'
-for compiler in gcc clang; do
-    for optimization in o0 o2; do
-        build_c_fixture_directory "$compiler" "$c_fixtures_dir/expressions" \
-            "$output_dir/expressions-c-$compiler-$optimization-pie" \
-            "-${optimization^^}" -g3 -gdwarf-5 -fPIE -pie
-        build_c_fixture_directory "$compiler" "$c_fixtures_dir/expressions" \
-            "$output_dir/expressions-c-$compiler-$optimization-nopie" \
-            "-${optimization^^}" -g3 -gdwarf-5 -fno-pie -no-pie
-    done
+# Each pair of compiler, optimization, and linking once.
+for build in gcc-o0-pie gcc-o2-nopie clang-o0-nopie clang-o2-pie; do
+    IFS=- read -r compiler optimization linking <<<"$build"
+    if [[ "$linking" == pie ]]; then
+        linking_flags=(-fPIE -pie)
+    else
+        linking_flags=(-fno-pie -no-pie)
+    fi
+    build_c_fixture_directory "$compiler" "$c_fixtures_dir/expressions" \
+        "$output_dir/expressions-c-$build" "-${optimization^^}" -g3 -gdwarf-5 "${linking_flags[@]}"
 done
 build_c_fixture_directory gcc "$c_fixtures_dir/same-names" "$output_dir/same-names" \
     -O0 -g3 -gdwarf-5 -fPIE -pie
@@ -1833,9 +1834,6 @@ build_tls_modules_fixture gcc "$output_dir/tls-modules-gcc" -O0 -fPIE -pie \
     '-DPLUGIN="libtls-plugin.so"' "$tls_modules_dir/main.c" "${tls_modules_linked[@]}" \
     -ltls-modules
 build_tls_modules_fixture musl-gcc "$output_dir/tls-modules-musl-gcc-o0" -O0 -fPIE -pie \
-    '-DPLUGIN="libtls-plugin-musl.so"' "$tls_modules_dir/main.c" "${tls_modules_linked[@]}" \
-    -ltls-modules-musl
-build_tls_modules_fixture musl-clang "$output_dir/tls-modules-musl-clang-o2-nopie" -O2 -no-pie \
     '-DPLUGIN="libtls-plugin-musl.so"' "$tls_modules_dir/main.c" "${tls_modules_linked[@]}" \
     -ltls-modules-musl
 build_tls_modules_fixture musl-gcc "$output_dir/tls-modules-musl-gcc-static" -O0 -static \

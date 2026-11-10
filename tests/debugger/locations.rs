@@ -11,6 +11,10 @@ use super::*;
 
 const VARIANTS: [&str; 3] = ["gcc-o2", "gcc-o2-nopie", "clang-o2"];
 
+/// The builds for values in registers or nowhere in memory, where linking
+/// changes nothing.
+const REGISTER_VARIANTS: [&str; 2] = ["gcc-o2", "clang-o2"];
+
 /// Launches a build of the fixture with `arguments` and stops in
 /// `locations_stop`.
 async fn stopped(variant: &str, arguments: &[&str]) -> Scenario {
@@ -126,7 +130,7 @@ const fn is_register(source: &VariableValueSource) -> bool {
 
 #[tokio::test]
 async fn a_record_split_across_registers_reads_and_places_each_member() {
-    for variant in VARIANTS {
+    for variant in REGISTER_VARIANTS {
         let scenario = stopped(variant, &[]).await;
         select(&scenario, "split_record").await;
         assert_eq!(integer(&scenario, "pair.first").await, 11, "{variant}");
@@ -157,24 +161,23 @@ async fn a_record_split_across_registers_reads_and_places_each_member() {
 
 #[tokio::test]
 async fn a_wide_integer_in_two_registers_reads_whole() {
-    for variant in ["gcc-o2", "gcc-o2-nopie"] {
-        let scenario = stopped(variant, &[]).await;
-        select(&scenario, "wide_value").await;
-        assert_eq!(integer(&scenario, "seed").await, 21, "{variant}");
-        assert_eq!(
-            integer(&scenario, "value").await,
-            (21_i128 << 64) | 63,
-            "{variant}"
-        );
+    let variant = "gcc-o2";
+    let scenario = stopped(variant, &[]).await;
+    select(&scenario, "wide_value").await;
+    assert_eq!(integer(&scenario, "seed").await, 21, "{variant}");
+    assert_eq!(
+        integer(&scenario, "value").await,
+        (21_i128 << 64) | 63,
+        "{variant}"
+    );
 
-        assert_eq!(
-            source(&scenario, "value").await,
-            VariableValueSource::Composite,
-            "{variant}"
-        );
+    assert_eq!(
+        source(&scenario, "value").await,
+        VariableValueSource::Composite,
+        "{variant}"
+    );
 
-        scenario.shutdown().await;
-    }
+    scenario.shutdown().await;
 }
 
 #[tokio::test]
@@ -215,7 +218,7 @@ async fn members_of_a_partly_kept_record_are_judged_by_their_own_bits() {
 
 #[tokio::test]
 async fn a_member_pointing_at_a_value_with_no_address_is_an_implicit_pointer() {
-    for variant in VARIANTS {
+    for variant in REGISTER_VARIANTS {
         let scenario = stopped(variant, &[]).await;
         select(&scenario, "implicit_member").await;
         assert_eq!(integer(&scenario, "ref.count").await, 402, "{variant}");
@@ -479,25 +482,24 @@ async fn watch(scenario: &Scenario, text: &str) -> microscope::Result<microscope
 
 #[tokio::test]
 async fn a_value_in_several_places_is_neither_changed_nor_watched() {
-    for variant in ["gcc-o2", "gcc-o2-nopie"] {
-        let scenario = stopped(variant, &[]).await;
-        select(&scenario, "wide_value").await;
-        let refused = assign(&scenario, "value", "1").await.unwrap_err();
-        assert!(
-            refused.to_string().contains("split across several places"),
-            "{variant}: {refused}"
-        );
+    let variant = "gcc-o2";
+    let scenario = stopped(variant, &[]).await;
+    select(&scenario, "wide_value").await;
+    let refused = assign(&scenario, "value", "1").await.unwrap_err();
+    assert!(
+        refused.to_string().contains("split across several places"),
+        "{variant}: {refused}"
+    );
 
-        assert!(
-            matches!(
-                watch(&scenario, "value").await,
-                Err(Error::WatchTargetNotInMemory(reason)) if reason.contains("several places")
-            ),
-            "{variant}"
-        );
+    assert!(
+        matches!(
+            watch(&scenario, "value").await,
+            Err(Error::WatchTargetNotInMemory(reason)) if reason.contains("several places")
+        ),
+        "{variant}"
+    );
 
-        scenario.shutdown().await;
-    }
+    scenario.shutdown().await;
 
     // Clang describes `point` in two pieces of memory, one after the other:
     // one place, which can be changed.

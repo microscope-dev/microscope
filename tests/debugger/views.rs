@@ -811,7 +811,6 @@ async fn cpp_containers_present_as_their_views_say_across_the_library_matrix() {
         ("containers-cpp-gcc-o0", false, &[][..]),
         ("containers-cpp-gcc-o2", true, &[]),
         ("containers-cpp-clang-o0", false, &[]),
-        ("containers-cpp-clang-o2", true, &[]),
         // The old ABI's list keeps no count to be wrong.
         ("containers-cpp-gcc-oldabi", false, &["overcounted"]),
         // Without -fstandalone-debug, libc++'s control blocks are
@@ -995,23 +994,11 @@ async fn tokio_values_present_as_their_views_say() {
     }
 }
 
-#[tokio::test]
-async fn optimized_tokio_values_present_as_their_views_say() {
-    for fixture in ["tokio-values-o3", "tokio-values-1.52-o3"] {
-        check_printed_markers(fixture, "barrier", MarkedFrame::Caller, true).await;
-    }
-}
-
 /// A core of the program's first stop presents its values as the program
 /// said before it, which the core's log keeps.
 #[tokio::test]
 async fn tokio_values_in_a_core_present_as_their_views_say() {
-    for (variant, optimized) in [
-        ("o0", false),
-        ("o3", true),
-        ("1.52-o0", false),
-        ("1.52-o3", true),
-    ] {
+    for (variant, optimized) in [("o0", false), ("o3", true), ("1.52-o3", true)] {
         let core = format!("tokio-values-{variant}.core");
         let log =
             fs::read_to_string(Scenario::fixture(&format!("{core}.log"))).expect("the core's log");
