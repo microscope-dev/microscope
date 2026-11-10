@@ -16,7 +16,7 @@ use crate::{Error, VirtualAddress};
 
 use super::classify::visible_stop_priority;
 use super::native::LinuxTraceOps;
-use super::run_control::collect_repairs;
+use super::trap::AtTrap;
 use super::{
     ActiveKind, Controller, Edit, Inferior, NativeThreadState, Result, StopBarrier, debug_thread_id,
 };
@@ -250,16 +250,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             result => result?,
         }
 
-        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let resume_threads = inferior
-            .run
-            .execution()
-            .map(|active| active.resume_threads.clone())
-            .unwrap_or_default();
-        let repairs = collect_repairs(inferior, &resume_threads);
-        if let Some(queued) = inferior.run.repairs_mut() {
-            *queued = repairs;
-        }
         self.advance_execution()
     }
 
@@ -268,9 +258,19 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// thread pass it unnoticed, so every other thread is stopped first.
     pub(super) fn repair_when_alone(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        inferior.thread_mut(pid)?.stopped_at_breakpoint = Some(address);
+        debug_assert_eq!(
+            inferior.thread(pid)?.trap,
+            AtTrap::MustStepOver { at: address },
+            "thread {pid} steps over a trap it does not stand at"
+        );
+        debug_assert!(
+            inferior
+                .run
+                .execution()
+                .is_some_and(|active| active.resume_threads.contains(&pid)),
+            "thread {pid} steps over the trap at {address} outside the execution"
+        );
         if inferior.run.barrier().is_none() && others_stopped(inferior, pid) {
-            self.queue_repair(pid, address)?;
             return self.start_next_repair();
         }
 

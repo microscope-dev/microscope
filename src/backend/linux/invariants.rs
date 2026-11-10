@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 
 use super::session::Session;
+use super::trap::{Lift, Trap};
 use super::{BreakpointOwner, Controller, Inferior, NativeThreadState, debug_thread_id};
 use crate::backend::linux::native::InspectionOps;
 
@@ -222,6 +223,7 @@ impl Inferior {
     /// contradict each other.
     fn check_invariants(&self, shutting_down: bool) {
         self.check_sites();
+        self.check_traps(shutting_down);
         self.check_threads(shutting_down);
         if !shutting_down {
             self.check_stop();
@@ -230,7 +232,6 @@ impl Inferior {
         self.check_watches();
     }
 
-    #[expect(clippy::too_many_lines, reason = "one check per site owner")]
     fn check_sites(&self) {
         let stack_moves = self.stack_moves.planted();
         let interpreted_moves = self.interpreted_moves.planted();
@@ -257,10 +258,6 @@ impl Inferior {
             debug_assert!(
                 !site.owners.is_empty(),
                 "the site at {address} has no owners"
-            );
-            debug_assert!(
-                !(self.traps_lifted && site.installed),
-                "the site at {address} is installed while the traps are lifted"
             );
             for owner in &site.owners {
                 match owner {
@@ -320,24 +317,58 @@ impl Inferior {
                 "the runtime hook at {address} has no runtime owner"
             );
         }
+    }
 
-        debug_assert!(
-            !self.traps_lifted || !self.vfork_windows.is_empty(),
-            "the traps are lifted with no vfork window open to reinstall them"
-        );
+    /// Each trap is in memory unless a vfork child runs there or one thread
+    /// steps over it, and each thread at a trap stands at a site. Whether
+    /// the other threads are stopped during a repair cannot be checked
+    /// here: a thread SIGKILL took out of its stop counts as running until
+    /// its exit arrives.
+    fn check_traps(&self, shutting_down: bool) {
+        let mut lifted_for_repair = None;
+        for (&address, site) in &self.breakpoints {
+            match site.trap {
+                Trap::Installed => debug_assert!(
+                    !self.vfork_child_runs(),
+                    "the trap at {address} is installed while a vfork child runs"
+                ),
+                Trap::Lifted(Lift::Vfork) => debug_assert!(
+                    shutting_down || !self.vfork_windows.is_empty(),
+                    "the trap at {address} is lifted with no vfork window open"
+                ),
+                Trap::Lifted(Lift::Repair) => {
+                    let other = lifted_for_repair.replace(address);
+                    debug_assert!(
+                        other.is_none(),
+                        "the traps at {address} and {other:?} are both lifted for repairs"
+                    );
+                }
+            }
+        }
 
-        for group in self.run.repairs() {
-            let site = self.breakpoints.get(&group.address);
+        let repairing = self.repairing();
+        for (&pid, thread) in &self.threads {
             debug_assert!(
-                site.is_some(),
-                "a repair at {} has no breakpoint site",
-                group.address
+                thread
+                    .trap
+                    .repairing()
+                    .is_none_or(|_| repairing.is_some_and(|(only, _)| only == pid)),
+                "threads {pid} and {repairing:?} both step over traps"
             );
-            debug_assert!(
-                !group.site_removed || site.is_some_and(|site| !site.installed),
-                "the repair at {} removed its trap, but the site is installed",
-                group.address
-            );
+            if let Some(address) = thread.trap.owed() {
+                debug_assert!(
+                    self.breakpoints.contains_key(&address),
+                    "thread {pid} stands at a trap at {address}, which has no site"
+                );
+            }
+            if let Some(address) = thread.trap.repairing() {
+                debug_assert!(
+                    self.breakpoints
+                        .get(&address)
+                        .is_some_and(|site| site.trap == Trap::Lifted(Lift::Repair)),
+                    "thread {pid} steps over the trap at {address}, which is not lifted for it"
+                );
+            }
         }
     }
 
@@ -349,13 +380,6 @@ impl Inferior {
                 "thread {id} is live and also tracked as {:?}",
                 self.tracked.get(&pid)
             );
-            if let Some(address) = thread.stopped_at_breakpoint {
-                debug_assert!(
-                    self.breakpoints.contains_key(&address),
-                    "thread {id} is stopped at a breakpoint at {address}, which has no site"
-                );
-            }
-
             debug_assert!(
                 thread
                     .armed

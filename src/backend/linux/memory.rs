@@ -12,6 +12,7 @@ use crate::{
 };
 
 use super::native::InspectionOps;
+use super::trap::{Lift, Trap};
 use super::{
     BREAKPOINT_OPCODE, BreakpointOwner, BreakpointSite, Controller, LinuxError,
     MAX_LOGICAL_MEMORY_READ, MAX_PUBLIC_MEMORY_READ, backend_error, validate_process,
@@ -113,7 +114,7 @@ pub(super) fn read_logical_block(
             bytes.len()
         );
         for (site_address, site) in breakpoints.range(address..VirtualAddress::new(end)) {
-            if site.installed {
+            if site.trap == Trap::Installed {
                 let offset = offset_within(site_address.get() - address.get())?;
                 *bytes
                     .get_mut(offset)
@@ -199,7 +200,7 @@ pub(super) fn read_logical_memory_with(
             breakpoints.range(VirtualAddress::new(current)..=VirtualAddress::new(last_word_address))
         {
             let offset = site_address.get() - current;
-            if site.installed {
+            if site.trap == Trap::Installed {
                 let byte = word
                     .get_mut(offset_within(offset)?)
                     .ok_or_else(|| Error::internal("a site in a word's range is in the word"))?;
@@ -260,7 +261,7 @@ fn check_traps_hidden(
     let end = VirtualAddress::new(address.get().saturating_add(bytes.len() as u64));
     for (&site_address, site) in breakpoints.range(address..end) {
         let offset = usize::try_from(site_address.get() - address.get()).unwrap_or(usize::MAX);
-        if site.installed
+        if site.trap == Trap::Installed
             && let Some(&byte) = bytes.get(offset)
         {
             debug_assert_eq!(
@@ -315,7 +316,7 @@ pub(super) fn write_logical_memory_with(
             count += 1;
 
             match sites.get(&VirtualAddress::new(target)) {
-                Some(site) if site.installed => hidden.push((target, user)),
+                Some(site) if site.trap == Trap::Installed => hidden.push((target, user)),
                 _ => *byte = user,
             }
         }
@@ -363,7 +364,7 @@ pub(super) fn install_site(
         address,
         BreakpointSite {
             original_byte,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([owner]),
         },
     );
@@ -371,22 +372,24 @@ pub(super) fn install_site(
     Ok(())
 }
 
-/// Restores the original byte of an installed site, keeping the site.
+/// Restores the original byte of an installed site for `lift`, keeping
+/// the site.
 pub(super) fn lift_site(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
+    lift: Lift,
     read_word: impl FnOnce(u64) -> Result<u64>,
     write_word: impl FnOnce(u64, u64) -> Result<()>,
 ) -> Result<()> {
     let site = sites
         .get_mut(&address)
         .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
-    if !site.installed {
+    if site.trap != Trap::Installed {
         return Ok(());
     }
 
     patch_byte(address, site.original_byte, read_word, write_word)?;
-    site.installed = false;
+    site.trap = Trap::Lifted(lift);
     Ok(())
 }
 
@@ -400,22 +403,42 @@ pub(super) fn reinstall_site(
     let site = sites
         .get_mut(&address)
         .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
-    if site.installed {
+    if site.trap == Trap::Installed {
         return Ok(());
     }
 
     patch_byte(address, BREAKPOINT_OPCODE, read_word, write_word)?;
-    site.installed = true;
+    site.trap = Trap::Installed;
     Ok(())
 }
 
-/// Takes `owner` off the site at `address`. The last owner's removal lifts
-/// the trap through `lift` and forgets the site, which is returned.
+/// Restores the original byte of the site at `address`, unless its trap
+/// is lifted, and forgets the site, which is returned.
+pub(super) fn remove_site(
+    sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+    address: VirtualAddress,
+    read_word: impl FnOnce(u64) -> Result<u64>,
+    write_word: impl FnOnce(u64, u64) -> Result<()>,
+) -> Result<BreakpointSite> {
+    let site = sites
+        .get(&address)
+        .ok_or_else(|| Error::internal("a breakpoint site is known"))?;
+    if site.trap == Trap::Installed {
+        patch_byte(address, site.original_byte, read_word, write_word)?;
+    }
+
+    sites
+        .remove(&address)
+        .ok_or_else(|| Error::internal("a breakpoint site is known"))
+}
+
+/// Takes `owner` off the site at `address`. The last owner's removal
+/// forgets the site through `remove`, and returns it.
 pub(super) fn remove_site_owner(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,
     owner: BreakpointOwner,
-    lift: impl FnOnce(&mut BTreeMap<VirtualAddress, BreakpointSite>) -> Result<()>,
+    remove: impl FnOnce(&mut BTreeMap<VirtualAddress, BreakpointSite>) -> Result<BreakpointSite>,
 ) -> Result<Option<BreakpointSite>> {
     let site = sites
         .get_mut(&address)
@@ -433,11 +456,7 @@ pub(super) fn remove_site_owner(
         return Ok(None);
     }
 
-    lift(sites)?;
-    sites
-        .remove(&address)
-        .map(Some)
-        .ok_or_else(|| backend_error(LinuxError::BreakpointSiteMissing(address)))
+    remove(sites).map(Some)
 }
 
 /// The aligned word that holds the byte at `address`, and the byte's

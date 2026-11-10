@@ -453,7 +453,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .flat_map(Gate::sites)
             .collect::<std::collections::BTreeSet<_>>();
         let planted = inferior.inspectors.gate_planted.clone();
-        let unneeded = if remove && inferior.run.repairs().is_empty() {
+        let unneeded = if remove && !inferior.repair_under_way() {
             planted.difference(&needed).copied().collect()
         } else {
             Vec::new()
@@ -496,7 +496,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         };
         let main = inferior.tgid;
         let runs = inferior.run.barrier().is_none()
-            && inferior.run.repairs().is_empty()
+            && !inferior.repair_under_way()
             && inferior
                 .run
                 .execution()

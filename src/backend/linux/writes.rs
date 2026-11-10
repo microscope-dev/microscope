@@ -10,6 +10,7 @@ use crate::{CodeInstanceId, Error, ModuleId, ProcessId, Result, VirtualAddress};
 
 use super::memory::{read_logical_memory, write_logical_memory_with};
 use super::native::LinuxTraceOps;
+use super::trap::TrapEvent;
 use super::{
     Controller, LinuxError, backend_error, debug_thread_id, process_id, validate_process,
     validate_public_stop, validate_resumable, validate_stopped_thread,
@@ -313,13 +314,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let execution = ExecutionId::new(inferior.next_execution + 1);
         inferior.next_execution = execution.get();
+        inferior.trap_event(pid, TrapEvent::Moved(pc))?;
         let thread = inferior.thread_mut(pid)?;
-        thread.stopped_at_breakpoint = thread.stopped_at_breakpoint.filter(|trap| *trap == pc);
-        thread.trapped_at = thread.trapped_at.filter(|trap| *trap == pc);
 
         // A signal's handler returns where the thread now stands, not to
         // the trap it would have executed again.
-        thread.awaiting_breakpoint = thread.awaiting_breakpoint.filter(|trap| *trap == pc);
+        thread.retrap = thread.retrap.filter(|trap| *trap == pc);
         thread.reason = Some(reason.clone());
         let stop = inferior.run.stop_mut().ok_or(Error::NotStopped)?;
         stop.id = stop_id;

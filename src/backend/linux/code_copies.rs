@@ -33,6 +33,7 @@ use nix::unistd::Pid;
 use super::memory::read_logical_block;
 use super::modules::AnonymousCode;
 use super::native::{InspectionOps, LinuxTraceOps};
+use super::trap::Trap;
 use super::{BREAKPOINT_OPCODE, Controller, RuntimeModule};
 use crate::protocol::DebuggerEvent;
 use crate::unwind::code_copies as copies;
@@ -370,7 +371,8 @@ impl<P: InspectionOps> Controller<P> {
                 let offset = offset as u64;
                 if original != copied {
                     let trap_site = sites.get(&VirtualAddress::new(source + length + offset));
-                    if *copied != BREAKPOINT_OPCODE || !trap_site.is_some_and(|site| site.installed)
+                    if *copied != BREAKPOINT_OPCODE
+                        || !trap_site.is_some_and(|site| site.trap == Trap::Installed)
                     {
                         return (length + offset, traps);
                     }

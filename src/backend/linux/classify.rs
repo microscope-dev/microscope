@@ -12,6 +12,7 @@ use crate::backend::linux::debug_registers;
 use crate::protocol::{StopReason, WatchpointId};
 
 use super::native::LinuxTraceOps;
+use super::trap::Trap;
 use super::{
     BREAKPOINT_OPCODE, ClassifiedStop, Controller, ExpectedStop, NativeThreadState, PendingSignal,
     RawStopRecord, SignalMetadata, TRAP_HARDWARE_BREAKPOINT, TRAP_UNKNOWN,
@@ -25,7 +26,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .and_then(|inferior| inferior.threads.get(&pid));
-        let expected = thread.map_or(ExpectedStop::None, |thread| thread.expected.clone());
+        // A thread single-steps over its trap, or for the user's step.
+        let stepping = thread.is_some_and(|thread| {
+            thread.trap.repairing().is_some()
+                || matches!(thread.expected, ExpectedStop::UserStep { .. })
+        });
         let starting =
             thread.is_some_and(|thread| matches!(thread.state, NativeThreadState::Starting));
         let debugger_requested = signal == Signal::SIGSTOP
@@ -36,10 +41,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         let expected_trace = signal == Signal::SIGTRAP
             && siginfo.as_ref().is_ok_and(is_single_step_trap)
-            && matches!(
-                expected,
-                ExpectedStop::BreakpointRepair { .. } | ExpectedStop::UserStep { .. }
-            );
+            && stepping;
         let code = siginfo.as_ref().ok().map(|metadata| metadata.code);
         let watch = if signal == Signal::SIGTRAP {
             self.watch_status(pid, code)
@@ -65,7 +67,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             signal,
             status,
             siginfo,
-            &expected,
+            stepping,
             starting,
             debugger_requested,
             breakpoint,
@@ -133,7 +135,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .session
             .inferior()
             .and_then(|inferior| inferior.breakpoints.get(&address))
-            .is_some_and(|site| site.installed);
+            .is_some_and(|site| site.trap == Trap::Installed);
         if !installed {
             return None;
         }
@@ -190,10 +192,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                     return false;
                 };
 
-                inferior
-                    .breakpoints
-                    .get(&source)
-                    .is_some_and(|site| site.installed && site.original_byte != BREAKPOINT_OPCODE)
+                inferior.breakpoints.get(&source).is_some_and(|site| {
+                    site.trap == Trap::Installed && site.original_byte != BREAKPOINT_OPCODE
+                })
             });
             if !carried {
                 return None;
@@ -257,13 +258,14 @@ pub(super) enum WatchStatus {
 
 #[expect(
     clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
     reason = "the pure classifier receives every piece of native stop evidence explicitly"
 )]
 pub(super) fn classify_stop_evidence(
     signal: Signal,
     status: String,
     siginfo: std::result::Result<SignalMetadata, Errno>,
-    expected: &ExpectedStop,
+    stepping: bool,
     starting: bool,
     debugger_requested: bool,
     breakpoint: Option<VirtualAddress>,
@@ -303,13 +305,7 @@ pub(super) fn classify_stop_evidence(
         };
     }
 
-    if signal == Signal::SIGTRAP
-        && siginfo.as_ref().is_ok_and(is_single_step_trap)
-        && matches!(
-            expected,
-            ExpectedStop::BreakpointRepair { .. } | ExpectedStop::UserStep { .. }
-        )
-    {
+    if signal == Signal::SIGTRAP && siginfo.as_ref().is_ok_and(is_single_step_trap) && stepping {
         return match watch {
             WatchStatus::Unknown(description) => ClassifiedStop::Unclassifiable(RawStopRecord {
                 status: format!("{status}; {description}"),

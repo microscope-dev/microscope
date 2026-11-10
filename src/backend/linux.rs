@@ -64,6 +64,7 @@ use registers::Fxsave;
 pub(super) use tls::CLibrary;
 pub use tls::RunningTls;
 use tls::TlsModule;
+use trap::{AtTrap, Lift, Trap, TrapEvent};
 
 mod activation;
 mod agent_files;
@@ -140,6 +141,7 @@ mod sys;
 pub mod syscalls;
 mod tls;
 mod tracer;
+mod trap;
 mod vdso;
 mod visualizers;
 mod wait_hub;
@@ -322,7 +324,7 @@ impl Drop for SessionLease {
 
 struct BreakpointSite {
     original_byte: u8,
-    installed: bool,
+    trap: Trap,
     owners: BTreeSet<BreakpointOwner>,
 }
 
@@ -372,12 +374,6 @@ enum ExpectedStop {
     AdoptedExec,
     InitialAttach,
     None,
-    BreakpointRepair {
-        address: VirtualAddress,
-    },
-    AwaitBreakpoint {
-        address: VirtualAddress,
-    },
     UserStep {
         kind: StepKind,
     },
@@ -392,13 +388,12 @@ struct TraceThread {
     /// stepped or ran without its siblings, until it continues with them.
     held_signal: Option<PendingSignal>,
     reason: Option<StopReason>,
-    stopped_at_breakpoint: Option<VirtualAddress>,
+    trap: AtTrap,
 
-    /// The site whose trap the thread reported, until it steps over the
-    /// site or runs on otherwise. It outlives the site's removal, so that a
-    /// breakpoint added there before the thread moves is stepped over too.
-    trapped_at: Option<VirtualAddress>,
-    awaiting_breakpoint: Option<VirtualAddress>,
+    /// The trap a signal's handler returns to, which the thread hit before
+    /// the signal interrupted its step over it. Its hit was counted, so the
+    /// thread runs alone until it executes the trap again.
+    retrap: Option<VirtualAddress>,
     debugger_stop_pending: bool,
 
     /// The watch-plan generation programmed into this thread's debug
@@ -438,9 +433,8 @@ impl TraceThread {
             pending_signal: None,
             held_signal: None,
             reason: None,
-            stopped_at_breakpoint: None,
-            trapped_at: None,
-            awaiting_breakpoint: None,
+            trap: AtTrap::Clear,
+            retrap: None,
             debugger_stop_pending: false,
             armed: None,
             watch_hits: BTreeMap::new(),
@@ -450,6 +444,12 @@ impl TraceThread {
             name: None,
             stack_start: None,
         }
+    }
+
+    /// Whether the execution's other threads are held while this one runs:
+    /// as it steps over a trap, and as it returns to one.
+    const fn holds_siblings(&self) -> bool {
+        self.trap.repairing().is_some() || self.retrap.is_some()
     }
 }
 
@@ -790,17 +790,6 @@ struct ActiveExecution {
     kind: ActiveKind,
     scope: ResumeScope,
     resume_threads: BTreeSet<Pid>,
-
-    /// Threads stopped at breakpoint sites that step over them, one site at
-    /// a time, before the execution's threads run.
-    repairs: VecDeque<RepairGroup>,
-}
-
-struct RepairGroup {
-    address: VirtualAddress,
-    remaining: VecDeque<Pid>,
-    current: Option<Pid>,
-    site_removed: bool,
 }
 
 /// A breakpoint or watchpoint change that needs every thread stopped.
@@ -1051,10 +1040,6 @@ struct Inferior {
     /// Threads in a vfork that shares this memory, by the thread that
     /// vforked. The traps are lifted while any window is open.
     vfork_windows: BTreeMap<Pid, VforkWindow>,
-
-    /// Whether the traps are lifted from the memory every open vfork window
-    /// shares, and so must be reinstalled when the last window closes.
-    traps_lifted: bool,
     waiter: Option<Waiter>,
     run: RunPhase,
     next_execution: u64,
@@ -1141,7 +1126,6 @@ impl Inferior {
             observer: false,
             former_sites: BTreeMap::new(),
             vfork_windows: BTreeMap::new(),
-            traps_lifted: false,
             waiter,
             run,
             next_execution: 0,
@@ -1182,21 +1166,71 @@ impl Inferior {
         matches!(thread.state, NativeThreadState::Stopped) || self.exited_leader(pid, thread)
     }
 
-    /// Whether a thread that resumes expecting `expected` holds the signals
+    /// Whether `thread`, resuming expecting `expected`, holds the signals
     /// its runtime tolerates arriving late: while it steps over a
     /// breakpoint or returns to one, while it steps, and while it runs
     /// without the threads the debugger keeps stopped. A handler run then
     /// could wait for those threads, as Go's preemption does.
-    fn holds_signals(&self, expected: &ExpectedStop) -> bool {
-        matches!(
-            expected,
-            ExpectedStop::BreakpointRepair { .. }
-                | ExpectedStop::AwaitBreakpoint { .. }
-                | ExpectedStop::UserStep { .. }
-        ) || self.run.execution().is_some_and(|active| {
-            matches!(active.kind, ActiveKind::Step { .. })
-                || matches!(active.scope, ResumeScope::Thread(_))
-        })
+    fn holds_signals(&self, thread: &TraceThread, expected: &ExpectedStop) -> bool {
+        thread.holds_siblings()
+            || matches!(expected, ExpectedStop::UserStep { .. })
+            || self.run.execution().is_some_and(|active| {
+                matches!(active.kind, ActiveKind::Step { .. })
+                    || matches!(active.scope, ResumeScope::Thread(_))
+            })
+    }
+
+    /// The thread that steps over a trap, and the trap's site.
+    fn repairing(&self) -> Option<(Pid, VirtualAddress)> {
+        self.threads
+            .iter()
+            .find_map(|(&pid, thread)| thread.trap.repairing().map(|at| (pid, at)))
+    }
+
+    /// The thread to step over its trap next, and the trap's site: of the
+    /// execution's threads stopped at a trap, the lowest site's, and the
+    /// lowest thread there, so that a site is lifted once for every thread
+    /// at it. An exiting thread steps over nothing.
+    fn next_repair(&self) -> Option<(Pid, VirtualAddress)> {
+        let active = self.run.execution()?;
+        active
+            .resume_threads
+            .iter()
+            .filter_map(|&pid| {
+                let thread = self.threads.get(&pid)?;
+                let AtTrap::MustStepOver { at } = thread.trap else {
+                    return None;
+                };
+                matches!(thread.state, NativeThreadState::Stopped).then_some((at, pid))
+            })
+            .min()
+            .map(|(at, pid)| (pid, at))
+    }
+
+    /// Whether a vforked child runs in this memory, which must hold no trap.
+    fn vfork_child_runs(&self) -> bool {
+        self.vfork_windows.values().any(|window| window.resumed)
+    }
+
+    /// Whether a thread steps over a trap, or a site is lifted for one to.
+    fn repair_under_way(&self) -> bool {
+        self.repairing().is_some()
+            || self
+                .breakpoints
+                .values()
+                .any(|site| site.trap == Trap::Lifted(Lift::Repair))
+    }
+
+    /// Moves `pid`'s trap state on `event`. A transition the state forbids
+    /// is a wait status the controller did not expect.
+    fn trap_event(&mut self, pid: Pid, event: TrapEvent) -> Result<()> {
+        let thread = self.thread_mut(pid)?;
+        thread.trap = thread.trap.on(event).map_err(|transition| {
+            backend_error(LinuxError::UnexpectedWait(format!(
+                "thread {pid} at a trap: {transition}"
+            )))
+        })?;
+        Ok(())
     }
 
     /// A stopped thread through which to read and write the shared address
@@ -1227,20 +1261,9 @@ impl Inferior {
     }
 
     /// Removes every reference to a thread that exited while others live on.
-    /// Returns whether the thread's breakpoint repair step was interrupted,
-    /// in which case execution must advance to the next repair.
-    fn forget_thread(&mut self, pid: Pid, status: &ExitStatus) -> bool {
+    fn forget_thread(&mut self, pid: Pid, status: &ExitStatus) {
         if let Some(active) = self.run.execution_mut() {
             active.resume_threads.remove(&pid);
-        }
-
-        let mut interrupted = false;
-        for group in self.run.repairs_mut().into_iter().flatten() {
-            group.remaining.retain(|&waiting| waiting != pid);
-            if group.current == Some(pid) {
-                group.current = None;
-                interrupted = true;
-            }
         }
 
         if let Some(stop) = self.run.stop_mut() {
@@ -1263,8 +1286,6 @@ impl Inferior {
         {
             barrier.thread_exited(pid, replacement, status);
         }
-
-        interrupted
     }
 
     /// The edits an internal stop holds until every thread stopped.
@@ -1276,10 +1297,10 @@ impl Inferior {
     }
 
     /// Every trap a process forked from this one may hold, with its
-    /// original byte: the sites installed now, one lifted for a repair
-    /// among them, and those removed since the address space began, as a
-    /// fork's event may be handled after edits that followed the fork. A
-    /// child is scrubbed only where its memory still holds a trap.
+    /// original byte: the sites installed now, any lifted among them, and
+    /// those removed since the address space began, as a fork's event may
+    /// be handled after edits that followed the fork. A child is scrubbed
+    /// only where its memory still holds a trap.
     fn inherited_sites(&self) -> Vec<(VirtualAddress, u8)> {
         let mut sites = self.former_sites.clone();
         sites.extend(
@@ -1288,30 +1309,6 @@ impl Inferior {
                 .map(|(&address, site)| (address, site.original_byte)),
         );
         sites.into_iter().collect()
-    }
-
-    /// Ends `pid`'s step over the front repair group's breakpoint at `address`.
-    pub(super) fn finish_current_repair(
-        &mut self,
-        pid: Pid,
-        address: VirtualAddress,
-    ) -> Result<()> {
-        let thread = self.thread_mut(pid)?;
-        thread.stopped_at_breakpoint = None;
-        thread.trapped_at = None;
-
-        let group = self
-            .run
-            .repairs_mut()
-            .and_then(VecDeque::front_mut)
-            .filter(|group| group.address == address && group.current == Some(pid))
-            .ok_or_else(|| {
-                backend_error(LinuxError::UnexpectedWait(format!(
-                    "breakpoint repair by {pid} at {address} does not match the active repair"
-                )))
-            })?;
-        group.current = None;
-        Ok(())
     }
 }
 

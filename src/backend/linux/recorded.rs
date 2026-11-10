@@ -28,6 +28,7 @@ use super::native::{InspectionOps, LinuxTraceOps};
 use super::registers::Fxsave;
 use super::signals::{Signal, WaitEvent};
 use super::tls::TlsModule;
+use super::trap::Lift;
 use super::{BreakpointOwner, BreakpointSite, SignalMetadata, Waiter};
 
 pub(super) struct Recorded<P>(pub(super) P);
@@ -489,16 +490,17 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
         )
     }
 
-    fn remove_breakpoint(
+    fn lift_breakpoint(
         &self,
         pid: Pid,
         sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
         address: VirtualAddress,
+        lift: Lift,
     ) -> Result<()> {
         issued(
-            format_args!("lift breakpoint {address} in {pid}"),
+            format_args!("lift breakpoint {address} in {pid} for {lift:?}"),
             &(),
-            || self.0.remove_breakpoint(pid, sites, address),
+            || self.0.lift_breakpoint(pid, sites, address, lift),
         )
     }
 
@@ -513,5 +515,24 @@ impl<P: LinuxTraceOps> LinuxTraceOps for Recorded<P> {
             &(),
             || self.0.reinstall_breakpoint(pid, sites, address),
         )
+    }
+
+    fn remove_breakpoint(
+        &self,
+        pid: Pid,
+        sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+        address: VirtualAddress,
+    ) -> Result<BreakpointSite> {
+        let mut removed = None;
+        issued(
+            format_args!("remove breakpoint {address} in {pid}"),
+            &(),
+            || {
+                self.0
+                    .remove_breakpoint(pid, sites, address)
+                    .map(|site| removed = Some(site))
+            },
+        )?;
+        removed.ok_or_else(|| crate::Error::internal("a removed site is returned"))
     }
 }

@@ -1,7 +1,7 @@
 //! All-stop execution control: resuming threads, repairing breakpoint
 //! sites, and publishing coherent stops.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::signals::Signal;
@@ -23,12 +23,13 @@ use super::classify::format_raw_stop;
 use super::loops::LoopReach;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::new_task::NewTask;
+use super::trap::{AtTrap, Lift, Trap, TrapEvent};
 use super::{
     ActiveExecution, ActiveKind, BreakpointOwner, ClassifiedStop, Controller, Edit, ExpectedStop,
-    Inferior, LinuxError, NativeThreadState, PendingSignal, PublicStop, RepairGroup, Resume,
-    ResumeGuard, StepOwner, StopBarrier, backend_error, debug_thread_id, exception_info,
-    pending_exception_info, process_id, scoped_threads, steps_instructions, validate_process,
-    validate_public_stop, validate_resumable, validate_stopped_thread,
+    Inferior, LinuxError, NativeThreadState, PendingSignal, PublicStop, Resume, ResumeGuard,
+    StepOwner, StopBarrier, backend_error, debug_thread_id, exception_info, pending_exception_info,
+    process_id, scoped_threads, steps_instructions, validate_process, validate_public_stop,
+    validate_resumable, validate_stopped_thread,
 };
 
 impl<P: LinuxTraceOps> Controller<P> {
@@ -320,7 +321,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // One that trapped there steps over the trap as any other does; one
         // that has yet to execute the trap arrives there first.
         if let Some((pid, at)) = standing
-            && inferior.thread(pid)?.stopped_at_breakpoint != Some(at)
+            && inferior.thread(pid)?.trap != (AtTrap::MustStepOver { at })
             && let ActiveKind::Step { start, .. } = &mut kind
         {
             start.standing = Some(at);
@@ -343,13 +344,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             inferior.thread_mut(pid)?.reason = None;
         }
 
-        let repairs = collect_repairs(inferior, &resume_threads);
         inferior.run.begin(ActiveExecution {
             id: execution_id,
             kind,
             scope,
             resume_threads,
-            repairs,
         });
 
         for installation in inferior.agents.values_mut() {
@@ -544,44 +543,34 @@ impl<P: LinuxTraceOps> Controller<P> {
 
 impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn advance_execution(&mut self) -> Result<()> {
-        if !self
-            .session
-            .inferior()
-            .ok_or(Error::NotRunning)?
-            .run
-            .repairs()
-            .is_empty()
-        {
+        let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
+        if inferior.repairing().is_some() || inferior.next_repair().is_some() {
             return self.start_next_repair();
         }
 
-        let (kind, resume_threads) = {
-            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-
-            // A thread awaiting a breakpoint that has since been removed will
-            // never trap there; resuming it alone would strand its siblings.
-            for thread in inferior.threads.values_mut() {
-                if thread.awaiting_breakpoint.is_some_and(|address| {
-                    !inferior
-                        .breakpoints
-                        .get(&address)
-                        .is_some_and(|site| site.installed)
-                }) {
-                    thread.awaiting_breakpoint = None;
-                }
-            }
-
-            let active = inferior.run.execution().ok_or(Error::NotRunning)?;
-            (active.kind.clone(), active.resume_threads.clone())
-        };
+        let active = inferior.run.execution().ok_or(Error::NotRunning)?;
+        let (kind, resume_threads) = (active.kind.clone(), active.resume_threads.clone());
 
         // A thread re-trapping at a breakpoint after its signal handler runs
-        // alone, holding its siblings back until its repair.
+        // alone, holding its siblings back until its repair. One whose trap
+        // was removed since will never trap there, so runs with them.
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        for thread in inferior.threads.values_mut() {
+            if thread.retrap.is_some_and(|address| {
+                !inferior
+                    .breakpoints
+                    .get(&address)
+                    .is_some_and(|site| site.trap == Trap::Installed)
+            }) {
+                thread.retrap = None;
+            }
+        }
+
         if let Some(pid) = resume_threads.iter().copied().find(|pid| {
-            self.session
-                .inferior()
-                .and_then(|inferior| inferior.threads.get(pid))
-                .is_some_and(|thread| thread.awaiting_breakpoint.is_some())
+            inferior
+                .threads
+                .get(pid)
+                .is_some_and(|thread| thread.retrap.is_some())
         }) {
             return self.resume_awaiting_thread(pid);
         }
@@ -645,124 +634,75 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Steps the next thread over its trap, lifting the trap's site and
+    /// reinstalling any other a repair lifted, or advances the execution
+    /// once no thread is left to. Only one thread steps over a trap at a
+    /// time, with the others stopped.
     pub(super) fn start_next_repair(&mut self) -> Result<()> {
-        let next = {
-            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        if inferior.repairing().is_some() {
+            return Ok(());
+        }
 
-            // Only a stopped thread steps over a trap. One exiting, or one
-            // SIGKILL took out of its stop to run to its exit, as when its
-            // process ends, steps over nothing.
-            let exiting = |inferior: &Inferior, pid: &Pid| {
-                inferior
-                    .threads
-                    .get(pid)
-                    .is_none_or(|thread| !matches!(thread.state, NativeThreadState::Stopped))
-            };
-
-            let group = inferior
-                .run
-                .repairs()
-                .front()
-                .ok_or_else(|| Error::internal("repair group exists"))?;
-            if group.current.is_some() {
-                return Ok(());
-            }
-
-            let remaining = group
-                .remaining
-                .iter()
-                .copied()
-                .filter(|pid| !exiting(inferior, pid))
-                .collect::<VecDeque<_>>();
-            let group = inferior
-                .run
-                .repairs_mut()
-                .and_then(VecDeque::front_mut)
-                .ok_or_else(|| Error::internal("repair group exists"))?;
-            group.remaining = remaining;
-            group.remaining.pop_front().map(|pid| {
-                group.current = Some(pid);
-                (pid, group.address, !group.site_removed)
+        let next = inferior.next_repair();
+        let pid = inferior.memory_thread();
+        let lifted = inferior
+            .breakpoints
+            .iter()
+            .filter(|&(&address, site)| {
+                site.trap == Trap::Lifted(Lift::Repair)
+                    && next.is_none_or(|(_, next)| next != address)
             })
-        };
+            .map(|(&address, _)| address)
+            .collect::<Vec<_>>();
+        for address in lifted {
+            self.ptrace
+                .reinstall_breakpoint(pid, &mut inferior.breakpoints, address)?;
+        }
 
-        let Some((pid, address, remove_site)) = next else {
-            self.finish_repair_group()?;
+        let Some((pid, address)) = next else {
             return self.advance_execution();
         };
 
         // A thread stopped at a breakpoint cannot also hold a pending signal:
         // a signal stop rewinds no PC and repairs nothing.
-        if self
-            .session
-            .inferior()
-            .ok_or(Error::NotRunning)?
-            .thread(pid)?
-            .pending_signal
-            .is_some()
-        {
+        if inferior.thread(pid)?.pending_signal.is_some() {
             return Err(backend_error(LinuxError::UnexpectedWait(format!(
                 "repair thread {pid} has a pending signal"
             ))));
         }
 
-        if remove_site {
-            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-            let pid = inferior.memory_thread();
-            let group = inferior
-                .run
-                .repairs_mut()
-                .and_then(VecDeque::front_mut)
-                .ok_or_else(|| Error::internal("repair group exists"))?;
-            self.ptrace
-                .remove_breakpoint(pid, &mut inferior.breakpoints, address)?;
-            group.site_removed = true;
+        // The threads at one site step over it under one lift.
+        if inferior
+            .breakpoints
+            .get(&address)
+            .is_some_and(|site| site.trap == Trap::Installed)
+        {
+            let memory = inferior.memory_thread();
+            self.ptrace.lift_breakpoint(
+                memory,
+                &mut inferior.breakpoints,
+                address,
+                Lift::Repair,
+            )?;
         }
+        inferior.trap_event(pid, TrapEvent::RepairStarted)?;
 
         // Stepping over the trap of a call that a step into another passes
         // enters it, to run to its return.
         self.guard_unchosen_call(pid)?;
-
-        self.resume_native(
-            pid,
-            Resume::Step,
-            false,
-            ExpectedStop::BreakpointRepair { address },
-        )
-    }
-
-    pub(super) fn finish_repair_group(&mut self) -> Result<()> {
-        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let group = inferior
-            .run
-            .repairs_mut()
-            .and_then(VecDeque::pop_front)
-            .ok_or_else(|| Error::internal("repair group exists"))?;
-        if group.site_removed {
-            self.ptrace.reinstall_breakpoint(
-                inferior.memory_thread(),
-                &mut inferior.breakpoints,
-                group.address,
-            )?;
-        }
-
-        Ok(())
+        self.resume_native(pid, Resume::Step, false, ExpectedStop::None)
     }
 
     pub(super) fn resume_awaiting_thread(&mut self, pid: Pid) -> Result<()> {
-        let address = self
-            .session
-            .inferior()
-            .ok_or(Error::NotRunning)?
-            .thread(pid)?
-            .awaiting_breakpoint
-            .ok_or_else(|| Error::internal("breakpoint is awaited"))?;
-        self.resume_native(
-            pid,
-            Resume::Continue,
-            true,
-            ExpectedStop::AwaitBreakpoint { address },
-        )
+        debug_assert!(
+            self.session
+                .inferior()
+                .and_then(|inferior| inferior.threads.get(&pid))
+                .is_some_and(|thread| thread.retrap.is_some()),
+            "thread {pid} runs alone with no trap to return to"
+        );
+        self.resume_native(pid, Resume::Continue, true, ExpectedStop::None)
     }
 
     pub(super) fn continue_thread(&mut self, pid: Pid) -> Result<()> {
@@ -795,16 +735,15 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A step that makes a system call, the user's or one over a
         // breakpoint's trap, stops at its entry and exit, which the
         // catchpoints judge.
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        let repairing = inferior.thread(pid)?.trap.repairing().is_some();
         let stepping_call = matches!(resume, Resume::Step)
-            && matches!(
-                expected,
-                ExpectedStop::UserStep { .. } | ExpectedStop::BreakpointRepair { .. }
-            )
+            && (repairing || matches!(expected, ExpectedStop::UserStep { .. }))
             && !self.catchpoints.is_empty()
             && self.steps_into_call(pid)?;
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let holds = inferior.holds_signals(&expected);
+        let holds = inferior.holds_signals(inferior.thread(pid)?, &expected);
         let thread = inferior.thread_mut(pid)?;
 
         // A thread in its exit stop runs on to its exit.
@@ -865,13 +804,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         thread.expected = expected;
         thread.reason = None;
-
-        // With no step over its trap left to run, the thread runs on.
-        if thread.stopped_at_breakpoint.is_none() {
-            thread.trapped_at = None;
-        }
-
-        Ok(())
+        inferior.trap_event(pid, TrapEvent::Resumed)
     }
 
     pub(super) fn handle_classified_stop(&mut self, pid: Pid, stop: ClassifiedStop) -> Result<()> {
@@ -957,23 +890,18 @@ impl<P: LinuxTraceOps> Controller<P> {
         // A thread re-executing a trap after signal delivery interrupted its
         // repair reaches a hit that was already counted. It ran alone, so
         // its siblings are stopped.
-        let awaited = {
-            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-            let thread = inferior.thread_mut(pid)?;
-            thread.stopped_at_breakpoint = Some(address);
-            thread.trapped_at = Some(address);
-            let awaited = thread.awaiting_breakpoint == Some(address)
-                && matches!(thread.expected, ExpectedStop::AwaitBreakpoint { address: expected } if expected == address);
-            if awaited {
-                thread.awaiting_breakpoint = None;
-                thread.expected = ExpectedStop::None;
-            }
-
-            awaited
-        };
-
-        if awaited {
-            self.queue_repair(pid, address)?;
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        inferior.trap_event(pid, TrapEvent::Hit(address))?;
+        let thread = inferior.thread_mut(pid)?;
+        if thread.retrap == Some(address) {
+            thread.retrap = None;
+            debug_assert!(
+                inferior
+                    .run
+                    .execution()
+                    .is_some_and(|active| active.resume_threads.contains(&pid)),
+                "thread {pid} returned to the trap at {address} outside the execution"
+            );
             return self.start_next_repair();
         }
 
@@ -1188,14 +1116,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         address: VirtualAddress,
         stepping: Option<StepKind>,
     ) -> Result<()> {
-        let lifted = self
+        let trapped = self
             .session
             .inferior()
             .ok_or(Error::NotRunning)?
             .thread(pid)?
-            .stopped_at_breakpoint
-            .is_none();
-        if !lifted {
+            .trap
+            == (AtTrap::MustStepOver { at: address });
+        if trapped {
             self.repair_when_alone(pid, address)
         } else if self.barrier_active() {
             self.finish_barrier_if_ready()
@@ -1232,8 +1160,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.settle_trace_during_barrier(pid, expected);
         }
 
+        if self.repairs(pid) {
+            return self.complete_repair(pid);
+        }
+
         match expected {
-            ExpectedStop::BreakpointRepair { address } => self.complete_repair(pid, address),
             ExpectedStop::UserStep { kind } => self.complete_user_step(pid, kind),
             other => self.begin_visible_stop(
                 pid,
@@ -1262,9 +1193,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         match expected {
-            ExpectedStop::BreakpointRepair { .. } | ExpectedStop::UserStep { .. } => {
-                self.finish_traced_instruction(pid, expected)
-            }
+            _ if self.repairs(pid) => self.finish_traced_instruction(pid, expected),
+            ExpectedStop::UserStep { .. } => self.finish_traced_instruction(pid, expected),
             expected => {
                 self.session
                     .inferior_mut()
@@ -1286,16 +1216,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         expected: &ExpectedStop,
         owners: BTreeMap<WatchpointId, u64>,
     ) -> Result<()> {
+        let repaired = self.repairs(pid);
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        if let ExpectedStop::BreakpointRepair { address } = *expected {
-            inferior.finish_current_repair(pid, address)?;
+        if repaired {
+            inferior.trap_event(pid, TrapEvent::Stepped)?;
         }
 
         inferior.thread_mut(pid)?.watch_hits.extend(owners);
-        if matches!(
-            expected,
-            ExpectedStop::BreakpointRepair { .. } | ExpectedStop::UserStep { .. }
-        ) {
+        if repaired || matches!(expected, ExpectedStop::UserStep { .. }) {
             self.note_step_progress(pid);
         }
 
@@ -1322,11 +1250,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         expected: ExpectedStop,
     ) -> Result<()> {
         match expected {
-            ExpectedStop::BreakpointRepair { address } => {
+            _ if self.repairs(pid) => {
                 self.session
                     .inferior_mut()
                     .ok_or(Error::NotRunning)?
-                    .finish_current_repair(pid, address)?;
+                    .trap_event(pid, TrapEvent::Stepped)?;
                 self.note_step_progress(pid);
             }
             ExpectedStop::UserStep { .. } => self.note_step_progress(pid),
@@ -1381,11 +1309,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             });
         }
 
-        let expected = inferior.thread(pid)?.expected.clone();
+        let thread = inferior.thread(pid)?;
+        let expected = thread.expected.clone();
+        let repairing = thread.trap.repairing();
         let mut delivered = policy.pass.then_some(pending);
-        if let Some(pending) = delivered
-            .filter(|pending| inferior.holds_signals(&expected) && self.defers(pending.signal))
-        {
+        if let Some(pending) = delivered.filter(|pending| {
+            inferior.holds_signals(thread, &expected) && self.defers(pending.signal)
+        }) {
             record!("hold {} in {pid}", pending.signal);
             self.session
                 .inferior_mut()
@@ -1395,10 +1325,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             delivered = None;
         }
 
+        if let Some(address) = repairing {
+            return self.signal_during_repair(pid, address, delivered);
+        }
+
         match expected {
-            ExpectedStop::BreakpointRepair { address } => {
-                self.signal_during_repair(pid, address, delivered)
-            }
             ExpectedStop::UserStep { kind } => self.signal_during_step(pid, kind, delivered),
             expected => {
                 self.session
@@ -1415,22 +1346,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Stops for a signal. One that interrupted a step over a trap runs
+    /// its handler when the thread resumes, which returns to the trap.
     fn stop_for_signal(&mut self, pid: Pid, pending: PendingSignal) -> Result<()> {
-        let repair_address = self
-            .session
-            .inferior()
-            .and_then(|inferior| inferior.threads.get(&pid))
-            .and_then(|thread| match thread.expected {
-                ExpectedStop::BreakpointRepair { address } => Some(address),
-                _ => None,
-            });
-        if let Some(address) = repair_address {
+        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        if let Some(address) = inferior.thread(pid)?.trap.repairing() {
+            inferior.trap_event(pid, TrapEvent::RepairInterrupted)?;
+            inferior.thread_mut(pid)?.retrap = Some(address);
             self.restore_active_breakpoints()?;
-            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-            let thread = inferior.thread_mut(pid)?;
-            thread.stopped_at_breakpoint = None;
-            thread.trapped_at = None;
-            thread.awaiting_breakpoint = Some(address);
         }
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
@@ -1458,33 +1381,21 @@ impl<P: LinuxTraceOps> Controller<P> {
                 return self.finish_barrier_if_ready();
             }
 
-            return self.resume_native(
-                pid,
-                Resume::Step,
-                false,
-                ExpectedStop::BreakpointRepair { address },
-            );
+            return self.resume_native(pid, Resume::Step, false, ExpectedStop::None);
         };
 
-        let memory = inferior.memory_thread();
-        if let Some(group) = inferior
-            .run
-            .repairs_mut()
-            .and_then(VecDeque::front_mut)
-            .filter(|group| group.address == address && group.current == Some(pid))
+        if inferior
+            .breakpoints
+            .get(&address)
+            .is_some_and(|site| site.trap == Trap::Lifted(Lift::Repair))
         {
-            group.current = None;
-            if group.site_removed {
-                self.ptrace
-                    .reinstall_breakpoint(memory, &mut inferior.breakpoints, address)?;
-                group.site_removed = false;
-            }
+            let memory = inferior.memory_thread();
+            self.ptrace
+                .reinstall_breakpoint(memory, &mut inferior.breakpoints, address)?;
         }
-
+        inferior.trap_event(pid, TrapEvent::RepairInterrupted)?;
         let thread = inferior.thread_mut(pid)?;
-        thread.stopped_at_breakpoint = None;
-        thread.trapped_at = None;
-        thread.awaiting_breakpoint = Some(address);
+        thread.retrap = Some(address);
         thread.pending_signal = Some(pending);
         thread.expected = ExpectedStop::None;
         if barrier {
@@ -1614,13 +1525,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         // step now executes, unless a breakpoint still owns the site: then
         // the thread hit that breakpoint, and steps over its trap.
         self.remove_breakpoint_owner(address, BreakpointOwner::Plan(execution))?;
-        let trapped = self
-            .session
-            .inferior()
-            .ok_or(Error::NotRunning)?
-            .thread(pid)?
-            .stopped_at_breakpoint
-            .is_some();
+        let trapped = matches!(
+            self.session
+                .inferior()
+                .ok_or(Error::NotRunning)?
+                .thread(pid)?
+                .trap,
+            AtTrap::MustStepOver { .. }
+        );
         if trapped {
             // A source step that reached a breakpoint's site judges it at the
             // trap there, as a hit the breakpoint declines; the signal came
@@ -1645,46 +1557,23 @@ impl<P: LinuxTraceOps> Controller<P> {
 }
 
 impl<P: LinuxTraceOps> Controller<P> {
-    pub(super) fn complete_repair(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
+    /// Whether `pid` steps over a trap.
+    pub(super) fn repairs(&self, pid: Pid) -> bool {
+        self.session
+            .inferior()
+            .and_then(|inferior| inferior.threads.get(&pid))
+            .is_some_and(|thread| thread.trap.repairing().is_some())
+    }
+
+    pub(super) fn complete_repair(&mut self, pid: Pid) -> Result<()> {
         self.session
             .inferior_mut()
             .ok_or(Error::NotRunning)?
-            .finish_current_repair(pid, address)?;
+            .trap_event(pid, TrapEvent::Stepped)?;
 
         // A repaired stepping thread executed its next instruction.
         self.note_step_progress(pid);
         self.start_next_repair()
-    }
-
-    pub(super) fn queue_repair(&mut self, pid: Pid, address: VirtualAddress) -> Result<()> {
-        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        debug_assert!(
-            !inferior
-                .run
-                .repairs()
-                .iter()
-                .any(|group| { group.current == Some(pid) || group.remaining.contains(&pid) }),
-            "thread {pid} is queued to step over the trap at {address} while it \
-             already waits to step over another"
-        );
-
-        // Only an execution's threads step over traps.
-        let repairs = inferior
-            .run
-            .repairs_mut()
-            .ok_or_else(|| Error::internal("a repair is queued for an execution"))?;
-        if let Some(group) = repairs.iter_mut().find(|group| group.address == address) {
-            group.remaining.push_front(pid);
-        } else {
-            repairs.push_front(RepairGroup {
-                address,
-                remaining: VecDeque::from([pid]),
-                current: None,
-                site_removed: false,
-            });
-        }
-
-        Ok(())
     }
 
     /// Records a stop the client must see and begins stopping every other
@@ -2082,21 +1971,20 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.finish_barrier_if_ready();
         }
 
-        let expected = self
+        let thread = self
             .session
             .inferior()
-            .and_then(|inferior| inferior.threads.get(&pid))
-            .map(|thread| thread.expected.clone())
-            .ok_or(Error::NotRunning)?;
-        match expected {
+            .ok_or(Error::NotRunning)?
+            .thread(pid)?;
+        if thread.trap.repairing().is_some() {
+            return self.resume_native(pid, Resume::Step, false, ExpectedStop::None);
+        }
+        if thread.retrap.is_some() {
+            return self.resume_awaiting_thread(pid);
+        }
+
+        match thread.expected.clone() {
             ExpectedStop::UserStep { kind } => self.start_user_step(pid, kind),
-            ExpectedStop::BreakpointRepair { address } => self.resume_native(
-                pid,
-                Resume::Step,
-                false,
-                ExpectedStop::BreakpointRepair { address },
-            ),
-            ExpectedStop::AwaitBreakpoint { .. } => self.resume_awaiting_thread(pid),
             ExpectedStop::InitialExec
             | ExpectedStop::AdoptedExec
             | ExpectedStop::InitialAttach
@@ -2105,38 +1993,9 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 }
 
-/// The repairs an execution resuming `resume_threads` makes first: each
-/// of those threads stopped at a breakpoint steps over it.
-pub(super) fn collect_repairs(
-    inferior: &Inferior,
-    resume_threads: &BTreeSet<Pid>,
-) -> VecDeque<RepairGroup> {
-    let mut grouped: BTreeMap<VirtualAddress, VecDeque<Pid>> = BTreeMap::new();
-
-    for &pid in resume_threads {
-        if let Some(address) = inferior
-            .threads
-            .get(&pid)
-            .and_then(|thread| thread.stopped_at_breakpoint)
-        {
-            grouped.entry(address).or_default().push_back(pid);
-        }
-    }
-
-    grouped
-        .into_iter()
-        .map(|(address, remaining)| RepairGroup {
-            address,
-            remaining,
-            current: None,
-            site_removed: false,
-        })
-        .collect()
-}
-
 /// Panics if `inferior` is not in the state a stop is published from:
-/// every thread stopped, every trap in place, and none of the active
-/// execution's traps left.
+/// every thread stopped, none stepping over a trap, every trap in place,
+/// and none of the active execution's traps left.
 fn check_publishable(inferior: &Inferior, stop_id: StopId) {
     for (&pid, thread) in &inferior.threads {
         debug_assert!(
@@ -2144,12 +2003,16 @@ fn check_publishable(inferior: &Inferior, stop_id: StopId) {
             "publishing stop {stop_id} while thread {pid} is {:?}",
             thread.state
         );
+        debug_assert!(
+            thread.trap.repairing().is_none(),
+            "publishing stop {stop_id} while thread {pid} steps over a trap"
+        );
     }
 
     let execution = inferior.run.execution().map(|active| active.id);
     for (&address, site) in &inferior.breakpoints {
         debug_assert!(
-            site.installed,
+            site.trap == Trap::Installed,
             "publishing stop {stop_id} with the trap at {address} lifted"
         );
         debug_assert!(

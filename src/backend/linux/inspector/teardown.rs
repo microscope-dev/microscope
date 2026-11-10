@@ -9,6 +9,7 @@ use super::{InspectorMessage, PauseRequest, send};
 use crate::backend::linux::cdp::{Incoming, RequestId, Session};
 use crate::backend::linux::native::LinuxTraceOps;
 use crate::backend::linux::node_launch::Ownership;
+use crate::backend::linux::trap::TrapEvent;
 use crate::backend::linux::{ActiveExecution, ActiveKind, BreakpointOwner, Controller, Edit};
 use crate::runtime_model::inspector_protocol;
 use crate::{Error, ExecutionId, Result, ResumeScope, RuntimeId, VirtualAddress};
@@ -282,14 +283,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.inspectors.end_interrupt();
         inferior.next_execution += 1;
         let resume_threads = inferior.threads.keys().copied().collect::<BTreeSet<_>>();
-        let repairs =
-            crate::backend::linux::run_control::collect_repairs(inferior, &resume_threads);
         inferior.run.begin(ActiveExecution {
             id: ExecutionId::new(inferior.next_execution),
             kind: ActiveKind::Continue,
             scope: ResumeScope::Process(crate::backend::linux::process_id(inferior.tgid)),
             resume_threads,
-            repairs,
         });
         for thread in inferior.threads.values_mut() {
             thread.reason = None;
@@ -505,7 +503,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         registers.rip = stop.get();
         registers.rdi = agent.get();
         self.ptrace.set_registers(pid, registers)?;
-        inferior.thread_mut(pid)?.stopped_at_breakpoint = None;
+        inferior.trap_event(pid, TrapEvent::Moved(stop))?;
         if let Some(cleanup) = inferior.inspectors.cleanup.as_mut() {
             cleanup.phase = Phase::Returning {
                 pid,

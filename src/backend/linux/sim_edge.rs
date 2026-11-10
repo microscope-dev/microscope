@@ -1061,7 +1061,7 @@ impl SimController {
                         address.get(),
                         Site {
                             original_byte: site.original_byte,
-                            installed: site.installed,
+                            installed: site.trap == super::trap::Trap::Installed,
                             owners: site.owners.len(),
                             plans,
                             users,

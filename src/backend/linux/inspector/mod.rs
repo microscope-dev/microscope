@@ -35,6 +35,7 @@ use super::breakpoints::remove_breakpoint_owner_from;
 use super::cdp::{Connection, Incoming, RequestId, Session};
 use super::native::LinuxTraceOps;
 use super::node_launch::Ownership;
+use super::trap::TrapEvent;
 use super::{BreakpointOwner, Controller};
 use crate::runtime_model::ManagedArm;
 use crate::runtime_model::inspector_protocol;
@@ -644,7 +645,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .ok_or_else(|| Error::RuntimeAgent("the inspector return stack overflows".into()))?;
         self.ptrace.set_registers(pid, registers)?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        inferior.thread_mut(pid)?.stopped_at_breakpoint = None;
+        inferior.trap_event(pid, TrapEvent::Moved(caller))?;
         let inspector = inferior.inspectors.records.entry(runtime).or_default();
         if inspector.target.is_none() {
             inspector.target = Some(target);

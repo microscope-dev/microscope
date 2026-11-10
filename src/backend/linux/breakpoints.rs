@@ -19,6 +19,7 @@ use crate::{
 
 use super::memory::{MemoryAccessError, holding_word, patch_byte, remove_site_owner};
 use super::native::{InspectionOps, LinuxTraceOps, is_vanished_tracee};
+use super::trap::{Lift, Trap, TrapEvent};
 use super::{BREAKPOINT_OPCODE, BreakpointOwner, Controller, Inferior, LinuxError, backend_error};
 
 /// The logical breakpoints clients requested, in creation order, counted by
@@ -495,11 +496,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let sites = trap_addresses(inferior, breakpoint)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        for thread in inferior.threads.values_mut() {
-            if thread.stopped_at_breakpoint.is_none()
-                && let Some(address) = thread.trapped_at.filter(|address| sites.contains(address))
-            {
-                thread.stopped_at_breakpoint = Some(address);
+        let pids = inferior.threads.keys().copied().collect::<Vec<_>>();
+        for pid in pids {
+            for &address in &sites {
+                inferior.trap_event(pid, TrapEvent::SiteAdded(address))?;
             }
         }
 
@@ -651,10 +651,10 @@ impl<P: LinuxTraceOps> Controller<P> {
                 .session
                 .inferior_mut()
                 .ok_or_else(|| Error::internal("live sites have an inferior"))?;
-            let stopped_at = inferior
+            let traps = inferior
                 .threads
                 .iter()
-                .map(|(&pid, thread)| (pid, thread.stopped_at_breakpoint))
+                .map(|(&pid, thread)| (pid, thread.trap))
                 .collect::<Vec<_>>();
             let mut removed = Vec::new();
             for breakpoint in self
@@ -685,8 +685,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                         }
                     }
 
-                    for (pid, address) in stopped_at {
-                        inferior.thread_mut(pid)?.stopped_at_breakpoint = address;
+                    for (pid, trap) in traps {
+                        inferior.thread_mut(pid)?.trap = trap;
                     }
 
                     return Err(cause);
@@ -1086,27 +1086,28 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
+    /// Reinstalls a trap lifted for a repair. The thread that was to step
+    /// over it has yet to, and still stands at the trap: it stopped before
+    /// its step, or SIGKILL took it on the way to its exit.
     pub(super) fn restore_active_breakpoints(&mut self) -> Result<()> {
         let Some(inferior) = self.session.inferior_mut() else {
             return Ok(());
         };
 
-        let removed: Vec<_> = inferior
-            .run
-            .repairs()
+        let lifted: Vec<_> = inferior
+            .breakpoints
             .iter()
-            .filter(|group| group.site_removed)
-            .map(|group| group.address)
+            .filter(|(_, site)| site.trap == Trap::Lifted(Lift::Repair))
+            .map(|(&address, _)| address)
             .collect();
         let pid = inferior.memory_thread();
-
-        for address in removed {
+        for address in lifted {
             self.ptrace
                 .reinstall_breakpoint(pid, &mut inferior.breakpoints, address)?;
         }
 
-        if let Some(repairs) = inferior.run.repairs_mut() {
-            repairs.clear();
+        if let Some((pid, _)) = inferior.repairing() {
+            inferior.trap_event(pid, TrapEvent::RepairHeld)?;
         }
         Ok(())
     }
@@ -1132,7 +1133,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         for (&address, site) in &inferior.breakpoints {
             let Some(destination) = moved
                 .iter()
-                .filter(|_| site.installed)
+                .filter(|_| site.trap == Trap::Installed)
                 .find_map(|code| code.destination(address))
             else {
                 continue;
@@ -1156,7 +1157,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let installed = inferior
             .breakpoints
             .iter()
-            .filter(|&(address, site)| site.installed && !lost.contains(address))
+            .filter(|&(address, site)| site.trap == Trap::Installed && !lost.contains(address))
             .map(|(&address, site)| (address, site.original_byte))
             .collect::<Vec<_>>();
 
@@ -1199,7 +1200,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 continue;
             };
 
-            forget_removed_site(inferior, address, site.original_byte);
+            forget_removed_site(inferior, address, site.original_byte)?;
 
             for owner in site.owners {
                 match owner {
@@ -1551,9 +1552,9 @@ pub(super) fn install_plan_breakpoint(
     execution: ExecutionId,
 ) -> Result<()> {
     debug_assert!(
-        !inferior.traps_lifted,
-        "installing the trap at {address} for execution {execution} while the traps \
-         are lifted for a vfork child"
+        !inferior.vfork_child_runs(),
+        "installing the trap at {address} for execution {execution} while a vfork \
+         child runs in the memory"
     );
     inferior
         .plan_sites
@@ -1575,8 +1576,8 @@ pub(super) fn install_logical_breakpoint(
     breakpoint: &Breakpoint,
 ) -> Result<()> {
     debug_assert!(
-        !inferior.traps_lifted,
-        "installing breakpoint {} while the traps are lifted for a vfork child",
+        !inferior.vfork_child_runs(),
+        "installing breakpoint {} while a vfork child runs in the memory",
         breakpoint.id
     );
     let owner = BreakpointOwner::User(breakpoint.id);
@@ -1684,20 +1685,24 @@ pub(super) fn remove_logical_breakpoint(
 /// Restores the original byte of every installed trap, keeping each site and
 /// its owners. A vfork child shares this memory and must not run a trap
 /// while it execs, so the traps stay lifted until [`reinstall_all_traps`].
+/// A trap lifted for a repair must be reinstalled first.
 pub(super) fn lift_all_traps(ptrace: &dyn LinuxTraceOps, inferior: &mut Inferior) -> Result<()> {
     let pid = inferior.memory_thread();
     let installed: Vec<_> = inferior
         .breakpoints
         .iter()
-        .filter_map(|(&address, site)| site.installed.then_some(address))
+        .filter_map(|(&address, site)| (site.trap == Trap::Installed).then_some(address))
         .collect();
     for address in installed {
-        ptrace.remove_breakpoint(pid, &mut inferior.breakpoints, address)?;
+        ptrace.lift_breakpoint(pid, &mut inferior.breakpoints, address, Lift::Vfork)?;
     }
 
     debug_assert!(
-        inferior.breakpoints.values().all(|site| !site.installed),
-        "lifting every trap left one in place"
+        inferior
+            .breakpoints
+            .values()
+            .all(|site| site.trap == Trap::Lifted(Lift::Vfork)),
+        "lifting every trap for a vfork left one in place"
     );
     Ok(())
 }
@@ -1711,41 +1716,39 @@ pub(super) fn reinstall_all_traps(
     let lifted: Vec<_> = inferior
         .breakpoints
         .iter()
-        .filter_map(|(&address, site)| (!site.installed).then_some(address))
+        .filter_map(|(&address, site)| (site.trap == Trap::Lifted(Lift::Vfork)).then_some(address))
         .collect();
     for address in lifted {
         ptrace.reinstall_breakpoint(pid, &mut inferior.breakpoints, address)?;
     }
 
     debug_assert!(
-        inferior.breakpoints.values().all(|site| site.installed),
+        inferior
+            .breakpoints
+            .values()
+            .all(|site| site.trap != Trap::Lifted(Lift::Vfork)),
         "reinstalling every trap left one lifted"
     );
     Ok(())
 }
 
-/// Forgets every repair of a site whose original instruction is restored,
-/// remembering the site for processes forked while it was installed.
+/// Remembers a removed site for processes forked while it was installed.
+/// With the original instruction restored, no thread steps over its trap.
 pub(super) fn forget_removed_site(
     inferior: &mut Inferior,
     address: VirtualAddress,
     original_byte: u8,
-) {
+) -> Result<()> {
     inferior
         .former_sites
         .entry(address)
         .or_insert(original_byte);
-
-    // With the original instruction restored, no thread needs a repair step.
-    for thread in inferior.threads.values_mut() {
-        if thread.stopped_at_breakpoint == Some(address) {
-            thread.stopped_at_breakpoint = None;
-        }
+    let pids = inferior.threads.keys().copied().collect::<Vec<_>>();
+    for pid in pids {
+        inferior.trap_event(pid, TrapEvent::SiteRemoved(address))?;
     }
 
-    if let Some(repairs) = inferior.run.repairs_mut() {
-        repairs.retain(|group| group.address != address);
-    }
+    Ok(())
 }
 
 pub(super) fn remove_breakpoint_owner_from(
@@ -1759,7 +1762,7 @@ pub(super) fn remove_breakpoint_owner_from(
         ptrace.remove_breakpoint(pid, sites, address)
     })?;
     if let Some(removed) = removed {
-        forget_removed_site(inferior, address, removed.original_byte);
+        forget_removed_site(inferior, address, removed.original_byte)?;
     }
 
     Ok(())

@@ -13,7 +13,8 @@ use super::classify::is_superseded;
 use super::memory::read_logical_memory;
 use super::native::LinuxTraceOps;
 use super::syscalls::info::{self, OP_ENTRY, OP_EXIT};
-use super::{BreakpointSite, ClassifiedStop, Controller, ExpectedStop, NativeThreadState};
+use super::trap::TrapEvent;
+use super::{BreakpointSite, ClassifiedStop, Controller, NativeThreadState};
 use crate::protocol::{ConditionOwner, DebuggerEvent, StopReason, SyscallStop};
 use crate::syscalls::captures::{self, Limits};
 use crate::syscalls::specs::{self, Arg};
@@ -203,11 +204,11 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         // A step over a breakpoint's trap that made the call is past the
         // trap, which the stop puts back.
-        let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        let thread = inferior.thread_mut(pid)?;
-        if let ExpectedStop::BreakpointRepair { address } = thread.expected {
-            thread.expected = ExpectedStop::None;
-            inferior.finish_current_repair(pid, address)?;
+        if self.repairs(pid) {
+            self.session
+                .inferior_mut()
+                .ok_or(Error::NotRunning)?
+                .trap_event(pid, TrapEvent::Stepped)?;
             self.note_step_progress(pid);
         }
 
@@ -219,15 +220,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// past the trap, and the user's step at its exit, where a single step
     /// across `syscall` ends; anything else resumes as it would have.
     fn resume_uncaught(&mut self, pid: Pid, stepping: bool, exit: bool) -> Result<()> {
-        let repairing = matches!(
-            self.session
-                .inferior()
-                .ok_or(Error::NotRunning)?
-                .thread(pid)?
-                .expected,
-            ExpectedStop::BreakpointRepair { .. }
-        );
-        if stepping && (exit || repairing) {
+        if stepping && (exit || self.repairs(pid)) {
             return self.handle_classified_stop(
                 pid,
                 ClassifiedStop::Trace {

@@ -50,8 +50,8 @@ state that the type system can't express.
 
 ```rust
 debug_assert!(
-    site.installed,
-    "lifting the trap at {address} for {owner:?}, but it is not installed",
+    site.trap == Trap::Installed,
+    "lifting the trap at {address} for {lift:?}, but it is not installed",
 );
 ```
 

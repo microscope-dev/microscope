@@ -446,3 +446,120 @@ fn a_thread_moved_off_its_hit_does_not_step_over_a_breakpoint_added_there() {
         run.describe()
     );
 }
+
+/// The invariant check fires on each trap state that contradicts itself.
+mod invariants {
+    use super::*;
+
+    const SITE: VirtualAddress = VirtualAddress::new(0x40);
+    const OTHER_SITE: VirtualAddress = VirtualAddress::new(0x48);
+
+    /// A harness whose state passes the check, with breakpoints at `SITE`
+    /// and `OTHER_SITE`.
+    fn checked() -> WatchHarness {
+        let mut harness = watch_harness(2);
+        harness.add_breakpoint(SITE.get());
+        harness.add_breakpoint(OTHER_SITE.get());
+        harness.controller.check_invariants();
+        harness
+    }
+
+    fn lift(harness: &mut WatchHarness, address: VirtualAddress, lift: Lift) {
+        harness
+            .inferior()
+            .breakpoints
+            .get_mut(&address)
+            .expect("a site")
+            .trap = Trap::Lifted(lift);
+    }
+
+    #[test]
+    #[should_panic(expected = "the trap at 0x40 is installed while a vfork child runs")]
+    fn a_trap_in_memory_a_vfork_child_runs_in() {
+        let mut harness = checked();
+        let parent = harness.threads[0];
+        harness.inferior().vfork_windows.insert(
+            parent,
+            VforkWindow {
+                child: VFORK_CHILD,
+                resumed: true,
+            },
+        );
+        harness.controller.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "the trap at 0x40 is lifted with no vfork window open")]
+    fn a_trap_lifted_for_a_vfork_that_is_over() {
+        let mut harness = checked();
+        lift(&mut harness, SITE, Lift::Vfork);
+        harness.controller.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "are both lifted for repairs")]
+    fn two_traps_lifted_for_repairs() {
+        let mut harness = checked();
+        lift(&mut harness, SITE, Lift::Repair);
+        lift(&mut harness, OTHER_SITE, Lift::Repair);
+        harness.controller.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "both step over traps")]
+    fn two_threads_stepping_over_traps() {
+        let mut harness = checked();
+        lift(&mut harness, SITE, Lift::Repair);
+        for pid in harness.threads.clone() {
+            harness.thread(pid).trap = AtTrap::Repairing { at: SITE };
+        }
+        harness.controller.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "stands at a trap at 0x70, which has no site")]
+    fn a_thread_at_a_trap_with_no_site() {
+        let mut harness = checked();
+        let pid = harness.threads[1];
+        harness.thread(pid).trap = AtTrap::MustStepOver {
+            at: VirtualAddress::new(0x70),
+        };
+        harness.controller.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "steps over the trap at 0x40, which is not lifted for it")]
+    fn a_thread_stepping_over_a_trap_in_memory() {
+        let mut harness = checked();
+        let pid = harness.threads[1];
+        harness.thread(pid).trap = AtTrap::Repairing { at: SITE };
+        harness.controller.check_invariants();
+    }
+}
+
+/// SIGKILL takes the leader on its way to its exit as it steps over a trap,
+/// and a pause stops the rest. The trap goes back in, and the leader still
+/// stands at it, never having stepped.
+#[test]
+fn a_stop_after_sigkill_took_a_thread_stepping_over_a_trap_puts_the_trap_back() {
+    let mut harness = repairing_harness_of(0);
+    let leader = harness.threads[0];
+    let site = VirtualAddress::new(0x40);
+    harness.trace().sigkill(leader);
+    harness
+        .event(leader, libc::PTRACE_EVENT_EXIT)
+        .expect("the exit event");
+    harness
+        .controller
+        .begin_pause(process_id(leader))
+        .expect("pause");
+    harness.settle_requested_stops();
+
+    assert_eq!(harness.public_reason(), Some(StopReason::Pause));
+    let inferior = harness.inferior();
+    assert_eq!(inferior.breakpoints[&site].trap, Trap::Installed);
+    assert_eq!(
+        inferior.threads[&leader].trap,
+        AtTrap::MustStepOver { at: site }
+    );
+}

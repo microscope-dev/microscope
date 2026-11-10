@@ -228,20 +228,24 @@ proptest! {
             .map(|(offset, original_byte, installed)| {
                 let site = BreakpointSite {
                     original_byte,
-                    installed,
+                    trap: if installed {
+                        Trap::Installed
+                    } else {
+                        Trap::Lifted(Lift::Repair)
+                    },
                     owners: BTreeSet::new(),
                 };
                 (VirtualAddress::new(memory.base + offset as u64), site)
             })
             .collect::<BTreeMap<_, _>>();
         for (address, site) in &sites {
-            if site.installed && memory.get(address.get()).is_some() {
+            if site.trap == Trap::Installed && memory.get(address.get()).is_some() {
                 memory.set(address.get(), BREAKPOINT_OPCODE);
             }
         }
 
         let user = |address, byte| match sites.get(&VirtualAddress::new(address)) {
-            Some(site) if site.installed => site.original_byte,
+            Some(site) if site.trap == Trap::Installed => site.original_byte,
             _ => byte,
         };
         let expected = expected_read(&memory, user, address, size);
@@ -462,7 +466,7 @@ impl StateMachineTest for Process {
                     VirtualAddress::new(address),
                     owner,
                     |sites| {
-                        lift_site(
+                        remove_site(
                             sites,
                             VirtualAddress::new(address),
                             peek(memory),
@@ -511,6 +515,7 @@ impl StateMachineTest for Process {
                 lift_site(
                     &mut process.sites,
                     address,
+                    Lift::Repair,
                     peek(&process.memory),
                     poke(&process.memory),
                 )
@@ -552,7 +557,11 @@ impl StateMachineTest for Process {
             .sites
             .iter()
             .map(|(address, site)| {
-                assert!(site.installed, "the site at {address} is installed");
+                assert_eq!(
+                    site.trap,
+                    Trap::Installed,
+                    "the site at {address} is installed"
+                );
                 assert_eq!(
                     Some(site.original_byte),
                     world.user.get(address.get()),
@@ -605,7 +614,8 @@ fn a_trap_goes_in_the_last_bytes_before_unmapped_memory() {
     );
     assert_eq!(sites[&address].original_byte, 0x90);
 
-    lift_site(&mut sites, address, peek(&memory), poke(&memory)).expect("lifting the trap");
+    lift_site(&mut sites, address, Lift::Repair, peek(&memory), poke(&memory))
+        .expect("lifting the trap");
     assert_eq!(memory.borrow().bytes[..WORD], [Some(0x90); WORD]);
 }
 

@@ -1,7 +1,7 @@
 //! Starting, attaching to, and ending a traced process, and tracking its
 //! threads, forks, and exec.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::signals::{Signal, WaitEvent};
@@ -21,6 +21,7 @@ use super::breakpoints::{install_logical_breakpoint, lift_all_traps, reinstall_a
 use super::memory::holding_word;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
 use super::session::{Session, Shutdown, Startup, Traced};
+use super::trap::{AtTrap, Lift, Trap};
 use super::{
     ActiveExecution, ActiveKind, BREAKPOINT_OPCODE, ClassifiedStop, Controller, ExpectedStop,
     Inferior, InferiorOrigin, LinuxError, MemoryAccessError, NativeThreadState, Orphans, Start,
@@ -282,7 +283,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             kind: ActiveKind::Launch,
             scope: ResumeScope::Process(process_id),
             resume_threads: BTreeSet::from([pid]),
-            repairs: VecDeque::new(),
         };
         // Like a pause requested during launch, an entry stop completes at
         // the initial exec stop.
@@ -849,7 +849,7 @@ impl<P: LinuxTraceOps> Controller<P> {
 
             // A thread created while a breakpoint site is lifted for a repair
             // waits for the repair; resuming execution then resumes it.
-            let should_resume = inferior.run.repairs().is_empty()
+            let should_resume = !inferior.repair_under_way()
                 && inferior
                     .run
                     .execution()
@@ -943,8 +943,8 @@ impl<P: LinuxTraceOps> Controller<P> {
                 self.end_vfork_window_of(pid)?;
                 if let Some(status) = alone {
                     let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
-                    let awaited = inferior.thread(pid)?.awaiting_breakpoint.is_some();
-                    return self.thread_exited(pid, status, awaited);
+                    let held = inferior.thread(pid)?.holds_siblings();
+                    return self.thread_exited(pid, status, held);
                 }
 
                 // A leader exiting alone gives a stop in progress nothing
@@ -1394,9 +1394,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         survivor.expected = ExpectedStop::None;
         survivor.pending_signal = None;
         survivor.held_signal = None;
-        survivor.stopped_at_breakpoint = None;
-        survivor.trapped_at = None;
-        survivor.awaiting_breakpoint = None;
+        survivor.trap = AtTrap::Clear;
+        survivor.retrap = None;
         survivor.stack_start = self
             .ptrace
             .registers(pid)
@@ -1410,9 +1409,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         inferior.breakpoints.clear();
         inferior.former_sites.clear();
         inferior.plan_sites.clear();
-        if let Some(repairs) = inferior.run.repairs_mut() {
-            repairs.clear();
-        }
         inferior.loader_site = None;
         inferior.runtime_hooks.clear();
         let agent_cleanup = inferior.retire_agents_after_exit();
@@ -1643,7 +1639,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             && self.session.attaching()
             && self.seize_threads_left()?
         {
-            return self.thread_exited(pid, status, exited.awaiting_breakpoint.is_some());
+            return self.thread_exited(pid, status, exited.holds_siblings());
         }
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
@@ -1714,7 +1710,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return joined;
         }
 
-        self.thread_exited(pid, status, exited.awaiting_breakpoint.is_some())
+        self.thread_exited(pid, status, exited.holds_siblings())
     }
 
     /// Seizes the threads an attach left untraced, and returns whether any
@@ -1728,14 +1724,9 @@ impl<P: LinuxTraceOps> Controller<P> {
 
     /// Publishes the exit of a thread whose process lives on, and ends or
     /// advances the execution it affects: one of the thread alone ends in
-    /// the exit. `awaited_breakpoint` says the thread was resumed alone to
-    /// reach a breakpoint it awaited.
-    fn thread_exited(
-        &mut self,
-        pid: Pid,
-        status: ExitStatus,
-        awaited_breakpoint: bool,
-    ) -> Result<()> {
+    /// the exit. `held_siblings` says the thread ran while the execution's
+    /// other threads were held for it.
+    fn thread_exited(&mut self, pid: Pid, status: ExitStatus, held_siblings: bool) -> Result<()> {
         let thread_id = debug_thread_id(pid);
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
         let process_id = process_id(inferior.tgid);
@@ -1748,10 +1739,9 @@ impl<P: LinuxTraceOps> Controller<P> {
                 )
         });
 
-        // A thread resumed alone to reach its awaited breakpoint holds its
-        // siblings back; they must run once it is gone.
-        let ran_alone = awaited_breakpoint && inferior.run.execution().is_some();
-        let repair_interrupted = inferior.forget_thread(pid, &status);
+        // The siblings a thread held back must run once it is gone.
+        let held_siblings = held_siblings && inferior.run.execution().is_some();
+        inferior.forget_thread(pid, &status);
         let barrier_active = inferior.run.barrier().is_some();
         self.bump_revision();
         let _ = self.events.send(DebuggerEvent::ThreadExited {
@@ -1810,7 +1800,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return self.raise_barrier(running, reason);
         }
 
-        if repair_interrupted || ran_alone {
+        if held_siblings {
             return self.advance_execution();
         }
 
@@ -2319,8 +2309,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     /// Reinstalls the traps lifted for vfork windows, once none is open.
     fn close_vfork_windows_if_empty(&mut self) -> Result<()> {
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        if inferior.vfork_windows.is_empty() && inferior.traps_lifted {
-            inferior.traps_lifted = false;
+        if inferior.vfork_windows.is_empty() {
             reinstall_all_traps(&self.ptrace, inferior)?;
         }
 
@@ -2346,16 +2335,12 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(true);
         }
 
-        if !inferior.traps_lifted {
-            // A repair's lifted site is restored first, so that the lift sees
-            // every trap in place and the repair is not left to reinstall one.
-            self.restore_active_breakpoints()?;
-            let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-            lift_all_traps(&self.ptrace, inferior)?;
-            inferior.traps_lifted = true;
-        }
-
+        // A repair's lifted site is restored first, so that the lift sees
+        // every trap in place and the repair is not left to reinstall one.
+        self.restore_active_breakpoints()?;
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
+        lift_all_traps(&self.ptrace, inferior)?;
+
         let unresumed: Vec<(Pid, VforkWindow)> = inferior
             .vfork_windows
             .iter()
@@ -2365,7 +2350,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         for (parent, window) in unresumed {
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
             debug_assert!(
-                inferior.traps_lifted,
+                inferior
+                    .breakpoints
+                    .values()
+                    .all(|site| site.trap == Trap::Lifted(Lift::Vfork)),
                 "resuming vforking thread {parent} while its child {} shares memory \
                  that still holds traps",
                 window.child
@@ -2481,13 +2469,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         let installed = inferior
             .breakpoints
             .iter()
-            .filter_map(|(&address, site)| site.installed.then_some(address))
+            .filter_map(|(&address, site)| (site.trap == Trap::Installed).then_some(address))
             .collect::<Vec<_>>();
         let pid = inferior.memory_thread();
         for address in installed {
             record(
                 self.ptrace
-                    .remove_breakpoint(pid, &mut inferior.breakpoints, address),
+                    .remove_breakpoint(pid, &mut inferior.breakpoints, address)
+                    .map(drop),
             );
         }
 

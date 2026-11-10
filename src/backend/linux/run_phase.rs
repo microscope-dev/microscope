@@ -4,10 +4,7 @@
 //! The phase is one value with private parts, so it changes only through
 //! the transitions here: an execution begins at a published stop, a
 //! barrier gathers a stop while it runs, and the stop is published or the
-//! execution resumes. Breakpoint repairs belong to the execution, so a
-//! published stop holds none.
-
-use std::collections::VecDeque;
+//! execution resumes.
 
 use nix::unistd::Pid;
 
@@ -15,7 +12,7 @@ use crate::protocol::{ExecutionId, StopReason};
 use crate::{Error, ExitStatus};
 
 use super::classify::visible_stop_priority;
-use super::{ActiveExecution, Edit, PublicStop, RepairGroup, Result, debug_thread_id};
+use super::{ActiveExecution, Edit, PublicStop, Result, debug_thread_id};
 
 pub(super) struct RunPhase(Phase);
 
@@ -35,9 +32,6 @@ enum Phase {
     },
     Stopped(PublicStop),
 }
-
-/// No repairs, for a phase without an execution.
-static NO_REPAIRS: VecDeque<RepairGroup> = VecDeque::new();
 
 impl RunPhase {
     pub(super) const fn running(execution: ActiveExecution) -> Self {
@@ -118,15 +112,6 @@ impl RunPhase {
         }
     }
 
-    pub(super) fn repairs(&self) -> &VecDeque<RepairGroup> {
-        self.execution()
-            .map_or(&NO_REPAIRS, |execution| &execution.repairs)
-    }
-
-    pub(super) fn repairs_mut(&mut self) -> Option<&mut VecDeque<RepairGroup>> {
-        self.execution_mut().map(|execution| &mut execution.repairs)
-    }
-
     /// Runs `execution` from a published stop, or, for a shutdown's
     /// inspector cleanup, in place of whatever the inferior was doing once
     /// the edits of any stop being gathered are applied.
@@ -196,13 +181,6 @@ impl RunPhase {
                 debug_assert!(
                     barrier.edits.is_empty(),
                     "publishing stop {} drops edits queued after the stop's edits were applied",
-                    stop.id
-                );
-                debug_assert!(
-                    execution
-                        .as_ref()
-                        .is_none_or(|active| active.repairs.is_empty()),
-                    "publishing stop {} with breakpoint repairs outstanding",
                     stop.id
                 );
                 execution.map(|active| active.id)

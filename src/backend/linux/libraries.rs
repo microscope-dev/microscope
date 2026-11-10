@@ -148,7 +148,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     .library
                     .is_some_and(|library| !self.modules.contains_key(&library))
                 {
-                    forget_owner(inferior, address, owner);
+                    forget_owner(inferior, address, owner)?;
                 } else {
                     remove_breakpoint_owner_from(&self.ptrace, inferior, address, owner)?;
                 }
@@ -204,15 +204,21 @@ impl<P: super::native::InspectionOps> Controller<P> {
 
 /// Removes an owner from a site whose memory is gone, without restoring
 /// the bytes its trap replaced.
-fn forget_owner(inferior: &mut Inferior, address: VirtualAddress, owner: BreakpointOwner) {
+fn forget_owner(
+    inferior: &mut Inferior,
+    address: VirtualAddress,
+    owner: BreakpointOwner,
+) -> Result<()> {
     let Some(site) = inferior.breakpoints.get_mut(&address) else {
-        return;
+        return Ok(());
     };
 
     site.owners.remove(&owner);
     if site.owners.is_empty() {
         let original_byte = site.original_byte;
         inferior.breakpoints.remove(&address);
-        super::breakpoints::forget_removed_site(inferior, address, original_byte);
+        super::breakpoints::forget_removed_site(inferior, address, original_byte)?;
     }
+
+    Ok(())
 }

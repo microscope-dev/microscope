@@ -27,6 +27,7 @@ use super::frames::{
     frame_lookup_address, make_presentation, presentation_visible_count, selected_code_instance,
     source_for_code_instance, source_line_changed, source_step_destination,
 };
+use super::trap::Trap;
 
 use super::loops::{StepLoops, inline_loop_step_is_complete};
 use super::native::LinuxTraceOps;
@@ -1258,12 +1259,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         let hit = inferior
             .threads
             .get(&pid)
-            .is_some_and(|thread| thread.stopped_at_breakpoint == Some(instruction));
+            .is_some_and(|thread| thread.trap.owed() == Some(instruction));
         Ok(!hit
             && inferior
                 .breakpoints
                 .get(&instruction)
-                .is_some_and(|site| site.installed))
+                .is_some_and(|site| site.trap == Trap::Installed))
     }
 
     /// Whether the step is complete where its thread stopped, or is left
@@ -1405,14 +1406,13 @@ impl<P: LinuxTraceOps> Controller<P> {
         kind: StepKind,
     ) -> Option<bool> {
         let instruction = VirtualAddress::new(registers.rip);
-        let stopped_at_breakpoint = self
+        let trapped = self
             .session
             .inferior()
             .and_then(|inferior| inferior.threads.get(&pid))
-            .and_then(|thread| thread.stopped_at_breakpoint);
+            .and_then(|thread| thread.trap.owed());
         if let Some(traversal) = &start.return_traversal {
-            if stopped_at_breakpoint != Some(instruction) || instruction != traversal.return_address
-            {
+            if trapped != Some(instruction) || instruction != traversal.return_address {
                 return Some(false);
             }
 
@@ -1436,8 +1436,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         start.epilogue_traversal.as_ref().map(|traversal| {
-            stopped_at_breakpoint == Some(instruction)
-                && traversal.completion_addresses.contains(&instruction)
+            trapped == Some(instruction) && traversal.completion_addresses.contains(&instruction)
         })
     }
 

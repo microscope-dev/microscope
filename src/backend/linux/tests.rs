@@ -79,7 +79,11 @@ fn logical_memory_reads_unaligned_cross_word_ranges_and_hides_traps() {
     .map(|(address, original_byte, installed)| {
         let site = BreakpointSite {
             original_byte,
-            installed,
+            trap: if installed {
+                Trap::Installed
+            } else {
+                Trap::Lifted(Lift::Repair)
+            },
             owners: BTreeSet::new(),
         };
 
@@ -98,7 +102,7 @@ fn logical_memory_reads_unaligned_cross_word_ranges_and_hides_traps() {
                 continue;
             };
 
-            if site.installed && offset < bytes.len() as u64 {
+            if site.trap == Trap::Installed && offset < bytes.len() as u64 {
                 bytes[usize::try_from(offset).expect("test offset fits usize")] = BREAKPOINT_OPCODE;
             }
         }
@@ -811,12 +815,12 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         })
     };
 
-    let classify_trap = |signal, siginfo, expected: &ExpectedStop, breakpoint, program_trap| {
+    let classify_trap = |signal, siginfo, steps: bool, breakpoint, program_trap| {
         classify_stop_evidence(
             signal,
             "raw-status".to_owned(),
             siginfo,
-            expected,
+            steps,
             false,
             false,
             breakpoint,
@@ -826,21 +830,18 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         )
     };
 
-    let classify = |signal, siginfo, expected: &ExpectedStop, breakpoint| {
-        classify_trap(signal, siginfo, expected, breakpoint, None)
+    let classify = |signal, siginfo, steps: bool, breakpoint| {
+        classify_trap(signal, siginfo, steps, breakpoint, None)
     };
 
-    let stepping = ExpectedStop::UserStep {
-        kind: StepKind::Instruction,
-    };
-
-    let none = ExpectedStop::None;
+    let stepping = true;
+    let running = false;
     let traced = |stop| matches!(stop, ClassifiedStop::Trace { ref watch } if watch.is_empty());
 
     assert!(traced(classify(
         Signal::SIGTRAP,
         metadata(libc::TRAP_TRACE),
-        &stepping,
+        stepping,
         None
     )));
 
@@ -848,11 +849,11 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
     assert!(traced(classify(
         Signal::SIGTRAP,
         metadata(libc::TRAP_BRKPT),
-        &stepping,
+        stepping,
         None
     )));
     assert!(matches!(
-        classify(Signal::SIGTRAP, metadata(libc::SI_TKILL), &none, None),
+        classify(Signal::SIGTRAP, metadata(libc::SI_TKILL), running, None),
         ClassifiedStop::SignalDelivery(PendingSignal {
             signal: Signal::SIGTRAP,
             sender: Some(71),
@@ -860,7 +861,7 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         })
     ));
     assert!(matches!(
-        classify(Signal::SIGSEGV, metadata(libc::SI_KERNEL), &none, None),
+        classify(Signal::SIGSEGV, metadata(libc::SI_KERNEL), running, None),
         ClassifiedStop::SignalDelivery(PendingSignal {
             signal: Signal::SIGSEGV,
             code: libc::SI_KERNEL,
@@ -868,11 +869,11 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         })
     ));
     assert!(matches!(
-        classify(Signal::SIGSTOP, Err(Errno::EINVAL), &none, None),
+        classify(Signal::SIGSTOP, Err(Errno::EINVAL), running, None),
         ClassifiedStop::GroupStop(Signal::SIGSTOP)
     ));
     assert!(matches!(
-        classify(Signal::SIGTRAP, Err(Errno::EIO), &none, None),
+        classify(Signal::SIGTRAP, Err(Errno::EIO), running, None),
         ClassifiedStop::Unclassifiable(RawStopRecord {
             siginfo: Err(Errno::EIO),
             ..
@@ -882,7 +883,7 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         classify(
             Signal::SIGTRAP,
             metadata(libc::SI_KERNEL),
-            &none,
+            running,
             Some(VirtualAddress::new(0x1234)),
         ),
         ClassifiedStop::Breakpoint(address) if address == VirtualAddress::new(0x1234)
@@ -894,26 +895,22 @@ fn stop_classifier_preserves_signal_and_trap_provenance() {
         classify_trap(
             Signal::SIGTRAP,
             metadata(libc::SI_KERNEL),
-            &none,
+            running,
             None,
             Some(VirtualAddress::new(0x1233)),
         ),
         ClassifiedStop::ProgramTrap(address) if address == VirtualAddress::new(0x1233)
     ));
     assert!(matches!(
-        classify(Signal::SIGTRAP, metadata(libc::SI_KERNEL), &none, None),
+        classify(Signal::SIGTRAP, metadata(libc::SI_KERNEL), running, None),
         ClassifiedStop::Unclassifiable(_)
     ));
 
     // SIGKILL wakes a thread from a reported stop: its siginfo vanishes and
     // then describes its exit event.
-    let repairing = ExpectedStop::BreakpointRepair {
-        address: VirtualAddress::new(0x1234),
-    };
-
     for siginfo in [Err(Errno::ESRCH), metadata(EXIT_EVENT)] {
         assert!(matches!(
-            classify(Signal::SIGTRAP, siginfo, &repairing, None),
+            classify(Signal::SIGTRAP, siginfo, stepping, None),
             ClassifiedStop::Superseded
         ));
     }
@@ -1579,23 +1576,24 @@ impl LinuxTraceOps for FakeTrace {
             address,
             BreakpointSite {
                 original_byte: 0x90,
-                installed: true,
+                trap: Trap::Installed,
                 owners: BTreeSet::from([owner]),
             },
         );
         Ok(())
     }
 
-    fn remove_breakpoint(
+    fn lift_breakpoint(
         &self,
         pid: Pid,
         sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
         address: VirtualAddress,
+        lift: Lift,
     ) -> Result<()> {
-        self.reach(pid, "remove_breakpoint")?;
+        self.reach(pid, "lift_breakpoint")?;
         self.record(format!("remove_site {address}"));
         self.put_byte(address, 0x90);
-        sites.get_mut(&address).expect("known site").installed = false;
+        sites.get_mut(&address).expect("known site").trap = Trap::Lifted(lift);
         Ok(())
     }
 
@@ -1608,8 +1606,20 @@ impl LinuxTraceOps for FakeTrace {
         self.reach(pid, "reinstall_breakpoint")?;
         self.record(format!("reinstall_site {address}"));
         self.put_byte(address, BREAKPOINT_OPCODE);
-        sites.get_mut(&address).expect("known site").installed = true;
+        sites.get_mut(&address).expect("known site").trap = Trap::Installed;
         Ok(())
+    }
+
+    fn remove_breakpoint(
+        &self,
+        pid: Pid,
+        sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+        address: VirtualAddress,
+    ) -> Result<BreakpointSite> {
+        self.reach(pid, "remove_breakpoint")?;
+        self.record(format!("remove_site {address}"));
+        self.put_byte(address, 0x90);
+        Ok(sites.remove(&address).expect("known site"))
     }
 }
 
@@ -1744,7 +1754,6 @@ impl WatchHarness {
             kind: ActiveKind::Continue,
             scope: ResumeScope::Process(process_id(inferior.tgid)),
             resume_threads: inferior.threads.keys().copied().collect(),
-            repairs: VecDeque::new(),
         });
 
         for thread in inferior.threads.values_mut() {
@@ -2245,7 +2254,7 @@ fn hits_are_attributed_from_dr6_without_rewinding_the_pc() {
         VirtualAddress::new(0x40),
         BreakpointSite {
             original_byte: 0x90,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
         },
     );
@@ -2288,7 +2297,7 @@ fn stale_status_is_never_consulted_outside_debug_exceptions() {
         VirtualAddress::new(0x40),
         BreakpointSite {
             original_byte: 0x90,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
         },
     );
@@ -2367,20 +2376,14 @@ fn a_hit_while_stepping_over_a_breakpoint_completes_the_repair_and_stops() {
             site,
             BreakpointSite {
                 original_byte: 0x90,
-                installed: false,
+                trap: Trap::Lifted(Lift::Repair),
                 owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
             },
         );
     }
 
     harness.start_continue();
-    *harness.inferior().run.repairs_mut().expect("an execution") = VecDeque::from([RepairGroup {
-        address: site,
-        remaining: VecDeque::new(),
-        current: Some(pid),
-        site_removed: true,
-    }]);
-    harness.thread(pid).expected = ExpectedStop::BreakpointRepair { address: site };
+    harness.thread(pid).trap = AtTrap::Repairing { at: site };
     harness.trace().take_actions();
     harness
         .trap(
@@ -2396,12 +2399,13 @@ fn a_hit_while_stepping_over_a_breakpoint_completes_the_repair_and_stops() {
 
     assert_eq!(hits[0].watchpoint, watchpoint.id);
     let inferior = harness.controller.session.inferior().expect("inferior");
-    assert!(inferior.run.repairs().is_empty());
-    assert!(
-        inferior.breakpoints[&site].installed,
+    assert!(!inferior.repair_under_way());
+    assert_eq!(
+        inferior.breakpoints[&site].trap,
+        Trap::Installed,
         "the site is restored"
     );
-    assert_eq!(inferior.threads[&pid].stopped_at_breakpoint, None);
+    assert_eq!(inferior.threads[&pid].trap, AtTrap::Clear);
 }
 
 #[test]
@@ -2679,7 +2683,7 @@ fn a_process_killed_while_its_temporary_breakpoint_is_deleted_reports_its_death(
         VirtualAddress::new(second),
         BreakpointSite {
             original_byte: 0x90,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
         },
     );
@@ -2793,7 +2797,10 @@ fn a_breakpoint_a_dying_process_cannot_take_is_not_taken_back() {
     let inferior = harness.inferior();
     let sites = inferior.breakpoints.keys().copied().collect::<Vec<_>>();
     assert_eq!(sites, [VirtualAddress::new(HIT_SITE)]);
-    assert!(inferior.breakpoints[&VirtualAddress::new(HIT_SITE)].installed);
+    assert_eq!(
+        inferior.breakpoints[&VirtualAddress::new(HIT_SITE)].trap,
+        Trap::Installed
+    );
     let memory = harness.trace().memory.borrow();
     assert_eq!(
         memory.get(&HIT_SITE).map(|word| word & 0xff),
@@ -3596,7 +3603,7 @@ fn a_fork_child_loses_a_trap_whose_word_reaches_an_unmapped_page() {
         site,
         BreakpointSite {
             original_byte: 0x55,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::Runtime]),
         },
     );
@@ -3844,7 +3851,7 @@ fn a_panic_releases_an_attached_process_as_a_detach_would() {
         site,
         BreakpointSite {
             original_byte: 0x55,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::Runtime]),
         },
     );
@@ -3901,7 +3908,7 @@ fn a_panic_takes_a_trap_queued_behind_an_interrupt_before_releasing() {
             site,
             BreakpointSite {
                 original_byte: 0x55,
-                installed: true,
+                trap: Trap::Installed,
                 owners: BTreeSet::from([BreakpointOwner::Runtime]),
             },
         );
@@ -3948,7 +3955,7 @@ fn a_panic_restores_a_trap_whose_word_reaches_an_unmapped_page() {
         site,
         BreakpointSite {
             original_byte: 0x55,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::Runtime]),
         },
     );
@@ -3976,7 +3983,7 @@ fn the_invariant_check_finds_a_site_no_owner_holds() {
         VirtualAddress::new(0x40),
         BreakpointSite {
             original_byte: 0x90,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::new(),
         },
     );
@@ -4238,7 +4245,7 @@ fn a_panic_takes_an_outstanding_debugger_stop_before_releasing() {
         site,
         BreakpointSite {
             original_byte: 0x55,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::Runtime]),
         },
     );
@@ -4843,7 +4850,6 @@ fn a_launch_killed_at_its_first_stop_ends_in_its_exit() {
         kind: ActiveKind::Launch,
         scope: ResumeScope::Process(process_id(pid)),
         resume_threads: BTreeSet::from([pid]),
-        repairs: VecDeque::new(),
     });
     let thread = inferior.thread_mut(pid).expect("thread");
     thread.state = NativeThreadState::Starting;
@@ -4885,24 +4891,11 @@ fn repairs_after_the_debuggers_own_kill_are_left_undone() {
         unreachable!("three threads");
     };
 
+    let site = VirtualAddress::new(0x40);
     let inferior = harness.inferior();
-    *inferior.run.repairs_mut().expect("an execution") = VecDeque::from([RepairGroup {
-        address: VirtualAddress::new(0x40),
-        remaining: VecDeque::from([running]),
-        current: Some(repairing),
-        // Lifting the trap already failed as the kill landed.
-        site_removed: false,
-    }]);
-    let thread = inferior.thread_mut(repairing).expect("thread");
-    thread.stopped_at_breakpoint = Some(VirtualAddress::new(0x40));
-    thread.expected = ExpectedStop::BreakpointRepair {
-        address: VirtualAddress::new(0x40),
-    };
-
-    inferior
-        .thread_mut(running)
-        .expect("thread")
-        .stopped_at_breakpoint = Some(VirtualAddress::new(0x40));
+    inferior.breakpoints.get_mut(&site).expect("the site").trap = Trap::Lifted(Lift::Repair);
+    inferior.thread_mut(repairing).expect("thread").trap = AtTrap::Repairing { at: site };
+    inferior.thread_mut(running).expect("thread").trap = AtTrap::MustStepOver { at: site };
 
     // The client kills the program mid-repair. When the repairing thread's
     // death arrives, the next repair has no stopped thread to lift the
@@ -5008,7 +5001,7 @@ fn hit_harness(thread_count: i32, hit_condition: &str) -> WatchHarness {
         VirtualAddress::new(HIT_SITE),
         BreakpointSite {
             original_byte: 0x90,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::User(BreakpointId::new(1))]),
         },
     );
@@ -5138,8 +5131,10 @@ fn a_visible_stop_during_an_internal_stop_wins_and_the_declined_hit_counts_once(
     let declined = harness.thread(first);
     assert_eq!(declined.reason, None);
     assert_eq!(
-        declined.stopped_at_breakpoint,
-        Some(VirtualAddress::new(HIT_SITE))
+        declined.trap,
+        AtTrap::MustStepOver {
+            at: VirtualAddress::new(HIT_SITE)
+        }
     );
     harness.trace().take_actions();
 
@@ -5181,8 +5176,10 @@ fn a_pause_requested_during_an_internal_stop_is_published() {
         "a pause must not repair or resume anything"
     );
     assert_eq!(
-        harness.thread(first).stopped_at_breakpoint,
-        Some(VirtualAddress::new(HIT_SITE))
+        harness.thread(first).trap,
+        AtTrap::MustStepOver {
+            at: VirtualAddress::new(HIT_SITE)
+        }
     );
 }
 
@@ -5285,7 +5282,12 @@ fn removing_a_breakpoint_releases_threads_waiting_to_step_over_it() {
         .controller
         .remove_breakpoint(BreakpointId::new(1))
         .expect("remove");
-    assert_eq!(harness.thread(first).stopped_at_breakpoint, None);
+    assert_eq!(
+        harness.thread(first).trap,
+        AtTrap::Reported {
+            at: VirtualAddress::new(HIT_SITE)
+        }
+    );
     harness.trace().take_actions();
 
     harness.resume().expect("resume");
@@ -5478,7 +5480,7 @@ fn a_hit_on_a_breakpoint_removed_while_running_is_dropped() {
         inferior
             .threads
             .values()
-            .all(|thread| thread.stopped_at_breakpoint.is_none() && thread.reason.is_none())
+            .all(|thread| thread.trap.owed().is_none() && thread.reason.is_none())
     );
 }
 
@@ -5583,7 +5585,7 @@ fn another_thread_at_a_stepping_plans_site_is_stepped_over_while_the_others_are_
             VirtualAddress::new(0x40),
             BreakpointSite {
                 original_byte: 0x90,
-                installed: true,
+                trap: Trap::Installed,
                 owners: BTreeSet::from([owner]),
             },
         );
@@ -5623,7 +5625,7 @@ fn another_thread_at_a_stepping_plans_site_is_stepped_over_while_the_others_are_
         "the stepping plan's site is never reported for another thread"
     );
     let inferior = harness.controller.session.inferior().expect("inferior");
-    assert!(inferior.run.barrier().is_none() && inferior.run.repairs().is_empty());
+    assert!(inferior.run.barrier().is_none() && !inferior.repair_under_way());
     assert_eq!(
         inferior.run.execution().map(|active| active.id),
         Some(ExecutionId::new(2))
@@ -6238,7 +6240,7 @@ fn begin_task_step(harness: &mut WatchHarness, thread: Pid, task: crate::TaskId)
         VirtualAddress::new(0x40),
         BreakpointSite {
             original_byte: 0x90,
-            installed: true,
+            trap: Trap::Installed,
             owners: BTreeSet::from([BreakpointOwner::Plan(execution)]),
         },
     );
@@ -6416,7 +6418,10 @@ fn a_runtime_hook_asks_at_each_hit_whether_its_thread_stops() {
         },
     };
 
+    // The thread steps over the trap of a hit that stopped as the execution
+    // begins, which `start_continue` skips.
     let hit = |harness: &mut WatchHarness| {
+        harness.thread(hitting).trap = AtTrap::Clear;
         harness.start_continue();
         harness.trace().take_actions();
         harness.hit_at(hitting, HOOK).expect("the hook's trap");
@@ -8033,8 +8038,8 @@ fn an_unchanged_store_while_stepping_over_a_breakpoint_finishes_the_repair_and_r
         );
         assert_eq!(harness.published(), []);
         let inferior = harness.controller.session.inferior().expect("inferior");
-        assert!(inferior.run.repairs().is_empty());
-        assert_eq!(inferior.threads[&repairing].stopped_at_breakpoint, None);
+        assert!(!inferior.repair_under_way());
+        assert_eq!(inferior.threads[&repairing].trap, AtTrap::Clear);
     }
 }
 
@@ -8179,23 +8184,10 @@ fn repairing_harness_of(repairing: usize) -> WatchHarness {
     harness.add_breakpoint(0x40);
     harness.start_continue();
     let (repairing, waiting) = (harness.threads[repairing], harness.threads[1 - repairing]);
+    let site = VirtualAddress::new(0x40);
     let inferior = harness.inferior();
-    *inferior.run.repairs_mut().expect("an execution") = VecDeque::from([RepairGroup {
-        address: VirtualAddress::new(0x40),
-        remaining: VecDeque::new(),
-        current: Some(repairing),
-        site_removed: true,
-    }]);
-    inferior
-        .breakpoints
-        .get_mut(&VirtualAddress::new(0x40))
-        .expect("site")
-        .installed = false;
-    let thread = inferior.thread_mut(repairing).expect("thread");
-    thread.stopped_at_breakpoint = Some(VirtualAddress::new(0x40));
-    thread.expected = ExpectedStop::BreakpointRepair {
-        address: VirtualAddress::new(0x40),
-    };
+    inferior.breakpoints.get_mut(&site).expect("site").trap = Trap::Lifted(Lift::Repair);
+    inferior.thread_mut(repairing).expect("thread").trap = AtTrap::Repairing { at: site };
 
     inferior.thread_mut(waiting).expect("thread").state = NativeThreadState::Stopped;
     harness.trace().take_actions();
@@ -8237,14 +8229,10 @@ fn an_exiting_thread_is_not_stepped_over_its_breakpoint() {
     let mut harness = repairing_harness_of(0);
     let (finished, exiting) = (harness.threads[0], harness.threads[1]);
     let inferior = harness.inferior();
-    inferior
-        .run
-        .repairs_mut()
-        .and_then(VecDeque::front_mut)
-        .expect("group")
-        .remaining = VecDeque::from([exiting]);
     let thread = inferior.thread_mut(exiting).expect("thread");
-    thread.stopped_at_breakpoint = Some(VirtualAddress::new(0x40));
+    thread.trap = AtTrap::MustStepOver {
+        at: VirtualAddress::new(0x40),
+    };
     thread.state = NativeThreadState::Exiting;
     harness.trace().killed.borrow_mut().insert(exiting);
     harness.trace().take_actions();
@@ -8291,7 +8279,7 @@ fn a_quiet_signal_during_a_repair_runs_its_handler_before_the_repair() {
         ]
     );
     assert_eq!(
-        harness.thread(repairing).awaiting_breakpoint,
+        harness.thread(repairing).retrap,
         Some(VirtualAddress::new(0x40))
     );
     assert_eq!(harness.thread(waiting).state, NativeThreadState::Stopped);
@@ -8495,7 +8483,6 @@ fn lost_frame_harness() -> WatchHarness {
         ),
         scope: ResumeScope::Thread(debug_thread_id(pid)),
         resume_threads: BTreeSet::from([pid]),
-        repairs: VecDeque::new(),
     });
     let thread = harness.thread(pid);
     thread.state = NativeThreadState::Running;
@@ -8593,7 +8580,7 @@ fn a_step_that_loses_its_frame_stops_explicitly_and_leaves_the_program_alone() {
             .expect("inferior")
             .breakpoints
             .values()
-            .all(|site| !site.installed),
+            .all(|site| site.trap != Trap::Installed),
         "the step's plan sites are removed"
     );
 }

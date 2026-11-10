@@ -1632,7 +1632,8 @@ fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
         .insert(super::super::BreakpointOwner::User(
             crate::BreakpointId::new(9),
         ));
-    inferior.thread_mut(io).expect("io").stopped_at_breakpoint = Some(entry);
+    inferior.thread_mut(io).expect("io").trap =
+        super::super::trap::AtTrap::MustStepOver { at: entry };
     scripted.record().gate = None;
     scripted
         .harness
@@ -1645,13 +1646,14 @@ fn a_gate_ending_keeps_the_repair_of_a_trap_it_shares() {
         .session
         .inferior()
         .expect("inferior");
-    assert!(
-        inferior.breakpoints[&entry].installed,
+    assert_eq!(
+        inferior.breakpoints[&entry].trap,
+        super::super::trap::Trap::Installed,
         "the user's trap stays"
     );
     assert_eq!(
-        inferior.thread(io).expect("io").stopped_at_breakpoint,
-        Some(entry),
+        inferior.thread(io).expect("io").trap,
+        super::super::trap::AtTrap::MustStepOver { at: entry },
         "the thread still steps over the trap"
     );
 }

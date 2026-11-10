@@ -138,6 +138,7 @@ submodules divide work by behavior:
 | `awaits` | Gather run results and complete the all-stop transition |
 | `stepping`, `step_targets` | Source and instruction execution plans |
 | `breakpoints` | Physical sites, logical owners, hit processing, and repair |
+| `trap` | Whether each site's trap is in memory, and where each thread stands at a trap |
 | `writes` | Mutations that require a valid public stop |
 | `watchpoints`, `interpreted_watches` | Debug-register watch plans, and following watches whose storage a runtime moves |
 | `frames`, `async_frames`, `returns` | Native and logical frames and return state |
@@ -284,9 +285,20 @@ completed. Repair each co-hit thread sequentially while every sibling remains
 stopped. Letting siblings run during repair can lose hits or execute a
 temporarily unpatched site.
 
+A site's `Trap` is installed, or lifted for a repair or for a vfork window.
+A thread's `AtTrap` says where it stands: clear of any trap, at a reported
+trap whose site was removed since, owing a step over a trap, or stepping
+over one. Nothing queues the repairs: the next thread to step over its trap
+is the execution's stopped thread at the lowest site, lowest thread first,
+so one lift serves every thread at a site. A signal delivered before a
+thread's step leaves the trap in its `retrap`: the handler returns there and
+executes the trap again, a hit already counted, so the thread runs alone
+until it does. `trap.rs` lists every transition, and any other is an
+unexpected wait.
+
 All user memory reads overlay original bytes at installed sites. Writes must
 update the original-byte model correctly so removing a breakpoint does not
-restore stale memory.
+restore stale memory, including a write to a site whose trap is lifted.
 
 ## Managed breakpoint locations
 

@@ -26,7 +26,7 @@ use crate::debug_info::DebugInfo;
 use crate::protocol::{LaunchOptions, StopId};
 use crate::{Error, Result, VirtualAddress};
 
-use super::memory::{MemoryAccessError, install_site, lift_site, reinstall_site};
+use super::memory::{MemoryAccessError, install_site, lift_site, reinstall_site, remove_site};
 #[path = "signal_action.rs"]
 mod signal_action;
 use super::modules::{
@@ -36,6 +36,7 @@ use super::modules::{
 
 use super::registers::Fxsave;
 use super::signals::{Signal, WaitEvent};
+use super::trap::Lift;
 use super::{
     BreakpointOwner, BreakpointSite, LinuxError, SignalMetadata, WAITER_THREAD_NAME, Waiter,
     WaiterThread, allocate_stop_id, backend_error,
@@ -379,22 +380,25 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         )
     }
 
-    /// Restores the original byte of an installed site, keeping the site.
-    fn remove_breakpoint(
+    /// Restores the original byte of an installed site for `lift`, keeping
+    /// the site.
+    fn lift_breakpoint(
         &self,
         pid: Pid,
         sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
         address: VirtualAddress,
+        lift: Lift,
     ) -> Result<()> {
         lift_site(
             sites,
             address,
+            lift,
             |word| self.read_word(pid, word),
             |word, value| self.write_word(pid, word, value),
         )
     }
 
-    /// Writes the trap of a site its removal lifted back in place.
+    /// Writes the trap of a lifted site back in place.
     fn reinstall_breakpoint(
         &self,
         pid: Pid,
@@ -402,6 +406,22 @@ pub(super) trait LinuxTraceOps: InspectionOps {
         address: VirtualAddress,
     ) -> Result<()> {
         reinstall_site(
+            sites,
+            address,
+            |word| self.read_word(pid, word),
+            |word, value| self.write_word(pid, word, value),
+        )
+    }
+
+    /// Restores the original byte of a site, unless its trap is lifted,
+    /// and forgets the site.
+    fn remove_breakpoint(
+        &self,
+        pid: Pid,
+        sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
+        address: VirtualAddress,
+    ) -> Result<BreakpointSite> {
+        remove_site(
             sites,
             address,
             |word| self.read_word(pid, word),
