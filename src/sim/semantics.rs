@@ -15,7 +15,7 @@ use super::client::{Evaluated, Purpose};
 use super::corpus::Variant;
 use super::facts::{self, Facts, Line};
 use super::kernel::shadow::{Position, Shadow};
-use super::kernel::{Kernel, State, Thread, Tid};
+use super::kernel::{CallPhase, Kernel, State, Thread, Tid};
 use super::loader::Image;
 use super::markers::{Marker, Verdict};
 use super::marks::Mark;
@@ -318,7 +318,7 @@ impl Begun {
             restarts: thread.restarts,
             // At a call's entry, the call is still to be made; one that
             // failed to be made again is made again first.
-            inside_call: thread.returning.is_some() || thread.entered || thread.restarting,
+            inside_call: thread.call != CallPhase::Outside,
             frame: presentation.map(|presentation| presentation.frame.clone()),
             hidden_inline_frames: presentation
                 .map_or(0, |presentation| presentation.hidden_inline_frames),
@@ -1468,7 +1468,7 @@ mod tests {
 
         // A thread stopped after its call failed, to be made again, stands
         // where the made-again call returns.
-        kernel.threads.get_mut(&tid).expect("the thread").restarting = true;
+        kernel.threads.get_mut(&tid).expect("the thread").call = CallPhase::Restarting;
         let begun = Begun::new(&kernel.threads[&tid], StepKind::Instruction, None);
         let thread = kernel.threads.get_mut(&tid).expect("the thread");
         thread.retired = begun.retired + 1;

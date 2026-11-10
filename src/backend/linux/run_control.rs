@@ -776,12 +776,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let to_call =
             stepping_call || matches!(resume, Resume::Continue) && !self.catchpoints.is_empty();
         thread.stepping_call = stepping_call;
-        thread.inside_call = false;
-
-        // Only a resume to the next system-call-stop reaches a call's exit.
-        if !to_call {
-            thread.syscall = None;
-        }
+        thread.call.resume(to_call);
 
         let result = match resume {
             _ if to_call => self.ptrace.continue_to_syscall(pid, signal),

@@ -3,7 +3,7 @@
 use nix::errno::Errno;
 use nix::libc;
 
-use super::{ENOSYS_RESULT, ExitStatus, Happening, Kernel, Tgid, Thread, Tid};
+use super::{CallPhase, ENOSYS_RESULT, ExitStatus, Happening, Kernel, Tgid, Thread, Tid};
 use crate::sim::cpu::{R8, R9, R10, RAX, RDI, RDX, RSI, RSP};
 use crate::sim::memory::MemoryError;
 
@@ -59,10 +59,11 @@ pub(super) fn serve(kernel: &mut Kernel, tid: Tid) -> bool {
         .get(&tid)
         .filter(|thread| !thread.state.exiting())
         .map(|thread| {
-            thread
-                .returning
-                .unwrap_or(thread.registers.general[RAX])
-                .cast_signed()
+            match thread.call {
+                CallPhase::Returning(result) => result,
+                _ => thread.registers.general[RAX],
+            }
+            .cast_signed()
         });
 
     kernel.served.push(Served {

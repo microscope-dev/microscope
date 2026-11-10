@@ -6,8 +6,8 @@ use nix::errno::Errno;
 use nix::libc;
 
 use super::{
-    DebugBehavior, Happening, Kernel, Options, SigInfo, State, StopKind, Tgid, Thread, Tid,
-    Tracing, WaitStatus,
+    CallPhase, DebugBehavior, Happening, Kernel, Options, SigInfo, State, StopKind, Tgid, Thread,
+    Tid, Tracing, WaitStatus,
 };
 
 use crate::sim::cpu::{R8, R9, R10, RAX, RDI, RDX, RSI, Registers};
@@ -70,7 +70,7 @@ impl Kernel {
         // `rip` as the thread returns, and no probe pins a tracer's change
         // to either before then.
         let thread = self.stopped(tid)?;
-        if thread.restarting
+        if thread.call == CallPhase::Restarting
             && (registers.rip != thread.registers.rip
                 || registers.general[RAX] != thread.registers.general[RAX])
         {

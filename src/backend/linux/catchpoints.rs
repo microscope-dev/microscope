@@ -73,7 +73,7 @@ impl<P: LinuxTraceOps> Controller<P> {
     pub(super) fn steps_into_call(&self, pid: Pid) -> Result<bool> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let thread = inferior.thread(pid)?;
-        if thread.syscall.is_some() || thread.inside_call {
+        if !matches!(thread.call, CallPosition::Outside) {
             return Ok(true);
         }
 
@@ -257,12 +257,13 @@ impl<P: LinuxTraceOps> Controller<P> {
             };
 
             let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-            inferior.thread_mut(pid)?.syscall = Some(entered.clone());
+            inferior.thread_mut(pid)?.call = CallPosition::Entered(entered.clone());
             return Ok(entered);
         }
 
         let inferior = self.session.inferior_mut().ok_or(Error::NotRunning)?;
-        if let Some(entered) = inferior.thread_mut(pid)?.syscall.take() {
+        if let CallPosition::Entered(entered) = std::mem::take(&mut inferior.thread_mut(pid)?.call)
+        {
             return Ok(entered);
         }
 
@@ -316,6 +317,37 @@ pub(super) struct Entered {
     call: SyscallId,
     args: [u64; 6],
     captured: Vec<Capture>,
+}
+
+/// Where a thread stands with respect to a system call.
+#[derive(Debug, Clone, Default)]
+pub(super) enum CallPosition {
+    #[default]
+    Outside,
+
+    /// Past the entry stop of a call, until its exit stop.
+    Entered(Entered),
+
+    /// At an event stop inside a call whose entry went unseen, which
+    /// returns when the thread next runs.
+    AtEvent,
+}
+
+impl CallPosition {
+    /// The thread stopped at a ptrace event inside the call it makes.
+    pub(super) fn at_event(&mut self) {
+        if matches!(self, Self::Outside) {
+            *self = Self::AtEvent;
+        }
+    }
+
+    /// The thread resumes, to its next system-call stop when `to_call`.
+    /// Only that resume reaches a call's exit stop.
+    pub(super) fn resume(&mut self, to_call: bool) {
+        if !to_call || matches!(self, Self::AtEvent) {
+            *self = Self::Outside;
+        }
+    }
 }
 
 /// A stopped thread's memory, with breakpoint traps hidden.

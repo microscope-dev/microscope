@@ -912,27 +912,27 @@ impl<P: LinuxTraceOps> Controller<P> {
         match event {
             libc::PTRACE_EVENT_CLONE => {
                 thread.state = NativeThreadState::Stopped;
-                thread.inside_call = true;
+                thread.call.at_event();
                 self.handle_clone_event(pid)
             }
             libc::PTRACE_EVENT_FORK => {
                 thread.state = NativeThreadState::Stopped;
-                thread.inside_call = true;
+                thread.call.at_event();
                 self.handle_fork_event(pid)
             }
             libc::PTRACE_EVENT_VFORK => {
                 thread.state = NativeThreadState::Stopped;
-                thread.inside_call = true;
+                thread.call.at_event();
                 self.handle_vfork_event(pid)
             }
             libc::PTRACE_EVENT_VFORK_DONE => {
                 thread.state = NativeThreadState::Stopped;
-                thread.inside_call = true;
+                thread.call.at_event();
                 self.handle_vfork_done(pid)
             }
             libc::PTRACE_EVENT_EXEC => {
                 thread.state = NativeThreadState::Stopped;
-                thread.inside_call = true;
+                thread.call.at_event();
                 self.handle_exec_event(pid)
             }
             libc::PTRACE_EVENT_EXIT => {

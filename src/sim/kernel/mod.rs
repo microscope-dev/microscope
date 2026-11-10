@@ -330,10 +330,24 @@ pub enum Tracing {
     Seized { tracer: i32, interrupted: bool },
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is one independent piece of a thread's kernel state"
-)]
+/// Where a thread stands in a system call, in the kernel's eyes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallPhase {
+    Outside,
+
+    /// Stopped at a call's entry, to make the call when it next runs
+    /// (K-SYS-2).
+    AtEntry,
+
+    /// Stopped inside a call, which returns this when the thread next runs.
+    /// `rax` holds `-ENOSYS` until then.
+    Returning(u64),
+
+    /// The call failed with `-ERESTARTNOINTR` for a signal pending, to be
+    /// made again as the thread returns to its program (K-SYS-7).
+    Restarting,
+}
+
 pub struct Thread {
     pub tid: Tid,
     pub tgid: Tgid,
@@ -344,9 +358,7 @@ pub struct Thread {
     /// another instruction or takes an exception, or [`NO_SYSTEM_CALL`].
     pub orig_rax: u64,
 
-    /// The result of a system call the thread stopped inside. `rax` holds
-    /// `-ENOSYS` until the call returns it.
-    pub returning: Option<u64>,
+    pub call: CallPhase,
     pub state: State,
     pub options: Options,
 
@@ -359,15 +371,6 @@ pub struct Thread {
     /// Whether the tracer resumed it with `PTRACE_SYSCALL`, to stop at
     /// each system call's entry and exit (K-SYS-1).
     pub syscall_stops: bool,
-
-    /// Whether the thread stopped at a system call's entry and makes the
-    /// call when it next runs (K-SYS-2).
-    pub entered: bool,
-
-    /// Whether the call the thread made last failed with
-    /// `-ERESTARTNOINTR` for a signal pending, to be made again as the
-    /// thread returns to its program (K-SYS-7).
-    pub restarting: bool,
 
     /// How many times the kernel rewound the thread over a `syscall` to
     /// make a call again (K-SYS-7).
@@ -488,7 +491,7 @@ impl Thread {
             },
             registers,
             orig_rax: call,
-            returning: None,
+            call: CallPhase::Outside,
             state: State::Running,
             options: if traced {
                 creator.options
@@ -499,8 +502,6 @@ impl Thread {
             single_step: false,
             // K-SYS-3: a new thread does not inherit system-call-stops.
             syscall_stops: false,
-            entered: false,
-            restarting: false,
             restarts: 0,
             resumed: false,
             report: None,
@@ -519,11 +520,7 @@ impl Thread {
     /// raised (K-TRAP-2).
     #[must_use]
     pub fn in_user_code(&self) -> bool {
-        self.state == State::Running
-            && self.returning.is_none()
-            && !self.entered
-            && !self.restarting
-            && !self.pending.raised()
+        self.state == State::Running && self.call == CallPhase::Outside && !self.pending.raised()
     }
 
     /// Whether running the thread can change anything.
@@ -1026,11 +1023,9 @@ impl Kernel {
                 // The stop is at the end of `execve`.
                 orig_rax: syscalls::SYS_EXECVE,
                 syscall_stops: false,
-                entered: false,
-                restarting: false,
+                call: CallPhase::Outside,
                 restarts: 0,
                 resumed: false,
-                returning: None,
                 state: if traced {
                     State::Stopped {
                         kind: StopKind::Signal(SIGTRAP),
@@ -1146,8 +1141,9 @@ impl Kernel {
                 State::Stopped { .. } | State::JobStopped | State::Zombie(_) => break,
             }
 
-            if let Some(result) = thread.returning.take() {
+            if let CallPhase::Returning(result) = thread.call {
                 // The system call the thread stopped inside returns.
+                thread.call = CallPhase::Outside;
                 thread.registers.general[RAX] = result;
                 if thread.single_step {
                     // K-TRAP-1: a step across `syscall` reports TRAP_BRKPT.
@@ -1166,9 +1162,10 @@ impl Kernel {
                 continue;
             }
 
-            if std::mem::take(&mut thread.entered) {
+            if thread.call == CallPhase::AtEntry {
                 // K-SYS-2: the call the thread stopped at the entry of runs
                 // before anything else can happen to the thread.
+                thread.call = CallPhase::Outside;
                 let single_step = thread.single_step;
                 match self.serve_entered(tid, single_step) {
                     Executed::Continue => continue,
@@ -1341,7 +1338,7 @@ impl Kernel {
         #[cfg(not(test))]
         let stops = thread.syscall_stops;
         if stops && thread.traced() {
-            thread.entered = true;
+            thread.call = CallPhase::AtEntry;
             self.syscall_stop(tid, false);
             return Executed::Stopped;
         }
@@ -1403,7 +1400,8 @@ impl Kernel {
                 ..
             }
         );
-        let returned = thread.returning.is_none() && !inside && !thread.state.exiting();
+        let returned =
+            !matches!(thread.call, CallPhase::Returning(_)) && !inside && !thread.state.exiting();
         let debugged = thread.traced() && thread.resumed && self.debugged == Some(thread.tgid);
 
         if returned
@@ -1714,7 +1712,7 @@ impl Kernel {
     fn event_stop(&mut self, tid: Tid, event: i32, message: u64, result: u64) {
         let thread = self.threads.get_mut(&tid).expect("stopping thread exists");
         thread.registers.general[RAX] = ENOSYS_RESULT;
-        thread.returning = Some(result);
+        thread.call = CallPhase::Returning(result);
         thread.enter_stop(
             StopKind::Event(event, message),
             SigInfo::event(tid, event),
@@ -1749,7 +1747,7 @@ impl Kernel {
     fn fail_to_restart(&mut self, tid: Tid) {
         let thread = self.threads.get_mut(&tid).expect("the calling thread");
         thread.registers.general[RAX] = ERESTARTNOINTR_RESULT;
-        thread.restarting = true;
+        thread.call = CallPhase::Restarting;
         self.happenings.push(Happening::Restarting { tid });
     }
 
@@ -1759,8 +1757,12 @@ impl Kernel {
     /// `rax`, unless the tracer changed the result meanwhile (K-SYS-7).
     fn restart_call(&mut self, tid: Tid) {
         let thread = self.threads.get_mut(&tid).expect("running thread exists");
-        if std::mem::take(&mut thread.restarting)
-            && thread.orig_rax != NO_SYSTEM_CALL
+        if thread.call != CallPhase::Restarting {
+            return;
+        }
+
+        thread.call = CallPhase::Outside;
+        if thread.orig_rax != NO_SYSTEM_CALL
             && thread.registers.general[RAX] == ERESTARTNOINTR_RESULT
         {
             thread.registers.general[RAX] = thread.orig_rax;

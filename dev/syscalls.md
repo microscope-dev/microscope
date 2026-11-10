@@ -314,6 +314,13 @@ its path, which the evaluator exposes as `$arg0`–`$arg5`, `$ret`, and
 call, including the step over a breakpoint's trap, has to pass through the
 call's two stops; `catchpoints.rs` handles that case.
 
+Each thread's `CallPosition` says where it stands: outside any call the
+controller knows of, past a call's entry stop with what the entry read, or
+at a ptrace event inside a call whose entry went unseen. In either of the
+last two, the thread's next step finishes the call, so it resumes to the
+call's exit stop. Only a resume with `PTRACE_SYSCALL` keeps a call's entry
+for its exit; any other resume forgets it.
+
 Two threads can reach caught calls at once, as when both return from
 `clone3`. One stop reports both: the stop names one thread, and each
 thread's snapshot carries its own call as its reason. A test that waits

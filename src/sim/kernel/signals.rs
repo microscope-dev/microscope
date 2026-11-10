@@ -5,8 +5,8 @@ use nix::errno::Errno;
 use nix::libc;
 
 use super::{
-    ExitStatus, Happening, Kernel, Parent, SigInfo, State, StopKind, Tgid, Thread, Tid, Tracing,
-    WaitStatus,
+    CallPhase, ExitStatus, Happening, Kernel, Parent, SigInfo, State, StopKind, Tgid, Thread, Tid,
+    Tracing, WaitStatus,
 };
 
 pub const SIGTRAP: i32 = libc::SIGTRAP;
@@ -313,7 +313,8 @@ impl Kernel {
 
                     // K-EXIT-3: the call the thread was resumed inside of
                     // returns before the signal is taken.
-                    if let Some(result) = thread.returning.take() {
+                    if let CallPhase::Returning(result) = thread.call {
+                        thread.call = CallPhase::Outside;
                         thread.registers.general[super::RAX] = result;
                     }
                 }
@@ -328,13 +329,17 @@ impl Kernel {
                     thread.state = State::Exiting(exit);
                     thread.report = None;
 
-                    // K-SYS-5: a call stopped at its entry never runs.
-                    thread.entered = false;
+                    match thread.call {
+                        // K-SYS-5: a call stopped at its entry never runs.
+                        CallPhase::AtEntry => thread.call = CallPhase::Outside,
 
-                    // A system call the thread stopped inside returns on
-                    // the way out.
-                    if let Some(result) = thread.returning.take() {
-                        thread.registers.general[super::RAX] = result;
+                        // A system call the thread stopped inside returns
+                        // on the way out.
+                        CallPhase::Returning(result) => {
+                            thread.call = CallPhase::Outside;
+                            thread.registers.general[super::RAX] = result;
+                        }
+                        CallPhase::Outside | CallPhase::Restarting => {}
                     }
 
                     pulled.push(thread.tid);

@@ -404,17 +404,12 @@ struct TraceThread {
     /// public stop, with each hit's number.
     watch_hits: BTreeMap<WatchpointId, u64>,
 
-    /// The system call the thread stopped at the entry of, with what was
-    /// read there, while its exit stop is still to come.
-    syscall: Option<catchpoints::Entered>,
+    /// Where the thread stands with respect to a system call.
+    call: catchpoints::CallPosition,
 
     /// Whether the thread's step makes a system call, which stops at its
     /// entry and exit for the catchpoints.
     stepping_call: bool,
-
-    /// Whether the thread is at an event stop inside a system call, which
-    /// returns when it next runs.
-    inside_call: bool,
 
     /// The thread's name as of its start or the last published stop.
     name: Option<Arc<str>>,
@@ -438,9 +433,8 @@ impl TraceThread {
             debugger_stop_pending: false,
             armed: None,
             watch_hits: BTreeMap::new(),
-            syscall: None,
+            call: catchpoints::CallPosition::Outside,
             stepping_call: false,
-            inside_call: false,
             name: None,
             stack_start: None,
         }
