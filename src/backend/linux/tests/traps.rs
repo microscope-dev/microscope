@@ -34,13 +34,6 @@ impl Run {
         self.program_stop(WaitEvent::Stopped(pid, Signal::SIGTRAP));
     }
 
-    /// `pid` stops for `signal`, which a process sent it.
-    fn signal(&mut self, pid: Pid, signal: libc::c_int) {
-        self.signal_info(pid, libc::SI_USER);
-        let signal = Signal::new(signal).expect("a signal");
-        self.program_stop(WaitEvent::Stopped(pid, signal));
-    }
-
     /// `pid` stops at the ptrace event `event`, whose message names
     /// [`VFORK_CHILD`].
     fn event(&mut self, pid: Pid, event: libc::c_int) {
@@ -68,14 +61,6 @@ impl Run {
             },
         );
         reader(receiver)
-    }
-
-    fn is_stopped(&self) -> bool {
-        self.harness
-            .controller
-            .session
-            .inferior()
-            .is_some_and(|inferior| inferior.run.stop().is_some())
     }
 
     /// Whether `pid` runs freely, not stepping.

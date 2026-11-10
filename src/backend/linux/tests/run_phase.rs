@@ -121,6 +121,21 @@ impl Run {
         ));
     }
 
+    /// `pid` stops for `signal`, which a process sent it.
+    pub(super) fn signal(&mut self, pid: Pid, signal: libc::c_int) {
+        self.signal_info(pid, libc::SI_USER);
+        let signal = Signal::new(signal).expect("a signal");
+        self.program_stop(WaitEvent::Stopped(pid, signal));
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.harness
+            .controller
+            .session
+            .inferior()
+            .is_some_and(|inferior| inferior.run.stop().is_some())
+    }
+
     pub(super) fn signal_info(&self, pid: Pid, code: i32) {
         let mut registers = self.harness.trace().registers_of(pid);
         registers[debug_registers::STATUS_REGISTER] = debug_registers::STATUS_IDLE;
@@ -316,6 +331,13 @@ fn reason_text(reason: &StopReason) -> String {
             format!("hit {}", hits.join(" "))
         }
         StopReason::ThreadExited { thread_id, .. } => format!("exit of {thread_id}"),
+        StopReason::Syscall(stop) => format!(
+            "call {}({}) {}",
+            stop.call.number,
+            stop.args[0],
+            stop.returned
+                .map_or_else(|| "at entry".to_owned(), |value| format!("= {value}"))
+        ),
         other => format!("{other:?}"),
     }
 }

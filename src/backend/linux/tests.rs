@@ -1,3 +1,4 @@
+mod calls;
 mod lifecycle;
 mod pids;
 mod run_phase;
@@ -1023,6 +1024,9 @@ pub(super) struct FakeTrace {
 
     /// Statuses the kernel holds that no waiter has taken.
     unreaped: RefCell<BTreeMap<Pid, WaitEvent>>,
+
+    /// The system-call stop each thread is at; others' cannot be read.
+    syscall_stops: RefCell<BTreeMap<Pid, super::syscalls::info::SyscallInfo>>,
 }
 
 impl FakeTrace {
@@ -1444,9 +1448,13 @@ impl LinuxTraceOps for FakeTrace {
 
     fn syscall_info(
         &self,
-        _pid: Pid,
+        pid: Pid,
     ) -> std::result::Result<super::syscalls::info::SyscallInfo, Errno> {
-        Err(Errno::EIO)
+        self.syscall_stops
+            .borrow()
+            .get(&pid)
+            .copied()
+            .ok_or(Errno::EIO)
     }
 
     fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()> {
