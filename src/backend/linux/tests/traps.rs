@@ -548,3 +548,27 @@ fn a_stop_after_sigkill_took_a_thread_stepping_over_a_trap_puts_the_trap_back() 
         AtTrap::MustStepOver { at: site }
     );
 }
+
+/// SIGKILL takes a thread out of its stop at a breakpoint's trap just as
+/// the debugger rewinds it over the trap, and the thread reaches its exit
+/// event. The trap is still the debugger's, not one the program executed:
+/// no stop is published, and the thread goes on to its exit.
+#[test]
+fn a_hit_sigkill_interrupts_as_it_is_rewound_is_not_the_programs_trap() {
+    let mut run = running(false);
+    run.describe();
+    *run.harness.trace().exit_point.borrow_mut() = Some((THREAD, "set_registers"));
+    run.hit(THREAD);
+    run.settle(true);
+    assert!(
+        run.harness.trace().exit_point.borrow().is_none(),
+        "the rewind was made"
+    );
+
+    let described = run.describe();
+    assert!(described.starts_with("running e2 []"), "{described}");
+    run.exit(THREAD);
+    let described = run.describe();
+    assert!(described.starts_with("running e2 ["), "{described}");
+    assert!(!described.contains("stopped"), "{described}");
+}

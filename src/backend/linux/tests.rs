@@ -984,6 +984,11 @@ pub(super) struct FakeTrace {
     /// requests again, as Linux's threads do at that stop.
     kill_at_read: RefCell<Option<(Pid, u64)>>,
 
+    /// A thread SIGKILL takes out of its stop as the controller makes the
+    /// named request of it. That request fails; the thread is then at its
+    /// exit event, where it answers requests again.
+    pub(super) exit_point: RefCell<Option<(Pid, &'static str)>>,
+
     /// Threads SIGKILL took out of their stop, which refuse every request.
     killed: RefCell<BTreeSet<Pid>>,
 
@@ -1154,6 +1159,12 @@ impl FakeTrace {
     /// request may be the one to do.
     fn reach(&self, pid: Pid, request: &'static str) -> Result<()> {
         self.fail_at(request)?;
+
+        if *self.exit_point.borrow() == Some((pid, request)) {
+            self.exit_point.borrow_mut().take();
+            self.set_siginfo(pid, EXIT_EVENT, None);
+            return Err(backend_error(LinuxError::System(Errno::ESRCH)));
+        }
 
         let mut point = self.kill_point.borrow_mut();
         if let Some((target, name, remaining)) = point.as_mut()
@@ -1537,7 +1548,7 @@ impl LinuxTraceOps for FakeTrace {
 
     fn set_registers(&self, pid: Pid, registers: libc::user_regs_struct) -> Result<()> {
         self.record(format!("set_registers {pid} rip={:#x}", registers.rip));
-        Ok(())
+        self.reach(pid, "set_registers")
     }
 
     fn set_options(&self, pid: Pid, _exit_kill: bool) -> Result<()> {

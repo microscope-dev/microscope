@@ -109,19 +109,14 @@ fn phase(name: &str) -> Row {
             attached = Some(process);
         }
         "running" => {
-            // Past its loader, so that nothing the loader does can race with
-            // the row.
+            // Rows may begin while the loader still runs.
             let started = dap.begin(
                 Profile::Helix,
                 ("launch", launch_arguments("spin")),
-                &Configuration {
-                    functions: vec!["main".to_owned()],
-                    ..Configuration::default()
-                },
+                &Configuration::default(),
             );
-            let stop = dap.stopped(started.mark);
-            dap.request("setFunctionBreakpoints", json!({"breakpoints": []}));
-            dap.request("continue", json!({"threadId": stop.thread}));
+            dap.event(started.mark, "process", |_| true);
+            dap.event(started.mark, "thread", |_| true);
         }
         "stopped" => {
             let started = dap.begin(
