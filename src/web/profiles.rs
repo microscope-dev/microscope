@@ -12,9 +12,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use microscope::profiler::{
-    CodeLine, DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, LineCost, Look, MarkerKind,
-    NO_KEY, NO_TASK, Preset, Profile, Query, RecordOptions, SampleSource, Side, Source, Transform,
-    Watch, ZoneScope, diff_costs, diff_trees, record_watched,
+    CodeLine, Cuts, DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, LineCost, Look,
+    MarkerKind, NO_KEY, NO_TASK, Preset, Profile, Query, RecordOptions, SampleSource, Side, Source,
+    Transform, Watch, ZoneScope, diff_costs, diff_trees, record_watched,
 };
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
@@ -739,7 +739,7 @@ fn sampling(spec: &RecordProfile) -> Result<RecordOptions, Failure> {
     }
 
     if let Some(seconds) = spec.window {
-        options.window = Some(
+        options.cuts = Cuts::Window(
             std::time::Duration::try_from_secs_f64(seconds)
                 .ok()
                 .filter(|window| !window.is_zero())

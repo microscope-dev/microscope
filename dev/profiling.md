@@ -898,6 +898,11 @@ budget and reader-backlog pauses stop counting as well as sampling. Breakpoint
 events count hits, including inherited threads and children, even when their
 sample records are lost. Each event read includes its inherited counts.
 
+A recording is cut one of three ways, `Cuts::Whole`, `Cuts::Window`, or
+`Cuts::Segments`, and the processor's `Cut` in `src/profiler/record/cuts.rs`
+holds what each needs. `Processor::save` saves the window or what is kept
+so far, or ends a segment.
+
 Window and segment cuts use timestamped count observations. The processor
 holds each observation until records before its timestamp have arrived, then
 records both the perf totals and the record-derived accounts at that boundary.

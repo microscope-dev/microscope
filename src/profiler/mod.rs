@@ -214,6 +214,22 @@ impl std::fmt::Display for PythonEngine {
     }
 }
 
+/// What a recording keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cuts {
+    /// All of it.
+    Whole,
+
+    /// Only what happened in the last span this long, which a trigger
+    /// saves: a recording's memory then holds no more.
+    Window(std::time::Duration),
+
+    /// Segments this long, each a complete profile of its span alone,
+    /// which the watch's save takes as it ends, or early when triggered.
+    /// The recording's own profile is the last.
+    Segments(std::time::Duration),
+}
+
 /// How to record.
 #[derive(Debug, Clone, PartialEq)]
 #[expect(
@@ -248,15 +264,9 @@ pub struct RecordOptions {
     /// sampling less of each period: none bounds it.
     pub budget: Option<budget::Budget>,
 
-    /// Keeps only what happened in the last span this long, which a
-    /// trigger saves: a recording's memory then holds no more.
-    pub window: Option<std::time::Duration>,
-
-    /// Cuts the recording into segments this long, without a window: each
-    /// is a complete profile of its span alone, which the watch's save
-    /// takes as it ends, or early when triggered. The recording's own
-    /// profile is the last.
-    pub segment: Option<std::time::Duration>,
+    /// Whether to keep all of the recording, only its last span, or
+    /// segments of it.
+    pub cuts: Cuts,
 
     /// How often to stop the program, through the debugger's attach, to
     /// read where its tasks wait: none never does.
@@ -307,8 +317,7 @@ impl RecordOptions {
             max_events: 16_384,
             off_cpu: preset.off_cpu(),
             budget: preset.budget(),
-            window: None,
-            segment: None,
+            cuts: Cuts::Whole,
             task_snapshots: None,
             live_snapshots: false,
             python: None,

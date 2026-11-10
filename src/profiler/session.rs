@@ -14,7 +14,7 @@ use super::interpreted::{Layout, Walked};
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
-    DEEP_STACK_COPY, Profile, PythonEngine, RecordError, RecordOptions, SMALL_STACK_COPY,
+    Cuts, DEEP_STACK_COPY, Profile, PythonEngine, RecordError, RecordOptions, SMALL_STACK_COPY,
     SampleSource, StackCopy,
 };
 
@@ -560,11 +560,11 @@ fn processor(
         ..crate::DebugFileOptions::default()
     });
     let mut processor = record::Processor::new(search, options.max_frames);
+    processor.cuts(options.cuts);
     if defer_debug
         && options.task_snapshots.is_none()
         && options.python.is_none()
-        && options.window.is_none()
-        && options.segment.is_none()
+        && options.cuts == Cuts::Whole
     {
         processor.defer_debug_information();
     }
@@ -624,20 +624,17 @@ fn settings(
         ("off-CPU", if options.off_cpu { "on" } else { "off" }.into()),
         (
             "window",
-            options.window.map_or_else(
-                || "all".into(),
-                |window| format!("the last {:.3} s", window.as_secs_f64()),
-            ),
+            match options.cuts {
+                Cuts::Window(window) => format!("the last {:.3} s", window.as_secs_f64()),
+                Cuts::Whole | Cuts::Segments(_) => "all".into(),
+            },
         ),
         (
             "segments",
-            options
-                .segment
-                .filter(|_| options.window.is_none())
-                .map_or_else(
-                    || "off".into(),
-                    |every| format!("every {:.3} s", every.as_secs_f64()),
-                ),
+            match options.cuts {
+                Cuts::Segments(every) => format!("every {:.3} s", every.as_secs_f64()),
+                Cuts::Whole | Cuts::Window(_) => "off".into(),
+            },
         ),
         (
             "task snapshots",
@@ -706,23 +703,25 @@ fn drive(
         .map(|pid| Collector::new(pid, options.probes.clone(), options.probe_timeout));
     let started = started.is_some();
 
-    if let Some(window) = options.window {
-        processor.keep_window(window);
+    // A cut recording reads its counts this often, and the processor
+    // counts each once the records before it are in: cuts fall there.
+    let observing = match options.cuts {
+        Cuts::Whole => None,
+        Cuts::Window(span) | Cuts::Segments(span) => Some(
+            (span / 8)
+                .min(watch.every)
+                .min(Duration::from_millis(250))
+                .max(Duration::from_millis(10)),
+        ),
+    };
+    if observing.is_some() {
+        processor.observe(monotonic(), events.counts());
     }
-    // Cuts use observed counts, held back with the records on their clock.
-    let accounting = options.window.or(options.segment).map(|span| {
-        (span / 8)
-            .min(watch.every)
-            .min(Duration::from_millis(250))
-            .max(Duration::from_millis(10))
-    });
-    if accounting.is_some() {
-        let counts = events.counts();
-        processor.counts_at(monotonic(), counts);
-    }
-    let mut counted = std::time::Instant::now();
-    let segment = options.segment.filter(|_| options.window.is_none());
-    let mut segmented = std::time::Instant::now();
+    let mut observed = std::time::Instant::now();
+    let mut segments = match options.cuts {
+        Cuts::Segments(every) => Some((every, std::time::Instant::now())),
+        Cuts::Whole | Cuts::Window(_) => None,
+    };
     let mut pending_save = None;
     if started {
         (watch.publish)(Profile {
@@ -748,10 +747,9 @@ fn drive(
             monotonic()
         });
 
-        if !finished && accounting.is_some_and(|every| counted.elapsed() >= every) {
-            let counts = events.counts();
-            processor.counts_at(monotonic(), counts);
-            counted = std::time::Instant::now();
+        if !finished && observing.is_some_and(|every| observed.elapsed() >= every) {
+            processor.observe(monotonic(), events.counts());
+            observed = std::time::Instant::now();
         }
 
         // Every record stamped before this has been written by the time
@@ -858,14 +856,14 @@ fn drive(
                 events,
                 syscalls,
                 triggered,
-                (accounting.is_some(), &mut pending_save),
-                (segment, &mut segmented),
+                &mut pending_save,
+                &mut segments,
             );
         }
 
         if started && published.elapsed() >= wait {
-            if accounting.is_none() {
-                processor.counts(events.counts());
+            if observing.is_none() {
+                processor.observe(monotonic(), events.counts());
             }
             (watch.publish)(Profile {
                 capture: processor.snapshot(),
@@ -889,12 +887,9 @@ fn drive(
     for snapshots in &mut snapshots {
         snapshots.finish(processor);
     }
-    let counts = events.counts();
-    if accounting.is_some() {
-        processor.counts_at(end, counts);
+    processor.observe(end, events.counts());
+    if observing.is_some() {
         processor.ingest(&[], None);
-    } else {
-        processor.counts(counts);
     }
     if pending_save.is_some()
         && let Some(save) = &mut watch.save
@@ -905,54 +900,47 @@ fn drive(
             events,
             syscalls,
             false,
-            (accounting.is_some(), &mut pending_save),
-            (segment, &mut segmented),
+            &mut pending_save,
+            &mut segments,
         );
     }
 }
 
-/// Saves the profile so far when `save`'s trigger fires, the program
-/// `triggered` one, or a segment of `every` since it was last `cut` is
-/// due: the window, or the segment, which ends there.
+/// Saves the profile so far when `save`'s trigger fires or the program
+/// `triggered` one, once the counts read then are `pending` no more, or
+/// when a segment of `segments`' length since its last cut is due.
 fn save_when_due(
     save: &mut Save<'_>,
     processor: &mut record::Processor,
     events: &perf::Events,
     syscalls: Option<&SyscallTrace>,
     triggered: bool,
-    (timed_counts, pending): (bool, &mut Option<u64>),
-    (every, cut): (Option<Duration>, &mut std::time::Instant),
+    pending: &mut Option<u64>,
+    segments: &mut Option<(Duration, std::time::Instant)>,
 ) {
-    let due = every.is_some_and(|every| cut.elapsed() >= every);
     let requested = save.trigger.swap(false, Ordering::Relaxed) || triggered;
-    if timed_counts {
-        if requested && pending.is_none() {
-            let counts = events.counts();
-            let at = monotonic();
-            processor.counts_at(at, counts);
-            *pending = Some(at);
-        }
-        if let Some(at) = *pending {
-            if processor.accounted_to().is_none_or(|end| end < at) {
-                return;
-            }
-            *pending = None;
-        } else if !due || processor.accounted_to().is_none() {
-            return;
-        }
-    } else if requested || due {
-        processor.counts(events.counts());
-    } else {
+    if requested && pending.is_none() {
+        let at = monotonic();
+        processor.observe(at, events.counts());
+        *pending = Some(at);
+    }
+
+    let due = segments
+        .as_ref()
+        .is_some_and(|(every, cut)| cut.elapsed() >= *every);
+    // Any counts counted at all are at or after 0.
+    let ready = pending.map_or(due && processor.observed(0), |at| processor.observed(at));
+    if !ready {
         return;
     }
+
+    *pending = None;
     record!("record: saved, segment due {due}");
     let _span = crate::span!("record save");
-    let capture = if every.is_some() {
+    if let Some((_, cut)) = segments {
         *cut = std::time::Instant::now();
-        processor.segment()
-    } else {
-        processor.snapshot()
-    };
+    }
+    let capture = processor.save();
 
     // The calls of the same span, on the same clock.
     let capture = syscalls.map_or_else(|| capture.clone(), |trace| trace.cut(&capture));
@@ -1571,13 +1559,13 @@ impl SyscallTrace {
         };
 
         let stacks = options.stacks.clone();
-        let kept = match (recording.window, recording.segment) {
-            (Some(window), _) => Kept::Window(
+        let kept = match recording.cuts {
+            Cuts::Window(window) => Kept::Window(
                 u64::try_from(window.as_nanos()).unwrap_or(u64::MAX),
                 std::collections::VecDeque::new(),
             ),
-            (None, Some(_)) => Kept::Since(std::collections::VecDeque::new()),
-            (None, None) => {
+            Cuts::Segments(_) => Kept::Since(std::collections::VecDeque::new()),
+            Cuts::Whole => {
                 let mut capture = SyscallCapture::new(stacks.clone());
                 capture.setting("syscalls", "bpf");
                 Kept::All(Box::new(capture))

@@ -1,3 +1,173 @@
+//! How a recording is cut: kept whole, to a rolling window, or into
+//! segments. A cut falls only where the events' counts were read and every
+//! record before them was processed, so a capture's counts and its records
+//! cover the same span (dev/profiling.md).
+
+use std::collections::{BTreeMap, VecDeque};
+
+use crate::backend::perf;
+use crate::profiler::Cuts;
+
+/// A moment where counts read were counted, and the accounts then.
+pub(super) struct Mark {
+    pub(super) time: u64,
+    pub(super) accounts: BTreeMap<u32, u64>,
+}
+
+pub(super) enum Cut {
+    /// Everything is kept, and counts count as they are read.
+    Whole,
+
+    /// Only the span since the newest mark at least `length` before the
+    /// newest is kept.
+    Window { length: u64, observed: Observed },
+
+    /// Only the span since the last segment ended, where `start` marks it.
+    Segments {
+        start: Option<Mark>,
+        observed: Observed,
+    },
+}
+
+/// The counts read as a cut recording goes on, each waiting until every
+/// record before it is processed, and the marks of those counted since,
+/// oldest first. A window keeps the marks it may yet start at, and
+/// segments only the newest.
+#[derive(Default)]
+pub(super) struct Observed {
+    waiting: VecDeque<(u64, perf::Counts)>,
+    marks: VecDeque<Mark>,
+}
+
+/// Where a capture ends.
+pub(super) enum End<'a> {
+    /// Where its records do: a whole recording.
+    Records,
+
+    /// Nowhere yet: no counts read have been counted.
+    Unobserved,
+
+    At(&'a Mark),
+}
+
+impl Cut {
+    pub(super) fn new(cuts: Cuts) -> Self {
+        match cuts {
+            Cuts::Whole => Self::Whole,
+            Cuts::Window(length) => Self::Window {
+                length: u64::try_from(length.as_nanos()).unwrap_or(u64::MAX),
+                observed: Observed::default(),
+            },
+            Cuts::Segments(_) => Self::Segments {
+                start: None,
+                observed: Observed::default(),
+            },
+        }
+    }
+
+    const fn observed_mut(&mut self) -> Option<&mut Observed> {
+        match self {
+            Self::Whole => None,
+            Self::Window { observed, .. } | Self::Segments { observed, .. } => Some(observed),
+        }
+    }
+
+    /// Takes counts read at `time`, giving back those to count now: a
+    /// whole recording's. A cut one's wait for the records before them.
+    pub(super) fn observe(&mut self, time: u64, counts: perf::Counts) -> Option<perf::Counts> {
+        let Some(observed) = self.observed_mut() else {
+            return Some(counts);
+        };
+
+        debug_assert!(
+            observed
+                .waiting
+                .back()
+                .map(|(at, _)| at)
+                .or_else(|| observed.marks.back().map(|mark| &mark.time))
+                .is_none_or(|last| *last <= time),
+            "counts read at {time} are older than the last read"
+        );
+        observed.waiting.push_back((time, counts));
+        None
+    }
+
+    /// The oldest counts waiting that were read by `time`, every record
+    /// before which is now processed, for the caller to count and mark.
+    pub(super) fn ripe(&mut self, time: u64) -> Option<(u64, perf::Counts)> {
+        self.observed_mut()?
+            .waiting
+            .pop_front_if(|(at, _)| *at <= time)
+    }
+
+    /// Marks `time`, where ripe counts were counted into `accounts`, and
+    /// gives back where a window now starts: nothing before it is kept.
+    pub(super) fn mark(&mut self, time: u64, accounts: &BTreeMap<u32, u64>) -> Option<u64> {
+        debug_assert!(
+            !matches!(self, Self::Whole),
+            "a whole recording counts what it reads at once"
+        );
+        let mark = Mark {
+            time,
+            accounts: accounts.clone(),
+        };
+
+        match self {
+            Self::Whole => None,
+            Self::Segments { observed, .. } => {
+                observed.marks.clear();
+                observed.marks.push_back(mark);
+                None
+            }
+            Self::Window { length, observed } => {
+                let marks = &mut observed.marks;
+                marks.push_back(mark);
+                let passed = time.saturating_sub(*length);
+                while marks.get(1).is_some_and(|mark| mark.time <= passed) {
+                    marks.pop_front();
+                }
+
+                marks
+                    .front()
+                    .map(|mark| mark.time)
+                    .filter(|start| *start <= passed)
+            }
+        }
+    }
+
+    /// Whether counts read at `at` have been counted, with every record
+    /// before them: at once in a whole recording.
+    pub(super) fn observed(&self, at: u64) -> bool {
+        match self.end() {
+            End::Records => true,
+            End::Unobserved => false,
+            End::At(mark) => mark.time >= at,
+        }
+    }
+
+    pub(super) fn end(&self) -> End<'_> {
+        match self {
+            Self::Whole => End::Records,
+            Self::Window { observed, .. } | Self::Segments { observed, .. } => {
+                observed.marks.back().map_or(End::Unobserved, End::At)
+            }
+        }
+    }
+
+    /// Where what is kept starts, if not where its records do.
+    pub(super) fn start(&self) -> Option<&Mark> {
+        match self {
+            Self::Whole => None,
+            Self::Segments { start, .. } => start.as_ref(),
+            Self::Window { length, observed } => {
+                let end = observed.marks.back()?.time;
+                let passed = end.saturating_sub(*length);
+                observed.marks.front().filter(|mark| mark.time <= passed)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! What each cut mode keeps after each event: a whole recording, a
@@ -13,6 +183,7 @@ mod tests {
     use crate::backend::perf;
     use crate::capture::{AccountKind, Capture};
     use crate::debug_info::DebugFileSearch;
+    use crate::profiler::Cuts;
     use crate::profiler::record::Processor;
 
     #[derive(Clone, Copy, PartialEq, Debug)]
@@ -39,9 +210,11 @@ mod tests {
     impl Recording {
         fn new(mode: Mode) -> Self {
             let mut processor = Processor::new(DebugFileSearch::default(), 64);
-            if mode == Mode::Window {
-                processor.keep_window(Duration::from_nanos(WINDOW));
-            }
+            processor.cuts(match mode {
+                Mode::Whole => Cuts::Whole,
+                Mode::Window => Cuts::Window(Duration::from_nanos(WINDOW)),
+                Mode::Segments => Cuts::Segments(Duration::from_secs(1)),
+            });
 
             Self { mode, processor }
         }
@@ -52,24 +225,16 @@ mod tests {
                 counted: time,
                 ..perf::Counts::default()
             };
-            if self.mode == Mode::Whole {
-                self.processor.counts(counts);
-            } else {
-                self.processor.counts_at(time, counts);
-            }
+            self.processor.observe(time, counts);
         }
 
         /// Whether a save asked for at `at` can be taken.
         fn observed(&self, at: u64) -> bool {
-            self.mode == Mode::Whole || self.processor.accounted_to().is_some_and(|end| end >= at)
+            self.processor.observed(at)
         }
 
         fn save(&mut self) -> Capture {
-            if self.mode == Mode::Segments {
-                self.processor.segment()
-            } else {
-                self.processor.snapshot()
-            }
+            self.processor.save()
         }
 
         /// Ends the recording at `time` as `drive` does once the events

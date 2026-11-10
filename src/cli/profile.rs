@@ -12,7 +12,7 @@ use super::format::plural;
 use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    CommandIdentity, Format, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
+    CommandIdentity, Cuts, Format, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
     ProbeSelection, Profile, PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy,
     StackView, Watch,
 };
@@ -687,7 +687,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     }
 
     if let Some(seconds) = args.window {
-        options.window = Some(Duration::try_from_secs_f64(seconds).context("--window")?);
+        options.cuts = Cuts::Window(Duration::try_from_secs_f64(seconds).context("--window")?);
     }
 
     if let Some(set) = &args.syscalls {
@@ -702,7 +702,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     if args.continuous.is_some() {
         let every = Duration::try_from_secs_f64(args.segment).context("--segment")?;
         anyhow::ensure!(!every.is_zero(), "--segment is a number of seconds");
-        options.segment = Some(every);
+        options.cuts = Cuts::Segments(every);
     }
 
     options.probes = match args.probes.as_str() {
@@ -780,7 +780,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
         }
     };
 
-    if let Some(window) = options.window {
+    if let Cuts::Window(window) = options.cuts {
         eprintln!(
             "microscope: keeping the last {:.3} s; `kill -USR2 {}` saves it",
             window.as_secs_f64(),
@@ -792,7 +792,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
         every: Duration::MAX,
         publish: &mut |_| {},
         stop: &stop,
-        save: (options.window.is_some() || continuous.is_some()).then_some(Save {
+        save: (options.cuts != Cuts::Whole).then_some(Save {
             trigger: &trigger,
             to: &mut save,
         }),
@@ -2362,8 +2362,9 @@ impl Profiling {
                 let mut options = RecordOptions::default();
                 if let [seconds] = window {
                     let seconds: f64 = seconds.parse().context("a window in seconds")?;
-                    options.window =
-                        Some(Duration::try_from_secs_f64(seconds).context("a window in seconds")?);
+                    options.cuts = Cuts::Window(
+                        Duration::try_from_secs_f64(seconds).context("a window in seconds")?,
+                    );
                 }
 
                 self.recording = Some(start_recording(pid, options));

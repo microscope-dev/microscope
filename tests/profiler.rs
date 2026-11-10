@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Attachment, CallNode, CommandIdentity, DEEP_STACK_COPY, GapReason, Granularity, MarkerKind,
-    Preset, ProbeSelection, Profile, Query, RecordError, RecordOptions, SMALL_STACK_COPY,
-    SampleSource, SampledStack, Save, StackCopy, StackEnding, StackView, Watch, ZONE_BEGAN_UNSEEN,
-    ZONE_ENDED_UNSEEN, record, record_attached, record_watched,
+    Attachment, CallNode, CommandIdentity, Cuts, DEEP_STACK_COPY, GapReason, Granularity,
+    MarkerKind, Preset, ProbeSelection, Profile, Query, RecordError, RecordOptions,
+    SMALL_STACK_COPY, SampleSource, SampledStack, Save, StackCopy, StackEnding, StackView, Watch,
+    ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, record, record_attached, record_watched,
 };
 use nix::sys::time::TimeValLike as _;
 use support::Scenario;
@@ -798,15 +798,15 @@ fn a_threads_time_off_its_cpu_is_each_sleep_and_each_preemption() {
 /// reaches past the start of one, and each change of the share is marked.
 #[test]
 fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {
-    budget_pauses(None);
+    budget_pauses(Cuts::Whole);
 }
 
 #[test]
 fn a_rolling_recording_counts_only_cpu_while_sampling_is_enabled() {
-    budget_pauses(Some(Duration::from_secs(10)));
+    budget_pauses(Cuts::Window(Duration::from_secs(10)));
 }
 
-fn budget_pauses(window: Option<Duration>) {
+fn budget_pauses(cuts: Cuts) {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("profile-phases"));
     command
@@ -814,7 +814,7 @@ fn budget_pauses(window: Option<Duration>) {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let options = RecordOptions {
-        window,
+        cuts,
         budget: Some(Budget {
             cpu: 0.001,
             period: Duration::from_millis(50),
@@ -971,7 +971,7 @@ fn a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span() {
         .stderr(Stdio::null());
     let window = Duration::from_millis(100);
     let options = RecordOptions {
-        window: Some(window),
+        cuts: Cuts::Window(window),
         ..RecordOptions::default()
     };
 
@@ -1047,7 +1047,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let options = RecordOptions {
-        segment: Some(Duration::from_millis(40)),
+        cuts: Cuts::Segments(Duration::from_millis(40)),
         ..RecordOptions::default()
     };
 
@@ -1161,7 +1161,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
 /// was recorded, and goes on to record all of the program.
 #[test]
 fn a_whole_recording_takes_a_save_asked_for_at_once_and_records_on() {
-    save_asked_for_at_once((None, None), "all", "off");
+    save_asked_for_at_once(Cuts::Whole, "all", "off");
 }
 
 /// A window longer than the program saves all so far once the counts
@@ -1169,7 +1169,7 @@ fn a_whole_recording_takes_a_save_asked_for_at_once_and_records_on() {
 #[test]
 fn a_window_takes_a_save_asked_for_at_once_and_records_on() {
     save_asked_for_at_once(
-        (Some(Duration::from_secs(10)), None),
+        Cuts::Window(Duration::from_secs(10)),
         "the last 10.000 s",
         "off",
     );
@@ -1180,7 +1180,7 @@ fn a_window_takes_a_save_asked_for_at_once_and_records_on() {
 #[test]
 fn segments_take_a_save_asked_for_at_once_and_record_on() {
     save_asked_for_at_once(
-        (None, Some(Duration::from_secs(10))),
+        Cuts::Segments(Duration::from_secs(10)),
         "all",
         "every 10.000 s",
     );
@@ -1190,11 +1190,7 @@ fn segments_take_a_save_asked_for_at_once_and_record_on() {
 /// before anything was recorded, which releases the program to its second
 /// phase: the save is taken once, as soon as it can be, and the recording
 /// says how it was cut in its `window` and `segments` settings.
-fn save_asked_for_at_once(
-    cuts: (Option<Duration>, Option<Duration>),
-    window: &str,
-    segments: &str,
-) {
+fn save_asked_for_at_once(cuts: Cuts, window: &str, segments: &str) {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("profile-phases"));
     command
@@ -1202,8 +1198,7 @@ fn save_asked_for_at_once(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let options = RecordOptions {
-        window: cuts.0,
-        segment: cuts.1,
+        cuts,
         ..RecordOptions::default()
     };
 
@@ -1237,7 +1232,7 @@ fn save_asked_for_at_once(
     assert!(on_stacks(profile).contains("second"));
 
     let (early, all) = (saved[0].span(), profile.span());
-    if cuts.1.is_some() {
+    if let Cuts::Segments(_) = cuts {
         assert_eq!(early.1, all.0, "the recording begins at the cut");
         assert!(profile.stacks().iter().all(|stack| stack.time >= all.0));
     } else {
@@ -1278,8 +1273,11 @@ fn a_segment_deletes_only_segments_older_than_kept() {
 fn timed_cuts_keep_exact_function_counts_including_inherited_threads() {
     for segmented in [false, true] {
         let options = RecordOptions {
-            window: (!segmented).then_some(Duration::from_secs(10)),
-            segment: segmented.then_some(Duration::from_millis(20)),
+            cuts: if segmented {
+                Cuts::Segments(Duration::from_millis(20))
+            } else {
+                Cuts::Window(Duration::from_secs(10))
+            },
             ..calls_of("leaf")
         };
         let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -3130,7 +3128,7 @@ fn a_programs_trigger_saves_the_window() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let options = RecordOptions {
-        window: Some(Duration::from_secs(10)),
+        cuts: Cuts::Window(Duration::from_secs(10)),
         ..RecordOptions::default()
     };
 
