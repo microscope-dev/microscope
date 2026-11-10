@@ -270,6 +270,17 @@ impl PythonSession {
         Self::attach_at_in(interpreter, fixture, name, false, &[]).await
     }
 
+    /// Attaches to `fixture`, run with `arguments`, at the checkpoint
+    /// `name`.
+    pub async fn attach_with_at(
+        interpreter: &str,
+        fixture: &str,
+        arguments: &[&str],
+        name: &str,
+    ) -> (Self, Vec<Vec<String>>) {
+        Self::attach_at_in(interpreter, fixture, name, false, arguments).await
+    }
+
     /// A real nested PID namespace, retaining the outer proc mount so the
     /// fixture can report its debugger-visible PID separately from `getpid()`.
     pub async fn attach_in_pid_namespace_at(

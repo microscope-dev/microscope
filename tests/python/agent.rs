@@ -682,6 +682,17 @@ async fn automatic_configuration_is_pending_until_acknowledged_and_edits_superse
             !second.pending_locations.is_empty(),
             "publication alone cannot establish readiness: {second:?}"
         );
+        let snapshot = session.scenario.snapshot().await;
+        let kept = snapshot
+            .breakpoints
+            .iter()
+            .find(|breakpoint| breakpoint.id == first)
+            .expect("the first breakpoint");
+        assert!(
+            kept.pending_locations.is_empty(),
+            "{interpreter}: the agent holds the old configuration or the new, and both keep the \
+             first site: {kept:?}"
+        );
         session.scenario.remove_breakpoint(first).await;
 
         for _ in 0..3 {
@@ -760,62 +771,76 @@ async fn a_free_threaded_monitoring_agent_refuses_thread_only_resume_without_con
     }
 }
 
+/// The thread that printed a checkpoint's report.
+fn main_thread(truth: &[Vec<String>]) -> microscope::ThreadId {
+    truth
+        .iter()
+        .find(|fields| fields[0] == "thread" && fields[3] == "printer")
+        .and_then(|fields| fields[1].parse().ok())
+        .map(microscope::ThreadId::new)
+        .expect("the fixture names its main thread")
+}
+
+/// Steps `main`, which a pause found running only Python, until it is
+/// among the evaluation loop's instructions: a pause can find it in a
+/// function the loop calls, as one that pops a frame.
+async fn step_into_the_loop(
+    session: &mut crate::session::PythonSession,
+    main: microscope::ThreadId,
+    interpreter: &str,
+) {
+    let mut steps = 0;
+
+    loop {
+        let trace = session.backtrace(main).await;
+        // The innermost native code, past the Python frames the loop runs
+        // and the functions inlined into it.
+        let looping = trace
+            .frames
+            .iter()
+            .find_map(|frame| frame.symbol.as_ref())
+            .is_some_and(|symbol| {
+                symbol.name.starts_with("_TAIL_CALL_")
+                    || symbol.name.starts_with("_PyEval_EvalFrameDefault")
+            });
+
+        if looping {
+            return;
+        }
+        steps += 1;
+        assert!(
+            steps < 100_000,
+            "{interpreter}: never stepped back into the loop: {trace:#?}"
+        );
+        session
+            .scenario
+            .operation(
+                "select the main thread",
+                session.scenario.handle().select_context(main),
+            )
+            .await;
+        session
+            .scenario
+            .step_to_stop(microscope::StepKind::Instruction)
+            .await;
+    }
+}
+
 /// A thread that only runs Python never calls the loop's entry: the agent
 /// installs from where a pause finds it, among the loop's instructions,
 /// which a tail-call build runs as a function each.
 #[tokio::test]
 async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
     use crate::session::PythonSession;
-    use microscope::{StopReason, ThreadId};
+    use microscope::StopReason;
     for interpreter in ["3.14", "standalone-3.14", "3.15t"] {
         let mut session = PythonSession::launch(interpreter, "control_spin.py", &[]).await;
         let truth = session.stop_at("initial").await;
-        let main = truth
-            .iter()
-            .find(|fields| fields[0] == "thread" && fields[3] == "printer")
-            .and_then(|fields| fields[1].parse().ok())
-            .map(ThreadId::new)
-            .expect("the fixture names its main thread");
+        let main = main_thread(&truth);
         session.go_on().await;
         session.wait_for_output("SPINNING").await;
-        // A pause can find the thread in a function the loop calls, as
-        // one that pops a frame: then step it until it is back in the loop.
         session.pause().await;
-        let mut steps = 0;
-
-        loop {
-            let trace = session.backtrace(main).await;
-            // The innermost native code, past the Python frames the loop
-            // runs and the functions inlined into it.
-            let looping = trace
-                .frames
-                .iter()
-                .find_map(|frame| frame.symbol.as_ref())
-                .is_some_and(|symbol| {
-                    symbol.name.starts_with("_TAIL_CALL_")
-                        || symbol.name.starts_with("_PyEval_EvalFrameDefault")
-                });
-
-            if looping {
-                break;
-            }
-            steps += 1;
-            assert!(
-                steps < 100_000,
-                "{interpreter}: never stepped back into the loop: {trace:#?}"
-            );
-            session
-                .scenario
-                .operation(
-                    "select the main thread",
-                    session.scenario.handle().select_context(main),
-                )
-                .await;
-            session
-                .scenario
-                .step_to_stop(microscope::StepKind::Instruction)
-                .await;
-        }
+        step_into_the_loop(&mut session, main, interpreter).await;
 
         session
             .scenario
@@ -870,6 +895,51 @@ async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_sessi
         assert!(
             matches!(reason, StopReason::Breakpoint { .. }),
             "{interpreter}: {reason:?}: {}",
+            session.output()
+        );
+        session.detach_and_finish().await;
+    }
+}
+
+/// A source request no thread has taken is withdrawn at detach, so the
+/// program never runs it, though its thread runs only Python and would
+/// take it at once.
+#[tokio::test]
+async fn a_detach_withdraws_a_request_no_thread_has_taken() {
+    use crate::session::PythonSession;
+    for interpreter in ["3.14", "3.15t"] {
+        let (mut session, truth) = PythonSession::attach_with_at(
+            interpreter,
+            "control_spin.py",
+            &["--release"],
+            "initial",
+        )
+        .await;
+        let main = main_thread(&truth);
+        session.go_on().await;
+        session.wait_for_output("SPINNING").await;
+        session.pause().await;
+        step_into_the_loop(&mut session, main, interpreter).await;
+
+        let site = session
+            .scenario
+            .add_breakpoint_spec(control_line("control_spin.py", "# TARGET_LINE"))
+            .await;
+        assert!(
+            site.pending_locations
+                .iter()
+                .any(|pending| pending.reason.contains("acknowledge")),
+            "{interpreter}: the request is outstanding: {site:?}"
+        );
+
+        // The releaser reads this once the detached program runs.
+        session.release();
+        let session = session.reattach_at("released").await;
+        assert!(
+            session
+                .output()
+                .contains("RELEASED TOOLS [None, None, None, None, None, None]"),
+            "{interpreter}: the withdrawn request ran: {}",
             session.output()
         );
         session.detach_and_finish().await;
