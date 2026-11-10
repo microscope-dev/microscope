@@ -266,20 +266,8 @@ impl ProcessGroup {
             })
             .await;
 
-        // The group is stopped once its driver has seen the root's stop.
-        let stopped = async {
-            loop {
-                match events.recv().await {
-                    Ok(GroupEvent::GroupStopped { .. }) => return Ok(()),
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(Error::RequestCancelled);
-                    }
-                }
-            }
-        };
         let attached = match attached {
-            Ok(_) => stopped.await,
+            Ok(_) => attach_seen(&mut events, &group.handle.shared, ATTACH_TIMEOUT).await,
             Err(error) => Err(error),
         };
 
@@ -461,6 +449,52 @@ impl GroupHandle {
 }
 
 const GROUP_EVENT_CAPACITY: usize = 256;
+
+/// How long an attach waits for the group to see the root's stop. The root
+/// has already stopped when the wait begins, so this is only the hop from
+/// its session to the group.
+const ATTACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Waits until the group has seen the root stop at its attach. When the
+/// group's events fell behind, the root's state says whether the stop was
+/// among those lost.
+async fn attach_seen(
+    events: &mut broadcast::Receiver<GroupEvent>,
+    shared: &Shared,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let ended = || Error::AttachFailed("its process ended before it stopped".into());
+    let seen = async {
+        loop {
+            match events.recv().await {
+                Ok(GroupEvent::GroupStopped { .. }) => return Ok(()),
+                Ok(GroupEvent::GroupExited | GroupEvent::MemberLost { .. }) => return Err(ended()),
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let root = shared
+                        .members
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .first()
+                        .map(|root| root.state.clone());
+                    match root {
+                        Some(MemberState::Stopped(_)) => return Ok(()),
+                        Some(MemberState::Exited(_) | MemberState::Lost) => return Err(ended()),
+                        _ => {}
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return Err(Error::RequestCancelled),
+            }
+        }
+    };
+    tokio::time::timeout(timeout, seen)
+        .await
+        .unwrap_or_else(|_| {
+            Err(Error::AttachFailed(
+                "the group did not see its process stop".into(),
+            ))
+        })
+}
 
 /// A member as the group's driver keeps it.
 struct Live {
@@ -1763,6 +1797,115 @@ mod stops_model;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A group whose root is in `state`, as an attach waits on it.
+    fn attaching(state: MemberState) -> Shared {
+        Shared {
+            members: Mutex::new(vec![Member {
+                number: 1,
+                process: None,
+                parent: None,
+                executed: None,
+                command: String::new(),
+                state,
+            }]),
+            handles: Mutex::default(),
+            copies: Mutex::default(),
+        }
+    }
+
+    /// How an attach's wait ends without waiting for its timeout.
+    async fn attach_answer(
+        events: &mut broadcast::Receiver<GroupEvent>,
+        root: MemberState,
+    ) -> Result<()> {
+        let hour = std::time::Duration::from_secs(3600);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            attach_seen(events, &attaching(root), hour),
+        )
+        .await
+        .expect("the attach is answered at once")
+    }
+
+    /// An attach ends at the group's stop, and fails at once when the
+    /// process exits or its session fails instead.
+    #[tokio::test]
+    async fn an_attach_ends_at_the_group_stop_and_fails_if_the_process_ends() {
+        let cases = [
+            (
+                GroupEvent::GroupStopped {
+                    member: 1,
+                    stop: crate::StopId::new(1),
+                    execution: None,
+                    reason: StopReason::Pause,
+                },
+                true,
+            ),
+            (GroupEvent::GroupExited, false),
+            (GroupEvent::MemberLost { member: 1 }, false),
+        ];
+        for (event, done) in cases {
+            let (sender, mut events) = broadcast::channel(4);
+            sender.send(event.clone()).expect("send the event");
+            let attached = attach_answer(&mut events, MemberState::Running).await;
+            assert_eq!(attached.is_ok(), done, "{event:?}: {attached:?}");
+            if !done {
+                assert!(
+                    matches!(attached, Err(Error::AttachFailed(_))),
+                    "{attached:?}"
+                );
+            }
+        }
+    }
+
+    /// When the group's events fell behind, the stop may be among those
+    /// lost, and the root's state says how the attach went.
+    #[tokio::test]
+    async fn an_attach_whose_events_fell_behind_reads_the_roots_state() {
+        let cases = [
+            (MemberState::Stopped(StopReason::Pause), true),
+            (MemberState::Exited(crate::ExitStatus::Code(0)), false),
+            (MemberState::Lost, false),
+        ];
+        for (state, done) in cases {
+            let (sender, mut events) = broadcast::channel(1);
+            for member in [2, 3] {
+                sender
+                    .send(GroupEvent::MemberDetached { member })
+                    .expect("send the event");
+            }
+            let attached = attach_answer(&mut events, state.clone()).await;
+            assert_eq!(attached.is_ok(), done, "{state:?}: {attached:?}");
+        }
+    }
+
+    /// An attach the group never sees stop fails instead of waiting on,
+    /// whether or not its events fell behind.
+    #[tokio::test]
+    async fn an_attach_the_group_never_sees_stop_times_out() {
+        for lagged in [false, true] {
+            let (sender, mut events) = broadcast::channel(1);
+            if lagged {
+                for member in [2, 3] {
+                    sender
+                        .send(GroupEvent::MemberDetached { member })
+                        .expect("send the event");
+                }
+            }
+            let attached = attach_seen(
+                &mut events,
+                &attaching(MemberState::Running),
+                std::time::Duration::from_millis(20),
+            )
+            .await;
+            assert!(
+                matches!(attached, Err(Error::AttachFailed(_))),
+                "lagged {lagged}: {attached:?}"
+            );
+            drop(sender);
+        }
+    }
 
     /// A driver for an unlaunched root, and the group's events.
     fn driver(scope: StopScope) -> (Driver, broadcast::Receiver<GroupEvent>) {

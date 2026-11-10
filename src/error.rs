@@ -468,6 +468,11 @@ pub enum Error {
 
     #[error("debugger shutdown timed out")]
     ShutdownTimedOut,
+
+    /// The attached process was stopped, but its group did not become
+    /// stopped with it.
+    #[error("the attach did not finish: {0}")]
+    AttachFailed(Arc<str>),
 }
 
 /// The result of a debugger request.
