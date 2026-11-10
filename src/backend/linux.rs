@@ -183,11 +183,6 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
     debug_registers::fuzz(data);
 }
 
-#[cfg(feature = "fuzzing")]
-pub fn fuzz_glibc_tls(data: &[u8]) {
-    tls::fuzz_glibc(data);
-}
-
 /// Each thread's id and thread pointer in process `pid`, which may be
 /// running, from its C library's own lists of its threads.
 pub fn running_thread_pointers(pid: u32) -> std::result::Result<Vec<(u32, u64)>, String> {

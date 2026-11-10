@@ -2071,6 +2071,56 @@ mod tests {
         vec![marker; usize::try_from(PAGE_SIZE).unwrap()]
     }
 
+    /// What parsing keeps of a segment: the pages the kernel saved, not
+    /// the ones it left out, and of a segment the file's end cuts, only
+    /// the bytes before the cut. The byte-model properties build their
+    /// cores without parsing.
+    #[test]
+    fn parsing_keeps_only_the_saved_bytes_a_file_holds() {
+        let mut bytes = core_bytes(
+            &minimal_notes(),
+            &[
+                // Kernel form: the first page saved, the second omitted.
+                Load {
+                    address: 0x10000,
+                    memory: 0x2000,
+                    saved: page(0xa1),
+                },
+                // Cut half way through by the end of the file.
+                Load {
+                    address: 0x20000,
+                    memory: 0x1000,
+                    saved: page(0xc3),
+                },
+            ],
+        );
+        bytes.truncate(bytes.len() - 0x800);
+        let core = parse_bytes(bytes).unwrap();
+        let read = |address: u64| {
+            let mut word = [0; 4];
+            core.read_saved(address, &mut word).map(|()| word)
+        };
+
+        assert_eq!(read(0x10ffc).unwrap(), [0xa1; 4], "a saved page");
+        assert!(
+            matches!(read(0x11000), Err(CoreMemoryError::Unavailable)),
+            "an omitted page"
+        );
+        assert_eq!(
+            read(0x207fc).unwrap(),
+            [0xc3; 4],
+            "the prefix before the cut"
+        );
+        assert!(
+            matches!(read(0x207fe), Err(CoreMemoryError::Unavailable)),
+            "across the cut"
+        );
+        assert!(
+            matches!(read(0x20800), Err(CoreMemoryError::Unavailable)),
+            "past the cut"
+        );
+    }
+
     /// An image's first page: an ELF header whose one note segment, at
     /// `note_offset`, holds a GNU build-id.
     fn image_header(note_offset: usize, build_id: &[u8]) -> Vec<u8> {

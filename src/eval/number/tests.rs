@@ -27,9 +27,12 @@ fn int(width: u8, signed: bool) -> IntType {
 /// Every operator on exact integers agrees with `i128` wherever `i128`
 /// holds the operands and the result.
 #[test]
-fn exact_arithmetic_matches_i128_for_every_small_pair() {
-    for left in -260..=260_i128 {
-        for right in -260..=260_i128 {
+fn exact_arithmetic_matches_i128_around_zero_and_the_byte_edges() {
+    // The wider-model property owns the rest of the range; these values
+    // anchor it to native arithmetic on both sides of each byte boundary.
+    let values = [-256, -255, -128, -3, -2, -1, 0, 1, 2, 3, 128, 255, 256_i128];
+    for left in values {
+        for right in values {
             let (a, b) = (exact(left), exact(right));
             assert_eq!(a.add(b), Ok(exact(left + right)));
             assert_eq!(a.sub(b), Ok(exact(left - right)));

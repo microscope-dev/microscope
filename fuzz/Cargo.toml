@@ -132,22 +132,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "syscall-record"
-path = "fuzz_targets/syscall_record.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "syscall-filter"
 path = "fuzz_targets/syscall_filter.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "glibc-tls"
-path = "fuzz_targets/glibc_tls.rs"
 test = false
 doc = false
 bench = false

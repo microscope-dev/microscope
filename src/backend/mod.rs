@@ -531,11 +531,6 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
     linux::fuzz_debug_register_plan(data);
 }
 
-#[cfg(feature = "fuzzing")]
-pub fn fuzz_glibc_tls(data: &[u8]) {
-    linux::fuzz_glibc_tls(data);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

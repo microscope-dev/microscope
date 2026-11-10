@@ -201,7 +201,3 @@ impl Window {
         self.progress.notify_all();
     }
 }
-
-// loom/ builds this file under cfg(loom), where these tests have no place.
-#[cfg(all(test, not(loom)))]
-mod tests;

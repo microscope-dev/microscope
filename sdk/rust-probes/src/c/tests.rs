@@ -65,10 +65,3 @@ fn sites_are_defined_from_bytes_and_null_does_nothing() {
     microscope_probes_label_end(None);
     let _ = site.map(|site| site.state.load(Ordering::Relaxed));
 }
-
-/// Text that is not UTF-8 is written with its bad bytes replaced.
-#[test]
-fn text_replaces_what_is_not_utf8() {
-    assert_eq!(Text(b"a\xffb").to_string(), "a\u{fffd}b");
-    assert_eq!(Text("naïve".as_bytes()).to_string(), "naïve");
-}

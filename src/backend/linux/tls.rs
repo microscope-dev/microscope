@@ -199,12 +199,6 @@ pub(super) fn tls_address(
         .map_err(|error| error.to_string().into())
 }
 
-/// Locates glibc TLS blocks in arbitrary memory for the fuzz harness.
-#[cfg(feature = "fuzzing")]
-pub(super) fn fuzz_glibc(data: &[u8]) {
-    glibc::fuzz(data);
-}
-
 /// Each thread's id and thread pointer in a process that uses glibc,
 /// which may be running: glibc's lists of its threads, read from memory
 /// without stopping it. A thread whose control block does not point to

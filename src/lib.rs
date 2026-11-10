@@ -354,14 +354,6 @@ pub fn fuzz_debug_register_plan(data: &[u8]) {
     backend::fuzz_debug_register_plan(data);
 }
 
-/// Locates glibc TLS blocks in loader state made of arbitrary bytes, for
-/// the fuzz harness.
-#[cfg(feature = "fuzzing")]
-#[doc(hidden)]
-pub fn fuzz_glibc_tls(data: &[u8]) {
-    backend::fuzz_glibc_tls(data);
-}
-
 /// Loads a module's debug information from its file's bytes, or from a
 /// file the bytes describe, and asks the loaded image every question the
 /// dump tool does, for the fuzz harness.

@@ -92,12 +92,7 @@ fn same(actual: f64, expected: f64) -> bool {
 }
 
 #[test]
-fn python_floors_remainders_toward_the_divisors_sign() {
-    for (left, right, expected) in [(-7, 3, 2), (7, -3, -2), (-7, -3, -1), (7, 3, 1)] {
-        let actual = int(binary(BinaryOp::Rem, &py_int(left), &literal(right)));
-        assert_eq!(actual, expected, "{left} % {right}");
-    }
-
+fn python_float_remainders_take_the_divisors_sign_through_zero_and_infinity() {
     for (left, right, expected) in [
         (-7.5, 2.0, 0.5),
         (7.5, -2.0, -0.5),

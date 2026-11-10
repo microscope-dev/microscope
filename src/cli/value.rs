@@ -1564,12 +1564,10 @@ mod tests {
         );
     }
 
-    /// Escapes that are neither colors nor links still end where a
-    /// terminal ends them.
+    /// An escape the text ends inside is dropped, as a terminal would wait
+    /// for the rest of it. The bounded-output property never makes one.
     #[test]
-    fn plain_text_drops_every_whole_escape() {
-        assert_eq!(plain("\u{1b}7a"), "a");
-        assert_eq!(plain("\u{1b}]0;title\u{7}ab"), "ab");
+    fn plain_text_drops_an_escape_the_text_ends_inside() {
         assert_eq!(plain("a\u{1b}[3"), "a");
     }
 

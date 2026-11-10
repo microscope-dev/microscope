@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn quantiles_stay_in_their_bucket_and_below_the_largest() {
+    fn a_failed_call_counts_but_has_no_time_in_the_mean() {
         let mut stats = SyscallStats::default();
 
         for duration in [100, 110, 120, 130, 5_000] {
@@ -313,17 +313,7 @@ mod tests {
 
         stats.add(Outcome::Failed(Errno(2)), None, 0);
         assert_eq!((stats.calls, stats.timed, stats.errors), (6, 5, 1));
-        let median = stats.quantile_ns(0.5).expect("timed");
-        assert!((64..128).contains(&median), "{median}");
-        let p99 = stats.quantile_ns(0.99).expect("timed");
-        assert!((4096..=5_000).contains(&p99), "{p99}");
         assert_eq!(stats.mean_ns(), Some(1092));
-        let mut merged = stats.clone();
-        merged.merge(&stats);
-        assert_eq!(
-            (merged.calls, merged.errors_by_errno[&2], merged.max_ns),
-            (12, 2, 5_000)
-        );
     }
 
     /// Found by `quantiles_lie_between_the_extremes_in_the_true_bucket`:

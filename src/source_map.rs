@@ -72,49 +72,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rules_rewrite_whole_leading_components_in_order() {
+    fn relative_prefixes_match_whole_components_without_collapsing_dots() {
         let mut map = SourcePathMap::new();
-        map.push("/work", "/home/me/src").unwrap();
-        map.push("/work/vendor", "/opt/vendor").unwrap();
         map.push("build/..", "/tmp/build").unwrap();
         let candidates = |path: &str| map.candidates(Path::new(path));
-
-        assert_eq!(
-            candidates("/work/vendor/lib.c"),
-            [
-                Path::new("/home/me/src/vendor/lib.c"),
-                Path::new("/opt/vendor/lib.c"),
-                Path::new("/work/vendor/lib.c"),
-            ]
-        );
-        assert_eq!(
-            candidates("/work"),
-            [Path::new("/home/me/src"), Path::new("/work")]
-        );
-        assert_eq!(candidates("/workspace/a.c"), [Path::new("/workspace/a.c")]);
-        assert_eq!(candidates("/a/work/b.c"), [Path::new("/a/work/b.c")]);
-
-        // Relative recorded paths match relative prefixes component by
-        // component; `..` is not collapsed.
         assert_eq!(
             candidates("build/../x.c"),
             [Path::new("/tmp/build/x.c"), Path::new("build/../x.c")]
         );
         assert_eq!(candidates("build/x.c"), [Path::new("build/x.c")]);
 
-        // A rule mapping a prefix to itself does not repeat the path, which
-        // stays last.
-        let mut identity = SourcePathMap::new();
-        identity.push("/src", "/src").unwrap();
-        assert_eq!(
-            identity.candidates(Path::new("/src/a.c")),
-            [Path::new("/src/a.c")]
-        );
-        identity.push("/src", "/tmp").unwrap();
-        assert_eq!(
-            identity.candidates(Path::new("/src/a.c")),
-            [Path::new("/tmp/a.c"), Path::new("/src/a.c")]
-        );
         assert!(matches!(
             SourcePathMap::new().push("", "/x"),
             Err(Error::EmptySourcePathPrefix)

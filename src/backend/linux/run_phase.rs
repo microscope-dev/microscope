@@ -395,8 +395,6 @@ mod tests {
     use crate::protocol::{ExceptionInfo, StopReason};
     use crate::{ExitStatus, VirtualAddress};
 
-    use super::super::classify::visible_stop_priority;
-
     const THREADS: [i32; 3] = [100, 101, 102];
 
     fn reason(kind: u8) -> StopReason {
@@ -451,8 +449,27 @@ mod tests {
         ]
     }
 
+    /// Which of two reasons a barrier publishes, written out here rather
+    /// than taken from the controller's own ranking, so a change to that
+    /// ranking is a change to this table: a pause or attach gives way to a
+    /// signal, a signal to a breakpoint, a watchpoint or the triggering
+    /// thread's exit, those to an exec,
+    /// and everything to a stop the controller cannot classify.
+    fn rank(reason: &StopReason) -> u8 {
+        match reason {
+            StopReason::Pause | StopReason::Attach => 0,
+            StopReason::Exception(_) => 1,
+            StopReason::Breakpoint { .. }
+            | StopReason::Watchpoint { .. }
+            | StopReason::ThreadExited { .. } => 2,
+            StopReason::Exec { .. } => 3,
+            StopReason::Unclassifiable { .. } => 4,
+            other => unreachable!("the model makes no {other:?}"),
+        }
+    }
+
     fn priority(barrier: &StopBarrier) -> Option<u8> {
-        barrier.reason().map(visible_stop_priority)
+        barrier.reason().map(rank)
     }
 
     proptest! {
@@ -487,7 +504,7 @@ mod tests {
 
                         // The more important reason wins; an equal one
                         // does not displace the first.
-                        let offered_priority = visible_stop_priority(&offered);
+                        let offered_priority = rank(&offered);
                         let wins = before.is_none_or(|before| offered_priority > before);
                         prop_assert_eq!(
                             priority(&barrier),
@@ -503,7 +520,7 @@ mod tests {
                     Op::OfferUnowned(kind) => {
                         barrier.offer(None, reason(kind));
                         prop_assert_eq!(barrier.triggering_thread(), triggering);
-                        prop_assert!(priority(&barrier) >= Some(visible_stop_priority(&reason(kind))));
+                        prop_assert!(priority(&barrier) >= Some(rank(&reason(kind))));
                     }
                     Op::Pause => {
                         barrier.pause();

@@ -383,8 +383,8 @@ change only the lines. `microscope report` always prints microseconds.
 ## Testing
 
 - Pure parts, such as the filter, decoders, statistics, and the budget's
-  steps, have unit tests and fuzz targets (`syscall_filter`,
-  `syscall_record`).
+  steps, have unit tests, and the filter has a fuzz target
+  (`syscall_filter`).
 - `tests/syscalls.rs` holds the CLI's output to strace's, using the ptrace
   engine, which needs no privilege. Its `bpf` module runs the dual-engine
   tests through `just test-bpf`. Times differ between runs, so the tests

@@ -521,9 +521,8 @@ probe-cost COUNT="100000000": build-test-programs
 # Runs one fuzz target: expression-parse, dwarf-expression, core-dump, dispatch,
 # elf-symbols, gopclntab, disassembly, debug-register-plan, dap-transport,
 # dap-request, views, image, perf-records, capture, profile-import,
-# syscall-record, syscall-filter, glibc-tls, js-source-map, cdp-message,
-# dwarf-load, jit-code, runtime-go, runtime-tokio, runtime-python, or
-# runtime-node. Arguments go to libFuzzer.
+# syscall-filter, js-source-map, cdp-message, dwarf-load, jit-code,
+# runtime-go, runtime-tokio, runtime-python, or runtime-node. Arguments go to libFuzzer.
 # The runtime targets load a test program, CPython, or Node from the dev
 # shell. A first load after a build fills the image cache and takes about
 # 20 seconds, so warm it with one run before forking workers.
