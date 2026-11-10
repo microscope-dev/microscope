@@ -1247,16 +1247,27 @@ fn a_go_programs_complete_stacks_all_end_where_stacks_begin() {
     let recording = record(go_command("o2", 40), &options).expect("record");
     assert!(recording.status.success());
     let stacks = recording.profile.stacks();
-    let complete = stacks
+    // A stack sampled in the program's own code never crossed a stack
+    // switch, so it is whole. One in the runtime may be on the system stack,
+    // whose switch cuts it short, the more often the busier the machine.
+    let in_main = stacks
         .iter()
-        .filter(|stack| stack.ending == StackEnding::Complete)
-        .count();
-    // 78% to 92% over runs; a regression that cuts stacks short shows.
+        .filter(|stack| {
+            stack
+                .functions
+                .first()
+                .is_some_and(|function| function.starts_with("main."))
+        })
+        .collect::<Vec<_>>();
     assert!(
-        complete * 2 > stacks.len(),
-        "{complete} of {}",
+        in_main.len() >= 10,
+        "{} of {} in main",
+        in_main.len(),
         stacks.len()
     );
+    for stack in &in_main {
+        assert_eq!(stack.ending, StackEnding::Complete, "{:?}", stack.functions);
+    }
     for stack in &stacks {
         if stack.ending == StackEnding::Complete {
             let outermost = stack.functions.last().map(String::as_str);
