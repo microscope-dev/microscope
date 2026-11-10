@@ -2503,6 +2503,8 @@ for fixture in hit-count-threads hit-count-spin hit-count-signals; do
     build_fixture gcc "$c_fixtures_dir/${fixture}.c" "$output_dir/${fixture}" \
         -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie -pthread
 done
+build_fixture gcc "$c_fixtures_dir/trap-jump.c" "$output_dir/trap-jump" \
+    -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/watch-threads.c" "$output_dir/watch-threads" \
     -O0 -g3 -gdwarf-5 -fno-omit-frame-pointer -fPIE -pie -pthread
 build_fixture gcc "$c_fixtures_dir/watch-steady.c" "$output_dir/watch-steady" \
