@@ -1193,11 +1193,16 @@ mod tests {
         assert_eq!(installation.deadline(), Some(now + ACK_TIMEOUT));
         installation.start_deadline(now + Duration::from_secs(1));
         assert_eq!(installation.deadline(), Some(now + ACK_TIMEOUT));
-        installation.pause_deadline(now);
+        // A second of the budget was spent running before the stop; only
+        // the rest is left once the program runs again.
+        installation.pause_deadline(now + Duration::from_secs(1));
         assert_eq!(installation.deadline(), None);
         let later = now + Duration::from_secs(3600);
         installation.start_deadline(later);
-        assert_eq!(installation.deadline(), Some(later + ACK_TIMEOUT));
+        assert_eq!(
+            installation.deadline(),
+            Some(later + ACK_TIMEOUT.saturating_sub(Duration::from_secs(1)))
+        );
         let mut installation = awaiting_with(Timer::Expired);
         installation.pause_deadline(later);
         installation.start_deadline(later);
@@ -1730,19 +1735,6 @@ mod tests {
         assert!(
             installation(&harness).is_some(),
             "running again after the internal stop"
-        );
-    }
-
-    #[test]
-    fn interrupted_running_periods_share_one_acknowledgement_budget() {
-        let now = Instant::now();
-        let mut installation = awaiting_with(Timer::Running(now + Duration::from_secs(2)));
-        installation.pause_deadline(now);
-        let later = now + Duration::from_secs(3600);
-        installation.start_deadline(later);
-        assert_eq!(
-            installation.deadline(),
-            Some(later + Duration::from_secs(2))
         );
     }
 

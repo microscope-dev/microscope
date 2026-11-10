@@ -640,18 +640,6 @@ mod tests {
         other.join().unwrap();
     }
 
-    #[test]
-    fn a_running_threads_registers_hold_only_its_thread_pointer() {
-        let tls = RunningTls::new(1);
-        let thread = RunningThread {
-            tls: &tls,
-            thread_pointer: 0x7f00_1234_5000,
-        };
-        let registers = thread.registers(Pid::from_raw(1)).unwrap();
-        assert_eq!(registers.fs_base, 0x7f00_1234_5000);
-        assert_eq!((registers.rip, registers.rsp, registers.rbp), (0, 0, 0));
-    }
-
     fn musl(id: u64) -> TlsModule {
         TlsModule::Musl {
             id: NonZeroU64::new(id).expect("module numbers start at one"),

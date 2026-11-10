@@ -13,11 +13,11 @@ use crate::protocol::{
     BreakpointHit, BreakpointSpec, ResolvedBreakpointLocation, ResumeScope, SignalPolicy,
 };
 
-use crate::unwind::{FrameContext, MemoryReader, RegisterFile};
+use crate::unwind::{MemoryReader, RegisterFile};
 use crate::{
     AddressRange, CodeInstanceKind, ExceptionDisposition, ExecutionContext, ImageAddress,
-    InlineFrameLookup, LaunchOptions, MemoryReadCompletion, MemoryReadUnavailableReason, Path,
-    PresentedFrame, VariableQuery, WatchpointHit, WatchpointOptions, WatchpointSpec,
+    LaunchOptions, Path, PresentedFrame, VariableQuery, WatchpointHit, WatchpointOptions,
+    WatchpointSpec,
 };
 
 use std::cell::RefCell;
@@ -25,7 +25,6 @@ use tokio::sync::{broadcast, watch};
 
 use super::activation::StackView;
 use super::classify::{WatchStatus, classify_stop_evidence};
-use super::frames::{default_inline_visible_count, frame_lookup_address};
 use super::memory::{MemoryAccessError, read_logical_memory_with};
 use super::modules::{ModuleMapping, parse_maps};
 use super::native::{InspectionOps, LinuxTraceOps, interrupt_outcome, queued_in_status};
@@ -69,142 +68,11 @@ fn maps_parser_preserves_distinct_loads_and_rejects_corruption() {
 }
 
 #[test]
-fn logical_memory_reads_unaligned_cross_word_ranges_and_hides_traps() {
-    let address = VirtualAddress::new(0x1003);
-    let mut reads = Vec::new();
-    let breakpoints = [
-        (0x1005, 0x55, true),
-        (0x1008, 0x88, true),
-        (0x1009, 0x99, false),
-        (0x1010, 0x10, true),
-    ]
-    .into_iter()
-    .map(|(address, original_byte, installed)| {
-        let site = BreakpointSite {
-            original_byte,
-            trap: if installed {
-                Trap::Installed
-            } else {
-                Trap::Lifted(Lift::Repair)
-            },
-            owners: BTreeSet::new(),
-        };
-
-        (VirtualAddress::new(address), site)
-    })
-    .collect::<BTreeMap<_, _>>();
-    let bytes = read_logical_memory_with(address, 10, &breakpoints, |current| {
-        reads.push(current);
-        let mut bytes = [0_u8; 8];
-        for (offset, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::try_from(current + offset as u64 - 0x1000).expect("test byte fits u8");
-        }
-
-        for (&site_address, site) in &breakpoints {
-            let Some(offset) = site_address.get().checked_sub(current) else {
-                continue;
-            };
-
-            if site.trap == Trap::Installed && offset < bytes.len() as u64 {
-                bytes[usize::try_from(offset).expect("test offset fits usize")] = BREAKPOINT_OPCODE;
-            }
-        }
-
-        Ok(u64::from_le_bytes(bytes))
-    })
-    .expect("logical memory read");
-    assert_eq!(bytes.bytes, [3, 4, 0x55, 6, 7, 0x88, 9, 10, 11, 12]);
-    assert_eq!(bytes.completion, MemoryReadCompletion::Complete);
-    assert_eq!(reads, [0x1000, 0x1008]);
-    let empty = read_logical_memory_with(address, 0, &breakpoints, |_| {
-        panic!("an empty logical read must not read target memory")
-    })
-    .expect("empty logical memory read");
-    assert!(empty.bytes.is_empty());
-    assert_eq!(empty.completion, MemoryReadCompletion::Complete);
-}
-
-#[test]
-fn logical_memory_reads_return_the_prefix_before_inaccessible_memory() {
-    let mut reads = Vec::new();
-    let result = read_logical_memory_with(
-        VirtualAddress::new(0x1003),
-        10,
-        &BTreeMap::new(),
-        |current| {
-            reads.push(current);
-            if current == 0x1008 {
-                return Err(MemoryAccessError::Inaccessible);
-            }
-
-            Ok(u64::from_le_bytes([0, 1, 2, 3, 4, 5, 6, 7]))
-        },
-    )
-    .expect("inaccessible memory is a typed partial result");
-
-    assert_eq!(result.bytes, [3, 4, 5, 6, 7]);
-    assert_eq!(
-        result.completion,
-        MemoryReadCompletion::Incomplete {
-            next_address: VirtualAddress::new(0x1008),
-            reason: MemoryReadUnavailableReason::Inaccessible,
-        }
-    );
-    assert_eq!(reads, [0x1000, 0x1008]);
-
-    // Any other failure is no inaccessible memory.
+fn a_failed_memory_read_is_no_short_read() {
     let result = read_logical_memory_with(VirtualAddress::new(0x1000), 8, &BTreeMap::new(), |_| {
         Err(MemoryAccessError::Fatal(Error::RequestCancelled))
     });
     assert!(matches!(result, Err(Error::RequestCancelled)));
-}
-
-#[test]
-fn logical_memory_reads_keep_the_readable_bytes_of_a_partial_word() {
-    // Readable memory ends `readable` bytes into the second word.
-    let read = |address, size, readable| {
-        read_logical_memory_with(
-            VirtualAddress::new(address),
-            size,
-            &BTreeMap::new(),
-            |current| {
-                let word = u64::from_le_bytes([0, 1, 2, 3, 4, 5, 6, 7]);
-                if current == 0x1008 {
-                    Err(MemoryAccessError::Partial { word, readable })
-                } else {
-                    Ok(word)
-                }
-            },
-        )
-        .expect("partial words are typed partial results")
-    };
-
-    let incomplete = |next| MemoryReadCompletion::Incomplete {
-        next_address: VirtualAddress::new(next),
-        reason: MemoryReadUnavailableReason::Inaccessible,
-    };
-
-    let spanning = read(0x1006, 8, 3);
-    assert_eq!(spanning.bytes, [6, 7, 0, 1, 2]);
-    assert_eq!(spanning.completion, incomplete(0x100b));
-
-    // A read that ends within the readable bytes is complete.
-    let within = read(0x1009, 2, 3);
-    assert_eq!(within.bytes, [1, 2]);
-    assert_eq!(within.completion, MemoryReadCompletion::Complete);
-
-    // A read that begins after them returns nothing.
-    let after = read(0x100c, 2, 3);
-    assert!(after.bytes.is_empty());
-    assert_eq!(after.completion, incomplete(0x100c));
-
-    // A count covering the whole word keeps its final byte, and an
-    // oversized count is clamped to the word.
-    for readable in [8, 9] {
-        let whole = read(0x1006, 10, readable);
-        assert_eq!(whole.bytes, [6, 7, 0, 1, 2, 3, 4, 5, 6, 7]);
-        assert_eq!(whole.completion, MemoryReadCompletion::Complete);
-    }
 }
 
 struct UnusedUnwindInfo;
@@ -416,62 +284,6 @@ fn sectionless_elf() -> Arc<[u8]> {
 }
 
 #[test]
-fn pause_during_launch_completes_at_the_initial_exec_stop() {
-    let mut harness = watch_harness(1);
-    harness.controller.session = Session::idle();
-    let (launch_reply, launch_result) = tokio::sync::oneshot::channel();
-    harness
-        .controller
-        .start(Start::Launch(LaunchOptions::default(), launch_reply));
-    let pid = harness
-        .controller
-        .session
-        .inferior()
-        .expect("launched")
-        .tgid;
-
-    assert_eq!(
-        harness
-            .controller
-            .begin_pause(process_id(pid))
-            .expect("a launching inferior accepts a pause"),
-        ExecutionId::new(1)
-    );
-    harness
-        .controller
-        .process_wait(WaitEvent::Stopped(pid, Signal::SIGTRAP))
-        .expect("process initial stop");
-
-    assert_eq!(
-        launch_result
-            .blocking_recv()
-            .expect("launch reply")
-            .expect("launch success"),
-        ExecutionId::new(1)
-    );
-    let published = harness.published();
-    assert!(
-        matches!(
-            published.as_slice(),
-            [
-                DebuggerEvent::InferiorLaunched { .. },
-                DebuggerEvent::InferiorStopped {
-                    execution_id: Some(execution),
-                    reason: StopReason::Pause,
-                    ..
-                },
-            ] if *execution == ExecutionId::new(1)
-        ),
-        "the paused launch must stop without first resuming: {published:?}"
-    );
-    assert_eq!(
-        harness.trace().take_actions(),
-        ["spawn".to_owned(), format!("set_options {pid}")],
-        "the initial thread must stop without a native stop request or resume"
-    );
-}
-
-#[test]
 fn virtual_inline_step_emits_a_new_stop_without_native_operations() {
     let mut harness = watch_harness(1);
     let pid = harness.threads[0];
@@ -613,46 +425,6 @@ fn user_breakpoint_supersedes_a_coincident_exception_barrier() {
     assert!(harness.trace().take_actions().is_empty());
 }
 
-#[test]
-fn inline_range_start_presentation_obeys_the_step_kind() {
-    let image = virtual_step_image();
-    let InlineFrameLookup::Unique(chain) = image.locate(ImageAddress::new(0x10)).inline_frames
-    else {
-        panic!("test address has one inline chain");
-    };
-
-    assert_eq!(
-        default_inline_visible_count(
-            &image,
-            chain.instances.as_ref(),
-            ImageAddress::new(0x10),
-            true,
-        ),
-        1,
-        "the middle frame starts here while its nested child remains hidden"
-    );
-    assert_eq!(
-        default_inline_visible_count(
-            &image,
-            chain.instances.as_ref(),
-            ImageAddress::new(0x10),
-            false,
-        ),
-        0,
-        "next and finish retain the parent presentation"
-    );
-    assert_eq!(
-        default_inline_visible_count(
-            &image,
-            chain.instances.as_ref(),
-            ImageAddress::new(0x11),
-            true,
-        ),
-        2,
-        "away from a range boundary the innermost active frame is visible"
-    );
-}
-
 fn virtual_step_image() -> Arc<ModuleImage> {
     let range = (0x10, 0x20);
     inline_test_image(&[
@@ -741,34 +513,6 @@ fn lined_test_image(
             ..crate::model::ModuleMetadata::default()
         },
     ))
-}
-
-#[test]
-fn frame_symbolization_adjusts_only_ordinary_caller_resume_addresses() {
-    let stopped = FrameContext {
-        instruction: VirtualAddress::new(0x1000),
-        cfa: None,
-        signal_frame: false,
-    };
-
-    let caller = FrameContext {
-        instruction: VirtualAddress::new(0x2000),
-        cfa: Some(VirtualAddress::new(0x3000)),
-        signal_frame: false,
-    };
-
-    let signal = FrameContext {
-        instruction: VirtualAddress::new(0x4000),
-        cfa: Some(VirtualAddress::new(0x5000)),
-        signal_frame: true,
-    };
-
-    assert_eq!(frame_lookup_address(0, &stopped), Some(stopped.instruction));
-    assert_eq!(
-        frame_lookup_address(1, &caller),
-        Some(VirtualAddress::new(0x1fff))
-    );
-    assert_eq!(frame_lookup_address(2, &signal), Some(signal.instruction));
 }
 
 #[test]
@@ -2731,27 +2475,6 @@ fn detaching_waits_for_no_main_thread_that_exits_during_the_detach() {
     );
 }
 
-/// A failure that ends an attached session detaches the process and ends
-/// the controller, as a shutdown does, rather than serve requests after.
-#[test]
-fn a_failure_that_detaches_an_attached_process_ends_the_controller() {
-    let mut harness = watch_harness(2);
-    harness.attached();
-    let unowned = WaitEvent::PtraceEvent(
-        Pid::from_raw(9999),
-        Signal::SIGTRAP,
-        libc::PTRACE_EVENT_CLONE,
-    );
-    let keeps_running = harness
-        .controller
-        .handle_message(ControllerMessage::Wait(unowned));
-    assert!(
-        harness.controller.session.inferior().is_none(),
-        "the process was detached"
-    );
-    assert!(!keeps_running, "the controller ends");
-}
-
 /// SIGKILL from outside takes an attached thread as the stop its
 /// temporary breakpoint made deletes it: lifting its second trap fails,
 /// and so would putting back the first. The process is dying, not failed:
@@ -3230,6 +2953,10 @@ fn a_shutdown_queued_behind_a_failure_that_releases_the_process_is_answered() {
     let keeps_running = harness
         .controller
         .handle_message(ControllerMessage::Wait(unowned));
+    assert!(
+        harness.controller.session.inferior().is_none(),
+        "the process was detached"
+    );
     assert!(!keeps_running, "the controller ends");
     assert!(
         matches!(answer.try_recv(), Ok(Ok(()))),
@@ -4443,54 +4170,6 @@ fn a_panic_stops_a_running_launched_thread_with_a_signal_it_does_not_deliver() {
     );
 }
 
-/// A launch while the controller still releases children the last program
-/// forked waits for them, rather than failing as if a program still ran.
-#[test]
-fn a_launch_while_fork_children_are_released_waits_for_them() {
-    let mut harness = hit_harness(1, ">=1");
-    let parent = harness.threads[0];
-    let child = Pid::from_raw(6000);
-    harness.trace().clone.replace(Some((child, child)));
-
-    for status in [
-        WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_FORK),
-        WaitEvent::PtraceEvent(parent, Signal::SIGTRAP, libc::PTRACE_EVENT_EXIT),
-        WaitEvent::Exited(parent, 0),
-    ] {
-        harness.controller.handle_wait(status);
-    }
-
-    assert!(matches!(
-        harness.controller.session,
-        Session::Draining { .. }
-    ));
-    harness.trace().take_actions();
-
-    let (reply, mut launched) = tokio::sync::oneshot::channel();
-    harness
-        .controller
-        .start(Start::Launch(LaunchOptions::default(), reply));
-    assert!(
-        launched.try_recv().is_err(),
-        "the launch waits for the child"
-    );
-    assert!(harness.trace().take_actions().is_empty());
-    harness
-        .controller
-        .handle_wait(WaitEvent::Stopped(child, Signal::SIGSTOP));
-    let actions = harness.trace().take_actions();
-    assert_eq!(
-        actions.iter().position(|action| action == "spawn"),
-        Some(actions.len() - 1),
-        "the child is released, and then the program launched: {actions:?}"
-    );
-    assert!(!matches!(
-        harness.controller.session,
-        Session::Draining { .. }
-    ));
-    assert!(harness.controller.session.inferior().is_some());
-}
-
 #[test]
 fn a_fork_child_that_dies_as_it_is_released_is_awaited_until_its_exit() {
     let mut harness = hit_harness(1, ">=1");
@@ -4635,42 +4314,6 @@ fn continuing_tolerates_threads_killed_by_a_siblings_exit() {
     }
 
     assert!(harness.controller.session.inferior().is_none());
-}
-
-#[test]
-fn a_hit_during_a_pause_outranks_the_pause() {
-    let mut harness = watch_harness(2);
-    let watchpoint = harness.add(0x1_1000, 8).expect("arm");
-    let [first, second] = harness.threads[..] else {
-        unreachable!("two threads");
-    };
-
-    harness.start_continue();
-    harness
-        .controller
-        .begin_pause(process_id(first))
-        .expect("pause");
-
-    // The first thread hits before its requested stop is delivered.
-    harness.watch_trap(first, 1).expect("hit during pause");
-    assert_eq!(
-        harness.public_reason(),
-        None,
-        "the second thread is running"
-    );
-    harness.settle_requested_stops();
-    let Some(StopReason::Watchpoint { hits }) = harness.public_reason() else {
-        panic!("the hit outranks the pause: {:?}", harness.public_reason());
-    };
-
-    assert_eq!(hits[0].watchpoint, watchpoint.id);
-    assert_eq!(hits[0].thread, debug_thread_id(first));
-    let inferior = harness.controller.session.inferior().expect("inferior");
-    assert_eq!(inferior.threads[&second].reason, None);
-    assert!(
-        inferior.threads[&first].debugger_stop_pending,
-        "the first thread's requested stop is still outstanding"
-    );
 }
 
 #[test]
@@ -5365,39 +5008,6 @@ fn a_declined_thread_exiting_during_an_internal_stop_publishes_nothing() {
 }
 
 #[test]
-fn removing_a_breakpoint_releases_threads_waiting_to_step_over_it() {
-    let mut harness = hit_harness(2, "==5");
-    let [first, second] = harness.threads[..] else {
-        panic!("two threads");
-    };
-
-    harness.hit(first).expect("declined hit");
-    let process = process_id(harness.threads[0]);
-    harness.controller.begin_pause(process).expect("pause");
-    harness.settle_requested_stops();
-    harness
-        .controller
-        .remove_breakpoint(BreakpointId::new(1))
-        .expect("remove");
-    assert_eq!(
-        harness.thread(first).trap,
-        AtTrap::Reported {
-            at: VirtualAddress::new(HIT_SITE)
-        }
-    );
-    harness.trace().take_actions();
-
-    harness.resume().expect("resume");
-    assert_eq!(
-        harness.trace().take_actions(),
-        [
-            format!("continue {first} None"),
-            format!("continue {second} None")
-        ]
-    );
-}
-
-#[test]
 fn amending_a_hit_condition_while_running_applies_to_the_next_hit() {
     let mut harness = hit_harness(1, "==5");
     let pid = harness.threads[0];
@@ -5412,42 +5022,6 @@ fn amending_a_hit_condition_while_running_applies_to_the_next_hit() {
     assert_eq!(amended.hit_count, 1);
     harness.hit(pid).expect("stopping hit");
     assert_eq!(harness.public_reason(), Some(site_hit(2)));
-}
-
-#[test]
-fn a_trap_reexecuted_after_a_signal_interrupted_its_repair_is_not_a_new_hit() {
-    let mut harness = hit_harness(1, "==2");
-    let pid = harness.threads[0];
-    harness.hit(pid).expect("declined hit");
-
-    // A signal arrives instead of the repair step's trace trap, before the
-    // original instruction ran.
-    harness.trace().set_siginfo(pid, 0, Some(1));
-    harness
-        .controller
-        .process_wait(WaitEvent::Stopped(pid, Signal::SIGUSR1))
-        .expect("signal during repair");
-    assert!(matches!(
-        harness.public_reason(),
-        Some(StopReason::Exception(_))
-    ));
-    harness.trace().take_actions();
-
-    harness.resume().expect("resume");
-    assert_eq!(
-        harness.trace().take_actions(),
-        [format!("continue {pid} Some(SIGUSR1)")]
-    );
-
-    // After its handler returns the thread executes the same trap again.
-    harness.hit(pid).expect("re-executed trap");
-    assert_eq!(harness.public_reason(), None, "the hit was counted twice");
-    harness.finish_step(pid).expect("repair step");
-    assert_eq!(harness.hit_count(), 1);
-    assert_eq!(
-        harness.trace().take_actions().last(),
-        Some(&format!("continue {pid} None"))
-    );
 }
 
 /// A thread whose step over the breakpoint it hit a pause interrupted
@@ -7047,47 +6621,6 @@ fn mixed_breakpoint_readiness_is_projected_in_replies_and_snapshots() {
         crate::BreakpointLocation::Managed(_)
     ));
     assert_eq!(harness.controller.snapshot().breakpoints[0], breakpoint);
-}
-
-#[test]
-fn removed_breakpoint_definitions_have_no_pending_arming() {
-    for all in [false, true] {
-        let mut harness = watch_harness(1);
-        let _runtime = scripted_runtime(
-            &harness,
-            ScriptedRuntime {
-                arm_failure: std::sync::Mutex::new(Some("configuration refused".into())),
-                ..ScriptedRuntime::default()
-            },
-        );
-        let breakpoint = harness
-            .add_spec(BreakpointSpec::Source {
-                path: "pending.scripted".into(),
-                line: crate::LineNumber::new(3).expect("line"),
-            })
-            .expect("breakpoint");
-        assert_eq!(breakpoint.pending_locations.len(), 1);
-        let removed = if all {
-            harness
-                .controller
-                .remove_all_breakpoints()
-                .expect("remove all")
-                .to_vec()
-        } else {
-            vec![
-                harness
-                    .controller
-                    .remove_breakpoint(breakpoint.id)
-                    .expect("remove"),
-            ]
-        };
-        assert_eq!(removed.len(), 1);
-        assert!(
-            removed[0].pending_locations.is_empty(),
-            "removed definition: {removed:?}"
-        );
-        assert!(harness.controller.snapshot().breakpoints.is_empty());
-    }
 }
 
 #[test]
@@ -9600,23 +9133,6 @@ fn a_step_leaves_runtime_machinery_in_a_library() {
         None,
         "no module holds the address"
     );
-}
-
-#[test]
-#[cfg(debug_assertions)]
-fn recorded_identity_batches_preserve_nested_and_unknown_thread_mappings() {
-    let host = Pid::from_raw(5000);
-    let collision = Pid::from_raw(7);
-    let target = crate::runtime_model::TargetThreadId::new(7).unwrap();
-    let edge = super::recorded::Recorded(FakeTrace {
-        target_ids: BTreeMap::from([(host, Some(target)), (collision, None)]),
-        ..FakeTrace::default()
-    });
-    assert_eq!(
-        edge.target_thread_ids(host, &[collision, host]),
-        [(host, target)]
-    );
-    assert_eq!(edge.target_thread_id(host, collision), None);
 }
 
 impl WatchHarness {

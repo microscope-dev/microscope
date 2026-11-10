@@ -146,13 +146,26 @@ mod tests {
         assert!(!is_anonymous_code(&mmap(b"[vdso]", true)));
     }
 
+    /// A process began when it was spawned, to within the clock's tick and
+    /// the reading of two clocks: an error in the units of its start or in
+    /// the time of boot moves it by far more.
     #[test]
-    fn this_process_began_before_now_and_after_boot() {
-        let began = began(std::process::id()).expect("its start");
-        let now = std::time::SystemTime::now();
-        assert!(began <= now);
+    fn a_process_began_when_it_was_spawned() {
+        let slack = std::time::Duration::from_millis(50);
+        let before = std::time::SystemTime::now();
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .expect("spawn sleep");
+        let after = std::time::SystemTime::now();
+        let began = began(child.id());
+        child.kill().expect("kill sleep");
+        child.wait().expect("reap sleep");
+
+        let began = began.expect("its start");
         assert!(
-            now.duration_since(began).expect("ordered") < std::time::Duration::from_hours(24 * 365)
+            before - slack <= began && began <= after + slack,
+            "{began:?} not within {before:?}..{after:?}"
         );
     }
 

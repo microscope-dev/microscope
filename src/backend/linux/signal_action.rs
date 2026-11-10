@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn signal_substitution_selects_the_proven_handler_before_other_threads_resume() {
+    fn signal_substitution_stops_at_the_proven_handler() {
         substitution_evidence(true);
     }
 

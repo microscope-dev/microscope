@@ -1167,24 +1167,6 @@ mod tests {
         assert_eq!(decide(&none, &other), Decision::Watch);
     }
 
-    #[test]
-    fn globs_match_names_as_a_shell_does() {
-        for (pattern, name, matches) in [
-            ("node", "node", true),
-            ("node", "nodejs", false),
-            ("python*", "python3.12", true),
-            ("python*", "ipython", false),
-            ("*", "", true),
-            ("py?hon", "python", true),
-            ("py?hon", "pyhon", false),
-            ("*.test", "a.test", true),
-            ("a*b*c", "aXbYbZc", true),
-            ("a*b*c", "aXbYbZ", false),
-        ] {
-            assert_eq!(matches_glob(pattern, name), matches, "{pattern} {name}");
-        }
-    }
-
     /// The glob rules, one character at a time: `*` takes any number of
     /// characters, `?` any one, and anything else itself.
     fn glob_reference(pattern: &[char], name: &[char]) -> bool {

@@ -1018,63 +1018,15 @@ mod tests {
     }
 
     #[test]
-    fn request_and_error_round_trip() {
-        let (address, server) = serve(|stream| {
-            let mut server = accept(stream);
-            let first = request(&mut server);
-            assert_eq!(first["method"], "Runtime.evaluate");
-            assert_eq!(first["params"], json!({"expression": "1 + 1"}));
-            reply(
-                &mut server,
-                &json!({"id": first["id"], "result": {"value": 2}}),
-            );
-
-            let second = request(&mut server);
-            assert_eq!(second["method"], "Foo.bar");
-            let error = json!({"code": -32601, "message": "'Foo.bar' wasn't found"});
-            reply(&mut server, &json!({"id": second["id"], "error": error}));
-            reply(
-                &mut server,
-                &json!({"method": "Debugger.resumed", "params": {}}),
-            );
-            linger(server);
-        });
-
-        let client = Client::open(address);
-        let first = client.send(
-            &Session::main(),
-            "Runtime.evaluate",
-            json!({"expression": "1 + 1"}),
-        );
-        assert_eq!(client.next(), Incoming::Connected);
-        assert_eq!(
-            reply_to(&client),
-            (first, Session::main(), Ok(json!({"value": 2})))
-        );
-
-        let second = client.send(&Session::main(), "Foo.bar", json!({}));
-        let error = CdpError::Protocol {
-            code: -32601,
-            message: "'Foo.bar' wasn't found".into(),
-        };
-        assert_eq!(reply_to(&client), (second, Session::main(), Err(error)));
-        assert_eq!(
-            client.next(),
-            Incoming::Event {
-                session: Session::main(),
-                method: "Debugger.resumed".into(),
-                params: json!({}),
-            }
-        );
-
-        client.finish();
-        server.join().expect("server");
-    }
-
-    #[test]
     fn requests_before_the_handshake_are_sent_after_it_in_order() {
-        let (address, server) = serve(|stream| {
-            thread::sleep(Duration::from_millis(300));
+        // The server answers the handshake only once the client's sends
+        // have returned, so sends that waited for it never release it.
+        let (sent, gate) = mpsc::channel::<()>();
+        let (address, server) = serve(move |stream| {
+            assert!(
+                gate.recv_timeout(DEADLINE).is_ok(),
+                "open or send waited for the handshake"
+            );
             let mut server = accept(stream);
             let mut last = 0;
             for method in ["A.one", "A.two", "A.three"] {
@@ -1091,14 +1043,10 @@ mod tests {
             linger(server);
         });
 
-        let started = Instant::now();
         let client = Client::open(address);
         let ids = ["A.one", "A.two", "A.three"]
             .map(|method| client.send(&Session::main(), method, json!({})));
-        assert!(
-            started.elapsed() < Duration::from_millis(250),
-            "open or send waited for the handshake"
-        );
+        sent.send(()).expect("the server waits for the sends");
 
         assert_eq!(client.next(), Incoming::Connected);
         for (id, method) in ids.into_iter().zip(["A.one", "A.two", "A.three"]) {

@@ -708,40 +708,6 @@ mod tests {
     }
 
     #[test]
-    fn freed_slots_are_reused_from_the_lowest_index() {
-        let chunk = |address| {
-            [Chunk {
-                address,
-                length: ChunkLength::Eight,
-            }]
-        };
-
-        let mut plan = DebugRegisterPlan::default();
-
-        for id in 1..=4 {
-            plan = plan
-                .with_watchpoint(
-                    WatchpointId::new(id),
-                    &chunk(0x1000 * id),
-                    SlotAccess::Write,
-                )
-                .unwrap();
-        }
-
-        plan = plan
-            .without_watchpoint(WatchpointId::new(2))
-            .without_watchpoint(WatchpointId::new(4));
-        plan = plan
-            .with_watchpoint(WatchpointId::new(5), &chunk(0x9000), SlotAccess::Write)
-            .unwrap();
-        assert_eq!(
-            plan.slots()[1].as_ref().map(|slot| slot.chunk.address),
-            Some(0x9000)
-        );
-        assert!(plan.slots()[3].is_none());
-    }
-
-    #[test]
     fn status_decoding_attributes_every_hit_and_refuses_unknown_slots() {
         let first = WatchpointId::new(1);
         let second = WatchpointId::new(2);

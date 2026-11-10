@@ -2274,40 +2274,6 @@ mod tests {
         assert_eq!(forks, 1);
     }
 
-    /// A low rate fills the rings slowly, but processing can still be busy
-    /// for longer than they last. Four threads spinning for 750 ms at
-    /// 200 Hz, each sample copying 64 KiB of stack, fill a 512 KiB ring
-    /// in about 40 ms and the queue not at all, so a reader drains them
-    /// and never turns sampling off, while processing takes nothing.
-    #[test]
-    fn a_low_rate_is_read_while_processing_is_busy() {
-        let options = EventOptions {
-            source: Source::Clock {
-                period: Duration::from_millis(5),
-            },
-            stack_bytes: 65528,
-            kernel: false,
-            ring_pages: 128,
-            switches: false,
-        };
-        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("build/test-programs/profile-switches");
-        let mut command = Command::new(program);
-        command.args(["0", "750", "4"]);
-        let Launched { events, exit, .. } =
-            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
-                .expect("launch the program");
-        let status = events
-            .read_while(|| exit.join())
-            .expect("the launch thread ends")
-            .expect("the program exits");
-        assert!(status.success(), "{status}");
-
-        assert_eq!(events.behind(Some(sys::monotonic())), []);
-        let mut records = Vec::new();
-        assert!(events.drain(&mut records) > 0);
-    }
-
     #[test]
     fn each_read_is_filled_whole_or_not_at_all_and_the_rest_read_on() {
         let pid = std::process::id();

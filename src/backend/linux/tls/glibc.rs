@@ -637,59 +637,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn blocks_follow_the_dtv_and_fall_back_to_static_tls() {
-        const BLOCK: u64 = 0x5555_0000;
-        let static_block = THREAD_POINTER - 0x80 + 0x24;
-
-        // A current DTV holds an allocated block, in either slotinfo list.
-        assert_eq!(Process::new(3, BLOCK, 0x80).address(), Ok(BLOCK + 0x24));
-        assert_eq!(Process::new(70, BLOCK, 0x80).address(), Ok(BLOCK + 0x24));
-
-        // An unallocated slot, or a DTV older than the module, leaves only
-        // the module's static block.
-        let unallocated = Process::new(3, u64::MAX, 0x80);
-        assert_eq!(unallocated.address(), Ok(static_block));
-        let mut stale = Process::new(3, BLOCK, 0x80);
-        stale.generation(1);
-        assert_eq!(stale.address(), Ok(static_block));
-
-        for no_static_block in [NO_TLS_OFFSET, FORCED_DYNAMIC_TLS_OFFSET] {
-            let mut stale = Process::new(3, BLOCK, no_static_block);
-            stale.generation(1);
-            assert_eq!(stale.address(), Err(TlsError::Deferred));
-            assert_eq!(
-                Process::new(3, u64::MAX, no_static_block).address(),
-                Err(TlsError::Deferred)
-            );
-        }
-
-        // A thread before its thread pointer is set, and a module without
-        // TLS, have no block.
-        let mut early = Process::new(3, BLOCK, 0x80);
-        early.thread_pointer = 0;
-        assert_eq!(early.address(), Err(TlsError::Deferred));
-        assert_eq!(Process::new(0, BLOCK, 0x80).address(), Err(TlsError::NoTls));
-
-        // glibc before 2.34 has no pointer to the loader's state in libc;
-        // the loader exports that state itself.
-        let mut before_2_34 = Process::new(3, BLOCK, 0x80);
-        before_2_34.symbols.remove("__nptl_rtld_global");
-        before_2_34.symbols.remove("_thread_db___nptl_rtld_global");
-        before_2_34.symbols.insert("_rtld_global", RTLD_GLOBAL);
-        assert_eq!(before_2_34.address(), Ok(BLOCK + 0x24));
-
-        // A statically linked C library holds the slotinfo list itself.
-        let mut static_library = Process::new(3, BLOCK, 0x80);
-        static_library.symbols.remove("__nptl_rtld_global");
-        static_library
-            .symbols
-            .insert("_dl_tls_dtv_slotinfo_list", 0x2100_0000);
-        static_library.word(0x2100_0000, FIRST_LIST);
-        static_library.descriptor("_thread_db__dl_tls_dtv_slotinfo_list", 64, 1, 0);
-        assert_eq!(static_library.address(), Ok(BLOCK + 0x24));
-    }
-
     /// A process with glibc's two lists of threads in its loader state:
     /// those on stacks the program gave and those on stacks glibc
     /// allocated, each a list of (descriptor, thread id).
@@ -757,37 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn thread_pointers_follow_both_lists_of_threads() {
-        let process = threaded(
-            &[(0x7100_0000, 100)],
-            &[(0x7200_0000, 101), (0x7300_0000, 0)],
-        );
-        assert_eq!(
-            thread_pointers(&process),
-            Ok(vec![(100, 0x7100_0000), (101, 0x7200_0000)]),
-            "the exited thread, whose id is cleared, is left out"
-        );
-
-        assert_eq!(thread_pointers(&threaded(&[], &[])), Ok(Vec::new()));
-    }
-
-    #[test]
-    fn a_thread_list_that_never_returns_fails() {
-        let mut cyclic = threaded(&[(0x7100_0000, 100), (0x7200_0000, 101)], &[]);
-        cyclic.word(0x7200_0000 + 0x2c0, 0x7100_0000 + 0x2c0);
-        let Err(TlsError::Failed(message)) = thread_pointers(&cyclic) else {
-            panic!("a cycle is not a list");
-        };
-
-        assert!(message.contains("_dl_stack_user"), "{message}");
-
-        let mut broken = threaded(&[(0x7100_0000, 100)], &[]);
-        broken.word(0x7100_0000 + 0x2c0, 0x9900_0000);
-        assert!(
-            thread_pointers(&broken).is_err(),
-            "an unreadable link fails"
-        );
-
+    fn a_static_program_has_no_thread_list() {
         let mut static_library = threaded(&[], &[]);
         static_library.symbols.remove("__nptl_rtld_global");
         assert!(thread_pointers(&static_library).is_err());

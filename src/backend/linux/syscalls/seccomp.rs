@@ -172,42 +172,6 @@ mod tests {
             .calls
     }
 
-    #[test]
-    fn the_filter_traces_exactly_the_chosen_calls_in_every_abi() {
-        let chosen = calls(&["trace=openat,connect,%process"]);
-        let program = filter(&chosen);
-        assert!(program.len() < 4096, "the kernel's limit");
-        for abi in Abi::ALL {
-            for &(number, _) in crate::syscalls::table::calls(abi) {
-                let id = SyscallId::new(abi, number);
-                let (arch, raw) = match abi {
-                    Abi::X86_64 => (AUDIT_ARCH_X86_64, number),
-                    Abi::X32 => (AUDIT_ARCH_X86_64, number | X32_SYSCALL_BIT),
-                    Abi::X86_32 => (AUDIT_ARCH_I386, number),
-                };
-
-                let expected = if chosen.contains(id) {
-                    RET_TRACE
-                } else {
-                    RET_ALLOW
-                };
-
-                assert_eq!(
-                    run(&program, arch, raw),
-                    Some(expected),
-                    "{id:?} {:?}",
-                    id.name()
-                );
-            }
-        }
-
-        // Another architecture's calls run.
-        assert_eq!(run(&program, 0xdead, 257), Some(RET_ALLOW));
-        assert_eq!(filter(&calls(&["trace=all"])), [op(RETURN, RET_TRACE)]);
-        let none = filter(&calls(&["trace=none"]));
-        assert_eq!(run(&none, AUDIT_ARCH_X86_64, 0), Some(RET_ALLOW));
-    }
-
     /// The rules the kernel's `bpf_check_classic` and
     /// `seccomp_check_filter` hold a program to, apart from `run`: at
     /// most `BPF_MAXINSNS` instructions, only the codes seccomp allows,

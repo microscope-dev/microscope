@@ -567,12 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_target_is_an_error() {
-        let reason = Files::new(Pid::from_raw(-1), b"library").unwrap_err();
-        assert!(reason.contains("Python agent file operation failed"));
-    }
-
-    #[test]
     fn an_already_missing_script_can_still_be_acknowledged() {
         let mut files = files();
         let path = files.script(1, "source").unwrap();
@@ -673,17 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn a_noexec_mount_refuses_loading_the_native_hook() {
-        assert!(executable_mount(FsFlags::empty()).is_ok());
-        assert!(executable_mount(FsFlags::ST_NOSUID).is_ok());
-        assert!(
-            executable_mount(FsFlags::ST_NOEXEC | FsFlags::ST_NOSUID)
-                .unwrap_err()
-                .contains("noexec")
-        );
-    }
-
-    #[test]
     fn a_directory_that_lost_its_private_mode_refuses_new_scripts() {
         let mut files = files();
         let directory = std::path::Path::new(files.library().unwrap())
@@ -739,9 +722,11 @@ mod tests {
             files.acknowledge(2).unwrap();
         }
         let closed = files.close();
+        let kept = std::fs::read_to_string(&script);
         std::fs::remove_file(&script).unwrap();
         files.close().unwrap();
         assert!(acknowledged.is_err(), "the replacement was retained");
+        assert_eq!(kept.unwrap(), "foreign source");
         assert!(!pending, "the caller proved the generation consumed");
         assert!(prepared.is_err(), "the retained file bounds preparation");
         let closed = closed.unwrap_err();

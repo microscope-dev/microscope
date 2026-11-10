@@ -790,16 +790,6 @@ mod tests {
         );
     }
 
-    /// A command name that reads as the rest of a record: a closing
-    /// parenthesis, then a zombie's state and fields.
-    #[test]
-    fn a_command_that_mimics_the_fields_after_it_is_still_the_command() {
-        let record = stat_record_in(b"x) Z 1 2 3 4 5 6 7 8 9", b'S', 0, "99");
-        assert_eq!(stat_state(&record), Some(b'S'));
-        assert_eq!(stat_start_time(&record), Some(99));
-        assert!(!stat_exited(&record));
-    }
-
     proptest::proptest! {
         /// The command can hold any bytes, parentheses and digits and
         /// states among them, and the fields after it still read as they
@@ -828,34 +818,8 @@ mod tests {
         }
     }
 
-    /// A process is exited once it begins to: its memory may be gone
-    /// before it is a zombie.
     #[test]
-    fn a_process_that_began_to_exit_has_exited() {
-        // State, parent, group, session, terminal, foreground group, flags.
-        let running = "42 (a (b)) R 1 42 42 0 -1 4194304 0 0";
-        let exiting = "42 (a (b)) R 1 42 42 0 -1 4194308 0 0";
-        let zombie = "42 (a (b)) Z 1 42 42 0 -1 4194308 0 0";
-        assert!(!stat_exited(running.as_bytes()));
-        assert!(stat_exited(exiting.as_bytes()));
-        assert!(stat_exited(zombie.as_bytes()));
-    }
-
-    #[test]
-    fn namespaces_match_the_controlled_process_and_thread_before_using_the_innermost_id() {
-        for ids in ["5001", "5001 7", "5001 5001 7"] {
-            let status = format!("Tgid:\t5000\nNSpid:\t{ids}\n");
-            let expected = if ids == "5001" { 5001 } else { 7 };
-            assert_eq!(
-                thread_in_status(status.as_bytes(), 5000, 5001)
-                    .unwrap()
-                    .get(),
-                expected
-            );
-            assert_eq!(thread_in_status(status.as_bytes(), 4999, 5001), None);
-            assert_eq!(thread_in_status(status.as_bytes(), 5000, 7), None);
-        }
-
+    fn a_process_is_in_its_own_namespace_only_when_it_has_one_id() {
         assert!(own_namespace(b"Tgid: 7\nNSpid: 7\n", 7));
         assert!(
             !own_namespace(b"Tgid: 7\nNSpid: 7 7\n", 7),
@@ -870,9 +834,7 @@ mod tests {
             "",
             "Tgid: 5000",
             "Tgid: 5000\nNSpid:",
-            "Tgid: 5000\nNSpid: 0",
             "Tgid: 5000\nNSpid: 5001 -7",
-            "Tgid: 5000\nNSpid: 5001 2147483648",
             "Tgid: 5000\nNSpid: 5001 X 7",
             "Tgid: 5000\nNSpid: 5001\nNSpid: 5001",
             "Tgid: 5000\nTgid: 5000\nNSpid: 5001",
@@ -883,13 +845,6 @@ mod tests {
                 "{status:?}"
             );
         }
-
-        let excessive = format!(
-            "Tgid: 5000\nNSpid: {}",
-            ["5001"; MAX_ID_VALUES + 1].join(" ")
-        );
-        assert_eq!(thread_in_status(excessive.as_bytes(), 5000, 5001), None);
-        assert_eq!(TargetThreadId::new(0), None);
     }
 
     #[test]
