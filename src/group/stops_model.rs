@@ -328,6 +328,9 @@ impl ReferenceStateMachine for Model {
 
 /// The rule under test and what the test knows apart from it.
 struct Harness {
+    /// The member a client runs alone from a group stop, as the CLI's
+    /// commands do, one at a time.
+    alone: Option<MemberNumber>,
     scope: StopScope,
     stops: Stops<(u32, Command)>,
     members: Vec<Member>,
@@ -504,7 +507,18 @@ impl Harness {
                 {
                     self.awaited = None;
                 }
-                match self.stops.stopped(stop.clone()) {
+                let action = self.stops.stopped(stop.clone());
+
+                // The CLI waits for the group stop that names the stop its
+                // command ended at, so that stop is reported on its own.
+                if self.alone.take() == Some(member) {
+                    assert_eq!(
+                        action,
+                        Some(StopAction::Report(stop.clone())),
+                        "member {member}, run alone, did not stop on its own"
+                    );
+                }
+                match action {
                     Some(StopAction::Report(reported)) if under_way => {
                         self.completed(Some(reported));
                     }
@@ -537,12 +551,21 @@ impl Harness {
                 self.after_internal();
             }
             Event::ContinueMember(member) => {
+                self.alone = match self.alone {
+                    None if self.awaited.is_none() => Some(member),
+                    _ => None,
+                };
                 self.members[member as usize - 1] = Member::Running;
                 self.left(member);
                 self.stops.continued();
             }
-            Event::PauseAll => self.pause_all(None),
+            // The CLI pauses the whole group only with its member stopped.
+            Event::PauseAll => {
+                self.alone = None;
+                self.pause_all(None);
+            }
             Event::Client(command) => {
+                self.alone = None;
                 let id = self.next_command;
                 self.next_command += 1;
                 self.unserved.insert(id);
@@ -571,6 +594,7 @@ impl StateMachineTest for Harness {
             next_command: 0,
             next_breakpoint: 0,
             next_stop: 0,
+            alone: None,
         }
     }
 

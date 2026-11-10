@@ -344,7 +344,9 @@ impl Cli {
     }
 
     /// What the group did since the prompt last read its events, which a
-    /// run reports first, as the prompt would have printed it.
+    /// run reports first, as the prompt would have printed it. Reading them
+    /// before the run starts also keeps the run's own rules, where a lost
+    /// member fails it and an exit ends it, to what happens during it.
     fn earlier_notices(&self, events: &mut broadcast::Receiver<GroupEvent>, lines: &mut RunLines) {
         loop {
             match events.try_recv() {
@@ -715,6 +717,24 @@ mod tests {
             [],
             "the continue ended at the old stop and left its own end unread"
         );
+
+        session.end().await;
+    }
+
+    /// An event from before a continue, which the prompt had no turn to
+    /// print, is a notice of what happened then. A member lost before
+    /// must not fail the continue as if it was lost during it.
+    #[tokio::test]
+    async fn a_continue_prints_an_older_loss_without_failing() {
+        let mut session = Session::of("basic");
+        session.run("break breakpoint_target").await;
+        session.run("run").await;
+        session.forwarded(1).await;
+
+        let lost = GroupEvent::MemberLost { member: 2 };
+        session.sender.send(lost).expect("send the old loss");
+        session.run("continue").await;
+        session.forwarded(2).await;
 
         session.end().await;
     }
