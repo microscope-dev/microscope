@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use microscope::{
-    ExitStatus, GroupEvent, GroupHandle, InferiorState, MemberNumber, MemberState, SourcePathMap,
-    StopReason,
+    ExitStatus, GroupEvent, GroupExecutionId, GroupHandle, GroupStop, InferiorState, MemberNumber,
+    MemberState, SourcePathMap, StopReason,
 };
 use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
 
@@ -285,16 +285,8 @@ impl Cli {
             Start::Continue => Some(group.handle.continue_all().await?),
         };
 
-        // Development builds panic on request once the group runs, to test
-        // what a panic in the CLI leaves of the processes it debugs.
         #[cfg(debug_assertions)]
-        {
-            const PANIC_WHILE_RUNNING: &str = "MICROSCOPE_TEST_CLI_PANIC";
-            assert!(
-                std::env::var_os(PANIC_WHILE_RUNNING).is_none(),
-                "a panic injected by {PANIC_WHILE_RUNNING}"
-            );
-        }
+        panic_if_asked();
 
         let mut root_exit = None;
         let (member, reason) = loop {
@@ -314,29 +306,10 @@ impl Cli {
                 Err(RecvError::Lagged(missed)) => {
                     lines.push(missed_warning(missed, renderer));
                     member_events.catch_up(&group.handle);
-                    if let Some(member) = lost(&group.handle)
-                        .into_iter()
-                        .find(|member| !lost_before.contains(member))
-                    {
-                        bail!(
-                            "the session of [{member}] failed, so its process was released or killed"
-                        );
+                    match run_end(&group.handle, before.as_ref(), &lost_before, execution)? {
+                        Some(end) => break end,
+                        None => continue,
                     }
-                    if let Some(stop) = group.handle.last_stop()
-                        && Some(&stop) != before.as_ref()
-                        && (execution.is_none() || stop.execution == execution)
-                    {
-                        break (stop.member, stop.reason);
-                    }
-                    if !group
-                        .handle
-                        .members()
-                        .iter()
-                        .any(|member| live(&member.state))
-                    {
-                        break group_exit(&group.handle);
-                    }
-                    continue;
                 }
                 Err(RecvError::Closed) => bail!("the group ended"),
             };
@@ -472,6 +445,45 @@ fn lost(group: &GroupHandle) -> Vec<MemberNumber> {
         .filter(|member| member.state == MemberState::Lost)
         .map(|member| member.number)
         .collect()
+}
+
+/// Development builds panic on request once the group runs, to test what a
+/// panic in the CLI leaves of the processes it debugs.
+#[cfg(debug_assertions)]
+fn panic_if_asked() {
+    const PANIC_WHILE_RUNNING: &str = "MICROSCOPE_TEST_CLI_PANIC";
+    assert!(
+        std::env::var_os(PANIC_WHILE_RUNNING).is_none(),
+        "a panic injected by {PANIC_WHILE_RUNNING}"
+    );
+}
+
+/// How a run that missed group events ended, as the group's state shows:
+/// a member whose session failed since `lost_before` fails it, a group stop
+/// newer than `before` that names `execution` ends it, as does every member
+/// being gone. None when it runs on.
+fn run_end(
+    group: &GroupHandle,
+    before: Option<&GroupStop>,
+    lost_before: &[MemberNumber],
+    execution: Option<GroupExecutionId>,
+) -> Result<Option<(MemberNumber, StopReason)>> {
+    if let Some(member) = lost(group)
+        .into_iter()
+        .find(|member| !lost_before.contains(member))
+    {
+        bail!("the session of [{member}] failed, so its process was released or killed");
+    }
+    if let Some(stop) = group.last_stop()
+        && Some(&stop) != before
+        && (execution.is_none() || stop.execution == execution)
+    {
+        return Ok(Some((stop.member, stop.reason)));
+    }
+    if !group.members().iter().any(|member| live(&member.state)) {
+        return Ok(Some(group_exit(group)));
+    }
+    Ok(None)
 }
 
 /// A run's end once every member is gone, reported as the root's exit.
