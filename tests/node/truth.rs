@@ -2,7 +2,7 @@
 //! and the comparisons that hold a reader of its threads to it, each shown
 //! to fail on the lies it exists to catch.
 
-use crate::session::NodeSession;
+use crate::support::Scenario;
 use crate::support::truth::Report;
 
 /// One frame as V8 reports it.
@@ -207,17 +207,25 @@ pub fn functions_in<'a>(thread: &'a Thread, file: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// The threads Node 26 reported at `checkpoint` of `fixture`, from the
+/// report the build saved beside the fixture's core.
+pub fn saved(fixture: &str, checkpoint: &str) -> Vec<Thread> {
+    let core = Scenario::fixture(&format!("node-{fixture}-26.core"));
+    let log = std::fs::read_to_string(core.with_extension("core.log"))
+        .expect("the core's log; run `just build-test-programs`");
+    threads(
+        Report::parse(&log)
+            .checkpoint(checkpoint)
+            .expect("the checkpoint the core was taken at"),
+    )
+}
+
 /// The comparisons fail on a dropped frame, a wrong line, a swapped thread,
 /// and a wrong tier, and hold for the truth itself.
-#[tokio::test]
-async fn the_truth_fails_on_the_lies_it_looks_for() {
-    let mut session = NodeSession::launch("26", "stacks.js", &[], &[]).await;
-    let truth = threads(&session.stop_at("parked").await);
-    session.shutdown().await;
-
-    let mut session = NodeSession::launch("26", "tiers.js", &["--allow-natives-syntax"], &[]).await;
-    let tiers = threads(&session.stop_at("tiers").await);
-    session.shutdown().await;
+#[test]
+fn the_truth_fails_on_the_lies_it_looks_for() {
+    let truth = saved("stacks", "parked");
+    let tiers = saved("tiers", "tiers");
 
     check_threads(&truth, &truth).expect("the truth holds");
     check_threads(&tiers, &tiers).expect("the tiers hold");

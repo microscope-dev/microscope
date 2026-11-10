@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use object::{Object as _, ObjectSection as _, ObjectSegment as _, ObjectSymbol as _};
 
+use microscope::python_agent;
+
 use crate::support::{ScratchDir, python};
 
 /// Own a fixture before the first fallible wait, including panic paths.
@@ -19,9 +21,6 @@ impl Drop for Reaped {
 
 #[path = "../../src/runtime_model/python/hook.rs"]
 mod hook;
-
-#[path = "../../src/runtime_model/python/agent.rs"]
-pub mod agent_source;
 
 /// A GIL and a free-threaded interpreter that inject through PEP 768: the
 /// agent's code differs only by those, not by version within them.
@@ -124,12 +123,12 @@ fn monitoring_reconfiguration_and_cleanup() {
     let library = scratch.path().join("hook.so");
     std::fs::write(&library, hook::library()).expect("write the hook");
     let agent = scratch.path().join("agent.py");
-    std::fs::write(&agent, agent_source::bootstrap().expect("agent bootstrap"))
+    std::fs::write(&agent, python_agent::bootstrap().expect("agent bootstrap"))
         .expect("write the agent");
     let standalone = scratch.path().join("standalone.py");
     std::fs::write(
         &standalone,
-        agent_source::script(library.to_str().expect("hook path"), 100, &[], None, 0)
+        python_agent::script(library.to_str().expect("hook path"), 100, &[], None, 0)
             .expect("whole-state script"),
     )
     .expect("write script");
@@ -345,7 +344,7 @@ async fn native_reports_cross_the_public_debugger_boundary() {
     let library = scratch.path().join("hook.so");
     let script = scratch.path().join("agent.py");
     std::fs::write(&library, hook::library()).expect("write hook");
-    std::fs::write(&script, agent_source::bootstrap().expect("bootstrap")).expect("write agent");
+    std::fs::write(&script, python_agent::bootstrap().expect("bootstrap")).expect("write agent");
 
     for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
@@ -429,7 +428,7 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
     let library = scratch.path().join("hook.so");
     let bootstrap = scratch.path().join("bootstrap.py");
     std::fs::write(&library, hook::library()).expect("write hook");
-    std::fs::write(&bootstrap, agent_source::bootstrap().expect("bootstrap"))
+    std::fs::write(&bootstrap, python_agent::bootstrap().expect("bootstrap"))
         .expect("write script");
 
     for interpreter in PEP_768 {

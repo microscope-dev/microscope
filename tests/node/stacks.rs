@@ -1,16 +1,17 @@
 //! Node fixtures parked under the debugger, and in core dumps, where they
-//! said they would be. microscope reads no JavaScript frames yet: these
-//! hold the fixtures and the harness to their contract, and the debugger to
-//! the threads the fixtures name.
+//! said they would be: the threads the fixtures name, with the JavaScript
+//! frames V8 reported, unwinding natively to where each began.
 
 use std::collections::BTreeMap;
 
-use microscope::{CoreDumpOptions, InferiorState, StateSnapshot};
+use microscope::{CoreDumpOptions, InferiorState, StateSnapshot, ThreadId};
 
+use crate::frames::{assert_truthful, observed};
+use crate::native::check_thread;
 use crate::session::{CORES, MATRIX, NodeSession, major};
 use crate::support::Scenario;
 use crate::support::truth::Report;
-use crate::truth::{Thread, functions_in, threads, unavailable};
+use crate::truth::{Thread, check_threads, functions_in, threads, unavailable};
 
 /// Each thread of `stacks.js`: its name, its functions from the innermost
 /// out, and the value it names.
@@ -155,9 +156,11 @@ pub fn check_isolates(
 /// On every build, `stacks.js` parks its main thread and two workers in
 /// the functions it names, each thread one the stop lists and labelled with
 /// its isolate, the same at a second stop, and the process ends with the
-/// debugger.
+/// debugger. Each thread's JavaScript frames are the ones V8 reported, and
+/// it unwinds natively through the interpreter's frames to where it began.
 #[tokio::test]
 async fn each_builds_threads_park_where_the_fixture_says() {
+    let mut lies = Vec::new();
     for entry in MATRIX {
         let mut session = NodeSession::launch(entry, "stacks.js", &[], &[]).await;
         let context = session.context();
@@ -172,6 +175,31 @@ async fn each_builds_threads_park_where_the_fixture_says() {
         let listed: Vec<u64> = snapshot.threads.iter().map(|t| t.id.get()).collect();
         check_listed(&context, &reported, &listed);
         let isolates = check_isolates(&context, &reported, &snapshot);
+
+        let seen = observed(&session.scenario, &reported).await;
+        if let Err(lie) = check_threads(&seen, &reported) {
+            lies.push(format!("{context}: {lie}"));
+        }
+        let scenario = &session.scenario;
+        let modules = scenario
+            .operation("modules", scenario.handle().loaded_modules())
+            .await;
+        for thread in &reported {
+            let context = format!("{context} thread {}", thread.name);
+            scenario
+                .operation(
+                    "select",
+                    scenario
+                        .handle()
+                        .select_context(ThreadId::new(thread.native)),
+                )
+                .await;
+            let trace = scenario
+                .operation("backtrace", scenario.handle().backtrace())
+                .await;
+            let (_, interpreted) = check_thread(&context, thread.printer, &trace, &modules);
+            assert!(interpreted > 0, "{context}: no interpreted frame");
+        }
 
         session.resume().await;
         session.pause().await;
@@ -195,13 +223,16 @@ async fn each_builds_threads_park_where_the_fixture_says() {
 
         session.shutdown().await;
     }
+    assert_truthful(&lies);
 }
 
 /// Each core dump holds every thread its fixture reported just before it
-/// aborted, each labelled with its isolate, and the report beside it says
-/// what the live one does.
+/// aborted, each labelled with its isolate, with the JavaScript frames V8
+/// reported, and the main thread unwinds to its start; the report beside
+/// it says what the live one does.
 #[tokio::test]
 async fn a_cores_threads_are_the_ones_node_reported() {
+    let mut wrong_frames = Vec::new();
     for entry in CORES {
         for (fixture, checkpoint) in [("stacks", "parked"), ("tiers", "tiers")] {
             let name = format!("node-{fixture}-{entry}.core");
@@ -234,7 +265,41 @@ async fn a_cores_threads_are_the_ones_node_reported() {
                 "{name}: Node's own threads: {listed:?}"
             );
 
+            // The post-mortem reader reads Node's own scripts' source from
+            // the executable. A frame's tier is no fact a backtrace reports.
+            let mut untiered = reported.clone();
+            for frame in untiered.iter_mut().flat_map(|thread| &mut thread.frames) {
+                frame.tier = None;
+            }
+            let seen = observed(&scenario, &untiered).await;
+            if let Err(lie) = check_threads(&seen, &untiered) {
+                wrong_frames.push(format!("{name}: {lie}"));
+            }
+
+            // The dump saved the builtins' copies and the compiled code, so
+            // the main thread unwinds as the live process's does.
+            scenario
+                .operation(
+                    "select",
+                    scenario
+                        .handle()
+                        .select_context(ThreadId::new(process_id.get())),
+                )
+                .await;
+            let modules = scenario
+                .operation("modules", scenario.handle().loaded_modules())
+                .await;
+            let trace = scenario
+                .operation("backtrace", scenario.handle().backtrace())
+                .await;
+            let (compiled, interpreted) = check_thread(&name, true, &trace, &modules);
+            assert!(interpreted > 0, "{name}: no interpreted frame");
+            if fixture == "tiers" {
+                assert!(compiled >= 2, "{name}: {compiled} compiled frames");
+            }
+
             scenario.shutdown().await;
         }
     }
+    assert_truthful(&wrong_frames);
 }

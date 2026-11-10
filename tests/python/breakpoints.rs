@@ -270,7 +270,7 @@ impl Run {
                 .recorded
                 .as_ref()
                 .and_then(|recorded| recorded.place.as_ref())
-                .is_some_and(|place| crate::agent::agent_source::is_agent_filename(&place.path))),
+                .is_some_and(|place| microscope::python_agent::is_agent_filename(&place.path))),
             "{context}: the agent's frames that reported the hit are in the stack: {inner:?}"
         );
 

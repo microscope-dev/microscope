@@ -355,12 +355,19 @@ async fn a_cores_tasks_are_the_ones_node_reported() {
 /// a faithful list.
 #[tokio::test]
 async fn the_tasks_comparison_fails_on_the_lies_it_looks_for() {
-    let (_scratch, fifo) = fifo();
-    let mut session = NodeSession::launch("26", FIXTURE, &[], &[&fifo]).await;
-    let lines = session.stop_at("tasks").await;
-    let truth = truth(&session.report(), &lines);
-    let (observed, gaps) = listed(&session.scenario).await;
-    session.shutdown().await;
+    let name = "node-tasks-26.core";
+    let core = Scenario::fixture(name);
+    let log = std::fs::read_to_string(core.with_extension("core.log"))
+        .expect("the core's log; run `just build-test-programs`");
+    let report = Report::parse(&log);
+    let lines = report
+        .checkpoint("tasks")
+        .expect("the checkpoint the core was taken at")
+        .to_vec();
+    let truth = truth(&report, &lines);
+    let scenario = Scenario::open_core(name, &CoreDumpOptions::new(core));
+    let (observed, gaps) = listed(&scenario).await;
+    scenario.shutdown().await;
     check(&observed, &gaps, &truth, true).expect("the list holds");
 
     let lied = |change: &dyn Fn(&mut Vec<Seen>)| {

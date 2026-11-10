@@ -86,6 +86,16 @@ pub mod unsafe_parts {
     pub use crate::backend::perf::sys::{DATA_HEAD, DATA_TAIL, HEAP_DATA, RingMemory};
 }
 
+/// Exports for `tests/python`, which runs the Python agent's scripts in
+/// interpreters without the debugger.
+#[doc(hidden)]
+pub mod python_agent {
+    pub use crate::runtime_model::{
+        is_python_agent_filename as is_agent_filename, python_agent_bootstrap as bootstrap,
+        python_agent_script as script,
+    };
+}
+
 #[cfg(feature = "tools")]
 #[doc(hidden)]
 pub mod tools;

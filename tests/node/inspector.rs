@@ -14,23 +14,24 @@ use crate::support::{Scenario, ScratchDir, node};
 /// What a user set, which the program must see as it was.
 const USER_OPTIONS: &str = "--no-warnings";
 
-async fn inspector_lifetime(entry: &str, race: bool) -> (String, String) {
+/// Runs `inspector-lifetime.js` on `entry` with its addon preloaded, which
+/// asks for a listing before the debugger's upgrade and writes the answer
+/// to a file. Returns the program's output and that listing.
+async fn inspector_lifetime(entry: &str) -> (String, String) {
     let scratch = ScratchDir::new("node-inspector-lifetime");
     let output = scratch.path().join("output");
     let report = scratch.path().join("listing");
     let file = std::fs::File::create(&output).expect("output");
     let errors = file.try_clone().expect("stderr");
     let addon = Scenario::fixture("node-inspector-lifetime.node");
-    let mut environment = vec![
+    let environment = vec![
         ("LD_PRELOAD".into(), Some(addon.clone().into_os_string())),
         ("LIFETIME_ADDON".into(), Some(addon.into_os_string())),
-    ];
-    if race {
-        environment.push((
+        (
             "MICROSCOPE_LISTING_REPORT".into(),
             Some(report.clone().into_os_string()),
-        ));
-    }
+        ),
+    ];
     let mut scenario = Scenario::new(
         format!("node {entry} inspector lifetime"),
         node::node(entry),
@@ -45,16 +46,15 @@ async fn inspector_lifetime(entry: &str, race: bool) -> (String, String) {
         })
         .await;
     let completed = tokio::time::timeout(Duration::from_secs(20), async {
-        if race {
-            loop {
-                let text = std::fs::read_to_string(&report).unwrap_or_default();
-                if text.split_once("\r\n\r\n").is_some_and(|(_, body)| {
-                    serde_json::from_str::<serde_json::Value>(body).is_ok()
-                }) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+        loop {
+            let text = std::fs::read_to_string(&report).unwrap_or_default();
+            if text
+                .split_once("\r\n\r\n")
+                .is_some_and(|(_, body)| serde_json::from_str::<serde_json::Value>(body).is_ok())
+            {
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let disclosed = std::fs::read_to_string(&report)
             .unwrap_or_default()
@@ -81,28 +81,22 @@ async fn inspector_lifetime(entry: &str, race: bool) -> (String, String) {
     )
 }
 
+/// A listing the addon asks for before the debugger's upgrade never lists
+/// the hidden target, and the program's own 64 listings, all hidden,
+/// release every UUID copy Node made for them.
 #[tokio::test]
-async fn hidden_listings_release_their_native_uuid_allocations() {
+async fn hidden_listings_never_disclose_the_target_and_release_their_uuids() {
     let mut failures = Vec::new();
     for entry in MATRIX {
-        let (output, _) = inspector_lifetime(entry, false).await;
-        if !output.lines().any(|line| line == "COPIES 0") {
-            failures.push(format!("{entry}: {output}"));
-        }
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[tokio::test]
-async fn a_listing_queued_before_the_debuggers_upgrade_never_discloses_the_target() {
-    let mut failures = Vec::new();
-    for entry in MATRIX {
-        let (_, listing) = inspector_lifetime(entry, true).await;
+        let (output, listing) = inspector_lifetime(entry).await;
         let body = listing.split_once("\r\n\r\n").expect("HTTP response").1;
         if serde_json::from_str::<serde_json::Value>(body).expect("JSON listing")
             != serde_json::json!([])
         {
-            failures.push(format!("{entry}: {body}"));
+            failures.push(format!("{entry}: listed {body}"));
+        }
+        if !output.lines().any(|line| line == "COPIES 0") {
+            failures.push(format!("{entry}: {output}"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

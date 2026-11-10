@@ -8,6 +8,7 @@ pub const SOURCE: &str = include_str!("agent.py");
 pub const FILENAME_PREFIX: &str = "<microscope agent ";
 
 /// Whether code compiled under `filename` is the agent's.
+#[must_use]
 pub fn is_agent_filename(filename: &str) -> bool {
     filename.starts_with(FILENAME_PREFIX) && filename.ends_with('>')
 }
@@ -57,10 +58,12 @@ pub fn is_script_filename(filename: &str) -> bool {
             .is_some_and(|generation| digits(generation, u8::is_ascii_digit))
 }
 
-/// A bootstrap whose caller supplies `__microscope_library`,
-/// `__microscope_generation`, and `__microscope_probes` in its namespace,
-/// and may supply `__microscope_step` and `__microscope_exceptions`.
-/// Keeping this separate also lets a cooperative fixture load the agent.
+/// The agent's bootstrap, which runs in a namespace its caller fills.
+///
+/// The caller supplies `__microscope_library`, `__microscope_generation`,
+/// and `__microscope_probes`, and may supply `__microscope_step` and
+/// `__microscope_exceptions`. Keeping this separate also lets a cooperative
+/// fixture load the agent.
 pub fn bootstrap() -> Result<String, serde_json::Error> {
     let source = serde_json::to_string(SOURCE)?;
     // The agent's asserts are debug assertions: compiled in only when

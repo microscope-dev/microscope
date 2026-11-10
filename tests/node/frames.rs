@@ -1,13 +1,11 @@
 //! JavaScript frames as microscope names them, held to what V8's own call
 //! sites reported at the same checkpoint.
 
-use microscope::{Backtrace, SourceLanguage, StackFrame, StackSegment, ThreadId};
+use microscope::{Backtrace, SourceLanguage, StackFrame, StackSegment, ThreadId, VariableKind};
 
-use microscope::CoreDumpOptions;
-
-use crate::session::{CORES, MATRIX, NodeSession};
+use crate::native::check_thread;
+use crate::session::{MATRIX, NodeSession};
 use crate::support::Scenario;
-use crate::support::truth::Report;
 use crate::truth::{Frame, Thread, check_threads, threads};
 
 /// The JavaScript frames of a backtrace's stack, innermost first, past
@@ -113,26 +111,10 @@ pub async fn observed(scenario: &Scenario, reported: &[Thread]) -> Vec<Thread> {
     observed
 }
 
-/// On every build, each parked thread's interpreted frames are the
-/// functions, files, lines, and columns V8 reported.
-#[tokio::test]
-async fn each_threads_javascript_frames_are_the_ones_v8_reported() {
-    let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "stacks.js", &[], &[]).await;
-        let reported = threads(&session.stop_at("parked").await);
-        let seen = observed(&session.scenario, &reported).await;
-        if let Err(lie) = check_threads(&seen, &reported) {
-            lies.push(format!("{}: {lie}", session.context()));
-        }
-        session.shutdown().await;
-    }
-    assert_truthful(&lies);
-}
-
 /// On every build, the frames of an ES module and of the TypeScript module
 /// it imports, which V8 names by percent-encoded `file:` URLs, are at the
-/// paths, lines, and columns V8 reported, and each is in its own language.
+/// paths, lines, and columns V8 reported, and each is in its own language;
+/// a module's bindings keep their scope beside a frame's own locals.
 #[tokio::test]
 async fn module_frames_are_at_the_paths_their_urls_name() {
     let mut lies = Vec::new();
@@ -168,6 +150,18 @@ async fn module_frames_are_at_the_paths_their_urls_name() {
         if languages != expected {
             lies.push(format!("{}: languages {languages:?}", session.context()));
         }
+
+        // Module bindings keep their scope beside the frame's own locals.
+        let printer = reported.iter().find(|t| t.printer).expect("the printer");
+        crate::values::select_function(&session, printer.native, "settle").await;
+        let names = ["entries", "label"];
+        let kinds = crate::values::kinds(&session, &names).await;
+        if kinds != [Some(VariableKind::Local), Some(VariableKind::Module)] {
+            lies.push(format!(
+                "{}: settle's {names:?} are {kinds:?}",
+                session.context()
+            ));
+        }
         session.shutdown().await;
     }
     assert_truthful(&lies);
@@ -175,7 +169,8 @@ async fn module_frames_are_at_the_paths_their_urls_name() {
 
 /// On every build, the frames of `tiers.js` in each tier the build runs
 /// (interpreted, Sparkplug, Maglev, Turbofan, inlined, deoptimized, and
-/// entered on a loop) are the ones V8 reported, the inlined ones included.
+/// entered on a loop) are the ones V8 reported, the inlined ones included,
+/// and the stack unwinds natively through the code each compiler made.
 #[tokio::test]
 async fn frames_of_every_tier_are_the_ones_v8_reported() {
     let mut lies = Vec::new();
@@ -185,8 +180,12 @@ async fn frames_of_every_tier_are_the_ones_v8_reported() {
         let checkpoint = session.stop_at("tiers").await;
         crate::stacks::check_tiers(&session.context(), entry, &session.report(), &checkpoint);
         let mut reported = threads(&checkpoint);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        crate::values::optimized_frames_show_no_stale_registers(&session, printer.native).await;
+        let printer_native = reported
+            .iter()
+            .find(|t| t.printer)
+            .expect("the printer")
+            .native;
+        crate::values::optimized_frames_show_no_stale_registers(&session, printer_native).await;
         // The tier is what makes each frame's reading differ, not a fact
         // a backtrace reports.
         for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {
@@ -196,38 +195,29 @@ async fn frames_of_every_tier_are_the_ones_v8_reported() {
         if let Err(lie) = check_threads(&seen, &reported) {
             lies.push(format!("{}: {lie}", session.context()));
         }
-        session.shutdown().await;
-    }
-    assert_truthful(&lies);
-}
 
-/// In each core dump, every reported thread's JavaScript frames are the
-/// ones V8 reported just before the process aborted: the post-mortem
-/// reader reads Node's own scripts' source from the executable.
-#[tokio::test]
-async fn a_cores_javascript_frames_are_the_ones_v8_reported() {
-    let mut lies = Vec::new();
-    for entry in CORES {
-        for (fixture, checkpoint) in [("stacks", "parked"), ("tiers", "tiers")] {
-            let name = format!("node-{fixture}-{entry}.core");
-            let core = Scenario::fixture(&name);
-            let log = std::fs::read_to_string(core.with_extension("core.log"))
-                .expect("the core's log; run `just build-test-programs`");
-            let mut reported = threads(
-                Report::parse(&log)
-                    .checkpoint(checkpoint)
-                    .expect("the checkpoint the core was taken at"),
-            );
-            for frame in reported.iter_mut().flat_map(|thread| &mut thread.frames) {
-                frame.tier = None;
-            }
-            let scenario = Scenario::open_core(&name, &CoreDumpOptions::new(core));
-            let seen = observed(&scenario, &reported).await;
-            if let Err(lie) = check_threads(&seen, &reported) {
-                lies.push(format!("{name}: {lie}"));
-            }
-            scenario.shutdown().await;
-        }
+        // Sparkplug's and Turbofan's frames run compiled code on every
+        // build, which no module's file holds; Maglev's and OSR's too,
+        // where the build runs them. The stack unwinds through them all.
+        let scenario = &session.scenario;
+        let modules = scenario
+            .operation("modules", scenario.handle().loaded_modules())
+            .await;
+        scenario
+            .operation(
+                "select",
+                scenario
+                    .handle()
+                    .select_context(ThreadId::new(printer_native)),
+            )
+            .await;
+        let trace = scenario
+            .operation("backtrace", scenario.handle().backtrace())
+            .await;
+        let context = session.context();
+        let (compiled, _) = check_thread(&context, true, &trace, &modules);
+        assert!(compiled >= 2, "{context}: {compiled} compiled frames");
+        session.shutdown().await;
     }
     assert_truthful(&lies);
 }
@@ -238,7 +228,7 @@ async fn a_cores_javascript_frames_are_the_ones_v8_reported() {
 const GAPS: &[(&[&str], &str)] = &[];
 
 /// Fails on any lie but the known gaps', which it prints.
-fn assert_truthful(lies: &[String]) {
+pub fn assert_truthful(lies: &[String]) {
     let (known, unknown): (Vec<_>, Vec<_>) = lies.iter().partition(|lie| {
         GAPS.iter()
             .any(|(texts, _)| texts.iter().all(|text| lie.contains(text)))

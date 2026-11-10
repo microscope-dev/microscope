@@ -7,7 +7,7 @@ use crate::session::{LINES, MATRIX, NodeSession};
 use crate::truth::{Named, threads};
 
 /// Selects the frame of `function` on the printer's thread.
-async fn select_function(session: &NodeSession, native: u64, function: &str) {
+pub async fn select_function(session: &NodeSession, native: u64, function: &str) {
     let handle = session.scenario.handle();
     session
         .scenario
@@ -203,7 +203,7 @@ async fn inspection_values_on_build_5() {
 
 /// The kind of each variable of the selected frame named in `names`, in
 /// the order asked, `None` for one the frame does not list.
-async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<VariableKind>> {
+pub async fn kinds(session: &NodeSession, names: &[&str]) -> Vec<Option<VariableKind>> {
     let snapshot = session
         .scenario
         .operation("variables", session.scenario.handle().variables())
@@ -255,29 +255,6 @@ async fn gallery_variable_scopes(session: &NodeSession, lies: &mut Vec<String>) 
             session.context()
         ));
     }
-}
-
-/// Module bindings retain their scope alongside the frame's own locals.
-#[tokio::test]
-async fn module_variables_are_in_the_scopes_javascript_gives_them() {
-    use VariableKind::{Local, Module};
-    let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "modules é/entry.mjs", &[], &[]).await;
-        let reported = threads(&session.stop_at("modules").await);
-        let printer = reported.iter().find(|t| t.printer).expect("the printer");
-        select_function(&session, printer.native, "settle").await;
-        let names = ["entries", "label"];
-        let seen = kinds(&session, &names).await;
-        if seen != [Some(Local), Some(Module)] {
-            lies.push(format!(
-                "{}: settle's {names:?} are {seen:?}",
-                session.context()
-            ));
-        }
-        session.shutdown().await;
-    }
-    assert!(lies.is_empty(), "{} lies:\n{}", lies.len(), lies.join("\n"));
 }
 
 /// On every build, `.length`, `.size`, and typed array elements read what

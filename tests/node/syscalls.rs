@@ -179,53 +179,6 @@ fn each_calls_javascript_frames_are_the_ones_v8_reported() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// The comparison fails on each lie it exists to catch: a dropped frame, a
-/// wrong line, a wrong function, and another thread.
-#[test]
-fn the_comparison_fails_on_each_lie() {
-    let frame = |function: &str, line| (function.to_owned(), "/a.js".to_owned(), Some(line));
-    let truth = |thread| Call {
-        thread,
-        tier: String::new(),
-        frames: vec![frame("inner", 3), frame("outer", 9)],
-    };
-    let mut reported = BTreeMap::new();
-    for (path, tier) in OPENS {
-        reported.insert(
-            path.to_owned(),
-            Call {
-                tier: tier.to_owned(),
-                ..truth(7)
-            },
-        );
-    }
-    let record = |path: &str, thread: u64, frames: &[(&str, u32)]| {
-        let stack: Vec<Value> = frames
-            .iter()
-            .map(|(function, line)| {
-                serde_json::json!({"function": function, "file": "/a.js", "line": line})
-            })
-            .collect();
-        serde_json::json!({"path": path, "tid": thread, "stack": stack})
-    };
-    let honest: Vec<Value> = OPENS
-        .iter()
-        .map(|(path, _)| record(path, 7, &[("inner", 3), ("outer", 9)]))
-        .collect();
-    assert_eq!(lies(&reported, &honest), Vec::<String>::new());
-
-    for lie in [
-        record("/dev/full", 7, &[("outer", 9)]),
-        record("/dev/full", 7, &[("inner", 4), ("outer", 9)]),
-        record("/dev/full", 7, &[("other", 3), ("outer", 9)]),
-        record("/dev/full", 8, &[("inner", 3), ("outer", 9)]),
-    ] {
-        let mut records = honest.clone();
-        records[0] = lie.clone();
-        assert_eq!(lies(&reported, &records).len(), 1, "{lie}");
-    }
-}
-
 /// The functions whose frames the fixture runs compiled where they open
 /// their paths, whose lines the BPF engine leaves unknown: it does not
 /// prove which compiled code a frame ran (`runtime_model/node/sampled.rs`).

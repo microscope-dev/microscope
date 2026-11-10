@@ -27,7 +27,8 @@ mod threads;
 mod values;
 
 pub use agent::{
-    BOOTSTRAP_DIRECTORY_PREFIX, SCRIPT_DIRECTORY_PREFIX, is_script_filename, script_name,
+    BOOTSTRAP_DIRECTORY_PREFIX, SCRIPT_DIRECTORY_PREFIX, bootstrap as agent_bootstrap,
+    is_agent_filename, is_script_filename, script as agent_script, script_name,
 };
 pub use exceptions::EXCEPTION_FILTERS;
 

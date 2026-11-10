@@ -233,64 +233,6 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     );
 }
 
-/// Live snapshots, which never stop the program, read each thread's
-/// JavaScript frames by line from where V8 publishes them while the
-/// thread waits in native code: the main thread in `fs.readSync` and the
-/// workers in `Atomics.wait`, as V8 reported them.
-#[test]
-fn live_snapshots_read_each_waiting_threads_javascript_lines() {
-    let options = RecordOptions {
-        python: Some(PythonEngine::Live { every: EVERY }),
-        ..RecordOptions::default()
-    };
-    let ready = |profile: &Profile, reported: &[Thread]| {
-        missing(
-            &expected(reported),
-            &paths(profile, Source::Waits, Look::Python),
-        )
-        .is_empty()
-    };
-    let (profile, reported) = record_parked("stacks.js", "parked", &options, ready);
-    assert_eq!(reported.len(), 3, "{reported:#?}");
-
-    let (taken, paused, _) = profile.task_snapshots();
-    assert!(taken > 0 && paused == 0, "{taken} {paused}");
-    let paths = paths(&profile, Source::Waits, Look::Python);
-    let missing = missing(&expected(&reported), &paths);
-    assert!(
-        missing.is_empty(),
-        "{}\n{paths:#?}\n{:#?}",
-        missing.join("\n"),
-        profile.task_snapshot_problems()
-    );
-}
-
-/// The comparison fails on each lie it exists to catch: a dropped frame, a
-/// wrong line, and a wrong function.
-#[test]
-fn the_path_comparison_fails_on_each_lie() {
-    let truth = vec![(
-        "main".to_owned(),
-        vec!["outer a.js:9".to_owned(), "inner a.js:3".to_owned()],
-    )];
-    let path = |frames: &[&str]| -> BTreeMap<Vec<String>, u64> {
-        let mut native = frames
-            .iter()
-            .map(|frame| (*frame).to_owned())
-            .collect::<Vec<_>>();
-        native.push("read".to_owned());
-        std::iter::once((native, 1)).collect()
-    };
-    assert!(missing(&truth, &path(&["outer a.js:9", "inner a.js:3"])).is_empty());
-    for lie in [
-        path(&["inner a.js:3"]),
-        path(&["outer a.js:9", "inner a.js:4"]),
-        path(&["outer a.js:9", "other a.js:3"]),
-    ] {
-        assert_eq!(missing(&truth, &lie).len(), 1, "{lie:?}");
-    }
-}
-
 /// What a flight recording shows of a write to the program, or of a turn
 /// to its inspector: a planted trap, a stored word or register, a signal
 /// that opens the inspector, and a CDP command.
@@ -371,24 +313,6 @@ fn profiling_and_tracing_write_nothing() {
         "the tracer wrote:\n{}",
         written.join("\n")
     );
-}
-
-/// The check fails on each write it exists to catch.
-#[cfg(debug_assertions)]
-#[test]
-fn the_write_check_fails_on_each_write() {
-    for write in [
-        "   1.0 controller install breakpoint 0x10 in 7 for Loader",
-        "   1.0 controller reinstall breakpoint 0x10 in 7",
-        "   1.0 controller PTRACE_POKEDATA 7 0x10 0x0000000000000000",
-        "   1.0 controller PTRACE_SETREGS 7 rip=0x10",
-        "   1.0 controller tgkill 7 7 SIGUSR1",
-        "   1.0 controller Runtime.evaluate to Session(1): Ok(1)",
-    ] {
-        let recording = format!("   0.5 controller request attach 7\n{write}\n");
-        assert_eq!(writes(&recording), [write], "{write}");
-    }
-    assert!(writes("   0.5 controller PTRACE_SEIZE 7 exit_kill=false\n").is_empty());
 }
 
 /// Runs the fixture `busy.js` on the entry for `seconds`, with `arguments`

@@ -24,7 +24,8 @@ pub use node::SCRIPT_EXTENSIONS as JAVASCRIPT_EXTENSIONS;
 pub use node::inspector as inspector_protocol;
 pub use python::BOOTSTRAP_DIRECTORY_PREFIX as PYTHON_BOOTSTRAP_PREFIX;
 pub use python::{
-    SCRIPT_DIRECTORY_PREFIX as PYTHON_SCRIPT_PREFIX,
+    SCRIPT_DIRECTORY_PREFIX as PYTHON_SCRIPT_PREFIX, agent_bootstrap as python_agent_bootstrap,
+    agent_script as python_agent_script, is_agent_filename as is_python_agent_filename,
     is_script_filename as is_python_script_filename, script_name as python_script_name,
 };
 mod records;

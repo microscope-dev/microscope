@@ -86,12 +86,17 @@ pub fn placement(trace: &Backtrace, resumed: &str, ends_early: bool) -> Vec<Stri
 
 /// On every build, at every checkpoint, each thread's await chain is the
 /// one V8 reported, after the function the thread resumed, and its stack
-/// is the one V8 reported above it.
+/// is the one V8 reported above it. The variables of `middle`, suspended in
+/// await, are the ones its generator keeps: its argument, `captured` from
+/// its context, by name and by expression, `this`, which its strict call
+/// left undefined, and the string `plain` in the register its frame on the
+/// stack holds it in once the await resumed it.
 #[tokio::test]
 async fn each_await_chain_is_the_one_v8_reported() {
     let mut lies = Vec::new();
     for entry in MATRIX {
         let mut session = NodeSession::launch(entry, "awaits.js", &[], &[]).await;
+        let mut suspended = Vec::new();
         for (index, (checkpoint, resumed, ends_early)) in CHECKPOINTS.into_iter().enumerate() {
             if index > 0 {
                 session.proceed().await;
@@ -99,6 +104,20 @@ async fn each_await_chain_is_the_one_v8_reported() {
             let reported = threads(&session.stop_at(checkpoint).await);
             let context = format!("{} at {checkpoint}", session.context());
             lies.extend(check(&session.scenario, &reported, resumed, ends_early, &context).await);
+            match checkpoint {
+                "chain" => {
+                    suspended =
+                        middle_variables(&session, reported[0].native, StackSegment::Awaiting)
+                            .await;
+                    lies.extend(suspended_lies(&session, &suspended, &context).await);
+                }
+                "resumed" => {
+                    let running =
+                        middle_variables(&session, reported[0].native, StackSegment::Thread).await;
+                    lies.extend(plain_lies(&suspended, &running, &context));
+                }
+                _ => {}
+            }
         }
         session.shutdown().await;
     }
@@ -173,58 +192,56 @@ pub async fn check(
     lies
 }
 
-/// On every build, the variables of `middle`, suspended in await, are the
-/// ones its generator keeps: its argument, `captured` from its context, by
-/// name and by expression, `this`, which its strict call left undefined,
-/// and the string `plain` in the register its frame on the stack holds it
-/// in once the await resumed it.
-#[tokio::test]
-async fn a_suspended_functions_variables_are_its_generators() {
+/// What `middle`'s suspended variables, read at `chain`, lack of what its
+/// generator keeps.
+async fn suspended_lies(
+    session: &NodeSession,
+    suspended: &[(String, VariableKind, String)],
+    context: &str,
+) -> Vec<String> {
     let mut lies = Vec::new();
-    for entry in MATRIX {
-        let mut session = NodeSession::launch(entry, "awaits.js", &[], &[]).await;
-        let reported = threads(&session.stop_at("chain").await);
-        let context = session.context();
-        let suspended =
-            middle_variables(&session, reported[0].native, StackSegment::Awaiting).await;
-        for (name, kind, text) in [
-            ("this", VariableKind::Parameter, "undefined"),
-            ("arguments[0]", VariableKind::Parameter, "20"),
-            ("captured", VariableKind::Local, "40"),
-        ] {
-            if !suspended
-                .iter()
-                .any(|(n, k, t)| n == name && *k == kind && t == text)
-            {
-                lies.push(format!(
-                    "{context}: no {name} {kind:?} {text}: {suspended:#?}"
-                ));
-            }
-        }
-        let (summary, _) = presented(&session, "captured").await;
-        if summary != "40" {
-            lies.push(format!("{context}: captured evaluates to {summary}"));
-        }
-
-        session.proceed().await;
-        let reported = threads(&session.stop_at("resumed").await);
-        let running = middle_variables(&session, reported[0].native, StackSegment::Thread).await;
-        let plain = |variables: &[(String, VariableKind, String)]| -> Option<String> {
-            variables
-                .iter()
-                .find(|(_, kind, text)| *kind == VariableKind::Unnamed && text == "'plain-10'")
-                .map(|(name, ..)| name.clone())
-        };
-        if plain(&suspended).is_none() || plain(&suspended) != plain(&running) {
+    for (name, kind, text) in [
+        ("this", VariableKind::Parameter, "undefined"),
+        ("arguments[0]", VariableKind::Parameter, "20"),
+        ("captured", VariableKind::Local, "40"),
+    ] {
+        if !suspended
+            .iter()
+            .any(|(n, k, t)| n == name && *k == kind && t == text)
+        {
             lies.push(format!(
-                "{context}: plain is in {:?} suspended, {:?} on the stack",
-                plain(&suspended),
-                plain(&running)
+                "{context}: no {name} {kind:?} {text}: {suspended:#?}"
             ));
         }
-        session.shutdown().await;
     }
-    assert!(lies.is_empty(), "{lies:#?}");
+    let (summary, _) = presented(session, "captured").await;
+    if summary != "40" {
+        lies.push(format!("{context}: captured evaluates to {summary}"));
+    }
+    lies
+}
+
+/// Whether `plain` is named the same while `middle` is suspended and once
+/// it runs on the stack again.
+fn plain_lies(
+    suspended: &[(String, VariableKind, String)],
+    running: &[(String, VariableKind, String)],
+    context: &str,
+) -> Vec<String> {
+    let plain = |variables: &[(String, VariableKind, String)]| -> Option<String> {
+        variables
+            .iter()
+            .find(|(_, kind, text)| *kind == VariableKind::Unnamed && text == "'plain-10'")
+            .map(|(name, ..)| name.clone())
+    };
+    if plain(suspended).is_some() && plain(suspended) == plain(running) {
+        return Vec::new();
+    }
+    vec![format!(
+        "{context}: plain is in {:?} suspended, {:?} on the stack",
+        plain(suspended),
+        plain(running)
+    )]
 }
 
 /// The name, kind, and summary of each variable of the frame of `middle`
@@ -281,11 +298,9 @@ async fn middle_variables(
 /// The comparisons fail on a dropped async frame, a wrong line, a wrong
 /// combinator index, a chain that is not there, and one where V8 has none,
 /// and hold for the truth itself.
-#[tokio::test]
-async fn the_await_truth_fails_on_the_lies_it_looks_for() {
-    let mut session = NodeSession::launch("26", "awaits.js", &[], &[]).await;
-    let truth = threads(&session.stop_at("chain").await);
-    session.shutdown().await;
+#[test]
+fn the_await_truth_fails_on_the_lies_it_looks_for() {
+    let truth = crate::truth::saved("awaits", "chain");
 
     check_threads(&truth, &truth).expect("the truth holds");
     let chain = |thread: &Thread| -> Vec<Frame> { thread.awaiting.clone() };
@@ -313,7 +328,7 @@ async fn the_await_truth_fails_on_the_lies_it_looks_for() {
     assert!(check_threads(&missing, &truth).is_err(), "a missing chain");
 
     let mut invented = truth.clone();
-    let mut none = truth.clone();
+    let mut none = truth;
     none[0].awaiting.clear();
     invented[0].awaiting.truncate(1);
     assert!(

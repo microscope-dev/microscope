@@ -1,18 +1,12 @@
-//! The layouts microscope reads interpreters by, checked against the
-//! headers of every interpreter in the matrix.
+//! What microscope assumes of each interpreter in the matrix beyond its
+//! layout, checked against the interpreter's headers. The layouts
+//! themselves are checked against each binary's own table and DWARF by
+//! `debug_info::cpython`'s tests.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::schemas;
 use crate::support::ScratchDir;
-
-const GENERATED: &str = "src/debug_info/cpython/layouts.gen.rs";
-
-fn root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-}
 
 /// Each interpreter's directory, by name.
 fn interpreters() -> Vec<(String, PathBuf)> {
@@ -31,58 +25,6 @@ fn interpreters() -> Vec<(String, PathBuf)> {
     interpreters.sort();
     assert!(!interpreters.is_empty(), "no interpreters in the matrix");
     interpreters
-}
-
-/// Fails when the checked-in layouts are not what the script makes of the
-/// matrix's headers. Run `scripts/cpython-layouts.sh` to make them again.
-#[test]
-fn the_generated_layouts_are_the_headers() {
-    let scratch = ScratchDir::new("python-layouts");
-    let made = scratch.path().join("layouts.gen.rs");
-    let output = Command::new("bash")
-        .arg(root().join("scripts/cpython-layouts.sh"))
-        .arg(&made)
-        .output()
-        .expect("run scripts/cpython-layouts.sh");
-    assert!(
-        output.status.success(),
-        "scripts/cpython-layouts.sh failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let made = std::fs::read_to_string(&made).expect("read the made layouts");
-    let checked_in = std::fs::read_to_string(root().join(GENERATED)).unwrap_or_default();
-    assert!(
-        made == checked_in,
-        "{GENERATED} is stale; rerun scripts/cpython-layouts.sh in the dev shell"
-    );
-}
-
-/// Fails when the checked-in table of the characters a `str`'s repr
-/// escapes is not what the script makes of the matrix's interpreters. Run
-/// `scripts/python-printable.sh` to make it again.
-#[test]
-fn the_escaped_characters_are_the_interpreters() {
-    const PRINTABLE: &str = "src/runtime_model/python/printable.gen.rs";
-    let scratch = ScratchDir::new("python-printable");
-    let made = scratch.path().join("printable.gen.rs");
-    let output = Command::new("bash")
-        .arg(root().join("scripts/python-printable.sh"))
-        .arg(&made)
-        .output()
-        .expect("run scripts/python-printable.sh");
-    assert!(
-        output.status.success(),
-        "scripts/python-printable.sh failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let made = std::fs::read_to_string(&made).expect("read the made table");
-    let checked_in = std::fs::read_to_string(root().join(PRINTABLE)).unwrap_or_default();
-    assert!(
-        made == checked_in,
-        "{PRINTABLE} is stale; rerun scripts/python-printable.sh in the dev shell"
-    );
 }
 
 /// What microscope assumes of every interpreter beyond the offsets its
@@ -194,50 +136,4 @@ fn compile(directory: &Path, file: &Path) -> std::process::Output {
         .arg(file)
         .output()
         .expect("run cc")
-}
-
-/// Each minor version's `_Py_DebugOffsets` holds the names its schema
-/// lists, at the offsets the schema puts them, and nothing more.
-#[test]
-fn each_schema_is_its_versions_debug_offsets() {
-    let mut source = String::from(
-        "#include <Python.h>\n\
-         #include <stddef.h>\n\
-         #include \"internal/pycore_runtime.h\"\n\
-         #if PY_MINOR_VERSION < 13\n\
-         /* No table before 3.13. */\n",
-    );
-    for (minor, schema) in [
-        (13, schemas::V3_13),
-        (14, schemas::V3_14),
-        (15, schemas::V3_15),
-    ] {
-        let _ = writeln!(source, "#elif PY_MINOR_VERSION == {minor}");
-        for (index, name) in schema.iter().enumerate() {
-            let _ = writeln!(
-                source,
-                "_Static_assert(offsetof(_Py_DebugOffsets, {name}) == {}, \"3.{minor} {name}\");",
-                24 + 8 * index
-            );
-        }
-        let _ = writeln!(
-            source,
-            "_Static_assert(sizeof(_Py_DebugOffsets) == {}, \"3.{minor} holds more\");",
-            24 + 8 * schema.len()
-        );
-    }
-
-    source.push_str("#else\n#error \"no schema of this version\"\n#endif\n");
-
-    let scratch = ScratchDir::new("python-schemas");
-    let file = scratch.path().join("schemas.c");
-    std::fs::write(&file, &source).expect("write the schema check");
-    for (name, directory) in interpreters() {
-        let output = compile(&directory, &file);
-        assert!(
-            output.status.success(),
-            "{name}'s headers disagree with its schema:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
 }

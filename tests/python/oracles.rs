@@ -1,10 +1,15 @@
 //! Mutation checks for frame/local comparisons, plus attach/launch parity against CPython.
 
-use microscope::{FrameKind, ThreadId};
+use microscope::{
+    Backtrace, CoreDumpOptions, ExecutionContext, FrameKind, InferiorState, StackFrameId,
+    StopContext, StopId, ThreadId,
+};
 
 use crate::locals::{PARKED, Stop, assert_locals, check_locals, reported_locals};
 use crate::session::PythonSession;
 use crate::stacks::{CodeLines, check_frames, reported_threads};
+use crate::support::Scenario;
+use crate::support::truth::Report;
 
 /// Primary GIL and free-threaded builds for client and path scenarios.
 const PRIMARY: [&str; 2] = ["3.14", "3.14t"];
@@ -13,17 +18,17 @@ const PRIMARY: [&str; 2] = ["3.14", "3.14t"];
 /// thread, a wrong value, and a missing local.
 #[tokio::test]
 async fn the_truth_fails_on_the_lies_it_looks_for() {
-    let mut session = PythonSession::launch("3.14", "stacks.py", &[]).await;
-    let truth = session.stop_at("parked").await;
-    let lines = CodeLines::of(&session.report());
-    let parked: Vec<_> = reported_threads(&truth)
+    let (scenario, stop, report) = saved("stacks").await;
+    let truth = report.checkpoint("parked").expect("the parked checkpoint");
+    let lines = CodeLines::of(&report);
+    let parked: Vec<_> = reported_threads(truth)
         .into_iter()
         .filter(|(_, printer, _)| !printer)
         .collect();
     let [(deep, _, reported), (shallow, _, _)] = &parked[..] else {
         panic!("two parked threads: {parked:?}");
     };
-    let trace = session.backtrace(ThreadId::new(*deep)).await;
+    let trace = backtrace(&scenario, stop, *deep).await;
     check_frames(&trace, reported, 0).expect("the truth holds");
     lines.check(&trace).expect("each line is its code's");
 
@@ -60,24 +65,24 @@ async fn the_truth_fails_on_the_lies_it_looks_for() {
     assert!(check_frames(&moved, reported, 0).is_err(), "a wrong line");
     assert!(lines.check(&moved).is_err(), "a line its code has not");
 
-    let other = session.backtrace(ThreadId::new(*shallow)).await;
+    let other = backtrace(&scenario, stop, *shallow).await;
     assert!(
         check_frames(&other, reported, 0).is_err(),
         "a swapped thread"
     );
-    session.shutdown().await;
+    scenario.shutdown().await;
 
-    let mut session = PythonSession::launch("3.14", "locals.py", &[]).await;
-    let truth = session.stop_at("parked").await;
+    let (scenario, id, report) = saved("locals").await;
+    let truth = report.checkpoint("parked").expect("the parked checkpoint");
     let (function, parameters) = PARKED[0];
-    let (thread, expected) = reported_locals(&truth)
+    let (thread, expected) = reported_locals(truth)
         .into_iter()
         .find_map(|((thread, name), locals)| (name == function).then_some((thread, locals)))
         .expect("CPython reported the function");
     let stop = Stop {
-        id: session.stop().await,
-        scenario: &session.scenario,
-        context: session.context(),
+        id,
+        scenario: &scenario,
+        context: "python-locals-3.15.core".to_owned(),
     };
     let variables = stop.variables(thread, function).await;
     check_locals(function, parameters, &variables, &expected).expect("the truth holds");
@@ -98,7 +103,36 @@ async fn the_truth_fails_on_the_lies_it_looks_for() {
         check_locals(function, parameters, &variables, &missing).is_err(),
         "a missing local"
     );
-    session.shutdown().await;
+    scenario.shutdown().await;
+}
+
+/// The core of `fixture` the build saved for 3.15, opened, with its stop
+/// and the report CPython wrote just before it aborted.
+async fn saved(fixture: &str) -> (Scenario, StopId, Report) {
+    let name = format!("python-{fixture}-3.15.core");
+    let core = Scenario::fixture(&name);
+    let log = std::fs::read_to_string(core.with_extension("core.log"))
+        .expect("the core's log; run `just build-test-programs`");
+    let mut scenario = Scenario::open_core(&name, &CoreDumpOptions::new(core));
+    let InferiorState::Stopped { stop_id, .. } = scenario.snapshot().await.inferior else {
+        panic!("{name}: the core is not stopped");
+    };
+    (scenario, stop_id, Report::parse(&log))
+}
+
+/// The backtrace of `thread` at `stop`.
+async fn backtrace(scenario: &Scenario, stop: StopId, thread: u64) -> Backtrace {
+    let context = StopContext {
+        stop,
+        execution: ExecutionContext::Thread(ThreadId::new(thread)),
+        frame: StackFrameId::INNERMOST,
+    };
+    scenario
+        .operation(
+            "thread backtrace",
+            scenario.handle().at(context).backtrace(),
+        )
+        .await
 }
 
 /// A process the debugger attaches to, parked at its checkpoint, shows
