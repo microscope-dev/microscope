@@ -218,13 +218,6 @@ it("steps into the call it names, and lists the line's calls when it names none"
     .toMatchTextContent("this line does not call missing; it calls hash, strcmp");
 });
 
-it("leaves expressions that start with a command's name to microscope", async () => {
-  const server = await mountPane(<Console />);
-  await type("n + 1");
-  expect((await server.next("console")).params).toMatchObject({ line: "n + 1" });
-  expect(server.requests.map((request) => request.method)).not.toContain("step");
-});
-
 it("clears with cls and with Ctrl+L", async () => {
   const server = await mountPane(<Console />);
   await type("p x");
@@ -265,10 +258,4 @@ it("shows a function's code in Disassembly instead of listing it", async () => {
   server.refuse(await server.next("resolve"), "failed", "no symbol named 'nothing' was found");
   await expect.element(entries().last()).toMatchTextContent("no symbol named 'nothing'");
   expect(server.requests.map((request) => request.method)).not.toContain("console");
-});
-
-it("leaves a disassembly with an instruction count to microscope", async () => {
-  const server = await mountPane(<Console />);
-  await type("disas main 8");
-  expect((await server.next("console")).params).toMatchObject({ line: "disas main 8" });
 });

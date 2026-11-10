@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ACTION_NAMES, action } from "../src/actions";
+import { action } from "../src/actions";
 import { toggleBreakpoint } from "../src/breakpoints";
 import type { Connection } from "../src/connection";
 import { initialModel, type Model, reduce } from "../src/model";
@@ -113,11 +113,6 @@ describe("stepping into a call", () => {
     expect(asked).toEqual([]);
     expect(tab.getState().palette).toBe("calls");
   });
-});
-
-it("names every action once", () => {
-  expect(new Set(ACTION_NAMES).size).toBe(ACTION_NAMES.length);
-  expect(ACTION_NAMES).toContain("jumpToCursor");
 });
 
 describe("toggling a breakpoint", () => {

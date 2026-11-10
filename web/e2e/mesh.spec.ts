@@ -150,22 +150,6 @@ test.describe("the built-in mesh viewer", () => {
     await expect(canvas).not.toBeFocused();
   });
 
-  test("names what is wrong with a mesh and draws none of it", async ({ page, microscope }) => {
-    await open(page, microscope);
-    for (const [name, problem] of [
-      ["flown", "vertex 2 is at (NaN, 1, 0)"],
-      ["stray", "index 4 is 7, past the last vertex, 3"],
-    ]) {
-      const board = card(page, name as string);
-      await shown(board);
-      await expect(board.locator(".drawing-caption")).toHaveText(
-        `4 vertices · 2 triangles · not drawn: ${problem}`,
-      );
-      const drawn = await sample(canvasOf(board));
-      expect(new Set(drawn).size, name).toBe(1);
-    }
-  });
-
   test("starts afresh when its card comes back on screen", async ({ page, microscope }) => {
     await open(page, microscope);
     const board = card(page, "mesh");

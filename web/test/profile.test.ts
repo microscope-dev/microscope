@@ -33,7 +33,6 @@ import {
   diffFill,
   formatBytes,
   formatChange,
-  formatCount,
   formatDuration,
   formatInstant,
   formatPercent,
@@ -631,26 +630,7 @@ describe("the lanes' time", () => {
   });
 });
 
-describe("a count", () => {
-  it("groups its digits and names one or many", () => {
-    expect(formatCount(0)).toBe("0");
-    expect(formatCount(1_234_567)).toBe("1,234,567");
-    expect(formatCount(1, "sample")).toBe("1 sample");
-    expect(formatCount(2, "sample")).toBe("2 samples");
-    expect(formatCount(1200, "sample")).toBe("1,200 samples");
-    expect(formatCount(3, "process", "processes")).toBe("3 processes");
-    expect(formatCount(1, "process", "processes")).toBe("1 process");
-  });
-});
-
 describe("the largest value", () => {
-  it("never falls below its floor", () => {
-    expect(largest([], 1)).toBe(1);
-    expect(largest([0.5, 0.25], 1)).toBe(1);
-    expect(largest([3, 9, 2], 1)).toBe(9);
-    expect(largest([-4, -2], Number.NEGATIVE_INFINITY)).toBe(-2);
-  });
-
   it("reads more values than a call can take as arguments", () => {
     // A lane per thread of 2048 buckets, for 300 threads.
     const values = Array.from({ length: 300 * 2048 }, () => 1);

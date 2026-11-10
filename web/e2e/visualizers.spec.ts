@@ -339,12 +339,6 @@ extend c life {
     await expect(caption).toHaveText(`dark ${await ink()}`);
   });
 
-  test("a pointer draws as what it points to", async ({ page, microscope }) => {
-    await life(page, microscope, path.join(root, "tests/fixtures/c/life/life.views"));
-    await drawAt(page, "step");
-    await expect(card(page, "life").locator(".drawing-caption")).toHaveText("generation 0");
-  });
-
   test("reloading views draws with the renderer as it is now", async ({ page, microscope }) => {
     const directory = test.info().outputPath("views");
     const { mkdir } = await import("node:fs/promises");

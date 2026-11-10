@@ -1251,10 +1251,14 @@ it("draws a lane per thread for hundreds of threads", async () => {
     })),
   });
   const canvas = page.getByRole("img", { name: /^CPU over/u });
+  // The first lane and the last are painted: a renderer that stopped
+  // after a few lanes leaves the bottom blank.
   await vi.waitFor(() => {
     const element = canvas.element() as HTMLCanvasElement;
-    const pixels = element.getContext("2d")?.getImageData(0, 0, 4, 18).data ?? [];
-    expect([...pixels].some((value) => value > 0)).toBe(true);
+    const context = element.getContext("2d");
+    const painted = (y: number) =>
+      [...(context?.getImageData(0, y, 4, 18).data ?? [])].some((value) => value > 0);
+    expect([painted(0), painted(element.height - 18)]).toEqual([true, true]);
   }, POLL);
 });
 
@@ -2346,10 +2350,10 @@ it("says why the log could not be read", async () => {
   await expect.element(page.getByText("the log is cut short")).toBeVisible();
 });
 
+// The processes tab is read end to end in e2e/syscalls.spec.ts.
 for (const [tab, method, reading, empty] of [
   ["files", "syscallFiles", "Reading files…", "No file was opened or used."],
   ["network", "syscallNetwork", "Reading sockets…", "No socket was used."],
-  ["processes", "syscallProcesses", "Reading processes…", "No process was seen."],
 ] as const) {
   it(`says it is reading ${tab}, and why it could not, rather than that there are none`, async () => {
     const server = await mount(<SyscallsView />, { summary: traced(), look: { st: tab } });

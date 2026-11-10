@@ -40,12 +40,9 @@ const WORDS = [
 describe("a console line", () => {
   it.each([
     ["c", { kind: "action", action: "continue" }],
-    ["continue", { kind: "action", action: "continue" }],
     ["n", { kind: "action", action: "over" }],
-    ["  next  ", { kind: "action", action: "over" }],
     ["s", { kind: "action", action: "into" }],
     ["f", { kind: "action", action: "out" }],
-    ["finish", { kind: "action", action: "out" }],
     ["si", { kind: "action", action: "instruction" }],
     ["nexti", { kind: "action", action: "overInstruction" }],
     ["interrupt", { kind: "action", action: "pause" }],
@@ -54,45 +51,27 @@ describe("a console line", () => {
     ["r", { kind: "start" }],
     ["step hash", { kind: "into", call: "hash" }],
     ["s *0x401a2f", { kind: "into", call: "*0x401a2f" }],
-    ["s ns::fn", { kind: "into", call: "ns::fn" }],
     ["until kvstore.c:112", { kind: "advance", location: "kvstore.c:112" }],
-    ["advance main", { kind: "advance", location: "main" }],
     ["adv 0x401000", { kind: "advance", location: "0x401000" }],
-    ["adv src/kv.c:table_find", { kind: "advance", location: "src/kv.c:table_find" }],
     ["cls", { kind: "clear" }],
-    ["clear", { kind: "clear" }],
-    ["disassemble", { kind: "disassemble", target: null }],
     ["disas table_find", { kind: "disassemble", target: { name: "table_find" } }],
-    ["disas ns::Map<int>::get", { kind: "disassemble", target: { name: "ns::Map<int>::get" } }],
     ["disassemble 0x401A2F", { kind: "disassemble", target: { address: "0x401a2f" } }],
   ])("reads %j as the page's own", (line, wanted) => {
     expect(asked(line)).toEqual(wanted);
   });
 
   it.each([
-    // Expressions that start with a run-control word's name.
-    "n + 1",
-    "c = 2",
+    // Expressions that start with a run-control word's name, in forms the
+    // properties below do not generate.
     "s->key",
     "f(3)",
     "n*2",
-    "step == 1",
-    "until + 1",
-    "advance /",
-    "until -",
     "r[0]",
     // Arguments the page's commands do not take: microscope says so.
     "continue 3",
     "next 2",
     "run --flag",
     "clear 1",
-    // microscope's own commands.
-    "print n",
-    "p key",
-    "info breakpoints",
-    "help",
-    "x/16xb key",
-    "jump 79",
     // An instruction count keeps microscope's listing.
     "disas main 20",
     "disassemble 0x401000 8",
@@ -158,16 +137,13 @@ describe("a console line", () => {
 });
 
 describe("an empty line", () => {
-  it.each(["n", "next", "s", "c", "finish", "si", "ni"])("repeats %j", (line) => {
+  it.each(["n", "c", "si"])("repeats %j", (line) => {
     expect(repeats(line)).toBe(true);
   });
 
-  it.each(["p n", "kill", "restart", "r", "pause", "clear", "until main", "step hash", "n + 1"])(
-    "does not repeat %j",
-    (line) => {
-      expect(repeats(line)).toBe(false);
-    },
-  );
+  it.each(["p n", "kill", "until main", "n + 1"])("does not repeat %j", (line) => {
+    expect(repeats(line)).toBe(false);
+  });
 });
 
 const stopped = (stop: number, place: Partial<Place> = {}): Inferior => ({

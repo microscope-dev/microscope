@@ -21,10 +21,19 @@ it("shows each thread's runtime labels beside its name", async () => {
     }),
   );
   await expect.element(page.getByTestId("threads")).toBeInTheDocument();
-  const rows = page.getByTestId("threads").getByRole("button").elements();
-  expect(rows.map((row) => row.textContent)).toEqual([
-    "thread 1 (node)isolate 1◂ stopped here",
-    "thread 2 (libuv-worker)stopped",
-    "thread 3 (alpha)isolate 2stopped",
-  ]);
+  const rows = page
+    .getByTestId("threads")
+    .getByRole("button")
+    .elements()
+    .map((row) => row.textContent ?? "");
+  expect(rows).toHaveLength(3);
+  for (const [row, name, label] of [
+    [0, "thread 1 (node)", "isolate 1"],
+    [1, "thread 2 (libuv-worker)", null],
+    [2, "thread 3 (alpha)", "isolate 2"],
+  ] as const) {
+    expect(rows[row]).toContain(name);
+    expect(rows[row]?.includes(label ?? "isolate")).toBe(label !== null);
+  }
+  expect(rows.map((row) => row.includes("stopped here"))).toEqual([true, false, false]);
 });

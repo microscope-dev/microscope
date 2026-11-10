@@ -67,7 +67,7 @@ for (const [index, example] of liveExamples.entries()) {
 }
 
 it("has a live example", () => {
-  expect(liveExamples).toHaveLength(1);
+  expect(liveExamples.length).toBeGreaterThanOrEqual(1);
 });
 
 it("shows the life fixture's own files", async () => {

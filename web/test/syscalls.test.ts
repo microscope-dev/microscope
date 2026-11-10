@@ -78,7 +78,7 @@ describe("what the Syscalls view draws", () => {
     expect(heatAlpha(10, 100)).toBeLessThan(heatAlpha(50, 100));
   });
 
-  it("gives each class its own hue and keeps red for errors", () => {
+  it("gives each class its own hue, none of them the red that failures are drawn in", () => {
     const classes = ["file", "net", "desc", "memory", "process", "signal", "ipc", "clock"];
     const hues = classes.map((name) => Number(/hsl\((\d+)/u.exec(seriesColor(name, false))?.[1]));
     expect(new Set(hues).size).toBe(classes.length);

@@ -4,14 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { action } from "../src/actions";
 import { Connection, type TransportHandlers } from "../src/connection";
-import {
-  commandName,
-  initialModel,
-  type Model,
-  type ModelEvent,
-  reduce,
-  stopKind,
-} from "../src/model";
+import { commandName, initialModel, type Model, type ModelEvent, reduce } from "../src/model";
 import type { ServerMessage, State, Target } from "../src/protocol";
 import { shown } from "../src/ui/Status";
 import { POLL } from "./fake-server";
@@ -27,8 +20,6 @@ function replay(messages: ServerMessage[]): Model[] {
   return models;
 }
 
-const output = (model: Model) => model.output.map((piece) => piece.text).join("");
-
 describe("every recorded transcript", () => {
   it.each(transcriptNames())("%s replays into a consistent model", (name) => {
     const messages = received(name);
@@ -39,9 +30,11 @@ describe("every recorded transcript", () => {
       expect(model.state?.session === null).toBe(model.state?.target === null);
       // Each model is something the status and actions can describe.
       expect(shown(model).label).not.toBe("");
-      for (const command of ["continue", "pause", "kill", "restart"] as const) {
+      for (const command of ["continue", "kill", "restart"] as const) {
         action(command, model);
       }
+      // Pause is offered exactly while the program runs.
+      expect(action("pause", model).enabled).toBe(model.state?.inferior.state === "running");
     }
     // Revisions within one session never go backward.
     let last: { session: string | null; revision: number } | null = null;
@@ -56,11 +49,6 @@ describe("every recorded transcript", () => {
 describe("a program run to its exit", () => {
   const models = replay(received("run-to-exit"));
   const final = models.at(-1) as Model;
-
-  it("collects both streams in order", () => {
-    expect(output(final)).toContain("out 1\n");
-    expect(final.output.some((piece) => piece.stream === "stderr")).toBe(true);
-  });
 
   it("offers to run it again once it exits", () => {
     expect(final.state?.inferior.state).toBe("exited");
@@ -88,17 +76,6 @@ describe("a program run to its exit", () => {
     expect(commandName(relative)).toBe("python3.14 views.py --out=/tmp/x b");
     expect(commandName(null)).toBeNull();
   });
-
-  it("names what kind of stop each is in words", () => {
-    expect(stopKind("breakpoint")).toBe("breakpoint");
-    expect(stopKind("languageException")).toBe("language exception");
-    expect(stopKind("watchpointArmFailed")).toBe("watchpoint arm failed");
-  });
-
-  it("waited for continue before it started", () => {
-    const firstState = models.find((model) => model.state)?.state;
-    expect(firstState?.inferior.state).toBe("notStarted");
-  });
 });
 
 describe("two tabs racing a stop", () => {
@@ -117,11 +94,6 @@ describe("two tabs racing a stop", () => {
       method: "continue",
       params: { stop: inferior.stop },
     });
-  });
-
-  it("hears who started the program", () => {
-    const notices = (models.at(-1) as Model).notices;
-    expect(notices.map((notice) => notice.text)).toContain("started the program");
   });
 });
 

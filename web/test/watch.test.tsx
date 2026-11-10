@@ -4,6 +4,7 @@
 import { afterEach, expect, it } from "vitest";
 import { page } from "vitest/browser";
 
+import "../src/styles.css";
 import { Registers } from "../src/ui/Registers";
 import { Watch } from "../src/ui/Values";
 import { mountPane, unmountPane } from "./pane";
@@ -13,6 +14,19 @@ afterEach(unmountPane);
 const textOf = (name: string) =>
   page.getByRole("listitem").filter({ hasText: name }).element().querySelector(".value-text");
 
+/** The color a row's value text is drawn in. */
+const colorOf = (name: string) => getComputedStyle(textOf(name) as Element).color;
+
+/** The color a theme token resolves to. */
+function token(name: string): string {
+  const probe = document.createElement("span");
+  probe.style.color = `var(${name})`;
+  document.body.append(probe);
+  const color = getComputedStyle(probe).color;
+  probe.remove();
+  return color;
+}
+
 it("dims a watch hidden while the program runs, saying why once", async () => {
   await mountPane(<Watch />, { look: { w: ["count", "limit"] }, stale: "running" });
   await expect
@@ -21,8 +35,7 @@ it("dims a watch hidden while the program runs, saying why once", async () => {
   await expect
     .element(page.getByRole("listitem").filter({ hasText: "count" }).getByText("not read"))
     .toBeVisible();
-  expect(textOf("count")?.className).toContain("absent");
-  expect(textOf("count")?.className).not.toContain("error");
+  expect(colorOf("count")).toBe(token("--ink-3"));
 });
 
 it("marks a watch red only when it failed", async () => {
@@ -33,7 +46,7 @@ it("marks a watch red only when it failed", async () => {
     error: { kind: "failed", message: "no variable nope" },
   });
   await expect.element(page.getByText("no variable nope")).toBeVisible();
-  expect(textOf("nope")?.className).toContain("error");
+  expect(colorOf("nope")).toBe(token("--error"));
 });
 
 it("dims an outer frame's register that was not saved", async () => {
@@ -42,6 +55,5 @@ it("dims an outer frame's register that was not saved", async () => {
     registers: [{ name: "rbx", value: null, bits: 64, role: null }],
   });
   await expect.element(page.getByText("not saved")).toBeVisible();
-  expect(textOf("rbx")?.className).toContain("absent");
-  expect(textOf("rbx")?.className).not.toContain("error");
+  expect(colorOf("rbx")).toBe(token("--ink-3"));
 });

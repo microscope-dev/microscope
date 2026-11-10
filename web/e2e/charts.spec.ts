@@ -36,14 +36,6 @@ function numbers(rows: Map<string, string>, name: string): number[] {
   return found;
 }
 
-/** The quantile `p` of `values` by linear interpolation (type 7). */
-function quantile(sorted: number[], p: number): number {
-  const h = (sorted.length - 1) * p;
-  const lo = Math.floor(h);
-  const below = sorted[lo] as number;
-  return lo + 1 >= sorted.length ? below : below + (h - lo) * ((sorted[lo + 1] as number) - below);
-}
-
 /** Steps to the next stop and waits until `board`, on screen, has drawn it. */
 async function step(page: Page, board: Locator, stop: string): Promise<void> {
   await board.scrollIntoViewIfNeeded();
@@ -51,286 +43,87 @@ async function step(page: Page, board: Locator, stop: string): Promise<void> {
   await expect(board.locator(".drawing-head")).toContainText(`stop ${stop}`);
 }
 
-test("Copy CSV keeps a lazy drawing in view when an earlier drawing grows", async ({ page }) => {
-  await page.setContent(`
-    <style>html { overflow-anchor: none; }</style>
-    <div id="earlier" style="height: 900px"></div>
-    <section aria-label="Drawing of bytes" style="height: 80px">
-      bytes <button hidden>Copy CSV</button>
-    </section>
-  `);
-  await page.evaluate(() => {
-    const earlier = document.querySelector("#earlier") as HTMLElement;
-    const board = document.querySelector("section") as HTMLElement;
-    const button = board.querySelector("button") as HTMLButtonElement;
-    let grew = false;
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) {
-        return;
-      }
-      if (grew) {
-        button.hidden = false;
-        observer.disconnect();
-      } else {
-        // The earlier renderer finishes before this card starts its draw.
-        grew = true;
-        earlier.style.height = "2000px";
-      }
-    });
-    observer.observe(board);
-    button.addEventListener("click", () => {
-      (window as unknown as { copied: string }).copied = "path,value\nvalues[0],7\n";
-    });
-  });
-  expect(await copyCsv(page, card(page, "bytes"))).toEqual(new Map([["values[0]", "7"]]));
-});
-
 const metrics = (page: Page, microscope: Microscope) =>
   open(page, microscope, "metrics", "c/metrics/metrics.views");
 
-test.describe("a C program's metrics", () => {
-  test("line-plot keeps a one-sample spike and gaps for NaN, against a ghost of the stop before", async ({
-    page,
-    microscope,
-  }) => {
-    // Narrow enough that the 600 values outnumber the plot's columns.
-    await page.setViewportSize({ width: 1000, height: 720 });
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "line-plot");
-    const values = numbers(await copyCsv(page, board), "values");
-    expect(values).toHaveLength(600);
-    // The spike is at 3/5 of the way, 250 plus the tick, and NaN at 1/10.
-    expect(values[361]).toBe(251);
-    expect(values.filter((value) => Number.isNaN(value))).toHaveLength(1);
-    const finite = values.filter((value) => Number.isFinite(value));
-    const least = values.indexOf(Math.min(...finite));
-    const caption = board.locator(".drawing-caption");
-    await expect(caption).toContainText("n=600");
-    await expect(caption).toContainText(new RegExp(`min \\S+ at \\[${least}\\]`, "u"));
-    await expect(caption).toContainText("max 251 at [361]");
-    await expect(caption).toContainText("1 NaN, left as gaps");
-    // More values than columns, yet the spike's column names it exactly.
-    await expect(caption).toContainText("values a column: min/max band");
-    expect((await titles(board)).some((title) => title.includes("max 251 at [361]"))).toBe(true);
-    await expect(board.locator("svg text", { hasText: "stop before" })).toHaveCount(0);
+/** The number of values a card's CSV holds under `name`, as `name[i]` or
+ * `name[i][j]`. */
+function csvCount(rows: Map<string, string>, name: string): number {
+  return [...rows.keys()].filter((key) => key.startsWith(`${name}[`)).length;
+}
 
-    await step(page, board, "#3");
-    await expect(caption).toContainText("max 252 at [361]");
-    await expect(board.locator("svg text", { hasText: "stop before" })).toHaveCount(1);
-  });
+/** The renderers' own math is held to known answers in
+ * test/builtins.test.tsx; here each draws a real program's values once,
+ * opens a part, and marks the stop before after one step. */
+test("a C program's metrics draw in every built-in, open their parts, and mark the stop before", async ({
+  page,
+  microscope,
+}) => {
+  await metrics(page, microscope);
+  await drawAt(page, "metrics.c:119");
+  const board = card(page, "m");
+  const caption = board.locator(".drawing-caption");
+  const part = async (name: string) => {
+    const dialog = page.getByRole("dialog", { name: `Part ${name}` });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Close" }).click();
+  };
 
-  test("histogram bins every sample and marks exact percentiles", async ({ page, microscope }) => {
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "histogram");
-    const latency = numbers(await copyCsv(page, board), "values");
-    expect(latency).toHaveLength(5000);
-    const sorted = latency.toSorted((a, b) => a - b);
-    await expect(board.locator(".drawing-caption")).toContainText("n=5000");
-    const drawn = await titles(board);
-    for (const [name, p] of [
-      ["p50", 0.5],
-      ["p90", 0.9],
-      ["p99", 0.99],
-    ] as const) {
-      expect(drawn).toContain(`${name} ${quantile(sorted, p)}`);
-    }
-    const bins = drawn
-      .flatMap((title) => /^\[.*[)\]]: (\d+) · /u.exec(title)?.[1] ?? [])
-      .map(Number);
-    expect(bins.reduce((a, b) => a + b, 0)).toBe(5000);
-    expect(drawn.some((title) => title.endsWith("· 100% up to here"))).toBe(true);
-    expect(drawn).not.toContain("the stop before");
-
-    await step(page, board, "#3");
-    expect(await titles(board)).toContain("the stop before");
-
-    // The chosen drawing stays chosen at the next stop, and in another view.
-    const histogram = board.getByRole("button", { name: "histogram", exact: true });
-    await expect(histogram).toHaveAttribute("aria-pressed", "true");
-    await menu(page, "Go", "Show source");
-    await page.keyboard.press("Alt+v");
-    await expect(histogram).toHaveAttribute("aria-pressed", "true");
-  });
-
-  test("box-plot gives each endpoint's exact quartiles and error bars, and opens its samples", async ({
-    page,
-    microscope,
-  }) => {
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "box-plot");
+  // Every value the card was given is drawn: the CSV's count is the
+  // caption's.
+  for (const [tab, input, drawn] of [
+    ["line-plot", "values", "n=600"],
+    ["histogram", "values", "n=5000"],
+    ["scatter-plot", "x", "n=700"],
+  ] as const) {
+    await showTab(board, tab);
     const rows = await copyCsv(page, board);
-    const names = ["search", "items", "login", "cart"];
-    expect(names.map((_, index) => rows.get(`labels[${index}]`))).toEqual(names);
-    const search = numbers(rows, "groups[0]").toSorted((a, b) => a - b);
-    expect(search).toHaveLength(300);
-    const box = board.getByRole("button", { name: /^search: n=300/u });
-    const summary = await box.locator("title").textContent();
-    expect(summary?.split("\n")).toEqual(
-      expect.arrayContaining([
-        `min ${search[0]}`,
-        `q1 ${quantile(search, 0.25)}`,
-        `median ${quantile(search, 0.5)}`,
-        `q3 ${quantile(search, 0.75)}`,
-        `max ${search.at(-1)}`,
-      ]),
-    );
-    const drawn = await titles(board);
-    for (const name of names) {
-      expect(
-        drawn.some((title) => title.startsWith(`${name}: mean `) && title.includes("sd")),
-      ).toBe(true);
-    }
-    // Every 50th sample is 40 more: six outliers an endpoint.
-    await expect(board.locator(".drawing-caption")).toContainText("24 outliers");
+    await expect(caption).toContainText(drawn);
+    expect(`n=${csvCount(rows, input)}`).toBe(drawn);
+  }
 
-    await box.click();
-    await expect(page.getByRole("dialog", { name: "Part m.endpoints[0]" })).toBeVisible();
-    await page
-      .getByRole("dialog", { name: "Part m.endpoints[0]" })
-      .getByRole("button", { name: "Close" })
-      .click();
+  await showTab(board, "box-plot");
+  expect(csvCount(await copyCsv(page, board), "groups[0]")).toBe(300);
+  await board.getByRole("button", { name: /^search: n=300/u }).click();
+  await part("m.endpoints[0]");
 
-    await step(page, board, "#3");
-    expect(
-      (await titles(board)).some(
-        (title) => title.startsWith("search: median") && title.endsWith("at the stop before"),
-      ),
-    ).toBe(true);
-  });
+  await showTab(board, "heatmap");
+  const rows = await copyCsv(page, board);
+  expect(csvCount(rows, "values")).toBe(8 * 24);
+  await expect(caption).toContainText("8 × 24 cells");
+  await board.getByRole("button", { name: `cpu1[2]: ${rows.get("values[1][2]")}` }).click();
+  await part("m.misses[1][2]");
 
-  test("scatter-plot names each point exactly and trails those that moved", async ({
-    page,
-    microscope,
-  }) => {
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "scatter-plot");
-    const rows = await copyCsv(page, board);
-    const x = numbers(rows, "x");
-    const y = numbers(rows, "y");
-    expect([x.length, y.length]).toEqual([700, 700]);
-    await expect(board.locator(".drawing-caption")).toContainText("n=700");
-    const drawn = await titles(board);
-    expect(drawn).toContain(`[0]: x ${x[0]}, y ${y[0]}`);
-    expect(drawn).toContain(`[699]: x ${x[699]}, y ${y[699]}`);
-    expect(drawn.filter((title) => /^\[\d+\]: x /u.test(title))).toHaveLength(700);
-    const lines = await board.locator(".drawing-body svg line").count();
+  await showTab(board, "bitmap");
+  await expect(caption).toContainText("64 × 40 gray8");
 
-    // Every point's time grows by a tenth a tick.
-    await step(page, board, "#3");
-    await expect(board.locator(".drawing-body svg line")).toHaveCount(lines + 700);
-  });
+  await showTab(board, "bits");
+  expect((await copyCsv(page, board)).get("values")).toBe("258");
+  await expect(caption).toContainText("0x102");
 
-  test("heatmap diverges around zero, hatches NaN, and opens a cell", async ({
-    page,
-    microscope,
-  }) => {
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "heatmap");
-    const rows = await copyCsv(page, board);
-    expect(rows.get("values[3][8]")).toBe("NaN");
-    expect(rows.get("row_labels[3]")).toBe("cpu3");
-    const misses = Array.from({ length: 8 }, (_, row) => numbers(rows, `values[${row}]`));
-    const all = misses.flat().filter((miss) => Number.isFinite(miss));
-    await expect(board.locator(".drawing-caption")).toHaveText(
-      `8 × 24 cells · diverging around 0 · min ${Math.min(...all)} · max ${Math.max(...all)} · 1 NaN, hatched`,
-    );
-    const drawn = await titles(board);
-    expect(drawn).toContain("cpu3[8]: NaN");
-    expect(drawn).toContain(`cpu1[2]: ${misses[1]?.[2]}`);
-    await board.getByRole("button", { name: `cpu1[2]: ${misses[1]?.[2]}` }).click();
-    await expect(page.getByRole("dialog", { name: "Part m.misses[1][2]" })).toBeVisible();
-    await page
-      .getByRole("dialog", { name: "Part m.misses[1][2]" })
-      .getByRole("button", { name: "Close" })
-      .click();
+  // One step, and each drawing shown before it marks what changed since.
+  await board.scrollIntoViewIfNeeded();
+  await page.keyboard.press("F5");
+  await expect(board.locator(".drawing-head")).toContainText("stop #3");
+  await expect(caption).toContainText("4 bits changed since the stop before, outlined");
+  await board
+    .locator("svg rect", { has: page.locator("title", { hasText: /^value bit 2: 1$/u }) })
+    .click();
+  await part("m.flags");
+  await showTab(board, "bitmap");
+  await expect(caption).toContainText("2560 pixels changed since the stop before, outlined");
+  await showTab(board, "heatmap");
+  await expect(caption).toContainText("changed since the stop before");
+  await showTab(board, "line-plot");
+  await expect(board.locator("svg text", { hasText: "stop before" })).toHaveCount(1);
+  await showTab(board, "histogram");
+  await expect.poll(() => titles(board)).toContain("the stop before");
 
-    await step(page, board, "#3");
-    await expect(board.locator(".drawing-caption")).toContainText("changed since the stop before");
-  });
-
-  test("bitmap shows each byte as a pixel, names it on hover, and outlines what changed", async ({
-    page,
-    microscope,
-  }) => {
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "bitmap");
-    const image = board.locator('canvas[aria-label="pixels"]');
-    // Each byte is ((row + column + tick) % 16) * 16.
-    const gray = (column: number, row: number) =>
-      image.evaluate(
-        (canvas: HTMLCanvasElement, [c, r]: number[]) =>
-          canvas.getContext("2d")?.getImageData(c as number, r as number, 1, 1).data[0],
-        [column, row],
-      );
-    expect(await gray(0, 0)).toBe(16);
-    expect(await gray(5, 3)).toBe(144);
-    await expect(board.locator(".drawing-caption")).toHaveText(/^64 × 40 gray8 · at \d+×$/u);
-    const point = async (column: number, row: number) => {
-      const box = await image.boundingBox();
-      if (box === null) {
-        throw new Error("the image is not on screen");
-      }
-      await page.mouse.move(
-        box.x + ((column + 0.5) * box.width) / 64,
-        box.y + ((row + 0.5) * box.height) / 40,
-      );
-    };
-    await point(5, 3);
-    await expect(board.getByRole("tooltip")).toHaveText("pixels: column 5, row 3");
-
-    // Every pixel changes, and the outline leaves them visible.
-    await step(page, board, "#3");
-    await expect(board.locator(".drawing-caption")).toContainText(
-      "2560 pixels changed since the stop before, outlined",
-    );
-    expect(await gray(0, 0)).toBe(32);
-    await page.mouse.move(0, 0);
-    await point(6, 3);
-    await expect(board.getByRole("tooltip")).toHaveText("pixels: column 6, row 3");
-  });
-
-  test("bits draws a 64-bit word's bits and outlines those that flipped", async ({
-    page,
-    microscope,
-  }) => {
-    await metrics(page, microscope);
-    await drawAt(page, "metrics.c:119");
-    const board = card(page, "m");
-    await showTab(board, "bits");
-    // The tick's two flags and the tick itself, shifted up a byte.
-    expect((await copyCsv(page, board)).get("values")).toBe("258");
-    await expect(board.locator(".drawing-caption")).toHaveText(
-      "1 × 64-bit · origin top-left · 8 bits a row · 0x102",
-    );
-    const drawn = await titles(board);
-    expect(drawn.filter((title) => title.endsWith(": 1"))).toEqual([
-      "value bit 1: 1",
-      "value bit 8: 1",
-    ]);
-    await expect(board.locator("svg text", { hasText: "0x0000000000000102" })).toBeVisible();
-
-    await step(page, board, "#3");
-    await expect(board.locator(".drawing-caption")).toHaveText(
-      "1 × 64-bit · origin top-left · 8 bits a row · 0x204 · 4 bits changed since the stop before, outlined",
-    );
-    // A bit opens the word it is part of.
-    await board
-      .locator("svg rect", { has: page.locator("title", { hasText: /^value bit 2: 1$/u }) })
-      .click();
-    await expect(page.getByRole("dialog", { name: "Part m.flags" })).toBeVisible();
-  });
+  // The chosen drawing stays chosen in another view.
+  const histogram = board.getByRole("button", { name: "histogram", exact: true });
+  await menu(page, "Go", "Show source");
+  await page.keyboard.press("Alt+v");
+  await expect(histogram).toHaveAttribute("aria-pressed", "true");
 });
 
 test.describe("a card's header", () => {
@@ -370,7 +163,7 @@ test.describe("a card's header", () => {
 });
 
 test.describe("a Go program's counters", () => {
-  test("bar-chart sorts a map by value and folds the rest into Other; a vertical one opens a bar", async ({
+  test("bar-chart sorts a map by value and folds the rest into Other, a donut sums its shares, and a vertical bar opens", async ({
     page,
     microscope,
   }) => {
@@ -397,8 +190,32 @@ test.describe("a Go program's counters", () => {
     expect(bars).toContain(`Other: 16 more entries, total ${rest}`);
     await expect(hits.locator(".drawing-caption")).toContainText("top 40 + Other (16 more");
 
+    // The seven largest shares and Other, summing to the whole.
+    const bytes = card(page, "bytes");
+    const sizes = await copyCsv(page, bytes);
+    const values: number[] = [];
+    for (let index = 0; sizes.has(`entries[${index}][1]`); index++) {
+      values.push(Number(sizes.get(`entries[${index}][1]`)));
+    }
+    expect(values).toHaveLength(10);
+    const total = values.reduce((a, b) => a + b, 0);
+    await expect(bytes.locator("svg text", { hasText: String(total) })).toBeVisible();
+    const slices = (await titles(bytes)).filter((title) => / · [\d.]+%/u.test(title));
+    expect(slices).toHaveLength(8);
+    expect(slices[0]).toBe(
+      `text/html: 100000 · ${Number(((100000 / total) * 100).toPrecision(3))}%`,
+    );
+    expect(slices.at(-1)).toMatch(/^Other \(3\): /u);
+    const shares = slices.map((title) => Number(/ · ([\d.]+)%/u.exec(title)?.[1]));
+    expect(Math.abs(shares.reduce((a, b) => a + b, 0) - 100)).toBeLessThan(0.05 * slices.length);
+
     await step(page, hits, "#3");
     expect(await titles(hits)).toContain("/api/search at the stop before: 600");
+    await bytes.scrollIntoViewIfNeeded();
+    await expect(bytes.locator(".drawing-head")).toContainText("stop #3");
+    expect((await titles(bytes)).some((title) => title.startsWith("text/html: 200000 · "))).toBe(
+      true,
+    );
 
     // Hours by index, in the program's order; a bar opens its element.
     const hours = card(page, "hours");
@@ -413,36 +230,6 @@ test.describe("a Go program's counters", () => {
     await hours.getByRole("button", { name: `[7]: ${counts[7]}` }).click();
     await expect(page.getByRole("dialog", { name: "Part hours[7]" })).toContainText(
       String(counts[7]),
-    );
-  });
-
-  test("donut-chart shows the seven largest shares and Other, summing to the whole", async ({
-    page,
-    microscope,
-  }) => {
-    await open(page, microscope, "charts", "go/charts/charts.views");
-    await drawAt(page, "main.go:44");
-    const bytes = card(page, "bytes");
-    const rows = await copyCsv(page, bytes);
-    const values: number[] = [];
-    for (let index = 0; rows.has(`entries[${index}][1]`); index++) {
-      values.push(Number(rows.get(`entries[${index}][1]`)));
-    }
-    expect(values).toHaveLength(10);
-    const total = values.reduce((a, b) => a + b, 0);
-    await expect(bytes.locator("svg text", { hasText: String(total) })).toBeVisible();
-    const slices = (await titles(bytes)).filter((title) => / · [\d.]+%/u.test(title));
-    expect(slices).toHaveLength(8);
-    expect(slices[0]).toBe(
-      `text/html: 100000 · ${Number(((100000 / total) * 100).toPrecision(3))}%`,
-    );
-    expect(slices.at(-1)).toMatch(/^Other \(3\): /u);
-    const shares = slices.map((title) => Number(/ · ([\d.]+)%/u.exec(title)?.[1]));
-    expect(Math.abs(shares.reduce((a, b) => a + b, 0) - 100)).toBeLessThan(0.05 * slices.length);
-
-    await step(page, bytes, "#3");
-    expect((await titles(bytes)).some((title) => title.startsWith("text/html: 200000 · "))).toBe(
-      true,
     );
   });
 });

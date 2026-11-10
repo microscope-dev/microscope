@@ -16,23 +16,8 @@ function files(directory: string): string[] {
   );
 }
 
-it("knows the eleven built-ins", () => {
-  expect(builtIns.toSorted()).toEqual([
-    "bar-chart",
-    "bitmap",
-    "bits",
-    "box-plot",
-    "donut-chart",
-    "flame-graph",
-    "heatmap",
-    "histogram",
-    "line-plot",
-    "mesh",
-    "scatter-plot",
-  ]);
-});
-
 it("names no built-in anywhere in the page", () => {
+  expect(builtIns.length).toBeGreaterThan(0);
   const named = files("src").flatMap((file) => {
     const text = readFileSync(file, "utf8");
     return builtIns

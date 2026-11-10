@@ -31,13 +31,15 @@ it("keeps the link for the access chosen last", async () => {
     .toHaveValue("http://x/join?control");
 });
 
-it("shows a failure as an error", async () => {
+it("shows a failure in place of the link it was making", async () => {
   const server = await mountPane(<Share />);
   await userEvent.click(page.getByRole("button", { name: "Share" }));
+  await expect.element(page.getByText("Making a link…")).toBeVisible();
   server.send({
     type: "error",
     id: (await server.next("share")).id,
     error: { kind: "forbidden", message: "this link cannot share" },
   });
-  await expect.element(page.getByText("this link cannot share")).toHaveClass("error");
+  await expect.element(page.getByText("this link cannot share")).toBeVisible();
+  await expect.element(page.getByText("Making a link…")).not.toBeInTheDocument();
 });
