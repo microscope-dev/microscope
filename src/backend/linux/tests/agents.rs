@@ -22,11 +22,11 @@ use crate::runtime_model::{
     HookPlace, PreparedAgentRequest, RuntimeAgent, RuntimeStop, RuntimeWrite, TargetProcessId,
 };
 
-const LEADER: Pid = Pid::from_raw(5000);
+pub(super) const LEADER: Pid = Pid::from_raw(5000);
 
 /// Where the runtime's image begins to run interpreted code, which the
 /// controller traps while the agent waits for an initialized thread.
-const ENTRY: u64 = 0x60;
+pub(super) const ENTRY: u64 = 0x60;
 
 /// Where the agent's library loads, and where in it its report hook and
 /// command slot are.
@@ -37,7 +37,7 @@ const CONTROL: u64 = LIBRARY_BIAS + 0x200;
 /// The interpreter's slot for a thread's pending source request.
 const SLOT: u64 = 0x9000;
 
-type Log = Arc<Mutex<Vec<String>>>;
+pub(super) type Log = Arc<Mutex<Vec<String>>>;
 
 fn log(log: &Log, entry: String) {
     log.lock().expect("the log").push(entry);
@@ -46,25 +46,25 @@ fn log(log: &Log, entry: String) {
 /// An agent that logs what it is asked, and whose interpreter thread and
 /// refusals each phase sets.
 #[derive(Debug)]
-struct Agent {
-    log: Log,
+pub(super) struct Agent {
+    pub(super) log: Log,
     entries: [ImageAddress; 1],
 
     /// The thread a source request goes to, or none while the interpreter
     /// is not initialized.
-    thread: Mutex<Option<crate::ThreadId>>,
+    pub(super) thread: Mutex<Option<crate::ThreadId>>,
 
     /// Why a request is refused before any write.
-    refusal: Mutex<Option<Arc<str>>>,
+    pub(super) refusal: Mutex<Option<Arc<str>>>,
 
     /// Whether a source request goes to the launch's bootstrap.
     bootstrap: Mutex<bool>,
 
     /// Whether a source request sits in the slot, untaken.
-    pending: Arc<AtomicBool>,
+    pub(super) pending: Arc<AtomicBool>,
 
     /// The newest generation published.
-    generation: Mutex<u64>,
+    pub(super) generation: Mutex<u64>,
 }
 
 fn sites(arming: &Arming<'_>) -> String {
@@ -213,9 +213,9 @@ impl AgentRequestTicket for Ticket {
 
 /// A run of two threads in a process whose runtime has an agent, whose
 /// library is loaded.
-struct Session {
-    run: Run,
-    agent: Arc<Agent>,
+pub(super) struct Session {
+    pub(super) run: Run,
+    pub(super) agent: Arc<Agent>,
     runtime: Arc<ScriptedRuntime>,
 }
 
@@ -234,7 +234,7 @@ fn exported(id: u32, name: &str, address: u64) -> crate::SymbolInfo {
 }
 
 impl Session {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut run = Run::new(watch_harness(2));
         run.shown_writes = BTreeSet::from([SLOT, CONTROL]);
         let agent = Arc::new(Agent {
@@ -283,14 +283,14 @@ impl Session {
     }
 
     /// Forgets what was logged, called and published so far.
-    fn forget(&mut self) {
+    pub(super) fn forget(&mut self) {
         self.run.take_calls();
         self.run.calls.clear();
         self.run.harness.published();
         self.agent.log.lock().expect("the log").clear();
     }
 
-    fn add(&mut self, line: u64) -> Reader {
+    pub(super) fn add(&mut self, line: u64) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         send(
             &mut self.run.harness,
@@ -307,7 +307,7 @@ impl Session {
         reader(receiver)
     }
 
-    fn remove(&mut self, id: u64) -> Reader {
+    pub(super) fn remove(&mut self, id: u64) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         send(
             &mut self.run.harness,
@@ -320,14 +320,14 @@ impl Session {
         reader(receiver)
     }
 
-    fn resume(&mut self) -> Reader {
+    pub(super) fn resume(&mut self) -> Reader {
         let mut resumed = self.run.resume();
         self.run.settle(true);
         let said = resumed();
         Box::new(move || said.clone())
     }
 
-    fn pause(&mut self) -> Reader {
+    pub(super) fn pause(&mut self) -> Reader {
         let mut paused = self.run.pause();
         self.run.settle(true);
         let said = paused();
@@ -336,7 +336,7 @@ impl Session {
 
     /// Continues only the leader, which the source request's thread is
     /// not.
-    fn resume_leader(&mut self) -> Reader {
+    pub(super) fn resume_leader(&mut self) -> Reader {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let process_id = self.run.process();
         let stop_id = self.run.stop_id();
@@ -356,7 +356,7 @@ impl Session {
 
     /// The source request's thread hits the hook at `address`, which
     /// reports `event`. A stopped program is continued first.
-    fn report(&mut self, address: u64, event: HookEvent) -> String {
+    pub(super) fn report(&mut self, address: u64, event: HookEvent) -> String {
         let resumed = if self.run.is_stopped() {
             format!("continue {}, ", self.resume()())
         } else {
@@ -374,7 +374,7 @@ impl Session {
 
     /// The agent runs the newest request, taking a source request from
     /// its slot, and reports how its configuration went.
-    fn agent_reports(&mut self, failure: Option<&str>, stale: bool) -> String {
+    pub(super) fn agent_reports(&mut self, failure: Option<&str>, stale: bool) -> String {
         self.agent.pending.store(false, Ordering::SeqCst);
         let newest = *self.agent.generation.lock().expect("the script");
         let generation = if stale {
@@ -393,7 +393,7 @@ impl Session {
 
     /// The alarm rings once the acknowledgement budget would have run out
     /// had the program run all along.
-    fn alarm(&mut self) -> String {
+    pub(super) fn alarm(&mut self) -> String {
         let timed_out = self
             .run
             .harness
@@ -407,7 +407,7 @@ impl Session {
     }
 
     /// Ends the session, detaching from the process.
-    fn detach(&mut self) -> Reader {
+    pub(super) fn detach(&mut self) -> Reader {
         if let Some(inferior) = self.run.harness.controller.session.inferior_mut() {
             inferior.origin = InferiorOrigin::Attached;
         }
@@ -418,7 +418,7 @@ impl Session {
     }
 
     /// The process exits, its threads one after the other.
-    fn exit(&mut self) {
+    pub(super) fn exit(&mut self) {
         for pid in [OTHER, LEADER] {
             self.run
                 .harness

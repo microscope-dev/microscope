@@ -1,3 +1,4 @@
+mod agent_model;
 mod agents;
 mod calls;
 mod lifecycle;

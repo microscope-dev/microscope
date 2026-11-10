@@ -606,8 +606,10 @@ released before every native report. Callback failures disarm the agent
 and report the failure instead of raising into the program.
 
 **Installation.** `backend/linux/runtime_agents.rs` owns one installation per
-runtime: its files, one outstanding generation, and the PEP 768 request's
-ticket. An idle agent, or one not yet installed, is configured by a source
+runtime: its files, the newest generation, and how that request stands, one
+of `Waiting` for a thread, `Awaiting` its acknowledgement, `Ready`, or
+`Refused`. Only an awaited request has a PEP 768 ticket, a thread, and an
+acknowledgement timer, so they go with it. An idle agent, or one not yet installed, is configured by a source
 request; an armed one through its command slot. A source request goes to a
 thread that is running Python: its instruction is in the evaluation loop, or
 in a tail-call build in any instruction's function, or at one of the model's
@@ -631,6 +633,9 @@ request and disarms an armed agent before removing traps; exit and exec
 remove the files.
 `tests/python/agent.rs` checks the real monitoring API on 3.14/3.15 in both GIL
 modes and the native register/all-stop boundary through `Scenario`.
+`backend/linux/tests/agents.rs` takes each phase of an installation through
+every event with a scripted agent, and `tests/agent_model.rs` checks random
+sequences of them against what the agent was sent and holds.
 
 **Breakpoints.** `PythonRuntime::resolve_breakpoint` claims a source path
 ending in `.py`, without its `.` components, as a line probe, and a function
