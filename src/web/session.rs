@@ -1968,7 +1968,8 @@ impl Session {
         };
         self.state.send_replace(Arc::new(first));
         let console = self.console_for(&handle, members.as_ref(), &outlet).await;
-        let pump = tokio::spawn(pump.run(events));
+        let group_events = members.as_ref().map(GroupHandle::subscribe);
+        let pump = tokio::spawn(pump.run(events, group_events));
 
         *target = Some(Target {
             id: session,
@@ -2493,6 +2494,20 @@ async fn loaded<T>(
 pub(super) struct Outlet {
     history: Arc<Mutex<History>>,
     messages: broadcast::Sender<Arc<str>>,
+}
+
+#[cfg(test)]
+impl Outlet {
+    /// An outlet no tab reads.
+    pub(super) fn unread() -> Self {
+        Self {
+            history: Arc::new(Mutex::new(History {
+                pieces: VecDeque::new(),
+                bytes: 0,
+            })),
+            messages: broadcast::channel(16).0,
+        }
+    }
 }
 
 impl Outlet {
