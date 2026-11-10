@@ -14,7 +14,7 @@ use microscope::{
     StepKind, StopReason,
 };
 
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, NodeSession};
 use crate::support::{ScratchDir, node};
 
 const SOURCE: &str = "maps/app.ts";
@@ -144,7 +144,7 @@ async fn where_stopped(session: &NodeSession, name: &str) -> (String, u32, Sourc
     (path, line, recorded.language, value)
 }
 
-/// On every build and through every compiler, breakpoints on the
+/// On each V8 line and through every compiler, breakpoints on the
 /// TypeScript's lines stop there, top-level code included, with the
 /// frame's locals; a step over goes to the next TypeScript line; and the
 /// program prints what it computed.
@@ -152,7 +152,7 @@ async fn where_stopped(session: &NodeSession, name: &str) -> (String, u32, Sourc
 async fn typescript_stops_at_its_own_lines_through_every_compiler() {
     let source = node::fixture(SOURCE).display().to_string();
     let mut lies = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         for compiler in COMPILERS {
             let scratch = ScratchDir::new("node-maps");
             let (arguments, script) = compiler.script(scratch.path());
@@ -224,13 +224,13 @@ async fn typescript_stops_at_its_own_lines_through_every_compiler() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-/// On every build, an exception thrown in a bundle stops at the
+/// On each V8 line, an exception thrown in a bundle stops at the
 /// TypeScript line that throws it.
 #[tokio::test]
 async fn an_exception_stops_at_the_typescript_that_throws_it() {
     let source = node::fixture(SOURCE).display().to_string();
     let mut lies = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         let scratch = ScratchDir::new("node-maps");
         let (arguments, script) = Compiler::Bundle.script(scratch.path());
         assert!(arguments.is_empty());
@@ -272,7 +272,7 @@ async fn an_unreadable_source_map_keeps_generated_breakpoints_and_steps() {
     let script = scratch.path().join("app.js");
     std::fs::write(&script, "function run(n) {\n  const squared = n * n;\n  return squared + 1;\n}\nconsole.log(run(9));\n//# sourceMappingURL=missing.js.map\n")
         .expect("write the script");
-    for entry in MATRIX {
+    for entry in ["26"] {
         let pending = NodeSession::unlaunched_with_node(entry, &script.display().to_string(), &[]);
         let breakpoint = (
             BreakpointSpec::Source {

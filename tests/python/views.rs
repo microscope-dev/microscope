@@ -11,7 +11,7 @@ use crate::expressions::{
     Case, agrees, all_children, check, local, outcome, refuses, reported_results,
 };
 use crate::locals::{Stop, presented, reported_locals};
-use crate::session::{MATRIX, PythonSession};
+use crate::session::{PythonSession, VERSIONS};
 
 /// Every expression the fixture evaluates in its frame of `values`.
 const CASES: &[Case] = &[
@@ -90,12 +90,12 @@ fn shown_items(children: &[ValueChild]) -> Vec<(String, String)> {
 
 /// Every local is shown as CPython's canonical text, every collection's
 /// items are its children in its own order, and every expression gives
-/// what CPython gave, or is refused as its case says, on every interpreter
-/// in the matrix.
+/// what CPython gave, or is refused as its case says, on every version and
+/// GIL mode.
 #[tokio::test]
 async fn each_library_value_is_shown_as_its_own_repr_writes_it() {
     let texts: Vec<&str> = CASES.iter().map(|case| case.python).collect();
-    for interpreter in MATRIX {
+    for interpreter in VERSIONS {
         let mut session = PythonSession::launch(interpreter, "views.py", &texts).await;
         let truth = session.stop_at("parked").await;
         let printer = truth

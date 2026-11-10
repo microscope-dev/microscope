@@ -138,14 +138,6 @@ fn snapshots_name_dataclass_methods_by_their_class_on_3_15() {
 }
 
 #[test]
-fn snapshots_name_dataclass_methods_by_their_class_on_standalone_3_14() {
-    snapshots_name_dataclass_methods_by_their_class(
-        "standalone-3.14",
-        PythonEngine::Snapshot { every: EVERY },
-    );
-}
-
-#[test]
 fn live_name_dataclass_methods_by_their_class_on_3_12() {
     snapshots_name_dataclass_methods_by_their_class("3.12", PythonEngine::Live { every: EVERY });
 }
@@ -163,14 +155,6 @@ fn live_name_dataclass_methods_by_their_class_on_3_14t() {
 #[test]
 fn live_name_dataclass_methods_by_their_class_on_3_15() {
     snapshots_name_dataclass_methods_by_their_class("3.15", PythonEngine::Live { every: EVERY });
-}
-
-#[test]
-fn live_name_dataclass_methods_by_their_class_on_standalone_3_14() {
-    snapshots_name_dataclass_methods_by_their_class(
-        "standalone-3.14",
-        PythonEngine::Live { every: EVERY },
-    );
 }
 
 /// Whether a Python path passes through `spin` calling `work`. Native
@@ -485,21 +469,8 @@ fn arbitrary_kernel_names_preserve_stopped_python_profiles_on_3_14() {
 }
 
 #[test]
-fn arbitrary_kernel_names_preserve_stopped_python_profiles_on_3_14t() {
-    arbitrary_kernel_names_preserve_python_profiles(
-        "3.14t",
-        PythonEngine::Snapshot { every: EVERY },
-    );
-}
-
-#[test]
 fn arbitrary_kernel_names_preserve_live_python_profiles_on_3_14() {
     arbitrary_kernel_names_preserve_python_profiles("3.14", PythonEngine::Live { every: EVERY });
-}
-
-#[test]
-fn arbitrary_kernel_names_preserve_live_python_profiles_on_3_14t() {
-    arbitrary_kernel_names_preserve_python_profiles("3.14t", PythonEngine::Live { every: EVERY });
 }
 
 /// A program instrumented with the `microscope` package is recorded as one

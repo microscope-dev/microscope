@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use microscope::{ExitStatus, LaunchOptions, StopReason};
 
-use crate::session::MATRIX;
+use crate::session::{LINES, MATRIX};
 use crate::support::{Scenario, ScratchDir, node};
 
 /// What a user set, which the program must see as it was.
@@ -403,7 +403,7 @@ const timer = setInterval(() => {
 
 #[tokio::test]
 async fn user_preloads_wait_for_the_inspector_and_workers_keep_their_options() {
-    for entry in MATRIX {
+    for entry in LINES {
         let scratch = ScratchDir::new("node-preload-options");
         let preload = scratch.path().join("user \"quoted\\preload.cjs");
         std::fs::write(
@@ -477,7 +477,7 @@ new Worker(code, {eval:true, env:{...process.env, NODE_OPTIONS:'--no-deprecation
 async fn a_refused_inspector_names_the_flag_that_allows_it() {
     use microscope::{BreakpointOptions, BreakpointSpec, LineNumber};
 
-    for entry in MATRIX {
+    for entry in LINES {
         let mut session = crate::session::NodeSession::launch(
             entry,
             "functions.js",

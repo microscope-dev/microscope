@@ -23,6 +23,10 @@ mod hook;
 #[path = "../../src/runtime_model/python/agent.rs"]
 pub mod agent_source;
 
+/// A GIL and a free-threaded interpreter that inject through PEP 768: the
+/// agent's code differs only by those, not by version within them.
+const PEP_768: [&str; 2] = ["3.14", "3.15t"];
+
 #[test]
 fn the_hook_is_a_loadable_exported_function() {
     let bytes = hook::library();
@@ -343,7 +347,7 @@ async fn native_reports_cross_the_public_debugger_boundary() {
     std::fs::write(&library, hook::library()).expect("write hook");
     std::fs::write(&script, agent_source::bootstrap().expect("bootstrap")).expect("write agent");
 
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
             "agent.py",
@@ -428,7 +432,7 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
     std::fs::write(&bootstrap, agent_source::bootstrap().expect("bootstrap"))
         .expect("write script");
 
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
             "agent.py",
@@ -455,21 +459,14 @@ async fn bootstrap_failure_reports_its_generation_through_the_owned_library() {
 }
 
 // One test for each build, which the test runner runs at once: a process
-// holds one debugger session.
+// holds one debugger session. Every kind of interruption takes the agent's
+// one `except BaseException` path, so a keyboard interrupt stands for all;
+// `monitoring_callbacks_survive_reconfiguration_and_code_reuse` runs each
+// kind on the Python side.
 
 #[tokio::test]
 async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_14() {
     user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.14").await;
-}
-
-#[tokio::test]
-async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_14t() {
-    user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.14t").await;
-}
-
-#[tokio::test]
-async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary_on_3_15() {
-    user_reentry_and_interruptions_are_visible_at_the_native_boundary("3.15").await;
 }
 
 #[tokio::test]
@@ -489,10 +486,6 @@ async fn user_reentry_and_interruptions_are_visible_at_the_native_boundary(inter
         for (mode, description) in [
             ("reentry", "monitoring coverage is unconfirmed"),
             ("keyboard", "interruption is preserved"),
-            ("exit", "interruption is preserved"),
-            ("custom", "interruption is preserved"),
-            ("cancelled", "interruption is preserved"),
-            ("timeout", "interruption is preserved"),
         ] {
             let (mut session, reason, _) = PythonSession::launch_to_stop(
                 interpreter,
@@ -543,7 +536,7 @@ async fn a_python_line_breakpoint_installs_without_cooperation_and_retires_its_f
     )
     .expect("nonzero line");
 
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
             "control.py",
@@ -648,7 +641,7 @@ fn control_line(fixture: &str, marker: &str) -> microscope::BreakpointSpec {
 async fn automatic_configuration_is_pending_until_acknowledged_and_edits_supersede_old_sites() {
     use crate::session::PythonSession;
     use microscope::{BreakpointOptions, ExitStatus, StopReason};
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
             "control_reconfigure.py",
@@ -836,7 +829,7 @@ async fn an_agent_installs_from_a_thread_paused_among_the_loops_instructions() {
 async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_session() {
     use crate::session::PythonSession;
     use microscope::StopReason;
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, _) =
             PythonSession::attach_at(interpreter, "control_attach.py", "initial").await;
         session
@@ -880,7 +873,7 @@ async fn an_automatic_agent_detaches_disarms_and_can_be_installed_by_a_new_sessi
 async fn exec_retires_old_agent_files_and_reinstalls_before_the_next_requested_line() {
     use crate::session::PythonSession;
     use microscope::{BreakpointOptions, ExitStatus, StopReason};
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
             "control_exec.py",
@@ -1025,7 +1018,7 @@ async fn exec_retires_a_launch_bootstrap() {
 async fn exhausted_monitoring_tools_report_failure_and_preserve_application_tools() {
     use crate::session::PythonSession;
     use microscope::StopReason;
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, _) =
             PythonSession::attach_at(interpreter, "control_failure.py", "initial").await;
         session
@@ -1196,7 +1189,7 @@ async fn steps_are_as_prompt_while_an_acknowledgement_is_outstanding() {
 async fn removing_all_sites_then_reactivating_uses_a_fresh_source_request() {
     use crate::session::PythonSession;
     use microscope::{BreakpointOptions, ExitStatus, StopReason};
-    for interpreter in ["3.14", "3.14t", "3.15", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, reason, _) = PythonSession::launch_to_stop(
             interpreter,
             "control_reconfigure.py",
@@ -1286,7 +1279,7 @@ async fn unsupported_python_injection_is_visible_even_for_pending_breakpoints() 
 async fn automatic_agents_use_target_process_ids_in_a_nested_pid_namespace() {
     use crate::session::PythonSession;
     use microscope::StopReason;
-    for interpreter in ["3.14", "3.15t"] {
+    for interpreter in PEP_768 {
         let (mut session, _) = PythonSession::attach_in_pid_namespace_at(
             interpreter,
             "control_attach.py",

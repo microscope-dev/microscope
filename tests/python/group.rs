@@ -10,17 +10,22 @@ use microscope::{
 };
 use tokio::time::timeout;
 
-use crate::session::MATRIX;
 use crate::support::python;
 
 const DEADLINE: Duration = Duration::from_secs(60);
 
+/// One interpreter on each side of every split a child's joining takes:
+/// the launch bootstrap (3.12) or PEP 768 (3.14), GIL or free-threaded
+/// (3.15t, and 3.13t, which takes no Python breakpoints), and a runtime in
+/// libpython or in the executable (debian-3.13).
+const SPLITS: [&str; 5] = ["3.12", "3.13t", "3.14", "3.15t", "debian-3.13"];
+
 /// A child interpreter started as `subprocess` starts one, by vfork and
-/// exec, joins the group of every interpreter in the matrix, whether its
-/// runtime is in the executable or in a libpython it depends on.
+/// exec, joins its parent's group, whether its runtime is in the
+/// executable or in a libpython it depends on.
 #[tokio::test]
 async fn a_child_interpreter_joins_its_parents_group() {
-    for name in MATRIX {
+    for name in SPLITS {
         let interpreter = python::interpreter(name);
         let program = Program::load(&interpreter, &DebugFileOptions::default())
             .unwrap_or_else(|error| panic!("{name}: load the interpreter: {error}"));
@@ -85,14 +90,14 @@ async fn a_child_interpreter_joins_its_parents_group() {
     }
 }
 
-/// A Python breakpoint stops in a child interpreter of every version in the
-/// matrix that takes Python breakpoints, 3.12 and 3.13 through the launch's
-/// bootstrap, whether the child is a new interpreter `subprocess` started or a
-/// fork of its parent's.
+/// A Python breakpoint stops in a child interpreter of each version that
+/// takes Python breakpoints, 3.12 through the launch's bootstrap, whether
+/// the child is a new interpreter `subprocess` started or a fork of its
+/// parent's.
 #[tokio::test]
 async fn a_python_breakpoint_stops_in_a_child_interpreter() {
     for how in ["spawn", "fork"] {
-        for name in MATRIX {
+        for name in SPLITS {
             let interpreter = python::interpreter(name);
             let program = Program::load(&interpreter, &DebugFileOptions::default())
                 .unwrap_or_else(|error| panic!("{name}: load the interpreter: {error}"));
@@ -158,12 +163,12 @@ async fn a_python_breakpoint_stops_in_a_child_interpreter() {
 }
 
 /// A Python breakpoint stops in the workers of a multiprocessing pool, on
-/// every version in the matrix that takes Python breakpoints: workers fork
-/// from the parent before 3.14, and from a forkserver interpreter, which
-/// joins at its exec, from 3.14 on. The parent never runs the function.
+/// each version that takes Python breakpoints: workers fork from the
+/// parent before 3.14, and from a forkserver interpreter, which joins at
+/// its exec, from 3.14 on. The parent never runs the function.
 #[tokio::test]
 async fn a_python_breakpoint_stops_in_a_pools_workers() {
-    for name in MATRIX {
+    for name in SPLITS {
         let interpreter = python::interpreter(name);
         let program = Program::load(&interpreter, &DebugFileOptions::default())
             .unwrap_or_else(|error| panic!("{name}: load the interpreter: {error}"));

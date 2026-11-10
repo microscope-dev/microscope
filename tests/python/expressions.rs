@@ -10,7 +10,7 @@ use microscope::{
 };
 
 use crate::locals::{Stop, presented, reported_locals};
-use crate::session::{MATRIX, PythonSession};
+use crate::session::{PythonSession, VERSIONS};
 
 /// What microscope must do with an expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,12 +468,12 @@ fn check_attributes(shown: &[(String, String)], reported: &[(&str, &str)]) -> Re
 }
 
 /// Every expression gives what CPython gave in the same frame, or is
-/// refused as its case says, on every interpreter in the matrix; and each
+/// refused as its case says, on every version and GIL mode; and each
 /// instance's children are the attributes CPython reported for it.
 #[tokio::test]
 async fn each_expression_gives_what_cpython_gave_in_the_frame() {
     let texts: Vec<&str> = CASES.iter().map(|case| case.python).collect();
-    for interpreter in MATRIX {
+    for interpreter in VERSIONS {
         let mut session = PythonSession::launch(interpreter, "expressions.py", &texts).await;
         let truth = session.stop_at("parked").await;
         let printer = truth

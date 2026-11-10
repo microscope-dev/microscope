@@ -6,7 +6,7 @@
 use microscope::{BreakpointOptions, BreakpointSpec, LineNumber, StepSkips};
 
 use crate::oracle::{self, Command, Pause, Planted, Skipping};
-use crate::session::{MATRIX, NodeSession};
+use crate::session::NodeSession;
 use crate::support::node;
 
 const FIXTURE: &str = "steps.js";
@@ -23,7 +23,7 @@ fn line_of(marker: &str) -> u64 {
 
 /// One case: the marked line it breaks at, the steps it takes there, and
 /// how those steps treat code that is not the program's.
-pub struct Case {
+struct Case {
     marker: &'static str,
     commands: &'static [Command],
     skipping: Skipping<'static>,
@@ -40,7 +40,7 @@ const fn case(marker: &'static str, commands: &'static [Command]) -> Case {
     }
 }
 
-pub const CASES: [Case; 10] = [
+const CASES: [Case; 10] = [
     case(
         "CALLS",
         &[
@@ -138,7 +138,7 @@ async fn run(entry: &str, case: &Case) -> (Vec<Pause>, Vec<Pause>) {
 
 /// Where, on the build `entry`, a step does not end where V8's own step
 /// ends.
-pub async fn lies(entry: &str, cases: &[Case]) -> Vec<String> {
+async fn lies(entry: &str, cases: &[Case]) -> Vec<String> {
     let mut lies = Vec::new();
     for case in cases {
         let (seen, expected) = run(entry, case).await;
@@ -160,37 +160,20 @@ async fn steps_end_where_v8_ends_them(entry: &str) {
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
-// Each build is a test of its own: each runs sixty nodes, oracle's and
-// microscope's, in turn, and all six in one test outlast its deadline
-// under `just stress`.
-const _: () = assert!(MATRIX.len() == 6, "a steps test for each build");
-
+// Each V8 line (`LINES`) is a test of its own: each runs sixty nodes,
+// oracle's and microscope's, in turn, and all three in one test outlast its
+// deadline under `just stress`.
 #[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them_on_build_0() {
-    steps_end_where_v8_ends_them(MATRIX[0]).await;
+async fn javascript_steps_end_where_v8_ends_them_on_26() {
+    steps_end_where_v8_ends_them("26").await;
 }
 
 #[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them_on_build_1() {
-    steps_end_where_v8_ends_them(MATRIX[1]).await;
+async fn javascript_steps_end_where_v8_ends_them_on_24() {
+    steps_end_where_v8_ends_them("24").await;
 }
 
 #[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them_on_build_2() {
-    steps_end_where_v8_ends_them(MATRIX[2]).await;
-}
-
-#[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them_on_build_3() {
-    steps_end_where_v8_ends_them(MATRIX[3]).await;
-}
-
-#[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them_on_build_4() {
-    steps_end_where_v8_ends_them(MATRIX[4]).await;
-}
-
-#[tokio::test]
-async fn javascript_steps_end_where_v8_ends_them_on_build_5() {
-    steps_end_where_v8_ends_them(MATRIX[5]).await;
+async fn javascript_steps_end_where_v8_ends_them_on_22() {
+    steps_end_where_v8_ends_them("22").await;
 }

@@ -5,7 +5,7 @@
 use microscope::{ExitStatus, StepSkips, StopReason};
 
 use crate::oracle::{self, Pause, Skipping};
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, NodeSession};
 
 const FIXTURE: &str = "statements.js";
 
@@ -77,7 +77,7 @@ async fn local(session: &NodeSession, name: &str) -> String {
 #[tokio::test]
 async fn debugger_statements_stop_where_v8_pauses_at_them() {
     let mut lies = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         for directories in [&[][..], &["/vendor/"][..]] {
             let (seen, expected, doubled) = run(entry, directories).await;
             // first, halt unless skipped, and the loop's two.

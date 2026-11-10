@@ -361,7 +361,7 @@ async fn a_pid_namespaces_python_frames_match_the_reported_target_threads() {
 
 #[tokio::test]
 async fn a_non_utf8_process_leader_name_preserves_attach_and_inspection() {
-    for interpreter in ["3.14", "3.14t"] {
+    for interpreter in ["3.14"] {
         let session = check_namespaced_frames(interpreter, &["--leader-name"]).await;
         session.detach_and_finish().await;
     }

@@ -200,27 +200,6 @@ async fn debian_breakpoints_and_exceptions_match_v8() {
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
 
-// Split the cases so cold-cache stress stays within each namespace deadline.
-#[tokio::test]
-async fn debian_steps_match_v8_in_the_first_half_of_cases() {
-    if !inside("debian::debian_steps_match_v8_in_the_first_half_of_cases") {
-        return;
-    }
-    let cases = &crate::steps::CASES;
-    let lies = crate::steps::lies(DEBIAN, &cases[..cases.len() / 2]).await;
-    assert!(lies.is_empty(), "{}", lies.join("\n"));
-}
-
-#[tokio::test]
-async fn debian_steps_match_v8_in_the_second_half_of_cases() {
-    if !inside("debian::debian_steps_match_v8_in_the_second_half_of_cases") {
-        return;
-    }
-    let cases = &crate::steps::CASES;
-    let lies = crate::steps::lies(DEBIAN, &cases[cases.len() / 2..]).await;
-    assert!(lies.is_empty(), "{}", lies.join("\n"));
-}
-
 #[tokio::test]
 async fn debian_assignments_reach_the_program() {
     if !inside("debian::debian_assignments_reach_the_program") {

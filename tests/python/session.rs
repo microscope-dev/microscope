@@ -31,6 +31,12 @@ pub const MATRIX: [&str; 10] = [
     "standalone-3.14",
 ];
 
+/// nixpkgs' interpreters, one of each version and GIL mode. Values are laid
+/// out by those alone: a distribution's build of a version finds its runtime
+/// differently, which `stacks` and `locals` hold, but lays out its objects
+/// the same.
+pub const VERSIONS: [&str; 7] = ["3.12", "3.13", "3.13t", "3.14", "3.14t", "3.15", "3.15t"];
+
 /// The interpreters whose fixtures' cores the build saves.
 pub const CORES: [&str; 4] = ["3.13", "3.14t", "3.15", "debian-3.13"];
 

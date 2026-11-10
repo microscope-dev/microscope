@@ -3,7 +3,7 @@
 
 use microscope::{Evaluation, Expression, SourceLanguage, ThreadId, VariableKind, VariableState};
 
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, MATRIX, NodeSession};
 use crate::truth::{Named, threads};
 
 /// Selects the frame of `function` on the printer's thread.
@@ -403,13 +403,13 @@ async fn operators_compute_as_javascript_does(session: &NodeSession, lies: &mut 
     }
 }
 
-/// On every build, `process.env`, whose variables an interceptor gives, is
+/// On each V8 line, `process.env`, whose variables an interceptor gives, is
 /// refused with that reason rather than shown as `{}`, and so is a member
 /// of it rather than reported absent.
 #[tokio::test]
 async fn an_interceptors_object_is_refused_rather_than_shown_empty() {
     let mut wrong = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         let mut session = NodeSession::launch(entry, "interceptors.js", &[], &[]).await;
         let reported = threads(&session.stop_at("look").await);
         let printer = reported
@@ -551,7 +551,7 @@ async fn inspection_depth_does_not_follow_hidden_property_chains(
 #[tokio::test]
 async fn dense_elements_cross_the_enumeration_limit_without_losing_values() {
     let mut lies = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         let mut session = NodeSession::launch(entry, "values.js", &[], &["elements"]).await;
         let reported = threads(&session.stop_at("elements").await);
         let printer = reported.iter().find(|t| t.printer).expect("the printer");
@@ -637,7 +637,7 @@ async fn inspection_children_include_numeric_own_properties_in_pages(session: &N
 
 #[tokio::test]
 async fn with_scope_refuses_crossed_names_but_keeps_inner_bindings() {
-    for entry in MATRIX {
+    for entry in LINES {
         let mut session = NodeSession::launch(entry, "values.js", &[], &["with"]).await;
         let reported = threads(&session.stop_at("with").await);
         let printer = reported.iter().find(|t| t.printer).expect("the printer");

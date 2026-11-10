@@ -9,7 +9,7 @@
 use microscope::{BreakpointOptions, BreakpointSpec, ExitStatus, StopReason};
 
 use crate::oracle;
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, NodeSession};
 use crate::support::node;
 
 const FIXTURE: &str = "functions.js";
@@ -67,7 +67,7 @@ async fn function_breakpoints_stop_where_each_function_begins() {
         ("inner", line_of(FIXTURE, "INNER")),
     ];
     let mut lies = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         let breakpoints = NAMES.iter().map(|name| function(name)).collect();
         let (mut session, mut reason, _events) = NodeSession::unlaunched(entry, FIXTURE)
             .run_to_stop(breakpoints)

@@ -11,7 +11,7 @@ use microscope::{
 };
 
 use crate::oracle::{self, Pause, Skipping};
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, NodeSession};
 
 const FIXTURE: &str = "exceptions.js";
 
@@ -111,7 +111,7 @@ pub async fn lies(entry: &str) -> Vec<String> {
 #[tokio::test]
 async fn javascript_exceptions_stop_where_v8_pauses_at_them() {
     let mut found = Vec::new();
-    for entry in MATRIX {
+    for entry in LINES {
         found.extend(lies(entry).await);
     }
     assert!(found.is_empty(), "{}", found.join("\n"));

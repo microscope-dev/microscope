@@ -350,7 +350,11 @@ Node 22, whose V8 does not enable it by default. `values.js` is the values
 gallery, which names each value by its path from a local.
 
 The suite's matrix is every other build, the official and nixpkgs builds of
-each line, and a missing build fails the test. `tests/node/session.rs`
+each line, and a missing build fails the test. Tests that read V8's memory
+run on all of them, since isolate-level offsets differ between an official
+build and nixpkgs' build of the same line. Tests of what V8 does itself over
+CDP (steps, pauses, exception filters, function breakpoints, assignments)
+run on one build per line, `LINES`. `tests/node/session.rs`
 launches a fixture with an empty environment, so `NODE_OPTIONS` cannot change
 it. The build saves a core of `stacks.js` and `tiers.js` for 26, 24, and 22
 with its report beside it, as `build/test-programs/node-*.core` and

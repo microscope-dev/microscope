@@ -26,6 +26,11 @@ pub const MATRIX: [&str; 6] = ["26", "24", "22", "nixpkgs-26", "nixpkgs-24", "ni
 /// the profiler's tests run.
 pub const SEPARATE: [&str; 2] = ["debian-24", "26-without-postmortem"];
 
+/// One build of each V8 line. Tests of what V8 does itself over CDP, such
+/// as steps, pauses, and assignments, run on these alone: a nixpkgs build
+/// pauses and steps as the official build of its line does.
+pub const LINES: [&str; 3] = ["26", "24", "22"];
+
 /// The builds whose fixtures' cores the build saves, one per V8 line.
 pub const CORES: [&str; 3] = ["26", "24", "22"];
 

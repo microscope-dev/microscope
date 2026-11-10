@@ -11,7 +11,7 @@ use microscope::{
     StopReason, VariableState,
 };
 
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, NodeSession};
 use crate::support::node;
 
 const FIXTURE: &str = "assignments.js";
@@ -377,8 +377,8 @@ async fn elsewhere(session: &mut NodeSession) {
 }
 
 #[tokio::test]
-async fn each_binding_takes_each_value_on_every_build() {
-    for entry in MATRIX {
+async fn each_binding_takes_each_value_on_each_line() {
+    for entry in LINES {
         each_binding_takes_each_value(entry).await;
     }
 }

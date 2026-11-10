@@ -15,7 +15,7 @@ use microscope::{
 };
 use tokio::sync::broadcast;
 
-use crate::session::{MATRIX, NodeSession};
+use crate::session::{LINES, NodeSession};
 use crate::support::node;
 
 const FIXTURE: &str = "breakpoints.js";
@@ -369,7 +369,7 @@ pub async fn every_kind_of_breakpoint(entry: &str) {
 
 #[tokio::test]
 async fn every_kind_of_breakpoint_stops_logs_and_waits_as_asked() {
-    for entry in MATRIX {
+    for entry in LINES {
         every_kind_of_breakpoint(entry).await;
     }
 }

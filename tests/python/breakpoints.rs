@@ -438,19 +438,15 @@ async fn every_kind_of_breakpoint(build: &str) {
     run.session.shutdown().await;
 }
 
-// One test for each build PEP 768 injects the agent into, and for each the
-// launch bootstrap gives it to. A process holds one debugger session, and
-// the test runner runs each test in its own process, so the builds run at
-// once.
+// One test for each way the agent arrives and runs: the launch bootstrap
+// (3.12), PEP 768 with the GIL (3.14) and free-threaded (3.14t), and the
+// standalone build's tail-call loop. agent.py branches on no other version.
+// A process holds one debugger session, so each build is a test of its own
+// and the runner runs them at once.
 
 #[tokio::test]
 async fn every_kind_of_breakpoint_on_3_12() {
     every_kind_of_breakpoint("3.12").await;
-}
-
-#[tokio::test]
-async fn every_kind_of_breakpoint_on_3_13() {
-    every_kind_of_breakpoint("3.13").await;
 }
 
 #[tokio::test]
@@ -461,16 +457,6 @@ async fn every_kind_of_breakpoint_on_3_14() {
 #[tokio::test]
 async fn every_kind_of_breakpoint_on_3_14t() {
     every_kind_of_breakpoint("3.14t").await;
-}
-
-#[tokio::test]
-async fn every_kind_of_breakpoint_on_3_15() {
-    every_kind_of_breakpoint("3.15").await;
-}
-
-#[tokio::test]
-async fn every_kind_of_breakpoint_on_3_15t() {
-    every_kind_of_breakpoint("3.15t").await;
 }
 
 #[tokio::test]
