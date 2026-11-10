@@ -1272,3 +1272,39 @@ fn a_continue_from_a_shown_stop_resumes_a_member_the_group_thinks_runs() {
     let (trace, failures) = run(StopScope::Group, &ops);
     assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
 }
+
+/// A continue that fails leaves the execution under way to the stop that
+/// ends it. Before, it cleared it, so a client could not tell the stop
+/// ended its own continue, and credited it to nobody.
+#[test]
+fn a_failed_continue_leaves_the_execution_under_way() {
+    let ops = [
+        Op::Deliver(0),
+        Op::Stop {
+            member: 0,
+            own: true,
+        },
+        Op::Deliver(0),
+        Op::Continue,
+        Op::ContinueFrom(Named::Previous(0)),
+        Op::Stop {
+            member: 0,
+            own: true,
+        },
+        Op::Deliver(0),
+        Op::Deliver(0),
+    ];
+    let (trace, failures) = run(StopScope::Group, &ops);
+    assert!(failures.is_empty(), "{failures:#?}");
+
+    let stops = trace
+        .iter()
+        .filter(|event| event.starts_with("GroupStopped"))
+        .collect::<Vec<_>>();
+    assert!(
+        stops
+            .get(1)
+            .is_some_and(|stop| stop.contains("execution: Some(GroupExecutionId(1))")),
+        "{trace:#?}"
+    );
+}

@@ -1578,12 +1578,14 @@ impl Driver {
 
         // The execution begins before the members resume, as a stop waiting
         // to be reported ends it at once.
+        // One that fails resumed nothing, and leaves the execution under
+        // way, if any, to the stop that ends it.
         self.next_execution += 1;
         let execution = GroupExecutionId(self.next_execution);
-        self.execution = Some(execution);
+        let previous = self.execution.replace(execution);
         let begun = |driver: &mut Self, result: Result<()>| {
             if result.is_err() && driver.execution == Some(execution) {
-                driver.execution = None;
+                driver.execution = previous;
             }
             result.map(|()| execution)
         };
