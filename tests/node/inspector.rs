@@ -513,3 +513,59 @@ async fn a_refused_inspector_names_the_flag_that_allows_it() {
         session.shutdown().await;
     }
 }
+
+/// A program that closes Node's inspector runs on past a breakpoint it
+/// can no longer stop at, and the breakpoint says the connection closed.
+#[tokio::test]
+async fn a_closed_inspector_leaves_its_breakpoints_waiting_with_why() {
+    use microscope::{BreakpointOptions, BreakpointSpec, LineNumber};
+
+    const FIXTURE: &str = "inspector-close.js";
+    let text = std::fs::read_to_string(node::fixture(FIXTURE)).expect("read the fixture");
+    let later = text
+        .lines()
+        .position(|line| line.contains("// LATER"))
+        .expect("a marked line")
+        + 1;
+
+    for entry in LINES {
+        let mut session = crate::session::NodeSession::launch(entry, FIXTURE, &[], &[]).await;
+        session.wrote("READY").await;
+        session.pause().await;
+        session
+            .scenario
+            .handle()
+            .add_breakpoint_with(
+                BreakpointSpec::Source {
+                    path: node::fixture(FIXTURE),
+                    line: LineNumber::new(u64::try_from(later).expect("a line")).expect("a line"),
+                },
+                BreakpointOptions {
+                    pending: true,
+                    ..BreakpointOptions::default()
+                },
+            )
+            .await
+            .expect("a breakpoint");
+
+        session.proceed().await;
+        session.wrote("CLOSED 1").await;
+        session.pause().await;
+
+        let snapshot = session
+            .scenario
+            .operation("snapshot", session.scenario.handle().snapshot())
+            .await;
+        let reasons = snapshot.breakpoints[0]
+            .pending_locations
+            .iter()
+            .map(|pending| pending.reason.to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            matches!(&reasons[..], [reason] if reason.starts_with("the inspector connection closed")),
+            "{}: {reasons:?}",
+            session.context()
+        );
+        session.shutdown().await;
+    }
+}

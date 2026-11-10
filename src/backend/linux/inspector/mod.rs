@@ -13,6 +13,8 @@
 mod addons;
 mod arming;
 pub(super) mod assignments;
+#[cfg(test)]
+mod connections;
 mod functions;
 mod interrupts;
 mod maps;

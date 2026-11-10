@@ -1030,6 +1030,10 @@ pub(super) struct FakeTrace {
     /// The system-call stop each thread is at; others' cannot be read.
     syscall_stops: RefCell<BTreeMap<Pid, super::syscalls::info::SyscallInfo>>,
 
+    /// The loopback sockets the process listens on, or `None` when they
+    /// cannot be read.
+    pub(super) loopback: RefCell<Option<Vec<std::net::SocketAddr>>>,
+
     /// What was done with runtime agents' files, which a scripted agent
     /// may share to log its own calls in order with them.
     pub(super) agent_log: Arc<std::sync::Mutex<Vec<String>>>,
@@ -1285,6 +1289,16 @@ impl LinuxTraceOps for FakeTrace {
         };
         files.log(format!("create files in {pid}"));
         Ok(Box::new(files))
+    }
+
+    fn loopback_listeners(
+        &self,
+        _pid: Pid,
+    ) -> std::result::Result<Vec<std::net::SocketAddr>, Arc<str>> {
+        self.loopback
+            .borrow()
+            .clone()
+            .ok_or_else(|| "this target has no sockets".into())
     }
 
     fn spawn(&self, _executable: &Path, _options: LaunchOptions) -> Result<Pid> {
@@ -5937,7 +5951,13 @@ pub(super) struct ScriptedRuntime {
     /// Where the runtime lists its inspector's targets, which makes the
     /// controller arm it through its inspector.
     inspector_hook: Option<ImageAddress>,
+
+    /// Where an attached node's inspector already listens, and its target,
+    /// or why that cannot be read; `None` reads as no inspector open.
+    pub(super) inspector_endpoint: std::sync::Mutex<Option<ScriptedEndpoint>>,
 }
+
+type ScriptedEndpoint = std::result::Result<(std::net::SocketAddr, Arc<str>), Arc<str>>;
 
 impl ScriptedRuntime {
     /// A runtime armed through the inspector `GetTargetIds` at `hook` lists.
@@ -6102,6 +6122,28 @@ impl crate::runtime_model::RuntimeModel for ScriptedRuntime {
 
     fn inspector_hook(&self) -> Option<ImageAddress> {
         self.inspector_hook
+    }
+
+    /// Every caller of the inspected runtime's `GetTargetIds` lists the
+    /// target the scripted inspector tests connect to.
+    fn inspector_target(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+        _caller: VirtualAddress,
+        _delegate: VirtualAddress,
+    ) -> std::result::Result<Option<Arc<str>>, Arc<str>> {
+        Ok(self.inspector_hook.map(|_| Arc::from("0f2b5c1e-uuid")))
+    }
+
+    fn inspector_endpoint(
+        &self,
+        _stop: &dyn crate::runtime_model::RuntimeStop,
+    ) -> std::result::Result<Option<(std::net::SocketAddr, Arc<str>)>, Arc<str>> {
+        self.inspector_endpoint
+            .lock()
+            .expect("the script")
+            .clone()
+            .transpose()
     }
 
     /// An inspected runtime's agent serves the target the scripted

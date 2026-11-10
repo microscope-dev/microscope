@@ -56,15 +56,15 @@ enum Command {
 }
 
 /// A fake Node inspector, scripted by the test that owns it.
-struct FakeInspector {
-    address: SocketAddr,
+pub(super) struct FakeInspector {
+    pub(super) address: SocketAddr,
     requests: mpsc::Receiver<Request>,
     commands: mpsc::Sender<Command>,
     gone: mpsc::Receiver<()>,
 }
 
 impl FakeInspector {
-    fn start() -> Self {
+    pub(super) fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("local address");
         let (request_sender, requests) = mpsc::channel();
@@ -89,6 +89,14 @@ impl FakeInspector {
         self.requests
             .recv_timeout(DEADLINE)
             .expect("a request from the controller")
+    }
+
+    /// The methods of the requests the controller sent since last asked.
+    pub(super) fn methods(&self) -> Vec<String> {
+        self.requests
+            .try_iter()
+            .map(|request| request.method)
+            .collect()
     }
 
     /// Sends `message` as the isolate at `session` does.
@@ -118,7 +126,7 @@ impl FakeInspector {
     }
 
     /// Closes the WebSocket, as a node that ends its inspector does.
-    fn close(&self) {
+    pub(super) fn close(&self) {
         self.commands
             .send(Command::Close)
             .expect("the fake inspector runs");
