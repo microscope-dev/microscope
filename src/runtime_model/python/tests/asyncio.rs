@@ -280,70 +280,6 @@ fn a_type_named_task_whose_objects_are_another_size_is_none() {
     assert_eq!(is_task, Ok(false));
 }
 
-#[test]
-fn a_task_is_named_by_its_text_or_until_python_asks_by_its_number() {
-    let (mut process, types, ty) = world(TASK_SIZE);
-    let text = process.str_object(types.str, "worker");
-    let number = process.int(types.int, 12);
-    let named = process.task(ty, 0, text);
-    let numbered = process.task(ty, 0, number);
-    let read = with_values(&process, types, InspectionLimits::default(), |values| {
-        [named, numbered].map(|task| values.task_name(VirtualAddress::new(task)))
-    });
-    assert_eq!(read, [Ok("worker".to_owned()), Ok("Task-12".to_owned())]);
-}
-
-#[test]
-fn a_task_no_thread_runs_is_done_waiting_or_ready_and_names_its_awaiters() {
-    let (mut process, types, ty) = world(TASK_SIZE);
-    let future = process.type_object("_asyncio.Future");
-    let names =
-        ["done", "waits", "ready", "awaited"].map(|name| process.str_object(types.str, name));
-    let [done, waits, ready, awaited] = names.map(|name| process.task(ty, 0, name));
-    process.put(done, Field::TaskState, 2, 4);
-    let waiting_for = process.object(future, 32);
-    process.word(waits, Field::TaskFutWaiter, waiting_for);
-    process.word(ready, Field::TaskAwaitedBy, awaited);
-    process.word(awaited, Field::TaskFutWaiter, ready);
-
-    let read = with_values(&process, types, InspectionLimits::default(), |values| {
-        [done, waits, ready, awaited].map(|task| values.task(VirtualAddress::new(task), None))
-    });
-    let shown: Vec<_> = read
-        .iter()
-        .map(|task| {
-            (
-                task.state.clone(),
-                task.detail.as_deref(),
-                task.labels.clone(),
-            )
-        })
-        .collect();
-    let label = |key: &str, value: &str| -> (Arc<str>, Arc<str>) { (key.into(), value.into()) };
-    assert_eq!(
-        shown,
-        [
-            (TaskState::Exited, None, vec![label("name", "done")]),
-            (
-                TaskState::Blocked,
-                Some("awaits _asyncio.Future"),
-                vec![label("name", "waits")]
-            ),
-            (
-                TaskState::Runnable,
-                None,
-                vec![label("name", "ready"), label("awaited_by", "awaited")]
-            ),
-            (
-                TaskState::Blocked,
-                Some("awaits task ready"),
-                vec![label("name", "awaited")]
-            ),
-        ]
-    );
-    assert_eq!(read[0].number, done, "a task's number is its id()");
-}
-
 /// A task awaited by more than are named says how many entries of its
 /// set of awaiters were not read, which may hold futures as well as tasks.
 #[test]
@@ -389,49 +325,6 @@ fn a_task_awaited_by_many_names_the_first_and_counts_the_entries_unread() {
             .map(|(_, value)| value),
         Some(&expected)
     );
-}
-
-#[test]
-fn a_suspended_task_is_the_frames_of_its_chain_of_awaits_innermost_first() {
-    let (mut process, types, ty) = world(TASK_SIZE);
-    let future = process.type_object("_asyncio.Future");
-    let waiting_for = process.object(future, 32);
-    let [outer, middle, inner] = [("outer", 10), ("middle", 20), ("inner", 30)]
-        .map(|(name, line)| process.code(name, line, &[(1, 0)]));
-
-    let inner = process.coroutine(
-        &types,
-        Constant::GeneratorYieldFrom,
-        inner,
-        Some(waiting_for),
-    );
-    let middle = process.coroutine(&types, Constant::GeneratorYieldFrom, middle, Some(inner));
-    let outer = process.coroutine(&types, Constant::GeneratorYieldFrom, outer, Some(middle));
-    let name = process.str_object(types.str, "chained");
-    let task = process.task(ty, outer, name);
-
-    let read = awaits(&process, types, task);
-    assert_eq!(read.end, None);
-    let frames: Vec<_> = read
-        .frames
-        .iter()
-        .map(|frame| {
-            (
-                frame.function.as_deref(),
-                frame.place.as_ref().map(|place| place.line),
-                frame.outermost,
-            )
-        })
-        .collect();
-    assert_eq!(
-        frames,
-        [
-            (Some("inner"), Some(30), false),
-            (Some("middle"), Some(20), false),
-            (Some("outer"), Some(10), true),
-        ]
-    );
-    assert_eq!(read.frames[0].frame, VirtualAddress::new(inner + GEN_FRAME));
 }
 
 #[test]

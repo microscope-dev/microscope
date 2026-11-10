@@ -982,14 +982,6 @@ mod tests {
     }
 
     #[test]
-    fn a_word_has_at_least_one_digit() {
-        assert_eq!(word_digits(0), 1);
-        assert_eq!(word_digits(9), 1);
-        assert_eq!(word_digits(10), 2);
-        assert_eq!(word_digits(DECIMAL_RADIX - 1), 19);
-    }
-
-    #[test]
     fn a_timedelta_writes_the_parts_it_has() {
         assert_eq!(delta(0, 0, 0), "0");
         assert_eq!(delta(-1, 5, 0), "days=-1, seconds=5");

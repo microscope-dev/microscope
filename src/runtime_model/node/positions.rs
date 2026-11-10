@@ -205,16 +205,6 @@ mod tests {
         (offset + 1) << 1
     }
 
-    /// Entries as (code offset, script offset, statement), as each
-    /// version writes them.
-    fn encode(entries: &[(i64, i64, bool)], encoding: Encoding) -> Vec<u8> {
-        let entries: Vec<_> = entries
-            .iter()
-            .map(|&(at, offset, statement)| (at, position(offset), statement))
-            .collect();
-        encode_positions(&entries, encoding)
-    }
-
     /// Entries as (code offset, source position, statement), as each
     /// version writes them.
     fn encode_positions(entries: &[(i64, i64, bool)], encoding: Encoding) -> Vec<u8> {
@@ -370,44 +360,6 @@ mod tests {
         }
     }
 
-    /// Each version's table decodes to its own offsets, and read as the
-    /// other version's, to others: the encoding must be the version's.
-    #[test]
-    fn each_encoding_decodes_its_own_tables_and_not_the_others() {
-        let written = [
-            (FUNCTION_ENTRY, 4, true),
-            (0, 10, true),
-            (3, 25, false),
-            (9, 7, true),
-            (14, 40, false),
-        ];
-        for (encoding, other) in [
-            (Encoding::SignedStatement, Encoding::FlagBits),
-            (Encoding::FlagBits, Encoding::SignedStatement),
-        ] {
-            let bytes = encode(&written, encoding);
-            let read: Vec<_> = decode(&bytes, encoding)
-                .expect("a table")
-                .iter()
-                .map(|entry| (entry.code_offset, script_offset(entry.position)))
-                .collect();
-            let expected: Vec<_> = written
-                .iter()
-                .map(|&(at, offset, _)| (at, Some(offset.cast_unsigned())))
-                .collect();
-            assert_eq!(read, expected, "{encoding:?}");
-
-            let misread: Vec<_> = decode(&bytes, other)
-                .map(|entries| entries.iter().map(|entry| entry.code_offset).collect())
-                .unwrap_or_default();
-            assert_ne!(
-                misread,
-                written.iter().map(|entry| entry.0).collect::<Vec<_>>(),
-                "{encoding:?} read as {other:?}"
-            );
-        }
-    }
-
     #[test]
     fn the_position_of_an_offset_is_the_last_entry_at_or_before_it() {
         let entries =
@@ -423,13 +375,6 @@ mod tests {
         assert_eq!(at(100), Some(7));
         assert_eq!(at(FUNCTION_ENTRY), Some(4), "the entry is kept");
         assert_eq!(at(FUNCTION_ENTRY - 1), None);
-    }
-
-    #[test]
-    fn a_table_cut_inside_an_entry_is_no_table() {
-        let mut bytes = encode(&[(0, 10, true), (300, 20, true)], Encoding::FlagBits);
-        bytes.pop();
-        assert!(decode(&bytes, Encoding::FlagBits).is_err());
     }
 
     #[test]

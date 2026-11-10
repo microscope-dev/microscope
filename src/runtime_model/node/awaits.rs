@@ -999,38 +999,6 @@ mod tests {
         )
     }
 
-    /// Two async functions, and a hidden one between them, suspended in
-    /// await: the chain names the two, innermost first, each at its
-    /// generator, and ends complete at a promise nothing waits for.
-    #[test]
-    fn a_chain_of_two_suspended_functions_ends_where_nothing_waits() {
-        let mut writer = Writer::new();
-        let last = writer.promise(smi(0));
-        let outer = writer.native("outer", true);
-        let (outer, outer_closure) = writer.async_function(outer, 1, last);
-        let to_outer = writer.reaction(smi(0), outer_closure, smi(0));
-        let hidden_promise = writer.promise(to_outer);
-        let hidden = writer.native("hidden", false);
-        let (_, hidden_closure) = writer.async_function(hidden, 0, hidden_promise);
-        let to_hidden = writer.reaction(smi(0), hidden_closure, smi(0));
-        let middle_promise = writer.promise(to_hidden);
-        let middle = writer.native("middle", true);
-        let (middle, middle_closure) = writer.async_function(middle, 3, middle_promise);
-        let to_middle = writer.reaction(smi(0), middle_closure, smi(0));
-        let first = writer.promise(to_middle);
-        let closure = running(&mut writer, first);
-
-        let chain = writer.walk(closure);
-        assert_eq!(
-            shown(&chain),
-            (
-                vec![("middle".to_owned(), middle), ("outer".to_owned(), outer)],
-                None
-            )
-        );
-        assert!(chain.frames.iter().all(|frame| frame.problem.is_none()));
-    }
-
     /// A chain of `count` promises, each settled by the reaction of the
     /// one before, the first the running function's; the closure.
     fn line_of(writer: &mut Writer, count: usize) -> u64 {

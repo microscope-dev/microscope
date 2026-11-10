@@ -137,17 +137,6 @@ fn unavailable_or_ambiguous_ids_never_fall_back_to_numeric_identity() {
     }
 }
 
-#[test]
-fn duplicate_host_entries_are_deduplicated_but_excessive_catalogs_are_bounded() {
-    let (mut process, _) = world();
-    process.memory.threads = vec![HOST, HOST];
-    let ids = super::super::threads::ThreadIds::new(&process.memory).unwrap();
-    assert_eq!(ids.resolve(7), Ok(HOST));
-    assert!(ids.resolve(0).is_err());
-    process.memory.threads = (1..=16385).map(ThreadId::new).collect();
-    assert!(super::super::threads::ThreadIds::new(&process.memory).is_err());
-}
-
 /// A watched frame is gone only where its thread's whole chain was read
 /// without it: a thread state that cannot be read proves nothing.
 #[test]

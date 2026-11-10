@@ -1296,35 +1296,9 @@ fn a_list_subclass_indexes_by_the_lists_getitem_and_refuses_its_own() {
 }
 
 #[test]
-fn a_module_and_a_class_are_shown_by_their_names() {
+fn a_module_whose_dict_cannot_be_read_is_shown_by_its_address() {
     let mut process = Process::new(layout());
-    let (types, object) = world(&mut process);
-    let module = module_object(&mut process, &types, "pkg.mod");
-    let point = class(
-        &mut process,
-        &types,
-        &Spec {
-            name: "Point",
-            module: Some("geom"),
-            ..Spec::default()
-        },
-        &[object],
-    );
-
-    let shown = presented_at(&process, types, module);
-    assert_eq!(shown.summary.as_ref(), "<module 'pkg.mod'>");
-    assert_eq!(shown.kind, InterpretedKind::Other);
-    assert_eq!(shown.type_name.as_ref(), "module");
-    assert_eq!(shown.module.as_deref(), Some("builtins"));
-
-    let shown = presented_at(&process, types, point);
-    assert_eq!(shown.summary.as_ref(), "<class 'geom.Point'>");
-    assert_eq!(shown.kind, InterpretedKind::Other);
-    assert_eq!(shown.type_name.as_ref(), "type");
-    assert_eq!(shown.module.as_deref(), Some("builtins"));
-
-    // A module whose dict cannot be read is shown by its address, saying
-    // why it has no name.
+    let (types, _) = world(&mut process);
     let unread = process.object(types.module, 32);
     process.word(unread, Field::ModuleDict, 0x10);
     let shown = presented_at(&process, types, unread);
@@ -1336,28 +1310,15 @@ fn a_module_and_a_class_are_shown_by_their_names() {
 }
 
 #[test]
-fn functions_and_built_in_functions_and_methods_are_shown_by_their_names() {
+fn a_built_in_is_shown_as_a_function_of_a_module_and_a_method_of_anything_else() {
     let mut process = Process::new(layout());
     let (types, _) = world(&mut process);
     let module = module_object(&mut process, &types, "builtins");
     let one = process.int(types.int, 1);
     let list = process.list(types.list, &[one]);
-    let function = function_object(&mut process, &types, "Point.move");
-    let len = builtin_object(&mut process, &types, "len", 0);
     let print = builtin_object(&mut process, &types, "print", module);
     let append = builtin_object(&mut process, &types, "append", list);
 
-    let shown = presented_at(&process, types, function);
-    assert_eq!(
-        shown.summary.as_ref(),
-        format!("<function Point.move at {function:#x}>")
-    );
-    assert_eq!(shown.type_name.as_ref(), "function");
-
-    assert_eq!(
-        presented_at(&process, types, len).summary.as_ref(),
-        "<built-in function len>"
-    );
     assert_eq!(
         presented_at(&process, types, print).summary.as_ref(),
         "<built-in function print>"
@@ -1388,33 +1349,6 @@ fn a_code_object_is_shown_with_its_file_and_its_first_line_or_minus_one_for_none
         presented_at(&process, types, unnumbered).summary.as_ref(),
         format!("<code object g at {unnumbered:#x}, file \"app.py\", line -1>")
     );
-}
-
-#[test]
-fn a_missing_attribute_of_an_instance_with_no_values_is_a_missing_key() {
-    let mut process = Process::new(layout());
-    let (types, object) = world(&mut process);
-    let plain = class(
-        &mut process,
-        &types,
-        &Spec {
-            name: "Plain",
-            module: Some("app"),
-            flags: MANAGED_DICT,
-            basicsize: 16,
-            keys: &["label"],
-            ..Spec::default()
-        },
-        &[object],
-    );
-    let instance = managed_instance(&mut process, plain, 16);
-    let values = tagged_values(&mut process, &[]);
-    set_managed(&mut process, instance, values);
-
-    match attribute_in(&process, types, instance, "nope") {
-        Err(InterpretedFailure::Refused(ErrorKind::MissingKey, _)) => {}
-        other => panic!("expected a missing key, got {other:?}"),
-    }
 }
 
 /// The word at `field` of the object at `object`.

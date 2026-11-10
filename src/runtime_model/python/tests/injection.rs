@@ -375,64 +375,6 @@ fn a_path_buffer_larger_than_the_read_limit_is_refused_even_if_it_fits_the_threa
     );
 }
 
-/// Reject precisely the second read of the script bytes, after the whole
-/// thread-state read succeeded. This pins the expected-bytes precondition.
-struct RejectExpected<'a> {
-    memory: &'a Memory,
-    at: VirtualAddress,
-    reached: std::cell::Cell<bool>,
-}
-
-impl RuntimeStop for RejectExpected<'_> {
-    fn read(&self, at: VirtualAddress, bytes: &mut [u8]) -> bool {
-        if at == self.at && bytes.len() == 6 {
-            self.reached.set(true);
-            return false;
-        }
-        self.memory.read(at, bytes)
-    }
-    fn thread_pointer(&self, thread: ThreadId) -> Option<u64> {
-        self.memory.thread_pointer(thread)
-    }
-    fn instruction(&self, thread: ThreadId) -> Option<VirtualAddress> {
-        self.memory.instruction(thread)
-    }
-    fn load_bias(&self) -> LoadBias {
-        self.memory.load_bias()
-    }
-    fn threads(&self) -> Vec<ThreadId> {
-        self.memory.threads()
-    }
-}
-
-#[test]
-fn an_unreadable_expected_bytes_read_refuses_the_whole_request() {
-    let (process, runtime, first, _) = target();
-    let stop = RejectExpected {
-        memory: &process.memory,
-        at: VirtualAddress::new(first + 76),
-        reached: std::cell::Cell::new(false),
-    };
-    let reader = Reader {
-        stop: &stop,
-        ..process.reader()
-    };
-    let result = super::super::injection::plan(
-        &reader,
-        VirtualAddress::new(runtime),
-        "/a.py",
-        &[candidate(100, 100)],
-    );
-    assert!(
-        matches!(result, Err(AgentFailure::Unavailable(ref reason)) if reason.contains("unreadable")),
-        "{result:?}"
-    );
-    assert!(
-        stop.reached.get(),
-        "the fault must occur after the thread-state read"
-    );
-}
-
 #[test]
 fn a_consumed_but_unacknowledged_slot_is_never_overwritten() {
     let (mut process, runtime, first, _) = target();

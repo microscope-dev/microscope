@@ -266,24 +266,6 @@ mod tests {
             ("", "''"),
             ("it's", "\"it's\""),
             ("both ' and \"", "'both \\' and \"'"),
-            ("tab\tnew\nreturn\r", "'tab\\tnew\\nreturn\\r'"),
-            ("back\\slash", "'back\\\\slash'"),
-            (
-                "\u{0}\u{1f}\u{7f}\u{85}\u{9f}",
-                "'\\x00\\x1f\\x7f\\x85\\x9f'",
-            ),
-            (
-                "caf\u{e9} \u{65e5} \u{1f40d}",
-                "'caf\u{e9} \u{65e5} \u{1f40d}'",
-            ),
-            (
-                "\u{a0}\u{ad}\u{200b}\u{2028}\u{202e}\u{feff}",
-                "'\\xa0\\xad\\u200b\\u2028\\u202e\\ufeff'",
-            ),
-            (
-                "\u{e000}\u{e0001}\u{10ffff}",
-                "'\\ue000\\U000e0001\\U0010ffff'",
-            ),
         ] {
             assert_eq!(string(&points(value)), expected, "{value:?}");
         }

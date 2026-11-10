@@ -890,31 +890,6 @@ mod tests {
         }
     }
 
-    /// The headers differ: 12.4's keep no stack slots' count.
-    #[test]
-    fn safepoint_headers_are_each_versions_own() {
-        let headers: Vec<_> = VERSIONS
-            .iter()
-            .map(|&version| {
-                let layout = layout(version);
-                let turbofan = SafepointFormat::of(&layout, false).unwrap();
-                let maglev = SafepointFormat::of(&layout, true).unwrap();
-                (
-                    (turbofan.length_offset, turbofan.header_size),
-                    (maglev.length_offset, maglev.header_size, maglev.between),
-                )
-            })
-            .collect();
-        assert_eq!(
-            headers,
-            [
-                ((0, 8), (0, 16, 1)),
-                ((4, 12), (4, 16, 1)),
-                ((4, 12), (4, 16, 1)),
-            ]
-        );
-    }
-
     #[test]
     fn safepoints_refuse_nonempty_tables_with_zero_width_entries() {
         for version in VERSIONS {

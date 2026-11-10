@@ -322,40 +322,6 @@ impl CodeTable {
         linetable::line_at(lines, i64::from(row.first_line), offset)
     }
 
-    /// Panics unless every span lies within its pool, every name id names
-    /// a name, the index finds each row it names by its address, and the
-    /// name index finds each name it names.
-    #[cfg(test)]
-    pub(super) fn check_invariants(&self) {
-        for index in 0..self.rows.len() {
-            self.check_row(index);
-        }
-
-        #[allow(
-            clippy::iter_over_hash_type,
-            reason = "every entry is checked, in any order"
-        )]
-        for (address, id) in &self.index {
-            debug_assert!(
-                self.rows
-                    .get(id.index())
-                    .is_some_and(|row| row.address == *address),
-                "the index finds row {id} at {address:#x}, which is not its"
-            );
-        }
-
-        #[allow(
-            clippy::iter_over_hash_type,
-            reason = "every entry is checked, in any order"
-        )]
-        for (name, id) in &self.name_index {
-            debug_assert!(
-                self.names.get(id.index()) == Some(name),
-                "the name index finds name {id}, which is not its"
-            );
-        }
-    }
-
     /// Panics unless row `index`'s spans lie within their pools, and each
     /// name id it and its locals hold names a name.
     fn check_row(&self, index: usize) {
@@ -439,43 +405,6 @@ fn source_path(file: Arc<str>) -> Arc<str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[should_panic(expected = "lies past the pool")]
-    fn a_span_past_its_pool_breaks_the_tables_invariants() {
-        let mut table = CodeTable::default();
-        table.names.push("f".into());
-        table.rows.push(CodeRecord {
-            address: VirtualAddress::new(0x1000),
-            proof: CodeProof {
-                ty: 0,
-                qualname: 0,
-                filename: 0,
-                linetable: 0,
-                first_line: 1,
-                units: 0,
-            },
-            qualname: NameId::new(0),
-            file: NameId::new(0),
-            first_line: 1,
-            units: 0,
-            parameters: 0,
-            internal: false,
-            locals: Span::since(0, 0).expect("a span"),
-            lines: Span::since(0, 4).expect("a span"),
-            function: None,
-        });
-        table.check_invariants();
-    }
-
-    #[test]
-    #[should_panic(expected = "the name index finds name")]
-    fn a_name_index_entry_of_another_name_breaks_the_tables_invariants() {
-        let mut table = CodeTable::default();
-        table.names.push("f".into());
-        table.name_index.insert("g".into(), NameId::new(0));
-        table.check_invariants();
-    }
 
     /// A script named relatively compiles with a `.` in its path, and its
     /// frames name the file without it, as breakpoints and listings do.

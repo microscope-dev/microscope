@@ -46,20 +46,6 @@ fn python_exception_filters_are_bits_the_agent_shares() {
     assert_eq!(exceptions::filter(0), None);
     assert_eq!(exceptions::filter(agent::RAISED | agent::UNCAUGHT), None);
 
-    let filters = crate::ExceptionStops::filters();
-    assert_eq!(
-        filters.iter().map(|filter| filter.id).collect::<Vec<_>>(),
-        [
-            "unhandled",
-            "runtime-fatal",
-            "raised",
-            "rust-panic",
-            "python-raised",
-            "python-uncaught",
-            "javascript-thrown",
-            "javascript-uncaught"
-        ]
-    );
     assert!(!raised.default && !uncaught.default);
     assert_eq!(exceptions::bits(crate::ExceptionStops::default()), 0);
     assert_eq!(exceptions::bits(crate::ExceptionStops::NONE), 0);
@@ -68,4 +54,8 @@ fn python_exception_filters_are_bits_the_agent_shares() {
         .and_then(|stops| stops.with("rust-panic", true))
         .expect("known filters");
     assert_eq!(exceptions::bits(chosen), agent::UNCAUGHT);
+    let raised = crate::ExceptionStops::NONE
+        .with("python-raised", true)
+        .expect("a known filter");
+    assert_eq!(exceptions::bits(raised), agent::RAISED);
 }

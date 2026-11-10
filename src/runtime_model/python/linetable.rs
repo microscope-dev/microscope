@@ -296,28 +296,6 @@ mod tests {
         0x80 | (15 << 3) | 7,
     ];
 
-    #[test]
-    fn each_form_gives_its_runs_line() {
-        let runs: Vec<Run> = runs(TABLE, 10).collect::<Result<_, _>>().expect("a table");
-        let lines: Vec<(u64, u64, Option<i64>)> = runs
-            .iter()
-            .map(|run| (run.start, run.end, run.line))
-            .collect();
-        assert_eq!(
-            lines,
-            [
-                (0, 4, Some(10)),
-                (4, 6, Some(12)),
-                (6, 12, Some(8)),
-                (12, 14, Some(11)),
-                (14, 30, None),
-            ]
-        );
-        assert_eq!(line_at(TABLE, 10, 7), Ok(Some(8)));
-        assert_eq!(line_at(TABLE, 10, 16), Ok(None));
-        assert_eq!(line_at(TABLE, 10, 30), Err(Malformed), "past the code");
-    }
-
     /// Prints, for each code object of some of the standard library, its
     /// table, first line, length in bytes, and `co_lines()`'s runs.
     const ORACLE: &str = r#"

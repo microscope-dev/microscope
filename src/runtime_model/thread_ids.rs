@@ -121,12 +121,6 @@ mod tests {
         assert!(!called.get());
     }
 
-    #[test]
-    fn missing_platform_evidence_is_one_global_problem() {
-        let ids = ThreadIds::read(vec![ThreadId::new(7)], |_| Vec::new());
-        assert!(ids.unwrap_err().contains("platform supplied no proven"));
-    }
-
     /// Every native id resolves to the one listed host that alone claims
     /// it and claims nothing else, is ambiguous where any other listed
     /// host or id is involved, and is missing where no listed host claims

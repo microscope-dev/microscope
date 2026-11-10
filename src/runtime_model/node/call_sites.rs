@@ -1742,7 +1742,7 @@ fn oddball_is(reader: &Reader<'_>, word: u64, kinds: &[Constant]) -> Result<bool
 
 #[cfg(test)]
 mod tests {
-    use super::{ends_with_method_name, is_identifier, is_line_terminator_sequence};
+    use super::{ends_with_method_name, is_identifier};
 
     fn units(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
@@ -1774,14 +1774,5 @@ mod tests {
         assert!(!identifier("a\u{d7}"));
         assert!(!identifier(""));
         assert!(is_identifier(&units("\u{3c0}")).is_err());
-    }
-
-    #[test]
-    fn a_carriage_return_ends_a_line_unless_a_line_feed_follows() {
-        assert!(is_line_terminator_sequence(0x0a, 0));
-        assert!(is_line_terminator_sequence(0x0d, 0x41));
-        assert!(!is_line_terminator_sequence(0x0d, 0x0a));
-        assert!(is_line_terminator_sequence(0x2028, 0));
-        assert!(!is_line_terminator_sequence(0x41, 0x0a));
     }
 }

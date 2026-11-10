@@ -437,115 +437,14 @@ fn walk_from(memory: &Memory, object: u64, ty: u32) -> AwaitChain {
     )
 }
 
-/// A chain is read innermost first, to the leaf it waits on, whether a
-/// coroutine holds the future it awaits, a pinned box points to it, a
-/// trait object does, or a record holds it as its only member.
+/// A trait object whose vtable no type names ends the chain, saying so.
+/// The model property draws only vtables it knows.
 #[test]
-fn a_chain_reaches_its_leaf_through_every_kind_of_future() {
+fn a_trait_object_of_an_unknown_vtable_ends_the_chain() {
     let outer = 0x1000;
-    let mut memory = Memory::default();
-
-    memory.byte(outer, 3);
-    memory.byte(outer + AWAITEE, 3);
-    let held = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        held,
-        AwaitChain {
-            frames: vec![
-                leaf(outer + 2 * AWAITEE, SLEEP),
-                coroutine_frame(outer + AWAITEE, INNER, 3, suspended(0), 21),
-                coroutine_frame(outer, OUTER, 3, suspended(0), 12),
-            ],
-            end: ChainEnd::Leaf,
-        }
-    );
-
     let boxed = 0x2000;
-    memory.byte(outer, 4);
-    memory.word(outer + AWAITEE, boxed);
+    let mut memory = Memory::default();
     memory.byte(boxed, 3);
-    let pinned = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        pinned.frames,
-        [
-            leaf(boxed + AWAITEE, SLEEP),
-            coroutine_frame(boxed, INNER, 3, suspended(0), 21),
-            coroutine_frame(outer, OUTER, 4, suspended(1), 13),
-        ]
-    );
-    assert_eq!(pinned.end, ChainEnd::Leaf);
-
-    memory.byte(outer, 5);
-    memory.word(outer + AWAITEE, boxed);
-    memory.word(outer + AWAITEE + 8, VTABLE);
-    let dynamic = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        dynamic.frames[1],
-        coroutine_frame(boxed, INNER, 3, suspended(0), 21)
-    );
-    assert_eq!(dynamic.end, ChainEnd::Leaf);
-
-    memory.byte(outer, 8);
-    memory.byte(outer + AWAITEE, 3);
-    let wrapped = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        wrapped.frames,
-        [
-            leaf(outer + 2 * AWAITEE, SLEEP),
-            coroutine_frame(outer + AWAITEE, INNER, 3, suspended(0), 21),
-            coroutine_frame(outer, OUTER, 8, suspended(5), 17),
-        ]
-    );
-
-    // tracing's `Instrumented` is passed through to the future it holds,
-    // here a pinned box in a `ManuallyDrop`'s `MaybeDangling`; a record of the
-    // same shape that is not tracing's is a leaf.
-    memory.byte(outer, 10);
-    memory.word(outer + AWAITEE, boxed);
-    let instrumented = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        instrumented.frames,
-        [
-            leaf(boxed + AWAITEE, SLEEP),
-            coroutine_frame(boxed, INNER, 3, suspended(0), 21),
-            coroutine_frame(outer, OUTER, 10, suspended(6), 18),
-        ]
-    );
-    assert_eq!(instrumented.end, ChainEnd::Leaf);
-
-    memory.byte(outer, 11);
-    let lookalike = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        lookalike.frames,
-        [
-            leaf(outer + AWAITEE, LOOKALIKE),
-            coroutine_frame(outer, OUTER, 11, suspended(7), 18),
-        ]
-    );
-
-    // tokio's task-local scope holds its future in an `Option`, which the
-    // walk passes through while it is `Some`; once the scope has dropped
-    // its future, the chain ends, saying so.
-    memory.byte(outer, 12);
-    memory.byte(outer + AWAITEE, 1);
-    memory.byte(outer + 2 * AWAITEE, 3);
-    let scoped = walk_from(&memory, outer, OUTER);
-    assert_eq!(
-        scoped.frames,
-        [
-            leaf(outer + 3 * AWAITEE, SLEEP),
-            coroutine_frame(outer + 2 * AWAITEE, INNER, 3, suspended(0), 21),
-            coroutine_frame(outer, OUTER, 12, suspended(8), 18),
-        ]
-    );
-    memory.byte(outer + AWAITEE, 0);
-    let dropped = walk_from(&memory, outer, OUTER);
-    assert!(
-        matches!(&dropped.end, ChainEnd::Broken(reason) if reason.contains("it is None")),
-        "{dropped:?}"
-    );
-
-    // A trait object of a vtable no type names ends the chain, saying so.
     memory.byte(outer, 5);
     memory.word(outer + AWAITEE, boxed);
     memory.word(outer + AWAITEE + 8, VTABLE + 8);
@@ -556,25 +455,12 @@ fn a_chain_reaches_its_leaf_through_every_kind_of_future() {
     );
 }
 
-/// A chain ends where its innermost coroutine has not begun, has ended,
-/// or names nothing it awaits, and where its memory or state cannot be
-/// read, each saying so, with the futures it passed.
+/// A chain ends where its state or its memory cannot be read, saying so.
+/// The model property owns the ends of readable states.
 #[test]
 fn every_end_of_a_chain_is_said() {
     let outer = 0x1000;
     let mut memory = Memory::default();
-    for (state, end) in [
-        (0, ChainEnd::Unresumed),
-        (1, ChainEnd::Finished),
-        (2, ChainEnd::Finished),
-        (6, ChainEnd::NoAwaitee),
-    ] {
-        memory.byte(outer, state);
-        let chain = walk_from(&memory, outer, OUTER);
-        assert_eq!(chain.end, end, "{state}");
-        assert_eq!(chain.frames.len(), 1, "{state}");
-    }
-
     memory.byte(outer, 9);
     let chain = walk_from(&memory, outer, OUTER);
     assert!(

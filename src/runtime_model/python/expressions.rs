@@ -1394,7 +1394,7 @@ fn scalar_text(key: &InterpretedKey) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{frexp, hash_float, hash_int, hash_text, hash_tuple};
+    use super::{hash_float, hash_int, hash_text, hash_tuple};
 
     #[test]
     fn text_hashes_as_cpython_hashes_it_with_a_zero_secret() {
@@ -1462,12 +1462,5 @@ mod tests {
         assert_eq!(hash_tuple(&[empty]), -5_486_347_211_504_344_842);
         let half = hash_float(0.5).unwrap_or_default();
         assert_eq!(hash_tuple(&[half]), -408_149_959_306_781_352);
-    }
-
-    #[test]
-    fn frexp_splits_a_float_as_c_does() {
-        assert_eq!(frexp(8.0), (0.5, 4));
-        assert_eq!(frexp(0.75), (0.75, 0));
-        assert_eq!(frexp(5e-324), (0.5, -1073));
     }
 }

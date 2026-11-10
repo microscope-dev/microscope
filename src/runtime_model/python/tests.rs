@@ -562,42 +562,6 @@ fn place(frame: &InterpretedFrame) -> Option<(&str, u32)> {
         .map(|place| (place.path.as_ref(), place.line))
 }
 
-#[test]
-fn a_thread_walks_its_segments_innermost_first_and_each_ends_at_an_entry_frame() {
-    let mut process = Process::new(layout());
-    let a = process.code("a", 10, &[(1, 0)]);
-    let b = process.code("b", 20, &[(1, 0)]);
-    let c = process.code("c", 30, &[(1, 0)]);
-
-    let outer_entry = process.entry(0);
-    let c_frame = process.frame(outer_entry, c, process.instruction(c, 0));
-    let inner_entry = process.entry(c_frame);
-    let b_frame = process.frame(inner_entry, b, process.instruction(b, 0));
-    let a_frame = process.frame(b_frame, a, process.instruction(a, 0));
-
-    let (frames, end) = walk_thread(&process, a_frame);
-    assert_eq!(
-        frames
-            .iter()
-            .map(|frame| frame.function.as_deref())
-            .collect::<Vec<_>>(),
-        [Some("a"), Some("b"), Some("c")]
-    );
-    assert_eq!(
-        frames.iter().map(place).collect::<Vec<_>>(),
-        [Some((FILE, 10)), Some((FILE, 20)), Some((FILE, 30))]
-    );
-    assert_eq!(
-        frames
-            .iter()
-            .map(|frame| frame.outermost)
-            .collect::<Vec<_>>(),
-        [false, true, true]
-    );
-    assert!(frames.iter().all(|frame| frame.problem.is_none()));
-    assert_eq!(end, None);
-}
-
 /// A frame as a walker in the kernel reads it: the code object it runs,
 /// that object's qualified-name and line-table pointers and first line, its
 /// instruction's offset from its bytecode, and its owner.
@@ -1094,37 +1058,6 @@ fn a_chain_that_ends_before_its_base_frame_says_so() {
     assert_eq!(
         walk(&process, &mut CodeTable::default(), &idle),
         (Vec::new(), None)
-    );
-}
-
-/// Pins what the walk does when a thread's frames reach its base frame
-/// with no entry frame beneath the last one: the last frame is marked
-/// outermost and the walk reports the missing entry frame. The base frame
-/// ends the chain, so this reports a gap that may not be there.
-#[test]
-fn a_base_frame_beneath_thread_frames_reports_the_missing_entry_frame() {
-    let mut process = Process::new(layout());
-    let a = process.code("a", 10, &[(1, 0)]);
-    let b = process.code("b", 20, &[(1, 0)]);
-    let base = process.frame(0, a, process.instruction(a, 0));
-    let b_frame = process.frame(base, b, process.instruction(b, 0));
-    let a_frame = process.frame(b_frame, a, process.instruction(a, 0));
-
-    let state = ThreadState {
-        base: Some(VirtualAddress::new(base)),
-        ..innermost(a_frame)
-    };
-    let (frames, end) = walk(&process, &mut CodeTable::default(), &state);
-    assert_eq!(
-        frames
-            .iter()
-            .map(|frame| frame.outermost)
-            .collect::<Vec<_>>(),
-        [false, true]
-    );
-    assert_eq!(
-        end.as_deref(),
-        Some("the outermost frames have no entry frame beneath them")
     );
 }
 

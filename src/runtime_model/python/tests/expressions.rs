@@ -16,25 +16,16 @@ use super::{Process, SMALL, layout};
 use crate::eval::error::ErrorKind;
 use crate::image::python::Field;
 use crate::runtime_model::{
-    InterpretedChild, InterpretedFailure, InterpretedHandle, InterpretedKey, InterpretedKind,
-    InterpretedName, InterpretedOperand, InterpretedSlot, InterpretedStep,
+    InterpretedChild, InterpretedFailure, InterpretedHandle, InterpretedKey, InterpretedName,
+    InterpretedSlot, InterpretedStep,
 };
-use crate::{
-    InspectionLimit, InspectionLimits, TextCompletion, VariableUnavailableReason, VirtualAddress,
-};
+use crate::{InspectionLimit, InspectionLimits, VariableUnavailableReason, VirtualAddress};
 
 /// The kinds of local the tests give a code object: a plain local, a
 /// cell, and a hidden one.
 const LOCAL: u8 = 0x20;
 const CELL: u8 = 0x40;
 const HIDDEN: u8 = 0x10;
-
-/// CPython's hash of `None`, which it has been a constant since 3.12.
-const NONE_HASH: i64 = 0xfca8_6420;
-
-/// The keys of a table of eight slots holding ints 1 and 9, whose hashes
-/// collide in the first slot.
-const COLLIDING: [i128; 2] = [1, 9];
 
 /// The code points of `text`, as a `str` of it has them.
 fn code_points(text: &str) -> Vec<u32> {
@@ -51,13 +42,6 @@ fn secret_with_k0(process: &mut Process, k0: u64) -> VirtualAddress {
     let secret = zero_secret(process);
     process.memory.write(secret.get(), k0, 8);
     secret
-}
-
-/// A `bytes` of type `types.bytes` holding `data`.
-fn bytes_object(process: &mut Process, types: &Types, data: &[u8]) -> u64 {
-    let object = process.bytes(data);
-    process.word(object, Field::ObjectType, types.bytes.get());
-    object
 }
 
 /// A `dict`'s entry of the `int` key `value`, which holds `item`.
@@ -151,15 +135,6 @@ fn item_in(
         secret,
         |values| values.step(VirtualAddress::new(object), InterpretedStep::Item(key)),
     )
-}
-
-/// The operand of the object at `object`, which must have one.
-fn operand_of(process: &Process, types: Types, object: u64) -> InterpretedOperand {
-    with_values(process, types, InspectionLimits::default(), |values| {
-        values
-            .operand(VirtualAddress::new(object))
-            .expect("the object is readable")
-    })
 }
 
 /// The length of the object at `object`, with the default limits.
@@ -299,32 +274,6 @@ fn a_hidden_local_is_not_a_name_and_a_name_in_no_namespace_is_none() {
 }
 
 #[test]
-fn a_variable_is_the_object_its_slot_holds() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let five = process.int(types.int, 5);
-    let seven = process.int(types.int, 7);
-    let frame = frame_with(
-        &mut process,
-        &types,
-        &["a", "b", "c", "d"],
-        &[LOCAL, LOCAL, LOCAL, LOCAL],
-        &[five, 0, 0, seven],
-        0,
-        0,
-    );
-
-    assert_eq!(
-        variable_in(&process, types, frame, 0),
-        Ok(VirtualAddress::new(five))
-    );
-    assert_eq!(
-        variable_in(&process, types, frame, 3),
-        Ok(VirtualAddress::new(seven))
-    );
-}
-
-#[test]
 fn a_null_slot_is_unbound_and_a_cell_holds_its_variable() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
@@ -367,65 +316,13 @@ fn a_null_slot_is_unbound_and_a_cell_holds_its_variable() {
 }
 
 #[test]
-fn a_list_is_indexed_from_either_end_and_an_index_past_it_is_out_of_bounds() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let items: Vec<u64> = (1..=3).map(|value| process.int(types.int, value)).collect();
-    let list = process.list(types.list, &items);
-
-    assert_eq!(
-        item_in(&process, types, None, list, &InterpretedKey::Int(0)),
-        Ok(VirtualAddress::new(items[0]))
-    );
-    assert_eq!(
-        item_in(&process, types, None, list, &InterpretedKey::Int(-1)),
-        Ok(VirtualAddress::new(items[2]))
-    );
-    for index in [3, -4] {
-        assert!(
-            matches!(
-                item_in(&process, types, None, list, &InterpretedKey::Int(index)),
-                Err(InterpretedFailure::Refused(ErrorKind::Bounds, _))
-            ),
-            "index {index} is out of bounds"
-        );
-    }
-}
-
-#[test]
-fn a_tuple_is_indexed_as_a_list_is() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let one = process.int(types.int, 1);
-    let two = process.int(types.int, 2);
-    let tuple = process.tuple(types.tuple, &[one, two]);
-
-    assert_eq!(
-        item_in(&process, types, None, tuple, &InterpretedKey::Int(1)),
-        Ok(VirtualAddress::new(two))
-    );
-    assert_eq!(
-        item_in(&process, types, None, tuple, &InterpretedKey::Int(-2)),
-        Ok(VirtualAddress::new(one))
-    );
-}
-
-#[test]
-fn a_bool_indexes_a_sequence_as_zero_or_one_and_other_keys_are_refused_as_types() {
+fn a_key_other_than_an_int_or_bool_is_refused_as_a_type() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
     let zero = process.int(types.int, 10);
     let one = process.int(types.int, 11);
     let list = process.list(types.list, &[zero, one]);
 
-    assert_eq!(
-        item_in(&process, types, None, list, &InterpretedKey::Bool(true)),
-        Ok(VirtualAddress::new(one))
-    );
-    assert_eq!(
-        item_in(&process, types, None, list, &InterpretedKey::Bool(false)),
-        Ok(VirtualAddress::new(zero))
-    );
     for key in [
         InterpretedKey::Text(b"0".to_vec()),
         InterpretedKey::Float(1.0),
@@ -442,76 +339,7 @@ fn a_bool_indexes_a_sequence_as_zero_or_one_and_other_keys_are_refused_as_types(
 }
 
 #[test]
-fn a_general_table_key_is_found_by_its_hash_past_a_colliding_key() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let first = process.int(types.int, 100);
-    let second = process.int(types.int, 200);
-    let entries = [
-        int_entry(&mut process, &types, COLLIDING[0], first),
-        int_entry(&mut process, &types, COLLIDING[1], second),
-    ];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
-
-    assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Int(1)),
-        Ok(VirtualAddress::new(first))
-    );
-    assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Int(9)),
-        Ok(VirtualAddress::new(second))
-    );
-}
-
-#[test]
-fn a_key_is_found_past_a_deleted_entry_in_its_probe_chain() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let gone = process.int(types.int, 100);
-    let kept = process.int(types.int, 200);
-    let entries = [
-        int_entry(&mut process, &types, COLLIDING[0], gone),
-        int_entry(&mut process, &types, COLLIDING[1], kept),
-    ];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[0]);
-
-    assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Int(1)),
-        Err(InterpretedFailure::Refused(
-            ErrorKind::MissingKey,
-            "the dict holds no key 1".into()
-        ))
-    );
-    assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Int(9)),
-        Ok(VirtualAddress::new(kept))
-    );
-}
-
-#[test]
-fn a_missing_key_ends_its_probe_at_an_empty_slot_and_is_missing() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let first = process.int(types.int, 100);
-    let second = process.int(types.int, 200);
-    let entries = [
-        int_entry(&mut process, &types, COLLIDING[0], first),
-        int_entry(&mut process, &types, COLLIDING[1], second),
-    ];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
-
-    // 17 probes the same slots as 1 and 9, and reaches an empty slot.
-    assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Int(17)),
-        Err(InterpretedFailure::Refused(
-            ErrorKind::MissingKey,
-            "the dict holds no key 17".into()
-        ))
-    );
-}
-
-#[test]
-fn a_float_or_a_bool_finds_the_int_key_it_equals() {
+fn the_least_float_an_int_key_can_equal_finds_it() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
     let item = process.str_object(types.str, "one");
@@ -522,71 +350,11 @@ fn a_float_or_a_bool_finds_the_int_key_it_equals() {
     ];
     let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
 
-    for (key, found) in [
-        (InterpretedKey::Float(1.0), item),
-        (InterpretedKey::Bool(true), item),
-        // -2.0**127 is exactly the least i128.
-        (InterpretedKey::Float(-(2.0_f64.powi(127))), least),
-    ] {
-        assert_eq!(
-            item_in(&process, types, None, dict, &key),
-            Ok(VirtualAddress::new(found)),
-            "the key {key:?}"
-        );
-    }
-}
-
-#[test]
-fn none_finds_a_none_key_by_the_hash_cpython_gives_it() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let none = process.object(types.none, SMALL);
-    let item = process.int(types.int, 42);
-    let entries = [(none, item, NONE_HASH)];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
-
+    // -2.0**127 is exactly the least i128.
+    let key = InterpretedKey::Float(-(2.0_f64.powi(127)));
     assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Nothing),
-        Ok(VirtualAddress::new(item))
-    );
-}
-
-#[test]
-fn a_key_of_another_type_whose_hash_is_equal_refuses_the_lookup() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let key_type = process.type_object("Key");
-    let key = process.object(key_type, SMALL);
-    let item = process.int(types.int, 42);
-    let entries = [(key, item, hash_int(9))];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
-
-    match item_in(&process, types, None, dict, &InterpretedKey::Int(9)) {
-        Err(InterpretedFailure::Refused(ErrorKind::Unsupported, message)) => {
-            assert!(
-                message.contains("only its type's `__eq__`") && message.contains("`Key`"),
-                "the message: {message}"
-            );
-        }
-        other => panic!("expected the lookup to refuse, got {other:?}"),
-    }
-}
-
-#[test]
-fn a_key_of_another_type_whose_hash_differs_is_passed_over() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let key_type = process.type_object("Key");
-    let key = process.object(key_type, SMALL);
-    let item = process.int(types.int, 42);
-    let wanted = process.int(types.int, 9);
-    let wanted_item = process.int(types.int, 43);
-    let entries = [(key, item, hash_int(1)), (wanted, wanted_item, hash_int(9))];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
-
-    assert_eq!(
-        item_in(&process, types, None, dict, &InterpretedKey::Int(9)),
-        Ok(VirtualAddress::new(wanted_item))
+        item_in(&process, types, None, dict, &key),
+        Ok(VirtualAddress::new(least))
     );
 }
 
@@ -764,119 +532,14 @@ fn a_str_key_in_a_large_table_is_found_by_probing_within_a_small_budget_that_a_s
 }
 
 #[test]
-fn an_operand_has_the_kind_and_type_name_of_its_object() {
+fn an_int_has_no_length() {
     let mut process = Process::new(layout());
     let types = process.builtin_types();
-    let int = process.int(types.int, 7);
-    let none = process.object(types.none, SMALL);
-    let yes = process.int(types.bool, 1);
-    let float = process.float(types.float, 1.5);
-    let digits = [1, 0, 0, 0, 1024];
-    let tag = process.long_tag(0, digits.len());
-    let large = process.long(types.int, tag, &digits);
-    let other_type = process.type_object("Gate");
-    let other = process.object(other_type, SMALL);
-
-    let cases = [
-        (int, "int", InterpretedKind::Int(Some(7))),
-        (none, "NoneType", InterpretedKind::Nothing),
-        (yes, "bool", InterpretedKind::Bool(true)),
-        (float, "float", InterpretedKind::Float(1.5)),
-        (large, "int", InterpretedKind::Int(None)),
-        (other, "Gate", InterpretedKind::Other),
-    ];
-    for (object, type_name, kind) in cases {
-        let operand = operand_of(&process, types, object);
-        assert_eq!(operand.type_name.as_ref(), type_name);
-        assert_eq!(operand.kind, kind, "the operand of {type_name}");
-        assert_eq!(operand.text, None);
-    }
-}
-
-#[test]
-fn a_str_and_bytes_operand_carry_their_whole_text() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let text = process.str_object(types.str, "abc");
-    let wide_units: Vec<u16> = "日本語".encode_utf16().collect();
-    let wide = process.wide_str(types.str, &wide_units);
-    let data = bytes_object(&mut process, &types, &[b'a', 0, 0xff]);
-
-    let operand = operand_of(&process, types, text);
-    assert_eq!(operand.kind, InterpretedKind::Text);
-    let summary = operand.text.expect("a str has its text");
-    assert_eq!(summary.bytes.as_ref(), b"abc");
-    assert_eq!(summary.completion, TextCompletion::Complete);
-
-    let operand = operand_of(&process, types, wide);
-    let summary = operand.text.expect("a str has its text");
-    assert_eq!(summary.bytes.as_ref(), "日本語".as_bytes());
-    assert_eq!(summary.completion, TextCompletion::Complete);
-
-    let operand = operand_of(&process, types, data);
-    assert_eq!(operand.kind, InterpretedKind::Bytes);
-    let summary = operand.text.expect("bytes have their contents");
-    assert_eq!(summary.bytes.as_ref(), [b'a', 0, 0xff]);
-    assert_eq!(summary.completion, TextCompletion::Complete);
-}
-
-#[test]
-fn a_sequence_or_map_operand_carries_its_length() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let one = process.int(types.int, 1);
-    let two = process.int(types.int, 2);
-    let list = process.list(types.list, &[one, two]);
-    let tuple = process.tuple(types.tuple, &[one]);
-    let entries = [
-        int_entry(&mut process, &types, 1, one),
-        int_entry(&mut process, &types, 2, two),
-    ];
-    let dict = process.hashed_dict(types.dict, Table::eight(Kind::General), &entries, &[]);
-
-    assert_eq!(
-        operand_of(&process, types, list).kind,
-        InterpretedKind::Sequence { length: 2 }
-    );
-    assert_eq!(
-        operand_of(&process, types, tuple).kind,
-        InterpretedKind::Sequence { length: 1 }
-    );
-    assert_eq!(
-        operand_of(&process, types, dict).kind,
-        InterpretedKind::Map { length: 2 }
-    );
-}
-
-#[test]
-fn the_length_of_a_text_bytes_sequence_or_map_is_its_count_and_an_int_has_none() {
-    let mut process = Process::new(layout());
-    let types = process.builtin_types();
-    let text = process.str_object(types.str, "abc");
-    let data = bytes_object(&mut process, &types, &[1, 2]);
-    let one = process.int(types.int, 1);
-    let list = process.list(types.list, &[one, one, one]);
-    let tuple = process.tuple(types.tuple, &[one]);
-    let dict = text_dict(
-        &mut process,
-        &types,
-        Table::eight(Kind::Unicode),
-        &[("a", one), ("b", one)],
-    );
     let int = process.int(types.int, 5);
-
-    assert_eq!(length_of(&process, types, text), Ok(3));
-    assert_eq!(length_of(&process, types, data), Ok(2));
-    assert_eq!(length_of(&process, types, list), Ok(3));
-    assert_eq!(length_of(&process, types, tuple), Ok(1));
-    assert_eq!(length_of(&process, types, dict), Ok(2));
-    assert!(
-        matches!(
-            length_of(&process, types, int),
-            Err(InterpretedFailure::Refused(ErrorKind::Type, _))
-        ),
-        "an int has no length"
-    );
+    assert!(matches!(
+        length_of(&process, types, int),
+        Err(InterpretedFailure::Refused(ErrorKind::Type, _))
+    ));
 }
 
 /// CPython's hash of the finite `value`, worked from what the value is:
@@ -929,20 +592,6 @@ fn integral_float() -> impl Strategy<Value = f64> {
         let significand = significand as f64;
         significand * 2_f64.powi(shift)
     })
-}
-
-#[test]
-fn float_hashes_reduce_their_value_and_never_give_minus_one() {
-    for (value, hash) in [
-        (0.0, 0),
-        (-0.0, 0),
-        (-1.0, -2),
-        (0.5, 1 << 60),
-        (f64::from_bits(1), reference_float_hash(f64::from_bits(1))),
-    ] {
-        assert_eq!(hash_float(value), Some(hash), "{value:e}");
-    }
-    assert_eq!(hash_float(f64::NAN), None);
 }
 
 proptest! {

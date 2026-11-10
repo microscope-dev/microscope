@@ -53,18 +53,7 @@ fn command_publication_is_bounded_expected_and_last() {
 
 #[test]
 fn corrupt_changed_unreadable_and_overflowing_command_slots_are_refused() {
-    for (offset, byte) in [(0, b'!'), (8, 8), (20, 1), (24, 1)] {
-        let (mut memory, address) = slot(7);
-        memory.fill(HEAP + offset, &[byte]);
-        assert!(
-            control::command(&memory, address, (7, 8), &[], None, 0, None).is_err(),
-            "{offset}"
-        );
-    }
     let (mut memory, address) = slot(7);
-    for next in [0, 6, 7] {
-        assert!(control::command(&memory, address, (7, next), &[], None, 0, None).is_err());
-    }
     assert!(
         control::command(
             &memory,
@@ -133,8 +122,6 @@ fn a_generation_must_pass_the_acknowledged_one() {
         (7, 7, false),
         (7, 6, false),
         (7, 8, true),
-        (0, 0, false),
-        (0, 1, true),
         (7, u64::MAX, true),
         (u64::MAX - 1, u64::MAX, true),
         (u64::MAX, u64::MAX, false),

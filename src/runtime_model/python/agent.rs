@@ -361,65 +361,59 @@ pub fn decode(event: u64, number: u64, argument: u64) -> Result<Report, std::syn
 mod tests {
     use super::{Failure, Report, decode};
 
-    /// A step back crosses in a script as its kind, and a step into's call
-    /// of a C function crosses the hook as the callable's address.
-    #[test]
-    fn a_step_back_and_a_steps_c_call_cross_whole() {
-        let script = super::script("lib.so", 1, &[], Some((3, super::BACK, 7, 2, 0x1000)), 0)
-            .expect("serialize the step");
-        assert!(script.contains("__microscope_step = [3,3,7,2,4096]\n"));
-        assert_eq!(
-            decode(5, 3, 0x7000),
-            Ok(Report::StepCalls {
-                number: 3,
-                callable: 0x7000
-            })
-        );
-        assert!(decode(5, 0, 0x7000).is_err());
-        assert!(decode(5, 3, 0).is_err());
-    }
-
     #[test]
     fn a_whole_state_script_escapes_its_literals() {
+        let library = "a\"\\\nb\u{1}\u{e9}'.so";
         let script = super::script(
-            "a\"\\\nb.so",
+            library,
             u64::MAX,
             &[("LINE", 1, 42, "quoted\".py", 7, "")],
             Some((5, super::OVER, 7, 2, 0x1000)),
             3,
         )
         .expect("serialize the complete state");
-        assert!(script.contains("__microscope_generation = 18446744073709551615"));
-        assert!(script.contains("__microscope_step = [5,1,7,2,4096]\n"));
-        assert!(script.contains("__microscope_exceptions = 3\n"));
+        let state = script
+            .strip_suffix(&super::bootstrap().expect("the bootstrap"))
+            .expect("the state comes before the bootstrap");
+
+        // What the agent reads is what CPython makes of those lines.
+        let python = std::path::Path::new(
+            &std::env::var_os("MICROSCOPE_CPYTHON")
+                .expect("MICROSCOPE_CPYTHON names the interpreters; run tests in the dev shell"),
+        )
+        .join("3.14/python");
+        let read = format!(
+            "{state}import json\nprint(json.dumps([__microscope_library, \
+             __microscope_generation, __microscope_probes, __microscope_step, \
+             __microscope_exceptions]))"
+        );
+        let output = std::process::Command::new(python)
+            .args(["-I", "-c", &read])
+            .output()
+            .expect("run the interpreter");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let read: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the state as JSON");
+        assert_eq!(
+            read,
+            serde_json::json!([
+                library,
+                u64::MAX,
+                [["LINE", 1, 42, "quoted\".py", 7, ""]],
+                [5, super::OVER, 7, 2, 0x1000],
+                3
+            ])
+        );
+
         assert!(
             super::script("a.so", 1, &[], None, 0)
                 .expect("serialize the state")
                 .contains("__microscope_step = None\n")
         );
-        assert!(script.contains(r#"a\"\\\nb.so"#));
-        assert!(script.contains("_candidate._bootstrap_lock = _thread.RLock()"));
-        assert!(script.contains("_sys.modules.setdefault('_microscope_agent', _candidate)"));
-        assert!(super::super::hook::library().starts_with(b"\x7fELF"));
-    }
-
-    /// The agent numbers a step's kinds and losses as the runtime does.
-    #[test]
-    fn the_agent_numbers_steps_as_the_runtime_does() {
-        assert!(super::SOURCE.contains(&format!(
-            "INTO, OVER, OUT, BACK = {}, {}, {}, {}",
-            super::INTO,
-            super::OVER,
-            super::OUT,
-            super::BACK
-        )));
-        assert!(super::SOURCE.contains("return [(2, step[0], 1)]  # The step's frame"));
-        assert!(super::SOURCE.contains("return [(2, step[0], 2)]  # Its thread ran on"));
-        let (frame, late) = (
-            super::StepLoss::Frame.description(),
-            super::StepLoss::Late.description(),
-        );
-        assert!(!frame.is_empty() && !late.is_empty() && frame != late);
     }
 
     /// The agent numbers an assignment's outcomes as the runtime does, and
@@ -431,7 +425,6 @@ mod tests {
             (2, super::AssignmentFailure::Object),
             (3, super::AssignmentFailure::Refused),
         ] {
-            assert!(super::SOURCE.contains(&format!("return [(6, number, {status})]")));
             assert_eq!(
                 super::decode(6, 8, status),
                 Ok(super::Report::Assigned {
@@ -439,9 +432,7 @@ mod tests {
                     failure: Some(failure)
                 })
             );
-            assert!(!failure.description().is_empty());
         }
-        assert!(super::SOURCE.contains("return [(6, number, 0)]"));
         assert!(super::decode(6, 8, 4).is_err());
         let assignment: super::Assignment = (
             1,
@@ -461,8 +452,6 @@ mod tests {
     /// a program's file, or other code compiled from a string, is not.
     #[test]
     fn only_the_agents_code_has_its_filename() {
-        let script = super::bootstrap().expect("the bootstrap");
-        assert!(script.contains("'<microscope agent ' + __microscope_library + '>'"));
         assert!(super::is_agent_filename(
             "<microscope agent /tmp/.microscope-1/hook.so>"
         ));
@@ -590,7 +579,8 @@ mod tests {
             (4, 0, 0x1000),
             (4, 3, 0x1000),
             (4, 1, 0),
-            (4, 1, 0),
+            (5, 0, 0x7000),
+            (5, 3, 0),
             (u64::MAX, 1, 0),
         ] {
             assert!(decode(event, number, argument).is_err());
