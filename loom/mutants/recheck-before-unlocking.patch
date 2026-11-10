@@ -2,8 +2,8 @@ Looks for the next unit before letting go of the adding lock: one finished in be
 
 --- a/src/in_order.rs
 +++ b/src/in_order.rs
-@@ -130,13 +130,13 @@
-             }
+@@ -146,13 +146,13 @@
+ 
              let next = adding.next;
              self.window.advance(next);
 -            drop(adding);

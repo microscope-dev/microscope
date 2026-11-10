@@ -387,7 +387,7 @@ pub const fn status_has_hits(status: u64) -> bool {
     status & STATUS_HITS != 0
 }
 
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 pub fn fuzz(data: &[u8]) {
     let mut plan = DebugRegisterPlan::default();
     let mut armed: std::collections::BTreeMap<WatchpointId, (Vec<Chunk>, SlotAccess)> =
@@ -512,6 +512,21 @@ fn assert_plan_invariants(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        /// The fuzz target's oracle, a model of what each watchpoint has
+        /// armed, on any sequence of plans, releases and refusals, and on
+        /// damaged copies of its corpus.
+        #[test]
+        fn plans_arm_what_a_model_of_each_watchpoint_says(
+            data in proptest::prop_oneof![
+                crate::test_strategies::damaged_corpus("debug-register-plan"),
+                proptest::collection::vec(proptest::prelude::any::<u8>(), 0..240),
+            ],
+        ) {
+            fuzz(&data);
+        }
+    }
 
     /// Brute-force minimal cover over aligned power-of-two chunks.
     fn optimal_chunks(address: u64, length: u64) -> u64 {

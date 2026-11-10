@@ -6,8 +6,6 @@
 //! `MICROSCOPE_WEB_TRANSCRIPTS=DIR`, each test also writes its traffic to
 //! `DIR/<test>.jsonl`, which the page's tests replay.
 
-#![allow(dead_code, reason = "each test uses a subset of the harness")]
-
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};

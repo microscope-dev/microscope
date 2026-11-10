@@ -1333,7 +1333,7 @@ fn forgiving_base64(input: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 pub fn fuzz(data: &[u8]) {
     let script = Location::Path(PathBuf::from("/fuzz/dist/app.js"));
     if let Ok(map) = SourceMap::parse(
@@ -1352,7 +1352,7 @@ pub fn fuzz(data: &[u8]) {
     }
 }
 
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 fn fuzz_queries(map: &SourceMap, data: &[u8]) {
     for pair in data.chunks(2).take(256) {
         let line = Line(u32::from(pair.first().copied().unwrap_or(0) % 16));

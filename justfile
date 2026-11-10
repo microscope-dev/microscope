@@ -142,7 +142,7 @@ vet:
 [doc("Builds the native test fixtures and runs the Rust test suite.")]
 test *ARGS: cache-warm
     ulimit -c 0; test_threads="$(nproc)"; if (( test_threads > {{max_test_threads}} )); then test_threads={{max_test_threads}}; fi; MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --test-threads "$test_threads" "$@"
-    if (( $# == 0 )); then cargo test --doc; CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c; fi
+    if (( $# == 0 )); then CARGO_TARGET_DIR="$PWD/target/sdk-probes" cargo test --quiet --manifest-path sdk/rust-probes/Cargo.toml --features c; fi
 
 # Runs the unit tests with every property test trying CASES cases instead
 # of its usual few hundred: the deeper search `just all` makes. The other

@@ -878,7 +878,7 @@ const fn condition(code: ConditionCode, flags: Flags) -> Option<bool> {
     })
 }
 
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 pub fn fuzz(data: &[u8]) {
     /// Code at 0x1000 from the input's tail, and data at 0x2000 from its
     /// head.
@@ -935,6 +935,26 @@ pub fn fuzz(data: &[u8]) {
                 range.start < range.end && range.end <= ranges[0].end,
                 "{range:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The fuzz target's oracle, that every decoded point and range
+        /// lies in the code it was decoded from, on damaged copies of its
+        /// corpus and on any bytes.
+        #[test]
+        fn decoded_dispatch_stays_in_its_code(
+            data in prop_oneof![
+                crate::test_strategies::damaged_corpus("dispatch"),
+                proptest::collection::vec(any::<u8>(), 0..256),
+            ],
+        ) {
+            super::fuzz(&data);
         }
     }
 }

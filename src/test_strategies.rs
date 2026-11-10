@@ -55,3 +55,36 @@ pub fn hostile_address(valid: Vec<u64>) -> impl Strategy<Value = u64> + Clone {
         1 => any::<u64>(),
     ]
 }
+
+/// A file of the fuzz target `target`'s corpus with up to eight of its
+/// bytes overwritten and the rest maybe cut, so properties reach the
+/// structured inputs the fuzzer was seeded with and the damage it makes.
+pub fn damaged_corpus(target: &str) -> impl Strategy<Value = Vec<u8>> + use<> {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fuzz/corpus")
+        .join(target);
+    let mut files = std::fs::read_dir(&directory)
+        .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
+        .map(|entry| std::fs::read(entry.expect("a corpus entry").path()).expect("a corpus file"))
+        .collect::<Vec<_>>();
+    files.sort();
+    assert!(!files.is_empty(), "{} is empty", directory.display());
+
+    (
+        prop::sample::select(files),
+        proptest::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..8),
+        prop_oneof![3 => Just(None), 1 => any::<prop::sample::Index>().prop_map(Some)],
+    )
+        .prop_map(|(mut bytes, writes, cut)| {
+            if !bytes.is_empty() {
+                for (at, byte) in writes {
+                    let at = at.index(bytes.len());
+                    bytes[at] = byte;
+                }
+            }
+            if let Some(cut) = cut {
+                bytes.truncate(cut.index(bytes.len() + 1));
+            }
+            bytes
+        })
+}

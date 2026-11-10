@@ -954,3 +954,14 @@ proptest! {
         prop_assert_eq!(read.is_err(), outside, "{:?}", lines);
     }
 }
+
+proptest! {
+    /// The fuzz target's oracle, that each original line leads to positions
+    /// that map back to it, on damaged copies of its corpus.
+    #[test]
+    fn damaged_maps_lead_back_to_the_lines_they_name(
+        data in crate::test_strategies::damaged_corpus("js-source-map"),
+    ) {
+        fuzz(&data);
+    }
+}

@@ -446,48 +446,69 @@ mod tests {
             })
     }
 
+    /// A saved breakpoint's command parses back to the same breakpoint,
+    /// with its condition perhaps in parentheses, or saving refuses it
+    /// because one of its texts holds a line break, which a file of one
+    /// command per line cannot hold.
+    fn reads_back(saved: &Saved) -> Result<(), TestCaseError> {
+        if let Some(condition) = &saved.condition {
+            prop_assert!(
+                microscope::Condition::parse(condition).is_ok(),
+                "{condition}"
+            );
+        }
+
+        let breaks_lines = [
+            Some(&saved.location),
+            saved.condition.as_ref(),
+            saved.log.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text.contains(['\n', '\r']));
+        let line = command(saved);
+        prop_assert_eq!(line.is_err(), breaks_lines, "{:?}", line);
+
+        if let Ok(line) = line {
+            let spec = command_named("break").expect("break is a command");
+            let rest = line.strip_prefix("break ").expect("a break command");
+            let parsed = parse_break(rest, spec);
+            prop_assert!(parsed.is_ok(), "{line:?}: {parsed:?}");
+            let parsed = parsed.expect("checked");
+
+            prop_assert_eq!(
+                parsed.location.as_deref(),
+                Some(saved.location.as_str()),
+                "{}",
+                line
+            );
+            prop_assert_eq!(parsed.hits, saved.hits.as_deref(), "{}", line);
+            prop_assert_eq!(parsed.log, saved.log.clone(), "{}", line);
+            prop_assert_eq!(parsed.disabled, !saved.enabled, "{}", line);
+            prop_assert!(
+                parsed.condition.map(str::to_owned) == saved.condition
+                    || parsed.condition.map(str::to_owned)
+                        == saved
+                            .condition
+                            .as_ref()
+                            .map(|condition| format!("({condition})")),
+                "{line}"
+            );
+        }
+
+        Ok(())
+    }
+
     proptest! {
-        /// A saved breakpoint's command parses back to the same breakpoint,
-        /// with its condition perhaps in parentheses, or saving refuses it
-        /// because one of its texts holds a line break, which a file of
-        /// one command per line cannot hold.
         #[test]
         fn saved_commands_parse_back(saved in saved()) {
-            if let Some(condition) = &saved.condition {
-                prop_assert!(microscope::Condition::parse(condition).is_ok(), "{condition}");
-            }
-
-            let breaks_lines = [Some(&saved.location), saved.condition.as_ref(), saved.log.as_ref()]
-                .into_iter()
-                .flatten()
-                .any(|text| text.contains(['\n', '\r']));
-            let line = command(&saved);
-            prop_assert_eq!(line.is_err(), breaks_lines, "{:?}", line);
-
-            if let Ok(line) = line {
-                let spec = command_named("break").expect("break is a command");
-                let rest = line.strip_prefix("break ").expect("a break command");
-                let parsed = parse_break(rest, spec);
-                prop_assert!(parsed.is_ok(), "{line:?}: {parsed:?}");
-                let parsed = parsed.expect("checked");
-
-                prop_assert_eq!(parsed.location.as_deref(), Some(saved.location.as_str()), "{}", line);
-                prop_assert_eq!(parsed.hits, saved.hits.as_deref(), "{}", line);
-                prop_assert_eq!(parsed.log, saved.log.clone(), "{}", line);
-                prop_assert_eq!(parsed.disabled, !saved.enabled, "{}", line);
-                prop_assert!(
-                    parsed.condition.map(str::to_owned) == saved.condition
-                        || parsed.condition.map(str::to_owned)
-                            == saved.condition.as_ref().map(|condition| format!("({condition})")),
-                    "{line}"
-                );
-            }
+            reads_back(&saved)?;
         }
     }
 
     /// The shrunk inputs of the property above, and the cases the review
-    /// suspected, each of which saved a line that read back as something
-    /// else or not at all.
+    /// suspected, each of which once saved a line that read back as
+    /// something else or not at all.
     #[test]
     fn saved_commands_quote_what_would_not_read_back() {
         let saved = |location: &str, condition: Option<&str>, log: Option<&str>, enabled| Saved {
@@ -499,37 +520,18 @@ mod tests {
             line_text: None,
         };
 
-        for (breakpoint, expected) in [
-            (
-                saved("<impl A for B>", None, None, false),
-                r#"break "<impl A for B>" disabled"#,
-            ),
-            (saved("a b/m.c:3", None, None, true), r#"break "a b/m.c:3""#),
-            (saved("log", None, None, true), r#"break "log""#),
-            (
-                saved("f", Some("c == '('"), Some("x"), true),
-                r#"break f if c == '(' log "x""#,
-            ),
-            (
-                saved("f", Some("c == '\"'"), None, false),
-                r#"break f if c == '"' disabled"#,
-            ),
-            (
-                saved("f", Some("log > 3"), None, true),
-                "break f if (log > 3)",
-            ),
-            (
-                saved("f", Some("`a if b`"), None, true),
-                "break f if `a if b`",
-            ),
-            (
-                saved("Foo<'a>::f", Some("x"), None, true),
-                "break Foo<'a>::f if x",
-            ),
+        for breakpoint in [
+            saved("<impl A for B>", None, None, false),
+            saved("a b/m.c:3", None, None, true),
+            saved("log", None, None, true),
+            saved("f", Some("c == '('"), Some("x"), true),
+            saved("f", Some("c == '\"'"), None, false),
+            saved("f", Some("log > 3"), None, true),
+            saved("f", Some("`a if b`"), None, true),
+            saved("Foo<'a>::f", Some("x"), None, true),
+            saved("f", None, Some("a\nb"), true),
         ] {
-            assert_eq!(command(&breakpoint).as_deref(), Ok(expected));
+            reads_back(&breakpoint).unwrap_or_else(|error| panic!("{breakpoint:?}: {error}"));
         }
-
-        assert!(command(&saved("f", None, Some("a\nb"), true)).is_err());
     }
 }
