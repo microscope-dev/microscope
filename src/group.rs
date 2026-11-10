@@ -903,49 +903,62 @@ impl Driver {
             // that a command acts on the group as the events left it.
             tokio::select! {
                 biased;
-                Some(internal) = self.internal.1.recv() => {
-                    match internal {
-                        Internal::Event(member, event) => self.event(member, event).await,
-                        Internal::PauseFailed(member) => self.paused(member, None),
-                        Internal::Lagged(member) => self.resync(member).await,
-                        Internal::Ended(member) => self.ended(member),
-                    }
-                    self.after_internal().await;
-                }
+                Some(internal) = self.internal.1.recv() => self.internal(internal).await,
                 Some(notice) = notices.recv() => self.notice(notice).await,
                 command = commands.recv() => match command {
-                    Some(command @ (Command::ContinueAll(..) | Command::ResumeAll(..))) => {
-                        self.resume(command).await;
-                    }
-                    Some(Command::Detach(number, reply)) => {
-                        let _ = reply.send(self.detach(number).await);
-                    }
-                    Some(Command::PauseAll(reply)) => {
-                        if self.members.values().any(|live| live.running && !live.gone) {
-                            self.pause_all(None);
-                            let _ = reply.send(Ok(()));
-                        } else {
-                            // With nothing running yet, the root pauses as
-                            // it starts, or says it is not running.
-                            let root = self.root.clone();
-                            tokio::spawn(async move {
-                                let paused = match root.pause().await {
-                                    Ok(_) | Err(Error::AlreadyStopped) => Ok(()),
-                                    Err(error) => Err(error),
-                                };
-                                let _ = reply.send(paused);
-                            });
-                        }
-                    }
                     Some(Command::Shutdown(reply)) => {
                         let _ = reply.send(self.shutdown().await);
                         return;
                     }
+                    Some(command) => self.serve(command).await,
                     None => {
                         let _ = self.shutdown().await;
                         return;
                     }
                 },
+            }
+        }
+    }
+
+    /// Handles what a member's forwarder sent.
+    async fn internal(&mut self, internal: Internal) {
+        match internal {
+            Internal::Event(member, event) => self.event(member, event).await,
+            Internal::PauseFailed(member) => self.paused(member, None),
+            Internal::Lagged(member) => self.resync(member).await,
+            Internal::Ended(member) => self.ended(member),
+        }
+        self.after_internal().await;
+    }
+
+    /// Serves a client's command, but for a shutdown, which ends the loop.
+    async fn serve(&mut self, command: Command) {
+        match command {
+            command @ (Command::ContinueAll(..) | Command::ResumeAll(..)) => {
+                self.resume(command).await;
+            }
+            Command::Detach(number, reply) => {
+                let _ = reply.send(self.detach(number).await);
+            }
+            Command::PauseAll(reply) => {
+                if self.members.values().any(|live| live.running && !live.gone) {
+                    self.pause_all(None);
+                    let _ = reply.send(Ok(()));
+                } else {
+                    // With nothing running yet, the root pauses as it
+                    // starts, or says it is not running.
+                    let root = self.root.clone();
+                    tokio::spawn(async move {
+                        let paused = match root.pause().await {
+                            Ok(_) | Err(Error::AlreadyStopped) => Ok(()),
+                            Err(error) => Err(error),
+                        };
+                        let _ = reply.send(paused);
+                    });
+                }
+            }
+            Command::Shutdown(reply) => {
+                let _ = reply.send(self.shutdown().await);
             }
         }
     }
