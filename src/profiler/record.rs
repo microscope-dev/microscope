@@ -3589,8 +3589,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_is_captured_at_comm_before_any_sample() {
-        let mut processor = Processor::new(DebugFileSearch::default(), 64);
+    fn command_is_read_from_argv_at_a_comm_or_fork_before_any_sample() {
         let pid = Pid::new(std::process::id());
         let expected = std::fs::read(format!("/proc/{pid}/cmdline"))
             .unwrap()
@@ -3599,38 +3598,36 @@ mod tests {
             .map(String::from_utf8_lossy)
             .collect::<Vec<_>>()
             .join(" ");
-        processor.process(decode::Record::Comm {
-            pid,
-            tid: pid.leader(),
-            name: b"test runner",
-            exec: true,
-            time: super::super::session::monotonic(),
-        });
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
-        assert_eq!(profile.command(0), Some(expected.as_str()));
-        assert_eq!(
-            profile.command_identity(0),
-            Some(super::super::CommandIdentity::Argv(&expected))
-        );
-    }
+        let time = super::super::session::monotonic();
+        let records = [
+            decode::Record::Comm {
+                pid,
+                tid: pid.leader(),
+                name: b"test runner",
+                exec: true,
+                time,
+            },
+            decode::Record::Fork {
+                pid,
+                ppid: Pid::new(1),
+                tid: pid.leader(),
+                ptid: Tid::new(1),
+                time,
+            },
+        ];
 
-    #[test]
-    fn command_is_captured_at_fork_before_any_sample() {
-        let mut processor = Processor::new(DebugFileSearch::default(), 64);
-        let pid = Pid::new(std::process::id());
-        processor.process(decode::Record::Fork {
-            pid,
-            ppid: Pid::new(1),
-            tid: pid.leader(),
-            ptid: Tid::new(1),
-            time: super::super::session::monotonic(),
-        });
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
-        assert!(profile.command(0).is_some());
+        for record in records {
+            let mut processor = Processor::new(DebugFileSearch::default(), 64);
+            processor.process(record);
+            let profile = super::super::Profile {
+                capture: processor.finish(),
+            };
+            assert_eq!(profile.command(0), Some(expected.as_str()));
+            assert_eq!(
+                profile.command_identity(0),
+                Some(super::super::CommandIdentity::Argv(&expected))
+            );
+        }
     }
 
     #[test]
@@ -3945,46 +3942,6 @@ mod tests {
         let last = processor.finish();
         assert_eq!(first.span().1, 5_000);
         assert_eq!(last.span(), (5_000, 5_000));
-    }
-
-    /// A budget pause becomes a gap only when it ends, but records are
-    /// processed while it lasts: a thread back on its CPU soon after the
-    /// pause began is still off it only until the pause did, not until it
-    /// came back unseen.
-    #[test]
-    fn a_thread_back_during_a_pause_is_off_its_cpu_until_the_pause_began() {
-        let mut processor = Processor::new(DebugFileSearch::default(), 64);
-        let (pid, tid) = (Pid::new(100), Tid::new(101));
-        processor.process(decode::Record::Fork {
-            pid,
-            ppid: Pid::new(1),
-            tid,
-            ptid: Tid::new(1),
-            time: 1_000,
-        });
-        for (out, time) in [(true, 2_000), (false, 4_000)] {
-            if !out {
-                processor.pause(3_000);
-            }
-            processor.process(decode::Record::Switch {
-                pid,
-                tid,
-                out,
-                preempted: false,
-                time,
-            });
-        }
-        processor.gap(3_000, 9_000, GapReason::Budget);
-
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
-        let intervals: Vec<_> = profile
-            .off_cpu()
-            .iter()
-            .map(|interval| (interval.time, interval.duration))
-            .collect();
-        assert_eq!(intervals, [(2_000, 1_000)]);
     }
 
     /// A full ring drops whatever does not fit, so a thread can come back

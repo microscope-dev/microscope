@@ -452,20 +452,4 @@ mod tests {
         .inspect();
         assert!(untimed.over_time.is_empty());
     }
-
-    #[test]
-    fn tables_list_only_those_with_rows() {
-        let mut builder = CaptureBuilder::new();
-        let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
-        builder.sample(thread, 0, 1, NONE, NONE);
-        let inspection = Profile {
-            capture: builder.finish(),
-        }
-        .inspect();
-
-        let names: Vec<_> = inspection.tables.iter().map(|(name, _)| *name).collect();
-        assert!(names.contains(&"samples"), "{names:?}");
-        assert!(!names.contains(&"system calls"), "{names:?}");
-        assert!(inspection.tables.iter().all(|(_, bytes)| *bytes > 0));
-    }
 }

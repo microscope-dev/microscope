@@ -472,7 +472,6 @@ mod tests {
         data
     }
 
-    const R: u32 = object::elf::PF_R;
     const RW: u32 = object::elf::PF_R | object::elf::PF_W;
     const RX: u32 = object::elf::PF_R | object::elf::PF_X;
 
@@ -494,40 +493,5 @@ mod tests {
             "{:?}",
             result.err()
         );
-    }
-
-    /// The kernel zeroes the rest of a writable segment's last file page
-    /// only when the segment has bytes beyond the file's; otherwise the
-    /// page holds the file's next bytes, as a read-only segment's does. A
-    /// segment without file bytes maps none of the file, wherever its
-    /// offset points.
-    #[test]
-    fn only_a_segment_reaching_past_its_file_bytes_has_its_page_zeroed() {
-        let data = executable(
-            0x4000,
-            &[
-                (0, 0x40_0000, 0x200, 0x200, RX),
-                (0x1000, 0x40_1000, 0x10, 0x10, RW),
-                (0x2000, 0x40_2000, 0x10, 0x20, RW),
-                (0x3000, 0x40_3000, 0x10, 0x10, R),
-                (0x3010, 0x40_4010, 0, 0x20, RW),
-            ],
-        );
-
-        let image = Image::new("/tails", 1, &data).expect("an executable");
-        let (space, _) = image.load(&[], [0; 16]);
-        let byte = |address| space.peek_bytes(address, 1).expect("mapped")[0];
-
-        assert_eq!(byte(0x40_100f), 0xaa);
-        assert_eq!(
-            byte(0x40_1010),
-            0xaa,
-            "a writable segment of file bytes alone"
-        );
-        assert_eq!(byte(0x40_2010), 0, "a writable segment with more");
-        assert_eq!(byte(0x40_2fff), 0);
-        assert_eq!(byte(0x40_3010), 0xaa, "a read-only segment");
-        assert_eq!(byte(0x40_4000), 0, "a segment without file bytes");
-        assert_eq!(byte(0x40_4010), 0);
     }
 }

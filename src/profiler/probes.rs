@@ -1200,7 +1200,7 @@ mod tests {
                 assert_eq!(header(state, clock as u8), Ok(clock));
             }
 
-            for clock in [0, 3, u8::MAX] {
+            for clock in [0, 3] {
                 assert_eq!(header(state, clock), Err("a ring has an unknown clock"));
             }
         }

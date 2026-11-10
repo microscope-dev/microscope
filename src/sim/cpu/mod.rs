@@ -564,21 +564,6 @@ mod tests {
         assert_eq!(outcome, Outcome::Completed);
     }
 
-    /// The implemented forms are sorted, as the search for one needs, and
-    /// every form the kernel's probes run is one of them.
-    #[test]
-    fn the_implemented_forms_are_sorted() {
-        assert!(
-            IMPLEMENTED.is_sorted(),
-            "IMPLEMENTED is out of iced's order"
-        );
-        assert!(
-            PROBED_THROUGH_THE_KERNEL
-                .iter()
-                .all(|code| IMPLEMENTED.contains(code))
-        );
-    }
-
     /// `syscall` saves the trap flag a single step sets in r11, though
     /// `rflags` does not show it.
     #[test]

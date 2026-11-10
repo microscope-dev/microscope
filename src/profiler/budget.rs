@@ -208,12 +208,15 @@ mod tests {
         );
     }
 
-    /// Whatever sampling costs, the controller settles on a share that fits
-    /// the budget, or on the least share, and stays: within a few periods,
-    /// or a few more when a costly start must be paid back first.
+    /// Whatever sampling costs, the controller settles on the largest share
+    /// that costs at most 90% of the budget, or on the least share, and
+    /// stays: within a few periods, or a few more when a costly start must
+    /// be paid back first. The costs are a whole period that fits, one just
+    /// over the edge, one whose costly start is paid back first, and one
+    /// that is over even at the least share.
     #[test]
     fn the_share_settles_where_it_fits_and_stays() {
-        for cost in [0.001, 0.009, 0.011, 0.05, 0.2, 1.0, 4.0] {
+        for (cost, settled) in [(0.009, 64), (0.011, 52), (0.2, 2), (1.0, 1)] {
             let mut controller = Controller::default();
             let mut changes = Vec::new();
 
@@ -223,13 +226,7 @@ mod tests {
                 }
             }
 
-            let steps = controller.steps();
-            let used = cost * f64::from(steps) / f64::from(STEPS);
-
-            assert!(
-                used <= BUDGET.cpu || steps == 1,
-                "{cost}: {steps} use {used}"
-            );
+            assert_eq!(controller.steps(), settled, "{cost}: {changes:?}");
             assert!(
                 changes
                     .iter()

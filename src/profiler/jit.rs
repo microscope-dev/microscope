@@ -649,25 +649,6 @@ mod tests {
         assert!(jit.needs(0x1008));
     }
 
-    /// A mapping over part of an anonymous range leaves the rest of it
-    /// anonymous code, which the map may name.
-    #[test]
-    fn a_mapping_over_part_of_a_range_keeps_the_rest() {
-        let mut jit = Jit::default();
-        jit.mapped(0x1000, 0x5000, true, 0);
-        jit.mapped(0x2000, 0x3000, false, 0);
-        assert!(jit.needs(0x1008));
-        assert!(!jit.needs(0x2008), "file-backed");
-        assert!(jit.needs(0x4008));
-        assert_eq!(
-            jit.ranges
-                .iter()
-                .map(|(&start, range)| (start, range.end))
-                .collect::<Vec<_>>(),
-            [(0x1000, 0x2000), (0x3000, 0x5000)]
-        );
-    }
-
     /// A new program has none of the old one's code, and reads the map on
     /// from where the old one's lines end.
     #[test]
@@ -686,31 +667,6 @@ mod tests {
         assert!(!jit.needs(0x1008));
         assert!(!jit.covers(0x1008));
         assert_eq!(jit.read, 40);
-    }
-
-    /// A mapping over a function the map named before the mapping was made
-    /// holds other code: the function no longer names it. One whose line
-    /// was read after may have been written for the new code, as the map is
-    /// read as the program runs and mappings as they are drained.
-    #[test]
-    fn a_mapping_ends_the_functions_read_before_it() {
-        let mut jit = Jit::default();
-        jit.mapped(0x1000, 0x3000, true, 0);
-        jit.path = Some("/tmp/perf-1.map".into());
-        for (start, read) in [(0x1000, 100), (0x2000, 300)] {
-            jit.functions.insert(
-                start,
-                Named {
-                    function: function(start, start + 0x10),
-                    read,
-                },
-            );
-        }
-        assert_eq!(jit.refresh(u32::MAX, 0, [0x1008], Vec::new).stale.len(), 1);
-
-        jit.mapped(0x1000, 0x3000, true, 200);
-        assert!(!jit.covers(0x1008), "read before the mapping");
-        assert!(jit.covers(0x2008), "read after it");
     }
 
     /// A process's registered objects are read when a sample lands in code

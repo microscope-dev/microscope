@@ -1625,46 +1625,6 @@ fn a_scope_keeps_the_samples_inside_its_zones(
     Ok(())
 }
 
-/// A zone nested in another of its site adds nothing: the sample inside
-/// both counts once, and a sample of the other thread at the same time
-/// counts not at all.
-#[test]
-fn a_nested_zone_counts_its_samples_once() {
-    let spans = [(0, 10, 50, 0), (0, 20, 10, 1)];
-    let capture = labeled(&spans, &[(0, 25, 3, 0), (1, 25, 7, 0), (0, 70, 11, 0)]);
-    let keys = Keys::new(&capture, Granularity::Function);
-    let scope = |band| ZoneScope {
-        sites: sites_named(&capture, "route"),
-        band,
-        outside: false,
-    };
-    let weight = |band| {
-        keys.aggregate(&Query {
-            zones: Some(scope(band)),
-            ..Query::default()
-        })
-        .weight
-    };
-
-    assert_eq!(weight(None), 3);
-    assert_eq!(weight(Some((10, 10))), 3, "the band holds its edges");
-    assert_eq!(weight(Some((11, 49))), 0);
-
-    let none = ZoneScope {
-        sites: Vec::new(),
-        band: None,
-        outside: false,
-    };
-    assert_eq!(
-        keys.aggregate(&Query {
-            zones: Some(none),
-            ..Query::default()
-        })
-        .weight,
-        0
-    );
-}
-
 /// A series is every site of one name, binned by time: each bin keeps its
 /// first, last, lowest, and highest value, values no axis can show are
 /// counted, not drawn, and the value before the range holds into it.

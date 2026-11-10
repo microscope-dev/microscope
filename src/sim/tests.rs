@@ -1,6 +1,8 @@
 //! The simulation's gate: fixed seeds over every program and variant, and
 //! a check that a seed always names the same run.
 
+use std::num::NonZeroUsize;
+
 use super::marks::Reach;
 use super::report::{Failure, FailureKind};
 use super::shrink;
@@ -25,23 +27,46 @@ const DETERMINISM_SEEDS: u64 = 32;
 fn fixed_seeds_pass_every_oracle() {
     let corpus = Corpus::load().expect("load the golden corpus");
     let settings = Settings::default();
+    let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
     let mut failures = Vec::new();
     let mut reach = Reach::default();
 
-    for seed in 0..GATE_SEEDS {
-        let outcome = run(seed, &corpus, &settings);
-        if outcome.failure.is_some() {
-            failures.push(describe_failure(&outcome));
+    // This is the suite's slowest test and its seeds are independent, so
+    // they run on every core. The floor still counts all of them.
+    std::thread::scope(|scope| {
+        let workers = (0..threads)
+            .map(|first| {
+                let (corpus, settings) = (&corpus, &settings);
+                scope.spawn(move || {
+                    let mut failures = Vec::new();
+                    let mut reach = Reach::default();
+                    for seed in (first as u64..GATE_SEEDS).step_by(threads) {
+                        let outcome = run(seed, corpus, settings);
+                        if outcome.failure.is_some() {
+                            failures.push((seed, describe_failure(&outcome)));
+                        }
+
+                        reach.add(&outcome.marks);
+                    }
+
+                    (failures, reach)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            let (theirs, reached) = worker.join().expect("a gate worker panicked");
+            failures.extend(theirs);
+            reach.merge(&reached);
         }
+    });
 
-        reach.add(&outcome.marks);
-    }
-
+    failures.sort_unstable_by_key(|(seed, _)| *seed);
     assert!(
         failures.is_empty(),
         "{} of {GATE_SEEDS} seeds failed; the first:\n{}",
         failures.len(),
-        failures[0]
+        failures[0].1
     );
 
     let rare = reach.below(MARK_FLOOR);
@@ -138,8 +163,7 @@ fn first_failure_with(sabotage: Sabotage) -> &'static str {
 fn a_skipped_temporary_trap_fails_breakpoint_accounting() {
     assert!(fails_with(
         Sabotage::SkipTemporaryTraps,
-        "breakpoint accounting",
-        "without a trap reporting it"
+        &[("breakpoint accounting", "without a trap reporting it")]
     ));
 }
 
@@ -150,8 +174,7 @@ fn a_skipped_temporary_trap_fails_breakpoint_accounting() {
 fn a_misread_first_argument_fails_catch_accounting() {
     assert!(fails_with(
         Sabotage::MisreportFirstCallArgument,
-        "catch accounting",
-        "with no stop reporting it"
+        &[("catch accounting", "with no stop reporting it")]
     ));
 }
 
@@ -161,59 +184,54 @@ fn a_misread_first_argument_fails_catch_accounting() {
 fn traps_passed_on_detach_fail_transparency() {
     assert!(fails_with(
         Sabotage::PassTrapsOnDetach,
-        "transparency",
-        "died of signal 5"
+        &[("transparency", "died of signal 5")]
     ));
 }
 
 /// A kernel that misplaces the program's mappings makes the debugger
-/// misplace the program, which the client's check of where the debugger
-/// says it loaded catches. Misplaced breakpoints usually fail first.
+/// misplace the program. The client's check of where the debugger says it
+/// loaded catches it, the frames oracle catches lines read from other code
+/// than the frames are in, and a watch on an object by name watches other
+/// memory than the symbol table says the object is in.
 #[test]
-fn shifted_mappings_fail_the_modules_check() {
+fn shifted_mappings_fail_modules_frames_and_watch_accounting() {
     assert!(fails_with(
         Sabotage::ShiftMappings,
-        "modules",
-        "the main module"
+        &[
+            ("modules", "the main module"),
+            ("frames", "shows line"),
+            ("watch accounting", "but watchpoint"),
+        ]
     ));
 }
 
-/// A debugger that misplaces the program reads the lines of other code
-/// than its frames are in, which the frames oracle catches.
-#[test]
-fn shifted_mappings_fail_the_frames_oracle() {
-    assert!(fails_with(Sabotage::ShiftMappings, "frames", "shows line"));
-}
-
-/// A watch on an object by name, when the debugger misplaces the program,
-/// watches other memory than the symbol table says the object is in.
-#[test]
-fn shifted_mappings_fail_watch_accounting() {
-    assert!(fails_with(
-        Sabotage::ShiftMappings,
-        "watch accounting",
-        "but watchpoint"
-    ));
-}
-
-/// Whether some fixed seed run with `sabotage` fails `check`, saying
-/// `message`.
-fn fails_with(sabotage: Sabotage, check: &str, message: &str) -> bool {
+/// Whether fixed seeds run with `sabotage` fail in each of `ways`, a check
+/// and part of its message, sweeping the seeds once for all of them.
+fn fails_with(sabotage: Sabotage, ways: &[(&str, &str)]) -> bool {
     let corpus = Corpus::load().expect("load the golden corpus");
     let settings = Settings {
         sabotage: Some(sabotage),
         ..Settings::default()
     };
 
-    (0..GATE_SEEDS).any(|seed| {
-        run(seed, &corpus, &settings)
-            .failure
-            .is_some_and(|failure| {
-                failure.kind == FailureKind::Debugger
-                    && failure.check == check
-                    && failure.message.contains(message)
-            })
-    })
+    let mut unseen = ways.to_vec();
+    for seed in 0..GATE_SEEDS {
+        let Some(failure) = run(seed, &corpus, &settings).failure else {
+            continue;
+        };
+
+        if failure.kind == FailureKind::Debugger {
+            unseen.retain(|(check, message)| {
+                failure.check != *check || !failure.message.contains(message)
+            });
+        }
+
+        if unseen.is_empty() {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// A request the controller drops unanswered fails even while the program
@@ -222,8 +240,7 @@ fn fails_with(sabotage: Sabotage, check: &str, message: &str) -> bool {
 fn a_reply_dropped_while_ending_fails() {
     assert!(fails_with(
         Sabotage::DropRequestsWhileEnding,
-        "lost reply",
-        "dropped the request without answering it"
+        &[("lost reply", "dropped the request without answering it")]
     ));
 }
 
@@ -234,8 +251,10 @@ fn a_reply_dropped_while_ending_fails() {
 fn a_kill_dropped_while_a_start_waits_fails() {
     assert!(fails_with(
         Sabotage::DropKillWhileStarting,
-        "lost reply",
-        "dropped a kill sent while a start waited for its first stop"
+        &[(
+            "lost reply",
+            "dropped a kill sent while a start waited for its first stop"
+        )]
     ));
 }
 
@@ -333,7 +352,7 @@ fn hidden_calls_fail_the_stepping_oracle() {
     some_failure_past(
         Sabotage::HideSteppedCalls,
         "stepping",
-        "into the call returning to",
+        &["into the call returning to"],
         // Reading the code the thread stands at shows the lie too.
         &["stepping", "code integrity"],
         true,
@@ -343,20 +362,26 @@ fn hidden_calls_fail_the_stepping_oracle() {
 /// Runs fixed seeds with `sabotage` until one fails `check`, requiring
 /// every failure on the way to be one of `allowed`.
 fn some_failure_with(sabotage: Sabotage, check: &str, allowed: &[&str]) {
-    some_failure_saying(sabotage, check, "", allowed);
+    some_failure_saying(sabotage, check, &[""], allowed);
 }
 
-/// Like [`some_failure_with`], for a failure of `check` whose message
-/// contains `saying`.
-fn some_failure_saying(sabotage: Sabotage, check: &str, saying: &str, allowed: &[&str]) {
-    some_failure_past(sabotage, check, saying, allowed, false);
+/// Like [`some_failure_with`], for failures of `check` whose messages
+/// contain each of `sayings`, sweeping the seeds once for all of them.
+fn some_failure_saying(sabotage: Sabotage, check: &str, sayings: &[&str], allowed: &[&str]) {
+    some_failure_past(sabotage, check, sayings, allowed, false);
 }
 
 /// Like [`some_failure_saying`], also passing over model gaps on the way
 /// when `gaps` says so.
-fn some_failure_past(sabotage: Sabotage, check: &str, saying: &str, allowed: &[&str], gaps: bool) {
+fn some_failure_past(
+    sabotage: Sabotage,
+    check: &str,
+    sayings: &[&str],
+    allowed: &[&str],
+    gaps: bool,
+) {
     let corpus = Corpus::load().expect("load the golden corpus");
-    some_failure_in(&corpus, sabotage, check, saying, allowed, gaps);
+    some_failure_in(&corpus, sabotage, check, sayings, allowed, gaps);
 }
 
 /// Like [`some_failure_past`], for programs of `corpus`.
@@ -364,7 +389,7 @@ fn some_failure_in(
     corpus: &Corpus,
     sabotage: Sabotage,
     check: &str,
-    saying: &str,
+    sayings: &[&str],
     allowed: &[&str],
     gaps: bool,
 ) {
@@ -386,6 +411,7 @@ fn some_failure_in(
         ..Settings::default()
     };
 
+    let mut unseen = sayings.to_vec();
     for seed in 0..SABOTAGE_SEEDS {
         let Some(failure) = run(seed, corpus, &settings).failure else {
             continue;
@@ -397,12 +423,15 @@ fn some_failure_in(
 
         assert_eq!(failure.kind, FailureKind::Debugger, "{failure}");
         assert!(allowed.contains(&failure.check), "{failure}");
-        if failure.check == check && failure.message.contains(saying) {
-            return;
+        if failure.check == check {
+            unseen.retain(|saying| !failure.message.contains(saying));
+            if unseen.is_empty() {
+                return;
+            }
         }
     }
 
-    panic!("no sabotaged run failed {check} saying {saying:?}");
+    panic!("no sabotaged run failed {check} saying any of {unseen:?}");
 }
 
 /// A kernel that resumes a thread's stopped siblings with it makes them run
@@ -465,14 +494,12 @@ fn skewed_stack_words_fail_the_variables_oracle() {
 /// every way.
 #[test]
 fn skewed_stack_words_fail_the_expressions_oracle() {
-    for saying in ["not true", "which holds", "expected"] {
-        some_failure_saying(
-            Sabotage::SkewSmallStackWords,
-            "expressions",
-            saying,
-            STACK_CHECKS,
-        );
-    }
+    some_failure_saying(
+        Sabotage::SkewSmallStackWords,
+        "expressions",
+        &["not true", "which holds", "expected"],
+        STACK_CHECKS,
+    );
 }
 
 /// The same misreported values change the registers a caller saved there,
@@ -495,7 +522,7 @@ fn skewed_stack_words_fail_the_entry_values_oracle() {
         &corpus,
         Sabotage::SkewSmallStackWords,
         "entry values",
-        "",
+        &[""],
         STACK_CHECKS,
         false,
     );
@@ -518,18 +545,16 @@ fn flickering_stack_words_fail_breakpoint_conditions() {
 /// casts of it with another, which the expressions oracle catches each way.
 #[test]
 fn flickering_stack_words_fail_the_expressions_oracle() {
-    for saying in [
-        "as the variables view shows",
-        "the exact result",
-        "truncated",
-    ] {
-        some_failure_saying(
-            Sabotage::FlickeringStackWords,
-            "expressions",
-            saying,
-            STACK_CHECKS,
-        );
-    }
+    some_failure_saying(
+        Sabotage::FlickeringStackWords,
+        "expressions",
+        &[
+            "as the variables view shows",
+            "the exact result",
+            "truncated",
+        ],
+        STACK_CHECKS,
+    );
 }
 
 /// A kernel that misreports small numbers in registers shows values held
@@ -540,7 +565,7 @@ fn skewed_registers_fail_the_expressions_oracle() {
     some_failure_saying(
         Sabotage::SkewSmallRegisters,
         "expressions",
-        "which holds",
+        &["which holds"],
         &[
             "variables",
             "expressions",
@@ -559,7 +584,7 @@ fn skewed_registers_fail_the_registers_oracle() {
     some_failure_saying(
         Sabotage::SkewSmallRegisters,
         "registers",
-        "frame 0 shows",
+        &["frame 0 shows"],
         &[
             "registers",
             "breakpoint conditions",
@@ -613,7 +638,7 @@ fn repeated_watch_traps_fail_watch_accounting() {
     some_failure_saying(
         Sabotage::RepeatWatchTraps,
         "watch accounting",
-        "accesses to it",
+        &["accesses to it"],
         &["watch accounting", "protocol", "transparency"],
     );
 }

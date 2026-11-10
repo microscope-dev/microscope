@@ -1774,12 +1774,14 @@ mod tests {
         assert_eq!(profile.paused(super::GapReason::Budget), [(3_000, 9_000)]);
     }
 
+    /// The program runs for a fraction of a second: long enough that the
+    /// snapshotter reads it before it exits, far short of the interval.
     #[test]
     fn a_program_ending_before_its_first_task_snapshot_explains_the_empty_result() {
         let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("build/test-programs/profile-kernel");
         let mut command = std::process::Command::new(program);
-        command.arg("0");
+        command.arg("2000000");
         let recording = crate::profiler::record(
             command,
             &super::RecordOptions {
@@ -1789,21 +1791,15 @@ mod tests {
         )
         .expect("record short target");
         assert!(recording.status.success());
-        assert_eq!(recording.profile.task_snapshots().0, 0);
+        let (taken, _, failed) = recording.profile.task_snapshots();
+        assert_eq!((taken, failed), (0, 0));
         let notes = recording.profile.task_snapshot_problems();
         assert!(
             notes
                 .iter()
-                .any(|(_, note)| note.contains("no task snapshot")
-                    || note.contains("cannot read the program")),
+                .any(|(_, note)| note.contains("no task snapshot was taken before recording ended")),
             "{notes:?}"
         );
-        if notes
-            .iter()
-            .any(|(_, note)| note.contains("no task snapshot"))
-        {
-            assert_eq!(recording.profile.task_snapshots().2, 0);
-        }
     }
 
     /// Processing may be busy loading debug information longer than a

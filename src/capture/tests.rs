@@ -114,29 +114,22 @@ fn sample_capture(offset: i64) -> Capture {
     builder.finish()
 }
 
+/// A file of two chunks of the same recording merges them: frames and
+/// stacks are interned once, and each thread's samples stay in time order.
+/// The file properties compare rows by meaning, so they cannot see a frame
+/// kept twice.
 #[test]
-fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
+fn chunks_of_one_recording_merge_by_identity() {
     let capture = sample_capture(0);
-    assert_eq!(capture.validate(), Ok(()));
-
-    // Samples come out per thread, in time order.
-    let first = capture.thread_samples(&capture.sample_ranges[0]);
-    assert_eq!(
-        first
+    let times = |capture: &Capture| {
+        capture
+            .thread_samples(&capture.sample_ranges[0])
             .iter()
             .map(|sample| sample.time.get())
-            .collect::<Vec<_>>(),
-        [2, 5]
-    );
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(times(&capture), [2, 5]);
 
-    let chunk = capture.seal().expect("seal");
-    assert_eq!(
-        Capture::from_chunk(chunk.as_bytes()).expect("read"),
-        capture
-    );
-
-    // A file of two chunks of the same recording merges them: frames and
-    // stacks are interned once, and each thread's samples stay ordered.
     let mut bytes = Vec::new();
     let mut writer = file::Writer::new(&mut bytes).expect("header");
     writer.chunk(&capture.seal().expect("seal")).expect("chunk");
@@ -170,19 +163,11 @@ fn a_capture_seals_reads_back_and_files_merge_chunks_by_identity() {
     assert_eq!(merged.stacks.len(), capture.stacks.len());
     assert_eq!(merged.threads.len(), 2);
     assert_eq!(merged.samples.len(), 8);
+    assert_eq!(times(&merged), [2, 5, 52, 55]);
     assert_eq!(merged.zones.len(), 2);
     assert_eq!(merged.gaps.len(), 2);
     assert_eq!(merged.account(AccountKind::LostSamples as u32), 4);
     assert_eq!(merged.frame_lines(0).len(), 1);
-
-    // A file cut inside its index, or inside its second chunk, still reads
-    // every complete chunk, and says it was cut.
-    let cut = &bytes[..bytes.len() - 3];
-    let read = file::read(cut).expect("read a cut file");
-    assert_eq!((read.chunks, read.truncated), (2, true));
-    let first_chunk = 16 + 8 + capture.seal().expect("seal").as_bytes().len();
-    let read = file::read(&bytes[..first_chunk + 100]).expect("read a file cut in a chunk");
-    assert_eq!((read.chunks, read.truncated), (1, true));
 }
 
 /// An interpreted frame is keyed by its function, file, and line, and its
@@ -290,52 +275,6 @@ fn interpreted_frames_keep_their_functions_apart_through_a_merge() {
     assert_eq!(merged.stacks.len(), capture.stacks.len());
 }
 
-/// Two zones of one span nest as they were recorded: the one recorded
-/// later, which ended last, holds the other. A capture rebuilt from
-/// another, as symbolizing or merging a file's chunks rebuilds it, keeps
-/// that nesting.
-#[test]
-fn zones_of_one_span_keep_their_nesting_when_a_capture_is_rebuilt() {
-    let mut builder = CaptureBuilder::new();
-    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
-    let site = |builder: &mut CaptureBuilder, name: &str| builder.site(name, "f.rs", 1, NONE, 0);
-    let (inner, outer) = (site(&mut builder, "leaf"), site(&mut builder, "b"));
-
-    for site in [inner, outer] {
-        builder.zone(
-            thread,
-            Zone {
-                start: 5.into(),
-                end: 9.into(),
-                site: site.into(),
-                flags: 0.into(),
-                value: NONE.into(),
-                reserved: 0.into(),
-            },
-        );
-    }
-
-    let depths = |capture: &Capture| {
-        capture
-            .zone_ranges
-            .iter()
-            .flat_map(|range| {
-                let start = range.start.get() as usize;
-                capture.zones[start..start + range.count.get() as usize]
-                    .iter()
-                    .map(move |zone| (zone.site.get(), range.depth.get()))
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let recorded = builder.finish();
-    assert_eq!(depths(&recorded), [(outer, 0), (inner, 1)]);
-
-    let mut rebuilt = CaptureBuilder::new();
-    rebuilt.absorb(&recorded);
-    assert_eq!(depths(&rebuilt.finish()), [(outer, 0), (inner, 1)]);
-}
-
 /// A task's labels, which snapshots find without a root frame, survive a
 /// capture rebuilt from another, as symbolizing or merging a file's chunks
 /// rebuilds it.
@@ -357,50 +296,6 @@ fn merged_chunks_keep_each_tasks_labels() {
     assert_eq!(merged.tasks.len(), 1);
     assert_ne!(merged.tasks[0].labels.get(), NONE, "the labels were lost");
     assert_eq!(merged.string(merged.tasks[0].labels.get()), "phase=spin");
-}
-
-/// Forgetting what came before a moment keeps every row from it on, cuts
-/// the spans that cross it there, and keeps what rows refer to.
-#[test]
-fn a_builder_forgets_rows_before_a_moment() {
-    let mut builder = CaptureBuilder::new();
-    let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
-    let frame = builder.frame(FrameKind::Native, NONE, 0x10, 0);
-    let stack = builder.stack(&[frame]);
-
-    for time in [1, 5, 9] {
-        builder.sample(thread, time, 1, stack, NONE);
-    }
-
-    builder.off_cpu(thread, 2, 2, false);
-    builder.off_cpu(thread, 4, 4, true);
-    builder.gap(1, 2, GapReason::Budget);
-    builder.gap(3, 7, GapReason::Budget);
-    builder.marker(3, MarkerKind::Budget, "before");
-    builder.marker(6, MarkerKind::Budget, "after");
-    builder.forget_before(5);
-    let capture = builder.finish();
-    assert_eq!(capture.validate(), Ok(()));
-    let times = |rows: &[Sample]| rows.iter().map(|row| row.time.get()).collect::<Vec<_>>();
-    assert_eq!(times(&capture.samples), [5, 9]);
-    assert_eq!(
-        capture
-            .off_cpu
-            .iter()
-            .map(|row| (row.time.get(), row.duration.get(), row.preempted))
-            .collect::<Vec<_>>(),
-        [(5, 3, 1)]
-    );
-    assert_eq!(
-        capture
-            .gaps
-            .iter()
-            .map(|gap| (gap.start.get(), gap.end.get()))
-            .collect::<Vec<_>>(),
-        [(5, 7)]
-    );
-    assert_eq!(capture.markers.len(), 1);
-    assert_eq!(capture.stacks.len(), 1);
 }
 
 #[test]

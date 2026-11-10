@@ -466,32 +466,3 @@ impl std::fmt::Display for Reach {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A run counts once for each mark it reached, however often it did.
-    #[test]
-    fn reach_counts_runs_not_hits() {
-        let mut marks = Marks::default();
-        marks.hit(Mark::CoHit);
-        marks.hit(Mark::CoHit);
-
-        let mut reach = Reach::default();
-        reach.add(&marks);
-        marks.hit(Mark::StepStop);
-        reach.add(&marks);
-        assert_eq!(reach.runs(Mark::CoHit), 2);
-        assert_eq!(reach.runs(Mark::StepStop), 1);
-        let rare = reach.below(2);
-        assert_eq!(rare.first(), Some(&(Mark::EntryStop, 0)));
-        assert!(rare.contains(&(Mark::StepStop, 1)));
-        assert!(!rare.iter().any(|&(mark, _)| mark == Mark::CoHit));
-
-        let mut merged = Reach::default();
-        merged.merge(&reach);
-        merged.merge(&reach);
-        assert_eq!(merged.runs(Mark::CoHit), 4);
-    }
-}

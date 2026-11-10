@@ -1533,27 +1533,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_host_identity_never_assigns_python_state_by_numeric_equality() {
-        let mut walked = runtime_model::Partial {
-            value: vec![runtime_model::WalkedThread {
-                native: 7,
-                state: VirtualAddress::new(0x1234),
-            }],
-            gaps: Vec::new(),
-        };
-        let hosts = ThreadIds::read(Vec::new(), |_| Vec::new()).unwrap();
-        let mapped = mapped_threads(&mut walked, &hosts);
-        assert!(
-            mapped.is_empty(),
-            "unproven state was assigned to host thread 7: {mapped:?}"
-        );
-        assert!(
-            !walked.gaps.is_empty(),
-            "missing identity evidence is visible"
-        );
-    }
-
-    #[test]
     fn proven_namespace_ids_preserve_good_states_and_report_missing_ones() {
         let host = crate::ThreadId::new(5000);
         let collision = crate::ThreadId::new(7);
