@@ -818,6 +818,11 @@ impl<C> Stops<C> {
         std::mem::take(&mut self.deferred)
     }
 
+    /// Whether the group stop under way waits for member `number`.
+    fn awaits(&self, number: MemberNumber) -> bool {
+        matches!(&self.phase, Phase::Stopping { waiting, .. } if waiting.contains(&number))
+    }
+
     /// Whether a continue would report a stop rather than resume.
     fn has_pending(&self) -> bool {
         !self.pending.is_empty()
@@ -1054,6 +1059,13 @@ impl Driver {
                 self.stops.continued(number);
                 self.shared
                     .update(number, |member| member.state = MemberState::Running);
+
+                // The stop the group waits for may be among what the
+                // snapshot covers, as one a client moved the member on
+                // from, and its event is dropped as old: pause it again.
+                if self.stops.awaits(number) {
+                    self.pause(number, &handle);
+                }
             }
             InferiorState::Stopped {
                 process_id,
@@ -1062,6 +1074,16 @@ impl Driver {
                 ..
             } => {
                 self.adopt_process(number, process_id);
+
+                // A stop newer than the one the group knows means the
+                // member ran in between, as the lost events said.
+                if self
+                    .members
+                    .get(&number)
+                    .is_some_and(|live| live.seen.is_some_and(|seen| stop_id > seen))
+                {
+                    self.stops.continued(number);
+                }
                 self.stop_event(number, stop_id, reason).await;
             }
         }
@@ -1290,11 +1312,12 @@ impl Driver {
     }
 
     async fn event(&mut self, number: MemberNumber, event: DebuggerEvent) {
-        if self
-            .members
-            .get(&number)
-            .is_some_and(|live| event.revision() <= live.resynced)
-        {
+        // A member the group released may still have events on the way,
+        // which no longer say anything about the group.
+        let Some(live) = self.members.get(&number) else {
+            return;
+        };
+        if event.revision() <= live.resynced {
             return;
         }
 
@@ -1435,22 +1458,28 @@ impl Driver {
             }
 
             waiting.insert(number);
-            let handle = live.handle.clone();
-            let internal = self.internal.0.clone();
-            tokio::spawn(async move {
-                // AlreadyStopped means its stop event is still on the way.
-                if let Err(error) = handle.pause().await
-                    && !matches!(error, Error::AlreadyStopped)
-                {
-                    record!("member {number} pause failed: {error}");
-                    let _ = internal.send(Internal::PauseFailed(number));
-                }
-            });
+            self.pause(number, &live.handle);
         }
 
         if let Some(stop) = self.stops.pause_all(first, waiting) {
             self.report(stop);
         }
+    }
+
+    /// Pauses member `number` for the group stop under way, which hears
+    /// of it only if the pause fails.
+    fn pause(&self, number: MemberNumber, handle: &DebuggerHandle) {
+        let handle = handle.clone();
+        let internal = self.internal.0.clone();
+        tokio::spawn(async move {
+            // AlreadyStopped means its stop event is still on the way.
+            if let Err(error) = handle.pause().await
+                && !matches!(error, Error::AlreadyStopped)
+            {
+                record!("member {number} pause failed: {error}");
+                let _ = internal.send(Internal::PauseFailed(number));
+            }
+        });
     }
 
     /// Notes that member `number` stopped, or will not, while the group
@@ -1695,12 +1724,14 @@ impl Driver {
             return Err(Error::NotStopped);
         }
 
-        let Some(live) = self.members.remove(&number) else {
-            return Err(Error::UnknownMember(number));
-        };
+        // A member whose session fails before it releases its process
+        // stays, for the session's end to say it was lost.
         live.handle
             .request(|reply| crate::protocol::Request::ReleaseOnShutdown { reply })
             .await?;
+        let Some(live) = self.members.remove(&number) else {
+            return Err(Error::UnknownMember(number));
+        };
         live.debugger.shutdown().await?;
         self.shared
             .update(number, |member| member.state = MemberState::Detached);
@@ -1892,6 +1923,9 @@ fn command_line(process: ProcessId) -> String {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod driver_model;
 
 #[cfg(test)]
 mod stops_model;
@@ -2438,9 +2472,9 @@ mod tests {
 
         driver
             .event(
-                2,
+                1,
                 DebuggerEvent::InferiorContinued {
-                    revision: 0,
+                    revision: 1,
                     process_id: ProcessId::new(2),
                     execution_id: crate::ExecutionId::new(1),
                     resumed: ResumeScope::Process(ProcessId::new(2)),
