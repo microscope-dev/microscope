@@ -6,6 +6,7 @@
 //! where it falls among the native stops it reports through `FakeTrace`.
 
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,29 +60,47 @@ enum Command {
 pub(super) struct FakeInspector {
     pub(super) address: SocketAddr,
     requests: mpsc::Receiver<Request>,
+
+    /// The id of the last message read, its outermost envelope's.
+    read: Arc<AtomicU64>,
     commands: mpsc::Sender<Command>,
     gone: mpsc::Receiver<()>,
 }
 
 impl FakeInspector {
     pub(super) fn start() -> Self {
+        Self::lagging(Duration::ZERO)
+    }
+
+    /// A fake that takes `lag` to finish the handshake, and again to read
+    /// its first request, as a loaded machine may.
+    pub(super) fn lagging(lag: Duration) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("local address");
         let (request_sender, requests) = mpsc::channel();
         let (commands, command_receiver) = mpsc::channel();
         let (gone_sender, gone) = mpsc::channel();
+        let read = Arc::new(AtomicU64::new(0));
+        let last_read = Arc::clone(&read);
         thread::spawn(move || {
-            if let Some(socket) = accept(&listener) {
-                serve(socket, &request_sender, &command_receiver);
+            if let Some(socket) = accept(&listener, lag) {
+                thread::sleep(lag);
+                serve(socket, &request_sender, &command_receiver, &last_read);
             }
             let _ = gone_sender.send(());
         });
         Self {
             address,
             requests,
+            read,
             commands,
             gone,
         }
+    }
+
+    /// The id of the last message the controller sent that the fake read.
+    pub(super) fn last_read(&self) -> u64 {
+        self.read.load(Ordering::Acquire)
     }
 
     /// The next request the controller sent.
@@ -141,7 +160,7 @@ impl FakeInspector {
 }
 
 /// The one connection the fake serves, once the controller makes it.
-fn accept(listener: &TcpListener) -> Option<WebSocket<TcpStream>> {
+fn accept(listener: &TcpListener, lag: Duration) -> Option<WebSocket<TcpStream>> {
     listener.set_nonblocking(true).ok()?;
     let started = Instant::now();
     let stream = loop {
@@ -157,6 +176,7 @@ fn accept(listener: &TcpListener) -> Option<WebSocket<TcpStream>> {
         }
     };
     stream.set_nonblocking(false).ok()?;
+    thread::sleep(lag);
     let socket = tungstenite::accept(stream).ok()?;
     socket
         .get_ref()
@@ -171,6 +191,7 @@ fn serve(
     mut socket: WebSocket<TcpStream>,
     requests: &mpsc::Sender<Request>,
     commands: &mpsc::Receiver<Command>,
+    read: &AtomicU64,
 ) {
     loop {
         loop {
@@ -190,8 +211,10 @@ fn serve(
         }
         match socket.read() {
             Ok(Message::Text(text)) => {
-                let message = serde_json::from_str(text.as_str()).expect("a JSON request");
+                let message: Value = serde_json::from_str(text.as_str()).expect("a JSON request");
+                let id = message["id"].as_u64().expect("a request id");
                 let _ = requests.send(untunnel(message));
+                read.store(id, Ordering::Release);
             }
             Ok(_) => {}
             Err(tungstenite::Error::Io(error))

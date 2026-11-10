@@ -266,6 +266,12 @@ impl Connection {
         self.shared.wake();
     }
 
+    /// The id of the last message queued, a worker's envelope included.
+    #[cfg(test)]
+    pub(super) fn last_id(&self) -> u64 {
+        self.shared.next_id.load(Ordering::Relaxed) - 1
+    }
+
     /// Closes the connection and waits for the transport's thread to end.
     #[cfg(test)]
     fn join(&mut self) {

@@ -9,6 +9,7 @@
 //! client sees of it is each breakpoint's pending reason.
 
 use std::net::{SocketAddr, TcpListener};
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use super::scripted::FakeInspector;
 use crate::backend::ControllerMessage;
 use crate::protocol::BreakpointSpec;
 use crate::{ImageAddress, RuntimeId};
+use rustix::net::{AddressFamily, SocketType};
 
 /// Where the scripted runtime's `GetTargetIds` is.
 const HOOK: u64 = 0x50;
@@ -42,12 +44,13 @@ struct Node {
 
     /// A socket that takes connections and never answers them.
     silent: Option<TcpListener>,
-}
 
-/// A loopback address nothing listens on.
-fn refusing() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    listener.local_addr().expect("local address")
+    /// Sockets bound and not listening, which refuse connections and keep
+    /// their ports from other sockets.
+    refusing: Vec<OwnedFd>,
+
+    /// Whether the listed inspector was told to close.
+    closing: bool,
 }
 
 /// `text` with every loopback port written as `PORT`.
@@ -90,6 +93,8 @@ impl Node {
             runtime,
             inspectors: Vec::new(),
             silent: None,
+            refusing: Vec::new(),
+            closing: false,
         };
         let said = node.add(3);
         assert_eq!(said, "ok", "the setup's breakpoint");
@@ -128,11 +133,25 @@ impl Node {
         );
     }
 
-    /// A fake inspector listens.
+    /// A fake inspector listens, slower to answer than `QUIET`, so a row
+    /// cannot settle by silence while a connection is still being made.
     fn listen(&mut self) -> SocketAddr {
-        let inspector = FakeInspector::start();
+        let inspector = FakeInspector::lagging(QUIET * 2);
         let address = inspector.address;
         self.inspectors.push(inspector);
+        address
+    }
+
+    /// A loopback address that refuses connections while the node lives.
+    fn refusing(&mut self) -> SocketAddr {
+        let socket =
+            rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None).expect("socket");
+        rustix::net::bind(&socket, &SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind");
+        let address = rustix::net::getsockname(&socket)
+            .expect("the bound address")
+            .try_into()
+            .expect("an IPv4 address");
+        self.refusing.push(socket);
         address
     }
 
@@ -183,12 +202,57 @@ impl Node {
         "-".to_owned()
     }
 
+    /// Closes the listed inspector, as Node does when its inspector ends.
+    fn close(&mut self) {
+        self.closing = true;
+        self.inspectors[0].close();
+    }
+
+    /// Whether the connection has nothing on the way: no handshake but the
+    /// silent socket's, no request the inspector has yet to read, and no
+    /// close the controller has yet to hear.
+    fn settled(&self) -> bool {
+        let inferior = self
+            .harness
+            .controller
+            .session
+            .inferior()
+            .expect("inferior");
+        let Some(inspector) = inferior.inspectors.records.get(&self.runtime) else {
+            return true;
+        };
+        match &inspector.status {
+            super::Status::Connecting(server, _) => {
+                let silent = self
+                    .silent
+                    .as_ref()
+                    .and_then(|silent| silent.local_addr().ok());
+                silent == Some(server.address)
+            }
+            super::Status::Connected(server, link) => {
+                let closing = self.closing && server.address == self.inspectors[0].address;
+                !closing
+                    && self
+                        .inspectors
+                        .iter()
+                        .filter(|inspector| inspector.address == server.address)
+                        .all(|inspector| inspector.last_read() == link.connection.last_id())
+            }
+            _ => true,
+        }
+    }
+
     /// Hands the controller each message the connection delivers until it
-    /// falls quiet, and returns what they were.
+    /// settles and falls quiet, and returns what they were.
     fn quiet(&mut self) -> Vec<String> {
         let mut delivered = Vec::new();
+        let started = Instant::now();
         let mut last = Instant::now();
-        while last.elapsed() < QUIET {
+        while last.elapsed() < QUIET || !self.settled() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the connection never settled: {delivered:?}"
+            );
             let next = self.harness.controller.messages.borrow_mut().try_recv();
             match next {
                 Ok(ControllerMessage::Inspector(message)) => {
@@ -299,18 +363,25 @@ fn phase(name: &str) -> Node {
             node.open();
             if name == "closed by node" {
                 node.quiet();
-                node.inspectors[0].close();
+                node.close();
             }
         }
         "refused" => {
-            node.endpoint(Ok(refusing()));
+            let address = node.refusing();
+            // Rows and other tests run beside this one, and none may take
+            // the port while the row expects it refused.
+            assert!(
+                TcpListener::bind(address).is_err(),
+                "another socket can take the refused port"
+            );
+            node.endpoint(Ok(address));
             node.open();
         }
         "listed, no listener" | "listed, two listeners" => {
             let listeners = if name == "listed, no listener" {
                 Vec::new()
             } else {
-                vec![refusing(), refusing()]
+                vec![node.refusing(), node.refusing()]
             };
             node.harness.trace().loopback.replace(Some(listeners));
             node.listing();
@@ -364,7 +435,7 @@ fn outcome(name: &str, event: &str) -> Option<String> {
             node.listing()
         }
         "node closes" => {
-            node.inspectors[0].close();
+            node.close();
             "-".to_owned()
         }
         "stale close" => node.stale(),
