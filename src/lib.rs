@@ -472,8 +472,9 @@ const REQUEST_CAPACITY: usize = 32;
 const EVENT_CAPACITY: usize = 256;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The number of events a subscriber may fall behind by before it misses
-/// some. `MICROSCOPE_EVENT_CAPACITY` lowers it so tests can make clients lag.
+/// The number of events a subscriber of a session or a group may fall
+/// behind by before it misses some. `MICROSCOPE_EVENT_CAPACITY` lowers it so
+/// tests can make clients lag.
 fn event_capacity() -> usize {
     std::env::var("MICROSCOPE_EVENT_CAPACITY")
         .ok()

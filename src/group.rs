@@ -225,7 +225,7 @@ impl ProcessGroup {
             copies: Mutex::default(),
         });
         let (commands, received) = mpsc::unbounded_channel();
-        let (events, _) = broadcast::channel(GROUP_EVENT_CAPACITY);
+        let (events, _) = broadcast::channel(crate::event_capacity());
         let task =
             Driver::new(Arc::clone(&shared), events.clone(), root, stops).run(notices, received);
 
@@ -447,8 +447,6 @@ impl GroupHandle {
         answer.await.map_err(|_| Error::RequestCancelled)?
     }
 }
-
-const GROUP_EVENT_CAPACITY: usize = 256;
 
 /// How long an attach waits for the group to see the root's stop. The root
 /// has already stopped when the wait begins, so this is only the hop from
@@ -1925,7 +1923,7 @@ mod tests {
             handles: Mutex::default(),
             copies: Mutex::default(),
         });
-        let (events, received) = broadcast::channel(GROUP_EVENT_CAPACITY);
+        let (events, received) = broadcast::channel(crate::event_capacity());
         (Driver::new(shared, events, root, scope), received)
     }
 
