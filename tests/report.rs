@@ -513,16 +513,56 @@ fn report_diff_reshapes_both_profiles() {
             .contains("nothing in the profile is named nosuch"),
         "{error}"
     );
-    let collapsed = [report::Reshape::Collapse("walk".into())];
-    let text = render(
-        &current,
-        None,
-        &report::Options {
-            focus: Some("walk"),
-            tree: true,
-            reshapes: &collapsed,
-            ..options()
-        },
+}
+
+/// Collapsing merges only a function calling itself directly: without the
+/// reshape the same tree nests `walk` in itself.
+#[test]
+fn report_collapse_merges_direct_recursion_into_its_first_call() {
+    let recursive = fixture(
+        "nanoseconds",
+        &[
+            (
+                &[("main", 1), ("walk", 3), ("walk", 3), ("leaf", 6)],
+                1_000_000_000,
+            ),
+            (&[("main", 1), ("walk", 3), ("leaf", 6)], 1_000_000_000),
+        ],
     );
-    assert!(text.contains("walk"), "{text}");
+    let collapsed = [report::Reshape::Collapse("walk".into())];
+    for (reshapes, expected) in [
+        (
+            &[][..],
+            vec![
+                vec!["2.000", "s", "0.000", "s", "walk"],
+                vec!["1.000", "s", "1.000", "s", "leaf"],
+                vec!["1.000", "s", "0.000", "s", "walk"],
+                vec!["1.000", "s", "1.000", "s", "leaf"],
+            ],
+        ),
+        (
+            &collapsed[..],
+            vec![
+                vec!["2.000", "s", "0.000", "s", "walk"],
+                vec!["2.000", "s", "2.000", "s", "leaf"],
+            ],
+        ),
+    ] {
+        let text = render(
+            &recursive,
+            None,
+            &report::Options {
+                focus: Some("walk"),
+                tree: true,
+                reshapes,
+                ..options()
+            },
+        );
+        let tree = self::rows(&text)
+            .into_iter()
+            .skip_while(|row| row.last() != Some(&"function"))
+            .skip(1)
+            .collect::<Vec<_>>();
+        assert_eq!(tree, expected, "{text}");
+    }
 }

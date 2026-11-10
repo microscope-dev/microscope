@@ -101,8 +101,10 @@ fn interactive_prompt_honors_no_color() {
     session.expect(Eof).expect("repl exited");
 }
 
+/// Line editing and the commands that only make sense at a terminal. A
+/// line Ctrl-C did not cancel would run as `invalid-commandbreak asdf`.
 #[test]
-fn interactive_control_c_cancels_the_line_and_control_l_redraws() {
+fn interactive_editing_errors_and_clearing() {
     let state = support::ScratchDir::new("repl-editing");
     let mut session = repl(&fixture("basic"), state.path());
 
@@ -118,32 +120,12 @@ fn interactive_control_c_cancels_the_line_and_control_l_redraws() {
         .expect("Ctrl-L redrew prompt");
 
     session
-        .send(ControlCode::EndOfTransmission)
-        .expect("send Ctrl-D");
-    session.expect(Eof).expect("repl exited");
-}
-
-#[test]
-fn interactive_errors_omit_repl_context() {
-    let state = support::ScratchDir::new("repl-errors");
-    let mut session = repl(&fixture("basic"), state.path());
-
-    session
         .send_line("break asdf")
         .expect("send invalid breakpoint");
     session
         .expect("error: no function named 'asdf' was found")
         .expect("concise interactive error");
     session.expect("(microscope) ").expect("prompt after error");
-
-    session.send_line("quit").expect("quit repl");
-    session.expect(Eof).expect("repl exited");
-}
-
-#[test]
-fn interactive_clear_command_and_cls_alias_clear_the_terminal() {
-    let state = support::ScratchDir::new("repl-clear");
-    let mut session = repl(&fixture("basic"), state.path());
 
     for command in ["clear", "cls"] {
         session.send_line(command).expect("send clear command");
@@ -153,7 +135,9 @@ fn interactive_clear_command_and_cls_alias_clear_the_terminal() {
         session.expect("(microscope) ").expect("prompt after clear");
     }
 
-    session.send_line("quit").expect("quit repl");
+    session
+        .send(ControlCode::EndOfTransmission)
+        .expect("send Ctrl-D");
     session.expect(Eof).expect("repl exited");
 }
 

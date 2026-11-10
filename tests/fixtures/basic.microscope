@@ -1,6 +1,0 @@
-# Stop at both calls and then let the inferior exit.
-break breakpoint_target
-run
-where
-continue
-continue

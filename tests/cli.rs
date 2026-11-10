@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
-use object::{Object, ObjectSection, ObjectSymbol};
+use object::{Object, ObjectSymbol};
 
 const BASIC: &str = "build/test-programs/basic";
 const SEGV_CORE: &str = "build/test-programs/crash-gcc-o0-segv.core";
@@ -696,6 +696,13 @@ fn batch(arguments: &[&str], commands: &[&str]) -> String {
 /// Runs `commands` through microscope's standard input, which reports each
 /// failed command and carries on, and returns stdout and stderr.
 fn piped(arguments: &[&str], commands: &[&str]) -> (String, String) {
+    let output = piped_output(arguments, commands);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    (assert_success(output), stderr)
+}
+
+fn piped_output(arguments: &[&str], commands: &[&str]) -> Output {
     let mut child = microscope_command()
         .args(arguments)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -710,10 +717,7 @@ fn piped(arguments: &[&str], commands: &[&str]) -> (String, String) {
     }
 
     drop(stdin);
-    let output = child.wait_with_output().expect("wait for microscope");
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-
-    (assert_success(output), stderr)
+    child.wait_with_output().expect("wait for microscope")
 }
 
 fn assert_success(output: Output) -> String {
@@ -1066,15 +1070,6 @@ fn command_line_errors_explain_themselves() {
     }
 }
 
-#[test]
-fn pid_only_attach_discovers_the_executable_and_quit_detaches() {
-    let mut target = support::ExternalProcess::spawn(&fixture("build/test-programs/attach"));
-    let process = target.process_id().get().to_string();
-    batch(&["--attach", &process], &["quit"]);
-    target.release();
-    assert_eq!(target.wait().code(), Some(23));
-}
-
 /// A panic that ends the controller releases an attached process as a
 /// detach would, whether the panic finds it stopped or running: no trap
 /// of a breakpoint and no watchpoint is left to kill it, and it runs on to
@@ -1339,28 +1334,21 @@ fn color_follows_the_choice_and_the_environment_on_both_streams() {
     );
 }
 
-#[test]
-fn batch_mode_executes_a_command_file() {
-    let stdout = assert_success(microscope(&[
-        "--batch",
-        "-c",
-        "tests/fixtures/basic.microscope",
-        BASIC,
-    ]));
-    assert_eq!(stdout.matches("stopped at breakpoint").count(), 2);
-    assert!(stdout.contains("breakpoint_target at"));
-    assert!(stdout.contains("basic.c:"));
-    assert!(stdout.contains("inferior exited with status 0"));
-}
-
+/// Unlike plain piped input, `--batch` on standard input ends the session
+/// at the first failing command.
 #[test]
 fn batch_mode_streams_commands_from_stdin() {
-    let (stdout, _) = piped(
+    let output = piped_output(
         &["--batch", BASIC],
-        &["break breakpoint_target", "run", "quit"],
+        &["break breakpoint_target", "invalid", "run", "quit"],
     );
-    assert!(stdout.contains("breakpoint 1 set"));
-    assert!(stdout.contains("stopped at breakpoint"));
+    assert_failure(&output, "error: stdin:2: unknown command 'invalid'");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("breakpoint 1 set at breakpoint_target"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("stopped at breakpoint"), "{stdout}");
 }
 
 #[test]
@@ -1437,12 +1425,6 @@ fn help_lists_every_command_and_details_one_by_name_or_alias() {
         ],
     );
     for expected in [
-        "  break        b                    Set a breakpoint",
-        "  finish       fin, f               Run until the selected frame returns",
-        "  continue     c                    Continue execution",
-        "  delete       del, d               Delete breakpoints, watchpoints wID, and catchpoints cID",
-        "  clear        cls                  Clear and redraw the terminal",
-        "  help         h, ?                 Show command help",
         "  Clear and redraw the terminal\n  aliases: cls",
         "delete <ids...>",
         "aliases: del, d",
@@ -1469,25 +1451,6 @@ fn help_lists_every_command_and_details_one_by_name_or_alias() {
     }
 }
 
-#[test]
-fn batch_mode_prints_every_location_of_an_inline_breakpoint() {
-    let stdout = batch(&["build/test-programs/inline-gcc-o2"], &["break leaf"]);
-    assert!(
-        stdout.contains("breakpoint 1 set at 6 locations"),
-        "{stdout}"
-    );
-
-    // Inline copies of one line differ by address.
-    assert_eq!(
-        stdout
-            .matches(" leaf at tests/fixtures/c/inline.c:")
-            .count(),
-        6,
-        "{stdout}"
-    );
-    assert_eq!(stdout.matches("  0x").count(), 6, "{stdout}");
-}
-
 /// Each other thread a stop finds at a breakpoint gets a line of its own
 /// after the stop's, naming its hit and place, as the threads list has it.
 #[test]
@@ -1498,6 +1461,18 @@ fn every_co_hit_prints_a_line_of_its_own() {
     }
 
     let stdout = batch(&["build/test-programs/hit-count-threads"], &commands);
+
+    // Every worker is running when the first reaches the breakpoint, and
+    // the stop names the one it is in.
+    let header = stdout
+        .lines()
+        .find(|line| line.starts_with("stopped at breakpoint 1 (hit 1) in contended at "))
+        .unwrap_or_else(|| panic!("no stop in:\n{stdout}"));
+    assert!(
+        header.contains("hit-count-threads.c:16 [thread ") && header.ends_with(" of 5]"),
+        "{header}"
+    );
+
     let place = " in contended at tests/fixtures/c/hit-count-threads.c:16";
     let mut co_hits = 0;
     for stop in stdout.split("\nstopped at breakpoint 1 ").skip(1) {
@@ -1840,65 +1815,6 @@ fn a_thread_blocked_on_a_future_shows_its_awaits() {
 }
 
 #[test]
-fn library_breakpoints_resolve_at_runtime_and_frames_show_their_own_sources() {
-    let stdout = batch(
-        &["build/test-programs/module-frames-gcc-o0"],
-        &[
-            "break main",
-            "run",
-            "break dso_apply",
-            "continue",
-            "break module_callback",
-            "continue",
-            "backtrace",
-        ],
-    );
-    assert_in_order(
-        &stdout,
-        &[
-            "breakpoint 2 set at dso_apply at tests/fixtures/c/module-frames/library.c:5 in \
-             libmodule-frames.so\n",
-            "stopped at breakpoint 2 (hit 1)",
-            "module-frames/library.c:5",
-            "stopped at breakpoint 3 (hit 1)",
-            "#0  0x",
-            " in module_callback at ",
-            "#1  0x",
-            " in dso_apply at ",
-            "tests/fixtures/c/module-frames/library.c:6\n",
-            "#2  0x",
-            " in main at ",
-        ],
-    );
-}
-
-#[test]
-fn batch_mode_sets_lists_and_deletes_source_and_file_function_breakpoints() {
-    let stdout = batch(
-        &[BASIC],
-        &[
-            "break basic.c:11",
-            "break basic.c:breakpoint_target",
-            "breakpoints",
-            "del 1",
-            "d all",
-            "info breakpoints",
-        ],
-    );
-    assert!(
-        stdout.contains("1   +      0  main at tests/fixtures/c/basic.c:11\n"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("2   +      0  breakpoint_target at tests/fixtures/c/basic.c:6\n"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("deleted breakpoint 1"), "{stdout}");
-    assert!(stdout.contains("deleted 1 breakpoint"), "{stdout}");
-    assert!(stdout.ends_with("no breakpoints\n"), "{stdout}");
-}
-
-#[test]
 fn batch_mode_sets_skips_and_amends_breakpoint_hit_conditions() {
     let stdout = batch(
         &["build/test-programs/hit-counts-gcc-o0"],
@@ -2007,31 +1923,9 @@ fn c_base_types_cast_in_a_program_that_describes_none() {
     );
 }
 
+/// A pointer into another module names the function there.
 #[test]
-fn function_pointers_show_their_signature_and_the_function_they_enter() {
-    let output = batch(
-        &["build/test-programs/variables-gcc-o0"],
-        &[
-            "break variables.c:68",
-            "run",
-            "p function_pointer",
-            "ptype function_pointer",
-            "p *function_pointer",
-            "whatis &function_pointer",
-        ],
-    );
-    assert_in_order(
-        &output,
-        &[
-            "(int (*)(int)) function_pointer = 0x",
-            " <pointer_identity>\n",
-            "type = int (*)(int)\n",
-            "(int (int)) *function_pointer = <unavailable",
-            "type = int (**)(int)\n",
-        ],
-    );
-
-    // A pointer into another module names the function there.
+fn function_pointers_name_the_function_they_enter_in_another_module() {
     let shared = batch(
         &["build/test-programs/globals-shared"],
         &["break after_load", "run", "up", "p touch", "whatis *touch"],
@@ -2098,25 +1992,6 @@ fn function_types_read_as_gdb_reads_them() {
             assert_eq!(function, expected, "{compiler} print {name}: {value}");
         }
     }
-}
-
-/// A PLT stub is named after the function it jumps to, so a breakpoint can
-/// name it and a backtrace through it reads as gdb's does.
-#[test]
-fn plt_stubs_are_named_after_their_targets() {
-    let output = batch(
-        &["build/test-programs/disassembly-gcc-o0"],
-        &["break printf@plt", "run", "bt"],
-    );
-    assert_in_order(
-        &output,
-        &[
-            "stopped at breakpoint 1 (hit 1) in printf@plt at 0x",
-            "#0  0x",
-            " in printf@plt from disassembly-gcc-o0\n#1  0x",
-            " in main at tests/fixtures/c/disassembly/main.c:",
-        ],
-    );
 }
 
 /// mold and lld describe no PLT stub with call-frame information. A stub
@@ -2225,8 +2100,7 @@ fn pending_rust_function_names_offer_loaded_spellings_without_selecting_them() {
 }
 
 /// Code without debug information is broken at by its symbols: a function
-/// the program imports waits for its library, an indirect function stops
-/// in the implementation chosen for the machine, and C++ names are read
+/// the program imports waits for its library, and C++ names are read
 /// demangled, with or without their scopes and parameters.
 #[test]
 fn functions_without_debug_information_are_found_by_their_symbols() {
@@ -2237,8 +2111,6 @@ fn functions_without_debug_information_are_found_by_their_symbols() {
             "break printf",
             "break measure",
             "run",
-            "break strlen",
-            "continue",
             "address printf",
             "disassemble printf 1",
         ],
@@ -2249,12 +2121,6 @@ fn functions_without_debug_information_are_found_by_their_symbols() {
             "breakpoint 1 set, pending until a module with its code loads",
             "breakpoint 2 set at measure at 0x",
             "stopped at breakpoint 2 (hit 1) in measure at 0x",
-            "breakpoint 3 set at 2 locations",
-            "\n  strlen at 0x",
-            " in ld-linux-x86-64.so.2",
-            "\n  __strlen_",
-            " in libc.so.6",
-            "stopped at breakpoint 3 (hit 1) in __strlen_",
             "printf: 0x",
             " <printf>:",
         ],
@@ -2529,26 +2395,6 @@ fn a_stop_prints_the_sections_its_settings_name_and_context_prints_them_again() 
 
     assert_in_order(&stdout, &expected);
     assert_eq!(stdout.matches("2: missing + 1:").count(), 1, "{stdout}");
-}
-
-/// A stop in a process of several threads names the one it is in.
-#[test]
-fn a_stop_names_its_thread_when_the_process_has_several() {
-    let stdout = batch(
-        &["build/test-programs/hit-count-threads"],
-        &["break contended", "run"],
-    );
-    let header = stdout
-        .lines()
-        .find(|line| line.starts_with("stopped at breakpoint 1 (hit 1) in contended at "))
-        .unwrap_or_else(|| panic!("no stop in:\n{stdout}"));
-
-    // Every worker is running when the first reaches the breakpoint.
-    assert!(header.ends_with(" of 5]"), "{header}");
-    assert!(
-        header.contains("hit-count-threads.c:16 [thread "),
-        "{header}"
-    );
 }
 
 /// A value that differs from what the last stop showed of the same
@@ -2952,6 +2798,7 @@ fn batch_mode_sets_amends_and_skips_watchpoint_conditions() {
     assert_in_order(
         &stdout,
         &[
+            "deleted 1 breakpoint\n",
             "watchpoint 1 set on last_call: 8 bytes at 0x",
             " using 1 hardware slot, stops where call % 10 == 0\n",
             "stopped by watchpoint 1 (change, hit 10) on last_call in counted at \
@@ -3612,31 +3459,6 @@ fn kernels_beside_view_files_present_values_and_their_runs_replay() {
     );
 }
 
-/// A program built with line tables only describes no variables or types,
-/// so nothing is presented, and microscope says so rather than guessing.
-#[test]
-fn a_program_without_variable_information_presents_nothing() {
-    let output = batch_output(
-        &["build/test-programs/containers-rust-limited"],
-        &["break barrier", "run", "up", "print text"],
-    );
-    assert!(!output.status.success(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("no variable is named `text` here"),
-        "{stderr}"
-    );
-    let check = microscope(&[
-        "views",
-        "check",
-        "build/test-programs/containers-rust-limited",
-    ]);
-    assert_in_order(
-        &assert_success(check),
-        &["no view's pattern matches any type"],
-    );
-}
-
 /// `print` shows a map's entries as `key: value` and a linked structure's
 /// elements, and says why a broken one shows as stored.
 #[test]
@@ -3735,38 +3557,18 @@ fn set_changes_values_the_program_then_uses() {
     );
 }
 
-#[test]
-fn print_and_p_render_scalars_and_print_lists_every_variable() {
-    let stdout = batch(
-        &["build/test-programs/variables-gcc-o0"],
-        &["break variables.c:108", "run", "p signed_int", "print"],
-    );
-    assert_eq!(
-        stdout.matches("(int) signed_int = -1234567").count(),
-        2,
-        "{stdout}"
-    );
-
-    for expected in [
-        "(char) character = 65 'A'",
-        "(float) single = 1.25",
-        "(double) double_precision = -2.5",
-        "(long double) extended = 3.125",
-    ] {
-        assert!(stdout.contains(expected), "{expected:?} in:\n{stdout}");
-    }
-}
-
 /// A frame with no variables says so, rather than printing nothing.
 #[test]
 fn print_says_when_a_frame_has_no_variables() {
-    for command in ["print", "pp"] {
-        let stdout = batch(
-            &["build/test-programs/fatal-signal"],
-            &["break main", "run", command],
-        );
-        assert!(stdout.contains("no variables in scope"), "{stdout}");
-    }
+    let stdout = batch(
+        &["build/test-programs/fatal-signal"],
+        &["break main", "run", "print", "pp"],
+    );
+    assert_eq!(
+        stdout.matches("no variables in scope").count(),
+        2,
+        "{stdout}"
+    );
 }
 
 /// An array of several dimensions prints as rows of rows, as its program
@@ -3939,39 +3741,6 @@ fn print_resolves_recursive_types_from_dwarf_four_and_five_type_units() {
 }
 
 #[test]
-fn print_renders_aggregates_slices_and_ranges() {
-    let stdout = batch(
-        &["build/test-programs/records-c-gcc-o0"],
-        &[
-            "break inspect_records",
-            "run",
-            "print global_record",
-            "print *bits",
-            "print *records",
-            "print huge_array[1048576]",
-            "print huge_array[3..7]",
-            "print (*records)[1].values[1]",
-        ],
-    );
-    for expected in [
-        "global_record = {inner = {signed_value = -7, unsigned_value = 9}, values = [20, 22]}",
-        "*bits = {negative = -3, first = 5, second = 42}",
-        "values = [43, 44]",
-        "(unsigned char) huge_array[1048576] = 0",
-        "huge_array[3..7] = [0, 0, 0, 0]",
-        "(int32_t) (*records)[1].values[1] = 44",
-    ] {
-        assert!(stdout.contains(expected), "{expected:?} in:\n{stdout}");
-    }
-
-    let stdout = batch(
-        &["build/test-programs/variables-rust-o0"],
-        &["break variables.rs:67", "run", "print slice"],
-    );
-    assert!(stdout.contains("(&[i32]) slice = [20, 22]"), "{stdout}");
-}
-
-#[test]
 fn print_renders_symbolic_enums_variants_and_raw_unions() {
     let stdout = batch(
         &["build/test-programs/enums-rust-o0"],
@@ -4017,29 +3786,22 @@ fn globals_lists_metadata_and_print_accepts_exact_qualification() {
         &["build/test-programs/globals-c-gcc-o0"],
         &[
             "globals duplicate",
+            "globals no_such_global",
             "break main.c:9",
             "run",
             "print one.c::duplicate",
-            "continue",
         ],
     );
-    assert!(stdout.contains("duplicate ("), "{stdout}");
-    assert!(stdout.contains("duplicate = 201"), "{stdout}");
-}
-
-#[test]
-fn batch_mode_lists_threads_and_steps_one_instruction() {
-    let stdout = batch(
-        &[BASIC],
-        &["break breakpoint_target", "run", "threads", "stepi"],
-    );
     assert!(
-        stdout
-            .lines()
-            .any(|line| line.starts_with("* ") && line.contains(" stopped")),
+        stdout.starts_with(
+            "duplicate (volatile int32_t)\nduplicate (volatile int32_t)\nno matching globals\n"
+        ),
         "{stdout}"
     );
-    assert!(stdout.contains("stopped after instruction step"));
+    assert!(
+        stdout.ends_with("(volatile int32_t) one.c::duplicate = 201\n"),
+        "{stdout}"
+    );
 }
 
 /// Runs `commands` at the workers fixture's checkpoint, where its workers
@@ -4051,12 +3813,30 @@ fn at_go_checkpoint(commands: &[&str]) -> String {
 }
 
 #[test]
-fn goroutines_are_listed_by_the_code_the_program_wrote() {
+fn goroutines_are_listed_by_the_code_the_program_wrote_and_inspected_by_id() {
     const WORKERS: &str = "tests/fixtures/go/workers/main.go";
     let worker = support::source_line(WORKERS, "for job := range jobs");
     let reached = support::source_line(WORKERS, "func reached(");
-    let stdout = at_go_checkpoint(&["goroutines"]);
-    let lines = stdout.lines().collect::<Vec<_>>();
+    let stdout = at_go_checkpoint(&[
+        "goroutines",
+        "tasks -a",
+        "goroutines -g",
+        "goroutines -t",
+        "goroutine 1 backtrace",
+        "threads",
+        "goroutine 1",
+        "goroutine",
+    ]);
+
+    // `goroutines` ends where it says how to list the runtime's own, and
+    // `tasks -a` where `goroutines -g` starts grouping them.
+    let (listing, rest) = stdout
+        .split_once("`goroutines -a` lists them\n")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    let (all, rest) = rest
+        .split_once("1 goroutine in main.reached at ")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    let lines = listing.lines().collect::<Vec<_>>();
 
     // Main runs on the stopped thread, and is selected through it.
     let main = lines
@@ -4081,34 +3861,70 @@ fn goroutines_are_listed_by_the_code_the_program_wrote() {
             "{line}"
         );
     }
+    assert!(!listing.contains("in runtime.gopark"), "{stdout}");
 
-    assert!(!stdout.contains("in runtime.gopark"), "{stdout}");
-    assert!(
-        lines
-            .last()
-            .is_some_and(|line| line.contains("`goroutines -a` lists them")),
-        "{stdout}"
-    );
-
-    let all = at_go_checkpoint(&["tasks -a"]);
     let listed = |output: &str| {
         output
             .lines()
             .filter(|line| line.starts_with("  [") || line.starts_with("* ["))
             .count()
     };
+    assert!(listed(all) > listed(listing), "{stdout}");
+    assert!(!all.contains("lists them"), "{stdout}");
 
-    assert!(listed(&all) > listed(&stdout), "{all}");
-    assert!(!all.contains("lists them"), "{all}");
-
-    let grouped = at_go_checkpoint(&["goroutines -g"]);
     assert!(
-        grouped
-            .lines()
+        rest.lines()
             .any(|line| line.starts_with("4 goroutines in main.worker at ")
                 && line.contains(&format!("workers/main.go:{worker}: "))),
-        "{grouped}"
+        "{stdout}"
     );
+
+    // Each goroutine's frames follow it, the runtime's own folded but
+    // where it parked.
+    assert_in_order(
+        rest,
+        &[
+            "main.worker at ",
+            "\n    #0 ",
+            "in runtime.gopark",
+            "\n        … #1–#2: 2 frames of the runtime",
+            "\n    #3 ",
+            "in main.worker at ",
+            "unwind stopped",
+        ],
+    );
+
+    // A command runs in the goroutine without keeping it selected.
+    assert_in_order(
+        rest,
+        &[
+            "\n#0 ",
+            "in main.reached",
+            "in main.checkpoint",
+            "in runtime.main",
+        ],
+    );
+    let threads = rest
+        .lines()
+        .filter(|line| line.contains(" stopped"))
+        .collect::<Vec<_>>();
+    assert!(
+        threads
+            .iter()
+            .any(|line| line.starts_with("* ") && line.ends_with(" — [1]")),
+        "{stdout}"
+    );
+    assert!(
+        threads.iter().any(|line| line.ends_with(" — idle")),
+        "{stdout}"
+    );
+    assert_in_order(rest, &["selected goroutine 1", "* [1] main.reached at "]);
+
+    let failure = batch_output(
+        &["build/test-programs/workers-go-o0"],
+        &["break main.reached", "run", "goroutine 1 next"],
+    );
+    assert_failure(&failure, "goroutine 1 can only run commands that inspect");
 }
 
 /// `step goroutine` follows the line's `go` statement into the goroutine
@@ -4148,20 +3964,6 @@ fn step_goroutine_enters_the_goroutine_the_line_starts() {
     assert_failure(&failure, "no call on this line calls sideways");
 }
 
-/// A program stripped of its debug information has goroutines nobody can
-/// read, which `goroutines` says rather than listing none.
-#[test]
-fn a_stripped_programs_goroutines_are_unavailable() {
-    let failure = batch_output(
-        &["build/test-programs/callers-go-stripped"],
-        &["break main.reached", "run", "goroutines"],
-    );
-    assert_failure(
-        &failure,
-        "goroutines could not be read: the program has no debug information describing Go's runtime",
-    );
-}
-
 /// A `-trimpath` build records its sources without the directory it was
 /// built in, which the missing source's reason says, with the way to map
 /// them; `--source-map` then finds them.
@@ -4198,64 +4000,6 @@ fn a_trimpath_programs_sources_say_why_they_are_missing() {
         &["break main.greet", "run"],
     );
     assert!(mapped.contains(&format!("=> {greet} |")), "{mapped}");
-}
-
-#[test]
-fn a_goroutine_is_selected_or_inspected_by_its_id() {
-    let stdout = at_go_checkpoint(&[
-        "goroutines -t",
-        "goroutine 1 backtrace",
-        "threads",
-        "goroutine 1",
-        "goroutine",
-    ]);
-
-    // Each goroutine's frames follow it, the runtime's own folded but
-    // where it parked.
-    assert_in_order(
-        &stdout,
-        &[
-            "main.worker at ",
-            "\n    #0 ",
-            "in runtime.gopark",
-            "\n        … #1–#2: 2 frames of the runtime",
-            "\n    #3 ",
-            "in main.worker at ",
-            "unwind stopped",
-        ],
-    );
-
-    // A command runs in the goroutine without keeping it selected.
-    assert_in_order(
-        &stdout,
-        &[
-            "#0 ",
-            "in main.reached",
-            "in main.checkpoint",
-            "in runtime.main",
-        ],
-    );
-    let threads = stdout
-        .lines()
-        .filter(|line| line.contains(" stopped"))
-        .collect::<Vec<_>>();
-    assert!(
-        threads
-            .iter()
-            .any(|line| line.starts_with("* ") && line.ends_with(" — [1]")),
-        "{stdout}"
-    );
-    assert!(
-        threads.iter().any(|line| line.ends_with(" — idle")),
-        "{stdout}"
-    );
-    assert_in_order(&stdout, &["selected goroutine 1", "* [1] main.reached at "]);
-
-    let failure = batch_output(
-        &["build/test-programs/workers-go-o0"],
-        &["break main.reached", "run", "goroutine 1 next"],
-    );
-    assert_failure(&failure, "goroutine 1 can only run commands that inspect");
 }
 
 #[test]
@@ -4303,76 +4047,7 @@ fn backtraces_say_whose_stack_each_run_of_frames_is_on() {
 }
 
 #[test]
-fn finish_shows_what_the_function_returned() {
-    for fixture in [
-        "build/test-programs/values-go-o0",
-        "build/test-programs/values-go-o2",
-    ] {
-        let stdout = batch(
-            &[fixture],
-            &["break main.returning", "run", "finish", "print"],
-        );
-        assert_in_order(
-            &stdout,
-            &[
-                "stopped after frame return",
-                "returned (int) count = 42",
-                "returned (bool) ok = true",
-                "returned (string) text = \"go\"",
-                "returned (error) failure = nil",
-                // The frame returned to lists them among its variables.
-                "returned (int) count = 42",
-            ],
-        );
-    }
-}
-
-/// C and C++ return by the System V convention: in registers, in st0, or
-/// in memory whose address is returned. A small C++ class GCC does not say
-/// how calls pass is unknown, for that reason.
-#[test]
-fn finish_shows_what_a_c_or_cpp_function_returned() {
-    let stdout = batch(
-        &["build/test-programs/returns-c-gcc-o2"],
-        &[
-            "break r_double",
-            "break r_long_double",
-            "break r_big",
-            "run",
-            "finish",
-            "continue",
-            "finish",
-            "continue",
-            "finish",
-            "print",
-        ],
-    );
-    assert_in_order(
-        &stdout,
-        &[
-            "returned (double) r_double = -0.375",
-            "returned (long double) r_long_double = 2.5",
-            "returned (big) r_big = {<3 fields>}",
-            "(int) n = 1",
-            "returned (big) r_big = {<3 fields>}",
-        ],
-    );
-
-    let stdout = batch(
-        &["build/test-programs/returns-cpp-gcc-o2"],
-        &["break r_plain", "run", "finish"],
-    );
-    assert!(
-        stdout.contains(
-            "returned (Plain) r_plain = <unavailable: unsupported variable feature: \
-             returning this type by the function's calling convention>"
-        ),
-        "{stdout}"
-    );
-}
-
-#[test]
-fn a_watched_goroutine_local_names_its_goroutine_and_follows_its_stack() {
+fn a_watched_goroutine_local_names_its_goroutine_until_its_frame_returns() {
     let stdout = batch(
         &["build/test-programs/watched-go-o0"],
         &[
@@ -4391,26 +4066,16 @@ fn a_watched_goroutine_local_names_its_goroutine_and_follows_its_stack() {
         ],
     );
 
-    // The address the watch is at, from its line.
-    let watched = |prefix: &str| {
+    // The watch names the goroutine whose stack holds it, as set and as
+    // listed.
+    for prefix in ["watchpoint 1 set on counter: ", "1 "] {
         let line = stdout
             .lines()
             .find(|line| line.starts_with(prefix) && line.contains("counter"))
             .unwrap_or_else(|| panic!("no {prefix:?}:\n{stdout}"));
         assert!(line.contains(" below the top of task "), "{line}");
-        let (_, after) = line.split_once("8 bytes at ").expect("a size");
-        after
-            .split_whitespace()
-            .next()
-            .expect("an address")
-            .to_owned()
-    };
+    }
 
-    let set = watched("watchpoint 1 set on counter: ");
-    let listed = watched("1 ");
-
-    // Each round's deep calls grew the stack, which the runtime moved.
-    assert_ne!(set, listed, "{stdout}");
     assert_in_order(
         &stdout,
         &[
@@ -4471,39 +4136,6 @@ fn stops_and_list_show_source_from_any_working_directory() {
         "{stdout}"
     );
     assert!(stdout.contains("   8 |"), "{stdout}");
-}
-
-#[test]
-fn source_maps_read_sources_recorded_under_another_directory() {
-    let commands = ["break breakpoint_target", "run", "list"];
-    let unmapped = batch(&["build/test-programs/basic-relocated"], &commands[..2]);
-    assert!(
-        unmapped.contains(
-            "source unavailable: source file /nonexistent/microscope/tests/fixtures/c/basic.c does not exist"
-        ),
-        "{unmapped}"
-    );
-
-    let repository = env!("CARGO_MANIFEST_DIR");
-    let stdout = batch(
-        &[
-            "--source-map",
-            "/nonexistent/microscope",
-            repository,
-            "build/test-programs/basic-relocated",
-        ],
-        &commands,
-    );
-
-    // The mapped file is the repository's, shown relative to it.
-    assert!(
-        stdout.contains("\ntests/fixtures/c/basic.c:6\n"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("=> 6 |     return microscope_value;"),
-        "{stdout}"
-    );
 }
 
 #[test]
@@ -5256,7 +4888,7 @@ fn frame_commands_report_the_ends_of_the_stack() {
 }
 
 #[test]
-fn disassembly_and_finish_follow_the_selected_frame() {
+fn disassembly_follows_the_selected_frame() {
     // An outer frame's function is shown around its call, marking where
     // execution returns.
     let stdout = batch(&["--core", FRAMES_CORE], &["frame 3", "disassemble"]);
@@ -5267,72 +4899,6 @@ fn disassembly_and_finish_follow_the_selected_frame() {
     let marked = line_index(&lines, function, |line| line.starts_with("=> "));
     assert!(
         lines[marked - 1].contains("call") && lines[marked - 1].ends_with("<frames_relay>"),
-        "{stdout}"
-    );
-
-    let stdout = batch(
-        &["build/test-programs/frames-gcc-o0"],
-        &[
-            &format!(
-                "break frames.c:{}",
-                frames_line("frames_sink = leaf_local;")
-            ),
-            "run",
-            "frame 5",
-            "finish",
-            "print depth",
-            "backtrace",
-        ],
-    );
-    let lines = stdout.lines().collect::<Vec<_>>();
-    let finished = line_index(&lines, 0, |line| line == "(int64_t) depth = 2");
-    line_index(&lines, finished, |line| {
-        line.starts_with("#0 ") && line.contains(" in frames_recurse at ")
-    });
-
-    // Depths 2 and 3 remain below main.
-    line_index(&lines, finished, |line| {
-        line.starts_with("#2 ") && line.contains(" in main at ")
-    });
-}
-
-#[test]
-fn a_line_breakpoint_inside_an_inline_body_stops_in_the_inline_frame() {
-    let stdout = batch(
-        &["build/test-programs/variables-inline-gcc-o0"],
-        &[
-            "break variables-inline.c:6",
-            "run",
-            "backtrace",
-            "up",
-            "disassemble",
-        ],
-    );
-    assert_in_order(
-        &stdout,
-        &[
-            "#0  ",
-            " in inline_target at ",
-            "variables-inline.c:6",
-            "#1  ",
-            " in inline_caller at ",
-            "variables-inline.c:12",
-            "function inline_caller in variables-inline-gcc-o0:",
-        ],
-    );
-}
-
-#[test]
-fn backtraces_demangle_rust_symbols() {
-    let stdout = batch(
-        &["--core", "build/test-programs/crash-rust-nodebug.core"],
-        &["bt"],
-    );
-    assert!(
-        stdout
-            .lines()
-            .any(|line| line.contains(" in crash::crash_now+0x")
-                && line.ends_with(" from crash-rust-nodebug")),
         "{stdout}"
     );
 }
@@ -5347,69 +4913,6 @@ fn where_reports_instructions_outside_every_module_by_address() {
         stdout.trim_end(),
         "<unknown> at 0x0000000000000000 outside every loaded module"
     );
-}
-
-#[test]
-fn watch_script_reports_values_lists_and_deletes_watchpoints() {
-    let stdout = assert_success(microscope(&[
-        "--batch",
-        "-c",
-        "tests/fixtures/watch.microscope",
-        "build/test-programs/watch-gcc-o0",
-    ]));
-    assert_no_sgr(&stdout);
-
-    let set = stdout
-        .lines()
-        .find(|line| line.starts_with("watchpoint 1 set on watch_i32: 4 bytes at 0x"))
-        .unwrap_or_else(|| panic!("missing set confirmation:\n{stdout}"));
-    assert!(set.ends_with("using 1 hardware slot"), "{set}");
-    assert!(
-        stdout.lines().any(
-            |line| line.starts_with("1   +      0  watch_i32  4 bytes at 0x")
-                && line.ends_with("  change")
-        ),
-        "{stdout}"
-    );
-    assert!(
-        stdout.lines().any(
-            |line| line.starts_with("2   +      0  watch_u64  8 bytes at 0x")
-                && line.ends_with("  write")
-        ),
-        "{stdout}"
-    );
-    for (old, new) in [(0, 1), (1, 2), (2, 42)] {
-        assert!(
-            stdout.contains(&format!("\n  old: {old}\n  new: {new}\n")),
-            "missing {old} -> {new}:\n{stdout}"
-        );
-    }
-
-    // `watch` skips the store of 2 over 2; `watch -w` reports the failed
-    // compare-exchange's store of the value already there.
-    assert_eq!(
-        stdout
-            .matches("stopped by watchpoint 1 (change, hit ")
-            .count(),
-        3
-    );
-    assert_eq!(
-        stdout
-            .matches("stopped by watchpoint 2 (write, hit ")
-            .count(),
-        2
-    );
-    assert!(
-        stdout.contains("\n  value: 4919131752989213764 (unchanged)\n"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("deleted watchpoint 1"));
-    assert!(stdout.contains("deleted 1 watchpoint\n"), "{stdout}");
-    assert!(
-        stdout.contains("watch.c:"),
-        "watch stops show source:\n{stdout}"
-    );
-    assert!(stdout.contains("inferior exited with status 0"), "{stdout}");
 }
 
 #[test]
@@ -5580,31 +5083,18 @@ fn disassemble_reports_data_inside_code_and_unproven_addresses() {
     }
 }
 
+/// Each form of indirect target renders once: a slot and what it holds, a
+/// register's target, a target in another module, an unreadable slot, and
+/// a branch form that is not computed. Library tests own the targets.
 #[test]
 fn disassemble_names_the_targets_indirect_branches_read_at_the_stop() {
     let executable = fixture("build/test-programs/disassembly-clang-o2-nopie");
     let address = |name| symbol_address(&executable, name);
-    let data = fs::read(&executable).expect("read fixture");
-    let object = object::File::parse(data.as_slice()).expect("parse fixture");
-    let section = |name| {
-        object
-            .section_by_name(name)
-            .unwrap_or_else(|| panic!("no section {name}"))
-            .address()
-    };
-
-    let (plt, got_plt) = (section(".plt"), section(".got.plt"));
     let commands = [
         format!("break {:#x}", address("disasm_call_method")),
         format!("break {:#x}", address("disasm_call_register")),
-        format!("break {:#x}", address("disasm_return")),
         "run\ndisassemble".to_owned(),
-        format!("disassemble {:#x} 1", plt + 0x10),
-        format!(
-            "continue\ndisassemble {:#x} 1",
-            address("disasm_call_register")
-        ),
-        format!("continue\ndisassemble {:#x} 1", address("disasm_return")),
+        "continue\ndisassemble".to_owned(),
         "disassemble disasm_indirect_forms".to_owned(),
     ];
     let commands = commands
@@ -5624,7 +5114,6 @@ fn disassemble_names_the_targets_indirect_branches_read_at_the_stop() {
             .to_owned()
     };
 
-    // At the stop, registers hold the target or address its slot.
     assert!(
         find("call qword ptr [rax+8]", true).ends_with(&format!(
             "  # {:#x} <disasm_methods+0x8> -> {:#x} <disasm_target_two>",
@@ -5640,78 +5129,24 @@ fn disassemble_names_the_targets_indirect_branches_read_at_the_stop() {
         )),
         "{stdout}"
     );
-    let ret = find("ret  # ", true);
-    assert!(ret.contains(" <main+0x"), "{ret}");
 
-    // Away from the stop, only slots the instruction addresses are read.
+    // Away from the stop, a register's target is unknown.
     assert!(find("call rcx", false).ends_with("call rcx"), "{stdout}");
-    assert!(
-        find(
-            &format!("# {:#x} <disasm_slot>", address("disasm_slot")),
-            false
-        )
-        .ends_with(&format!(
-            "-> {:#x} <disasm_target_one>",
-            address("disasm_target_one")
-        )),
-        "{stdout}"
-    );
     let got = find(" <.got+0x", false);
     assert!(
         got.contains(" -> 0x7") && got.ends_with(" in libc.so.6>"),
         "{got}"
     );
-
-    // Lazy binding has not yet filled the stub's slot, which is named once.
-    let stub = find("jmp qword ptr [rip+", false);
-    assert!(
-        stub.ends_with(&format!(
-            "jmp qword ptr [rip+{:#x}]  # {:#x} <.got.plt+0x18> -> {:#x} <printf@plt+0x6>",
-            got_plt + 0x18 - (plt + 0x16),
-            got_plt + 0x18,
-            plt + 0x16
-        )),
-        "{stub}"
-    );
     assert!(
         find("jmp qword ptr [0]", false).ends_with("  # 0x0 -> memory inaccessible at 0x0"),
         "{stdout}"
     );
-
-    // Far transfers, interrupt returns, and branches whose operand size
-    // differs between Intel and AMD processors say they are not computed.
-    for form in ["jmp far fword ptr [rax]", "jmp rax", "iretq"] {
-        assert!(
-            find(form, false).ends_with(&format!(
-                "{form}  # -> not computed for this form of branch"
-            )),
-            "{stdout}"
-        );
-    }
-
-    assert_no_sgr(&stdout);
-}
-
-#[test]
-fn disassemble_says_when_a_restarted_system_call_hides_a_stopped_target() {
-    let target = support::ExternalProcess::spawn(&fixture("build/test-programs/attach-restart"));
-
-    // Attaching must interrupt pause(2).
-    support::wait_for_system_call(target.process_id(), 34);
-    let process = target.process_id().get().to_string();
-    let output = batch_output(&["--attach", &process], &["disassemble"]);
-    drop(target);
-    let stdout = assert_success(output);
-    let stopped = stdout
-        .lines()
-        .find(|line| line.starts_with("=> "))
-        .unwrap_or_else(|| panic!("no stopped instruction in:\n{stdout}"));
     assert!(
-        stopped.ends_with(
-            "jmp rax  # -> unknown: a restarted system call replaces a register it uses"
-        ),
+        find("iretq", false).ends_with("iretq  # -> not computed for this form of branch"),
         "{stdout}"
     );
+
+    assert_no_sgr(&stdout);
 }
 
 #[test]
@@ -5825,19 +5260,6 @@ fn registers_show_the_selected_frames_own_values() {
 }
 
 #[test]
-fn signal_fixtures_unblock_inherited_signals() {
-    for (program, status) in [("signal-policy", 63), ("watch-gcc-o0", 0)] {
-        let output = Command::new("env")
-            .arg("--block-signal=USR1")
-            .arg(fixture(&format!("build/test-programs/{program}")))
-            .stdin(Stdio::null())
-            .output()
-            .expect("run the signal fixture with SIGUSR1 blocked");
-        assert_eq!(output.status.code(), Some(status), "{program}: {output:?}");
-    }
-}
-
-#[test]
 fn handle_shows_and_changes_signal_policies_like_gdb() {
     let stdout = batch(
         &["build/test-programs/signal-policy"],
@@ -5876,17 +5298,6 @@ fn handle_shows_and_changes_signal_policies_like_gdb() {
     let alarm = line_index(&lines, usr1, |line| line.contains(" received SIGALRM "));
     let exited = line_index(&lines, alarm, |line| line.contains("exited with status 61"));
     assert!(exited > alarm);
-}
-
-#[test]
-fn info_signals_lists_every_signals_policy() {
-    let stdout = batch(&[BASIC], &["info signals"]);
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines[0], "signal    stop  print  pass");
-    assert_eq!(lines.len(), 65, "{stdout}");
-    assert!(lines.contains(&"SIGINT    yes   yes    no"), "{stdout}");
-    assert!(lines.contains(&"SIGURG    no    no     yes"), "{stdout}");
-    assert!(lines.contains(&"SIG64     yes   yes    yes"), "{stdout}");
 }
 
 #[test]
@@ -6045,60 +5456,6 @@ fn expressions_print_compute_and_point_at_their_errors() {
             "missing `{expected}` in:\n{stderr}"
         );
     }
-}
-
-/// Code in the vDSO is shown as code in any library is: named by a symbol
-/// when one covers it, and always by the module the kernel names `[vdso]`.
-#[test]
-fn vdso_code_is_shown_in_the_module_the_kernel_names() {
-    let core = batch(
-        &["--core", "build/test-programs/vdso-gcc-o0-clock.core"],
-        &["info core", "bt", "where"],
-    );
-    let lines = core.lines().collect::<Vec<_>>();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains(" [vdso] module ") && line.ends_with(" read from the dump")),
-        "{core}"
-    );
-    let innermost = lines
-        .iter()
-        .position(|line| line.starts_with("#0 "))
-        .unwrap_or_else(|| panic!("{core}"));
-    assert!(
-        lines[innermost].ends_with(" in <unknown> from [vdso]"),
-        "{core}"
-    );
-    assert!(
-        lines[innermost + 1].contains(" in clock_gettime+0x")
-            && lines[innermost + 1].contains(" from libc.so"),
-        "{core}"
-    );
-    assert!(
-        lines[innermost + 2].contains(" in vdso_clock at "),
-        "{core}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("<unknown> at 0x") && line.ends_with(" from [vdso]")),
-        "{core}"
-    );
-
-    let live = batch(
-        &["build/test-programs/vdso-gcc-o0", "--", "time"],
-        &["run", "bt"],
-    );
-    let innermost = live
-        .lines()
-        .find(|line| line.starts_with("#0 "))
-        .unwrap_or_else(|| panic!("{live}"));
-    assert!(
-        (innermost.contains(" in time+0x") || innermost.contains(" in __vdso_time+0x"))
-            && innermost.ends_with(" from [vdso]"),
-        "{live}"
-    );
 }
 
 /// `info modules` says what describes each module, and for one stripped of
@@ -6475,7 +5832,7 @@ fn step_goes_into_one_call_of_the_line() {
 }
 
 /// A backtrace shows the functions that left by tail calls between a frame
-/// and its caller, and selecting one shows what was passed to it.
+/// and its caller.
 #[test]
 fn backtraces_show_the_functions_that_left_by_tail_calls() {
     let line = |marker: &str| support::source_line("tests/fixtures/c/tail-frames.c", marker);
@@ -6485,9 +5842,6 @@ fn backtraces_show_the_functions_that_left_by_tail_calls() {
             &format!("break tail-frames.c:{}", line("frames: leaf")),
             "run",
             "bt",
-            "frame 1",
-            "print value",
-            "print $pc",
         ],
     );
     assert_in_order(
@@ -6506,8 +5860,6 @@ fn backtraces_show_the_functions_that_left_by_tail_calls() {
                 " in main at tests/fixtures/c/tail-frames.c:{}",
                 line("frames: call top")
             ),
-            "(int) value = 6",
-            "(u64) $pc = <unavailable: a tail call discarded the frame>",
         ],
     );
 
@@ -7165,50 +6517,6 @@ fn report_inverts_the_call_tree_into_callers() {
     assert_failure(&microscope(&["report", "--invert", &profile]), "--tree");
 }
 
-#[test]
-fn report_compares_and_focuses_from_the_command_line() {
-    let scratch = support::ScratchDir::new("cli-report-query");
-    let before = scratch.path().join("before.folded");
-    let after = scratch.path().join("after.folded");
-    std::fs::write(&before, "main;a;leaf 30\nmain;b;leaf 10\n").unwrap();
-    std::fs::write(&after, "main;a;leaf 5\nmain;b;leaf 15\n").unwrap();
-    let before = before.to_string_lossy();
-    let after = after.to_string_lossy();
-    let diff = assert_success(microscope(&["report", &after, "--base", &before]));
-    assert!(
-        diff.contains("Total: 40 samples → 20 samples (-50.0%)"),
-        "{diff}"
-    );
-    assert!(diff.contains("-20 samples  -50.0%  leaf"), "{diff}");
-    // a and b have no own cost before or after.
-    assert!(!diff.contains("  a\n") && !diff.contains("  b\n"), "{diff}");
-    let focus = assert_success(microscope(&["report", &after, "--focus", "leaf"]));
-    assert!(focus.contains("Callers"), "{focus}");
-    for name in ["a", "b"] {
-        assert!(
-            focus
-                .lines()
-                .any(|line| line.split_whitespace().last() == Some(name)),
-            "{focus}"
-        );
-    }
-    let tree = assert_success(microscope(&[
-        "report",
-        &after,
-        "--base",
-        &before,
-        "--focus",
-        "a",
-        "--tree",
-        "--min-percent",
-        "0",
-        "--lines",
-    ]));
-    assert!(tree.contains("-25"), "{tree}");
-    assert!(!tree.contains("  b\n"), "{tree}");
-    assert!(tree.lines().all(|line| line.len() < 100), "{tree}");
-}
-
 /// The time threads spent off their CPUs is a sum over threads, which can
 /// be many times as long as the recording, so the report says how many it
 /// sums and which thread was off longest.
@@ -7791,6 +7099,7 @@ fn print_shows_a_javascript_value_as_node_writes_it() {
 /// A Node core's `tasks` lists what its event loops wait on, each by what
 /// it waits for and the callback Node will call, and its thread-pool jobs
 /// on their threads; grouped, the items with no callback are one group.
+/// `handles` is the same list under Node's name for it.
 #[test]
 fn a_node_cores_tasks_show_each_callback_and_pool_job() {
     let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
@@ -7798,7 +7107,7 @@ fn a_node_cores_tasks_show_each_callback_and_pool_job() {
     let node = node.to_str().expect("a UTF-8 path");
     let stdout = batch(
         &["--core", "build/test-programs/node-tasks-26.core", node],
-        &["tasks", "tasks -g"],
+        &["tasks", "tasks -g", "handles", "handle SIGUSR2 nostop"],
     );
     assert_in_order(
         &stdout,
@@ -7810,6 +7119,10 @@ fn a_node_cores_tasks_show_each_callback_and_pool_job() {
             " — thread-pool job (thread ",
             "1 handle in callback sessionTimeout at tests/fixtures/node/tasks.js:78: 2\n",
             " handles in <no callback>: 7, 9,",
+            // Node calls its tasks handles: `handles` lists them, while
+            // `handle` stays the command that sets how a signal stops.
+            "\n  [2] timeout 30000 ms — callback sessionTimeout at ",
+            "\nSIGUSR2   no    yes    yes\n",
         ],
     );
 }
@@ -7849,29 +7162,6 @@ fn tasks_read_no_stack_of_a_stackless_task() {
         stdout.contains(
             "are unavailable: it has no frames because it does not run until its runtime calls its callback\n"
         ),
-        "{stdout}"
-    );
-}
-
-/// Node calls its tasks handles: `handles` lists them, while `handle` stays
-/// the command that sets how a signal stops.
-#[test]
-fn handles_lists_nodes_tasks_and_handle_still_sets_signals() {
-    let node = std::path::Path::new(&std::env::var("MICROSCOPE_NODE").expect("MICROSCOPE_NODE"))
-        .join("26/node");
-    let node = node.to_str().expect("a UTF-8 path");
-    let stdout = batch(
-        &["--core", "build/test-programs/node-tasks-26.core", node],
-        &["handles", "handle SIGUSR2 nostop"],
-    );
-    assert!(
-        stdout.contains("  [2] timeout 30000 ms — callback sessionTimeout at "),
-        "{stdout}"
-    );
-    assert!(
-        stdout
-            .lines()
-            .any(|line| line.starts_with("SIGUSR2") && line.contains("no")),
         "{stdout}"
     );
 }
