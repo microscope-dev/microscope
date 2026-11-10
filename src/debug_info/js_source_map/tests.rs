@@ -79,112 +79,6 @@ fn segments_decode_to_their_worked_out_places() {
     assert_eq!(map.name(NameId::new(2)), None);
 }
 
-#[test]
-fn a_position_takes_the_segment_that_covers_it_on_its_own_line() {
-    let map = worked();
-    let cases = [
-        (at(0, 0), Some(place(0, 0, 0, None))),
-        (at(0, 3), Some(place(0, 0, 0, None))),
-        (at(0, 4), Some(place(0, 0, 4, None))),
-        (at(0, 8), Some(place(0, 0, 6, Some(1)))),
-        // The segment at column 9 has no source, through the line's end.
-        (at(0, 9), None),
-        (at(0, 500), None),
-        // An empty line, after a line whose last segment had a place.
-        (at(1, 0), None),
-        // Before line 2's first segment, which starts at column 5.
-        (at(2, 0), None),
-        (at(2, 4), None),
-        (at(2, 5), Some(place(1, 1, 11, None))),
-        (at(2, 10), None),
-        (at(2, 11), Some(place(0, 0, 9, None))),
-        (at(2, 12), Some(place(0, 0, 9, Some(0)))),
-        (at(3, 0), None),
-    ];
-    for (position, expected) in cases {
-        assert_eq!(map.original_at(position), expected, "{position:?}");
-    }
-
-    assert_eq!(
-        map.covering(at(0, 9)),
-        Some(Covering {
-            start: Column::from_zero_based(9),
-            original: None
-        })
-    );
-    assert_eq!(map.covering(at(2, 4)), None);
-}
-
-#[test]
-fn an_original_line_leads_to_every_generated_position_mapped_to_it() {
-    let map = worked();
-    let a = SourceId::new(0);
-    let b = SourceId::new(1);
-    let line = |n| Line::from_zero_based(n);
-    let found: Vec<(Position, u32)> = map
-        .generated_for_line(a, line(0))
-        .map(|found| (found.generated, found.original_column.zero_based()))
-        .collect();
-    assert_eq!(
-        found,
-        [
-            (at(0, 0), 0),
-            (at(0, 4), 4),
-            (at(0, 6), 6),
-            (at(2, 11), 9),
-            (at(2, 12), 9)
-        ]
-    );
-    assert_eq!(map.generated_for_line(a, line(1)).count(), 0);
-
-    let column = |n| ColumnChoice::Covering(Column::from_zero_based(n));
-    assert_eq!(
-        map.breakpoint_positions(a, line(0), ColumnChoice::LineStart),
-        [at(0, 0)]
-    );
-    assert_eq!(map.breakpoint_positions(a, line(0), column(5)), [at(0, 4)]);
-    assert_eq!(
-        map.breakpoint_positions(a, line(0), column(9)),
-        [at(2, 11), at(2, 12)]
-    );
-    assert_eq!(
-        map.breakpoint_positions(a, line(0), column(99)),
-        [at(2, 11), at(2, 12)]
-    );
-    assert_eq!(
-        map.breakpoint_positions(b, line(1), ColumnChoice::LineStart),
-        [at(2, 5)]
-    );
-    assert_eq!(map.breakpoint_positions(b, line(1), column(10)), []);
-
-    // Never the nearest line: nothing maps to a.ts line 1 or b.ts line 0.
-    assert_eq!(
-        map.breakpoint_positions(a, line(1), ColumnChoice::LineStart),
-        []
-    );
-    assert_eq!(
-        map.breakpoint_positions(b, line(0), ColumnChoice::LineStart),
-        []
-    );
-}
-
-/// Two segments at one position: the first is empty and covers nothing,
-/// so neither direction leads through it.
-#[test]
-fn a_segment_another_starts_at_covers_nothing() {
-    let map = parse(&simple(r#"["a.ts"]"#, "[]", "AAAA,AACA"));
-    assert_eq!(map.original_at(at(0, 0)), Some(place(0, 1, 0, None)));
-    let a = SourceId::new(0);
-    assert_eq!(
-        map.generated_for_line(a, Line::from_zero_based(0)).count(),
-        0
-    );
-    assert_eq!(
-        map.breakpoint_positions(a, Line::from_zero_based(1), ColumnChoice::LineStart),
-        [at(0, 0)]
-    );
-}
-
 /// Segments of a line may be listed out of column order; they are sorted
 /// as ECMA-426 sorts them.
 #[test]
@@ -883,6 +777,11 @@ proptest! {
             }
             let expected = oracle.map(|(start, original)| Covering { start, original });
             prop_assert_eq!(map.covering(at(line, column)), expected, "{}:{}", line, column);
+            prop_assert_eq!(
+                map.original_at(at(line, column)),
+                oracle.and_then(|(_, original)| original),
+                "{}:{}", line, column
+            );
         }
     }
 
@@ -919,9 +818,32 @@ proptest! {
                 expected.sort_unstable();
                 prop_assert_eq!(&found, &expected);
 
-                let chosen = map.breakpoint_positions(source, line, ColumnChoice::LineStart);
-                prop_assert!(chosen.iter().all(|position| found.iter().any(|(_, at)| at == position)));
-                prop_assert_eq!(chosen.is_empty(), found.is_empty());
+                // A breakpoint goes at every generated copy of the chosen
+                // original column: the line's least, or the greatest at or
+                // before the one asked for.
+                let at_column = |chosen: Option<Column>| -> Vec<Position> {
+                    expected
+                        .iter()
+                        .filter(|(column, _)| Some(*column) == chosen)
+                        .map(|(_, position)| *position)
+                        .collect()
+                };
+                prop_assert_eq!(
+                    map.breakpoint_positions(source, line, ColumnChoice::LineStart),
+                    at_column(expected.first().map(|(column, _)| *column))
+                );
+                for asked in (0..32).map(Column::from_zero_based) {
+                    let covering = expected
+                        .iter()
+                        .map(|(column, _)| *column)
+                        .filter(|column| *column <= asked)
+                        .max();
+                    prop_assert_eq!(
+                        map.breakpoint_positions(source, line, ColumnChoice::Covering(asked)),
+                        at_column(covering),
+                        "column {:?}", asked
+                    );
+                }
             }
         }
     }
