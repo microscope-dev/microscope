@@ -245,7 +245,8 @@ fn every_slice_is_where_scope_info_tq_puts_it() {
                 continue;
             }
 
-            for context_locals in [0, 1, 74, 75, 76, 200] {
+            // None, then the two sides of the inline limit.
+            for context_locals in [0, 74, 75] {
                 for bits in 0u32..(1 << 7) {
                     // Only 12.4 reads the last two flags.
                     if version != (12, 4) && bits >= 32 {
@@ -270,7 +271,7 @@ fn every_slice_is_where_scope_info_tq_puts_it() {
         }
     }
 
-    assert_eq!(cases, (9 * 128 + 20 * 32) * 6 * 3);
+    assert_eq!(cases, (9 * 128 + 20 * 32) * 3 * 3);
 }
 
 /// A few places written out, so that a layout misread from

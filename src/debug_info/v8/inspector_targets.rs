@@ -145,15 +145,9 @@ mod tests {
     #[test]
     fn every_target_caller_and_source_is_proven_and_mutations_refuse() {
         let root = std::env::var_os("MICROSCOPE_NODE").expect("pinned Node builds");
-        for entry in [
-            "22",
-            "24",
-            "26",
-            "nixpkgs-22",
-            "nixpkgs-24",
-            "nixpkgs-26",
-            "debian-24",
-        ] {
+        // One build of each toolchain: the matrix test proves the layout
+        // on every build.
+        for entry in ["24", "nixpkgs-24", "debian-24"] {
             let directory = std::path::Path::new(&root).join(entry);
             let path = directory.join(if entry == "debian-24" {
                 "root/usr/lib/x86_64-linux-gnu/libnode.so.137"

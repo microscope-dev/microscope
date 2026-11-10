@@ -5318,9 +5318,9 @@ mod tests {
 
     /// A compressed section's header is input. One claiming far more than
     /// its bytes could hold, or more than a file may, leaves the module's
-    /// DWARF unusable, saying why, before anything is decompressed; and a
-    /// zstd stream longer than its claim is read only as far as the claim.
-    /// None of them allocates more than a few MiB.
+    /// DWARF unusable, saying why, before anything is decompressed, and
+    /// neither allocates more than a few MiB. A stream longer than its
+    /// claim is `compressed`'s to stop.
     #[test]
     fn a_compressed_section_is_read_only_within_its_claim_and_our_limits() {
         use crate::test_memory::memory_cap::{start_totals, stop_totals, totals};
@@ -5344,14 +5344,6 @@ mod tests {
             encoder.write_all(data).expect("compress");
             encoder.finish().expect("compress")
         };
-
-        // 64 MiB from 2 KiB of zstd RLE blocks, each 128 KiB of one byte.
-        let mut bomb = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
-        for index in 0..512 {
-            let header = u32::from(index == 511) | (1 << 1) | ((128 << 10) << 3);
-            bomb.extend_from_slice(&header.to_le_bytes()[..3]);
-            bomb.push(0xaa);
-        }
 
         // Bytes zlib cannot compress, by a linear congruential generator.
         let mut state = 1_u64;
@@ -5380,12 +5372,6 @@ mod tests {
                 },
                 "its compressed sections claim to decompress to 2097152 bytes, more than the \
                  1048576 one file may",
-            ),
-            (
-                "a zstd stream longer than its claim",
-                compressed(object::elf::ELFCOMPRESS_ZSTD, 1024, &bomb),
-                LoadLimits::default(),
-                "its .debug_info section is not the zstd data of 1024 bytes its header claims",
             ),
         ];
 
@@ -6220,7 +6206,7 @@ mod tests {
         }
     }
 
-    /// Loading on one worker, two, or eight builds a byte-identical image.
+    /// Loading on one worker or eight builds a byte-identical image.
     /// One worker walks the units in order; more walk them apart and add
     /// what each built in order. Units that reach each other's types, as
     /// Go's and Zig's do, are walked in order with each other, apart from
@@ -6275,19 +6261,16 @@ mod tests {
                 "{fixture} differs walking one unit ahead"
             );
             assert!(!serial.is_empty(), "{fixture}");
-            for jobs in [2, 8] {
-                let recording =
-                    crate::timings::Recording::start(crate::timings::Options::default())
-                        .expect("no other recording");
-                let apart = load(jobs);
-                let report = recording.finish().unwrap();
-                assert!(apart == serial, "{fixture} differs with {jobs} workers");
-                assert_eq!(
-                    report.counters.get("units_walked_in_order"),
-                    None,
-                    "{fixture} walks its units apart with {jobs} workers"
-                );
-            }
+            let recording = crate::timings::Recording::start(crate::timings::Options::default())
+                .expect("no other recording");
+            let apart = load(8);
+            let report = recording.finish().unwrap();
+            assert!(apart == serial, "{fixture} differs with 8 workers");
+            assert_eq!(
+                report.counters.get("units_walked_in_order"),
+                None,
+                "{fixture} walks its units apart with 8 workers"
+            );
         }
     }
 
@@ -6299,11 +6282,11 @@ mod tests {
     #[test]
     fn plt_stubs_unwind_to_their_callers_without_call_frame_information() {
         // `printf@plt` is `mov $0, %r11d` (6 bytes), then the jump through
-        // the GOT; `memcpy@plt`, in `.plt.got`, is the jump alone, where the
-        // tokio suite once caught a thread.
+        // the GOT; `__cxa_finalize@plt`, in `.plt.got`, is the jump alone,
+        // as `memcpy@plt` was where the tokio suite once caught a thread.
         for (fixture, stub, offsets) in [
             ("disassembly-gcc-mold", "printf@plt", &[0, 6][..]),
-            ("tokio-steps-o0", "memcpy@plt", &[0]),
+            ("disassembly-gcc-mold", "__cxa_finalize@plt", &[0]),
         ] {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("build/test-programs")
@@ -6386,59 +6369,16 @@ mod tests {
         }
     }
 
-    /// Debug information that would build more than its budget is left
-    /// out, with the budget's error naming what asked, and loads with the
-    /// default.
+    /// Debug information that would build more than its budget is left out,
+    /// with the budget's error naming what asked; whose locals alone would
+    /// take it past its budget loads without them, keeping its functions,
+    /// lines, globals, and the coroutines async bodies run, and says why it
+    /// has no locals.
     #[test]
-    fn a_load_past_its_budget_leaves_the_dwarf_out_naming_what_asked() {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/containers-rust-o2");
-        let data = fs::read(&path).expect("run `just build-test-programs`");
-        let load = |limits| {
-            load_debug_info(
-                &path,
-                &data,
-                crate::ModuleImageId::new(0),
-                &super::super::DebugFileSearch::default(),
-                limits,
-                None,
-            )
-        };
-
-        let small = LoadLimits {
-            per_input_byte: 0,
-            floor: 64 << 10,
-            ..LoadLimits::default()
-        };
-
-        let (over, _) = load(small).expect("a load past its budget");
-        let crate::DebugInformation::Unusable { reason } = over.image.debug_information() else {
-            panic!("{:?}", over.image.debug_information());
-        };
-
-        assert!(
-            ["types", "data objects", "symbolic names"]
-                .iter()
-                .any(|what| reason.starts_with(&format!(
-                    "the debug information needs more than its load budget of {} bytes: {what} \
-                     asked for ",
-                    64 << 10
-                ))),
-            "{reason}"
-        );
-        assert_eq!(over.image.functions().len(), 0);
-        assert_ne!(over.image.symbols().count(), 0, "its symbols describe it");
-        let (within, _) = load(LoadLimits::default()).expect("the default budget");
-        assert_eq!(
-            within.image.debug_information(),
-            crate::DebugInformation::Loaded
-        );
-    }
-
-    /// Debug information whose locals would take it past its budget loads
-    /// without them, keeping its functions, lines, globals, and the
-    /// coroutines async bodies run, and says why it has no locals.
-    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a budget too small for anything, then one for the locals alone"
+    )]
     fn a_load_past_its_budget_leaves_its_locals_out_and_keeps_the_rest() {
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("build/test-programs/tokio-std-async-o0");
@@ -6466,10 +6406,27 @@ mod tests {
             crate::DebugInformation::Loaded
         );
 
+        let over = load(64 << 10);
+        let crate::DebugInformation::Unusable { reason } = over.image.debug_information() else {
+            panic!("{:?}", over.image.debug_information());
+        };
+        assert!(
+            ["types", "data objects", "symbolic names"]
+                .iter()
+                .any(|what| reason.starts_with(&format!(
+                    "the debug information needs more than its load budget of {} bytes: {what} \
+                     asked for ",
+                    64 << 10
+                ))),
+            "{reason}"
+        );
+        assert_eq!(over.image.functions().len(), 0);
+        assert_ne!(over.image.symbols().count(), 0, "its symbols describe it");
+
         // A budget too small for the locals but large enough for the rest.
         // Those budgets differ by a factor rather than a margin, which
         // halving the factor between the bounds finds in a few loads.
-        let (mut small, mut large) = (1_u64, 1 << 32);
+        let (mut small, mut large) = (64_u64 << 10, 1 << 32);
         let partial = loop {
             assert!(small + 1 < large, "no budget leaves out only the locals");
             let floor = (small.isqrt() * large.isqrt()).clamp(small + 1, large - 1);

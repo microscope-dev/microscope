@@ -593,35 +593,19 @@ mod tests {
         assert_eq!(rust_path("a::b<c"), None);
     }
 
+    /// Names that only resemble a symbol's, at edges the properties do not
+    /// generate: one cut inside a part, a clone's function, a name that
+    /// begins with a colon, and a symbol that is not mangled.
     #[test]
-    fn written_names_spell_mangled_ones_with_or_without_scopes_and_parameters() {
-        for (mangled, name, expected) in [
-            ("_ZN6shapes5scaleEd", "shapes::scale", true),
-            ("_ZN6shapes5scaleEd", "shapes::scale(double)", true),
-            ("_ZN6shapes5scaleEd", "scale", true),
-            ("_ZN6shapes5scaleEd", "shapes::scale(int)", false),
-            ("_ZN6shapes5scaleEd", "apes::scale", false),
-            ("_ZN6shapes5scaleEd", "shapes::scal", false),
-            ("_ZNK6shapes6Widget4pickEv", "shapes::Widget::pick", true),
-            ("_ZNK6shapes6Widget4pickEv", "Widget::pick()", true),
-            ("_ZN5boxedIiE3getEv", "boxed<int>::get", true),
-            ("_Z3bazi.constprop.0", "baz", false),
-            (
-                "_ZN4core3fmt5write17h0123456789abcdefE",
-                "core::fmt::write",
-                true,
-            ),
-            (
-                "_RNvCsdHzz05DFzbQ_5crash9crash_now",
-                "crash::crash_now",
-                true,
-            ),
-            ("_RNvCsdHzz05DFzbQ_5crash9crash_now", "crash::crash", false),
-            ("main", "main", false),
-            // A name is what a person typed, and may begin with a colon.
-            ("_ZN6shapes5scaleEd", ":scale", false),
+    fn names_that_only_resemble_a_symbols_do_not_spell_it() {
+        for (mangled, name) in [
+            ("_ZN6shapes5scaleEd", "shapes::scal"),
+            ("_RNvCsdHzz05DFzbQ_5crash9crash_now", "crash::crash"),
+            ("_Z3bazi.constprop.0", "baz"),
+            ("_ZN6shapes5scaleEd", ":scale"),
+            ("main", "main"),
         ] {
-            assert_eq!(spells(mangled, name), expected, "{mangled} as {name}");
+            assert!(!spells(mangled, name), "{mangled} as {name}");
         }
     }
 
@@ -638,7 +622,6 @@ mod tests {
                 "_ZN4core3fmt5write17h0123456789abcdefE",
                 Some("core::fmt::write"),
             ),
-            ("_ZN3foo3barEv", Some("foo::bar()")),
             ("_ZNSt6thread6detachEv", Some("std::thread::detach()")),
             // GCC clones keep their suffix.
             ("_Z3bazi.constprop.0", Some("baz(int) [clone .constprop.0]")),

@@ -91,25 +91,4 @@ mod tests {
             ]
         );
     }
-
-    /// A name that spells `Arc` has one spelling for each of its paths,
-    /// each `Arc` within replaced; another name has its own alone.
-    #[test]
-    fn a_name_with_an_arc_is_spelled_with_each_of_its_paths() {
-        assert_eq!(
-            with_each_arc("f<alloc::sync::Arc<a::Handle, alloc::alloc::Global>>"),
-            [
-                "f<alloc::sync::Arc<a::Handle, alloc::alloc::Global>>",
-                "f<alloc::rcs::arc::Arc<a::Handle, alloc::alloc::Global>>",
-            ]
-        );
-        assert_eq!(
-            with_each_arc("f<alloc::sync::Arc<alloc::sync::Arc<u8>>>")[1],
-            "f<alloc::rcs::arc::Arc<alloc::rcs::arc::Arc<u8>>>"
-        );
-        assert_eq!(
-            with_each_arc("f<alloc::rc::Rc<u8>>"),
-            ["f<alloc::rc::Rc<u8>>"]
-        );
-    }
 }

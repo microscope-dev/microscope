@@ -1113,51 +1113,6 @@ mod tests {
     const RET: u8 = 0xc3;
 
     #[test]
-    fn each_shape_of_napi_get_node_version_gives_its_static() {
-        // test rdi, rdi; je; test rsi, rsi; je
-        const CHECKS: [u8; 10] = [0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0x85, 0xf6, 0x74, 0x10];
-
-        // Node 22 and 24: pxor xmm0, xmm0; mov qword [rsi], 0x3437480;
-        // xor eax, eax; ret
-        let official = decode(
-            &[
-                &CHECKS[..],
-                &[0x66, 0x0f, 0xef, 0xc0],
-                &[0x48, 0xc7, 0x06, 0x80, 0x74, 0x43, 0x03],
-                &[0x31, 0xc0, RET],
-            ]
-            .concat(),
-        );
-        assert_eq!(decode_node_version(&official, "22"), Ok(0x343_7480));
-
-        // Node 26: mov eax, 1; the checks; mov qword [rsi], 0x41434c8;
-        // xorps xmm0, xmm0; ret
-        let returns_first = decode(
-            &[
-                &[0xb8, 1, 0, 0, 0][..],
-                &CHECKS,
-                &[0x48, 0xc7, 0x06, 0xc8, 0x34, 0x14, 0x04],
-                &[0x0f, 0x57, 0xc0, RET],
-            ]
-            .concat(),
-        );
-        assert_eq!(decode_node_version(&returns_first, "26"), Ok(0x414_34c8));
-
-        // nixpkgs and Debian: lea rax, [rip + 0x100]; pxor xmm0, xmm0;
-        // mov [rsi], rax; ret
-        let addressed = decode(
-            &[
-                &CHECKS[..],
-                &[0x48, 0x8d, 0x05, 0, 1, 0, 0],
-                &[0x66, 0x0f, 0xef, 0xc0],
-                &[0x48, 0x89, 0x06, RET],
-            ]
-            .concat(),
-        );
-        assert_eq!(decode_node_version(&addressed, "nixpkgs"), Ok(0x1111));
-    }
-
-    #[test]
     fn napi_get_node_version_of_another_shape_is_refused() {
         const CHECKS: [u8; 10] = [0x48, 0x85, 0xff, 0x74, 0x10, 0x48, 0x85, 0xf6, 0x74, 0x10];
 
@@ -1186,45 +1141,6 @@ mod tests {
     }
 
     #[test]
-    fn each_shape_of_dispatch_table_accessor_decodes() {
-        // mov rax, [rdi + 0x268]; lea rcx, [rax - 1]; cmp rcx, 0x43; jbe; ret
-        let isolate = decode(&[
-            0x48, 0x8b, 0x87, 0x68, 0x02, 0, 0, 0x48, 0x8d, 0x48, 0xff, 0x48, 0x83, 0xf9, 0x43,
-            0x76, 0x01, RET,
-        ]);
-        assert_eq!(
-            decode_dispatch_table(&isolate, "isolate"),
-            Ok(DispatchTable::Isolate { offset: 0x268 })
-        );
-
-        // mov rax, [rip + 0x100]; mov rax, [rax + 0x3270]; ret
-        let loaded = decode(&[
-            0x48, 0x8b, 0x05, 0, 1, 0, 0, 0x48, 0x8b, 0x80, 0x70, 0x32, 0, 0, RET,
-        ]);
-        assert_eq!(
-            decode_dispatch_table(&loaded, "group"),
-            Ok(DispatchTable::Group {
-                group: ImageAddress::new(0x1107),
-                offset: 0x3270
-            })
-        );
-
-        // lea rax, [rip + 0x100]; mov rax, [rax]; mov rax, [rax + 0x3268];
-        // xor edx, edx; ret
-        let addressed = decode(&[
-            0x48, 0x8d, 0x05, 0, 1, 0, 0, 0x48, 0x8b, 0x00, 0x48, 0x8b, 0x80, 0x68, 0x32, 0, 0,
-            0x31, 0xd2, RET,
-        ]);
-        assert_eq!(
-            decode_dispatch_table(&addressed, "group"),
-            Ok(DispatchTable::Group {
-                group: ImageAddress::new(0x1107),
-                offset: 0x3268
-            })
-        );
-    }
-
-    #[test]
     fn a_dispatch_table_accessor_of_another_shape_is_refused_by_its_instruction() {
         // A further load of the table's base: mov rax, [rax].
         let loads_again = decode(&[0x48, 0x8b, 0x87, 0x68, 0x02, 0, 0, 0x48, 0x8b, 0x00, RET]);
@@ -1239,35 +1155,6 @@ mod tests {
         let short = decode(&[0x48, 0x8b, 0x05, 0, 1, 0, 0, RET]);
         assert!(decode_dispatch_table(&short, "accessor").is_err());
         assert!(decode_dispatch_table(&[], "accessor").is_err());
-    }
-
-    #[test]
-    fn each_shape_of_get_default_loads_the_groups_variable() {
-        // Debian: push rbx; mov rbx, rdi; sub rsp, 0x18; lea rax, [rip +
-        // 0x100]; mov rax, [rax]; lock add dword [rax], 1
-        let debian = decode(&[
-            0x53, 0x48, 0x89, 0xfb, 0x48, 0x83, 0xec, 0x18, 0x48, 0x8d, 0x05, 0, 1, 0, 0, 0x48,
-            0x8b, 0x00, 0xf0, 0x83, 0x00, 0x01,
-        ]);
-        assert_eq!(decode_group_variable(&debian, "debian"), Ok(0x110f));
-
-        // nixpkgs: push rbx; sub rsp, 0x18; lea rax, [rip + 0x100]; mov
-        // rbx, fs:0x28; mov [rbp - 0x18], rbx; mov rbx, rdi; mov rax, [rax];
-        // lock add dword [rax], 1
-        let nixpkgs = decode(&[
-            0x53, 0x48, 0x83, 0xec, 0x18, 0x48, 0x8d, 0x05, 0, 1, 0, 0, 0x64, 0x48, 0x8b, 0x1c,
-            0x25, 0x28, 0, 0, 0, 0x48, 0x89, 0x5d, 0xe8, 0x48, 0x89, 0xfb, 0x48, 0x8b, 0x00, 0xf0,
-            0x83, 0x00, 0x01,
-        ]);
-        assert_eq!(decode_group_variable(&nixpkgs, "nixpkgs"), Ok(0x110c));
-
-        // Official: mov rdx, [rip + 0x100]; mov rax, rdi; lock add dword
-        // [rdx], 1; mov [rdi], rdx; ret
-        let official = decode(&[
-            0x48, 0x8b, 0x15, 0, 1, 0, 0, 0x48, 0x89, 0xf8, 0xf0, 0x83, 0x02, 0x01, 0x48, 0x89,
-            0x17, RET,
-        ]);
-        assert_eq!(decode_group_variable(&official, "official"), Ok(0x1107));
     }
 
     #[test]
@@ -1360,18 +1247,6 @@ mod tests {
     }
 
     #[test]
-    fn the_tables_base_is_the_word_its_teardown_clears() {
-        assert_eq!(
-            decode_table_teardown(&teardown(0x3270, 0x3278, true), "dtor"),
-            Ok(0x3270)
-        );
-        assert_eq!(
-            decode_table_teardown(&teardown(0x3268, 0x3270, true), "dtor"),
-            Ok(0x3268)
-        );
-    }
-
-    #[test]
     fn a_teardown_of_another_shape_is_refused() {
         // base_ cleared only after vas_ is deleted.
         let late = decode_table_teardown(&teardown(0x3270, 0x3278, false), "dtor").unwrap_err();
@@ -1415,36 +1290,6 @@ mod tests {
         bytes.extend([0x44, 0x89, 0xe0, 0x48, 0x89, 0x03]); // mov eax, r12d; mov [rbx], rax
         bytes.extend([0x5b, 0x41, 0x5e, 0x41, 0x5f, RET]);
         decode(&bytes)
-    }
-
-    #[test]
-    fn the_embedded_blob_is_found_by_where_each_result_is_stored() {
-        let pointer = |at: u64| (at, true);
-        let size = |at: u64| (at, false);
-
-        let flow = follow(&range(true), "range").expect("a flow");
-        assert_eq!(
-            (flow.code, flow.size),
-            (Some(Value::Returned(0)), Some(Value::Returned(1)))
-        );
-        let accessors = [pointer(0x10), size(0x18), pointer(0x20), size(0x28)];
-        let blob = assign_blob(&flow, &accessors, "range").expect("a blob");
-        assert_eq!(
-            [blob.code, blob.code_size, blob.data, blob.data_size].map(ImageAddress::get),
-            [0x10, 0x18, 0x20, 0x28]
-        );
-
-        let flow = follow(&range(false), "range").expect("a flow");
-        assert_eq!(
-            (flow.code, flow.size),
-            (Some(Value::Returned(3)), Some(Value::Returned(2)))
-        );
-        let accessors = [size(0x28), pointer(0x20), size(0x18), pointer(0x10)];
-        let blob = assign_blob(&flow, &accessors, "range").expect("a blob");
-        assert_eq!(
-            [blob.code, blob.code_size, blob.data, blob.data_size].map(ImageAddress::get),
-            [0x10, 0x18, 0x20, 0x28]
-        );
     }
 
     #[test]

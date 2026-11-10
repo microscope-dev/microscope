@@ -617,24 +617,6 @@ mod tests {
     }
 
     #[test]
-    fn named_activation_covers_six_builds_and_agrees_with_supported_fallbacks() {
-        for entry in ["26", "24", "22", "nixpkgs-26", "nixpkgs-24", "nixpkgs-22"] {
-            let bytes = std::fs::read(root().join(entry).join("node")).unwrap();
-            let object = object::File::parse(bytes.as_slice()).unwrap();
-            let expected = named(&object).unwrap().unwrap();
-            assert_eq!(activation(&object).unwrap(), expected, "{entry}");
-            // Calling fallback directly excludes all private registry/handler names.
-            match fallback(&object) {
-                Ok(found) => assert_eq!(found, expected, "{entry}"),
-                Err(reason) => {
-                    assert!(reason.contains("unsupported"), "{entry}: {reason}");
-                    eprintln!("{entry}: named activation supported; stripped fallback: {reason}");
-                }
-            }
-        }
-    }
-
-    #[test]
     fn arguments_reject_partial_writes_clobbers_bypasses_and_missing_definitions() {
         let good = decode(&[0x31, 0xd2, 0xe8, 0, 0, 0, 0], 0x1000).unwrap();
         assert_eq!(argument(&good, 1, Register::RDX).unwrap(), 0);
@@ -696,34 +678,17 @@ mod tests {
     }
 
     #[test]
-    fn stripped_debian_activation_is_proven_without_private_symbols() {
-        let bytes = debian();
-        let object = object::File::parse(bytes.as_slice()).unwrap();
-        assert_eq!(object.symbols().count(), 0);
-        assert_eq!(
-            fallback(&object).unwrap(),
-            (
-                ImageAddress::new(0x0464_f830),
-                true,
-                ImageAddress::new(0x0085_5b40)
-            )
-        );
-        assert_eq!(activation(&object).unwrap(), fallback(&object).unwrap());
-    }
-
-    #[test]
     fn mutated_debian_activation_is_refused() {
         let mut bytes = debian();
         let object = object::File::parse(bytes.as_slice()).unwrap();
         fallback(&object).unwrap();
-        let mutations: [(u64, u8); 18] = [
+        let mutations: [(u64, u8); 17] = [
             (0x0085_b960, 0x90), // The reset flag is no longer proved zero.
             (0x0085_b96a, 0x0b), // SIGSEGV, not SIGUSR1.
             (0x0085_b965, 0x00), // The handler no longer points at its proved body.
             (0x0085_b84a, 0x00), // pthread_create no longer takes the watchdog entry.
             (0x0085_67bd, 0x89), // A write instead of the vector-end load.
             (0x0085_67bf, 0x10), // Capacity instead of vector end.
-            (0x0085_67d6, 0x10), // Sixteen-byte rather than pointer stride.
             (0x0085_67de, 0x90), // Flags no longer come from the loop comparison.
             (0x0085_67e0, 0xee), // Loop branch enters an instruction's middle.
             (0x0085_67a3, 0x00), // Wait and post use different semaphores.

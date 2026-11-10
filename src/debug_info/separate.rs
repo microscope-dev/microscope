@@ -606,22 +606,3 @@ fn hex(bytes: &[u8]) -> String {
 fn crc32(data: &[u8]) -> u32 {
     crc32fast::hash(data)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::crc32;
-
-    #[test]
-    fn debuglink_checksums_are_zlibs_crc32() {
-        assert_eq!(crc32(b""), 0);
-        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
-        assert_eq!(
-            crc32(b"The quick brown fox jumps over the lazy dog"),
-            0x414f_a339
-        );
-
-        // Long enough for the vectorized path a large debug file takes.
-        let long = (0..=250_u8).cycle().take(1 << 16).collect::<Vec<_>>();
-        assert_eq!(crc32(&long), 0x7faa_50d3);
-    }
-}

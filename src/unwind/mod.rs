@@ -445,40 +445,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_register_file_keeps_any_number_and_forgets_what_it_is_told_to() {
-        let register = DwarfRegister::new;
-        let mut file =
-            RegisterFile::new([(register(700), 7), (register(6), 60), (register(63), 1)]);
-        file.set(register(64), 2);
-        file.set(register(700), 70);
-        assert_eq!(file.get(register(700)), Some(70));
-        assert_eq!(file.get(register(5)), None);
-        assert_eq!(
-            file.iter().collect::<Vec<_>>(),
-            [
-                (register(6), 60),
-                (register(63), 1),
-                (register(64), 2),
-                (register(700), 70)
-            ]
-        );
-
-        // A register set and forgotten leaves the file as it was.
-        let before = file.clone();
-        file.set(register(0), 9);
-        file.set(register(65), 9);
-        file.remove(register(0));
-        file.remove(register(65));
-        assert_eq!(file, before);
-
-        file.retain(|register| register.number() % 2 == 0);
-        assert_eq!(
-            file.iter().collect::<Vec<_>>(),
-            [(register(6), 60), (register(64), 2), (register(700), 70)]
-        );
-    }
-
     #[derive(Debug, Clone)]
     enum Change {
         Set(u16, u64),

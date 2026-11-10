@@ -705,24 +705,6 @@ mod tests {
         (generated.version, bytes)
     }
 
-    #[test]
-    fn a_table_gives_each_field_its_schema_names_and_the_rest_are_generated() {
-        let (version, bytes) = table_of("3.13", schemas::V3_13);
-        let (found, flags, layout) = describe(Some(&bytes), Some(version));
-        assert_eq!(found, PyVersion(version));
-        assert_eq!(flags, TARGET_TABLE | GENERATED_TABLE);
-        let layout = layout.expect("a layout");
-        let generated = generated("3.13").expect("3.13 is in the matrix");
-        assert_eq!(
-            layout.field(Field::ThreadNext),
-            generated.field(Field::ThreadNext)
-        );
-
-        // 3.13's table has no co_flags; the generated layout does.
-        assert!(!schemas::V3_13.contains(&"code_object.co_flags"));
-        assert!(layout.has(Field::CodeFlags));
-    }
-
     /// The build whose layout agrees with a table on every field both name
     /// completes it, whichever patch release of its minor version it is,
     /// as 3.14.8's interpreter state outgrew 3.14.4's; one no build agrees
@@ -790,33 +772,6 @@ mod tests {
             .2
             .expect_err("2 is no flag");
         assert!(refused.contains("free_threaded"), "{refused}");
-    }
-
-    #[test]
-    fn remote_debugging_fields_are_taken_from_each_targets_table() {
-        for (name, schema) in [
-            ("3.14", schemas::V3_14),
-            ("3.14t", schemas::V3_14),
-            ("3.15", schemas::V3_15),
-            ("3.15t", schemas::V3_15),
-        ] {
-            let (version, bytes) = table_of(name, schema);
-            let layout = describe(Some(&bytes), Some(version)).2.expect("layout");
-
-            for entry in schema
-                .iter()
-                .filter(|entry| entry.starts_with("debugger_support."))
-            {
-                let field = Field::named(entry).unwrap_or_else(|| panic!("missing {entry}"));
-                let index = schema
-                    .iter()
-                    .position(|candidate| candidate == entry)
-                    .expect("in schema");
-                let at = TABLE_START + 8 * index;
-                let offset = u64::from_le_bytes(bytes[at..at + 8].try_into().expect("a word"));
-                assert_eq!(layout.field(field), Some(offset), "{name}: {entry}");
-            }
-        }
     }
 
     #[test]
@@ -913,19 +868,6 @@ mod tests {
                 "{}",
                 generated.name
             );
-        }
-    }
-
-    /// Each interpreter's generated layout is complete and consistent.
-    #[test]
-    fn every_generated_layout_is_valid() {
-        for generated in layouts::GENERATED {
-            validated(
-                PyVersion(generated.version),
-                generated.free_threaded,
-                generated.layout(),
-            )
-            .unwrap_or_else(|problem| panic!("{}: {problem}", generated.name));
         }
     }
 

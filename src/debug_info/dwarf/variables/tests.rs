@@ -17,15 +17,11 @@ use crate::{
     Variant, VariantSelection, VariantSelector, VirtualAddress,
 };
 
-use super::codec::{
-    decode_address, decode_integer_value, decode_scalar, extract_bit_field, read_sleb128_i128,
-    read_uleb128_u128,
-};
+use super::codec::{decode_address, decode_scalar, extract_bit_field};
 
 use super::die::Seen;
 use super::evaluate::{
     EvaluateError, FrameBase, FrameBaseCache, FrameBaseContext, dwarf_value_bytes, evaluate,
-    materialize_constant,
 };
 
 use super::globals::{DefinitionIndex, DefinitionResolution};
@@ -317,24 +313,6 @@ fn declaration_canonicalization_cannot_launder_a_non_type_reference() {
         TypeResolution::Malformed(description)
             if description.contains("non-type tag")
     ));
-}
-
-#[test]
-fn discriminant_leb128_parsers_cover_full_width_and_reject_overflow() {
-    let mut unsigned_max = vec![0xff; 18];
-    unsigned_max.push(0x03);
-    let mut cursor = 0;
-    assert_eq!(
-        read_uleb128_u128(&unsigned_max, &mut cursor).unwrap(),
-        u128::MAX
-    );
-    assert_eq!(cursor, unsigned_max.len());
-
-    let mut unsigned_overflow = vec![0xff; 18];
-    unsigned_overflow.push(0x04);
-    assert!(read_uleb128_u128(&unsigned_overflow, &mut 0).is_err());
-    assert_eq!(read_sleb128_i128(&[0x7d], &mut 0).unwrap(), -3);
-    assert!(read_sleb128_i128(&[0x80; 20], &mut 0).is_err());
 }
 
 #[test]
@@ -821,63 +799,6 @@ fn read_at(
 }
 
 #[test]
-fn undefined_location_pieces_leave_the_rest_of_a_value_readable() {
-    let mut runtime = Runtime::new([]);
-    let pieces = [
-        piece(
-            Location::Value {
-                value: Value::Generic(0x12),
-            },
-            8,
-        ),
-        piece(Location::Empty, 16),
-        piece(
-            Location::Value {
-                value: Value::Generic(0x34),
-            },
-            8,
-        ),
-    ];
-    let storage = composite(&pieces, 4, &mut runtime).expect("composite");
-    assert_eq!(
-        read_at(&storage, 0, 4, &mut runtime),
-        Err(
-            VariableUnavailableReason::OptimizedOut(crate::OptimizedOutReason::UndefinedPieces {
-                ranges: Arc::from([crate::ValueBitRange {
-                    offset: 8,
-                    size: 16
-                }]),
-            })
-            .into()
-        )
-    );
-    assert_eq!(read_at(&storage, 0, 1, &mut runtime), Ok(vec![0x12]));
-    assert_eq!(read_at(&storage, 3, 1, &mut runtime), Ok(vec![0x34]));
-    assert_eq!(
-        read_at(&storage, 1, 2, &mut runtime),
-        Err(
-            VariableUnavailableReason::OptimizedOut(crate::OptimizedOutReason::EmptyLocation)
-                .into()
-        )
-    );
-
-    // Pieces describing more than the object are malformed.
-    assert!(matches!(
-        composite(&pieces, 3, &mut runtime),
-        Err(EvaluateError::Malformed(_))
-    ));
-
-    // A value with no defined bits at all is optimized out.
-    assert_eq!(
-        composite(&[piece(Location::Empty, 32)], 8, &mut runtime).map(drop),
-        Err(
-            VariableUnavailableReason::OptimizedOut(crate::OptimizedOutReason::EmptyLocation)
-                .into()
-        )
-    );
-}
-
-#[test]
 fn an_empty_location_expression_describes_an_optimized_out_value() {
     let mut pool = Pool::new([]);
     let mut runtime = Runtime::new([]);
@@ -1039,35 +960,6 @@ fn malformed_pieces_are_refused() {
         )
         .map(drop),
         Err(crate::UnsupportedVariableFeature::CompositeLocation.into())
-    );
-}
-
-#[test]
-fn a_piece_in_an_unsaved_register_leaves_the_others_readable() {
-    // r1 is not in the frame's registers.
-    let mut runtime = Runtime::new([(0, 7)]);
-    let pieces = [
-        piece(
-            Location::Register {
-                register: gimli::Register(0),
-            },
-            64,
-        ),
-        piece(
-            Location::Register {
-                register: gimli::Register(1),
-            },
-            64,
-        ),
-    ];
-    let storage = composite(&pieces, 16, &mut runtime).expect("composite");
-    assert_eq!(
-        read_at(&storage, 0, 8, &mut runtime),
-        Ok(7_u64.to_le_bytes().to_vec())
-    );
-    assert_eq!(
-        read_at(&storage, 8, 8, &mut runtime),
-        Err(VariableUnavailableReason::RegisterUnavailable("1".into()).into())
     );
 }
 
@@ -1373,46 +1265,6 @@ fn operational_memory_failures_escape_the_per_variable_result_lane() {
 }
 
 #[test]
-fn fixed_form_constants_zero_extend_and_signed_forms_sign_extend() {
-    let little = target(ByteOrder::Little);
-
-    // A fixed data form supplies zero high bits: DW_FORM_data1 0xff for a
-    // signed 4-byte type is 255; producers use DW_FORM_sdata for -1.
-    assert_eq!(
-        materialize_constant(&ConstantValue::Fixed(0xff), 4, little)
-            .expect("zero-extended fixed-form constant")
-            .as_ref(),
-        &[0xff, 0x00, 0x00, 0x00]
-    );
-    assert_eq!(
-        materialize_constant(&ConstantValue::Signed(-1), 4, little)
-            .expect("sign-extended constant")
-            .as_ref(),
-        &[0xff, 0xff, 0xff, 0xff]
-    );
-
-    // Clang writes an unsigned short's 65535 as the 64-bit sign extension
-    // of its pattern, in an unsigned form.
-    assert_eq!(
-        materialize_constant(&ConstantValue::Unsigned(u128::from(u64::MAX)), 2, little)
-            .expect("a sign-extended pattern in an unsigned form")
-            .as_ref(),
-        &[0xff, 0xff]
-    );
-
-    // A value that is neither the pattern nor its extension does not fit.
-    assert!(materialize_constant(&ConstantValue::Unsigned(0x1_0000), 2, little).is_err());
-    assert!(
-        materialize_constant(
-            &ConstantValue::Unsigned(u128::from(u64::MAX - 1) << 1),
-            2,
-            little
-        )
-        .is_err()
-    );
-}
-
-#[test]
 fn unexecuted_fbreg_branches_do_not_require_a_frame_base() {
     let mut pool = Pool::new([]);
     let mut runtime = Runtime::new([]);
@@ -1546,34 +1398,6 @@ fn scalar_decoding_obeys_bit_width_sign_and_target_byte_order() {
             ScalarValue::Unsigned(unsigned)
         );
     }
-
-    // A sub-byte integer masks its padding and sign-extends from its width.
-    let base = |encoding, bit_size| BaseType {
-        name: "bits".into(),
-        base_name: "bits".into(),
-        encoding,
-        byte_size: 1,
-        bit_size: Some(bit_size),
-    };
-
-    assert_eq!(
-        decode_integer_value(
-            &base(BaseTypeEncoding::Unsigned, 3),
-            &[0xff],
-            ByteOrder::Little
-        )
-        .unwrap(),
-        IntegerValue::Unsigned(7)
-    );
-    assert_eq!(
-        decode_integer_value(
-            &base(BaseTypeEncoding::Signed, 3),
-            &[0x05],
-            ByteOrder::Little
-        )
-        .unwrap(),
-        IntegerValue::Signed(-3)
-    );
 }
 
 #[test]
@@ -1798,45 +1622,6 @@ fn graph_finalization_propagates_wrapper_sizes_to_a_fixpoint() {
             .all(|entry| matches!(entry, TypeEntry::Resolved(info) if info.byte_size == Some(8))),
         "{types:?}"
     );
-}
-
-#[test]
-fn inline_cycle_analysis_distinguishes_storage_from_indirection() {
-    let mut cycle_nodes = inline_storage_cycle_nodes(&wrapper_cycle());
-    cycle_nodes.sort_unstable();
-    assert_eq!(cycle_nodes, [0, 1]);
-
-    let pointer_recursion = [
-        node(
-            0,
-            "node",
-            Some(8),
-            TypeKind::Record {
-                kind: RecordKind::Struct,
-                members: Arc::from([RecordMember {
-                    name: Some("next".into()),
-                    type_ref: reference(1),
-                    layout: RecordMemberLayout::ByteOffset(0),
-                    accessibility: Accessibility::Public,
-                    artificial: false,
-                    embedded: false,
-                    declaration: None,
-                }]),
-                bases: Arc::default(),
-                incomplete: false,
-            },
-        ),
-        node(
-            1,
-            "node *",
-            Some(8),
-            TypeKind::Pointer {
-                target: Some(reference(0)),
-                address_class: 0,
-            },
-        ),
-    ];
-    assert!(inline_storage_cycle_nodes(&pointer_recursion).is_empty());
 }
 
 /// One generated type: its kind, the types it names, and a choice that

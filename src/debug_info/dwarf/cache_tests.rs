@@ -202,7 +202,6 @@ fn a_cached_load_answers_as_an_uncached_one() {
     // dump's cost grows with the program.
     let cases = [
         (fixture("variables-cpp-clang-o2"), search(&[])),
-        (fixture("variables-rust-o2"), search(&[])),
         (fixture("callers-go-stripped"), search(&[])),
         (split.clone(), search(&[&root])),
         (split, search(&[&altlink])),

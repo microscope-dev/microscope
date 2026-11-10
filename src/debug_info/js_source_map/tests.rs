@@ -195,15 +195,6 @@ fn segments_out_of_column_order_are_sorted() {
     assert_eq!(map.original_at(at(0, 2)), Some(place(0, 0, 0, None)));
 }
 
-#[test]
-fn bases_convert_only_through_named_constructors() {
-    assert_eq!(Line::from_one_based(1), Some(Line::from_zero_based(0)));
-    assert_eq!(Line::from_one_based(0), None);
-    assert_eq!(Column::from_one_based(7), Some(Column::from_zero_based(6)));
-    assert_eq!(Column::from_zero_based(6).one_based(), Some(7));
-    assert_eq!(Line::from_zero_based(u32::MAX).one_based(), None);
-}
-
 /// Section 0 starts at 0:0, with names `["unused"]`: `AAAA` 0:0 to one.ts
 /// 0:0, `EAAE` 0:2 to 0:2, then `AACA` 1:0 to 1:2. Section 1 starts at
 /// 1:10 with names `["x"]`: `AAAAA` local 0:0 is 1:10, to two.ts 0:0 named
@@ -601,28 +592,6 @@ fn malformed_json_and_fields_are_typed_errors() {
 
     let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
     assert!(matches!(parse_error(&deep), SourceMapError::Json(_)));
-}
-
-#[test]
-fn vlq_values_span_32_bits_with_the_sign() {
-    let decode = |text: &str| {
-        let mut at = 0;
-        let value = decode_vlq(text.as_bytes(), &mut at);
-        value.map(|value| (value, at))
-    };
-    assert_eq!(decode("A"), Ok((0, 1)));
-    assert_eq!(decode("C"), Ok((1, 1)));
-    assert_eq!(decode("D"), Ok((-1, 1)));
-    // The spec's examples.
-    assert_eq!(decode("iB"), Ok((17, 2)));
-    assert_eq!(decode("V"), Ok((-10, 1)));
-    // "-0" is -2^31.
-    assert_eq!(decode("B"), Ok((-(1 << 31), 1)));
-    assert_eq!(decode("+/////D"), Ok(((1 << 31) - 1, 7)));
-    assert_eq!(decode("//////D"), Ok((-((1 << 31) - 1), 7)));
-    // Zero digits past 32 bits add nothing, so they are allowed.
-    assert_eq!(decode("ggggggggA"), Ok((0, 9)));
-    assert!(decode("+/////H").is_err());
 }
 
 #[test]

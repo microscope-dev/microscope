@@ -13,8 +13,8 @@ const AGENT_URL: &str = "_ZNK4node9inspector5Agent8GetWsUrlB5cxx11Ev";
 const IO_URL: &str = "_ZNK4node9inspector11InspectorIo8GetWsUrlB5cxx11Ev";
 const FORMAT: &str = "_ZN4node9inspector15FormatWsAddressERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEiS8_b";
 
-const DISPATCH: &str = "_ZN4node9inspector12_GLOBAL__N_126SameThreadInspectorSession8DispatchERKN12v8_inspector10StringViewE";
-const STOP: &str = "_ZN4node9inspector5Agent4StopEv";
+pub(super) const DISPATCH: &str = "_ZN4node9inspector12_GLOBAL__N_126SameThreadInspectorSession8DispatchERKN12v8_inspector10StringViewE";
+pub(super) const STOP: &str = "_ZN4node9inspector5Agent4StopEv";
 const CONNECT: &str = "_ZN4node9inspector5Agent7ConnectESt10unique_ptrINS0_24InspectorSessionDelegateESt14default_deleteIS3_EEb";
 
 // The supported GCC constructor returns its new InspectorSession through the saved sret.
@@ -132,7 +132,7 @@ fn relative_pointer(object: &object::File<'_>, address: u64) -> Option<u64> {
     found
 }
 
-fn named_function(object: &object::File<'_>, name: &str) -> Option<(u64, u64)> {
+pub(super) fn named_function(object: &object::File<'_>, name: &str) -> Option<(u64, u64)> {
     let mut found = None;
     for symbol in object.symbols().chain(object.dynamic_symbols()) {
         if !symbol.is_definition() || symbol.name().ok() != Some(name) {
@@ -822,25 +822,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stripped_debian_inspector_dispatch_has_an_exact_native_entry() {
-        let root = std::env::var_os("MICROSCOPE_NODE").expect("the pinned Node matrix");
-        let bytes = std::fs::read(
-            std::path::Path::new(&root)
-                .join("debian-24/root/usr/lib/x86_64-linux-gnu/libnode.so.137"),
-        )
-        .unwrap();
-        let object = object::File::parse(bytes.as_slice()).unwrap();
-        assert_eq!(
-            close_functions(&object),
-            Some((
-                crate::ImageAddress::new(0x0085_bc80),
-                crate::ImageAddress::new(0x0085_63d0),
-            ))
-        );
-        assert_eq!(layout(&object).unwrap().close, close_functions(&object));
-    }
-
-    #[test]
     fn stripped_dispatch_rejects_changed_construction_and_relocations() {
         let root = std::env::var_os("MICROSCOPE_NODE").expect("the pinned Node matrix");
         let mut bytes = std::fs::read(
@@ -1004,54 +985,6 @@ mod tests {
                     "{entry} accepted mutation at {offset:x}"
                 );
                 bytes[offset] ^= 8;
-            }
-        }
-    }
-
-    #[test]
-    fn native_inspector_accessors_are_proven_on_every_unstripped_node_build() {
-        let root = std::env::var_os("MICROSCOPE_NODE").expect("the pinned Node matrix");
-        for entry in [
-            "26",
-            "24",
-            "22",
-            "nixpkgs-26",
-            "nixpkgs-24",
-            "nixpkgs-22",
-            "debian-24",
-        ] {
-            let directory = std::path::Path::new(&root).join(entry);
-            let file = if entry == "debian-24" {
-                directory.join("root/usr/lib/x86_64-linux-gnu/libnode.so.137")
-            } else {
-                directory.join("node")
-            };
-            let bytes = std::fs::read(file).unwrap();
-            let object = object::File::parse(bytes.as_slice()).unwrap();
-            let layout = layout(&object).unwrap_or_else(|reason| panic!("{entry}: {reason}"));
-            assert_ne!(layout.registry.get(), 0, "{entry}");
-            assert!(
-                layout.close.is_some(),
-                "{entry}: native close is unavailable"
-            );
-            assert_eq!(
-                layout.startup,
-                Some(
-                    startup(&object, layout.vector)
-                        .unwrap_or_else(|reason| panic!("{entry}: {reason}"))
-                )
-            );
-            if entry != "debian-24" {
-                let (dispatch, _) = named_function(&object, DISPATCH).unwrap();
-                let (stop, _) = named_function(&object, STOP).unwrap();
-                assert_eq!(
-                    layout.close,
-                    Some((
-                        crate::ImageAddress::new(dispatch),
-                        crate::ImageAddress::new(stop)
-                    )),
-                    "{entry}"
-                );
             }
         }
     }

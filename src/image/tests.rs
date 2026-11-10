@@ -3904,6 +3904,10 @@ fn sealed_v8(runtime: Option<&super::v8::V8Runtime>) -> Option<super::v8::V8Runt
 /// A V8 runtime reads back as it was sealed, with its layout or the reason
 /// it has none; a field or constant the layout lacks reads back absent.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one round trip for each part of a runtime"
+)]
 fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
     use super::v8::{
         self, Constant, DYNAMIC_SYMBOLS, DispatchTable, EmbeddedBlob, Field, NodeRelease, V8Layout,
@@ -4000,6 +4004,35 @@ fn a_v8_runtime_reads_back_with_its_layout_or_its_problem() {
                     hidden: [0x800, 0x900, 0xa00].map(ImageAddress::new),
                     upgrade: ImageAddress::new(0xb00),
                 },
+            }),
+            ..runtime.clone()
+        };
+        assert_eq!(sealed_v8(Some(&other)), Some(other));
+    }
+    for pool in [
+        None,
+        Some(v8::UvPool {
+            threads: ImageAddress::new(0xc00),
+            nthreads: ImageAddress::new(0xc08),
+            idle_threads: ImageAddress::new(0xc10),
+            cond: ImageAddress::new(0xc18),
+            mutex: ImageAddress::new(0xc20),
+        }),
+    ] {
+        let other = V8Runtime {
+            tasks: Ok(v8::NodeTasks {
+                current_context: 0x158,
+                environment_slot: 0x10f,
+                tag_slot: 0x147,
+                context_tag: ImageAddress::new(0xd00),
+                principal_realm: 0xbc8,
+                timers_callback: 0x288,
+                provider_type: 0x30,
+                provider_names: ImageAddress::new(0xe00),
+                async_id: 0x38,
+                object_wrapper: 0x28,
+                nodedbg: std::array::from_fn(|at| ImageAddress::new(0xf00 + 8 * at as u64)),
+                pool,
             }),
             ..runtime.clone()
         };
