@@ -1095,7 +1095,7 @@ struct Terminating {
 }
 
 impl Inferior {
-    /// Creates an inferior with no execution, stop, breakpoints, or watchpoints.
+    /// Creates an inferior in `run`, with no breakpoints or watchpoints.
     fn new(
         origin: InferiorOrigin,
         tgid: Pid,

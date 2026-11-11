@@ -634,8 +634,8 @@ remove the files.
 `tests/python/agent.rs` checks the real monitoring API on 3.14/3.15 in both GIL
 modes and the native register/all-stop boundary through `Scenario`.
 `backend/linux/tests/agents.rs` takes each phase of an installation through
-every event with a scripted agent, and `tests/agent_model.rs` checks random
-sequences of them against what the agent was sent and holds.
+every event with a scripted agent, and `backend/linux/tests/agent_model.rs`
+checks random sequences of them against what the agent was sent and holds.
 
 **Breakpoints.** `PythonRuntime::resolve_breakpoint` claims a source path
 ending in `.py`, without its `.` components, as a line probe, and a function

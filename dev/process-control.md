@@ -132,6 +132,7 @@ submodules divide work by behavior:
 | Module | Responsibility |
 |---|---|
 | `native` | Real Linux operations and the trait boundary used by simulation |
+| `session` | The controller's phase (idle, traced, or draining fork children) and the replies each phase owes |
 | `lifecycle` | Launch, attach, detach, termination, and process ownership |
 | `classify` | Convert raw wait evidence into debugger stop classes |
 | `run_phase` | Whether the inferior runs, gathers a stop, or is stopped, and which reason a stop publishes |
@@ -294,7 +295,9 @@ so one lift serves every thread at a site. A signal delivered before a
 thread's step leaves the trap in its `retrap`: the handler returns there and
 executes the trap again, a hit already counted, so the thread runs alone
 until it does. `trap.rs` lists every transition, and any other is an
-unexpected wait.
+unexpected wait. Two writes go around it: an exec clears the surviving
+thread's state, since the new program has none of the old traps, and a
+breakpoint change that fails puts back each thread's state from before.
 
 All user memory reads overlay original bytes at installed sites. Writes must
 update the original-byte model correctly so removing a breakpoint does not
@@ -432,7 +435,8 @@ session therefore makes no system-call catchpoint of its own.
 With `StopScope::Group`, one member's stop pauses every other running
 member. `GroupEvent::GroupStopped` is published once none is left running.
 A stop that another member made while the group was stopping is queued.
-`continue_all` reports a queued stop before it resumes anything;
+`continue_all` reports a queued stop before it resumes anything, unless
+its member has moved on since, when the stop is dropped;
 `resume_all` drops the queue, for a client that already shows each
 member's stop. With `StopScope::Process`, each member's stop is reported
 alone.

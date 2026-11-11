@@ -1107,7 +1107,6 @@ impl SimController {
     }
 }
 
-/// The inferior's threads the controller holds in `state`.
 /// The threads the controller has inside a system call, unless it is
 /// `shutting_down`.
 fn in_calls(inferior: &super::Inferior, shutting_down: bool) -> Option<BTreeSet<Tid>> {

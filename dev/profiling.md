@@ -78,7 +78,7 @@ For clock and breakpoint sources, a reader thread drains the rings into a queue
 while the processor works (`Events::read_while`). A low rate fills a ring
 slowly, but loading a program's debug information or its JIT code can keep
 the processor busy for seconds: with an inline drain, 16 Node workers at
-199 Hz lost 76% of their samples (`a_low_rate_is_read_while_processing_is_busy`).
+199 Hz lost 76% of their samples.
 A ring a quarter full wakes the reader, which otherwise sleeps 100 us at
 500 Hz and up and 100 ms below; stopping wakes it at once through an
 eventfd in the same epoll set. Waking every 2 ms at `prod`'s 49 Hz cost 0.2
