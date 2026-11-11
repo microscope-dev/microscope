@@ -387,10 +387,18 @@ impl Events {
     /// Opens disabled events for `pid`, its threads, and its children,
     /// which enable themselves when it next executes a program.
     pub fn open(pid: u32, options: &EventOptions) -> Result<Self, OpenError> {
+        let cpus = online_cpus().map_err(OpenError::Cpus)?;
+        let leased = Leased::take(options, cpus.len());
+        Self::open_leased(pid, options, leased)
+    }
+
+    /// Opens events as [`Events::open`] does, in rings of at most the
+    /// pages `leased` holds.
+    fn open_leased(pid: u32, options: &EventOptions, leased: Leased) -> Result<Self, OpenError> {
         let start = sys::flag::DISABLED | sys::flag::ENABLE_ON_EXEC;
         let pid = i32::try_from(pid).map_err(|_| OpenError::Cpus(std::io::Error::other("pid")))?;
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        let (rings, pages, _, lease) = rings(attr(options, start), pid, &cpus, options)?;
+        let (rings, pages, _, lease) = rings(attr(options, start), pid, &cpus, options, leased)?;
         let sideband = match sideband_attr(options, start) {
             Some(attr) => into_rings(&attr, pid, &cpus, &rings)?,
             None => Vec::new(),
@@ -489,7 +497,8 @@ impl Events {
 
                 let Some(events) = owner.as_mut() else {
                     // The first thread's events own the rings.
-                    match rings(attr, thread, cpus, options) {
+                    let leased = Leased::take(options, cpus.len());
+                    match rings(attr, thread, cpus, options, leased) {
                         Ok((rings, pages, watermark, lease)) => {
                             attr.wakeup_watermark = watermark;
                             let sideband = match &sideband {
@@ -1059,36 +1068,59 @@ fn into_rings(
     Ok(events)
 }
 
+/// The ring memory a test build leases before its events open
+/// ([`lease`]): the most pages each CPU's ring may have, and the lease of
+/// them. A launch leases before it forks, as its child waits at its gate
+/// until the events are open: a lease taken after could wait for another
+/// recording that waits, in turn, for that child to execute.
+struct Leased {
+    pages: usize,
+    lease: lease::Lease,
+}
+
+impl Leased {
+    /// The most pages `options` asks for that a lease of rings on `cpus`
+    /// CPUs is free for, halved while it is not, and at the fewest pages
+    /// that hold two samples, waited for.
+    fn take(options: &EventOptions, cpus: usize) -> Self {
+        let fewest = min_pages(options.stack_bytes);
+        let mut pages = options.ring_pages.next_power_of_two().max(fewest);
+
+        loop {
+            let bytes = (pages + 1) * sys::page_size() * cpus;
+            let wanted = if pages == fewest {
+                lease::Wanted::Wait
+            } else {
+                lease::Wanted::Try
+            };
+            match lease::take(bytes, wanted) {
+                Some(lease) => return Self { pages, lease },
+                None => pages = (pages / 2).max(fewest),
+            }
+        }
+    }
+}
+
 /// One event of `attr` for `pid` on each of `cpus` with its ring, the rings'
 /// data pages, the watermark the events wake their reader at, and the
 /// lease of their memory.
 ///
 /// The kernel lets a user lock only so much memory for rings, which other
-/// recordings may be using: rings that do not fit are halved, down to the
-/// fewest that hold two samples. Each size opens its events afresh, as they
-/// wake their reader a quarter of the way in. A test build leases the
-/// memory first ([`lease`]), and halves the rings when it is not free.
+/// recordings may be using: rings that do not fit are halved, from the
+/// pages `leased` holds down to the fewest that hold two samples. Each size
+/// opens its events afresh, as they wake their reader a quarter of the way
+/// in.
 fn rings(
     mut attr: sys::Attr,
     pid: i32,
     cpus: &[u32],
     options: &EventOptions,
+    leased: Leased,
 ) -> Result<(Vec<sys::Ring>, usize, u32, lease::Lease), OpenError> {
     let fewest = min_pages(options.stack_bytes);
-    let mut pages = options.ring_pages.next_power_of_two().max(fewest);
+    let Leased { mut pages, lease } = leased;
 
     loop {
-        let bytes = (pages + 1) * sys::page_size() * cpus.len();
-        let wanted = if pages == fewest {
-            lease::Wanted::Wait
-        } else {
-            lease::Wanted::Try
-        };
-        let Some(lease) = lease::take(bytes, wanted) else {
-            pages /= 2;
-            continue;
-        };
-
         attr.wakeup_watermark = u32::try_from(pages * sys::page_size() / 4).unwrap_or(u32::MAX);
         let rings: std::io::Result<Vec<sys::Ring>> = open_each(&attr, pid, cpus)?
             .into_iter()
@@ -1300,6 +1332,8 @@ pub fn launch(
     launch: LaunchOptions,
     held: impl FnOnce(u32, &Events) -> Result<(), String>,
 ) -> Result<Launched, LaunchError> {
+    let cpus = online_cpus().map_err(|error| LaunchError::Events(OpenError::Cpus(error)))?;
+    let leased = Leased::take(options, cpus.len());
     let (pid_read, pid_write) = pipe()?;
     let (go_read, go_write) = pipe()?;
     gate(&mut command, [&pid_write, &go_read, &go_write], launch);
@@ -1360,7 +1394,7 @@ pub fn launch(
         }
     };
 
-    let events = match Events::open(pid, options) {
+    let events = match Events::open_leased(pid, options, leased) {
         Ok(events) => events,
         Err(error) => {
             record!("perf launch: closing {pid}'s gate unopened: {error}");
