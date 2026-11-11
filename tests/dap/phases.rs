@@ -59,8 +59,21 @@ struct Row {
     frame: Option<Value>,
 }
 
-fn launch_arguments(program: &str) -> Value {
-    json!({"program": fixture(program)})
+/// Every program a row launches is spin, which never ends by itself: a
+/// row's end, or the row, ends it. A program that could exit on its own
+/// races the row's end, and the row would record whichever came first.
+fn launch_arguments() -> Value {
+    json!({"program": fixture("spin")})
+}
+
+/// Kills the session's program from outside, as a crash or `kill -9` does.
+fn kill(dap: &Dap) {
+    let pid = dap.process_id().expect("a live process");
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(pid).expect("pid fits i32")),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .expect("kill the program");
 }
 
 fn core_arguments() -> Value {
@@ -96,7 +109,7 @@ fn phase(name: &str) -> Row {
         }
         "launch held" => {
             dap.initialize(Profile::Helix);
-            send_and_settle(&mut dap, "launch", launch_arguments("spin"));
+            send_and_settle(&mut dap, "launch", launch_arguments());
         }
         "attach held" => {
             let process = ExternalProcess::spawn(&fixture("attach"));
@@ -112,7 +125,7 @@ fn phase(name: &str) -> Row {
             // Rows may begin while the loader still runs.
             let started = dap.begin(
                 Profile::Helix,
-                ("launch", launch_arguments("spin")),
+                ("launch", launch_arguments()),
                 &Configuration::default(),
             );
             dap.event(started.mark, "process", |_| true);
@@ -121,7 +134,7 @@ fn phase(name: &str) -> Row {
         "stopped" => {
             let started = dap.begin(
                 Profile::Helix,
-                ("launch", launch_arguments("spin")),
+                ("launch", launch_arguments()),
                 &Configuration {
                     functions: vec!["main".to_owned()],
                     ..Configuration::default()
@@ -151,9 +164,11 @@ fn phase(name: &str) -> Row {
         "exited" => {
             let started = dap.begin(
                 Profile::Helix,
-                ("launch", launch_arguments("basic")),
+                ("launch", launch_arguments()),
                 &Configuration::default(),
             );
+            dap.event(started.mark, "thread", |_| true);
+            kill(&dap);
             dap.event(started.mark, "terminated", |_| true);
         }
         _ => unreachable!("no phase {name}"),
@@ -255,7 +270,7 @@ fn act(row: &mut Row, event: &str) -> bool {
             "initialize",
             json!({"adapterID": "microscope", "clientID": "hx"}),
         ),
-        "launch" => send_and_settle(dap, "launch", launch_arguments("spin")),
+        "launch" => send_and_settle(dap, "launch", launch_arguments()),
         "attach core" => send_and_settle(dap, "attach", core_arguments()),
         "configurationDone" => send_and_settle(dap, "configurationDone", Value::Null),
         "threads" => {
@@ -283,14 +298,7 @@ fn act(row: &mut Row, event: &str) -> bool {
         "terminate" => send_and_settle(dap, "terminate", json!({})),
         "disconnect" => return ask(dap, "disconnect", json!({}))["success"] == true,
         "close input" => return true,
-        "killed outside" => {
-            let pid = dap.process_id().expect("a live process");
-            nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(i32::try_from(pid).expect("pid fits i32")),
-                nix::sys::signal::Signal::SIGKILL,
-            )
-            .expect("kill the program");
-        }
+        "killed outside" => kill(dap),
         "exits" => row
             .attached
             .as_mut()
