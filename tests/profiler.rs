@@ -1677,7 +1677,12 @@ fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
             "{version}"
         );
 
+        // A reader behind a busy machine shortens stack copies, and past
+        // what a short copy holds only the frame-pointer chain goes on,
+        // which 3.12's trampolines leave. A shortened stack still crosses
+        // leaf's trampoline to the C that called it.
         let mut through = 0;
+        let mut short = 0;
         for stack in &stacks {
             let context = format!("{version}: {stack:?}");
             assert_ne!(
@@ -1693,11 +1698,26 @@ fn a_stack_through_a_perf_maps_code_goes_on_to_its_callers() {
             assert!(
                 stack.functions[leaf + 1..]
                     .iter()
-                    .any(|function| function.starts_with("py::<module>:")),
+                    .any(|function| function.starts_with("map_next")),
                 "{context}"
             );
-            assert_eq!(stack.ending, StackEnding::Complete, "{context}");
+            if stack.ending == StackEnding::Complete {
+                assert!(
+                    stack.functions[leaf + 1..]
+                        .iter()
+                        .any(|function| function.starts_with("py::<module>:")),
+                    "{context}"
+                );
+            } else {
+                short += 1;
+            }
         }
+
+        assert!(
+            short <= recording.profile.shortened_stacks(),
+            "{version}: {short} stacks through leaf end short, and {} were shortened",
+            recording.profile.shortened_stacks()
+        );
 
         assert!(
             through >= PERF_MAP_LEAF_SAMPLES,
