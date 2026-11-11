@@ -7,8 +7,8 @@
 //! come after it all the same, and are not news.
 
 use microscope::{
-    DebuggerEvent, ExecutionContext, ProcessId, StackFrameId, StopContext, StopId, StopReason,
-    ThreadId,
+    DebuggerEvent, ExecutionContext, ExitStatus, ProcessId, StackFrameId, StopContext, StopId,
+    StopReason, ThreadId,
 };
 
 /// The stop the client was told about.
@@ -86,14 +86,19 @@ pub(super) enum News {
     Started(ProcessId),
 
     /// The process stopped at a new stop.
-    Stopped,
+    Stopped {
+        process: ProcessId,
+        stop: StopId,
+        thread: ThreadId,
+        reason: StopReason,
+    },
 
     /// The process left the stop the client shows for a reason the client
     /// did not ask for, such as another session's continue.
     ResumedElsewhere,
 
     /// The process exited.
-    Exited,
+    Exited(ExitStatus),
 
     /// The debugger let the process go.
     Detached,
@@ -106,25 +111,36 @@ pub(super) enum News {
 /// `resynced` brought up to date. An event at or before that revision is
 /// already shown, except the end of the shown process: a snapshot never
 /// ends it, so its exit or detach is news however late it is read.
-pub(super) const fn news(run: &Run, resynced: u64, event: &DebuggerEvent) -> News {
+pub(super) fn news(run: &Run, resynced: u64, event: DebuggerEvent) -> News {
     let fresh = event.revision() > resynced;
     match event {
         DebuggerEvent::InferiorLaunched { process_id, .. }
         | DebuggerEvent::InferiorAttached { process_id, .. }
             if fresh && matches!(run, Run::NoProcess) =>
         {
-            News::Started(*process_id)
+            News::Started(process_id)
         }
-        DebuggerEvent::InferiorStopped { .. } if fresh => News::Stopped,
+        DebuggerEvent::InferiorStopped {
+            process_id,
+            stop_id,
+            thread_id,
+            reason,
+            ..
+        } if fresh => News::Stopped {
+            process: process_id,
+            stop: stop_id,
+            thread: thread_id,
+            reason,
+        },
 
         // The client's own requests leave the stop as they resume it.
         DebuggerEvent::InferiorContinued { .. } if fresh && matches!(run, Run::Stopped(..)) => {
             News::ResumedElsewhere
         }
-        DebuggerEvent::InferiorExited { process_id, .. } if fresh || shows(run, *process_id) => {
-            News::Exited
-        }
-        DebuggerEvent::InferiorDetached { process_id, .. } if fresh || shows(run, *process_id) => {
+        DebuggerEvent::InferiorExited {
+            process_id, status, ..
+        } if fresh || shows(run, process_id) => News::Exited(status),
+        DebuggerEvent::InferiorDetached { process_id, .. } if fresh || shows(run, process_id) => {
             News::Detached
         }
         _ => News::None,
@@ -141,7 +157,7 @@ const fn shows(run: &Run, process: ProcessId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microscope::{ExecutionId, ExitStatus, ResumeScope};
+    use microscope::{ExecutionId, ResumeScope};
 
     const SHOWN: ProcessId = ProcessId::new(7);
     const OTHER: ProcessId = ProcessId::new(8);
@@ -200,6 +216,19 @@ mod tests {
         }
     }
 
+    fn stop() -> News {
+        News::Stopped {
+            process: SHOWN,
+            stop: StopId::new(2),
+            thread: ThreadId::new(7),
+            reason: StopReason::Pause,
+        }
+    }
+
+    fn exit() -> News {
+        News::Exited(ExitStatus::Code(0))
+    }
+
     /// Each event about process 7, read before (stale) and after (fresh) a
     /// snapshot at revision 10, by each program the client may be shown.
     #[test]
@@ -218,12 +247,12 @@ mod tests {
             ("launched",  "stale", [News::None, News::None, News::None, News::None]),
             ("attached",  "fresh", [News::Started(SHOWN), News::None, News::None, News::None]),
             ("attached",  "stale", [News::None, News::None, News::None, News::None]),
-            ("stopped",   "fresh", [News::Stopped, News::Stopped, News::Stopped, News::Stopped]),
+            ("stopped",   "fresh", [stop(), stop(), stop(), stop()]),
             ("stopped",   "stale", [News::None, News::None, News::None, News::None]),
             ("continued", "fresh", [News::None, News::None, News::ResumedElsewhere, News::None]),
             ("continued", "stale", [News::None, News::None, News::None, News::None]),
-            ("exited",    "fresh", [News::Exited, News::Exited, News::Exited, News::Exited]),
-            ("exited",    "stale", [News::None, News::Exited, News::Exited, News::None]),
+            ("exited",    "fresh", [exit(), exit(), exit(), exit()]),
+            ("exited",    "stale", [News::None, exit(), exit(), News::None]),
             ("detached",  "fresh", [News::Detached, News::Detached, News::Detached, News::Detached]),
             ("detached",  "stale", [News::None, News::Detached, News::Detached, News::None]),
             ("other",     "fresh", [News::None, News::None, News::None, News::None]),
@@ -233,7 +262,7 @@ mod tests {
         for (kind, freshness, expected) in table {
             let revision = if freshness == "fresh" { 11 } else { 10 };
             for ((shown, run), expected) in runs.iter().zip(expected) {
-                let got = news(run, 10, &event(kind, revision));
+                let got = news(run, 10, event(kind, revision));
                 if got != expected {
                     wrong.push(format!(
                         "{freshness} {kind} shown {shown}: got {got:?}, want {expected:?}"

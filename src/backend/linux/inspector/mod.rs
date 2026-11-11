@@ -399,7 +399,7 @@ impl Status {
     const fn link(&self) -> Option<&Link> {
         match self {
             Self::Connecting(_, link) | Self::Connected(_, link) => Some(link),
-            _ => None,
+            Self::Unknown | Self::Awaited { .. } | Self::Listed(_) | Self::Failed { .. } => None,
         }
     }
 
@@ -407,7 +407,11 @@ impl Status {
     const fn connected(&self) -> Option<&Link> {
         match self {
             Self::Connected(_, link) => Some(link),
-            _ => None,
+            Self::Unknown
+            | Self::Awaited { .. }
+            | Self::Listed(_)
+            | Self::Connecting(..)
+            | Self::Failed { .. } => None,
         }
     }
 

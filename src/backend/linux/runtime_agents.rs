@@ -251,7 +251,7 @@ impl Installation {
             }
             State::Ready if sent => Some(Ok(())),
             State::Refused(reason) if sent => Some(Err(Arc::clone(reason))),
-            _ => None,
+            State::Waiting | State::Ready | State::Refused(_) => None,
         }
     }
 

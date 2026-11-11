@@ -2023,36 +2023,30 @@ impl Session {
     /// Tells the client what an event says of where the program is, unless
     /// it was told already.
     async fn run_event(&mut self, event: DebuggerEvent) -> Result<(), Closed> {
-        let news = self.phase.target().map_or(News::None, |target| {
-            super::run::news(&target.run, target.resynced, &event)
-        });
+        let Some(target) = self.phase.target() else {
+            return Ok(());
+        };
 
-        match (news, event) {
-            (News::Started(process), _) => {
+        match super::run::news(&target.run, target.resynced, event) {
+            News::Started(process) => {
                 self.set_run(Run::Running(process));
 
                 // The first thread's id is the process id.
                 self.announce_thread(ThreadId::new(process.get())).await
             }
-            (
-                News::Stopped,
-                DebuggerEvent::InferiorStopped {
-                    process_id,
-                    stop_id,
-                    thread_id,
-                    reason,
-                    ..
-                },
-            ) => self.stopped(process_id, stop_id, thread_id, reason).await,
-            (News::ResumedElsewhere, _) => self.resumed_elsewhere().await,
-            (News::Exited, DebuggerEvent::InferiorExited { status, .. }) => {
-                self.exited(&status, true).await
-            }
-            (News::Detached, _) => {
+            News::Stopped {
+                process,
+                stop,
+                thread,
+                reason,
+            } => self.stopped(process, stop, thread, reason).await,
+            News::ResumedElsewhere => self.resumed_elsewhere().await,
+            News::Exited(status) => self.exited(&status, true).await,
+            News::Detached => {
                 self.set_run(Run::NoProcess);
                 self.client.event("terminated", json!({})).await
             }
-            _ => Ok(()),
+            News::None => Ok(()),
         }
     }
 

@@ -62,14 +62,20 @@ impl Inspector {
                 },
             ));
         }
-        match self.status {
+        match &self.status {
             Status::Awaited {
                 unstarted: Some(why),
             } => Err(format!("Node's inspector has not started; {why}").into()),
             Status::Unknown | Status::Awaited { unstarted: None } => {
                 Err("Node's inspector has not started yet".into())
             }
-            _ => Err("Node's inspector is not connected".into()),
+            Status::Listed(..) | Status::Connecting(..) => {
+                Err("Node's inspector is not connected".into())
+            }
+            Status::Connected(..) => {
+                Err("waiting for Node's inspector to name its isolates".into())
+            }
+            Status::Failed { reason, .. } => Err(Arc::clone(reason)),
         }
     }
 }

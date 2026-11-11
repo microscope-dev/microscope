@@ -1919,7 +1919,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 // other is a thread no event announced yet; one may still come.
                 match inferior.tracked.remove(&pid) {
                     Some(Tracked::Retired | Tracked::Killed | Tracked::ForkChild { .. }) => {}
-                    _ => {
+                    None
+                    | Some(
+                        Tracked::Vanished
+                        | Tracked::Unseized
+                        | Tracked::EarlyStop(_)
+                        | Tracked::HandedOver,
+                    ) => {
                         inferior.tracked.insert(pid, Tracked::Vanished);
                     }
                 }
@@ -1938,7 +1944,15 @@ impl<P: LinuxTraceOps> Controller<P> {
                     Some(Tracked::ForkChild { sites, vfork }) => {
                         self.settle_fork_child(pid, &sites, vfork);
                     }
-                    _ => {
+                    None
+                    | Some(
+                        Tracked::Retired
+                        | Tracked::Vanished
+                        | Tracked::Unseized
+                        | Tracked::EarlyStop(_)
+                        | Tracked::Killed
+                        | Tracked::HandedOver,
+                    ) => {
                         inferior.tracked.insert(pid, Tracked::EarlyStop(*status));
                     }
                 }
@@ -1969,7 +1983,11 @@ impl<P: LinuxTraceOps> Controller<P> {
                 pending.insert(pid, std::mem::take(sites));
                 false
             }
-            _ => true,
+            Tracked::Retired
+            | Tracked::Vanished
+            | Tracked::Unseized
+            | Tracked::Killed
+            | Tracked::HandedOver => true,
         });
 
         // Their parent is gone, so a vfork child no longer blocks it, and
