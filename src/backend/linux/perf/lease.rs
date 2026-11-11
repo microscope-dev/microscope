@@ -266,14 +266,40 @@ mod imp {
     mod tests {
         use super::*;
 
-        /// A scratch pool of 256 bytes, a byte a slot.
-        fn pool(name: &str) -> Pool {
+        /// A pool whose lock files are removed with it.
+        struct Scratch {
+            pool: Pool,
+            directory: std::path::PathBuf,
+        }
+
+        impl std::ops::Deref for Scratch {
+            type Target = Pool;
+
+            fn deref(&self) -> &Pool {
+                &self.pool
+            }
+        }
+
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        /// A scratch pool of `bytes` named `name`.
+        fn scratch(name: &str, bytes: usize) -> Scratch {
             let directory = std::env::temp_dir().join(format!(
                 "microscope-ring-lease-{name}-{}",
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&directory);
-            Pool::new(&directory, SLOTS).expect("a pool")
+            let pool = Pool::new(&directory, bytes).expect("a pool");
+            Scratch { pool, directory }
+        }
+
+        /// A scratch pool of 256 bytes, a byte a slot.
+        fn pool(name: &str) -> Scratch {
+            scratch(name, SLOTS)
         }
 
         const NONE: Duration = Duration::ZERO;
@@ -311,13 +337,17 @@ mod imp {
                 "nothing was let go"
             );
 
-            let (let_go, waiting) = std::sync::mpsc::channel();
+            let (taking, waiting) = std::sync::mpsc::channel();
             std::thread::scope(|scope| {
                 scope.spawn(move || {
                     waiting.recv().expect("the taker waits");
+                    // A few retries for the taker to wait through, so that
+                    // it is granted on a retry. Nothing depends on how long
+                    // the wait lasts.
+                    std::thread::sleep(RETRY * 3);
                     drop(held);
                 });
-                let_go.send(()).expect("let go");
+                taking.send(()).expect("taking");
                 let taken = pool.take(100, Wanted::Wait, Duration::from_secs(60));
                 assert!(taken.is_some(), "the lease let go of is taken");
             });
@@ -340,10 +370,7 @@ mod imp {
             }
 
             let pool = pool("processes");
-            let directory = std::env::temp_dir().join(format!(
-                "microscope-ring-lease-processes-{}",
-                std::process::id()
-            ));
+            let directory = pool.directory.clone();
             let other = || {
                 let output = std::process::Command::new(
                     std::env::current_exe().expect("test executable"),
@@ -421,11 +448,7 @@ mod imp {
         /// A lease is a byte count rounded up to whole slots of the pool.
         #[test]
         fn a_lease_rounds_up_to_whole_slots() {
-            let directory = std::env::temp_dir().join(format!(
-                "microscope-ring-lease-round-{}",
-                std::process::id()
-            ));
-            let pool = Pool::new(&directory, 1000 * SLOTS).expect("a pool");
+            let pool = scratch("round", 1000 * SLOTS);
             let first = pool.take(1001, Wanted::Try, NONE).expect("two slots");
             let rest = pool.take(254_000, Wanted::Try, NONE).expect("254 left");
             assert!(pool.take(1, Wanted::Try, NONE).is_none(), "none left");
