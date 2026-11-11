@@ -5,6 +5,7 @@
 mod cuts;
 mod held;
 mod modules;
+mod off_cpu;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
