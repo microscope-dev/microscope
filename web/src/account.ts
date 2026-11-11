@@ -75,13 +75,33 @@ export async function currentUser(): Promise<User | null> {
   return (await response.json()) as User;
 }
 
-/** Counts the page's own sign-ins and outs, which a check that set out
- * before one of them must not undo. */
-let changes = 0;
+/** Counts the page's own sign-ins and outs, which an answer to a question
+ * asked before one of them must not undo. */
+let epoch = 0;
+
+/** Sets who is signed in as the page itself decided it. */
+function decided(state: Partial<AccountState>): void {
+  epoch += 1;
+  account.setState(state);
+}
+
+/** Asks services who is signed in, and gives a setter that applies its
+ * answer only if the page has not signed in or out since it asked. */
+async function askSince(): Promise<{ now: Account; apply(state: Partial<AccountState>): void }> {
+  const asked = epoch;
+  const now = await ask();
+  return {
+    now,
+    apply: (state) => {
+      if (epoch === asked) {
+        decided(state);
+      }
+    },
+  };
+}
 
 const signedIn = (user: User): User => {
-  changes += 1;
-  account.setState({ now: { kind: "in", user }, notice: null });
+  decided({ now: { kind: "in", user }, notice: null });
   return user;
 };
 
@@ -120,9 +140,8 @@ export async function enterRecoveryCode(challenge: string, recoveryCode: string)
 
 /** Asks services for the account again, after a change to it. */
 async function refresh(): Promise<void> {
-  const user = await currentUser();
-  changes += 1;
-  account.setState({ now: user ? { kind: "in", user } : { kind: "out" } });
+  const { now, apply } = await askSince();
+  apply({ now });
 }
 
 /** A new secret for an authenticator app, which is not in use until a code
@@ -194,10 +213,10 @@ export async function requestPasswordReset(email: string): Promise<void> {
  * account, which stays signed in, so services is asked again. */
 export async function resetPassword(token: string, password: string): Promise<void> {
   await post("/api/password-resets/complete", { token, password });
-  const user = await currentUser();
-  changes += 1;
-  account.setState({
-    now: user ? { kind: "in", user } : { kind: "out" },
+  const { now, apply } = await askSince();
+  const user = now.kind === "in" ? now.user : null;
+  apply({
+    now,
     reset: null,
     notice: {
       ok: true,
@@ -213,15 +232,13 @@ export async function signOut(): Promise<void> {
   if (!response.ok) {
     throw await failure(response);
   }
-  changes += 1;
-  account.setState({ now: { kind: "out" }, notice: null });
+  decided({ now: { kind: "out" }, notice: null });
 }
 
 /** Ends every session the account has, this browser's too. */
 export async function signOutEverywhere(): Promise<void> {
   await post("/api/logout/everywhere", null);
-  changes += 1;
-  account.setState({
+  decided({
     now: { kind: "out" },
     notice: { ok: true, text: "You are signed out on every device." },
   });
@@ -240,14 +257,16 @@ export interface Notice {
   readonly text: string;
 }
 
-export const account = createStore<{
+interface AccountState {
   now: Account;
   notice: Notice | null;
   /** A TOTP challenge single sign-on left for the Account pane to finish. */
   challenge: string | null;
   /** The token from a password reset link, until a new password uses it. */
   reset: string | null;
-}>(() => ({
+}
+
+export const account = createStore<AccountState>(() => ({
   now: { kind: "checking" },
   notice: null,
   challenge: null,
@@ -282,14 +301,8 @@ export function checkAccount(): Promise<void> {
     return following;
   }
   if (asking === null) {
-    const before = changes;
-    const settle = (now: Account) => {
-      if (changes === before) {
-        account.setState({ now });
-      }
-    };
-    asking = ask()
-      .then(settle)
+    asking = askSince()
+      .then(({ now, apply }) => apply({ now }))
       .finally(() => {
         asking = null;
       });
@@ -331,11 +344,10 @@ export function followSignIn(): void {
   const error = fragment.get("error");
   const notice = fragment.get("notice");
   const challenge = fragment.get("challenge");
-  changes += 1;
   // Only what the fragment carried changes: once taken, the fragment is
   // gone, and following again, as React's development build does, must not
   // erase what the first time found.
-  account.setState({
+  decided({
     now: { kind: "checking" },
     ...(error === null
       ? notice === null
@@ -345,9 +357,7 @@ export function followSignIn(): void {
     ...(challenge !== null && fragment.get("method") === "totp" ? { challenge } : {}),
   });
   following = (async () => {
-    const now = await ask();
-    changes += 1;
-    account.setState({ now });
+    decided({ now: await ask() });
   })().finally(() => {
     following = null;
   });
@@ -374,15 +384,14 @@ export function followEmailLink(link: "confirm" | "login" | "reset"): void {
   } else {
     // Until the link is answered, the pane shows neither the sign-in form
     // nor an older check's answer.
-    changes += 1;
-    account.setState({ now: { kind: "checking" } });
+    decided({ now: { kind: "checking" } });
     following = (async () => {
       const response = await post("/api/login/link", { token });
       signedIn((await response.json()) as User);
     })()
       .catch(async (error: Error) => {
         tell({ ok: false, text: `Could not sign in: ${error.message}.` });
-        account.setState({ now: await ask() });
+        decided({ now: await ask() });
       })
       .finally(() => {
         following = null;
