@@ -358,11 +358,15 @@ fn terminating_before_configuration_is_done_fails_the_launch_and_launches_nothin
     );
     dap.event(terminate.mark, "terminated", |_| true);
 
-    // A client that configures anyway starts nothing.
+    // A client that restarts or configures anyway starts nothing.
+    assert_eq!(
+        dap.request_error("restart", json!({})),
+        "the session was terminated before its configuration was done, so there is nothing to restart"
+    );
     let done = dap.send("configurationDone", Value::Null);
     dap.success(done);
     dap.request("threads", Value::Null);
-    assert_eq!(dap.events(done.mark, "process"), Vec::<Value>::new());
+    assert_eq!(dap.events(terminate.mark, "process"), Vec::<Value>::new());
     dap.finish();
 }
 

@@ -1383,7 +1383,19 @@ impl Session {
     /// started, but not which program.
     async fn restart(&mut self, arguments: Value) -> Result<Value, ErrorBody> {
         let target = match &mut self.phase {
-            Phase::Started { target, .. } => target,
+            Phase::Started {
+                target,
+                configured: true,
+            } => target,
+            // Only a start terminated before it began is started unconfigured.
+            Phase::Started {
+                configured: false, ..
+            } => {
+                return Err(ErrorBody::new(
+                    "the session was terminated before its configuration was done, \
+                     so there is nothing to restart",
+                ));
+            }
             // Configuration done starts the program, so restarting it before
             // would start it twice.
             Phase::Adopted { .. } => {
