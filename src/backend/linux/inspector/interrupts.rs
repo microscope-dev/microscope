@@ -22,10 +22,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
         let mut asked = false;
         for inspector in inferior.inspectors.records.values_mut() {
-            let Some(link) = inspector.status.connected() else {
+            let Some((link, isolates)) = inspector.status.connected_mut() else {
                 continue;
             };
-            for (session, isolate) in &mut inspector.isolates {
+            for (session, isolate) in isolates {
                 asked |= ask_pause(&link.connection, session, isolate);
             }
         }

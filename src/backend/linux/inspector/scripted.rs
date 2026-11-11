@@ -961,7 +961,7 @@ fn a_pause_listed_after_another_stop_resumed_stops_at_its_own() {
         )]
     );
     assert!(
-        scripted.record().isolates[&Session::main()]
+        scripted.record().status.isolates()[&Session::main()]
             .paused
             .is_some(),
         "V8 holds the pause published"
@@ -1041,7 +1041,7 @@ fn a_disconnect_mid_request_leaves_the_breakpoint_pending() {
     assert_eq!(scripted.actions(), Vec::<String>::new());
     let record = scripted.record();
     assert!(record.status.link().is_some(), "the new connection stays");
-    assert!(record.isolates[&Session::main()].paused.is_none());
+    assert!(record.status.isolates()[&Session::main()].paused.is_none());
 }
 
 /// A worker that starts while the process is stopped is readied, armed,
@@ -1728,9 +1728,10 @@ fn a_step_whose_pause_waits_for_a_resume_lets_the_main_thread_take_it() {
     let main = scripted.main();
     scripted
         .record()
-        .isolates
-        .get_mut(&Session::main())
+        .status
+        .connected_isolate(&Session::main())
         .expect("the main isolate")
+        .1
         .resuming = true;
     scripted.actions();
     begin_native_step(&mut scripted);

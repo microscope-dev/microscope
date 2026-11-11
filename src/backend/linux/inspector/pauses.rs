@@ -294,9 +294,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let (Some(link), Some(isolate)) =
-            (inspector.status.link(), inspector.isolates.get_mut(session))
-        else {
+        let Some((link, isolate)) = inspector.status.connected_isolate(session) else {
             return Ok(());
         };
         let mut listing = BTreeMap::new();
@@ -423,8 +421,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inferior_mut()
             .and_then(|inferior| inferior.inspectors.records.get_mut(&runtime))
             .and_then(|inspector| {
-                inspector
-                    .isolates
+                let (_, isolates) = inspector.status.connected_mut()?;
+                isolates
                     .values_mut()
                     .filter_map(|isolate| isolate.paused.as_mut())
                     .find(|paused| paused.listing.contains_key(&id))
@@ -476,7 +474,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         // worker's is looked for.
         let mut ready = Vec::new();
         for (&runtime, inspector) in &inferior.inspectors.records {
-            for (session, isolate) in &inspector.isolates {
+            for (session, isolate) in inspector.status.isolates() {
                 if isolate.paused.as_ref().is_some_and(Paused::ready) {
                     ready.push((runtime, session.clone()));
                 }
@@ -562,7 +560,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inspectors
             .records
             .get(runtime)?
-            .isolates
+            .status
+            .isolates()
             .get(session)?;
         let paused = isolate.paused.as_ref()?;
         let numbers = paused
@@ -634,7 +633,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inspectors
             .records
             .values()
-            .flat_map(|inspector| inspector.isolates.values())
+            .flat_map(|inspector| inspector.status.isolates().values())
             .filter_map(|isolate| isolate.paused.as_ref()?.thread)
             .collect::<BTreeSet<_>>();
         let matching = inferior
@@ -785,7 +784,6 @@ impl<P: LinuxTraceOps> Controller<P> {
         for inspector in inferior.inspectors.records.values_mut() {
             let Inspector {
                 status,
-                isolates,
                 step,
                 gate,
                 desired,
@@ -793,37 +791,30 @@ impl<P: LinuxTraceOps> Controller<P> {
                 through,
                 ..
             } = inspector;
+            let Some((link, isolates)) = status.connected_mut() else {
+                continue;
+            };
             for (session, isolate) in isolates.iter_mut() {
                 // The isolate an assignment is made in stays paused while
                 // the program runs, and is asked to make it.
-                if let (Some(assignment), Some(link)) = (
-                    inspector_assigning(assigning, session, isolate, resumed),
-                    status.link(),
-                ) {
+                if let Some(assignment) = inspector_assigning(assigning, session, isolate, resumed)
+                {
                     super::assignments::begin(&link.connection, session, isolate, assignment);
                     // One that could not be begun ends at once.
                     ended |= assignment.ended();
                     continue;
                 }
-                held |= resume_isolate(
-                    status.link().map(|link| &link.connection),
-                    session,
-                    isolate,
-                    (step, through),
-                    resumed,
-                );
+                held |=
+                    resume_isolate(&link.connection, session, isolate, (step, through), resumed);
             }
             if resumed.contains(&main)
-                && let (Some(link), Some(isolate)) =
-                    (status.link(), isolates.get_mut(&Session::main()))
+                && let Some(isolate) = isolates.get_mut(&Session::main())
             {
                 pause_for_step(&link.connection, isolate, step.as_mut(), gate.as_mut());
             }
             // A function compiled while the program ran is found as it
             // runs on.
-            if let Some(link) = status.link()
-                && super::functions::wanted(desired)
-            {
+            if super::functions::wanted(desired) {
                 for (session, isolate) in isolates.iter_mut() {
                     super::functions::search(&link.connection, session, isolate);
                 }
@@ -832,7 +823,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         // Names hold only while their thread stays where V8 paused it.
         let judged = inferior.inspectors.records.values().any(|inspector| {
             inspector
-                .isolates
+                .status
+                .isolates()
                 .values()
                 .any(|isolate| isolate.paused.as_ref().is_some_and(|paused| paused.judged))
         });
@@ -856,7 +848,8 @@ impl<P: InspectionOps> Controller<P> {
             .inspectors
             .records
             .get(runtime)?
-            .isolates
+            .status
+            .isolates()
             .get(session)?
             .paused
             .as_ref()
@@ -872,8 +865,9 @@ impl<P: InspectionOps> Controller<P> {
             .inspectors
             .records
             .get_mut(&runtime)?
-            .isolates
-            .get_mut(session)
+            .status
+            .connected_isolate(session)
+            .map(|(_, isolate)| isolate)
     }
 
     /// Whether V8 holds thread `thread` paused, where its innermost
@@ -884,7 +878,7 @@ impl<P: InspectionOps> Controller<P> {
                 .inspectors
                 .records
                 .values()
-                .flat_map(|inspector| inspector.isolates.values())
+                .flat_map(|inspector| inspector.status.isolates().values())
                 .filter_map(|isolate| isolate.paused.as_ref()?.thread)
                 .any(|pid| debug_thread_id(pid) == thread)
         })
@@ -945,7 +939,7 @@ fn inspector_assigning<'a>(
 /// there, or `Debugger.resume`. Returns whether the pause stays held: one
 /// not yet judged, or whose stop was not published.
 fn resume_isolate(
-    connection: Option<&Connection>,
+    connection: &Connection,
     session: &Session,
     isolate: &mut Isolate,
     (step, through): (&mut Option<Stepping>, &mut Option<super::addons::Through>),
@@ -987,9 +981,7 @@ fn resume_isolate(
     {
         *through = None;
     }
-    if let Some(connection) = connection {
-        isolate.resuming |= send(connection, session, command, serde_json::json!({})).is_ok();
-    }
+    isolate.resuming |= send(connection, session, command, serde_json::json!({})).is_ok();
     isolate.paused = None;
     false
 }

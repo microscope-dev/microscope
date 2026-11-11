@@ -298,8 +298,13 @@ impl<P: LinuxTraceOps> Controller<P> {
     }
 
     fn release_for_cleanup(inspector: &mut super::Inspector) -> Result<()> {
-        let link = inspector.status.link().ok_or(Error::NotRunning)?;
-        for (session, isolate) in &mut inspector.isolates {
+        if inspector.status.link().is_none() {
+            return Err(Error::NotRunning);
+        }
+        let Some((link, isolates)) = inspector.status.connected_mut() else {
+            return Ok(());
+        };
+        for (session, isolate) in isolates {
             for (method, params) in [
                 (
                     "Debugger.setBreakpointsActive",
@@ -678,7 +683,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
             Incoming::Closed { reason, answered } => {
-                inspector.disconnect();
+                inspector.status.disconnect();
                 if returning {
                     return Ok(());
                 }

@@ -107,7 +107,8 @@ impl Inspectors {
     fn isolates_mut(&mut self) -> impl Iterator<Item = &mut Isolate> {
         self.records
             .values_mut()
-            .flat_map(|inspector| inspector.isolates.values_mut())
+            .filter_map(|inspector| inspector.status.connected_mut())
+            .flat_map(|(_, isolates)| isolates.values_mut())
     }
 
     /// Forgets a site whose memory is gone.
@@ -171,17 +172,6 @@ impl Inspectors {
         *frames = shown.into();
     }
 
-    /// Panics if an inspector contradicts itself.
-    pub(super) fn check_invariants(&self) {
-        for (runtime, inspector) in &self.records {
-            debug_assert!(
-                inspector.isolates.is_empty() || matches!(inspector.status, Status::Connected(..)),
-                "runtime {runtime}'s inspector holds isolates with no connection: {:?}",
-                inspector.status
-            );
-        }
-    }
-
     /// Every target, cleanup, and startup checkpoint planted.
     pub(super) fn planted(&self) -> BTreeSet<VirtualAddress> {
         self.entries
@@ -228,11 +218,10 @@ struct Inspector {
     /// Which exceptions V8 is to pause at, as `setPauseOnExceptions`
     /// names them.
     pausing: &'static str,
-
-    /// The main isolate and each worker's, by the session that reaches
-    /// it, while connected.
-    isolates: BTreeMap<Session, Isolate>,
 }
+
+/// A connection's isolates, by the session that reaches each.
+type Isolates = BTreeMap<Session, Isolate>;
 
 /// What one isolate holds and does, as its session reported it.
 #[derive(Debug, Default)]
@@ -362,7 +351,9 @@ enum Status {
     Listed(Server),
 
     Connecting(Server, Link),
-    Connected(Server, Link),
+    /// Connected, with the main isolate and each worker's, by the session
+    /// that reaches it.
+    Connected(Server, Link, Isolates),
 
     /// The inspector cannot be used. The target stays known, if Node
     /// listed one, for detach to find the server by.
@@ -398,7 +389,7 @@ impl Status {
     /// The connection, made or being made.
     const fn link(&self) -> Option<&Link> {
         match self {
-            Self::Connecting(_, link) | Self::Connected(_, link) => Some(link),
+            Self::Connecting(_, link) | Self::Connected(_, link, _) => Some(link),
             Self::Unknown | Self::Awaited { .. } | Self::Listed(_) | Self::Failed { .. } => None,
         }
     }
@@ -406,7 +397,7 @@ impl Status {
     /// The connection, once made.
     const fn connected(&self) -> Option<&Link> {
         match self {
-            Self::Connected(_, link) => Some(link),
+            Self::Connected(_, link, _) => Some(link),
             Self::Unknown
             | Self::Awaited { .. }
             | Self::Listed(_)
@@ -418,37 +409,64 @@ impl Status {
     /// The id of the target Node listed, if it did.
     const fn target(&self) -> Option<&Arc<str>> {
         match self {
-            Self::Listed(server) | Self::Connecting(server, _) | Self::Connected(server, _) => {
+            Self::Listed(server) | Self::Connecting(server, _) | Self::Connected(server, ..) => {
                 Some(&server.target)
             }
             Self::Failed { target, .. } => target.as_ref(),
             Self::Unknown | Self::Awaited { .. } => None,
         }
     }
-}
 
-impl Inspector {
+    /// Each isolate, while connected.
+    fn isolates(&self) -> &Isolates {
+        static NONE: Isolates = BTreeMap::new();
+        match self {
+            Self::Connected(_, _, isolates) => isolates,
+            Self::Unknown
+            | Self::Awaited { .. }
+            | Self::Listed(_)
+            | Self::Connecting(..)
+            | Self::Failed { .. } => &NONE,
+        }
+    }
+
+    /// The connection and its isolates, once made.
+    const fn connected_mut(&mut self) -> Option<(&Link, &mut Isolates)> {
+        match self {
+            Self::Connected(_, link, isolates) => Some((link, isolates)),
+            Self::Unknown
+            | Self::Awaited { .. }
+            | Self::Listed(_)
+            | Self::Connecting(..)
+            | Self::Failed { .. } => None,
+        }
+    }
+
+    /// The connection and the isolate `session` reaches.
+    fn connected_isolate(&mut self, session: &Session) -> Option<(&Link, &mut Isolate)> {
+        let (link, isolates) = self.connected_mut()?;
+        Some((link, isolates.get_mut(session)?))
+    }
+
     /// Ends the connection with no fault of its own, and returns it. The
     /// isolates go with it.
     fn disconnect(&mut self) -> Option<Link> {
-        self.isolates.clear();
-        match std::mem::take(&mut self.status) {
-            Status::Connecting(server, link) | Status::Connected(server, link) => {
-                self.status = Status::Listed(server);
+        match std::mem::take(self) {
+            Self::Connecting(server, link) | Self::Connected(server, link, _) => {
+                *self = Self::Listed(server);
                 Some(link)
             }
             other => {
-                self.status = other;
+                *self = other;
                 None
             }
         }
     }
 
-    /// The inspector cannot be used, for `reason`, and holds no isolates.
+    /// The inspector cannot be used, for `reason`.
     fn fail(&mut self, reason: Arc<str>) {
-        self.isolates.clear();
-        let target = self.status.target().cloned();
-        self.status = Status::Failed { reason, target };
+        let target = self.target().cloned();
+        *self = Self::Failed { reason, target };
     }
 }
 
@@ -600,7 +618,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     record!("the inspector of runtime {runtime} cannot be used: {reason}");
                     if let Some(inferior) = self.session.inferior_mut() {
                         let inspector = inferior.inspectors.records.entry(runtime).or_default();
-                        inspector.fail(reason);
+                        inspector.status.fail(reason);
                     }
                     continue;
                 }
@@ -665,13 +683,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 inspector.listening = listening.unwrap_or_default().into_iter().collect();
                 record!("SIGUSR1 opens the attached node's inspector");
             }
-            Ok(false) => inspector.fail(
+            Ok(false) => inspector.status.fail(
                 "the node's SIGUSR1 disposition is not Node's native inspector handler; \
                  microscope will not deliver SIGUSR1 to application code; start it with \
                  --inspect=127.0.0.1:0"
                     .into(),
             ),
-            Err(reason) => inspector.fail(reason),
+            Err(reason) => inspector.status.fail(reason),
         }
     }
 
@@ -862,7 +880,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 {
                     return self.assignment_replied(runtime, id, result);
                 }
-                if inspector.isolates.values().any(|isolate| {
+                if inspector.status.isolates().values().any(|isolate| {
                     isolate
                         .paused
                         .as_ref()
@@ -895,7 +913,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             Incoming::Closed { reason, .. } => {
                 record!("the inspector connection closed: {reason}");
-                inspector.fail(format!("the inspector connection closed: {reason}").into());
+                inspector
+                    .status
+                    .fail(format!("the inspector connection closed: {reason}").into());
                 self.publish_breakpoints_changed();
                 // No pause is coming to hold the main thread for.
                 self.release_step_gate()?;
@@ -918,7 +938,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
         inspector.status = match std::mem::take(&mut inspector.status) {
-            Status::Connecting(server, link) => Status::Connected(server, link),
+            Status::Connecting(server, link) => Status::Connected(
+                server,
+                link,
+                Isolates::from([(Session::main(), Isolate::default())]),
+            ),
             other => other,
         };
         let Some(link) = inspector.status.connected() else {
@@ -936,7 +960,6 @@ impl<P: LinuxTraceOps> Controller<P> {
             serde_json::json!({ "enabled": true }),
         );
         ready_isolate(&link.connection, &main);
-        inspector.isolates.insert(main.clone(), Isolate::default());
         self.sync_inspector(runtime);
         // A release Node takes before the preload's waitForDebugger begins
         // is lost, so the release answers Node's report that it waits.
@@ -1036,14 +1059,14 @@ impl<P: LinuxTraceOps> Controller<P> {
             if let Some(id) = params["sessionId"].as_str() {
                 let worker = session.worker(id);
                 record!("worker {worker:?} is gone");
-                inspector
-                    .isolates
-                    .retain(|session, _| !session.path().starts_with(worker.path()));
+                if let Some((_, isolates)) = inspector.status.connected_mut() {
+                    isolates.retain(|session, _| !session.path().starts_with(worker.path()));
+                }
                 self.publish_breakpoints_changed();
             }
             return Ok(());
         }
-        let Some(isolate) = inspector.isolates.get_mut(session) else {
+        let Some((link, isolate)) = inspector.status.connected_isolate(session) else {
             record!("inspector event {method} of an unknown isolate {session:?}");
             return Ok(());
         };
@@ -1075,9 +1098,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             inspector_protocol::RESUMED => {
                 isolate.resuming = false;
-                if isolate.pause == PauseRequest::Deferred
-                    && let Some(link) = inspector.status.link()
-                {
+                if isolate.pause == PauseRequest::Deferred {
                     let sent = send(
                         &link.connection,
                         session,
@@ -1102,7 +1123,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             inspector_protocol::WAITING => self.release_isolate(runtime, session),
             inspector_protocol::END if session.path().is_empty() => {
                 record!("the program ends; the debugger leaves its inspector");
-                if let Some(link) = inspector.disconnect() {
+                if let Some(link) = inspector.status.disconnect() {
                     link.connection.close();
                 }
             }
@@ -1122,13 +1143,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
-        let Some(link) = inspector.status.link() else {
+        let Some((link, isolates)) = inspector.status.connected_mut() else {
             return;
         };
         ready_isolate(&link.connection, session);
-        inspector
-            .isolates
-            .insert(session.clone(), Isolate::default());
+        isolates.insert(session.clone(), Isolate::default());
         self.sync_inspector(runtime);
         self.release_isolate(runtime, session);
     }

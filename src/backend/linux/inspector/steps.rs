@@ -70,9 +70,15 @@ impl<P: LinuxTraceOps> Controller<P> {
         let location = params
             .pointer("/callFrames/0/location")
             .unwrap_or(&serde_json::Value::Null);
-        let top = location["scriptId"]
-            .as_str()
-            .and_then(|id| inspector.isolates.get(session)?.scripts.get(id).cloned());
+        let top = location["scriptId"].as_str().and_then(|id| {
+            inspector
+                .status
+                .isolates()
+                .get(session)?
+                .scripts
+                .get(id)
+                .cloned()
+        });
         let Some(link) = inspector.status.link() else {
             return false;
         };
@@ -199,7 +205,7 @@ impl<P: InspectionOps> Controller<P> {
             .inspectors
             .records
             .iter()
-            .find(|(_, inspector)| inspector.isolates.contains_key(&Session::main()))
+            .find(|(_, inspector)| inspector.status.isolates().contains_key(&Session::main()))
             .map(|(&runtime, _)| runtime)?;
         let trace = self
             .backtrace(stop_id, &super::super::frames::StackRoot::of_thread(pid))
@@ -336,7 +342,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             pid == inferior.tgid
                 && inferior.inspectors.records.values().any(|inspector| {
                     let resuming = inspector
-                        .isolates
+                        .status
+                        .isolates()
                         .get(&Session::main())
                         .is_some_and(|isolate| isolate.resuming);
                     inspector.status.link().is_some()

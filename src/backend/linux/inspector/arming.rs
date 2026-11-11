@@ -25,7 +25,8 @@ impl Inspector {
             return Err(Arc::clone(reason));
         }
         let states = || {
-            self.isolates
+            self.status
+                .isolates()
                 .values()
                 .filter_map(|isolate| isolate.sites.get(&number))
                 .flat_map(|site| &site.placements)
@@ -43,7 +44,8 @@ impl Inspector {
             return Err(Arc::clone(reason));
         }
         if self
-            .isolates
+            .status
+            .isolates()
             .values()
             .any(|isolate| isolate.sites.contains_key(&number))
         {
@@ -95,7 +97,7 @@ impl Inspector {
         // A loaded script is named as the location names its own: by as
         // many trailing components, or whole.
         let depth = (!path.starts_with('/')).then(|| path.split('/').count());
-        let loaded = (self.isolates.values())
+        let loaded = (self.status.isolates().values())
             .flat_map(|isolate| isolate.scripts.values())
             .filter(|url| !url.is_empty() && !url.starts_with("node:"))
             .map(|url| {
@@ -150,7 +152,11 @@ impl<P: LinuxTraceOps> Controller<P> {
             (Some(step), _) if step.returning => {
                 Some(super::addons::returning(inspector.through.take(), step)?)
             }
-            (Some(step), _) => Some(super::steps::stepping(&inspector.isolates, step, main)?),
+            (Some(step), _) => Some(super::steps::stepping(
+                inspector.status.isolates(),
+                step,
+                main,
+            )?),
         };
         // A step from a native stop holds the main thread until its pause
         // is handed to it; V8 holds the thread for any other step.
@@ -192,7 +198,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return;
         };
 
-        let Some(link) = inspector.status.connected() else {
+        let Some((link, isolates)) = inspector.status.connected_mut() else {
             if let Status::Listed(server) = &inspector.status {
                 let server = server.clone();
                 self.open_connection(runtime, server);
@@ -204,7 +210,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .iter()
             .map(|arm| (arm.number, arm))
             .collect::<BTreeMap<_, _>>();
-        for (session, isolate) in &mut inspector.isolates {
+        for (session, isolate) in isolates {
             let target = Target {
                 connection: &link.connection,
                 session,
@@ -249,9 +255,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return;
         };
-        let (Some(link), Some(isolate)) =
-            (inspector.status.link(), inspector.isolates.get_mut(session))
-        else {
+        let Some((link, isolate)) = inspector.status.connected_isolate(session) else {
             return;
         };
         let target = Target {
@@ -295,10 +299,14 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let connection = inspector.status.link().map(|link| &link.connection);
-        for (session, isolate) in &mut inspector.isolates {
+        let Some((link, isolates)) = inspector.status.connected_mut() else {
+            record!("inspector reply {id:?}: {result:?}");
+            return Ok(());
+        };
+        let connection = &link.connection;
+        for (session, isolate) in isolates {
             if isolate.withdrawn.remove(&id) {
-                if let (Some(connection), Ok(set)) = (connection, &result)
+                if let Ok(set) = &result
                     && let Some(breakpoint) = set["breakpointId"].as_str()
                 {
                     remove(connection, session, breakpoint);
@@ -320,7 +328,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     continue;
                 };
                 if matches!(placement.state, SiteState::Withdrawn(_)) {
-                    if let (Some(connection), Ok(set)) = (connection, &result)
+                    if let Ok(set) = &result
                         && let Some(breakpoint) =
                             set.get("breakpointId").and_then(serde_json::Value::as_str)
                     {

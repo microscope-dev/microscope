@@ -39,7 +39,6 @@ impl<P: InspectionOps> Controller<P> {
             self.check_run_phase(inferior);
             self.check_watchpoint_ids(inferior);
             self.check_managed(inferior);
-            inferior.inspectors.check_invariants();
             for (&runtime, installation) in &inferior.agents {
                 installation.check_invariants(runtime);
             }

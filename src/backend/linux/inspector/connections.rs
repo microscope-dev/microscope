@@ -229,7 +229,7 @@ impl Node {
                     .and_then(|silent| silent.local_addr().ok());
                 silent == Some(server.address)
             }
-            super::Status::Connected(server, link) => {
+            super::Status::Connected(server, link, _) => {
                 let closing = self.closing && server.address == self.inspectors[0].address;
                 !closing
                     && self

@@ -576,7 +576,8 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Err("Node's inspector is not connected".into());
         }
         let (session, index) = inspector
-            .isolates
+            .status
+            .isolates()
             .iter()
             .find_map(|(session, isolate)| {
                 let paused = isolate.paused.as_ref()?;
@@ -671,13 +672,12 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let (Some(link), Some(assignment)) =
-            (inspector.status.link(), inspector.assigning.as_mut())
+        let (Some(_), Some(assignment)) = (inspector.status.link(), inspector.assigning.as_mut())
         else {
             return Ok(());
         };
         let session = assignment.session.clone();
-        let Some(isolate) = inspector.isolates.get_mut(&session) else {
+        let Some((link, isolate)) = inspector.status.connected_isolate(&session) else {
             assignment.fail("the isolate the frame is in is gone");
             return self.queue_internal_edit(super::super::Edit::InspectorAssigned);
         };

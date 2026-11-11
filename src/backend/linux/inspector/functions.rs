@@ -157,9 +157,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return false;
         };
-        let (Some(link), Some(isolate)) =
-            (inspector.status.link(), inspector.isolates.get_mut(session))
-        else {
+        let Some((link, isolate)) = inspector.status.connected_isolate(session) else {
             return false;
         };
         if !wanted(&inspector.desired) {
@@ -175,7 +173,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             .inferior()
             .and_then(|inferior| inferior.inspectors.records.get(&runtime))
             .is_some_and(|inspector| {
-                inspector.isolates.values().any(|isolate| {
+                inspector.status.isolates().values().any(|isolate| {
                     isolate
                         .search
                         .as_ref()
@@ -199,11 +197,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         else {
             return Ok(());
         };
-        let Some(link) = inspector.status.link() else {
+        let Some((link, isolates)) = inspector.status.connected_mut() else {
             return Ok(());
         };
         let names = names(&inspector.desired);
-        let Some((session, isolate)) = inspector.isolates.iter_mut().find(|(_, isolate)| {
+        let Some((session, isolate)) = isolates.iter_mut().find(|(_, isolate)| {
             isolate
                 .search
                 .as_ref()
