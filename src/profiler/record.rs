@@ -1008,7 +1008,9 @@ impl Processor {
         let time = record.time().unwrap_or(self.latest);
         self.account_before(time);
         self.map_lost_before(time);
-        if time < self.latest {
+        // Late: older than a record processed already, or than a watermark
+        // that said every record before it had come.
+        if time < self.latest.max(self.processed_to) {
             self.builder.count(AccountKind::LateRecords as u32, 1);
         }
 

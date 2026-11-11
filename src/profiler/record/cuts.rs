@@ -418,6 +418,9 @@ mod tests {
         Drain { lag: u64 },
         /// A save, if anything was observed yet, as `drive` asks for one.
         Save,
+        /// A sample this long before the last record or reading, which is
+        /// late if one after it was processed first.
+        Late { before: u64 },
     }
 
     fn step() -> impl Strategy<Value = Step> {
@@ -426,6 +429,7 @@ mod tests {
             2 => (1..20_u64).prop_map(|after| Step::Observe { after }),
             2 => (0..40_u64).prop_map(|lag| Step::Drain { lag }),
             1 => Just(Step::Save),
+            1 => (1..30_u64).prop_map(|before| Step::Late { before }),
         ]
     }
 
@@ -438,6 +442,37 @@ mod tests {
         /// Each time the sleeper left its CPU and came back, if it did.
         off: Vec<(u64, Option<u64>)>,
         saves: Vec<(u64, Capture)>,
+        /// The samples processed after a later record was.
+        late: Vec<u64>,
+    }
+
+    /// Records waiting to be processed, by time and whether each is a
+    /// sample, the latest time processed, and the latest watermark, by
+    /// which every record before it had come.
+    #[derive(Default)]
+    struct Unprocessed {
+        records: Vec<(u64, bool)>,
+        latest: u64,
+        watermark: u64,
+    }
+
+    impl Unprocessed {
+        /// Processes, in time order, every record at or before `watermark`,
+        /// or every record, noting each sample older than one processed or
+        /// than an earlier watermark.
+        fn process(&mut self, watermark: Option<u64>, late: &mut Vec<u64>) {
+            self.records.sort_unstable();
+            let ready = self
+                .records
+                .partition_point(|(time, _)| watermark.is_none_or(|watermark| *time <= watermark));
+            for (time, is_sample) in self.records.drain(..ready) {
+                if time < self.latest.max(self.watermark) && is_sample {
+                    late.push(time);
+                }
+                self.latest = self.latest.max(time);
+            }
+            self.watermark = self.watermark.max(watermark.unwrap_or(0));
+        }
     }
 
     /// Runs `steps` in `mode`, ending at the last time plus one, and
@@ -448,6 +483,7 @@ mod tests {
         let mut run = Run::default();
         let (mut now, mut watermark) = (1, 0);
         let mut pending = Vec::new();
+        let mut unprocessed = Unprocessed::default();
         recording.observe(now);
         run.observations.push(now);
 
@@ -460,13 +496,16 @@ mod tests {
                         0 | 1 => {
                             pending.push(sample(now));
                             run.samples.push(now);
+                            unprocessed.records.push((now, true));
                         }
                         _ if out => {
                             pending.push(switch(now, true));
                             run.off.push((now, None));
+                            unprocessed.records.push((now, false));
                         }
                         _ => {
                             pending.push(switch(now, false));
+                            unprocessed.records.push((now, false));
                             if let Some((_, back)) = run.off.last_mut() {
                                 *back = Some(now);
                             }
@@ -482,6 +521,13 @@ mod tests {
                     // A record is later than every watermark before it.
                     watermark = now.saturating_sub(lag).max(watermark);
                     recording.ingest(&std::mem::take(&mut pending), watermark);
+                    unprocessed.process(Some(watermark), &mut run.late);
+                }
+                Step::Late { before } => {
+                    let time = now.saturating_sub(before).max(1);
+                    pending.push(sample(time));
+                    run.samples.push(time);
+                    unprocessed.records.push((time, true));
                 }
                 Step::Save => {
                     if recording.observed(0) {
@@ -492,6 +538,8 @@ mod tests {
         }
 
         recording.ingest(&pending, watermark);
+        unprocessed.process(Some(watermark), &mut run.late);
+        unprocessed.process(None, &mut run.late);
         let end = now + 1;
         run.observations.push(end);
         (run, recording.end(end))
@@ -539,9 +587,44 @@ mod tests {
                 prop_assert_eq!(capture.span().1, next.span().0);
             }
 
-            let mut samples: Vec<u64> = captures.iter().flat_map(|capture| sample_times(capture)).collect();
-            samples.sort_unstable();
-            prop_assert_eq!(&samples, &run.samples);
+            // Every sample on time is in the one segment it falls in; one
+            // that came late is in at most one, or dropped, and counted.
+            let mut on_time = run.samples.clone();
+            on_time.sort_unstable();
+            for time in &run.late {
+                let at = on_time.binary_search(time).expect("a late sample was recorded");
+                on_time.remove(at);
+            }
+            let mut kept: Vec<u64> = Vec::new();
+            for capture in &captures {
+                let (from, to) = capture.span();
+                for time in sample_times(capture) {
+                    let at = i64::try_from(time).expect("small");
+                    prop_assert!(
+                        run.late.contains(&time) || (from <= at && at <= to),
+                        "{} outside {:?}",
+                        time,
+                        (from, to)
+                    );
+                    kept.push(time);
+                }
+            }
+            kept.sort_unstable();
+            let mut missing = on_time.clone();
+            for time in &kept {
+                if let Ok(at) = missing.binary_search(time) {
+                    missing.remove(at);
+                } else {
+                    prop_assert!(run.late.contains(time), "{} kept twice", time);
+                }
+            }
+            prop_assert!(missing.is_empty(), "lost {:?}", missing);
+            prop_assert!(kept.len() <= run.samples.len());
+            let late: u64 = captures
+                .iter()
+                .map(|capture| capture.account(AccountKind::LateRecords as u32))
+                .sum();
+            prop_assert_eq!(late, run.late.len() as u64);
 
             let end = *run.observations.last().expect("an end");
             let counted: u64 = captures
@@ -580,14 +663,35 @@ mod tests {
                 }
 
                 let start = start.unwrap_or(0);
-                let kept: Vec<u64> = run
-                    .samples
-                    .iter()
-                    .copied()
-                    .filter(|time| start <= *time && *time < end)
-                    .collect();
-                prop_assert_eq!(sample_times(capture), kept);
+                let within = |time: &u64| start <= *time && *time < end;
+                let mut on_time: Vec<u64> = run.samples.iter().copied().filter(within).collect();
+                for time in run.late.iter().filter(|time| within(time)) {
+                    let at = on_time.iter().position(|kept| kept == time).expect("recorded");
+                    on_time.remove(at);
+                }
+                // A late sample in the window may be kept or dropped.
+                let mut kept = sample_times(capture);
+                for time in &on_time {
+                    let at = kept.iter().position(|kept| kept == time);
+                    prop_assert!(at.is_some(), "lost {} from {:?}", time, (start, end));
+                    kept.remove(at.expect("checked"));
+                }
+                for time in &kept {
+                    prop_assert!(within(time) && run.late.contains(time), "kept {}", time);
+                }
                 prop_assert_eq!(capture.account(AccountKind::Counted as u32), end - start);
+
+                // The sleeper's time off its CPU, cut to the window.
+                let off: u64 = capture.off_cpu.iter().map(|interval| interval.duration.get()).sum();
+                let expected: u64 = run
+                    .off
+                    .iter()
+                    .map(|(left, back)| {
+                        let back = back.unwrap_or(u64::MAX).min(end);
+                        back.saturating_sub((*left).max(start))
+                    })
+                    .sum();
+                prop_assert_eq!(off, expected);
             }
         }
     }
