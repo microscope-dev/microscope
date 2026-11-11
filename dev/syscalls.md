@@ -389,9 +389,9 @@ change only the lines. `microscope report` always prints microseconds.
   engine, which needs no privilege. Its `bpf` module runs the dual-engine
   tests through `just test-bpf`. Times differ between runs, so the tests
   compare their digit counts and columns with strace's, at every
-  precision. The ptrace engine's stops cost microseconds, so only the BPF
-  test `a_call_under_a_microsecond_counts_its_nanoseconds` sees a call
-  shorter than one.
+  precision. No test asserts how long a call takes: that depends on the
+  machine. Both engines time calls in nanoseconds through the same code,
+  so the ptrace engine's table test covers nanosecond precision for both.
 - `tests/catchpoints.rs` covers catchpoints through `Scenario`.
 - `tests/python/syscalls.rs` traces `tests/fixtures/python/syscalls.py` with
   `-k` on three interpreters. It checks each call's Python lines, a second

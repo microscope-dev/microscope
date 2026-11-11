@@ -2720,46 +2720,6 @@ mod bpf {
         }
     }
 
-    /// A getppid takes the BPF engine well under a microsecond, which
-    /// strace's table shows as 0 and `--syscall-times=ns` shows as it is.
-    #[test]
-    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn a_call_under_a_microsecond_counts_its_nanoseconds() {
-        let directory = ScratchDir::new("syscalls-bpf-ns");
-        let output = microscope(&[
-            "-c",
-            "--syscall-times=ns",
-            "-e",
-            "trace=getppid",
-            "-U",
-            "name,calls,min-time,p50",
-            "--",
-        ])
-        .env_clear()
-        .arg(fixture())
-        .args(["churn", "20"])
-        .current_dir(directory.path())
-        .output()
-        .expect("run microscope");
-        let table = text(&output.stderr);
-        assert_eq!(output.status.code(), Some(0), "{table}");
-        let row = table
-            .lines()
-            .find(|line| line.starts_with("getppid "))
-            .unwrap_or_else(|| panic!("no getppid row:\n{table}"));
-        let numbers: Vec<u64> = row
-            .split_whitespace()
-            .skip(1)
-            .map(|cell| cell.parse().expect("a number"))
-            .collect();
-        let [calls, min, p50] = numbers[..] else {
-            panic!("{row:?}");
-        };
-        assert_eq!(calls, 20, "{table}");
-        assert!((1..1_000).contains(&min), "min {min} ns:\n{table}");
-        assert!(p50 > 0, "{table}");
-    }
-
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_blocked_call_is_reported_in_flight_while_the_program_runs() {
