@@ -420,12 +420,21 @@ pub struct OffCpu {
     /// When it left its CPU, in nanoseconds on the capture's clock.
     pub time: I64,
 
-    /// Nanoseconds until it ran again, or until the recording ended.
+    /// Nanoseconds until it ran again, or until the capture ended.
     pub duration: U64,
 
     /// One when it left while it could still run, zero when it blocked.
     pub preempted: u8,
+
+    /// [`OFF_CPU_BEGAN_UNSEEN`] and [`OFF_CPU_ENDED_UNSEEN`].
+    pub flags: u8,
 }
+
+/// It left its CPU before the capture began, which starts it.
+pub const OFF_CPU_BEGAN_UNSEEN: u8 = 1;
+
+/// It was still off its CPU when the capture ended, which ends it.
+pub const OFF_CPU_ENDED_UNSEEN: u8 = 2;
 
 /// Where one thread's rows are in a table grouped by thread.
 #[repr(C)]
@@ -622,6 +631,11 @@ pub enum AccountKind {
     /// first read, which a program waits for before it relies on its
     /// marks being recorded.
     ProbesRead = 34,
+
+    /// Times a thread left its CPU and its return was lost: it left again,
+    /// or exited, with no switch back in between. Each is no interval, as
+    /// when it came back is unknown.
+    OffCpuLost = 35,
 }
 
 /// A count of something the views must show.
@@ -1161,5 +1175,5 @@ const _: () = assert!(size_of::<Syscall>() == 96 && size_of::<SyscallNote>() == 
 const _: () = assert!(size_of::<Frame>() == 16);
 const _: () = assert!(size_of::<Stack>() == 8);
 const _: () = assert!(size_of::<Sample>() == 24);
-const _: () = assert!(size_of::<OffCpu>() == 17);
+const _: () = assert!(size_of::<OffCpu>() == 18);
 const _: () = assert!(size_of::<Zone>() == 32);

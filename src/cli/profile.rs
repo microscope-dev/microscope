@@ -1926,6 +1926,15 @@ fn off_cpu(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         seconds(blocked),
         seconds(preempted)
     )?;
+    let lost = profile.off_cpu_lost();
+    if lost > 0 {
+        writeln!(
+            out,
+            "{} off a CPU ended in records the kernel dropped, and {} not counted.",
+            plural(lost, "interval"),
+            if lost == 1 { "is" } else { "are" }
+        )?;
+    }
     let waited = sdk.iter().map(off).sum::<u64>();
     if waited > 0 {
         writeln!(

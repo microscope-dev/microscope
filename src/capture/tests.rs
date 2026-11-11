@@ -44,8 +44,8 @@ fn sample_capture(offset: i64) -> Capture {
     builder.sample(main_thread, offset + 2, 1000, shallow, NONE);
     builder.sample(worker, offset + 3, 1000, broken, NONE);
     builder.sample(worker, offset + 4, 1000, python, NONE);
-    builder.off_cpu(worker, offset + 4, 2, false);
-    builder.off_cpu(worker, offset + 1, 1, true);
+    builder.off_cpu(worker, offset + 4, 2, false, OFF_CPU_ENDED_UNSEEN);
+    builder.off_cpu(worker, offset + 1, 1, true, 0);
 
     builder.count(AccountKind::LostSamples as u32, 2);
     builder.gap(offset + 6, offset + 7, GapReason::Budget);
@@ -323,6 +323,13 @@ fn validation_rejects_every_out_of_bounds_reference() {
     assert!(
         broken.validate().is_err(),
         "an off-CPU interval of no cause"
+    );
+
+    let mut broken = valid.clone();
+    broken.off_cpu[0].flags = 4;
+    assert!(
+        broken.validate().is_err(),
+        "an off-CPU interval of unknown flags"
     );
 
     let mut broken = valid.clone();

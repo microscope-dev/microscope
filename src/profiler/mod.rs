@@ -499,11 +499,18 @@ pub struct OffCpuInterval {
     /// When it left its CPU.
     pub time: i64,
 
-    /// Nanoseconds until it ran again, or until the recording ended.
+    /// Nanoseconds until it ran again, or until the capture ended.
     pub duration: u64,
 
     /// Whether it left while it could still run, rather than blocking.
     pub preempted: bool,
+
+    /// Whether it left before the capture began, which starts it.
+    pub began_unseen: bool,
+
+    /// Whether it was still off its CPU when the capture ended, which ends
+    /// it.
+    pub ended_unseen: bool,
 }
 
 /// What a function costs.
@@ -882,6 +889,14 @@ impl Profile {
             .account(crate::capture::records::AccountKind::ShortenedStacks as u32)
     }
 
+    /// Times a thread left its CPU and its return was among the records
+    /// the kernel dropped: these are no interval.
+    #[must_use]
+    pub fn off_cpu_lost(&self) -> u64 {
+        self.capture
+            .account(crate::capture::records::AccountKind::OffCpuLost as u32)
+    }
+
     /// Records other than samples the kernel dropped: of mappings, names,
     /// threads, and context switches.
     #[must_use]
@@ -1017,6 +1032,12 @@ impl Profile {
                         time: interval.time.get(),
                         duration: interval.duration.get(),
                         preempted: interval.preempted != 0,
+                        began_unseen: interval.flags
+                            & crate::capture::records::OFF_CPU_BEGAN_UNSEEN
+                            != 0,
+                        ended_unseen: interval.flags
+                            & crate::capture::records::OFF_CPU_ENDED_UNSEEN
+                            != 0,
                     }),
             );
         }

@@ -189,7 +189,7 @@ fn build(model: &Model, counted: bool) -> CaptureBuilder {
     }
 
     for &(life, time, duration, preempted) in &model.off_cpu {
-        builder.off_cpu(threads[life], time, duration, preempted);
+        builder.off_cpu(threads[life], time, duration, preempted, 0);
     }
 
     for &(life, start, end, site, value, flags) in &model.zones {
@@ -313,7 +313,7 @@ struct Rows {
     threads: Vec<ThreadKey>,
     tasks: Vec<(String, u64, String)>,
     samples: Vec<(ThreadKey, i64, u64, Vec<String>, Option<u64>)>,
-    off_cpu: Vec<(ThreadKey, i64, u64, u8)>,
+    off_cpu: Vec<(ThreadKey, i64, u64, u8, u8)>,
 
     /// Thread, start, end, site, flags, value, and depth when it is kept.
     zones: Vec<(ThreadKey, i64, i64, String, u32, String, Option<u32>)>,
@@ -445,6 +445,7 @@ fn rows(capture: &Capture, depths: bool) -> Rows {
                 interval.time.get(),
                 interval.duration.get(),
                 interval.preempted,
+                interval.flags,
             ));
         }
     }
@@ -631,12 +632,15 @@ fn expected(model: &Model, (lo, hi): (i64, i64)) -> Rows {
     for &(life, start, duration, preempted) in &model.off_cpu {
         let end = start + duration as i64;
         if overlaps(start, end) {
+            let flags = if start < lo { OFF_CPU_BEGAN_UNSEEN } else { 0 }
+                | if end > hi { OFF_CPU_ENDED_UNSEEN } else { 0 };
             let (start, end) = (start.max(lo), end.min(hi));
             rows.off_cpu.push((
                 thread(life),
                 start,
                 (end - start) as u64,
                 u8::from(preempted),
+                flags,
             ));
         }
     }
@@ -1176,7 +1180,7 @@ fn read_whole(bytes: &[u8]) -> Capture {
 fn a_span_of_no_length_at_a_cut_is_in_the_later_piece() {
     let mut builder = CaptureBuilder::new();
     let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
-    builder.off_cpu(thread, 24, 0, true);
+    builder.off_cpu(thread, 24, 0, true, 0);
     builder.gap(24, 24, GapReason::Budget);
     let [before, after] = &pieces(builder, &[24])[..] else {
         panic!("two pieces");

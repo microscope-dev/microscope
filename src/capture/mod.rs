@@ -35,7 +35,7 @@ pub struct CaptureFormat;
 
 /// What a capture's tables mean: bump it with any change to what is
 /// stored.
-pub const CAPTURE_REVISION: u32 = 10;
+pub const CAPTURE_REVISION: u32 = 11;
 
 impl Format for CaptureFormat {
     type Kind = CaptureTable;
@@ -513,6 +513,14 @@ impl Capture {
 
         if self.off_cpu.iter().any(|interval| interval.preempted > 1) {
             return Err("an off-CPU interval has an unknown cause".into());
+        }
+        let known = records::OFF_CPU_BEGAN_UNSEEN | records::OFF_CPU_ENDED_UNSEEN;
+        if self
+            .off_cpu
+            .iter()
+            .any(|interval| interval.flags & !known != 0)
+        {
+            return Err("an off-CPU interval has unknown flags".into());
         }
 
         if !self.frame_symbols.is_empty() && self.frame_symbols.len() != self.frames.len() {

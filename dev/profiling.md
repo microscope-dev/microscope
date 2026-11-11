@@ -705,6 +705,17 @@ An unmatched start or end can occur at recording boundaries or after record
 loss. Represent incomplete intervals and loss counts. Do not extend them to an
 arbitrary timestamp to make totals balance.
 
+A thread is on its CPU or off it since it left (`record/off_cpu.rs`).
+Switches come from the sideband, which stays on through every gap in
+sampling, so an interval ends where the thread came back, gap or not. One
+the capture's start or end cuts says so: `OFF_CPU_BEGAN_UNSEEN` where a
+window or segment begins after the thread left, `OFF_CPU_ENDED_UNSEEN` where
+the recording, a snapshot, or a segment ends before it came back. A return
+the kernel dropped, seen as a second switch out or an exit with no switch
+back between, is no interval, since when the thread came back is unknown;
+the capture counts it as `OffCpuLost`, and `report` says how many. The table
+in `record/off_cpu.rs` holds each event in each phase.
+
 ## Instrumentation probes
 
 The probes SDK places a static site table and shared ring protocol in the

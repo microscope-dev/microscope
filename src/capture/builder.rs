@@ -7,9 +7,9 @@ use foldhash::HashMap;
 use super::Capture;
 use super::records::{
     Account, Frame, FrameKind, Function, Gap, GapReason, Line, Mapping, Marker, MarkerKind, Module,
-    NONE, OffCpu, Plot, Process, Range, Sample, Setting, Site, Stack, Syscall, SyscallErrno,
-    SyscallNote, SyscallStat, Task, TaskWait, Thread, ThreadRange, Truncation, UNSEEN,
-    ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, Zone, ZoneRange,
+    NONE, OFF_CPU_BEGAN_UNSEEN, OFF_CPU_ENDED_UNSEEN, OffCpu, Plot, Process, Range, Sample,
+    Setting, Site, Stack, Syscall, SyscallErrno, SyscallNote, SyscallStat, Task, TaskWait, Thread,
+    ThreadRange, Truncation, UNSEEN, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, Zone, ZoneRange,
 };
 
 use crate::image::{StrId, StringsBuilder};
@@ -482,12 +482,13 @@ impl CaptureBuilder {
     }
 
     /// Records that a thread spent `duration` nanoseconds off its CPU from
-    /// `time`, preempted or blocked.
-    pub fn off_cpu(&mut self, thread: u32, time: i64, duration: u64, preempted: bool) {
+    /// `time`, preempted or blocked, with `OFF_CPU_*` `flags`.
+    pub fn off_cpu(&mut self, thread: u32, time: i64, duration: u64, preempted: bool, flags: u8) {
         own_mut(&mut self.off_cpu, thread).push(OffCpu {
             time: time.into(),
             duration: duration.into(),
             preempted: preempted.into(),
+            flags,
         });
     }
 
@@ -695,6 +696,7 @@ impl CaptureBuilder {
                 if start < time && end > time {
                     interval.time = time.into();
                     interval.duration = end.abs_diff(time).into();
+                    interval.flags |= OFF_CPU_BEGAN_UNSEEN;
                 }
 
                 end > time || start >= time
@@ -741,7 +743,10 @@ impl CaptureBuilder {
             intervals.retain_mut(|interval| {
                 let start = interval.time.get();
                 let length = time.saturating_sub(start).max(0).unsigned_abs();
-                interval.duration = interval.duration.get().min(length).into();
+                if interval.duration.get() > length {
+                    interval.duration = length.into();
+                    interval.flags |= OFF_CPU_ENDED_UNSEEN;
+                }
                 start < time
             });
         }

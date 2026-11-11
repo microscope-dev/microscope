@@ -393,17 +393,13 @@ pub struct Processor {
     chain: Vec<u64>,
     frames: Vec<u32>,
 
-    /// Each thread off its CPU since a switch: its row, when it left, and
-    /// whether it was preempted.
-    switched_out: BTreeMap<Tid, (u32, u64, bool)>,
+    /// Each thread off its CPU since a switch.
+    off_cpu: off_cpu::OffCpu,
 
     /// Each gap in sampling, in time order and apart, and where the last
     /// one ended: a recording that ends paused ends there.
     gaps: Vec<(u64, u64)>,
     gaps_end: u64,
-
-    /// Where a budget pause that is not yet a gap began.
-    paused: Option<u64>,
 
     /// The CPU time of this thread when the processor began, and what
     /// loading images has taken of it since.
@@ -498,10 +494,9 @@ impl Processor {
             fixed_period: None,
             chain: Vec::new(),
             frames: Vec::new(),
-            switched_out: BTreeMap::new(),
+            off_cpu: off_cpu::OffCpu::default(),
             gaps: Vec::new(),
             gaps_end: 0,
-            paused: None,
             began: thread_cpu(),
             setup: None,
             loading: std::time::Duration::ZERO,
@@ -1086,23 +1081,15 @@ impl Processor {
                 let thread = self.thread(pid, tid, at);
 
                 if out {
-                    self.switched_out.insert(tid, (thread, time, preempted));
-                } else if let Some((thread, left, preempted)) = self.switched_out.remove(&tid) {
-                    let back = time.min(self.next_gap(left));
-                    self.builder.off_cpu(
-                        thread,
-                        left.cast_signed(),
-                        back.saturating_sub(left),
-                        preempted,
-                    );
+                    self.off_cpu
+                        .left(&mut self.builder, tid, (thread, time, preempted));
+                } else {
+                    self.off_cpu.back(&mut self.builder, tid, time);
                 }
-
-                // A thread that comes back unseen leaving left before the
-                // recording could see it, so when is unknown.
             }
             decode::Record::Exit { pid, tid, .. } => {
                 self.thread_changes += 1;
-                self.switched_out.remove(&tid);
+                self.off_cpu.exited(&mut self.builder, tid);
                 self.builder.thread_exit(tid, at);
                 if let Some(interpreted) = &mut self.interpreted {
                     interpreted.thread_exited(pid, tid);
@@ -2625,15 +2612,7 @@ impl Processor {
             interpreted.close(builder);
         }
 
-        for &(thread, left, preempted) in self.switched_out.values() {
-            let back = end.min(self.next_gap(left));
-            builder.off_cpu(
-                thread,
-                left.cast_signed(),
-                back.saturating_sub(left),
-                preempted,
-            );
-        }
+        self.off_cpu.close(builder, end);
 
         let nanoseconds = |time: std::time::Duration| u64::try_from(time.as_nanos()).unwrap_or(0);
         for (kind, total) in [
@@ -2755,14 +2734,14 @@ impl Processor {
 
         if let Some(process) = self.processes.get(&pid) {
             for tid in &process.threads {
-                self.switched_out.remove(tid);
+                self.off_cpu.exited(&mut self.builder, *tid);
             }
         }
     }
 
-    /// Records that sampling was off from `start` to `end`, and why. A
-    /// thread that left its CPU before a gap may have come back unseen in
-    /// it, so its interval ends where the gap begins.
+    /// Records that sampling was off from `start` to `end`, and why. Only
+    /// sampling is off: a thread's switches are still recorded, so its time
+    /// off its CPU goes on through a gap.
     ///
     /// A budget pause is recorded when it ends, after the task snapshots
     /// taken in it recorded theirs, so it keeps only the spans around them.
@@ -2811,22 +2790,6 @@ impl Processor {
                 .all(|pair| matches!(pair, [a, b] if a.1 <= b.0)),
             "the gaps overlap after adding {start}..{end}"
         );
-    }
-
-    /// Records that the budget turned sampling off at `start`, a pause that
-    /// becomes a gap only when it ends. Records stamped in it are processed
-    /// meanwhile, and a thread off its CPU before it is cut where it began.
-    pub fn pause(&mut self, start: u64) {
-        debug_assert!(self.paused.is_none(), "a pause is already open at {start}");
-        self.paused = Some(start);
-    }
-
-    /// Ends the open budget pause at `end`, as a gap.
-    pub fn resume(&mut self, end: u64) {
-        debug_assert!(self.paused.is_some(), "no pause is open to end at {end}");
-        if let Some(start) = self.paused.take() {
-            self.gap(start, end, GapReason::Budget);
-        }
     }
 
     /// Notes the task a sample of process `pid` ran, when a task snapshot
@@ -3145,16 +3108,6 @@ impl Processor {
                 .info
                 .as_ref()
                 .is_some_and(|info| info.image.symbolize(ImageAddress::new(address)).is_some())
-    }
-
-    /// Where the first gap or open pause after `time` began, or the end of
-    /// time.
-    fn next_gap(&self, time: u64) -> u64 {
-        let next = self.gaps.partition_point(|&(start, _)| start <= time);
-        let gap = self.gaps.get(next).map_or(u64::MAX, |&(start, _)| start);
-        self.paused
-            .filter(|&paused| paused > time)
-            .map_or(gap, |paused| gap.min(paused))
     }
 
     /// Ends the recorder's setup: what it costs from here on is the cost of

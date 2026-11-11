@@ -181,7 +181,7 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::backend::perf;
-    use crate::capture::{AccountKind, Capture};
+    use crate::capture::{AccountKind, Capture, OFF_CPU_BEGAN_UNSEEN, OFF_CPU_ENDED_UNSEEN};
     use crate::debug_info::DebugFileSearch;
     use crate::profiler::Cuts;
     use crate::profiler::record::Processor;
@@ -352,7 +352,23 @@ mod tests {
         let off: Vec<_> = capture
             .off_cpu
             .iter()
-            .map(|interval| format!("{}+{}", interval.time.get(), interval.duration.get()))
+            .map(|interval| {
+                let began = if interval.flags & OFF_CPU_BEGAN_UNSEEN == 0 {
+                    ""
+                } else {
+                    "<"
+                };
+                let ended = if interval.flags & OFF_CPU_ENDED_UNSEEN == 0 {
+                    ""
+                } else {
+                    ">"
+                };
+                format!(
+                    "{began}{}+{}{ended}",
+                    interval.time.get(),
+                    interval.duration.get()
+                )
+            })
             .collect();
         let late = capture.account(AccountKind::LateRecords as u32);
         let late = if late == 0 {
@@ -709,62 +725,62 @@ mod tests {
             .collect();
 
         let expected = [
-            "whole / snapshot: 10..30 counted 5 samples [10, 20, 30] off [\"22+8\"]",
-            "whole / save: 10..30 counted 5 samples [10, 20, 30] off [\"22+8\"]",
+            "whole / snapshot: 10..30 counted 5 samples [10, 20, 30] off [\"22+8>\"]",
+            "whole / save: 10..30 counted 5 samples [10, 20, 30] off [\"22+8>\"]",
             "whole / save asked: observed true then true: 10..70 counted 65 samples [10, 20, 30, 60, 70] off [\"22+40\"]",
             "whole / records arrive: 10..70 counted 65 samples [10, 20, 30, 60, 70] off [\"22+40\"]",
-            "whole / late record: 10..30 counted 65 samples [10, 20, 21, 30] off [\"22+8\"] late 1",
-            "whole / end: 10..30 counted 80 samples [10, 20, 30] off [\"22+8\"]",
-            "whole / save then end: 10..30 counted 5 samples [10, 20, 30] off [\"22+8\"], then 10..30 counted 80 samples [10, 20, 30] off [\"22+8\"]",
+            "whole / late record: 10..30 counted 65 samples [10, 20, 21, 30] off [\"22+8>\"] late 1",
+            "whole / end: 10..30 counted 80 samples [10, 20, 30] off [\"22+8>\"]",
+            "whole / save then end: 10..30 counted 5 samples [10, 20, 30] off [\"22+8>\"], then 10..30 counted 80 samples [10, 20, 30] off [\"22+8>\"]",
             "window waiting / snapshot: 0..0 counted 0 samples [] off []",
             "window waiting / save: 0..0 counted 0 samples [] off []",
             "window waiting / save asked: observed false then true: 5..65 counted 60 samples [10, 20, 30, 60] off [\"22+40\"]",
             "window waiting / records arrive: 5..65 counted 60 samples [10, 20, 30, 60] off [\"22+40\"]",
-            "window waiting / late record: 5..65 counted 60 samples [10, 20, 21, 30] off [\"22+43\"]",
-            "window waiting / end: 5..80 counted 75 samples [10, 20, 30] off [\"22+58\"]",
-            "window waiting / save then end: 0..0 counted 0 samples [] off [], then 5..80 counted 75 samples [10, 20, 30] off [\"22+58\"]",
-            "window shorter than its length / snapshot: 10..25 counted 25 samples [10, 20] off [\"22+3\"]",
-            "window shorter than its length / save: 10..25 counted 25 samples [10, 20] off [\"22+3\"]",
-            "window shorter than its length / save asked: observed false then true: 25..65 counted 40 samples [30, 60] off [\"25+37\"]",
-            "window shorter than its length / records arrive: 25..65 counted 40 samples [30, 60] off [\"25+37\"]",
-            "window shorter than its length / late record: 25..65 counted 40 samples [30] off [\"25+40\"] late 1",
-            "window shorter than its length / end: 25..80 counted 55 samples [30] off [\"25+55\"]",
-            "window shorter than its length / save then end: 10..25 counted 25 samples [10, 20] off [\"22+3\"], then 25..80 counted 55 samples [30] off [\"25+55\"]",
-            "window rolling / snapshot: 25..55 counted 30 samples [30, 40, 50] off [\"25+30\"]",
-            "window rolling / save: 25..55 counted 30 samples [30, 40, 50] off [\"25+30\"]",
-            "window rolling / save asked: observed false then true: 35..65 counted 30 samples [40, 50, 60] off [\"35+27\"]",
-            "window rolling / records arrive: 35..65 counted 30 samples [40, 50, 60] off [\"35+27\"]",
-            "window rolling / late record: 35..65 counted 30 samples [40, 50] off [\"35+30\"] late 1",
-            "window rolling / end: 45..80 counted 35 samples [50] off [\"45+35\"]",
-            "window rolling / save then end: 25..55 counted 30 samples [30, 40, 50] off [\"25+30\"], then 45..80 counted 35 samples [50] off [\"45+35\"]",
+            "window waiting / late record: 5..65 counted 60 samples [10, 20, 21, 30] off [\"22+43>\"]",
+            "window waiting / end: 5..80 counted 75 samples [10, 20, 30] off [\"22+58>\"]",
+            "window waiting / save then end: 0..0 counted 0 samples [] off [], then 5..80 counted 75 samples [10, 20, 30] off [\"22+58>\"]",
+            "window shorter than its length / snapshot: 10..25 counted 25 samples [10, 20] off [\"22+3>\"]",
+            "window shorter than its length / save: 10..25 counted 25 samples [10, 20] off [\"22+3>\"]",
+            "window shorter than its length / save asked: observed false then true: 25..65 counted 40 samples [30, 60] off [\"<25+37\"]",
+            "window shorter than its length / records arrive: 25..65 counted 40 samples [30, 60] off [\"<25+37\"]",
+            "window shorter than its length / late record: 25..65 counted 40 samples [30] off [\"<25+40>\"] late 1",
+            "window shorter than its length / end: 25..80 counted 55 samples [30] off [\"<25+55>\"]",
+            "window shorter than its length / save then end: 10..25 counted 25 samples [10, 20] off [\"22+3>\"], then 25..80 counted 55 samples [30] off [\"<25+55>\"]",
+            "window rolling / snapshot: 25..55 counted 30 samples [30, 40, 50] off [\"<25+30>\"]",
+            "window rolling / save: 25..55 counted 30 samples [30, 40, 50] off [\"<25+30>\"]",
+            "window rolling / save asked: observed false then true: 35..65 counted 30 samples [40, 50, 60] off [\"<35+27\"]",
+            "window rolling / records arrive: 35..65 counted 30 samples [40, 50, 60] off [\"<35+27\"]",
+            "window rolling / late record: 35..65 counted 30 samples [40, 50] off [\"<35+30>\"] late 1",
+            "window rolling / end: 45..80 counted 35 samples [50] off [\"<45+35>\"]",
+            "window rolling / save then end: 25..55 counted 30 samples [30, 40, 50] off [\"<25+30>\"], then 45..80 counted 35 samples [50] off [\"<45+35>\"]",
             "segments waiting / snapshot: 0..0 counted 0 samples [] off []",
             "segments waiting / save: 4..4 counted 0 samples [] off []",
             "segments waiting / save asked: observed false then true: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
             "segments waiting / records arrive: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
-            "segments waiting / late record: 10..65 counted 65 samples [10, 20, 21, 30] off [\"22+43\"]",
-            "segments waiting / end: 10..80 counted 80 samples [10, 20, 30] off [\"22+58\"]",
-            "segments waiting / save then end: 4..4 counted 0 samples [] off [], then 4..80 counted 80 samples [10, 20, 30] off [\"22+58\"]",
-            "segments before a cut / snapshot: 10..25 counted 25 samples [10, 20] off [\"22+3\"]",
-            "segments before a cut / save: 10..25 counted 25 samples [10, 20] off [\"22+3\"]",
+            "segments waiting / late record: 10..65 counted 65 samples [10, 20, 21, 30] off [\"22+43>\"]",
+            "segments waiting / end: 10..80 counted 80 samples [10, 20, 30] off [\"22+58>\"]",
+            "segments waiting / save then end: 4..4 counted 0 samples [] off [], then 4..80 counted 80 samples [10, 20, 30] off [\"22+58>\"]",
+            "segments before a cut / snapshot: 10..25 counted 25 samples [10, 20] off [\"22+3>\"]",
+            "segments before a cut / save: 10..25 counted 25 samples [10, 20] off [\"22+3>\"]",
             "segments before a cut / save asked: observed false then true: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
             "segments before a cut / records arrive: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
-            "segments before a cut / late record: 10..65 counted 65 samples [10, 20, 21, 30] off [\"22+43\"] late 1",
-            "segments before a cut / end: 10..80 counted 80 samples [10, 20, 30] off [\"22+58\"]",
-            "segments before a cut / save then end: 10..25 counted 25 samples [10, 20] off [\"22+3\"], then 25..80 counted 55 samples [30] off [\"25+55\"]",
-            "segments after a cut / snapshot: 25..35 counted 10 samples [30] off [\"25+10\"]",
-            "segments after a cut / save: 25..35 counted 10 samples [30] off [\"25+10\"]",
-            "segments after a cut / save asked: observed false then true: 25..65 counted 40 samples [30, 40, 60] off [\"25+37\"]",
-            "segments after a cut / records arrive: 25..65 counted 40 samples [30, 40, 60] off [\"25+37\"]",
-            "segments after a cut / late record: 25..65 counted 40 samples [30, 40] off [\"25+40\"] late 1",
-            "segments after a cut / end: 25..80 counted 55 samples [30, 40] off [\"25+55\"]",
-            "segments after a cut / save then end: 25..35 counted 10 samples [30] off [\"25+10\"], then 35..80 counted 45 samples [40] off [\"35+45\"]",
+            "segments before a cut / late record: 10..65 counted 65 samples [10, 20, 21, 30] off [\"22+43>\"] late 1",
+            "segments before a cut / end: 10..80 counted 80 samples [10, 20, 30] off [\"22+58>\"]",
+            "segments before a cut / save then end: 10..25 counted 25 samples [10, 20] off [\"22+3>\"], then 25..80 counted 55 samples [30] off [\"<25+55>\"]",
+            "segments after a cut / snapshot: 25..35 counted 10 samples [30] off [\"<25+10>\"]",
+            "segments after a cut / save: 25..35 counted 10 samples [30] off [\"<25+10>\"]",
+            "segments after a cut / save asked: observed false then true: 25..65 counted 40 samples [30, 40, 60] off [\"<25+37\"]",
+            "segments after a cut / records arrive: 25..65 counted 40 samples [30, 40, 60] off [\"<25+37\"]",
+            "segments after a cut / late record: 25..65 counted 40 samples [30, 40] off [\"<25+40>\"] late 1",
+            "segments after a cut / end: 25..80 counted 55 samples [30, 40] off [\"<25+55>\"]",
+            "segments after a cut / save then end: 25..35 counted 10 samples [30] off [\"<25+10>\"], then 35..80 counted 45 samples [40] off [\"<35+45>\"]",
             "segments cut at its last record / snapshot: 25..25 counted 0 samples [] off []",
             "segments cut at its last record / save: 25..25 counted 0 samples [] off []",
-            "segments cut at its last record / save asked: observed false then true: 25..65 counted 40 samples [60] off [\"25+37\"]",
-            "segments cut at its last record / records arrive: 25..65 counted 40 samples [60] off [\"25+37\"]",
-            "segments cut at its last record / late record: 25..65 counted 40 samples [] off [\"25+40\"] late 1",
-            "segments cut at its last record / end: 25..80 counted 55 samples [] off [\"25+55\"]",
-            "segments cut at its last record / save then end: 25..25 counted 0 samples [] off [], then 25..80 counted 55 samples [] off [\"25+55\"]",
+            "segments cut at its last record / save asked: observed false then true: 25..65 counted 40 samples [60] off [\"<25+37\"]",
+            "segments cut at its last record / records arrive: 25..65 counted 40 samples [60] off [\"<25+37\"]",
+            "segments cut at its last record / late record: 25..65 counted 40 samples [] off [\"<25+40>\"] late 1",
+            "segments cut at its last record / end: 25..80 counted 55 samples [] off [\"<25+55>\"]",
+            "segments cut at its last record / save then end: 25..25 counted 0 samples [] off [], then 25..80 counted 55 samples [] off [\"<25+55>\"]",
         ];
         assert_eq!(actual, expected, "\n{}", actual.join("\n"));
     }

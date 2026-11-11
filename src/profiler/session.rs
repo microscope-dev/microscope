@@ -1217,9 +1217,8 @@ struct Pacer {
     /// How long sampling last took to turn on, and off.
     toggled: (u64, u64),
 
-    /// Since when sampling has been on, or none while the budget pauses
-    /// it. The processor keeps where the pause began.
-    on_since: Option<u64>,
+    /// Whether sampling is on, and since when.
+    pace: Pace,
 
     /// What the period has sampled and cost so far.
     sampled: u64,
@@ -1237,7 +1236,7 @@ impl Pacer {
             length: nanoseconds(budget.period),
             window: (now, u64::MAX),
             toggled: (0, 0),
-            on_since: Some(now),
+            pace: Pace::On { since: now },
             sampled: 0,
             cpu: processor.cpu(),
             loading: processor.loading(),
@@ -1247,7 +1246,7 @@ impl Pacer {
 
     /// Whether sampling is on.
     const fn sampling(&self) -> bool {
-        self.on_since.is_some()
+        matches!(self.pace, Pace::On { .. })
     }
 
     /// Turns sampling on or off with `toggle` as the schedule says at
@@ -1274,16 +1273,20 @@ impl Pacer {
 
         let (from, until) = self.window;
         let wanted = from <= now && now < until;
-        if wanted && self.on_since.is_none() {
-            let (began, on) = toggle(true);
-            processor.resume(began);
-            self.toggled.0 = on.saturating_sub(began);
-            self.on_since = Some(on);
-        } else if !wanted && let Some(on) = self.on_since.take() {
-            let (began, off) = toggle(false);
-            self.toggled.1 = off.saturating_sub(began);
-            self.sampled += off.saturating_sub(on);
-            processor.pause(off);
+        match self.pace {
+            Pace::Paused { since } if wanted => {
+                let (began, on) = toggle(true);
+                processor.gap(since, began, GapReason::Budget);
+                self.toggled.0 = on.saturating_sub(began);
+                self.pace = Pace::On { since: on };
+            }
+            Pace::On { since } if !wanted => {
+                let (began, off) = toggle(false);
+                self.toggled.1 = off.saturating_sub(began);
+                self.sampled += off.saturating_sub(since);
+                self.pace = Pace::Paused { since: off };
+            }
+            Pace::On { .. } | Pace::Paused { .. } => {}
         }
 
         let next = [from, until, self.period.saturating_add(current(self))]
@@ -1296,9 +1299,9 @@ impl Pacer {
     /// Ends the period at `now`, lets the controller choose the share of
     /// the next one, and places its window.
     fn next_period(&mut self, now: u64, length: u64, processor: &mut record::Processor) {
-        if let Some(on) = &mut self.on_since {
-            self.sampled += now.saturating_sub(*on);
-            *on = now;
+        if let Pace::On { since } = &mut self.pace {
+            self.sampled += now.saturating_sub(*since);
+            *since = now;
         }
 
         let cpu = processor.cpu();
@@ -1337,10 +1340,17 @@ impl Pacer {
 
     /// Ends the recording at `now`: a pause it ends in is a gap to the end.
     fn finish(self, now: u64, processor: &mut record::Processor) {
-        if self.on_since.is_none() {
-            processor.resume(now);
+        if let Pace::Paused { since } = self.pace {
+            processor.gap(since, now, GapReason::Budget);
         }
     }
+}
+
+/// Whether the budget has sampling on, and since when.
+#[derive(Debug, Clone, Copy)]
+enum Pace {
+    On { since: u64 },
+    Paused { since: u64 },
 }
 
 /// The event that takes `source`'s samples in `program`, and for a
@@ -1690,25 +1700,12 @@ mod tests {
 
     /// A budget pause is a gap from when sampling finished turning off to
     /// when it began turning back on, and one still open when the recording
-    /// ends ends there. The processor learns where a pause began as it
-    /// begins, so a thread off its CPU before it and back during it is off
-    /// only until the pause began. A recording that ends sampling has no
-    /// gap at its end.
+    /// ends ends there. A recording that ends sampling has no gap at its
+    /// end.
     #[test]
     fn a_budget_pause_is_a_gap_from_sampling_off_to_sampling_on() {
-        use crate::backend::perf::decode::Record;
-        use crate::model::{Pid, Tid};
-
         let processor =
             || super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
-        let (pid, tid) = (Pid::new(100), Tid::new(101));
-        let switch = |out, time| Record::Switch {
-            pid,
-            tid,
-            out,
-            preempted: false,
-            time,
-        };
 
         // Sampling is on until 3,000 of a period that outlasts the test, and
         // turning it on or off takes 100 ns.
@@ -1725,22 +1722,13 @@ mod tests {
         };
 
         let mut paused = processor();
-        paused.process(Record::Fork {
-            pid,
-            ppid: Pid::new(1),
-            tid,
-            ptid: Tid::new(1),
-            time: 1_000,
-        });
         let mut pacer = super::Pacer::new(budget, 1_000, &paused);
         pacer.window = (1_000, 3_000);
         assert_eq!(
             pace(&mut pacer, &mut paused, 1_500),
             Duration::from_nanos(1_500)
         );
-        paused.process(switch(true, 2_000));
         pace(&mut pacer, &mut paused, 3_000);
-        paused.process(switch(false, 4_000));
         pacer.window = (5_000, 7_000);
         pace(&mut pacer, &mut paused, 4_500);
         pace(&mut pacer, &mut paused, 5_000);
@@ -1758,12 +1746,6 @@ mod tests {
         let paused = super::Profile {
             capture: paused.finish(),
         };
-        let off: Vec<_> = paused
-            .off_cpu()
-            .iter()
-            .map(|interval| (interval.time, interval.duration))
-            .collect();
-        assert_eq!(off, [(2_000, 1_100)]);
         assert_eq!(
             paused.paused(super::GapReason::Budget),
             [(3_100, 5_000), (7_100, 9_000)]

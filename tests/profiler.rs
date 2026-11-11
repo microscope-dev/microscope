@@ -794,8 +794,8 @@ fn a_threads_time_off_its_cpu_is_each_sleep_and_each_preemption() {
 }
 
 /// A recording over its CPU budget samples less of each period and pauses
-/// sampling between: no sample falls in a pause, no off-CPU interval
-/// reaches past the start of one, and each change of the share is marked.
+/// sampling between: no sample falls in a pause, and each change of the
+/// share is marked.
 #[test]
 fn a_recording_over_its_budget_pauses_between_samples_and_says_so() {
     budget_pauses(Cuts::Whole);
@@ -860,16 +860,6 @@ fn budget_pauses(cuts: Cuts) {
     assert_cpu_accounting(profile);
     if let Some(stack) = sampled.iter().find(|stack| inside(stack.time)) {
         panic!("{stack:?} was sampled in a gap: {gaps:?}");
-    }
-
-    for interval in profile.off_cpu() {
-        let back = interval.time + i64::try_from(interval.duration).expect("short");
-        assert!(
-            !gaps
-                .iter()
-                .any(|(start, _)| interval.time < *start && *start < back),
-            "{interval:?} reaches past the start of a gap: {gaps:?}"
-        );
     }
 }
 

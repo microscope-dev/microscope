@@ -532,10 +532,10 @@ fn off_cpu_time_falls_in_each_slice_it_overlaps() {
         builder.thread(Pid::new(1), Tid::new(1), 0),
         builder.thread(Pid::new(1), Tid::new(2), 0),
     );
-    builder.off_cpu(a, 5, 20, false);
-    builder.off_cpu(a, 30, 4, true);
-    builder.off_cpu(a, 45, 10, false);
-    builder.off_cpu(b, -5, 100, false);
+    builder.off_cpu(a, 5, 20, false, 0);
+    builder.off_cpu(a, 30, 4, true, 0);
+    builder.off_cpu(a, 45, 10, false, 0);
+    builder.off_cpu(b, -5, 100, false, 0);
 
     let capture = builder.finish();
     let query = Query {
@@ -1280,7 +1280,7 @@ fn labeled_off(spans: &[(u32, i64, i64, u32)], samples: &[Sample], off: &[Off]) 
     }
 
     for &(thread, time, duration, preempted) in off {
-        builder.off_cpu(threads[thread as usize], time, duration, preempted);
+        builder.off_cpu(threads[thread as usize], time, duration, preempted, 0);
     }
 
     builder.finish()
