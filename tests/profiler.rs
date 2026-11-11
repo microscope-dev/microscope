@@ -1231,15 +1231,34 @@ fn save_asked_for_at_once(cuts: Cuts, window: &str, segments: &str) {
     assert_cpu_accounting(profile);
     assert!(on_stacks(profile).contains("second"));
 
+    // The program is released only once the save is taken.
+    assert!(!on_stacks(&saved[0]).contains("second"));
+
     let (early, all) = (saved[0].span(), profile.span());
+    let times = |profile: &Profile| {
+        profile
+            .stacks()
+            .iter()
+            .map(|stack| stack.time)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let (saved_times, all_times) = (times(&saved[0]), times(profile));
     if let Cuts::Segments(_) = cuts {
         assert_eq!(early.1, all.0, "the recording begins at the cut");
-        assert!(profile.stacks().iter().all(|stack| stack.time >= all.0));
+        assert!(all_times.iter().all(|&time| time >= all.0));
+        assert!(
+            saved_times.is_disjoint(&all_times),
+            "a sample in both segments"
+        );
     } else {
         // A whole recording saves at once, perhaps before any record
-        // came: then the save is empty.
+        // came: then the save is empty. Whatever it holds, the recording
+        // goes on to hold too.
         assert!(early == (0, 0) || early.0 == all.0, "{early:?} {all:?}");
-        assert!(early.1 <= all.1, "{early:?} {all:?}");
+        assert!(
+            saved_times.is_subset(&all_times),
+            "the recording lost what it saved"
+        );
         assert!(on_stacks(profile).contains("first"));
     }
 }
