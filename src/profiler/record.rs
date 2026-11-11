@@ -379,6 +379,8 @@ pub struct Processor {
 
     /// The latest time processed.
     latest: u64,
+
+    /// The earliest record, whatever a cut forgot since.
     first: Option<u64>,
     registers: Vec<(crate::unwind::DwarfRegister, u64)>,
     scratch: SampleScratch,
@@ -739,7 +741,6 @@ impl Processor {
             self.counts(counts);
             if let Some(start) = self.cut.mark(at, self.builder.accounts()) {
                 self.builder.forget_before(start.cast_signed());
-                self.first = Some(start);
             }
         }
     }
@@ -1011,11 +1012,7 @@ impl Processor {
         }
 
         self.latest = self.latest.max(time);
-        // A capture holds nothing before its start. Before a cut, a late
-        // record moves the start back to it; after one, the cut forgets it.
-        if self.cut.start().is_none() {
-            self.first = Some(self.first.map_or(time, |first| first.min(time)));
-        }
+        self.first = Some(self.first.map_or(time, |first| first.min(time)));
         let at = time.cast_signed();
 
         match record {
@@ -2579,8 +2576,13 @@ impl Processor {
                 accounts,
             });
         }
-        self.first = Some(end);
         builder.finish()
+    }
+
+    /// Where the capture begins: the cut's start once it has one, or else
+    /// the earliest record.
+    fn start_time(&self) -> Option<u64> {
+        self.cut.start().map(|mark| mark.time).or(self.first)
     }
 
     /// Ends `builder` where the cut does, with the counts counted there,
@@ -2590,7 +2592,7 @@ impl Processor {
             End::Records => fallback,
             End::Unobserved => {
                 // Until the first counts read are counted, no span is.
-                let end = self.first.unwrap_or(fallback);
+                let end = self.start_time().unwrap_or(fallback);
                 builder.restore_accounts(&BTreeMap::new());
                 builder.setting("start", &end.to_string());
                 builder.setting("end", &end.to_string());
@@ -3211,7 +3213,7 @@ impl Processor {
     /// Gives each frame not yet symbolized its lines, and the capture its
     /// span so far.
     fn symbolize_new(&mut self) {
-        let start = self.first.unwrap_or(0);
+        let start = self.start_time().unwrap_or(0);
         self.builder.setting("start", &start.to_string());
 
         // A segment cut after the last record ends no earlier than it began.
