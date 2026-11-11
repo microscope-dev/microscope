@@ -2127,7 +2127,29 @@ mod bpf {
                     (tid, vec![call])
                 })
                 .collect();
-            assert_eq!(calls, expected_calls, "{context}");
+
+            // A call is lost, and counted, when the kernel cannot take a
+            // task storage lock another BPF program holds on its CPU. Every
+            // call shown is the right one; those missing are counted lost.
+            let lost: usize = Regex::new(r"--- lost (\d+) events ---")
+                .expect("lost regex")
+                .captures_iter(trace)
+                .map(|found| found[1].parse::<usize>().expect("lost count"))
+                .sum();
+            assert!(
+                calls
+                    .iter()
+                    .all(|(tid, shown)| expected_calls.get(tid) == Some(shown)),
+                "{context}"
+            );
+            let missing = expected_calls
+                .keys()
+                .filter(|tid| !calls.contains_key(tid))
+                .count();
+            assert!(
+                missing <= lost,
+                "{missing} terminal calls missing, {lost} lost: {context}"
+            );
         }
     }
 

@@ -1352,7 +1352,7 @@ mod bpf {
             Command::new(node::node(ENTRY))
                 .args([
                     "-e",
-                    "console.log('ready'); const end = Date.now() + 3000; let n = 0; \
+                    "console.log('ready'); const end = Date.now() + 60000; let n = 0; \
                      while (Date.now() < end) n++;",
                 ])
                 .env_remove("NODE_OPTIONS")
@@ -1371,6 +1371,11 @@ mod bpf {
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args(["record", "--node", "bpf", "--pid"])
             .arg(spinning.0.id().to_string())
+            // Node spins until the test ends, so the recording, not node,
+            // decides how long it runs: reading node's images without the
+            // cache took up to 3 s here, and a node that stopped on its own
+            // left too few samples after it.
+            .args(["--duration", "5"])
             .arg("--output")
             .arg(&profile)
             .env("MICROSCOPE_CACHE_DIR", "")
