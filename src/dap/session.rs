@@ -572,7 +572,11 @@ impl Session {
 
     async fn message(&mut self, message: Inbound) -> Result<(), Closed> {
         let (header, arguments) = match message {
-            Inbound::Request { seq, command, .. } if self.take_cancellation(&seq) => {
+            // configurationDone runs whatever a cancel says: a launch or
+            // attach waits on it, and would wait on for one never sent.
+            Inbound::Request { seq, command, .. }
+                if self.take_cancellation(&seq) && command != "configurationDone" =>
+            {
                 return self
                     .client
                     .respond(&Header { seq, command }, Err(ErrorBody::cancelled()))

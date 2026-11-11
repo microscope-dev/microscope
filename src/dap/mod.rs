@@ -331,9 +331,15 @@ async fn read_frames<R: AsyncBufRead + Unpin>(
                 arguments,
             }) => {
                 // A cancellation must be seen before the session reaches the
-                // request it cancels, so the reader records it.
+                // request it cancels, so the reader records it. Requests are
+                // numbered in the order they are sent, so one a cancel names
+                // was sent before it: a later request is not the one meant.
                 if command == "cancel"
                     && let Some(request) = arguments.get("requestId").filter(|id| !id.is_null())
+                    && request
+                        .as_u64()
+                        .zip(seq.as_u64())
+                        .is_none_or(|(request, cancel)| request < cancel)
                     && let Ok(mut cancelled) = cancelled.lock()
                 {
                     cancelled.insert(request.to_string());

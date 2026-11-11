@@ -343,6 +343,15 @@ fn requests_cancelled_while_waiting_their_turn_answer_that_they_were_cancelled()
     let cancelled = dap.send("threads", Value::Null);
     let kept = dap.send("threads", Value::Null);
     let cancel = dap.send("cancel", json!({"requestId": cancelled.seq}));
+
+    // configurationDone runs whatever a cancel says: the launch waits on it.
+    let cancel_done = dap.send("cancel", json!({"requestId": done.seq}));
+
+    // A cancel names a request already sent, never one still to come.
+    let ahead = dap.send("cancel", json!({"requestId": cancel_done.seq + 2}));
+    let later = dap.send("threads", Value::Null);
+    assert_eq!(later.seq, cancel_done.seq + 2);
+
     dap.release_terminals();
     dap.success(done);
     dap.success(launch);
@@ -353,5 +362,8 @@ fn requests_cancelled_while_waiting_their_turn_answer_that_they_were_cancelled()
     );
     dap.success(kept);
     dap.success(cancel);
+    dap.success(cancel_done);
+    dap.success(ahead);
+    dap.success(later);
     dap.finish();
 }
