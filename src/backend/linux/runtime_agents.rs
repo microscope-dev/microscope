@@ -836,10 +836,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
-        // A report with no installation is from an agent this controller
-        // never configured, so it is about none of its generations.
+        // With no installation, the program loaded the agent itself, as its
+        // bootstrap and hook library: its failure stops the program, so the
+        // user sees it, though it concerns no generation of ours.
         let Some(installation) = inferior.agents.get(&runtime) else {
-            return Ok(false);
+            return Ok(true);
         };
         if installation.generation != Some(generation) {
             return Ok(false);

@@ -714,6 +714,7 @@ const EXPECTED: &[&str] = &[
     "uninstalled / refused add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 refused) <create files in 5001, file 1, inject refused, drop file 1>",
     "uninstalled / continue leader: ok -> running e2 [continued e2] {continue 5000 None} () <>",
     "uninstalled / ack: continue ok, - -> running e2 [continued e2] {continue 5000 None, continue 5001 None, report hit, step over report, continue 5000 None, continue 5001 None} () <>",
+    "uninstalled / failure: continue ok, - -> stopped RuntimeEvent { description: \"scripted failure\" } by 5001 [continued e2, stopped e2 RuntimeEvent { description: \"scripted failure\" } by 5001] {continue 5000 None, continue 5001 None, report hit} () <>",
     "uninstalled / detach: ok -> not running [] {remove_site 0x73000100, detach 5000 None, detach 5001 None} () <>",
     "uninstalled / exit: - -> not running [5001 exited] {} () <>",
     "waiting / add: ok -> stopped Pause by 5000 [breakpoints] {} (b1 no thread, b2 no thread) <>",
