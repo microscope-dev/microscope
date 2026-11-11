@@ -99,26 +99,46 @@ function orgParams(pane: Pane): { name: string; section: Section } {
 
 export const orgName = (pane: Pane): string => orgParams(pane).name;
 
+/** Where a control's request is: none, or answered; on its way; or
+ * refused. Only the newest request's answer counts. */
+type Run = { kind: "idle" } | { kind: "working"; id: number } | { kind: "failed"; error: Error };
+
+/** One request a control makes at a time, with `fail` for a failure that
+ * comes some other way. */
+export function useRun() {
+  const [now, setNow] = useState<Run>({ kind: "idle" });
+  const newest = useRef(0);
+  const run = useCallback((send: () => Promise<unknown>) => {
+    newest.current += 1;
+    const id = newest.current;
+    setNow({ kind: "working", id });
+    send().then(
+      () => newest.current === id && setNow({ kind: "idle" }),
+      (error: Error) => newest.current === id && setNow({ kind: "failed", error }),
+    );
+  }, []);
+  const fail = useCallback((error: Error) => setNow({ kind: "failed", error }), []);
+  return {
+    working: now.kind === "working",
+    error: now.kind === "failed" ? now.error : null,
+    run,
+    fail,
+  };
+}
+
 /** One request a control makes: whether it is in flight, and why services
  * refused it. */
 export function useAction() {
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const run = useCallback((send: () => Promise<unknown>) => {
-    setWorking(true);
-    setError(null);
-    send()
-      .catch((failure: Error) => setError(failure.message))
-      .finally(() => setWorking(false));
-  }, []);
-  const clear = useCallback(() => setError(null), []);
-  return { working, error, run, clear };
+  const { working, error, run } = useRun();
+  return { working, error: error?.message ?? null, run };
 }
 
 /** An answer a pane asks for itself, again whenever `key` changes or it
- * calls `again`. */
+ * calls `again`. An answer for another key is never shown; one for this
+ * key stays while it is asked again. */
 export function useLoaded<T>(load: () => Promise<T>, key: string) {
-  const [state, setState] = useState<{ data: T | null; error: string | null }>({
+  const [loaded, setLoaded] = useState<{ key: string; data: T | null; error: string | null }>({
+    key,
     data: null,
     error: null,
   });
@@ -126,8 +146,14 @@ export function useLoaded<T>(load: () => Promise<T>, key: string) {
   useEffect(() => {
     let live = true;
     load().then(
-      (data) => live && setState({ data, error: null }),
-      (failure: Error) => live && setState((before) => ({ ...before, error: failure.message })),
+      (data) => live && setLoaded({ key, data, error: null }),
+      (failure: Error) =>
+        live &&
+        setLoaded((before) => ({
+          key,
+          data: before.key === key ? before.data : null,
+          error: failure.message,
+        })),
     );
     return () => {
       live = false;
@@ -135,7 +161,8 @@ export function useLoaded<T>(load: () => Promise<T>, key: string) {
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- `key` names what `load` asks
   }, [key, round]);
   const again = useCallback(() => setRound((before) => before + 1), []);
-  return { ...state, again };
+  const current = loaded.key === key;
+  return { data: current ? loaded.data : null, error: current ? loaded.error : null, again };
 }
 
 function showAccount() {

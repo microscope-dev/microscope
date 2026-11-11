@@ -48,7 +48,7 @@ import { parseJoinLink, remote, setRemote, standalone } from "../target";
 import { qrcodegen } from "../vendor/qrcodegen";
 import type { Availability } from "../workbench/commands";
 import { COMMANDS, type CommandId, useCommands } from "./commands";
-import { Organizations } from "./Orgs";
+import { Organizations, useRun } from "./Orgs";
 import { ContinueWith, OrgLink, SignInMethods } from "./SingleSignOn";
 
 /** Why the microscope the page last connected to sent it back, if it did. */
@@ -367,15 +367,10 @@ function Action({
 /** A form's fields and its one request: whether it is in flight, and what
  * went wrong with it. */
 function useSubmit(send: () => Promise<void>) {
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<Refused | Error | null>(null);
+  const { working, error, run } = useRun();
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    setWorking(true);
-    setError(null);
-    send()
-      .catch((failure: Error) => setError(failure))
-      .finally(() => setWorking(false));
+    run(send);
   };
   return { working, error, submit };
 }
@@ -425,8 +420,7 @@ function Field(props: {
 /** Signing in with a passkey: the button's, and the username field's
  * autofill while the form is open, which the button stops first. */
 function usePasskeySignIn(on: boolean) {
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { working, error, run, fail } = useRun();
   const autofill = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -441,21 +435,17 @@ function usePasskeySignIn(on: boolean) {
       )
       .catch((failure: Error) => {
         if (!controller.signal.aborted) {
-          setError(failure.message);
+          fail(failure);
         }
       });
     return () => controller.abort();
-  }, [on]);
+  }, [on, fail]);
 
   const start = () => {
     autofill.current?.abort();
-    setWorking(true);
-    setError(null);
-    signInWithPasskey()
-      .catch((failure: Error) => setError(failure.message))
-      .finally(() => setWorking(false));
+    run(signInWithPasskey);
   };
-  return { working, error, start };
+  return { working, error: error?.message ?? null, start };
 }
 
 function SignIn({ go }: { go: Go }) {

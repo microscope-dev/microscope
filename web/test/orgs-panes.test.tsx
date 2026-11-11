@@ -12,6 +12,7 @@ import { directory, type Member, type Org, type Project } from "../src/orgs";
 import { proving } from "../src/sso";
 import { AccountBody } from "../src/ui/Account";
 import { OrgBody, ProjectsBody } from "../src/ui/Orgs";
+import { OrgLink, orgLink } from "../src/ui/SingleSignOn";
 import type { PaneId } from "../src/workbench/layout";
 import { mountPane, unmountPane } from "./pane";
 
@@ -658,4 +659,21 @@ it("tells same-named organizations apart, and says when the members to add could
   await expect
     .element(page.getByText("Could not load the members to add to teams: the database is down."))
     .toBeVisible();
+});
+
+it("checks a second organization's sign-in link afresh, never showing the first's", async () => {
+  services({ "GET /api/sso/saml/a": [200, { org_name: "acme" }] });
+  const answered = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input) === "/api/sso/saml/b" ? new Promise(() => {}) : answered(input, init),
+  );
+  orgLink.setState({ key: "a" });
+  const shown = render(<OrgLink />);
+  await expect.element(page.getByRole("heading", { name: "acme" })).toBeVisible();
+
+  orgLink.setState({ key: "b" });
+  await expect.element(page.getByText("Checking the sign-in link…")).toBeVisible();
+  expect(page.getByRole("heading", { name: "acme" }).elements()).toHaveLength(0);
+  shown.unmount();
+  orgLink.setState({ key: null });
 });
