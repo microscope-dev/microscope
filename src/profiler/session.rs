@@ -768,7 +768,7 @@ fn drive(
             if let Some(pacer) = &mut pacer {
                 let edge = pacer.pace(monotonic(), processor, |on| {
                     let toggling = monotonic();
-                    events.sample(on);
+                    events.hold(perf::Hold::Budget, !on);
                     (toggling, monotonic())
                 });
                 // While the budget pauses sampling only the sideband's
@@ -842,8 +842,7 @@ fn drive(
         // the next drain, at once.
         if !processor.stopped_at_load() {
             for snapshots in &mut snapshots {
-                let sampling = pacer.as_ref().is_none_or(Pacer::sampling);
-                snapshots.when_due(processor, events, sampling);
+                snapshots.when_due(processor, events);
             }
         }
 
@@ -1100,13 +1099,8 @@ impl Snapshots {
         }
     }
 
-    /// Takes a snapshot when one is due, leaving sampling as it was.
-    fn when_due(
-        &mut self,
-        processor: &mut record::Processor,
-        events: &perf::Events,
-        sampling: bool,
-    ) {
+    /// Takes a snapshot when one is due.
+    fn when_due(&mut self, processor: &mut record::Processor, events: &perf::Events) {
         if std::time::Instant::now() < self.next {
             return;
         }
@@ -1162,9 +1156,7 @@ impl Snapshots {
         }
 
         // Only sampling pauses, as `Events::stop` says.
-        if sampling {
-            events.sample(false);
-        }
+        events.hold(perf::Hold::Snapshot, true);
 
         let modules = processor.modules_of(Pid::new(self.pid));
         let start = monotonic();
@@ -1179,9 +1171,7 @@ impl Snapshots {
             },
             Some(start),
         );
-        if sampling {
-            events.sample(true);
-        }
+        events.hold(perf::Hold::Snapshot, false);
 
         self.next = std::time::Instant::now() + self.every;
 
@@ -1227,9 +1217,9 @@ struct Pacer {
     /// How long sampling last took to turn on, and off.
     toggled: (u64, u64),
 
-    /// Since when sampling has been on, or off.
+    /// Since when sampling has been on, or none while the budget pauses
+    /// it. The processor keeps where the pause began.
     on_since: Option<u64>,
-    paused_since: Option<u64>,
 
     /// What the period has sampled and cost so far.
     sampled: u64,
@@ -1248,7 +1238,6 @@ impl Pacer {
             window: (now, u64::MAX),
             toggled: (0, 0),
             on_since: Some(now),
-            paused_since: None,
             sampled: 0,
             cpu: processor.cpu(),
             loading: processor.loading(),
@@ -1285,16 +1274,15 @@ impl Pacer {
 
         let (from, until) = self.window;
         let wanted = from <= now && now < until;
-        if wanted && let Some(paused) = self.paused_since.take() {
+        if wanted && self.on_since.is_none() {
             let (began, on) = toggle(true);
-            processor.gap(paused, began, GapReason::Budget);
+            processor.resume(began);
             self.toggled.0 = on.saturating_sub(began);
             self.on_since = Some(on);
         } else if !wanted && let Some(on) = self.on_since.take() {
             let (began, off) = toggle(false);
             self.toggled.1 = off.saturating_sub(began);
             self.sampled += off.saturating_sub(on);
-            self.paused_since = Some(off);
             processor.pause(off);
         }
 
@@ -1349,8 +1337,8 @@ impl Pacer {
 
     /// Ends the recording at `now`: a pause it ends in is a gap to the end.
     fn finish(self, now: u64, processor: &mut record::Processor) {
-        if let Some(paused) = self.paused_since {
-            processor.gap(paused, now, GapReason::Budget);
+        if self.on_since.is_none() {
+            processor.resume(now);
         }
     }
 }

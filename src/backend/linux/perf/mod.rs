@@ -237,48 +237,62 @@ impl Queue {
     }
 }
 
-/// The sampling events are on while the recording wants them and the
-/// reader is not behind. The sideband stays on while sampling is off for
-/// the reader, so that no mapping, thread, or context switch is missed.
+/// What holds the sampling events off. Each holds and lets go on its own,
+/// and sampling is on while none holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hold {
+    /// The budget pauses sampling between the shares of its periods.
+    Budget,
+
+    /// A stopped snapshot reads the program.
+    Snapshot,
+
+    /// The reader is behind, its queue full.
+    Behind,
+
+    /// The recording ended, for good.
+    Ended,
+}
+
+/// Which [`Hold`]s are in force. The sideband stays on through all but the
+/// end, so that no mapping, thread, or context switch is missed.
 #[derive(Debug, Default)]
 struct Gate {
-    /// The recording turned sampling off.
-    off: bool,
+    /// One bit per hold in force.
+    held: u8,
 
     /// Since when the reader has been behind, and each earlier span it
     /// was, not yet taken.
     behind: Option<u64>,
     spans: Vec<(u64, u64)>,
-
-    /// The recording stopped its events, for good.
-    stopped: bool,
 }
 
 impl Gate {
-    /// The recording wants sampling `on`: whether the sampling events are
-    /// to be on, which they are not while the reader is behind.
-    fn want(&mut self, on: bool) -> bool {
-        assert!(
-            !(on && self.stopped),
-            "sampling resumed after the events stopped"
+    /// `who` holds sampling off, or lets go, at `now`: whether the sampling
+    /// events turn on or off, if either.
+    fn hold(&mut self, who: Hold, held: bool, now: u64) -> Option<bool> {
+        debug_assert_ne!(self.holds(who), held, "{who:?} held or let go twice");
+        debug_assert!(
+            held || who != Hold::Ended,
+            "sampling resumed after it ended"
         );
-        self.off = !on;
-        on && self.behind.is_none()
-    }
 
-    /// The reader fell `behind`, or caught up, at `now`: what the sampling
-    /// events are to become, if anything. Sampling stays off for the
-    /// recording while it wants it off.
-    fn fall_behind(&mut self, behind: bool, now: u64) -> Option<bool> {
-        if behind {
-            assert!(self.behind.is_none(), "the reader fell behind twice");
-            self.behind = Some(now);
-            return (!self.off).then_some(false);
+        let was = self.held == 0;
+        self.held ^= 1 << who as u8;
+        if who == Hold::Behind {
+            if held {
+                self.behind = Some(now);
+            } else if let Some(since) = self.behind.take() {
+                self.spans.push((since, now));
+            }
         }
 
-        let since = self.behind.take()?;
-        self.spans.push((since, now));
-        (!self.off).then_some(true)
+        let on = self.held == 0;
+        (on != was).then_some(on)
+    }
+
+    const fn holds(&self, who: Hold) -> bool {
+        self.held & 1 << who as u8 != 0
     }
 
     /// Each span the reader was behind that no earlier call took. A span
@@ -706,7 +720,6 @@ impl Events {
         std::thread::scope(|scope| {
             let reader = scope.spawn(|| {
                 let began = sys::thread_cpu();
-                let mut behind = false;
                 // The sampling events, whose samples a busy queue keeps only
                 // the top of the stack of. Breakpoint samples omit their
                 // period, and are kept whole.
@@ -742,10 +755,7 @@ impl Events {
                         std::thread::sleep(self.reader_wait);
                         continue;
                     };
-                    if now_behind != behind {
-                        behind = now_behind;
-                        self.fall_behind(behind);
-                    }
+                    self.fall_behind(now_behind);
                     if shorten {
                         // Processing is behind, so a sample keeps only the
                         // top of its stack, rather than sampling stop.
@@ -789,14 +799,16 @@ impl Events {
         })
     }
 
-    /// Turns sampling off while the reader is `behind`, and back on as the
-    /// recording wants once it is not.
+    /// Holds sampling off while the reader is `behind`.
     fn fall_behind(&self, behind: bool) {
         let mut gate = self
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(on) = gate.fall_behind(behind, sys::monotonic()) {
+        if gate.holds(Hold::Behind) == behind {
+            return;
+        }
+        if let Some(on) = gate.hold(Hold::Behind, behind, sys::monotonic()) {
             self.enable_sampling(on);
         }
         drop(gate);
@@ -877,47 +889,57 @@ impl Events {
     }
 
     /// Starts every event of an attached process, and every event a thread
-    /// inherited from one, counting and sampling. Events start once, before
-    /// they stop.
+    /// inherited from one, counting, and sampling unless something holds
+    /// it off. Events start once, before they stop.
     pub fn start(&self) {
-        self.enable(true);
-    }
-
-    /// Stops every event for good, the sideband with sampling, as the
-    /// recording ends. A pause turns only sampling off ([`Self::sample`]):
-    /// the program runs on through it, and a mapping it makes meanwhile
-    /// must still be recorded, or its module is never found.
-    pub fn stop(&self) {
-        self.enable(false);
-        self.gate
+        let gate = self
+            .gate
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stopped = true;
-    }
-
-    fn enable(&self, on: bool) {
-        assert!(
-            !self
-                .gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .stopped,
-            "events started or stopped after they stopped"
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(
+            !gate.holds(Hold::Ended),
+            "events started after they stopped"
         );
-        self.sample(on);
+        self.enable_sampling(gate.held == 0);
+        drop(gate);
         for fd in &self.sideband {
-            let _ = sys::enable(fd, on);
+            let _ = sys::enable(fd, true);
         }
     }
 
-    /// Starts or stops sampling, as a budget pauses it, and leaves the
-    /// sideband on so that no mapping or thread is missed meanwhile.
-    pub fn sample(&self, on: bool) {
+    /// Stops every event for good, the sideband with sampling, as the
+    /// recording ends. A pause holds only sampling off ([`Self::hold`]):
+    /// the program runs on through it, and a mapping it makes meanwhile
+    /// must still be recorded, or its module is never found.
+    pub fn stop(&self) {
         let mut gate = self
             .gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.enable_sampling(gate.want(on));
+        if let Some(on) = gate.hold(Hold::Ended, true, sys::monotonic()) {
+            self.enable_sampling(on);
+        }
+        drop(gate);
+        for fd in &self.sideband {
+            let _ = sys::enable(fd, false);
+        }
+    }
+
+    /// Holds sampling off for `who`, the budget or a stopped snapshot, or
+    /// lets go, leaving the sideband on so that no mapping or thread is
+    /// missed meanwhile. Sampling comes back on once nothing holds it.
+    pub fn hold(&self, who: Hold, held: bool) {
+        debug_assert!(
+            matches!(who, Hold::Budget | Hold::Snapshot),
+            "{who:?} is held by the events themselves"
+        );
+        let mut gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(on) = gate.hold(who, held, sys::monotonic()) {
+            self.enable_sampling(on);
+        }
     }
 
     /// Starts or stops the sampling events alone.
@@ -1927,47 +1949,40 @@ mod tests {
         assert!(!queued(Source::Mappings));
     }
 
-    /// A reader starved for a while keeps sampling off from when its queue
-    /// filled until it caught up, whatever the budget asks meanwhile, and a
-    /// budget pause outlasts a catch-up. Each span it was behind is taken
-    /// once, and one still going when the recording ends ends there.
+    /// Sampling is on while nothing holds it off. A stopped snapshot inside
+    /// a budget pause leaves it off, a reader behind outlasts a budget
+    /// pause and is outlasted by one, and nothing turns it back on once the
+    /// recording ended. Each span the reader was behind is taken once, and
+    /// one still going when the recording ends ends there.
     #[test]
-    fn a_starved_reader_keeps_sampling_off_until_it_catches_up_whatever_the_budget_asks() {
-        enum Step {
-            Queued(usize),
-            Budget(bool),
-        }
-        use Step::{Budget, Queued};
-        const LIMIT: usize = 64;
+    fn sampling_is_on_while_nothing_holds_it_off() {
+        use Hold::{Behind, Budget, Ended, Snapshot};
 
         let mut gate = Gate::default();
-        let (mut on, mut behind) = (true, false);
+        let mut on = true;
         let mut seen = Vec::new();
-        for (time, step) in [
-            (10, Queued(50)),
-            (20, Queued(LIMIT)),
-            (30, Budget(false)),
-            (40, Queued(0)),
-            (50, Budget(true)),
-            (60, Queued(LIMIT + 6)),
-            (70, Budget(true)),
-            (75, Budget(false)),
-            (78, Budget(true)),
-            (80, Queued(10)),
-            (90, Queued(LIMIT)),
+        for (time, who, held) in [
+            (10, Snapshot, true),
+            (20, Snapshot, false),
+            (30, Budget, true),
+            (40, Snapshot, true),
+            (50, Snapshot, false),
+            (60, Budget, false),
+            (70, Behind, true),
+            (80, Budget, true),
+            (90, Behind, false),
+            (100, Budget, false),
+            (110, Budget, true),
+            (120, Behind, true),
+            (130, Budget, false),
+            (140, Behind, false),
+            (150, Behind, true),
+            (160, Ended, true),
+            (170, Behind, false),
         ] {
-            match step {
-                Budget(wanted) => on = gate.want(wanted),
-                Queued(queued) => {
-                    let Pass::Drain { behind: now, .. } = Pass::of(queued, LIMIT, true, true)
-                    else {
-                        panic!("a clock's reader never waits");
-                    };
-                    if now != behind {
-                        behind = now;
-                        on = gate.fall_behind(now, time).unwrap_or(on);
-                    }
-                }
+            if let Some(now) = gate.hold(who, held, time) {
+                assert_ne!(now, on, "{who:?} at {time} toggled to the same state");
+                on = now;
             }
             seen.push((time, on));
         }
@@ -1975,22 +1990,36 @@ mod tests {
         assert_eq!(
             seen,
             [
-                (10, true),
-                (20, false),
+                (10, false),
+                (20, true),
                 (30, false),
                 (40, false),
-                (50, true),
-                (60, false),
+                (50, false),
+                (60, true),
                 (70, false),
-                (75, false),
-                (78, false),
-                (80, true),
+                (80, false),
                 (90, false),
+                (100, true),
+                (110, false),
+                (120, false),
+                (130, false),
+                (140, true),
+                (150, false),
+                (160, false),
+                (170, false),
             ]
         );
-        assert_eq!(gate.take_spans(None), [(20, 40), (60, 80)]);
-        assert_eq!(gate.take_spans(Some(100)), [(90, 100)]);
-        assert_eq!(gate.take_spans(Some(120)), []);
+        assert_eq!(gate.take_spans(None), [(70, 90), (120, 140), (150, 170)]);
+
+        // A span still going when the recording takes them ends there, and
+        // the reader catching up after adds none.
+        let mut gate = Gate::default();
+        assert_eq!(gate.hold(Behind, true, 10), Some(false));
+        assert_eq!(gate.take_spans(None), []);
+        assert_eq!(gate.hold(Ended, true, 20), None);
+        assert_eq!(gate.take_spans(Some(30)), [(10, 30)]);
+        assert_eq!(gate.hold(Behind, false, 40), None);
+        assert_eq!(gate.take_spans(Some(50)), []);
     }
 
     /// The end of a readable mapping of this process with nothing mapped
@@ -2282,7 +2311,7 @@ mod tests {
             // Once the shell runs, so that executing it turns nothing on.
             let mut ready = [0_u8; 6];
             std::io::Read::read_exact(&mut said, &mut ready).expect("the shell starts");
-            events.sample(false);
+            events.hold(Hold::Budget, true);
             let paused = sys::monotonic();
             std::io::Write::write_all(&mut writer, b"\n").expect("release the shell");
             (exit.join(), paused)

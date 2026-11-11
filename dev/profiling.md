@@ -94,8 +94,11 @@ up front for the same reason. A reader that is never read from pauses instead
 of losing samples (`a_reader_far_behind_pauses_sampling_instead_of_losing_samples`).
 What the reader does on each pass (`Pass::of`) and when sampling is on
 (`Gate`) are pure, so their tests replay starved readers, full queues and
-budget pauses exactly. Tests on real rings check only what holds under any
-load (dev/testing.md).
+budget pauses exactly. Four things can hold sampling off, each on its own
+(`perf::Hold`): the budget, a stopped snapshot, the reader falling behind,
+and the end of the recording. Sampling is on while none does, so a snapshot
+that ends inside a budget pause leaves sampling off. Tests on real rings
+check only what holds under any load (dev/testing.md).
 
 Breakpoint counters never pause for a full queue: that would miss calls without
 counting them as lost. At 64 MiB their reader waits for processing to take the

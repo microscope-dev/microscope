@@ -401,7 +401,7 @@ pub struct Processor {
     gaps: Vec<(u64, u64)>,
     gaps_end: u64,
 
-    /// Where a pause that is not yet a gap began.
+    /// Where a budget pause that is not yet a gap began.
     paused: Option<u64>,
 
     /// The CPU time of this thread when the processor began, and what
@@ -2762,10 +2762,6 @@ impl Processor {
     /// A budget pause is recorded when it ends, after the task snapshots
     /// taken in it recorded theirs, so it keeps only the spans around them.
     pub fn gap(&mut self, start: u64, end: u64, reason: GapReason) {
-        if self.paused == Some(start) {
-            self.paused = None;
-        }
-
         // A clock that failed reads as zero.
         if end <= start {
             return;
@@ -2812,12 +2808,20 @@ impl Processor {
         );
     }
 
-    /// Records that sampling went off at `start` for a pause that becomes
-    /// a gap only when it ends. Records stamped in it are processed
+    /// Records that the budget turned sampling off at `start`, a pause that
+    /// becomes a gap only when it ends. Records stamped in it are processed
     /// meanwhile, and a thread off its CPU before it is cut where it began.
     pub fn pause(&mut self, start: u64) {
-        debug_assert!(self.paused.is_none(), "a pause is already open");
+        debug_assert!(self.paused.is_none(), "a pause is already open at {start}");
         self.paused = Some(start);
+    }
+
+    /// Ends the open budget pause at `end`, as a gap.
+    pub fn resume(&mut self, end: u64) {
+        debug_assert!(self.paused.is_some(), "no pause is open to end at {end}");
+        if let Some(start) = self.paused.take() {
+            self.gap(start, end, GapReason::Budget);
+        }
     }
 
     /// Notes the task a sample of process `pid` ran, when a task snapshot
