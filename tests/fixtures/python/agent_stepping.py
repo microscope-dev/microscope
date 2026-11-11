@@ -64,9 +64,12 @@ class Debugger:
         self.thread = thread
         agent.hook = self.report
 
-    def queue(self, step):
+    def queue(self, step, assignment=None):
         self.generation += 1
-        payload = json.dumps([self.generation, self.probes, step]).encode()
+        command = [self.generation, self.probes, step]
+        if assignment is not None:
+            command += [0, assignment]
+        payload = json.dumps(command).encode()
         agent._control[32:32 + len(payload)] = payload
         agent._control[16:20] = len(payload).to_bytes(4, 'little')
         agent._control[8:16] = self.generation.to_bytes(8, 'little')
@@ -360,6 +363,35 @@ elif mode == 'mismatch':
     debugger.probes = []
     assert straight() == 3
     assert reports == [(1, 900, 0), (2, 2, 1)], reports
+
+    # Nor is a variable assigned in a frame not where it was found, though
+    # the frame that is there has one of its name.
+    def assigned(code, at):
+        reports.clear()
+
+        def assign(event, number, argument):
+            if event == 0:
+                return
+            reports.append((event, number, argument))
+            if event == 1:
+                frame = program_frame()
+                where = depth(frame) if at is None else at
+                debugger.queue(None, [agent.assigned + 1, threading.get_native_id(), where,
+                                      id(frame.f_code if code is None else code),
+                                      'a', ['int', '40']])
+        agent.hook = assign
+        debugger.probes = [breakpoint_at('STRAIGHT_SECOND')]
+        debugger.start()
+        debugger.probes = []
+        return straight()
+    # The frame found takes it where a function's variables can be written.
+    given, status = (42, 0) if sys.version_info >= (3, 13) else (3, 3)
+    assert assigned(None, None) == given
+    assert reports == [(1, 900, 0), (6, agent.assigned, status)], reports
+    assert assigned(caller.__code__, None) == 3
+    assert reports == [(1, 900, 0), (6, agent.assigned, 1)], reports
+    assert assigned(None, 10_000) == 3
+    assert reports == [(1, 900, 0), (6, agent.assigned, 1)], reports
 elif mode == 'late':
     # A step another thread configured binds only in a callback its own
     # thread was in at the time; later, its thread has run on, and the
