@@ -425,25 +425,30 @@ impl Status {
             Self::Unknown | Self::Awaited { .. } => None,
         }
     }
+}
 
-    /// Ends the connection with no fault of its own, and returns it.
+impl Inspector {
+    /// Ends the connection with no fault of its own, and returns it. The
+    /// isolates go with it.
     fn disconnect(&mut self) -> Option<Link> {
-        match std::mem::take(self) {
-            Self::Connecting(server, link) | Self::Connected(server, link) => {
-                *self = Self::Listed(server);
+        self.isolates.clear();
+        match std::mem::take(&mut self.status) {
+            Status::Connecting(server, link) | Status::Connected(server, link) => {
+                self.status = Status::Listed(server);
                 Some(link)
             }
             other => {
-                *self = other;
+                self.status = other;
                 None
             }
         }
     }
 
-    /// The inspector cannot be used, for `reason`.
+    /// The inspector cannot be used, for `reason`, and holds no isolates.
     fn fail(&mut self, reason: Arc<str>) {
-        let target = self.target().cloned();
-        *self = Self::Failed { reason, target };
+        self.isolates.clear();
+        let target = self.status.target().cloned();
+        self.status = Status::Failed { reason, target };
     }
 }
 
@@ -595,7 +600,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                     record!("the inspector of runtime {runtime} cannot be used: {reason}");
                     if let Some(inferior) = self.session.inferior_mut() {
                         let inspector = inferior.inspectors.records.entry(runtime).or_default();
-                        inspector.status.fail(reason);
+                        inspector.fail(reason);
                     }
                     continue;
                 }
@@ -660,13 +665,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 inspector.listening = listening.unwrap_or_default().into_iter().collect();
                 record!("SIGUSR1 opens the attached node's inspector");
             }
-            Ok(false) => inspector.status.fail(
+            Ok(false) => inspector.fail(
                 "the node's SIGUSR1 disposition is not Node's native inspector handler; \
                  microscope will not deliver SIGUSR1 to application code; start it with \
                  --inspect=127.0.0.1:0"
                     .into(),
             ),
-            Err(reason) => inspector.status.fail(reason),
+            Err(reason) => inspector.fail(reason),
         }
     }
 
@@ -890,10 +895,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             }
             Incoming::Closed { reason, .. } => {
                 record!("the inspector connection closed: {reason}");
-                inspector
-                    .status
-                    .fail(format!("the inspector connection closed: {reason}").into());
-                inspector.isolates.clear();
+                inspector.fail(format!("the inspector connection closed: {reason}").into());
                 self.publish_breakpoints_changed();
                 // No pause is coming to hold the main thread for.
                 self.release_step_gate()?;
@@ -1100,10 +1102,9 @@ impl<P: LinuxTraceOps> Controller<P> {
             inspector_protocol::WAITING => self.release_isolate(runtime, session),
             inspector_protocol::END if session.path().is_empty() => {
                 record!("the program ends; the debugger leaves its inspector");
-                if let Some(link) = inspector.status.disconnect() {
+                if let Some(link) = inspector.disconnect() {
                     link.connection.close();
                 }
-                inspector.isolates.clear();
             }
             _ => record!("inspector event {method} of {session:?}"),
         }

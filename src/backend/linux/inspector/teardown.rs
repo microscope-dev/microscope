@@ -678,8 +678,7 @@ impl<P: LinuxTraceOps> Controller<P> {
                 }
             }
             Incoming::Closed { reason, answered } => {
-                inspector.status.disconnect();
-                inspector.isolates.clear();
+                inspector.disconnect();
                 if returning {
                     return Ok(());
                 }
