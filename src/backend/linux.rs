@@ -3052,7 +3052,10 @@ impl<P: InspectionOps> Controller<P> {
         let Some(inferior) = self.session.inferior() else {
             return StateSnapshot {
                 revision: self.revision,
-                inferior: InferiorState::NotRunning,
+                inferior: self
+                    .session
+                    .ended()
+                    .map_or(InferiorState::NotStarted, session::Ended::state),
                 stop_id: None,
                 selected: None,
                 selected_frame: None,

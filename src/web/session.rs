@@ -1831,7 +1831,7 @@ impl Session {
 
         // A group's program has started while its own process runs.
         let started = if group {
-            !matches!(handle.snapshot().await?.inferior, InferiorState::NotRunning)
+            handle.snapshot().await?.inferior.live_process().is_some()
         } else {
             matches!(
                 self.state.borrow().inferior,
@@ -2625,13 +2625,7 @@ async fn add_breakpoint(
 
 /// Notes what a member's event means for its state, and says what its
 /// logpoints, conditions, and signals report, each line after `tag`.
-pub(super) fn observe(
-    describer: &mut Describer,
-    outlet: &Outlet,
-    event: &DebuggerEvent,
-    tag: &str,
-) {
-    describer.ended.observe(event);
+pub(super) fn observe(describer: &Describer, outlet: &Outlet, event: &DebuggerEvent, tag: &str) {
     let log = |text: String| outlet.publish(Stream::Log, &format!("{tag}{text}\n"));
     let renderer = Renderer::new(false);
 

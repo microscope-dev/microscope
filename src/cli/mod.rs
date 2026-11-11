@@ -376,11 +376,12 @@ impl Cli {
 
     /// The process the session launched, while it is alive.
     pub async fn live_process(&self) -> Option<microscope::ProcessId> {
-        match self.debugger().snapshot().await.ok()?.inferior {
-            microscope::InferiorState::Running { process_id, .. }
-            | microscope::InferiorState::Stopped { process_id, .. } => Some(process_id),
-            microscope::InferiorState::NotRunning => None,
-        }
+        self.debugger()
+            .snapshot()
+            .await
+            .ok()?
+            .inferior
+            .live_process()
     }
 
     /// Records the terminal's size, as the line editor measured it.

@@ -190,9 +190,11 @@ everything every client might display.
 ## State model
 
 `InferiorState` distinguishes a program that has not started, is running, is
-stopped, or has ended. A stopped state is public only after the all-stop
-barrier completes. Internal tracees can be in finer states while that barrier
-is being gathered.
+stopped, exited, or was detached. The last two say how the last program
+ended until another is launched or attached to, so a client whose events
+lagged still learns it from a snapshot. A stopped state is public only after
+the all-stop barrier completes. Internal tracees can be in finer states while
+that barrier is being gathered.
 
 Selection is client-facing session state: execution context, thread or task,
 and frame. A selected logical task may be parked and have no native thread at

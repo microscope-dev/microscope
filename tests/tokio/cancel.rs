@@ -310,7 +310,10 @@ async fn a_waiting_step_ends_with_its_session() {
                 assert!(
                     matches!(
                         scenario.snapshot().await.inferior,
-                        microscope::InferiorState::NotRunning
+                        microscope::InferiorState::Exited {
+                            status: microscope::ExitStatus::Terminated(_),
+                            ..
+                        }
                     ),
                     "{fixture}"
                 );

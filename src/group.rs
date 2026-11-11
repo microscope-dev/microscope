@@ -1054,7 +1054,7 @@ impl Driver {
 
         // A member not running is left to its newest events, which a lag
         // keeps, as its exit or detach is.
-        let applies = !matches!(snapshot.inferior, InferiorState::NotRunning);
+        let applies = snapshot.inferior.live_process().is_some();
         if let Some(live) = self.members.get_mut(&number)
             && applies
         {
@@ -1062,7 +1062,9 @@ impl Driver {
         }
 
         match snapshot.inferior {
-            InferiorState::NotRunning => {}
+            InferiorState::NotStarted
+            | InferiorState::Exited { .. }
+            | InferiorState::Detached { .. } => {}
             InferiorState::Running { process_id, .. } => {
                 self.adopt_process(number, process_id);
                 self.set_running(number, true);

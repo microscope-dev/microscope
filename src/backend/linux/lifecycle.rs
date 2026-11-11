@@ -20,7 +20,7 @@ use super::RunPhase;
 use super::breakpoints::{install_logical_breakpoint, lift_all_traps, reinstall_all_traps};
 use super::memory::holding_word;
 use super::native::{LinuxTraceOps, is_vanished_tracee};
-use super::session::{Session, Shutdown, Startup, Traced};
+use super::session::{Ended, Session, Shutdown, Startup, Traced};
 use super::trap::{AtTrap, Lift, Trap};
 use super::{
     ActiveExecution, ActiveKind, BREAKPOINT_OPCODE, ClassifiedStop, Controller, ExpectedStop,
@@ -1332,6 +1332,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Session::Draining {
             orphans,
             deferred,
+            ended,
             cleanup_error,
         } = std::mem::replace(&mut self.session, Session::idle())
         else {
@@ -1347,11 +1348,18 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
 
         if self.shutdown.is_some() {
+            self.session = Session::Idle {
+                ended: Some(ended),
+                cleanup_error: None,
+            };
             self.finish_shutdown(cleanup_result(cleanup_error));
             return false;
         }
 
-        self.session = Session::Idle { cleanup_error };
+        self.session = Session::Idle {
+            ended: Some(ended),
+            cleanup_error,
+        };
         if let Some(start) = deferred {
             self.start(start);
         }
@@ -1649,11 +1657,15 @@ impl<P: LinuxTraceOps> Controller<P> {
             let orphans = self
                 .settle_stopped_fork_children()
                 .ok_or(Error::NotRunning)?;
+            let ended = Ended::Exited(process_id, status.clone());
             let Traced {
                 mut inferior,
                 startup,
                 kill,
-            } = self.session.take_traced().ok_or(Error::NotRunning)?;
+            } = self
+                .session
+                .take_traced(|_| ended.clone())
+                .ok_or(Error::NotRunning)?;
             Self::abandon_assignment(&mut inferior);
             let mut cleanup_error = inferior.retire_agents_after_exit().err();
             let edits = inferior.take_pending_edits();
@@ -1702,9 +1714,13 @@ impl<P: LinuxTraceOps> Controller<P> {
                 Some(orphans) => Session::Draining {
                     orphans,
                     deferred: None,
+                    ended,
                     cleanup_error,
                 },
-                None => Session::Idle { cleanup_error },
+                None => Session::Idle {
+                    ended: Some(ended),
+                    cleanup_error,
+                },
             };
             self.settle_pending_edits(edits);
             return joined;
@@ -1817,7 +1833,7 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.shutdown = Some(Shutdown { reply });
 
         match &mut self.session {
-            Session::Idle { cleanup_error } => {
+            Session::Idle { cleanup_error, .. } => {
                 let outcome = cleanup_result(cleanup_error.take());
                 self.finish_shutdown(outcome);
                 return;
@@ -2158,7 +2174,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             mut inferior,
             startup,
             kill,
-        }) = self.session.take_traced()
+        }) = self.session.take_traced(Ended::Detached)
         else {
             return;
         };
@@ -2207,7 +2223,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             mut inferior,
             startup,
             kill,
-        }) = self.session.take_traced()
+        }) = self.session.take_traced(Ended::Detached)
         else {
             return;
         };
@@ -2219,6 +2235,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             self.session = Session::Draining {
                 orphans,
                 deferred: None,
+                ended: Ended::Detached(process_id(inferior.tgid)),
                 cleanup_error: None,
             };
             Ok(())
@@ -2451,7 +2468,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             mut inferior,
             startup,
             kill,
-        }) = self.session.take_traced()
+        }) = self.session.take_traced(Ended::Detached)
         else {
             self.finish_shutdown(first_error.map_or(Err(Error::NotRunning), Err));
             return;

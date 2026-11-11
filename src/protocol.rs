@@ -1847,8 +1847,8 @@ pub struct ThreadSnapshot {
 /// The externally observable state of the inferior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferiorState {
-    /// No inferior process exists.
-    NotRunning,
+    /// No program has been launched or attached to.
+    NotStarted,
 
     /// The inferior is starting or running.
     Running {
@@ -1873,6 +1873,29 @@ pub enum InferiorState {
         /// The reason execution stopped.
         reason: StopReason,
     },
+
+    /// The last program exited, as [`DebuggerEvent::InferiorExited`] said.
+    Exited {
+        process_id: ProcessId,
+        status: ExitStatus,
+    },
+
+    /// The debugger let the last program go, or lost it, as
+    /// [`DebuggerEvent::InferiorDetached`] said.
+    Detached { process_id: ProcessId },
+}
+
+impl InferiorState {
+    /// The process a program runs in, while one is traced.
+    #[must_use]
+    pub const fn live_process(&self) -> Option<ProcessId> {
+        match self {
+            Self::Running { process_id, .. } | Self::Stopped { process_id, .. } => {
+                Some(*process_id)
+            }
+            Self::NotStarted | Self::Exited { .. } | Self::Detached { .. } => None,
+        }
+    }
 }
 
 /// An immutable view of debugger state at one revision.

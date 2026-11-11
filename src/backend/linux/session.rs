@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use nix::unistd::Pid;
 
-use crate::protocol::{ExecutionId, Reply, StopId};
+use crate::protocol::{ExecutionId, ExitStatus, InferiorState, ProcessId, Reply, StopId};
 use crate::{Error, VirtualAddress};
 
 use super::{Inferior, Start, Waiter};
@@ -17,9 +17,11 @@ use super::{Inferior, Start, Waiter};
     reason = "a controller holds one session in place; boxing the inferior adds a pointer chase to every access"
 )]
 pub(super) enum Session {
-    /// No process is traced. `cleanup_error` is why the last one's runtime
-    /// agents could not be retired, which a shutdown reports.
+    /// No process is traced. `ended` is how the last one ended, and
+    /// `cleanup_error` why its runtime agents could not be retired, which
+    /// a shutdown reports.
     Idle {
+        ended: Option<Ended>,
         cleanup_error: Option<Arc<str>>,
     },
 
@@ -32,8 +34,32 @@ pub(super) enum Session {
 
         /// A launch or attach held until the children are released.
         deferred: Option<Start>,
+        ended: Ended,
         cleanup_error: Option<Arc<str>>,
     },
+}
+
+/// How a traced process's session ended.
+#[derive(Debug, Clone)]
+pub(super) enum Ended {
+    Exited(ProcessId, ExitStatus),
+
+    /// Released, handed to a group's watcher, or vanished while attached.
+    Detached(ProcessId),
+}
+
+impl Ended {
+    pub(super) fn state(&self) -> InferiorState {
+        match self {
+            Self::Exited(process_id, status) => InferiorState::Exited {
+                process_id: *process_id,
+                status: status.clone(),
+            },
+            Self::Detached(process_id) => InferiorState::Detached {
+                process_id: *process_id,
+            },
+        }
+    }
 }
 
 /// A traced process, and the requests about it still waiting for an
@@ -59,8 +85,8 @@ pub(super) enum Startup {
     },
 }
 
-/// A session that is ending. It wraps whichever phase the session is in:
-/// it ends once that phase leaves nothing to release.
+/// A session that is ending, held alongside whichever phase the session
+/// is in: it ends once that phase leaves nothing to release.
 #[derive(Default)]
 pub(super) struct Shutdown {
     /// The client's shutdown. One the controller began itself, as a failed
@@ -87,7 +113,17 @@ pub(super) struct Orphans {
 impl Session {
     pub(super) const fn idle() -> Self {
         Self::Idle {
+            ended: None,
             cleanup_error: None,
+        }
+    }
+
+    /// How the last traced process ended, until another is traced.
+    pub(super) const fn ended(&self) -> Option<&Ended> {
+        match self {
+            Self::Idle { ended, .. } => ended.as_ref(),
+            Self::Draining { ended, .. } => Some(ended),
+            Self::Traced(_) => None,
         }
     }
 
@@ -184,14 +220,15 @@ impl Session {
         }
     }
 
-    /// Ends the traced phase, leaving the session idle, and returns what
-    /// the phase still owes.
-    pub(super) fn take_traced(&mut self) -> Option<Traced> {
-        if !matches!(self, Self::Traced(_)) {
-            return None;
-        }
-
-        match std::mem::replace(self, Self::idle()) {
+    /// Ends the traced phase as `ended` says, leaving the session idle,
+    /// and returns what the phase still owes.
+    pub(super) fn take_traced(&mut self, ended: impl FnOnce(ProcessId) -> Ended) -> Option<Traced> {
+        let tgid = self.inferior()?.tgid;
+        let idle = Self::Idle {
+            ended: Some(ended(super::process_id(tgid))),
+            cleanup_error: None,
+        };
+        match std::mem::replace(self, idle) {
             Self::Traced(traced) => Some(traced),
             Self::Idle { .. } | Self::Draining { .. } => None,
         }

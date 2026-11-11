@@ -304,7 +304,6 @@ pub struct Describer {
 
     /// The runs each stop ended, by the stop, as its events said.
     ran_to: BTreeMap<u64, Vec<Run>>,
-    pub ended: Ended,
 
     /// Counts the changes tabs make to the program's values.
     pub writes: Arc<AtomicU64>,
@@ -329,7 +328,6 @@ impl Describer {
             credits,
             stops: Vec::new(),
             ran_to: BTreeMap::new(),
-            ended: Ended::default(),
             writes: Arc::default(),
             settings: Arc::default(),
         }
@@ -366,12 +364,12 @@ impl Describer {
 
     pub async fn describe(&mut self, snapshot: &StateSnapshot) -> State {
         let inferior = match &snapshot.inferior {
-            InferiorState::NotRunning => match (self.ended.detached, &self.ended.exited) {
-                (Some(pid), _) => Inferior::Detached { pid },
-                (None, Some(description)) => Inferior::Exited {
-                    description: description.clone(),
-                },
-                (None, None) => Inferior::NotStarted,
+            InferiorState::NotStarted => Inferior::NotStarted,
+            InferiorState::Exited { status, .. } => Inferior::Exited {
+                description: plain(&StopReason::Exited(status.clone())),
+            },
+            InferiorState::Detached { process_id } => Inferior::Detached {
+                pid: process_id.get(),
             },
             InferiorState::Running { process_id, .. } => Inferior::Running {
                 pid: process_id.get(),
@@ -651,31 +649,6 @@ impl Describer {
             .iter()
             .find(|record| record.module.id == module)
             .map(|record| record.module.load_bias)
-    }
-}
-
-/// How the program last ended, which snapshots no longer say.
-#[derive(Default)]
-pub struct Ended {
-    exited: Option<String>,
-    detached: Option<u64>,
-}
-
-impl Ended {
-    pub fn observe(&mut self, event: &microscope::DebuggerEvent) {
-        use microscope::DebuggerEvent;
-        match event {
-            DebuggerEvent::InferiorExited { status, .. } => {
-                self.exited = Some(plain(&StopReason::Exited(status.clone())));
-            }
-            DebuggerEvent::InferiorDetached { process_id, .. } => {
-                self.detached = Some(process_id.get());
-            }
-            DebuggerEvent::InferiorLaunched { .. } | DebuggerEvent::InferiorAttached { .. } => {
-                *self = Self::default();
-            }
-            _ => {}
-        }
     }
 }
 

@@ -443,14 +443,19 @@ impl Client {
         let mut watched_launch = 0;
         let mut last_stop: Option<StopId> = None;
         let mut stale: Option<StopId> = None;
+        let mut traced = false;
 
         for _ in 0..self.script.requests {
             let Some(snapshot) = self.state().await? else {
                 return Ok(());
             };
 
+            traced |= snapshot.inferior.live_process().is_some();
             match snapshot.inferior.clone() {
-                InferiorState::NotRunning => {
+                ended @ (InferiorState::NotStarted
+                | InferiorState::Exited { .. }
+                | InferiorState::Detached { .. }) => {
+                    check_ended(&ended, launches, traced)?;
                     self.end_unwaited_step(None);
                     if launches == self.script.launches {
                         break;
@@ -1176,7 +1181,10 @@ impl Client {
         }
 
         let snapshot = self.snapshot().await?;
-        if snapshot.inferior != InferiorState::NotRunning {
+        if !matches!(
+            snapshot.inferior,
+            InferiorState::Exited { .. } | InferiorState::Detached { .. }
+        ) {
             return Err(protocol(format!(
                 "after a kill the inferior is {:?}",
                 snapshot.inferior
@@ -1447,4 +1455,17 @@ fn judge_shutdown(
 /// first stop.
 fn exited_before_first_stop(error: &Error) -> bool {
     error.to_string().contains("exited before its first stop")
+}
+
+/// Once a program was traced, a snapshot says how it ended until the next
+/// one is; before, that nothing started.
+fn check_ended(ended: &InferiorState, launches: u64, traced: bool) -> Result<(), Failure> {
+    let started = !matches!(ended, InferiorState::NotStarted);
+    if (launches == 0 && started) || (traced && !started) {
+        return Err(protocol(format!(
+            "after {launches} launches, a program seen traced: {traced}, the inferior is \
+             {ended:?}"
+        )));
+    }
+    Ok(())
 }

@@ -222,8 +222,10 @@ impl Run {
     pub(super) fn process(&self) -> ProcessId {
         match self.snapshot().inferior {
             InferiorState::Stopped { process_id, .. }
-            | InferiorState::Running { process_id, .. } => process_id,
-            InferiorState::NotRunning => process_id(Pid::from_raw(5000)),
+            | InferiorState::Running { process_id, .. }
+            | InferiorState::Exited { process_id, .. }
+            | InferiorState::Detached { process_id } => process_id,
+            InferiorState::NotStarted => process_id(Pid::from_raw(5000)),
         }
     }
 
@@ -282,7 +284,9 @@ impl Run {
     /// The run's state, and what it published, since last asked.
     pub(super) fn describe(&mut self) -> String {
         let state = match self.snapshot().inferior {
-            InferiorState::NotRunning => "not running".to_owned(),
+            InferiorState::NotStarted => "not started".to_owned(),
+            InferiorState::Exited { status, .. } => format!("exited {status:?}"),
+            InferiorState::Detached { .. } => "detached".to_owned(),
             InferiorState::Running { execution_id, .. } => {
                 format!("running {}", execution(execution_id))
             }

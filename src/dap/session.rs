@@ -1333,11 +1333,7 @@ impl Session {
         let snapshot = handle.snapshot().await.ok();
         let process = snapshot
             .as_ref()
-            .and_then(|snapshot| match snapshot.inferior {
-                InferiorState::Running { process_id, .. }
-                | InferiorState::Stopped { process_id, .. } => Some(process_id),
-                InferiorState::NotRunning => None,
-            });
+            .and_then(|snapshot| snapshot.inferior.live_process());
         let process = process.or_else(|| handle.core_dump().map(|core| core.process_id));
 
         // A stop the program's events showed while it started stays.
@@ -1902,7 +1898,13 @@ impl Session {
         // of. The program's own debugger has.
         if matches!(self.shown(), Run::NoProcess)
             && let Some(handle) = self.handle()
-            && handle.snapshot().await.map_err(error)?.inferior == InferiorState::NotRunning
+            && handle
+                .snapshot()
+                .await
+                .map_err(error)?
+                .inferior
+                .live_process()
+                .is_none()
         {
             return Err(ErrorBody::new("the program is not running"));
         }
@@ -2439,17 +2441,21 @@ impl Session {
                 Run::Stopped(..) => self.resumed_elsewhere().await,
             },
 
-            // The exit event comes after the gap, as the newest events stay
-            // queued. Only when none is queued was it missed.
-            InferiorState::NotRunning
+            // The exit or detach event comes after the gap, as the newest
+            // events stay queued. Only when none is queued was it missed.
+            InferiorState::Exited { status, .. }
                 if self.shown().process().is_some() && !self.events_queued() =>
             {
-                self.client
-                    .important("the program ended, but its exit status was missed")
-                    .await?;
+                self.exited(&status, true).await
+            }
+            InferiorState::Detached { .. }
+                if self.shown().process().is_some() && !self.events_queued() =>
+            {
                 self.ended_target().await
             }
-            InferiorState::NotRunning => Ok(()),
+            InferiorState::NotStarted
+            | InferiorState::Exited { .. }
+            | InferiorState::Detached { .. } => Ok(()),
         }
     }
 

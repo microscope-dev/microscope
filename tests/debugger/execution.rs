@@ -788,10 +788,18 @@ async fn repeated_thread_creation_and_exit_loses_no_breakpoint_events() {
         Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
     ));
 
-    assert!(matches!(
-        scenario.snapshot().await.inferior,
-        InferiorState::NotRunning
-    ));
+    // A client whose events lagged still learns how the program ended.
+    let ended = scenario.snapshot().await.inferior;
+    assert!(
+        matches!(
+            ended,
+            InferiorState::Exited {
+                status: ExitStatus::Code(0),
+                ..
+            }
+        ),
+        "{ended:?}"
+    );
 
     scenario.shutdown().await;
 }
@@ -1709,10 +1717,15 @@ async fn killing_ends_the_inferior_but_keeps_the_session() {
         .operation("kill a stopped inferior", scenario.handle().kill())
         .await;
 
-    assert!(matches!(
-        scenario.snapshot().await.inferior,
-        InferiorState::NotRunning
-    ));
+    let ended = scenario.snapshot().await.inferior;
+    assert!(
+        matches!(
+            &ended,
+            InferiorState::Exited { process_id, status: ExitStatus::Terminated(info) }
+                if *process_id == first && info.code == 9
+        ),
+        "{ended:?}"
+    );
 
     let exits = std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| match event {
@@ -1751,10 +1764,14 @@ async fn killing_a_running_or_attached_process_ends_it() {
         .operation("kill a running inferior", scenario.handle().kill())
         .await;
 
-    assert!(matches!(
-        scenario.snapshot().await.inferior,
-        InferiorState::NotRunning
-    ));
+    let ended = scenario.snapshot().await.inferior;
+    assert!(
+        matches!(
+            &ended,
+            InferiorState::Exited { status: ExitStatus::Terminated(info), .. } if info.code == 9
+        ),
+        "{ended:?}"
+    );
 
     scenario.shutdown().await;
 

@@ -103,6 +103,10 @@ struct Model {
     shutdown_reply: Option<usize>,
     ended: bool,
 
+    /// How the last process ended, as a snapshot should say until the
+    /// next is traced.
+    last: &'static str,
+
     /// What each reply should say now, in the order they were asked.
     replies: Vec<String>,
 }
@@ -174,6 +178,15 @@ impl Model {
         }
     }
 
+    /// What a snapshot should say of the program.
+    fn inferior(&self) -> &'static str {
+        if self.process.is_some() {
+            "traced"
+        } else {
+            self.last
+        }
+    }
+
     fn start(&mut self, kind: Kind, reply: usize) {
         self.process = Some(Process {
             kind,
@@ -204,6 +217,7 @@ impl Model {
         let reply = self.shutdown_reply.take();
         self.answer(reply, "ok");
         self.process = None;
+        self.last = "detached";
         self.ended = true;
     }
 
@@ -211,6 +225,10 @@ impl Model {
     fn ended_with(&mut self, status: ExitStatus) {
         let Some(process) = self.process.take() else {
             return;
+        };
+        self.last = match status {
+            ExitStatus::Code(_) => "exited",
+            ExitStatus::Terminated(_) => "killed",
         };
         self.answer(process.startup, &exited_before_stop(status));
         if self.shutdown {
@@ -390,6 +408,9 @@ impl ReferenceStateMachine for Model {
             shutdown: false,
             shutdown_reply: None,
             ended: false,
+
+            // The idle harness killed the process it began with.
+            last: "killed",
             replies: Vec::new(),
         })
         .boxed()
@@ -548,6 +569,21 @@ impl Session {
     fn check(&mut self, model: &Model, step: Step) {
         let said: Vec<String> = self.replies.iter_mut().map(|read| read()).collect();
         assert_eq!(said, model.replies, "the replies after {step:?}");
+        let inferior = match self.harness.controller.snapshot().inferior {
+            InferiorState::Running { .. } | InferiorState::Stopped { .. } => "traced",
+            InferiorState::NotStarted => "not started",
+            InferiorState::Exited {
+                status: ExitStatus::Code(0),
+                ..
+            } => "exited",
+            InferiorState::Exited {
+                status: ExitStatus::Terminated(info),
+                ..
+            } if info.code == 9 => "killed",
+            InferiorState::Exited { .. } => "exited otherwise",
+            InferiorState::Detached { .. } => "detached",
+        };
+        assert_eq!(inferior, model.inferior(), "the inferior after {step:?}");
         assert_eq!(
             self.running, !model.ended,
             "whether the controller runs after {step:?}"
@@ -609,6 +645,44 @@ impl StateMachineTest for Session {
             model.replies
         );
     }
+}
+
+/// Runs `steps` against the model and the controller, then ends the
+/// session, checking both after each step.
+fn replay(steps: &[Step]) {
+    let mut model = <Model as ReferenceStateMachine>::init_state()
+        .new_tree(&mut proptest::test_runner::TestRunner::deterministic())
+        .expect("the initial state")
+        .current();
+    let mut session = <Session as StateMachineTest>::init_test(&model);
+    for &step in steps {
+        assert!(
+            model.steps().contains(&step),
+            "{step:?} cannot happen in {model:?}"
+        );
+        model.apply(step);
+        session = <Session as StateMachineTest>::apply(session, &model, step);
+    }
+    <Session as StateMachineTest>::teardown(session, model);
+}
+
+/// A process that exits while its fork child is due, under a shutdown,
+/// still says how it ended once the child is released. Found by the
+/// model: the drain's end dropped it, so the snapshot said nothing ever
+/// started.
+#[test]
+fn a_drained_session_says_how_its_program_ended() {
+    replay(&[
+        Step::Launch,
+        Step::Kill,
+        Step::Death,
+        Step::Launch,
+        Step::Exit,
+        Step::Launch,
+        Step::FirstStop,
+        Step::Fork,
+        Step::Exit,
+    ]);
 }
 
 prop_state_machine! {

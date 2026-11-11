@@ -343,7 +343,7 @@ mod tests {
 
         StateSnapshot {
             revision: 1,
-            inferior: InferiorState::NotRunning,
+            inferior: InferiorState::NotStarted,
             stop_id: None,
             selected: None,
             selected_frame: None,

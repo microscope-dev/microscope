@@ -1518,7 +1518,7 @@ impl DebuggerHandle {
 
         let snapshot = self.snapshot().await?;
         let InferiorState::Running { process_id, .. } = snapshot.inferior else {
-            return Err(if matches!(snapshot.inferior, InferiorState::NotRunning) {
+            return Err(if snapshot.inferior.live_process().is_none() {
                 Error::NotRunning
             } else {
                 Error::AlreadyStopped

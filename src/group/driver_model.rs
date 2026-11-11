@@ -165,7 +165,14 @@ impl Fake {
                 },
                 Some(stop),
             ),
-            Truth::Exited | Truth::Detached | Truth::Lost => (InferiorState::NotRunning, None),
+            Truth::Exited => (
+                InferiorState::Exited {
+                    process_id,
+                    status: ExitStatus::Code(0),
+                },
+                None,
+            ),
+            Truth::Detached | Truth::Lost => (InferiorState::Detached { process_id }, None),
         };
         StateSnapshot {
             revision: self.revision,
