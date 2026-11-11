@@ -2637,7 +2637,7 @@ pub fn globals(page: &GlobalVariablePage, renderer: Renderer) -> String {
 
             format!(
                 "{} ({})",
-                renderer.paint(Role::Name, &entry.variable.qualified_name),
+                renderer.paint(Role::Name, &entry.selector),
                 renderer.paint(Role::Type, type_name)
             )
         })

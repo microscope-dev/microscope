@@ -575,6 +575,7 @@ impl<P: InspectionOps> Controller<P> {
                     .map(|global| LoadedGlobalVariableInfo {
                         module: running.then_some(module.loaded),
                         image: module.image.id(),
+                        selector: module.image.global_selector(&global),
                         variable: global,
                     })
             })

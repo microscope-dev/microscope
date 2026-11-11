@@ -3415,6 +3415,9 @@ pub struct LoadedGlobalVariableInfo {
 
     /// The image-level global metadata.
     pub variable: GlobalVariableInfo,
+
+    /// The shortest name that selects this entry alone within its image.
+    pub selector: Arc<str>,
 }
 
 /// One bounded page of global catalog metadata.

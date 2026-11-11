@@ -1340,6 +1340,35 @@ impl ModuleImage {
             .ok_or_else(|| Error::internal("the global index names no catalog entry"))
     }
 
+    /// The shortest selector `global_named` resolves to `global` alone: its
+    /// qualified name, else that name qualified by its file's name, else by
+    /// its file's path. Two definitions in one file share every selector.
+    #[must_use]
+    pub fn global_selector(&self, global: &GlobalVariableInfo) -> Arc<str> {
+        let source = global
+            .declaration
+            .as_ref()
+            .and_then(|declaration| self.source_file(declaration.file));
+        let qualified = &global.qualified_name;
+        let by_file = source.and_then(|source| {
+            source
+                .path
+                .file_name()
+                .map(|file| format!("{}::{qualified}", file.to_string_lossy()))
+        });
+        let by_path =
+            source.map(|source| format!("{}::{qualified}", source.path.to_string_lossy()));
+
+        [Some(qualified.to_string()), by_file, by_path]
+            .into_iter()
+            .flatten()
+            .find(|selector| {
+                self.global_named(selector)
+                    .is_ok_and(|found| found.id == global.id)
+            })
+            .map_or_else(|| Arc::clone(qualified), Arc::from)
+    }
+
     /// Returns all source files referenced by this image.
     #[must_use]
     pub fn source_files(&self) -> &[SourceFile] {

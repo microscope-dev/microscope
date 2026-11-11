@@ -3790,16 +3790,21 @@ fn globals_lists_metadata_and_print_accepts_exact_qualification() {
             "break main.c:9",
             "run",
             "print one.c::duplicate",
+            "print two.c::duplicate",
         ],
     );
+
+    // Each listed name is one `print` accepts for that definition alone.
     assert!(
         stdout.starts_with(
-            "duplicate (volatile int32_t)\nduplicate (volatile int32_t)\nno matching globals\n"
+            "one.c::duplicate (volatile int32_t)\ntwo.c::duplicate (volatile int32_t)\nno matching globals\n"
         ),
         "{stdout}"
     );
     assert!(
-        stdout.ends_with("(volatile int32_t) one.c::duplicate = 201\n"),
+        stdout.ends_with(
+            "(volatile int32_t) one.c::duplicate = 201\n(volatile int32_t) two.c::duplicate = 202\n"
+        ),
         "{stdout}"
     );
 }
