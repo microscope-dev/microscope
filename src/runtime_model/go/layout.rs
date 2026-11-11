@@ -76,7 +76,40 @@ pub struct Statuses {
     pub dead_extra: Option<u64>,
 }
 
+/// What a goroutine's status word says it is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GStatus {
+    Dead,
+    Idle,
+    OnThread,
+    Runnable,
+    Waiting,
+    Blocked,
+    Unknown,
+}
+
 impl Statuses {
+    /// Classifies a status word, ignoring the bit a scan sets.
+    pub fn classify(&self, status: u64) -> GStatus {
+        let base = status & !self.scan;
+        let is = |known: Option<u64>| Some(base) == known;
+        if base == self.dead || is(self.dead_extra) {
+            GStatus::Dead
+        } else if base == self.idle {
+            GStatus::Idle
+        } else if base == self.running || base == self.syscall {
+            GStatus::OnThread
+        } else if base == self.runnable || base == self.preempted {
+            GStatus::Runnable
+        } else if base == self.waiting {
+            GStatus::Waiting
+        } else if base == self.copystack || is(self.leaked) {
+            GStatus::Blocked
+        } else {
+            GStatus::Unknown
+        }
+    }
+
     fn bind(image: &dyn RuntimeImage) -> Result<Self, Missing> {
         let status = |name: &str| constant(image, &format!("runtime._G{name}"));
         Ok(Self {

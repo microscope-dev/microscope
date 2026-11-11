@@ -61,6 +61,43 @@ const COMPLETE: u64 = 0b10;
 const NOTIFIED: u64 = 0b100;
 const CANCELLED: u64 = 0b10_0000;
 
+/// Where a task is in its life, from its state word. Complete wins over
+/// the rest, and running over notified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Complete,
+    Running,
+    Notified,
+    Idle,
+}
+
+/// A task's state word, decoded. tokio never takes back a cancellation,
+/// so a task cancelled before it completes is cancelled at every state.
+#[derive(Debug, Clone, Copy)]
+struct TaskWord {
+    lifecycle: Lifecycle,
+    cancelled: bool,
+}
+
+impl TaskWord {
+    const fn new(bits: u64) -> Self {
+        let lifecycle = match (
+            bits & COMPLETE != 0,
+            bits & RUNNING != 0,
+            bits & NOTIFIED != 0,
+        ) {
+            (true, ..) => Lifecycle::Complete,
+            (false, true, _) => Lifecycle::Running,
+            (false, false, true) => Lifecycle::Notified,
+            (false, false, false) => Lifecycle::Idle,
+        };
+        Self {
+            lifecycle,
+            cancelled: bits & CANCELLED != 0,
+        }
+    }
+}
+
 /// The most shards one list may have, and the most tasks one list or
 /// queue is read for, so corrupted memory cannot make the debugger read
 /// without end.
@@ -917,14 +954,11 @@ impl RuntimeModel for TokioRuntime {
             return Err(format!("task {} is no longer where it was", task.task.number).into());
         }
 
-        let state = word(header.wrapping_add(tasks.state))?;
-
-        // tokio never takes back a cancellation, nor cancels a task that
-        // completed.
-        Ok(if state & CANCELLED != 0 {
-            Some(TaskEnd::Cancelled)
-        } else {
-            (state & COMPLETE != 0).then_some(TaskEnd::Finished)
+        let state = TaskWord::new(word(header.wrapping_add(tasks.state))?);
+        Ok(match (state.cancelled, state.lifecycle) {
+            (true, _) => Some(TaskEnd::Cancelled),
+            (false, Lifecycle::Complete) => Some(TaskEnd::Finished),
+            (false, Lifecycle::Running | Lifecycle::Notified | Lifecycle::Idle) => None,
         })
     }
 

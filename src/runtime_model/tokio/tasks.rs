@@ -4,10 +4,7 @@
 use std::sync::Arc;
 
 use super::layout::{Flavor, Pool, Queues};
-use super::{
-    CANCELLED, COMPLETE, Census, Cursor, Instance, List, MAX_TASKS, NOTIFIED, RUNNING, Tasks,
-    TokioRuntime,
-};
+use super::{Census, Cursor, Instance, Lifecycle, List, MAX_TASKS, TaskWord, Tasks, TokioRuntime};
 
 use crate::runtime_model::futures::{self, AsyncFrameKind, ChainEnd};
 use crate::runtime_model::records;
@@ -851,27 +848,22 @@ fn owned_task(
         .filter(polls)
         .find(|thread| thread.task == Some(node.id))
         .map(|thread| thread.thread);
-    let cancelled = node.state & CANCELLED != 0;
-    let (state, detail) = if node.state & COMPLETE != 0 {
-        (
-            TaskState::Exited,
-            if cancelled { "cancelled" } else { "completed" },
-        )
-    } else if node.state & RUNNING != 0 {
-        match thread {
+    let word = TaskWord::new(node.state);
+    let (state, detail) = match word.lifecycle {
+        Lifecycle::Complete if word.cancelled => (TaskState::Exited, "cancelled"),
+        Lifecycle::Complete => (TaskState::Exited, "completed"),
+        Lifecycle::Running => match thread {
             Some(_) => (TaskState::Running, "running"),
             None => (
                 TaskState::Unknown("a poll of the task begins or ends on some thread".into()),
                 "running",
             ),
-        }
-    } else if node.state & NOTIFIED != 0 {
-        (TaskState::Runnable, "runnable")
-    } else {
-        (TaskState::Blocked, "suspended")
+        },
+        Lifecycle::Notified => (TaskState::Runnable, "runnable"),
+        Lifecycle::Idle => (TaskState::Blocked, "suspended"),
     };
 
-    let detail = if cancelled && node.state & COMPLETE == 0 {
+    let detail = if word.cancelled && word.lifecycle != Lifecycle::Complete {
         format!("{detail}, cancelled")
     } else {
         detail.to_owned()

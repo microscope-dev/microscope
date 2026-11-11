@@ -10,7 +10,7 @@ mod types;
 
 use std::sync::{Arc, OnceLock};
 
-use layout::{Goroutines, Labels, Layout, Missing, Threads};
+use layout::{GStatus, Goroutines, Labels, Layout, Missing, Threads};
 
 use super::{
     CodeAddress, Crossing, DynamicValue, Partial, RuntimeException, RuntimeHook, RuntimeImage,
@@ -289,11 +289,17 @@ impl GoRuntime {
 
         let word = |offset| field(offset, 8);
         let status = field(layout.status, 4)?;
-        let statuses = &layout.statuses;
-        let base = status & !statuses.scan;
-        if base == statuses.dead || Some(base) == statuses.dead_extra {
-            return Ok(None);
-        }
+        let class = layout.statuses.classify(status);
+        let state = match class {
+            GStatus::Dead => return Ok(None),
+            GStatus::OnThread => TaskState::Running,
+            GStatus::Runnable => TaskState::Runnable,
+            GStatus::Waiting | GStatus::Blocked => TaskState::Blocked,
+            GStatus::Idle => TaskState::Unknown("the goroutine is being created".into()),
+            GStatus::Unknown => {
+                TaskState::Unknown(format!("the goroutine's status {status:#x} is unknown").into())
+            }
+        };
 
         let number = word(layout.goid)?;
 
@@ -313,25 +319,11 @@ impl GoRuntime {
             (procid != 0 && m_word(layout.m_curg)? == g).then(|| ThreadId::new(procid))
         };
 
-        let state = if base == statuses.running || base == statuses.syscall {
-            TaskState::Running
-        } else if base == statuses.runnable || base == statuses.preempted {
-            TaskState::Runnable
-        } else if base == statuses.waiting
-            || base == statuses.copystack
-            || Some(base) == statuses.leaked
-        {
-            TaskState::Blocked
-        } else if base == statuses.idle {
-            TaskState::Unknown("the goroutine is being created".into())
-        } else {
-            TaskState::Unknown(format!("the goroutine's status {status:#x} is unknown").into())
-        };
-
         // A waiting goroutine is described by why it waits, as the
         // runtime's own tracebacks do; any other by its status.
+        let base = status & !layout.statuses.scan;
         let wait_reason = field(layout.wait_reason, 1)?;
-        let detail = if base == statuses.waiting && wait_reason != 0 {
+        let detail = if class == GStatus::Waiting && wait_reason != 0 {
             names
                 .wait_reasons
                 .get(usize::try_from(wait_reason).unwrap_or(usize::MAX))
@@ -346,7 +338,7 @@ impl GoRuntime {
         };
 
         let address = |value: u64| (value != 0).then(|| VirtualAddress::new(value));
-        let on_thread = base == statuses.running || base == statuses.syscall;
+        let on_thread = class == GStatus::OnThread;
         let entry = word(layout.startpc)?;
 
         // A parked goroutine resumes after the call that saved its
