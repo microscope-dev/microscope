@@ -1015,7 +1015,11 @@ impl Processor {
         }
 
         self.latest = self.latest.max(time);
-        self.first.get_or_insert(time);
+        // A capture holds nothing before its start. Before a cut, a late
+        // record moves the start back to it; after one, the cut forgets it.
+        if self.cut.start().is_none() {
+            self.first = Some(self.first.map_or(time, |first| first.min(time)));
+        }
         let at = time.cast_signed();
 
         match record {

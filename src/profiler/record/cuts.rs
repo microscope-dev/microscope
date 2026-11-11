@@ -587,8 +587,9 @@ mod tests {
                 prop_assert_eq!(capture.span().1, next.span().0);
             }
 
-            // Every sample on time is in the one segment it falls in; one
-            // that came late is in at most one, or dropped, and counted.
+            // Every sample is within its segment's span. One on time is in
+            // the segment it falls in; one that came late is in at most one,
+            // or dropped, and counted.
             let mut on_time = run.samples.clone();
             on_time.sort_unstable();
             for time in &run.late {
@@ -601,7 +602,7 @@ mod tests {
                 for time in sample_times(capture) {
                     let at = i64::try_from(time).expect("small");
                     prop_assert!(
-                        run.late.contains(&time) || (from <= at && at <= to),
+                        from <= at && at <= to,
                         "{} outside {:?}",
                         time,
                         (from, to)
