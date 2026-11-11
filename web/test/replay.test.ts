@@ -78,6 +78,22 @@ describe("a program run to its exit", () => {
   });
 });
 
+describe("a link the server ended", () => {
+  const stopped = replay(received("steps")).find(
+    (model) => model.state?.inferior.state === "stopped",
+  );
+
+  it.each(["unauthorized", "incompatible"] as const)(
+    "shows why it is %s, not the last state",
+    (link) => {
+      expect(stopped && shown(stopped).label).toBe("Stopped");
+      const ended = reduce(stopped as Model, { type: "link", link });
+      expect(shown(ended)).toMatchObject({ pill: "warn", detail: null });
+      expect(shown(ended).label).not.toBe("Stopped");
+    },
+  );
+});
+
 describe("two tabs racing a stop", () => {
   const models = replay(received("two-tabs"));
 

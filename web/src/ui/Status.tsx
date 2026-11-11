@@ -13,15 +13,22 @@ interface Shown {
 
 /** What the status shows: the run state is the loudest thing on screen. */
 export function shown(model: Model): Shown {
-  if (model.link === "reconnecting" || model.link === "connecting") {
-    return {
-      pill: "warn",
-      label: model.link === "connecting" ? "Connecting" : "Reconnecting",
-      detail: model.state?.session ? "showing the last state" : null,
-    };
-  }
-  if (model.link === "unreachable") {
-    return { pill: "warn", label: "Can't reach microscope", detail: "still trying" };
+  switch (model.link) {
+    case "connecting":
+    case "reconnecting":
+      return {
+        pill: "warn",
+        label: model.link === "connecting" ? "Connecting" : "Reconnecting",
+        detail: model.state?.session ? "showing the last state" : null,
+      };
+    case "unreachable":
+      return { pill: "warn", label: "Can't reach microscope", detail: "still trying" };
+    case "unauthorized":
+      return { pill: "warn", label: "Not connected", detail: null };
+    case "incompatible":
+      return { pill: "warn", label: "Reload to update", detail: null };
+    case "open":
+      break;
   }
   const state = model.state;
   if (state?.busy) {

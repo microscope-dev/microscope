@@ -48,14 +48,23 @@ export interface ConnectionOptions {
   now?: () => number;
 }
 
+/** Where the connection is. Each attempt makes its own phase, and an event
+ * from a transport or check counts only while its phase is the current one,
+ * so a late close from a replaced socket changes nothing. */
+type Phase =
+  | { kind: "stopped" }
+  /** Asking the server whether this browser may connect. */
+  | { kind: "authorizing" }
+  /** On a socket, open once the transport says so. `transport` is null
+   * until `connect` returns. */
+  | { kind: "socket"; transport: Transport | null; open: boolean }
+  /** Waiting to try again. */
+  | { kind: "waiting"; timer: ReturnType<typeof setTimeout> };
+
 export class Connection {
   readonly #options: ConnectionOptions;
-  #transport: Transport | null = null;
-  #open = false;
-  #stopped = true;
-  /** Bumped by each attempt and by stop, so a late event from an older
-   * socket is ignored. */
-  #generation = 0;
+  #phase: Phase = { kind: "stopped" };
+  /** Attempts that failed since the last hello, which pick the backoff. */
   #attempt = 0;
   /** Whether the server has said hello since `start`. Until it has, a
    * failed attempt means it cannot be reached, not that it was lost. */
@@ -64,7 +73,6 @@ export class Connection {
   #pending = new Map<number, Pending>();
   /** Bytes sent ahead of the answers they belong to, by request. */
   #binary = new Map<number, Uint8Array>();
-  #timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: ConnectionOptions) {
     this.#options = options;
@@ -72,10 +80,9 @@ export class Connection {
 
   /** Connects, and keeps reconnecting until stopped. */
   start(): void {
-    if (!this.#stopped) {
+    if (this.#phase.kind !== "stopped") {
       return;
     }
-    this.#stopped = false;
     this.#reached = false;
     this.#options.emit({ type: "link", link: "connecting" });
     void this.#attemptConnection();
@@ -83,19 +90,17 @@ export class Connection {
 
   /** Whether it was started and not stopped since. */
   get started(): boolean {
-    return !this.#stopped;
+    return this.#phase.kind !== "stopped";
   }
 
   stop(): void {
-    this.#stopped = true;
-    this.#generation += 1;
-    if (this.#timer !== null) {
-      clearTimeout(this.#timer);
-      this.#timer = null;
+    const phase = this.#phase;
+    this.#phase = { kind: "stopped" };
+    if (phase.kind === "waiting") {
+      clearTimeout(phase.timer);
+    } else if (phase.kind === "socket") {
+      phase.transport?.close();
     }
-    this.#transport?.close();
-    this.#transport = null;
-    this.#open = false;
     this.#failPending();
   }
 
@@ -104,51 +109,52 @@ export class Connection {
     method: M,
     ...params: ParamsOf<M> extends undefined ? [] : [ParamsOf<M>]
   ): Promise<Results[M]> {
-    if (!this.#open || this.#transport === null) {
+    const phase = this.#phase;
+    if (phase.kind !== "socket" || !phase.open || phase.transport === null) {
       return Promise.reject(new RequestError("disconnected", "not connected to microscope"));
     }
+    const transport = phase.transport;
     const id = this.#nextId++;
     assert(!this.#pending.has(id), `request id ${id} is already pending`);
     assert(!this.#binary.has(id), `request id ${id} already has bytes`);
     const message = params.length === 0 ? { id, method } : { id, method, params: params[0] };
     return new Promise<Results[M]>((resolve, reject) => {
       this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      assert(this.#transport !== null, `request ${id} lost its transport before sending`);
-      this.#transport.send(JSON.stringify(message));
+      transport.send(JSON.stringify(message));
     });
   }
 
   async #attemptConnection(): Promise<void> {
-    assert(!this.#stopped, `connection attempt ${this.#attempt} started while stopped`);
     assert(
-      this.#timer === null,
-      `connection attempt ${this.#attempt} started with a retry pending`,
+      this.#phase.kind !== "socket",
+      `connection attempt ${this.#attempt} started on an open socket`,
     );
-    this.#generation += 1;
-    const generation = this.#generation;
-    const current = () => generation === this.#generation;
+    const authorizing: Phase = { kind: "authorizing" };
+    this.#phase = authorizing;
     let authorized: boolean;
     try {
       authorized = await this.#options.authorized();
     } catch {
-      if (current()) {
+      if (this.#phase === authorizing) {
         this.#lost();
-        this.#retry();
       }
       return;
     }
-    if (this.#stopped || !current()) {
+    if (this.#phase !== authorizing) {
       return;
     }
     if (!authorized) {
-      this.#stopped = true;
+      this.#phase = { kind: "stopped" };
       this.#options.emit({ type: "link", link: "unauthorized" });
       return;
     }
-    this.#transport = this.#options.connect({
+    const socket: Phase & { kind: "socket" } = { kind: "socket", transport: null, open: false };
+    this.#phase = socket;
+    const current = () => this.#phase === socket;
+    const transport = this.#options.connect({
       open: () => {
         if (current()) {
-          this.#open = true;
+          socket.open = true;
         }
       },
       message: (text) => {
@@ -163,10 +169,17 @@ export class Connection {
       },
       close: () => {
         if (current()) {
-          this.#closed();
+          this.#failPending();
+          this.#lost();
         }
       },
     });
+    if (current()) {
+      socket.transport = transport;
+    } else {
+      // It closed, or was stopped, as it connected.
+      transport.close();
+    }
   }
 
   /** Keeps a frame of bytes, an 8-byte little-endian request id and the
@@ -222,34 +235,23 @@ export class Connection {
     this.#options.emit({ type: "message", message, at: (this.#options.now ?? Date.now)() });
   }
 
-  #closed(): void {
-    this.#open = false;
-    this.#transport = null;
-    this.#failPending();
-    if (!this.#stopped) {
-      this.#lost();
-      this.#retry();
-    }
-  }
-
-  /** Says the server is away: lost after it answered, or never reached. */
+  /** Says the server is away, lost after it answered or never reached,
+   * and waits to try again. */
   #lost(): void {
     this.#options.emit({ type: "link", link: this.#reached ? "reconnecting" : "unreachable" });
-  }
-
-  #retry(): void {
-    assert(!this.#stopped, `retry ${this.#attempt} scheduled while stopped`);
-    assert(this.#timer === null, `retry ${this.#attempt} scheduled with another pending`);
     const backoff = this.#options.backoff ?? [100, 250, 500, 1000, 2000];
     const delay = backoff[Math.min(this.#attempt, backoff.length - 1)];
     assert(delay !== undefined, `backoff has no delay for attempt ${this.#attempt}`);
     this.#attempt += 1;
-    this.#timer = setTimeout(() => {
-      this.#timer = null;
-      if (!this.#stopped) {
-        void this.#attemptConnection();
-      }
-    }, delay);
+    const waiting: Phase = {
+      kind: "waiting",
+      timer: setTimeout(() => {
+        if (this.#phase === waiting) {
+          void this.#attemptConnection();
+        }
+      }, delay),
+    };
+    this.#phase = waiting;
   }
 
   #failPending(): void {
