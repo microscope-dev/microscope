@@ -836,8 +836,10 @@ impl<P: LinuxTraceOps> Controller<P> {
         let Some(inferior) = self.session.inferior() else {
             return Ok(false);
         };
+        // A report with no installation is from an agent this controller
+        // never configured, so it is about none of its generations.
         let Some(installation) = inferior.agents.get(&runtime) else {
-            return Ok(true);
+            return Ok(false);
         };
         if installation.generation != Some(generation) {
             return Ok(false);
@@ -897,7 +899,7 @@ impl<P: LinuxTraceOps> Controller<P> {
             return Ok(false);
         };
         let Some(mut installation) = inferior.agents.remove(&runtime) else {
-            return Ok(true);
+            return Ok(false);
         };
         let result = (|| {
             if installation.generation != Some(generation) {
