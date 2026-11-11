@@ -32,7 +32,9 @@ check: lint test miri loom web-test docs
 # Runs everything to check before committing. The concurrent Miri tests try
 # more seeds than `check` does: ordering bugs planted in the probe SDK showed
 # only between seeds 48 and 61.
-all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-props web-e2e stress sim bench-smoke (audit-bin "debug")
+# The BPF tests run last, so that a host without their wrapper ends on the
+# warning that they were skipped.
+all: check props fuzz-replay (miri-seeds "0..64") (loom "4") loom-mutants web-props web-e2e stress sim bench-smoke (audit-bin "debug") test-bpf-if-installed
 
 # Enters the pinned Nix development shell, or runs a command in it, with
 # nothing of the host's environment but the user and their terminal.
@@ -166,6 +168,19 @@ test-bpf LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-programs
     fi
     ulimit -c 0
     MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/contained.sh setarch "$(uname -m)" cargo nextest run --features {{test_features}} --run-ignored only --test syscalls --test python --test node --test profiler_kernel -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
+
+# Runs `test-bpf` where its wrapper is installed; elsewhere warns that the
+# BPF tests did not run, and succeeds.
+[script]
+test-bpf-if-installed LAUNCHER="/run/wrappers/bin/microscope-bpf":
+    if [[ ! -x "$1" ]]; then
+        printf '\n%s\n%s\n%s\n\n' \
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" \
+            "WARNING: the BPF engine's tests were SKIPPED: $1 is missing. Import nixosModules.microscope-bpf to run them." \
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+        exit 0
+    fi
+    {{just_executable()}} test-bpf "$1"
 
 # How many seeds `just miri` tries its concurrent tests under: about as many
 # as run at once. Try more with `just miri_seeds=0..256 miri`, or
