@@ -461,21 +461,26 @@ entries! {
         /// The bytes a generator's [`Field::GenFrameState`] holds: not yet
         /// started; suspended; suspended in an `await` or `yield from` of
         /// the object atop its frame's stack, which 3.15 may lock as
-        /// well; and running. Any other state is finished.
+        /// well; running; and finished, which before 3.15 is completed,
+        /// then cleared. Any other byte is a state the model does not know.
         GeneratorCreated = "FRAME_CREATED",
         GeneratorSuspended = "FRAME_SUSPENDED",
         GeneratorYieldFrom = "FRAME_SUSPENDED_YIELD_FROM",
         GeneratorYieldFromLocked = "FRAME_SUSPENDED_YIELD_FROM_LOCKED",
         GeneratorExecuting = "FRAME_EXECUTING",
+        GeneratorCompleted = "FRAME_COMPLETED",
+        GeneratorCleared = "FRAME_CLEARED",
 
         /// How far below the top of a generator's frame's stack the object
         /// it awaits is, in values: 1, or from 3.15, where the value below
         /// the top is the iterator's index, 2.
         GeneratorAwaitedDepth = "awaited_depth",
 
-        /// The state of a future that has neither a result nor been
-        /// cancelled, `STATE_PENDING`.
+        /// A future's states: neither a result nor cancelled, cancelled,
+        /// and with a result or an exception.
         FuturePending = "STATE_PENDING",
+        FutureCancelled = "STATE_CANCELLED",
+        FutureFinished = "STATE_FINISHED",
 
         /// The eval breaker bit PEP 768 asks a debugger to set.
         DebugStopBit = "_PY_EVAL_PLEASE_STOP_BIT",

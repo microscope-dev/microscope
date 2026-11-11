@@ -523,6 +523,22 @@ int main(int argc, char **argv) {
     CONSTANT(GeneratorYieldFromLocked, (uint8_t)(int8_t)FRAME_SUSPENDED);
 #endif
     CONSTANT(GeneratorExecuting, (uint8_t)(int8_t)FRAME_EXECUTING);
+    /* 3.15 has no completed state: a generator that returns is cleared. */
+#if PY_VERSION_HEX >= 0x030f0000
+    CONSTANT(GeneratorCompleted, (uint8_t)(int8_t)FRAME_CLEARED);
+#else
+    CONSTANT(GeneratorCompleted, (uint8_t)(int8_t)FRAME_COMPLETED);
+#endif
+    CONSTANT(GeneratorCleared, (uint8_t)(int8_t)FRAME_CLEARED);
+#if PY_VERSION_HEX >= 0x030e0000
+    /* The model reads coroutines' states from 3.14, and tells them apart
+     * only while these differ. */
+    _Static_assert(FRAME_CREATED != FRAME_SUSPENDED
+                       && FRAME_SUSPENDED != FRAME_SUSPENDED_YIELD_FROM
+                       && FRAME_SUSPENDED_YIELD_FROM != FRAME_EXECUTING
+                       && FRAME_EXECUTING != FRAME_CLEARED,
+                   "a coroutine's states differ");
+#endif
     /* _PyGen_yf peeks at the top of the stack; from 3.15, GET_ITER pushes
      * the iterator's index above it, and gen_getyieldfrom peeks at 2. */
 #if PY_VERSION_HEX >= 0x030f0000
@@ -532,8 +548,12 @@ int main(int argc, char **argv) {
 #endif
 #if PY_VERSION_HEX >= 0x030e0000
     CONSTANT(FuturePending, MICROSCOPE_STATE_PENDING);
+    CONSTANT(FutureCancelled, MICROSCOPE_STATE_CANCELLED);
+    CONSTANT(FutureFinished, MICROSCOPE_STATE_FINISHED);
 #else
     CONSTANT(FuturePending, 0);
+    CONSTANT(FutureCancelled, 0);
+    CONSTANT(FutureFinished, 0);
 #endif
     printf("        ],\n");
 

@@ -61,8 +61,12 @@ fn asyncio_layout() -> PythonLayout {
     layout.set_constant(Constant::GeneratorYieldFrom, 0xff);
     layout.set_constant(Constant::GeneratorYieldFromLocked, 0xff);
     layout.set_constant(Constant::GeneratorExecuting, 0);
+    layout.set_constant(Constant::GeneratorCompleted, 1);
+    layout.set_constant(Constant::GeneratorCleared, 4);
     layout.set_constant(Constant::GeneratorAwaitedDepth, 1);
     layout.set_constant(Constant::FuturePending, 0);
+    layout.set_constant(Constant::FutureCancelled, 1);
+    layout.set_constant(Constant::FutureFinished, 2);
     layout
 }
 
@@ -376,6 +380,53 @@ fn a_chain_that_loops_runs_or_runs_no_coroutine_ends_with_why() {
         read.end.as_deref(),
         Some("the task runs a `list`, which is no coroutine")
     );
+}
+
+#[test]
+fn a_state_cpython_does_not_define_is_unknown_not_finished() {
+    let (mut process, types, ty) = world(TASK_SIZE);
+    let name = process.str_object(types.str, "task");
+    let code = process.code("ends", 5, &[(1, 0)]);
+    for (byte, end) in [
+        (1, "has finished"),
+        (4, "has finished"),
+        (2, "is in state 2"),
+    ] {
+        let coroutine = process.coroutine(&types, Constant::GeneratorExecuting, code, None);
+        process.put(coroutine, Field::GenFrameState, byte, 1);
+        let task = process.task(ty, coroutine, name);
+        let read = awaits(&process, types, task);
+        let end = format!("the coroutine at {coroutine:#x} {end}");
+        assert!(
+            read.end
+                .as_deref()
+                .is_some_and(|read| read.starts_with(&end)),
+            "{byte}: {:?}",
+            read.end
+        );
+    }
+
+    let waiting = process.task(ty, 0, name);
+    for (state, expected) in [
+        (1, TaskState::Exited),
+        (2, TaskState::Exited),
+        (
+            3,
+            TaskState::Unknown(
+                format!(
+                    "the task at {waiting:#x} is in future state 3, which asyncio does not define"
+                )
+                .into(),
+            ),
+        ),
+        (0, TaskState::Runnable),
+    ] {
+        process.put(waiting, Field::TaskState, state, 4);
+        let snapshot = with_values(&process, types, InspectionLimits::default(), |values| {
+            values.task(VirtualAddress::new(waiting), None)
+        });
+        assert_eq!(snapshot.state, expected, "future state {state}");
+    }
 }
 
 #[test]

@@ -371,8 +371,16 @@ impl Values<'_, '_> {
                 .try_into()
                 .map_err(|_| malformed(task, "asyncio.Task"))?,
         );
-        if state != u32::from(layout.constant(Constant::FuturePending)) {
+        let is = |constant| state == u32::from(layout.constant(constant));
+        if is(Constant::FutureCancelled) || is(Constant::FutureFinished) {
             return Ok((TaskState::Exited, None));
+        }
+
+        if !is(Constant::FuturePending) {
+            return Err(format!(
+                "the task at {task:#x} is in future state {state}, which asyncio does not define"
+            )
+            .into());
         }
 
         let waiter = reader.field_word(task, Field::TaskFutWaiter)?;
@@ -554,8 +562,13 @@ impl Values<'_, '_> {
                 Coroutine::Resting
             } else if is(Constant::GeneratorExecuting) {
                 Coroutine::Running
-            } else {
+            } else if is(Constant::GeneratorCompleted) || is(Constant::GeneratorCleared) {
                 Coroutine::Finished
+            } else {
+                return Err(format!(
+                    "the coroutine at {generator:#x} is in state {state}, which CPython does not define"
+                )
+                .into());
             },
         )
     }
