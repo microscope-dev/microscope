@@ -1893,6 +1893,16 @@ impl Session {
     }
 
     async fn pause(&self) -> Result<Value, ErrorBody> {
+        // A group hears of its members through tasks of its own, which may
+        // not yet have heard of an exit this session has told the client
+        // of. The program's own debugger has.
+        if matches!(self.shown(), Run::NoProcess)
+            && let Some(handle) = self.handle()
+            && handle.snapshot().await.map_err(error)?.inferior == InferiorState::NotRunning
+        {
+            return Err(ErrorBody::new("the program is not running"));
+        }
+
         let paused = if let Some(group) = self
             .phase
             .target()
