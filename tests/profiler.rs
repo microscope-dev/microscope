@@ -2849,6 +2849,17 @@ fn snapshots_in_a_budget_pause_leave_gaps_apart() {
             .any(|&(start, _)| budget.iter().any(|&(from, to)| from < start && start <= to)),
         "no snapshot fell in a budget pause: {gaps:?}"
     );
+
+    // A snapshot that ends inside a budget pause leaves sampling off.
+    let stacks = recording.profile.stacks();
+    assert!(!stacks.is_empty());
+    if let Some(stack) = stacks.iter().find(|stack| {
+        budget
+            .iter()
+            .any(|&(from, to)| from < stack.time && stack.time < to)
+    }) {
+        panic!("{stack:?} was sampled in a budget pause: {gaps:?}");
+    }
 }
 
 /// Records `command` with a task snapshot every 50 ms, `live` or stopping

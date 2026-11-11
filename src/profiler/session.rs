@@ -1700,25 +1700,20 @@ fn cut(
 mod tests {
     use std::time::Duration;
 
-    /// The pacer tells the processor where a budget pause began as it
-    /// begins, as the pause becomes a gap only when it ends: a thread off
-    /// its CPU before the pause and back during it is off only until the
-    /// pause began, not until it came back unseen.
+    /// A budget pause is a gap from when sampling finished turning off to
+    /// when it began turning back on, and one still open when the recording
+    /// ends ends there. The processor learns where a pause began as it
+    /// begins, so a thread off its CPU before it and back during it is off
+    /// only until the pause began. A recording that ends sampling has no
+    /// gap at its end.
     #[test]
-    fn a_budget_pause_cuts_time_off_a_cpu_where_it_began() {
+    fn a_budget_pause_is_a_gap_from_sampling_off_to_sampling_on() {
         use crate::backend::perf::decode::Record;
         use crate::model::{Pid, Tid};
 
-        let mut processor =
-            super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
+        let processor =
+            || super::record::Processor::new(crate::debug_info::DebugFileSearch::default(), 64);
         let (pid, tid) = (Pid::new(100), Tid::new(101));
-        processor.process(Record::Fork {
-            pid,
-            ppid: Pid::new(1),
-            tid,
-            ptid: Tid::new(1),
-            time: 1_000,
-        });
         let switch = |out, time| Record::Switch {
             pid,
             tid,
@@ -1727,39 +1722,68 @@ mod tests {
             time,
         };
 
-        // Sampling is on until 3,000 of a period that outlasts the test.
+        // Sampling is on until 3,000 of a period that outlasts the test, and
+        // turning it on or off takes 100 ns.
         let budget = super::Budget {
             cpu: 0.01,
             period: Duration::from_hours(1),
         };
-        let mut pacer = super::Pacer::new(budget, 1_000, &processor);
-        pacer.window = (1_000, 3_000);
         let mut toggled = Vec::new();
         let mut pace = |pacer: &mut super::Pacer, processor: &mut _, now| {
             pacer.pace(now, processor, |on| {
                 toggled.push((now, on));
-                (now, now)
-            });
+                (now, now + 100)
+            })
         };
 
-        pace(&mut pacer, &mut processor, 1_500);
-        processor.process(switch(true, 2_000));
-        pace(&mut pacer, &mut processor, 3_000);
-        processor.process(switch(false, 4_000));
-        pace(&mut pacer, &mut processor, 5_000);
-        pacer.finish(9_000, &mut processor);
-        assert_eq!(toggled, [(3_000, false)]);
+        let mut paused = processor();
+        paused.process(Record::Fork {
+            pid,
+            ppid: Pid::new(1),
+            tid,
+            ptid: Tid::new(1),
+            time: 1_000,
+        });
+        let mut pacer = super::Pacer::new(budget, 1_000, &paused);
+        pacer.window = (1_000, 3_000);
+        assert_eq!(
+            pace(&mut pacer, &mut paused, 1_500),
+            Duration::from_nanos(1_500)
+        );
+        paused.process(switch(true, 2_000));
+        pace(&mut pacer, &mut paused, 3_000);
+        paused.process(switch(false, 4_000));
+        pacer.window = (5_000, 7_000);
+        pace(&mut pacer, &mut paused, 4_500);
+        pace(&mut pacer, &mut paused, 5_000);
+        pace(&mut pacer, &mut paused, 7_000);
+        pace(&mut pacer, &mut paused, 8_000);
+        pacer.finish(9_000, &mut paused);
 
-        let profile = super::Profile {
-            capture: processor.finish(),
+        let mut sampling = processor();
+        let mut pacer = super::Pacer::new(budget, 1_000, &sampling);
+        pacer.window = (1_000, 3_000);
+        pace(&mut pacer, &mut sampling, 2_000);
+        pacer.finish(2_500, &mut sampling);
+
+        assert_eq!(toggled, [(3_000, false), (5_000, true), (7_000, false)]);
+        let paused = super::Profile {
+            capture: paused.finish(),
         };
-        let off: Vec<_> = profile
+        let off: Vec<_> = paused
             .off_cpu()
             .iter()
             .map(|interval| (interval.time, interval.duration))
             .collect();
-        assert_eq!(off, [(2_000, 1_000)]);
-        assert_eq!(profile.paused(super::GapReason::Budget), [(3_000, 9_000)]);
+        assert_eq!(off, [(2_000, 1_100)]);
+        assert_eq!(
+            paused.paused(super::GapReason::Budget),
+            [(3_100, 5_000), (7_100, 9_000)]
+        );
+        let sampling = super::Profile {
+            capture: sampling.finish(),
+        };
+        assert_eq!(sampling.gaps(), []);
     }
 
     /// The program runs for a fraction of a second: long enough that the
