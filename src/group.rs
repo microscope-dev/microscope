@@ -568,8 +568,18 @@ struct Live {
     /// The member's copy of each of the root's breakpoints, by the root's
     /// id, with the root's settings it was given.
     mirrored: BTreeMap<BreakpointId, (BreakpointId, Settings)>,
-    running: bool,
-    gone: bool,
+    run: Run,
+}
+
+/// Whether a member runs, as its driver last learned.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Run {
+    /// Stopped, or not started yet.
+    Stopped,
+    Running,
+
+    /// Exited, detached, watched elsewhere, or lost with its session.
+    Gone,
 }
 
 /// What a breakpoint's copy must agree on with the root's.
@@ -920,8 +930,7 @@ impl Driver {
                 seen: None,
                 resynced: 0,
                 mirrored: BTreeMap::new(),
-                running: false,
-                gone: false,
+                run: Run::Stopped,
             },
         );
         driver
@@ -975,7 +984,7 @@ impl Driver {
                 let _ = reply.send(self.detach(number).await);
             }
             Command::PauseAll(reply) => {
-                if self.members.values().any(|live| live.running && !live.gone) {
+                if self.members.values().any(|live| live.run == Run::Running) {
                     if self.execution.is_none() && self.stops.is_running() {
                         self.next_execution += 1;
                         self.execution = Some(GroupExecutionId(self.next_execution));
@@ -1115,7 +1124,9 @@ impl Driver {
             return;
         }
         live.process = Some(process);
-        live.gone = false;
+        if live.run == Run::Gone {
+            live.run = Run::Stopped;
+        }
         let command = command_line(process);
         self.shared.update(number, |member| {
             member.process = Some(process);
@@ -1131,11 +1142,10 @@ impl Driver {
         let Some(live) = self.members.get_mut(&number) else {
             return;
         };
-        if live.gone {
+        if live.run == Run::Gone {
             return;
         }
-        live.running = false;
-        live.gone = true;
+        live.run = Run::Gone;
         self.shared
             .update(number, |member| member.state = MemberState::Lost);
         self.emit(GroupEvent::MemberLost { member: number });
@@ -1185,8 +1195,7 @@ impl Driver {
                 if let Some(number) = left
                     && let Some(live) = self.members.get_mut(&number)
                 {
-                    live.gone = true;
-                    live.running = false;
+                    live.run = Run::Gone;
                     self.shared.update(number, |member| {
                         member.state = MemberState::Watched(program.clone());
                     });
@@ -1240,8 +1249,7 @@ impl Driver {
             seen: None,
             resynced: 0,
             mirrored: BTreeMap::new(),
-            running: false,
-            gone: false,
+            run: Run::Stopped,
         };
         let mut failures = Vec::new();
         match ready {
@@ -1261,7 +1269,7 @@ impl Driver {
             )]
             Err(error) => {
                 record!("member {number} did not start: {error}");
-                live.gone = true;
+                live.run = Run::Gone;
             }
         }
 
@@ -1272,15 +1280,17 @@ impl Driver {
             parent,
             executed: executed.clone(),
             command,
-            state: if live.gone {
+            state: if live.run == Run::Gone {
                 MemberState::Detached
             } else {
                 MemberState::Running
             },
         };
-        let resume = !live.gone && self.stops.is_running();
+        let resume = live.run != Run::Gone && self.stops.is_running();
         if resume {
-            live.running = continue_stopped(&handle, |_| true).await.is_ok();
+            if continue_stopped(&handle, |_| true).await.is_ok() {
+                live.run = Run::Running;
+            }
         } else if let Ok(snapshot) = handle.snapshot().await
             && let InferiorState::Stopped { reason, .. } = snapshot.inferior
         {
@@ -1352,8 +1362,7 @@ impl Driver {
             } => self.stop_event(number, stop_id, reason).await,
             DebuggerEvent::InferiorExited { status, .. } => {
                 if let Some(live) = self.members.get_mut(&number) {
-                    live.running = false;
-                    live.gone = true;
+                    live.run = Run::Gone;
                 }
                 let state = MemberState::Exited(status.clone());
                 self.shared.update(number, |member| member.state = state);
@@ -1366,8 +1375,7 @@ impl Driver {
             }
             DebuggerEvent::InferiorDetached { .. } => {
                 if let Some(live) = self.members.get_mut(&number) {
-                    live.running = false;
-                    live.gone = true;
+                    live.run = Run::Gone;
                 }
                 self.shared.update(number, |member| {
                     if !matches!(member.state, MemberState::Watched(_)) {
@@ -1411,8 +1419,7 @@ impl Driver {
 
     fn started(&mut self, number: MemberNumber, process: ProcessId) {
         if let Some(live) = self.members.get_mut(&number) {
-            live.gone = false;
-            live.running = true;
+            live.run = Run::Running;
             live.process = Some(process);
         }
         let command = command_line(process);
@@ -1426,8 +1433,11 @@ impl Driver {
     }
 
     fn set_running(&mut self, number: MemberNumber, running: bool) {
-        if let Some(live) = self.members.get_mut(&number) {
-            live.running = running;
+        // A member that is gone stays gone until it starts again.
+        if let Some(live) = self.members.get_mut(&number)
+            && live.run != Run::Gone
+        {
+            live.run = if running { Run::Running } else { Run::Stopped };
         }
     }
 
@@ -1465,7 +1475,7 @@ impl Driver {
         let stopped = first.as_ref().map(|first| first.member);
         let mut waiting = BTreeSet::new();
         for (&number, live) in &self.members {
-            if Some(number) == stopped || live.gone || !live.running {
+            if Some(number) == stopped || live.run != Run::Running {
                 continue;
             }
 
@@ -1526,7 +1536,7 @@ impl Driver {
             .ok_or(Error::UnknownMember(number))?;
         let process = live
             .process
-            .filter(|_| !live.gone)
+            .filter(|_| live.run != Run::Gone)
             .ok_or(Error::NotRunning)?;
 
         live.handle
@@ -1545,7 +1555,7 @@ impl Driver {
             live.seen
         );
         live.seen = Some(stop);
-        live.running = true;
+        live.run = Run::Running;
         Ok(())
     }
 
@@ -1653,7 +1663,10 @@ impl Driver {
         // the group may not have seen that yet.
         let mut current = BTreeMap::new();
         for number in self.stops.pending_members() {
-            if let Some(live) = self.members.get(&number).filter(|live| !live.gone)
+            if let Some(live) = self
+                .members
+                .get(&number)
+                .filter(|live| live.run != Run::Gone)
                 && let Ok(snapshot) = live.handle.snapshot().await
                 && let InferiorState::Stopped { stop_id, .. } = snapshot.inferior
             {
@@ -1679,7 +1692,7 @@ impl Driver {
             let shown = shown
                 .filter(|(member, _)| *member == number)
                 .map(|(_, stop)| stop);
-            if live.gone || (live.running && shown.is_none()) {
+            if live.run == Run::Gone || (live.run == Run::Running && shown.is_none()) {
                 continue;
             }
 
@@ -1690,7 +1703,7 @@ impl Driver {
                     // Its events for the stop it left are now behind the
                     // group, as resume_observed notes.
                     live.seen = live.seen.max(Some(stop));
-                    live.running = true;
+                    live.run = Run::Running;
                     resumed = true;
                 }
                 Err(Error::NotRunning | Error::NotStopped) => {}
@@ -1743,7 +1756,7 @@ impl Driver {
 
         let mut failures = Vec::new();
         for (&number, live) in self.members.iter_mut().filter(|(number, _)| **number != 1) {
-            if !live.gone {
+            if live.run != Run::Gone {
                 failures.extend(mirror(&self.shared, number, &snapshot.breakpoints, live).await);
             }
         }
@@ -1753,7 +1766,7 @@ impl Driver {
     }
 
     fn check_exited(&self) {
-        if self.members.values().all(|live| live.gone) {
+        if self.members.values().all(|live| live.run == Run::Gone) {
             self.emit(GroupEvent::GroupExited);
         }
     }
@@ -1768,10 +1781,10 @@ impl Driver {
         let Some(live) = self.members.get(&number) else {
             return Err(Error::UnknownMember(number));
         };
-        if live.gone {
+        if live.run == Run::Gone {
             return Err(Error::NotRunning);
         }
-        if live.running {
+        if live.run == Run::Running {
             return Err(Error::NotStopped);
         }
 
