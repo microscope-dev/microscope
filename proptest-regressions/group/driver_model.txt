@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e5eabfce305ebfb73f316b293d5831a0ab72eb258d6331334442b991b3bcf4c0 # shrinks to scope = Group, ops = [Stop { member: 0, own: false }, Deliver(0), Deliver(0), Join { late: false }, Lose(1), Continue]
+cc 44207dd30f1b05372246a101ed7f30bcadf2b60003fb870d4ff643eefc45f453 # shrinks to scope = Group, ops = [Join { late: false }, Deliver(0), Deliver(0), Stop { member: 0, own: false }, Lose(0), Stop { member: 1, own: false }, Deliver(6), Deliver(1), Continue, ContinueFrom(GroupStop)]

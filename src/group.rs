@@ -1579,9 +1579,9 @@ impl Driver {
         };
 
         // The execution begins before the members resume, as a stop waiting
-        // to be reported ends it at once.
-        // One that fails resumed nothing, and leaves the execution under
-        // way, if any, to the stop that ends it.
+        // to be reported ends it at once. One that fails resumed nothing,
+        // and leaves the execution under way, if any, to the stop that ends
+        // it.
         self.next_execution += 1;
         let execution = GroupExecutionId(self.next_execution);
         let previous = self.execution.replace(execution);
@@ -1634,9 +1634,11 @@ impl Driver {
     }
 
     /// Continues the group once the member a client showed has resumed,
-    /// which is enough even with no other member stopped.
+    /// which is enough even with no other member stopped or able to
+    /// resume. With `shown`, that member is resumed here, at that stop.
     async fn continue_rest(&mut self, shown: Option<(MemberNumber, crate::StopId)>) -> Result<()> {
         match self.continue_all(shown).await {
+            Err(_) if shown.is_none() => Ok(()),
             Err(Error::NotStopped) => Ok(()),
             result => result,
         }
@@ -1666,7 +1668,11 @@ impl Driver {
             return Ok(());
         }
 
-        let mut result = Err(Error::NotStopped);
+        // Once any member resumed, the execution is under way and the
+        // continue succeeded: a member that could not resume, such as one
+        // whose controller is gone, is reported by its own events.
+        let mut resumed = false;
+        let mut failure = None;
         for (&number, live) in &mut self.members {
             // The member a client showed stopped may be stopped though the
             // group has yet to read it.
@@ -1685,14 +1691,20 @@ impl Driver {
                     // group, as resume_observed notes.
                     live.seen = live.seen.max(Some(stop));
                     live.running = true;
-                    result = Ok(());
+                    resumed = true;
                 }
                 Err(Error::NotRunning | Error::NotStopped) => {}
-                Err(error) => result = Err(error),
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
 
-        result
+        match (resumed, failure) {
+            (true, _) => Ok(()),
+            (false, Some(error)) => Err(error),
+            (false, None) => Err(Error::NotStopped),
+        }
     }
 
     /// Deletes the group's temporary breakpoints a member's stop hit, as

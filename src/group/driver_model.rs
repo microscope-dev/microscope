@@ -14,7 +14,7 @@
 //! 2. The driver resumes a member only at a stop the group read, or one a
 //!    client named. A continue from a stop that is no longer current fails,
 //!    and one that succeeds resumed that stop, unless it reported a stop
-//!    that waited instead.
+//!    that waited instead. A continue that resumed any member succeeds.
 //! 3. Each stop is reported once, and before the driver resumes it, unless
 //!    a client showed it, or the member moved on or went.
 //! 4. Every command is answered, and once the inputs stop, the group is
@@ -565,6 +565,9 @@ struct Asked {
     named: Option<(MemberNumber, StopId)>,
     events: usize,
     resume: bool,
+
+    /// Whether the driver resumed a member while serving it.
+    resumed: bool,
     answer: Answer,
 }
 
@@ -915,20 +918,25 @@ impl Harness {
             _ => unreachable!("{op:?} is not a command"),
         };
 
-        let events = {
+        let left = |world: &World| -> usize {
+            world.members.values().map(|member| member.left.len()).sum()
+        };
+        let (events, before) = {
             let mut world = lock(&self.world);
             world.observe();
-            world.trace.len()
+            (world.trace.len(), left(&world))
         };
+        self.driver.serve(command).await;
+        let resumed = left(&lock(&self.world)) > before;
         self.asked.push(Asked {
             op: op.clone(),
             stale,
             named: named_stop,
             events,
             resume,
+            resumed,
             answer,
         });
-        self.driver.serve(command).await;
         self.settle().await;
     }
 
@@ -953,6 +961,16 @@ impl Harness {
             };
             if asked.resume {
                 world.resumes -= 1;
+            }
+            if asked.resumed
+                && !asked.stale
+                && matches!(asked.answer, Answer::Execution(_))
+                && let Err(error) = &result
+            {
+                world.failures.push(format!(
+                    "rule 2: {:?} resumed a member, but failed with {error:?}",
+                    asked.op
+                ));
             }
             if asked.stale && result.is_ok() {
                 world.failures.push(format!(
@@ -1314,4 +1332,51 @@ fn a_failed_continue_leaves_the_execution_under_way() {
             .is_some_and(|stop| stop.contains("execution: Some(GroupExecutionId(1))")),
         "{trace:#?}"
     );
+}
+
+/// A continue that resumed one member succeeds though another could not
+/// be asked. Found by the model: the last member tried decided the
+/// answer, so a lost member the group had not yet heard of made the
+/// continue fail while the first member ran.
+#[test]
+fn a_continue_that_resumed_a_member_succeeds_past_a_lost_one() {
+    let ops = [
+        Op::Stop {
+            member: 0,
+            own: false,
+        },
+        Op::Deliver(0),
+        Op::Deliver(0),
+        Op::Join { late: false },
+        Op::Lose(1),
+        Op::Continue,
+    ];
+    let (trace, failures) = run(StopScope::Group, &ops);
+    assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
+}
+
+/// As above, where the continue resumed the stop a client showed before
+/// it tried the lost member.
+#[test]
+fn a_continue_from_a_shown_stop_succeeds_past_a_lost_member() {
+    let ops = [
+        Op::Join { late: false },
+        Op::Deliver(0),
+        Op::Deliver(0),
+        Op::Stop {
+            member: 0,
+            own: false,
+        },
+        Op::Lose(0),
+        Op::Stop {
+            member: 1,
+            own: false,
+        },
+        Op::Deliver(6),
+        Op::Deliver(1),
+        Op::Continue,
+        Op::ContinueFrom(Named::GroupStop),
+    ];
+    let (trace, failures) = run(StopScope::Group, &ops);
+    assert!(failures.is_empty(), "{failures:#?}\n{trace:#?}");
 }
