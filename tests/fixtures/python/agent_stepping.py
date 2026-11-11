@@ -370,8 +370,10 @@ elif mode == 'late':
     agent.apply(library, agent.generation + 1, probes)
     target_thread = threading.get_native_id()
     frame_depth = depth(sys._getframe())
-    # This thread waits in C, not in threading's Python, whose first calls
-    # are callbacks of this thread's that the configuration could land in.
+    # This thread must be in no callback while the configuration lands, or
+    # the step binds there. threading's waits are Python, and every line of
+    # this file takes LINE events for the probe, so it starts the other
+    # thread and waits from code of another file, which takes none.
     done = _thread.allocate_lock()
     done.acquire()
 
@@ -381,8 +383,12 @@ elif mode == 'late':
                         [7, OVER, target_thread, frame_depth + 1, id(straight.__code__)])
         finally:
             done.release()
-    _thread.start_new_thread(configure, ())
-    assert done.acquire(timeout=10), 'the configuration never ended'
+    waiter = {}
+    exec(compile('def wait(start, configure, done):\n'
+                 '    start(configure, ())\n'
+                 '    return done.acquire(timeout=10)\n', '<late wait>', 'exec'), waiter)
+    assert waiter['wait'](_thread.start_new_thread, configure, done), \
+        'the configuration never ended'
     assert straight() == 3
     assert (1, 900, 0) in reports and (2, 7, 2) in reports, reports
     assert not any(report[0] == 2 and report[2] == 0 for report in reports), reports
