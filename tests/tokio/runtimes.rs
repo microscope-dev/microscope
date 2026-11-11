@@ -12,7 +12,7 @@ use std::process::Stdio;
 use microscope::{
     BreakpointSpec, CoreDumpOptions, Evaluation, EvaluationMode, Expression, InferiorState,
     InspectionLimits, LaunchOptions, RegisterRole, StackFrameId, StopContext, StopReason,
-    TaskSnapshot, TaskState, ThreadActivity, ThreadId,
+    TaskSnapshot, TaskState, ThreadActivity, ThreadId, ThreadState,
 };
 
 use crate::invariants::checked;
@@ -405,26 +405,32 @@ async fn a_thread_stopped_in_clone_still_shows_the_set_it_runs() {
             })
             .await;
 
-        // The clone the thread `local` makes.
+        // The clone the thread `local` makes. Another thread's catch can
+        // share the stop and be the one it names, so every thread's own
+        // reason is read, as dev/syscalls.md says.
         let local = loop {
             assert!(
                 matches!(reason, StopReason::Syscall(_)),
                 "{fixture}: {reason:?}"
             );
             let snapshot = scenario.snapshot().await;
-            let InferiorState::Stopped { thread_id, .. } = snapshot.inferior else {
-                panic!("{fixture}: not stopped");
-            };
-            let name = snapshot
-                .threads
-                .iter()
-                .find(|thread| thread.id == thread_id)
-                .and_then(|thread| thread.name.as_deref());
-            if name == Some("local") {
-                break thread_id;
+            let local = snapshot.threads.iter().find(|thread| {
+                thread.name.as_deref() == Some("local")
+                    && matches!(
+                        thread.state,
+                        ThreadState::Stopped {
+                            reason: Some(StopReason::Syscall(_))
+                        }
+                    )
+            });
+            if let Some(local) = local {
+                break local.id;
             }
             reason = scenario.resume_to_stop().await;
         };
+        scenario
+            .operation("select local", scenario.handle().select_context(local))
+            .await;
 
         let (tasks, gaps) = tasks(&scenario, 4096).await;
         assert!(gaps.is_empty(), "{fixture}: {gaps:?}");
