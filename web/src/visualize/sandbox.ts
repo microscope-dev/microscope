@@ -214,7 +214,6 @@ export class Sandbox {
   /** Draws waiting for a turn, told whether they may go ahead. */
   private readonly waiting: ((go: boolean) => void)[] = [];
   private running = 0;
-  private disposed = false;
   private next = 1;
   /** Renderers known to be live, by digest: drawing one starts no worker. */
   private readonly liveDigests = new Set<string>();
@@ -470,7 +469,6 @@ export class Sandbox {
 
   /** Removes the frame, ending every worker. */
   dispose(): void {
-    this.disposed = true;
     clearTimeout(this.readyTimer);
     this.state = { kind: "closed" };
     this.settle();
@@ -480,13 +478,13 @@ export class Sandbox {
     for (const live of this.lives.values()) {
       live.end({
         kind: "failed",
-        failure: { message: "the page closed the sandbox", file: null, line: null, column: null },
+        failure: problem(CLOSED),
       });
     }
     for (const id of this.pending.keys()) {
       this.finish(id, {
         kind: "failed",
-        failure: { message: "the page closed the sandbox", file: null, line: null, column: null },
+        failure: problem(CLOSED),
       });
     }
     assert(this.lives.size === 0, `${this.lives.size} live sessions outlive the sandbox`);
@@ -643,7 +641,7 @@ export class Sandbox {
   /** Waits until fewer than LIVE_PARALLEL live sessions run, and says
    * whether this one may start. */
   private liveTurn(): Promise<boolean> {
-    if (this.disposed) {
+    if (this.state.kind === "closed") {
       return Promise.resolve(false);
     }
     if (this.liveRunning < LIVE_PARALLEL) {
@@ -663,7 +661,7 @@ export class Sandbox {
   /** Waits until fewer than PARALLEL draws run, and says whether this
    * one may run: not once the sandbox is closed. */
   private turn(): Promise<boolean> {
-    if (this.disposed) {
+    if (this.state.kind === "closed") {
       return Promise.resolve(false);
     }
     if (this.running < PARALLEL) {
