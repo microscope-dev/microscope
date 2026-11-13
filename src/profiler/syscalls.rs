@@ -111,6 +111,7 @@ impl Profile {
             dropped: account(AccountKind::SyscallsLost),
             unseen: account(AccountKind::SyscallsUnseen),
             capped: account(AccountKind::SyscallsCapped),
+            overflowed: account(AccountKind::SyscallsOverflowed),
         }
     }
 
@@ -385,6 +386,7 @@ impl Profile {
                 why: match extra {
                     1 => Loss::Unseen,
                     2 => Loss::Capped,
+                    3 => Loss::Overflowed,
                     _ => Loss::Dropped,
                 },
             },
@@ -593,6 +595,11 @@ mod tests {
                 count: 3,
                 why: Loss::Capped,
             },
+            TraceEvent::Lost {
+                time: 245,
+                count: 5,
+                why: Loss::Overflowed,
+            },
             TraceEvent::ThreadExit {
                 thread: Tid::new(11),
                 process: Pid::new(10),
@@ -644,6 +651,7 @@ mod tests {
         let syscalls = read.syscalls();
         let lost = Losses {
             capped: 3,
+            overflowed: 5,
             ..Losses::default()
         };
         assert_eq!((syscalls.lost, &syscalls.counted), (lost, &counted));

@@ -273,11 +273,14 @@ pub enum Loss {
     /// Failed or slow calls past a counting recording's cap: counted, not
     /// kept.
     Capped,
+
+    /// Calls a full ring had no room for: counted, not kept.
+    Overflowed,
 }
 
 impl Loss {
     /// Every kind, in the order the kernel counts them.
-    pub const ALL: [Self; 3] = [Self::Dropped, Self::Unseen, Self::Capped];
+    pub const ALL: [Self; 4] = [Self::Dropped, Self::Unseen, Self::Capped, Self::Overflowed];
 }
 
 /// How many events a trace is missing, by why.
@@ -286,6 +289,7 @@ pub struct Losses {
     pub dropped: u64,
     pub unseen: u64,
     pub capped: u64,
+    pub overflowed: u64,
 }
 
 impl Losses {
@@ -294,12 +298,13 @@ impl Losses {
             Loss::Dropped => self.dropped += count,
             Loss::Unseen => self.unseen += count,
             Loss::Capped => self.capped += count,
+            Loss::Overflowed => self.overflowed += count,
         }
     }
 
     #[must_use]
     pub const fn any(&self) -> bool {
-        self.dropped + self.unseen + self.capped > 0
+        self.dropped + self.unseen + self.capped + self.overflowed > 0
     }
 }
 
@@ -484,8 +489,8 @@ pub enum TraceEvent {
 
     /// Events the engine lost, on one CPU or thread, since the last such
     /// report. Every count the trace shows is a lower bound once one has
-    /// occurred, but for calls over a counting recording's cap, which are
-    /// counted.
+    /// occurred, but for calls over a counting recording's cap or past a
+    /// full ring, which are counted.
     Lost {
         time: u64,
         count: u64,

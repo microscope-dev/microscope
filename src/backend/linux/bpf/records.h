@@ -89,7 +89,9 @@ enum loss {
 	LOSS_UNSEEN = 1,
 	// A failed or slow call over config.cap, counted but not sent.
 	LOSS_CAPPED = 2,
-	LOSSES = 3,
+	// A call whose record the ring had no room for, counted instead.
+	LOSS_OVERFLOWED = 3,
+	LOSSES = 4,
 };
 
 enum signal_flags {

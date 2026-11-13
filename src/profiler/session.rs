@@ -11,6 +11,7 @@ use super::budget::{Budget, Controller, Observation, STEPS, WARM_UP};
 use super::calls::{self, Calls};
 use super::collector::{Collector, ProbeSelection};
 use super::interpreted::{Layout, Walked};
+use super::ladder::{HOLD, Ladder, Move, Period, Rung};
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
@@ -717,7 +718,7 @@ fn drive(
     let mut pacer = options
         .budget
         .filter(|_| started.is_some())
-        .map(|budget| Pacer::new(budget, monotonic(), processor));
+        .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls));
     let mut snapshots = started.map_or_else(Vec::new, |pid| snapshotters(pid, options));
     let mut probes = started
         .filter(|_| options.probes != ProbeSelection::Off)
@@ -1227,9 +1228,13 @@ fn nanoseconds(duration: Duration) -> u64 {
 /// Samples a share of each budget period, in one span at a random offset
 /// so that it cannot keep step with a periodic program, and asks the
 /// controller once a period how large the next share is.
-struct Pacer {
+struct Pacer<'a> {
     budget: Budget,
     controller: Controller,
+
+    /// What to give up before samples, and the trace that gives it up.
+    ladder: Ladder,
+    syscalls: Option<&'a SyscallTrace>,
 
     /// When the period began, how long it lasts, and the span of it to
     /// sample.
@@ -1243,26 +1248,47 @@ struct Pacer {
     /// Whether sampling is on, and since when.
     pace: Pace,
 
-    /// What the period has sampled and cost so far.
+    /// What the period has sampled so far, and what microscope's process,
+    /// its loading of debug information, and the trace's programs had cost
+    /// when it began, and how many calls they had traced.
     sampled: u64,
     cpu: Duration,
     loading: Duration,
+    kernel: Duration,
+    calls: u64,
+
+    /// What the process took while sampling was off this period, and what
+    /// it had taken when sampling last turned off.
+    paused_cpu: Duration,
+    paused_at: Duration,
     random: u64,
 }
 
-impl Pacer {
-    fn new(budget: Budget, now: u64, processor: &record::Processor) -> Self {
+impl<'a> Pacer<'a> {
+    fn new(
+        budget: Budget,
+        now: u64,
+        processor: &record::Processor,
+        syscalls: Option<&'a SyscallTrace>,
+    ) -> Self {
+        let rungs = syscalls.map_or_else(Vec::new, SyscallTrace::rungs);
         Self {
             budget,
             controller: Controller::default(),
+            ladder: Ladder::new(rungs.into_iter().chain([Rung::Samples])),
+            syscalls,
             period: now,
             length: nanoseconds(budget.period),
             window: (now, u64::MAX),
             toggled: (0, 0),
             pace: Pace::On { since: now },
             sampled: 0,
-            cpu: processor.cpu(),
+            paused_cpu: Duration::ZERO,
+            paused_at: Duration::ZERO,
+            cpu: process_cpu(),
             loading: processor.loading(),
+            kernel: Duration::ZERO,
+            calls: 0,
             random: now | 1,
         }
     }
@@ -1298,6 +1324,7 @@ impl Pacer {
         let wanted = from <= now && now < until;
         match self.pace {
             Pace::Paused { since } if wanted => {
+                self.paused_cpu += process_cpu().saturating_sub(self.paused_at);
                 let (began, on) = toggle(true);
                 processor.gap(since, began, GapReason::Budget);
                 self.toggled.0 = on.saturating_sub(began);
@@ -1307,6 +1334,7 @@ impl Pacer {
                 let (began, off) = toggle(false);
                 self.toggled.1 = off.saturating_sub(began);
                 self.sampled += off.saturating_sub(since);
+                self.paused_at = process_cpu();
                 self.pace = Pace::Paused { since: off };
             }
             Pace::On { .. } | Pace::Paused { .. } => {}
@@ -1322,23 +1350,50 @@ impl Pacer {
     /// Ends the period at `now`, lets the controller choose the share of
     /// the next one, and places its window.
     fn next_period(&mut self, now: u64, length: u64, processor: &mut record::Processor) {
-        if let Pace::On { since } = &mut self.pace {
-            self.sampled += now.saturating_sub(*since);
-            *since = now;
+        let cpu = process_cpu();
+        match &mut self.pace {
+            Pace::On { since } => {
+                self.sampled += now.saturating_sub(*since);
+                *since = now;
+            }
+            Pace::Paused { .. } => {
+                self.paused_cpu += cpu.saturating_sub(self.paused_at);
+                self.paused_at = cpu;
+            }
         }
 
-        let cpu = processor.cpu();
         let loading = processor.loading();
+        let (calls, kernel) = self
+            .syscalls
+            .map_or((0, Duration::ZERO), SyscallTrace::cost);
+        let kernel_cost = kernel.saturating_sub(self.kernel);
+        let period = Duration::from_nanos(now.saturating_sub(self.period));
+        let sampled = Duration::from_nanos(self.sampled);
+        let paused = period.saturating_sub(sampled).max(Duration::from_nanos(1));
+        let spent = cpu
+            .saturating_sub(self.cpu)
+            .saturating_sub(loading.saturating_sub(self.loading))
+            + kernel_cost;
         let observed = Observation {
-            cpu: cpu
-                .saturating_sub(self.cpu)
-                .saturating_sub(loading.saturating_sub(self.loading)),
-            sampled: Duration::from_nanos(self.sampled),
-            period: Duration::from_nanos(now.saturating_sub(self.period)),
+            cpu: spent,
+            sampled,
+            period,
+            fixed: (kernel_cost + self.paused_cpu.mul_f64(period.div_duration_f64(paused)))
+                .min(spent),
         };
 
-        (self.cpu, self.loading, self.sampled, self.period) = (cpu, loading, 0, now);
-        if let Some(decision) = self.controller.step(self.budget, observed) {
+        let traced = calls.saturating_sub(self.calls);
+        (self.cpu, self.loading, self.kernel, self.calls) = (cpu, loading, kernel, calls);
+        (self.sampled, self.period, self.paused_cpu) = (0, now, Duration::ZERO);
+        let warm = self.controller.warm();
+        let decision = self.controller.step(self.budget, observed);
+        if warm {
+            self.climb(now, observed, traced, processor);
+        }
+
+        if !self.ladder.sheds(Rung::Samples) {
+            self.controller.whole();
+        } else if let Some(decision) = decision {
             let text = format!(
                 "sampling {:.1}% of each period: recording used {:.2}% of a CPU, against a budget of {:.2}%",
                 f64::from(decision.steps) * 100.0 / f64::from(STEPS),
@@ -1361,12 +1416,79 @@ impl Pacer {
         self.window = (now + offset, now + offset + span);
     }
 
+    /// Moves down the ladder after a period over budget, or up it after
+    /// enough under, and says so in the capture. A period counts as over
+    /// while the controller samples less than all of it.
+    fn climb(
+        &mut self,
+        now: u64,
+        observed: Observation,
+        traced: u64,
+        processor: &mut record::Processor,
+    ) {
+        let seconds = observed.period.as_secs_f64().max(f64::EPSILON);
+        let used = observed.cpu.as_secs_f64() / seconds;
+        let period = Period {
+            over: used > self.budget.cpu
+                || (self.ladder.sheds(Rung::Samples) && self.controller.steps() < STEPS),
+            used: used / self.budget.cpu,
+            #[expect(clippy::cast_precision_loss, reason = "a rate needs no precision")]
+            calls: traced as f64 / seconds,
+        };
+        let Some(moved) = self.ladder.judge(period, now) else {
+            return;
+        };
+
+        if let Move::Down(rung) = moved
+            && rung != Rung::Samples
+        {
+            self.controller.forgive();
+        }
+
+        let text = match moved {
+            Move::Down(rung) => format!(
+                "gave up {}: recording used {:.2}% of a CPU, against a budget of {:.2}%",
+                rung.text(),
+                used * 100.0,
+                self.budget.cpu * 100.0
+            ),
+            Move::Up(rung) => format!(
+                "took back {}: recording stayed under its budget for {} s",
+                rung.text(),
+                HOLD.as_secs()
+            ),
+        };
+
+        record!("record: budget: {text}");
+        processor
+            .builder()
+            .marker(now.cast_signed(), MarkerKind::Budget, &text);
+        if let Some(syscalls) = self.syscalls {
+            syscalls.shed(self.ladder.shed());
+        }
+    }
+
     /// Ends the recording at `now`: a pause it ends in is a gap to the end.
     fn finish(self, now: u64, processor: &mut record::Processor) {
         if let Pace::Paused { since } = self.pace {
             processor.gap(since, now, GapReason::Budget);
         }
     }
+}
+
+/// The CPU time microscope's whole process has spent.
+fn process_cpu() -> Duration {
+    use nix::sys::resource::{UsageWho, getrusage};
+    getrusage(UsageWho::RUSAGE_SELF).map_or(Duration::ZERO, |usage| {
+        let time = |time: nix::sys::time::TimeVal| {
+            Duration::new(
+                u64::try_from(time.tv_sec()).unwrap_or(0),
+                u32::try_from(time.tv_usec()).unwrap_or(0) * 1_000,
+            )
+        };
+
+        time(usage.user_time()) + time(usage.system_time())
+    })
 }
 
 /// Whether the budget has sampling on, and since when.
@@ -1489,7 +1611,7 @@ mod tests {
             period: Duration::from_hours(1),
         };
         let mut toggled = Vec::new();
-        let mut pace = |pacer: &mut super::Pacer, processor: &mut _, now| {
+        let mut pace = |pacer: &mut super::Pacer<'_>, processor: &mut _, now| {
             pacer.pace(now, processor, |on| {
                 toggled.push((now, on));
                 (now, now + 100)
@@ -1497,7 +1619,7 @@ mod tests {
         };
 
         let mut paused = processor();
-        let mut pacer = super::Pacer::new(budget, 1_000, &paused);
+        let mut pacer = super::Pacer::new(budget, 1_000, &paused, None);
         pacer.window = (1_000, 3_000);
         assert_eq!(
             pace(&mut pacer, &mut paused, 1_500),
@@ -1512,7 +1634,7 @@ mod tests {
         pacer.finish(9_000, &mut paused);
 
         let mut sampling = processor();
-        let mut pacer = super::Pacer::new(budget, 1_000, &sampling);
+        let mut pacer = super::Pacer::new(budget, 1_000, &sampling, None);
         pacer.window = (1_000, 3_000);
         pace(&mut pacer, &mut sampling, 2_000);
         pacer.finish(2_500, &mut sampling);

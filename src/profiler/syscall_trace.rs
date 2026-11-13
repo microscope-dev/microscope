@@ -2,12 +2,13 @@
 //! beside the samples, on their clock, cut with them.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use super::ladder::Rung;
 use super::{Cuts, Preset, RecordOptions};
-use crate::backend::syscall_engines::bpf::{self, BpfOptions, Exceptions};
+use crate::backend::syscall_engines::bpf::{self, BpfOptions, Exceptions, Shed};
 use crate::backend::syscall_engines::capture::SyscallCapture;
 use crate::backend::syscall_engines::stacks::SharedStacks;
 use crate::backend::syscall_engines::{Sink, TraceOptions};
@@ -237,6 +238,18 @@ pub(super) struct SyscallTrace {
     thread: std::thread::JoinHandle<Result<(), String>>,
     shared: Arc<Mutex<Shared>>,
     stacks: Option<SharedStacks>,
+    level: SyscallLevel,
+    budget: Arc<Budgeted>,
+}
+
+/// What the recording's budget has the trace shed, as [`Shed`]'s bits, the
+/// calls traced, and what tracing them has cost the traced threads beyond
+/// counting them, in nanoseconds.
+#[derive(Default)]
+struct Budgeted {
+    shed: AtomicU8,
+    calls: AtomicU64,
+    kernel: AtomicU64,
 }
 
 /// What a recording keeps of its trace until the samples are cut.
@@ -262,6 +275,7 @@ struct Shared {
 /// The trace's sink, which says when the trace sees its process.
 struct Held {
     shared: Arc<Mutex<Shared>>,
+    budget: Arc<Budgeted>,
     ready: Option<std::sync::mpsc::Sender<()>>,
     filter: Option<Filter>,
     fds: FdTable,
@@ -338,6 +352,15 @@ impl Sink for Held {
         let time = super::session::monotonic();
         lock(&self.shared).counted.push_back((time, stats));
     }
+
+    fn shed(&self) -> Shed {
+        Shed(self.budget.shed.load(Ordering::Relaxed))
+    }
+
+    fn cost(&mut self, calls: u64, nanoseconds: u64) {
+        self.budget.calls.store(calls, Ordering::Relaxed);
+        self.budget.kernel.store(nanoseconds, Ordering::Relaxed);
+    }
 }
 
 impl SyscallTrace {
@@ -378,7 +401,8 @@ impl SyscallTrace {
         let engine = BpfOptions {
             count_only: !streams,
             stack_copy,
-            exceptions: (!streams).then_some(Exceptions {
+            // Calls that stream need these only once the budget sheds them.
+            exceptions: Some(Exceptions {
                 slow: options.slow,
                 per_second: KEPT_PER_SECOND,
             }),
@@ -395,10 +419,12 @@ impl SyscallTrace {
             last_flush: 0,
         }));
         let stop = Arc::new(AtomicBool::new(false));
+        let budget = Arc::new(Budgeted::default());
         let (ready, seen) = std::sync::mpsc::channel();
         let stopped = Arc::clone(&stop);
         let mut sink = Held {
             shared: Arc::clone(&shared),
+            budget: Arc::clone(&budget),
             ready: Some(ready),
             filter: options.filter.as_ref().map(|(_, filter)| filter.clone()),
             fds: FdTable::default(),
@@ -418,6 +444,8 @@ impl SyscallTrace {
                 thread,
                 shared,
                 stacks,
+                level,
+                budget,
             }));
         }
 
@@ -426,6 +454,44 @@ impl SyscallTrace {
             Ok(Err(why)) => why,
             _ => "the trace ended before it began".to_owned(),
         })
+    }
+
+    /// The rungs of the budget's ladder this trace can give up.
+    pub(super) fn rungs(&self) -> Vec<Rung> {
+        let mut rungs = Vec::new();
+        if self.level >= SyscallLevel::Calls {
+            rungs.extend([Rung::Stacks, Rung::Sampled, Rung::ExceptionsOnly]);
+        }
+
+        if self.level == SyscallLevel::Full {
+            rungs.push(Rung::Strings);
+        }
+
+        rungs
+    }
+
+    /// Gives up the rungs in `shed`, and takes back the rest.
+    pub(super) fn shed(&self, shed: &[Rung]) {
+        let bits = shed
+            .iter()
+            .map(|rung| match rung {
+                Rung::Stacks => Shed::STACKS.0,
+                Rung::Strings => Shed::STRINGS.0,
+                Rung::Sampled => Shed::SAMPLED.0,
+                Rung::ExceptionsOnly => Shed::STREAM.0,
+                Rung::Samples => 0,
+            })
+            .fold(0, |bits, bit| bits | bit);
+        self.budget.shed.store(bits, Ordering::Relaxed);
+    }
+
+    /// The calls traced so far, and what tracing them has cost the traced
+    /// threads beyond counting them, which no budget sheds.
+    pub(super) fn cost(&self) -> (u64, Duration) {
+        (
+            self.budget.calls.load(Ordering::Relaxed),
+            Duration::from_nanos(self.budget.kernel.load(Ordering::Relaxed)),
+        )
     }
 
     /// `samples` with the calls and counts of their span. Those after it

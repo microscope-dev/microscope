@@ -618,6 +618,9 @@ pub enum AccountKind {
     /// not kept.
     SyscallsCapped = 37,
 
+    /// System calls a full ring had no room for: counted, not kept.
+    SyscallsOverflowed = 38,
+
     /// Records of interpreted frames the kernel's rings had no room for.
     InterpretedLost = 28,
 

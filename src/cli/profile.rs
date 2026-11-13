@@ -1668,28 +1668,27 @@ fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
     )?;
 
     let lost = syscalls.lost;
-    if lost.dropped > 0 {
-        writeln!(
-            out,
-            "The kernel had no room for {} records: every count is a lower bound.",
-            lost.dropped
-        )?;
-    }
-
-    if lost.unseen > 0 {
-        writeln!(
-            out,
-            "{} calls never returned where the trace could see: they are not counted.",
-            lost.unseen
-        )?;
-    }
-
-    if lost.capped > 0 {
-        writeln!(
-            out,
-            "{} failed or slow calls were over the cap: counted, but not kept.",
-            lost.capped
-        )?;
+    for (count, says) in [
+        (
+            lost.dropped,
+            "records the kernel had no room for, or program runs it skipped: some calls lack detail, and counts may be short",
+        ),
+        (
+            lost.unseen,
+            "calls never returned where the trace could see: they are not counted",
+        ),
+        (
+            lost.capped,
+            "failed or slow calls were over the cap: counted, but not kept",
+        ),
+        (
+            lost.overflowed,
+            "calls came while the kernel's ring was full: counted, but not kept",
+        ),
+    ] {
+        if count > 0 {
+            writeln!(out, "{count} {says}.")?;
+        }
     }
 
     writeln!(out)?;

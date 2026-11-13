@@ -2,7 +2,6 @@
 //! sees into the neutral events of `crate::syscalls`.
 
 pub mod bpf;
-pub mod budget;
 pub mod capture;
 pub mod cgroup;
 pub mod continuous;
@@ -44,9 +43,14 @@ pub trait Sink {
     /// just been given to [`Sink::counted`].
     fn end_segment(&mut self, _time: u64) {}
 
-    /// What the budget says, at `time`: how it is measured, and each step
-    /// that gave up detail to stay inside it.
-    fn budget(&mut self, _time: u64, _note: &str) {}
+    /// What to give up to stay inside the recording's budget.
+    fn shed(&self) -> bpf::Shed {
+        bpf::Shed::default()
+    }
+
+    /// The calls traced so far, and the nanoseconds tracing them has cost
+    /// the traced threads beyond counting them.
+    fn cost(&mut self, _calls: u64, _nanoseconds: u64) {}
 
     /// Nanoseconds a call must have been blocked to be reported in flight;
     /// `None` asks for no reports.

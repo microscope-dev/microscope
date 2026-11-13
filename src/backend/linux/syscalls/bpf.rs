@@ -30,7 +30,6 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use super::super::bpf::sampler::{self, PythonLayouts, V8Layouts};
 use super::super::perf;
 use super::Sink;
-use super::budget::{Budget, CAPPED_BYTES, CAPPED_ELEMENTS, Step};
 use super::cgroup::{self, Cgroup, PidNamespace};
 use super::launch::{self, Gate, GateOptions};
 use super::ptrace::{
@@ -134,6 +133,61 @@ pub const STACK_COPY_RING: u32 = 8 << 20;
 
 /// The smallest ring a memory cgroup short of room for the default gets.
 const SMALLEST_RING: u32 = 256 << 10;
+
+/// The most bytes of a string or buffer kept once strings are shed.
+pub const CAPPED_BYTES: u32 = 16;
+
+/// The most elements of an array kept once strings are shed.
+pub const CAPPED_ELEMENTS: u32 = 4;
+
+/// One call in this many is sent once calls are sampled.
+pub const SAMPLED_EVERY: u32 = 16;
+
+/// What the programs cost a call, as `microscope-tools syscall-overhead`
+/// and the 8-thread streaming loop measured them on a Ryzen 9 9950X:
+/// counted, sent, sent with the kernel's walk of its stack, and with a
+/// copy of its stack.
+const COUNTED_NS: u64 = 150;
+const STREAMED_NS: u64 = 220;
+const STACK_NS: u64 = 560;
+const COPIED_STACK_NS: u64 = 1_100;
+
+/// What a call costs the programs loaded with `flags` that shed `shed`.
+const fn per_call(flags: u32, shed: Shed) -> u64 {
+    if flags & CONFIG_STREAM == 0 || shed.has(Shed::STREAM) {
+        COUNTED_NS
+    } else if shed.has(Shed::SAMPLED) {
+        COUNTED_NS + STREAMED_NS / SAMPLED_EVERY as u64
+    } else if shed.has(Shed::STACKS) || flags & CONFIG_STACKS == 0 {
+        STREAMED_NS
+    } else if flags & CONFIG_STACK_COPY != 0 {
+        COPIED_STACK_NS
+    } else {
+        STACK_NS
+    }
+}
+
+/// What a trace gives up to stay inside its recording's budget.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Shed(pub u8);
+
+impl Shed {
+    pub const STACKS: Self = Self(1);
+
+    /// Strings and buffers past [`CAPPED_BYTES`].
+    pub const STRINGS: Self = Self(2);
+
+    /// Every call but one in [`SAMPLED_EVERY`], which are counted.
+    pub const SAMPLED: Self = Self(4);
+
+    /// Every call but those that fail or are slow, which are counted.
+    pub const STREAM: Self = Self(8);
+
+    #[must_use]
+    pub const fn has(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
 
 /// How one argument is copied (`struct arg_copy`).
 #[repr(C)]
@@ -1171,7 +1225,7 @@ fn version(release: &str) -> Option<(u32, u32)> {
 }
 
 /// How the BPF engine runs, beyond what to trace.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BpfOptions {
     /// Count in the kernel and report no calls, only their statistics.
     pub count_only: bool,
@@ -1184,10 +1238,6 @@ pub struct BpfOptions {
     /// information, rather than trust the kernel's walk alone.
     pub stack_copy: bool,
     pub attach: AttachMode,
-
-    /// Percent of one CPU the trace may cost, giving up detail to stay
-    /// inside it.
-    pub budget: Option<f64>,
 
     /// While counting, the failed and slow calls to send whole.
     pub exceptions: Option<Exceptions>,
@@ -1208,7 +1258,6 @@ impl Default for BpfOptions {
             ring: None,
             stack_copy: false,
             attach: AttachMode::Auto,
-            budget: None,
             exceptions: None,
         }
     }
@@ -1218,10 +1267,12 @@ impl RawConfig {
     /// The programs' settings for a trace of `options` run as `engine`
     /// says, of `rows` calls' statistics.
     fn new(options: &TraceOptions, engine: BpfOptions, launch: bool, rows: u32) -> Self {
+        // Counting is always on: a call a full ring has no room for is
+        // counted instead.
         let mut flags = if engine.count_only {
             CONFIG_COUNT
         } else {
-            CONFIG_STREAM
+            CONFIG_COUNT | CONFIG_STREAM
         };
 
         if options.follow {
@@ -1474,9 +1525,6 @@ struct Loaded {
     /// The call each row of statistics counts.
     rows: Vec<SyscallId>,
 
-    /// The chosen calls' slots in CALLS.
-    slots: Vec<u32>,
-
     /// What waits out the programs running, and what it is set to.
     fence: (
         ArrayOfMaps<MapData, Array<MapData, u32>>,
@@ -1487,9 +1535,16 @@ struct Loaded {
     generation: u32,
     attachment: Attachment,
 
-    /// Whether the kernel counts any calls, whose statistics are read
-    /// once the trace ends.
-    counting: bool,
+    /// The programs' settings and the chosen calls' specs as loaded, and
+    /// what has been shed of them since.
+    base: RawConfig,
+    specs: Vec<(u32, RawCallSpec)>,
+    shedding: Shed,
+
+    /// The calls seen return as last counted, and what they and those
+    /// before them cost.
+    runs: u64,
+    estimated: u64,
 }
 
 impl Loaded {
@@ -1533,6 +1588,8 @@ impl Loaded {
 
         let mut ebpf = load_object(&btf, rows, scope)?;
         let rings = rings(&mut ebpf, engine)?;
+        let mut specs = Vec::with_capacity(chosen.len());
+        let base;
         {
             let mut calls: Array<_, Bytes<SPEC_BYTES>> =
                 Array::try_from(ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
@@ -1540,6 +1597,7 @@ impl Loaded {
             for (row, &(slot, call)) in chosen.iter().enumerate() {
                 let mut spec = call_spec(call, options);
                 spec.stat = u16::try_from(row).unwrap_or(u16::MAX);
+                specs.push((slot, spec));
                 let mut value = [0; SPEC_BYTES];
                 value.copy_from_slice(spec.as_bytes());
                 calls.set(slot, value, 0).map_err(load_error)?;
@@ -1550,6 +1608,7 @@ impl Loaded {
                 Array::try_from(ebpf.map_mut("CONFIG").ok_or_else(|| missing("CONFIG"))?)
                     .map_err(load_error)?;
             let raw = RawConfig::new(options, engine, launch, rows);
+            base = raw;
             let mut value = [0; CONFIG_BYTES];
             value.copy_from_slice(raw.as_bytes());
             config.set(0, value, 0).map_err(load_error)?;
@@ -1581,9 +1640,13 @@ impl Loaded {
             fence,
             generation: 0,
             rows: calls,
-            slots: chosen.iter().map(|&(slot, _)| slot).collect(),
+
             attachment,
-            counting: engine.count_only,
+            base,
+            specs,
+            shedding: Shed::default(),
+            runs: 0,
+            estimated: 0,
         })
     }
 
@@ -1603,54 +1666,84 @@ impl Loaded {
         config.set(0, value, 0).map_err(load_error)
     }
 
-    /// Gives up what `step` names, from the next call on.
-    fn give_up(&mut self, step: Step) -> Result<(), BpfError> {
-        record!("syscalls bpf: over budget: {step}");
-        match step {
-            Step::DropStacks => self.configure(|config| {
-                config.flags &= !(CONFIG_STACKS | CONFIG_STACK_COPY);
-            }),
-            Step::CapStrings => {
-                self.configure(|config| config.elements = config.elements.min(CAPPED_ELEMENTS))?;
-                let mut calls: Array<_, Bytes<SPEC_BYTES>> =
-                    Array::try_from(self.ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
-                        .map_err(load_error)?;
-                for &slot in &self.slots {
-                    let mut spec =
-                        RawCallSpec::read_from_bytes(&calls.get(&slot, 0).map_err(load_error)?)
-                            .map_err(|_| BpfError::Load("a CALLS value has another size".into()))?;
+    /// Gives up what `shed` names, and takes back what it does not, from
+    /// the next call on.
+    fn shed(&mut self, shed: Shed) -> Result<(), BpfError> {
+        record!("syscalls bpf: shed {shed:?}");
+        let base = self.base;
+        self.configure(|config| {
+            let mut flags = base.flags | (config.flags & CONFIG_GENERATION);
+            if shed.has(Shed::STACKS) {
+                flags &= !(CONFIG_STACKS | CONFIG_STACK_COPY);
+            }
 
+            if shed.has(Shed::STREAM) {
+                flags &= !CONFIG_STREAM;
+            }
+
+            *config = RawConfig {
+                flags,
+                sample: if shed.has(Shed::SAMPLED) {
+                    SAMPLED_EVERY
+                } else {
+                    0
+                },
+                elements: if shed.has(Shed::STRINGS) {
+                    base.elements.min(CAPPED_ELEMENTS)
+                } else {
+                    base.elements
+                },
+                ..base
+            };
+        })?;
+
+        if shed.has(Shed::STRINGS) != self.shedding.has(Shed::STRINGS) {
+            let mut calls: Array<_, Bytes<SPEC_BYTES>> =
+                Array::try_from(self.ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
+                    .map_err(load_error)?;
+            for &(slot, base) in &self.specs {
+                let mut spec = base;
+                if shed.has(Shed::STRINGS) {
                     // Paths stay whole for the descriptors they name, and
-                    // structures for their fields.
+                    // structures for their fields: only String, Strings,
+                    // Bytes, and Iovec, as `call_spec` numbers them.
                     for arg in &mut spec.args {
-                        // String, Strings, Bytes, and Iovec, as `call_spec`
-                        // numbers them.
                         if matches!(arg.kind, 2 | 3 | 5 | 6) {
                             arg.limit = arg.limit.min(CAPPED_BYTES);
                         }
                     }
-
-                    let mut value = [0; SPEC_BYTES];
-                    value.copy_from_slice(spec.as_bytes());
-                    calls.set(slot, value, 0).map_err(load_error)?;
                 }
 
-                Ok(())
-            }
-            Step::Sample(every) => {
-                self.counting = true;
-                self.configure(|config| {
-                    config.sample = every;
-                    config.flags |= CONFIG_COUNT;
-                })
-            }
-            Step::CountOnly => {
-                self.counting = true;
-                self.configure(|config| {
-                    config.flags = (config.flags & !CONFIG_STREAM) | CONFIG_COUNT;
-                })
+                let mut value = [0; SPEC_BYTES];
+                value.copy_from_slice(spec.as_bytes());
+                calls.set(slot, value, 0).map_err(load_error)?;
             }
         }
+
+        self.shedding = shed;
+        Ok(())
+    }
+
+    /// The calls the programs have seen return, over every CPU.
+    fn runs(&self) -> u64 {
+        self.ebpf
+            .map("RUNS")
+            .and_then(|map| PerCpuArray::<_, u64>::try_from(map).ok())
+            .and_then(|runs| runs.get(&0, 0).ok())
+            .map_or(0, |values| values.iter().sum())
+    }
+
+    /// Nanoseconds the programs have cost the traced threads: as the
+    /// kernel times them, or else the calls they saw return since the last
+    /// estimate, `runs` in all, each at what one costs as they now run.
+    fn kernel_cost(&mut self, runs: u64) -> u64 {
+        if let Some(time) = self.run_time() {
+            return time;
+        }
+
+        self.estimated += runs.saturating_sub(self.runs) * per_call(self.base.flags, self.shedding);
+        self.runs = runs;
+        self.estimated
     }
 
     /// Nanoseconds the kernel has spent running the programs, when it
@@ -1744,8 +1837,8 @@ impl Loaded {
     /// program because it was already running on that CPU: a bound on
     /// what the trace is missing, since a skip may have been of a thread
     /// it does not trace.
-    fn lost(&self) -> [u64; 3] {
-        let mut lost = [0; 3];
+    fn lost(&self) -> [u64; 4] {
+        let mut lost = [0; 4];
         if let Some(map) = self.ebpf.map("LOST")
             && let Ok(counts) = PerCpuArray::<_, u64>::try_from(map)
         {
@@ -1997,19 +2090,6 @@ fn missing(name: &str) -> BpfError {
     BpfError::Load(format!("the BPF object has no {name}"))
 }
 
-/// The CPU time this process has spent, in nanoseconds.
-fn cpu_time() -> u64 {
-    use nix::sys::resource::{UsageWho, getrusage};
-    getrusage(UsageWho::RUSAGE_SELF).map_or(0, |usage| {
-        let nanoseconds = |time: nix::sys::time::TimeVal| {
-            u64::try_from(time.tv_sec()).unwrap_or(0) * 1_000_000_000
-                + u64::try_from(time.tv_usec()).unwrap_or(0) * 1_000
-        };
-
-        nanoseconds(usage.user_time()) + nanoseconds(usage.system_time())
-    })
-}
-
 /// A zombie leader can still have running workers.
 fn ended(process: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{process}/stat")).map_or(true, |stat| {
@@ -2137,14 +2217,6 @@ fn run(
         // not be the host's.
         follow: options.follow && cgroup.is_none(),
         cgroup,
-        budget: engine.budget.map(|percent| {
-            let limits = &options.limits;
-            let long = limits.string > CAPPED_BYTES as usize
-                || limits.dump > CAPPED_BYTES as usize
-                || limits.elements > CAPPED_ELEMENTS as usize;
-            Budget::new(percent, options.stacks.is_some(), long)
-        }),
-        window: (0, 0),
         live,
         first,
         end: None,
@@ -2158,7 +2230,7 @@ fn run(
         mappings,
         batch: Vec::new(),
         perf: Vec::new(),
-        lost: [0; 3],
+        lost: [0; 4],
         untrusted: 0,
         unwinder: options
             .stacks
@@ -2173,9 +2245,7 @@ fn run(
     let result = reader.run(&mut loaded, stop, gate.as_ref().map(|gate| gate.pid));
     let ring_end = reader.end;
     let Reader { sink, .. } = reader;
-    if loaded.counting {
-        sink.counted(loaded.counted(first));
-    }
+    sink.counted(loaded.counted(first));
 
     drop(loaded);
     let status = gate.as_mut().map(Gate::finish);
@@ -2325,10 +2395,6 @@ struct Reader<'a> {
 
     /// The cgroup traced, which the trace lasts as long as.
     cgroup: Option<Cgroup>,
-    budget: Option<Budget>,
-
-    /// When the budget's window began, and the CPU time spent by then.
-    window: (u64, u64),
 
     /// The traced processes still running.
     live: BTreeSet<Pid>,
@@ -2358,7 +2424,7 @@ struct Reader<'a> {
     mappings: Vec<perf::Events>,
     batch: Vec<Record>,
     perf: Vec<u8>,
-    lost: [u64; 3],
+    lost: [u64; 4],
 
     /// The mapping rings' heads that could not be trusted, as last counted.
     untrusted: u64,
@@ -2415,6 +2481,11 @@ const TICK_MS: u16 = 100;
 /// How long the reader waits for the ring while events wait for their
 /// stacks, which it then gives the sink.
 const WAITING_TICK_MS: u16 = 10;
+
+/// The most records a read takes from each ring, so that a reader behind
+/// its rings still ticks: reports losses, sheds what the budget says, and
+/// ends segments.
+const MOST_DRAINED: usize = 4096;
 
 /// How long after its time a record is surely in its ring: a program
 /// stamps its record before it writes it.
@@ -2503,13 +2574,11 @@ impl Reader<'_> {
                 // before it.
                 self.release(Until::None);
                 self.report_lost(loaded, now);
-                self.hold_budget(loaded, now)?;
+                self.follow_budget(loaded)?;
                 self.sink.tick(now);
                 if self.sink.segment_due(now) {
-                    if loaded.counting {
-                        let counted = loaded.take_counted(self.first)?;
-                        self.sink.counted(counted);
-                    }
+                    let counted = loaded.take_counted(self.first)?;
+                    self.sink.counted(counted);
 
                     self.sink.end_segment(now);
                 }
@@ -2547,46 +2616,19 @@ impl Reader<'_> {
         Ok(())
     }
 
-    /// Once a second, gives up a step of detail if tracing cost more than
-    /// its budget: microscope's own CPU time, and the programs' when the kernel
-    /// times them.
-    fn hold_budget(&mut self, loaded: &mut Loaded, now: u64) -> Result<(), BpfError> {
-        let Some(budget) = &mut self.budget else {
-            return Ok(());
-        };
-
-        let spent = cpu_time() + loaded.run_time().unwrap_or(0);
-        if self.window.0 == 0 {
-            if loaded.run_time().is_none() {
-                self.sink.budget(
-                    now,
-                    "the kernel does not time BPF programs (kernel.bpf_stats_enabled is 0), \
-                     so the budget holds microscope's own CPU time alone",
-                );
-            }
-
-            self.window = (now, spent);
-            return Ok(());
+    /// Gives up what the sink says to shed, and tells it what tracing
+    /// has cost the traced threads beyond counting their calls, which no
+    /// budget sheds.
+    fn follow_budget(&mut self, loaded: &mut Loaded) -> Result<(), BpfError> {
+        let shed = self.sink.shed();
+        if shed != loaded.shedding {
+            loaded.shed(shed)?;
         }
 
-        let (began, before) = self.window;
-        if now - began < 1_000_000_000 {
-            return Ok(());
-        }
-
-        let used = spent.saturating_sub(before);
-        if let Some(step) = budget.after(used, now - began) {
-            loaded.give_up(step)?;
-            self.sink.budget(
-                now,
-                &format!(
-                    "over budget, at {:.1}% of a CPU: {step}",
-                    super::budget::share(used, now - began)
-                ),
-            );
-        }
-
-        self.window = (now, spent);
+        let runs = loaded.runs();
+        let counting = runs.saturating_mul(COUNTED_NS);
+        self.sink
+            .cost(runs, loaded.kernel_cost(runs).saturating_sub(counting));
         Ok(())
     }
 
@@ -2610,7 +2652,11 @@ impl Reader<'_> {
     fn drain(&mut self, rings: &mut [RingBuf<MapData>], every: bool) {
         let cut = (!every).then(|| monotonic().saturating_sub(SETTLED_NS));
         for (index, ring) in rings.iter_mut().enumerate() {
-            while let Some(item) = ring.next() {
+            let mut taken = 0;
+            while taken < MOST_DRAINED
+                && let Some(item) = ring.next()
+            {
+                taken += 1;
                 match decode(&item) {
                     Ok(record) => self.merge.push(index, record),
                     // Only the flight recorder, which release builds leave
@@ -3414,6 +3460,41 @@ mod tests {
 
         let thread = &folded.by_call[&(Pid::new(9), Tid::new(10), openat)];
         assert_eq!((thread.calls, thread.errors_by_errno[&2]), (3, 1));
+    }
+
+    /// Where the kernel does not time the programs, a call costs what its
+    /// cheapest remaining work does: shedding never estimates it dearer.
+    #[test]
+    fn a_call_costs_what_the_programs_still_do_with_it() {
+        let copied = CONFIG_STREAM | CONFIG_STACKS | CONFIG_STACK_COPY;
+        let walked = CONFIG_STREAM | CONFIG_STACKS;
+        let shed = |bits: &[Shed]| Shed(bits.iter().fold(0, |all, bit| all | bit.0));
+        assert_eq!(per_call(copied, Shed::default()), COPIED_STACK_NS);
+        assert_eq!(per_call(walked, Shed::default()), STACK_NS);
+        assert_eq!(per_call(copied, Shed::STACKS), STREAMED_NS);
+        assert_eq!(per_call(CONFIG_STREAM, Shed::default()), STREAMED_NS);
+        assert_eq!(
+            per_call(copied, shed(&[Shed::STACKS, Shed::SAMPLED])),
+            COUNTED_NS + STREAMED_NS / 16
+        );
+        assert_eq!(
+            per_call(copied, shed(&[Shed::STACKS, Shed::SAMPLED, Shed::STREAM])),
+            COUNTED_NS
+        );
+        assert_eq!(
+            per_call(CONFIG_COUNT | CONFIG_STACKS, Shed::default()),
+            COUNTED_NS
+        );
+
+        // Each rung costs less than the one above it.
+        let mut shedding = Shed::default();
+        let mut cost = per_call(copied, shedding);
+        for rung in [Shed::STACKS, Shed::STRINGS, Shed::SAMPLED, Shed::STREAM] {
+            shedding.0 |= rung.0;
+            let next = per_call(copied, shedding);
+            assert!(next <= cost, "{shedding:?}");
+            cost = next;
+        }
     }
 
     #[test]

@@ -107,14 +107,15 @@ export function tracedBy(settings: readonly Setting[]): TraceNote {
 }
 
 /** What the trace is missing, by why: records the kernel dropped and
- * returns it never saw leave every count short; calls over the cap were
- * counted. */
+ * returns it never saw may leave counts short; calls over the cap or past
+ * a full ring were counted. */
 export function lossNotes(lost: SyscallLosses): TraceNote[] {
   const notes: TraceNote[] = [];
   if (lost.dropped > 0) {
     notes.push({
       text: `${formatCount(lost.dropped)} dropped`,
-      title: "Records the kernel had no room for: every count is a lower bound.",
+      title:
+        "Records the kernel had no room for, or program runs it skipped: some calls lack detail, and counts may be short.",
       warn: true,
     });
   }
@@ -131,26 +132,21 @@ export function lossNotes(lost: SyscallLosses): TraceNote[] {
       title: "Failed or slow calls past the cap: counted, but not kept.",
     });
   }
+  if (lost.overflowed > 0) {
+    notes.push({
+      text: `${formatCount(lost.overflowed)} not kept`,
+      title: "Calls that came while the kernel's ring was full: counted, but not kept.",
+    });
+  }
   return notes;
 }
 
-/** What else shaped the trace: its cgroup, each step the budget took, and
- * what saved a window. */
+/** What else shaped the trace: its cgroup, and what saved a window. */
 export function traceNotes(settings: readonly Setting[]): TraceNote[] {
   const notes: TraceNote[] = [];
   const cgroup = settings.find((each) => each.name === "cgroup")?.value;
   if (cgroup) {
     notes.push({ text: `cgroup ${cgroup}` });
-  }
-  const steps = settings
-    .flatMap((each) => {
-      const step = /^budget (\d+)$/u.exec(each.name);
-      return step ? [{ step: Number(step[1]), note: each.value }] : [];
-    })
-    .toSorted((a, b) => a.step - b.step)
-    .map((each) => each.note);
-  if (steps.length > 0) {
-    notes.push({ text: `budget: ${steps.at(-1)}`, title: steps.join("\n"), warn: true });
   }
   const trigger = settings.find((each) => each.name === "trigger")?.value;
   if (trigger) {

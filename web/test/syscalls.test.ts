@@ -106,25 +106,17 @@ describe("what a trace's footer says of how it was made", () => {
     expect(tracedBy([])).toEqual({ text: "" });
   });
 
-  it("says the cgroup, the budget's last step with every step on hover, and a window's trigger", () => {
+  it("says the cgroup and a window's trigger", () => {
     expect(
       traceNotes(
         settings([
           ["program", "make"],
-          ["budget 10", "counting only"],
           ["cgroup", "/sys/fs/cgroup/app.slice"],
-          ["budget 2", "one call in 2"],
-          ["budget 1", "cut at 16"],
           ["trigger", "close failed with errno 9"],
         ]),
       ),
     ).toEqual([
       { text: "cgroup /sys/fs/cgroup/app.slice" },
-      {
-        text: "budget: counting only",
-        title: "cut at 16\none call in 2\ncounting only",
-        warn: true,
-      },
       { text: "saved when close failed with errno 9", warn: true },
     ]);
     expect(traceNotes(settings([["syscalls", "bpf"]]))).toEqual([]);
@@ -133,12 +125,13 @@ describe("what a trace's footer says of how it was made", () => {
 
 describe("a trace's losses", () => {
   it("warn only of those that leave the counts short", () => {
-    expect(lossNotes({ dropped: 0, unseen: 0, capped: 0 })).toEqual([]);
-    const notes = lossNotes({ dropped: 1200, unseen: 1, capped: 40 });
+    expect(lossNotes({ dropped: 0, unseen: 0, capped: 0, overflowed: 0 })).toEqual([]);
+    const notes = lossNotes({ dropped: 1200, unseen: 1, capped: 40, overflowed: 7 });
     expect(notes.map((note) => [note.text, note.warn ?? false])).toEqual([
       ["1,200 dropped", true],
       ["1 unseen", true],
       ["40 over the cap", false],
+      ["7 not kept", false],
     ]);
   });
 });

@@ -9,6 +9,7 @@ mod collector;
 mod frame_pointers;
 mod interpreted;
 mod jit;
+pub mod ladder;
 mod probes;
 mod record;
 pub(crate) use record::{OwnedLine, hex, symbolize as symbolize_lines};

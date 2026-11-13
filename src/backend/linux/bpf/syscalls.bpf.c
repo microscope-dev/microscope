@@ -153,6 +153,15 @@ struct {
 	__array(values, struct fence_token);
 } FENCE SEC(".maps");
 
+// Each CPU's count of the chosen calls it saw return: what tracing cost,
+// as microscope estimates it where the kernel does not time programs.
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} RUNS SEC(".maps");
+
 // Each CPU's count of calls, for sampling one in config.sample.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -368,6 +377,13 @@ static __always_inline int output(void *data, u64 size)
 		return 0;
 	lost();
 	return -1;
+}
+
+// Sends `size` bytes from `data`; nonzero when the ring had no room.
+static __always_inline int emit(void *data, u64 size)
+{
+	void *events = ring();
+	return events ? bpf_ringbuf_output(events, data, size, 0) : -1;
 }
 
 // Whether this CPU's bucket lets one more failed or slow call through at
@@ -747,8 +763,9 @@ __noinline int copy_arg(u32 slot, u32 index, u32 off, u32 phase, s64 ret)
 	return off + sizeof(struct capture_header) + ((len + 7) & ~7);
 }
 
-// Builds a call record for `entry` in the scratch buffer and sends it.
-static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u32 kind, u32 phase,
+// Builds a call record for `entry` in the scratch buffer and sends it;
+// nonzero when it was not sent, which the caller counts.
+static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32 kind, u32 phase,
 				      s64 ret, u64 exited)
 {
 	// Exec can change a worker's id even when loading the new image fails.
@@ -770,7 +787,7 @@ static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u3
 	u32 zero = 0;
 	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
 	if (!buffer)
-		return;
+		return -1;
 	struct call_record *record = (void *)buffer->data;
 	record->header.kind = kind;
 	record->header.tid = tid;
@@ -792,7 +809,7 @@ static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u3
 	if (off > SCRATCH)
 		off = SCRATCH;
 	record->header.size = off;
-	output(buffer->data, off);
+	return emit(buffer->data, off);
 }
 
 // The statistics thread `tid` counts into: its own, or once THREAD_STATS
@@ -856,6 +873,19 @@ static __always_inline void count(struct config *settings, struct call_spec *spe
 	}
 	if (returned && spec->moves && ret > 0)
 		value->bytes += ret;
+}
+
+// Counts a call whose record was not sent, when the kernel counts calls.
+static __always_inline void unsent(struct config *settings, struct call_spec *spec, u32 slot,
+				   u32 tid, u32 tgid, u64 entered, u64 exited, s64 ret,
+				   int returned)
+{
+	if (!(settings->flags & CONFIG_COUNT)) {
+		lost();
+		return;
+	}
+	count(settings, spec, slot, tid, tgid, entered, exited, ret, returned);
+	lost_as(LOSS_OVERFLOWED);
 }
 
 // The longest dentry name a file record carries.
@@ -1090,7 +1120,8 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
 	// Arguments the old image holds, as execve's, are read now.
 	for (u32 index = 0; index < 6; index++) {
 		if (spec->args[index].kind != COPY_NONE && spec->args[index].when == READ_ENTRY) {
-			send_call(tid, tgid, &entry, RECORD_ENTRY, READ_ENTRY, 0, 0);
+			if (send_call(tid, tgid, &entry, RECORD_ENTRY, READ_ENTRY, 0, 0))
+				lost();
 			break;
 		}
 	}
@@ -1148,9 +1179,14 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	}
 	if (!spec || !spec->selected)
 		return 0;
+	u32 zero = 0;
+	u64 *runs = bpf_map_lookup_elem(&RUNS, &zero);
+	if (runs)
+		*runs += 1;
 	u32 slot = slot_of(entry.abi, entry.nr);
 	int send = sent(settings, entry.flags);
-	if ((settings->flags & CONFIG_COUNT) && !send) {
+	int counted = (settings->flags & CONFIG_COUNT) && !send;
+	if (counted) {
 		count(settings, spec, slot, tid, tgid, entry.entered, now, ret, 1);
 		u8 kept = exception(settings, entry.entered, now, ret, 1);
 		if (kept && admitted(settings, now)) {
@@ -1166,7 +1202,12 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 		if ((settings->flags & CONFIG_STACKS) &&
 		    send_stack(ctx, tid, tgid, regs, settings->flags))
 			entry.flags |= CALL_STACK_LOST;
-		send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT, ret, now);
+		if (send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT, ret, now)) {
+			if (counted)
+				lost();
+			else
+				unsent(settings, spec, slot, tid, tgid, entry.entered, now, ret, 1);
+		}
 	}
 	return 0;
 }
@@ -1337,10 +1378,12 @@ int process_exit(void *ctx)
 		u32 slot = slot_of(entry.abi, entry.nr);
 		struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
 		if (spec && spec->selected) {
-			if ((settings->flags & CONFIG_COUNT) && !sent(settings, entry.flags))
-				count(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
-			if (sent(settings, entry.flags))
-				send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT + 1, 0, 0);
+			if (!sent(settings, entry.flags)) {
+				if (settings->flags & CONFIG_COUNT)
+					count(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
+			} else if (send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT + 1, 0, 0)) {
+				unsent(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
+			}
 		}
 	}
 	s32 code = BPF_CORE_READ(task, exit_code);

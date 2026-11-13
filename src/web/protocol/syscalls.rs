@@ -91,14 +91,15 @@ pub struct SyscallSummary {
 }
 
 /// Events a trace's engine lost: records it dropped and returns it never
-/// saw, which make every count a lower bound, and failed or slow calls
-/// over a counting recording's cap, which were counted but not kept.
+/// saw, which make every count a lower bound, and calls over a counting
+/// recording's cap or past a full ring, which were counted but not kept.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallLosses {
     pub dropped: u64,
     pub unseen: u64,
     pub capped: u64,
+    pub overflowed: u64,
 }
 
 impl From<microscope::syscalls::Losses> for SyscallLosses {
@@ -107,6 +108,7 @@ impl From<microscope::syscalls::Losses> for SyscallLosses {
             dropped: lost.dropped,
             unseen: lost.unseen,
             capped: lost.capped,
+            overflowed: lost.overflowed,
         }
     }
 }

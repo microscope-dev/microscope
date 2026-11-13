@@ -67,6 +67,11 @@ pub struct Observation {
 
     /// How long the period lasted.
     pub period: Duration,
+
+    /// What of `cpu` sampling did not cause: what recording took a second
+    /// while sampling was off, over the whole period, and what tracing
+    /// calls cost.
+    pub fixed: Duration,
 }
 
 /// A change of the share sampled.
@@ -116,6 +121,18 @@ impl Controller {
         self.steps
     }
 
+    /// Samples each period whole, while the budget gives up other detail
+    /// first.
+    pub const fn whole(&mut self) {
+        self.steps = STEPS;
+    }
+
+    /// Owes nothing: what recording spent over went with detail it gave
+    /// up.
+    pub const fn forgive(&mut self) {
+        self.owed = Duration::ZERO;
+    }
+
     /// Whether the first period, which warms recording up, has passed.
     #[must_use]
     pub const fn warm(self) -> bool {
@@ -150,8 +167,11 @@ impl Controller {
         let used = observed.cpu.as_secs_f64() / observed.period.as_secs_f64();
 
         // CPU per second of sampling, and the share of a period that fits.
-        let cost = observed.cpu.as_secs_f64() / observed.sampled.as_secs_f64();
-        let left = budget.cpu - self.owed.as_secs_f64() / budget.period.as_secs_f64();
+        let sampling = observed.cpu.saturating_sub(observed.fixed);
+        let cost = sampling.as_secs_f64() / observed.sampled.as_secs_f64();
+        let left = budget.cpu
+            - self.owed.as_secs_f64() / budget.period.as_secs_f64()
+            - observed.fixed.as_secs_f64() / observed.period.as_secs_f64();
         let fits = if cost > 0.0 {
             ((left / cost * 0.9 * f64::from(STEPS)).floor().max(0.0) as u32).clamp(1, STEPS)
         } else {
@@ -190,6 +210,7 @@ mod tests {
             cpu: sampled.mul_f64(cost),
             sampled,
             period: BUDGET.period,
+            fixed: Duration::ZERO,
         }
     }
 
@@ -234,6 +255,31 @@ mod tests {
                 "{cost} changed late: {changes:?}"
             );
         }
+    }
+
+    /// A cost that pauses do not lower, such as a reader's polling, is
+    /// paid first, and sampling gets what is left: 0.6% of a CPU fixed,
+    /// and sampling at 2% of a CPU, fits 0.4 / 2 * 0.9 of each period, or
+    /// 11 sixty-fourths. Charged to sampling, the fixed cost would hold it
+    /// at the least share.
+    #[test]
+    fn a_cost_sampling_does_not_cause_is_paid_before_sampling() {
+        let mut controller = Controller::default();
+        for _ in 0..20 {
+            let sampled = BUDGET.period * controller.steps() / STEPS;
+            let fixed = BUDGET.period.mul_f64(0.006);
+            controller.step(
+                BUDGET,
+                Observation {
+                    cpu: fixed + sampled.mul_f64(0.02),
+                    sampled,
+                    period: BUDGET.period,
+                    fixed,
+                },
+            );
+        }
+
+        assert_eq!(controller.steps(), 11);
     }
 
     /// Once the cost falls and what was owed is paid, the share doubles
@@ -282,6 +328,7 @@ mod tests {
                         cpu: Duration::from_secs_f64(first / 1000.0),
                         sampled: BUDGET.period,
                         period: BUDGET.period,
+                        fixed: Duration::ZERO,
                     }
                 } else {
                     period(0.0095, steps)
@@ -306,6 +353,7 @@ mod tests {
             cpu: Duration::from_millis(500),
             sampled: Duration::ZERO,
             period: BUDGET.period,
+            fixed: Duration::ZERO,
         };
 
         assert_eq!(controller.step(BUDGET, idle), None);

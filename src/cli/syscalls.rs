@@ -294,11 +294,6 @@ pub struct SyscallsArgs {
     #[arg(long, value_name = "SIZE")]
     ring: Option<String>,
 
-    /// Hold the trace's cost to PERCENT of one CPU: over it, drop stacks,
-    /// cut strings, sample calls, then only count them, a step a second.
-    #[arg(long, value_name = "PERCENT")]
-    budget: Option<f64>,
-
     /// Trace every process of a cgroup.
     #[arg(long, value_name = "PATH", conflicts_with = "container")]
     cgroup: Option<PathBuf>,
@@ -634,7 +629,6 @@ fn check_targets(args: &SyscallsArgs, attached: &[u32]) -> Result<()> {
             (args.container.is_some(), "--container"),
             (args.continuous.is_some(), "--continuous"),
             (args.ring.is_some(), "--ring"),
-            (args.budget.is_some(), "--budget"),
             (args.attach != AttachArg::Auto, "--attach"),
         ] {
             if given {
@@ -746,12 +740,6 @@ fn plan(args: &SyscallsArgs) -> Result<Plan> {
     let launching = !args.command.is_empty();
     let cgroup = args.cgroup.is_some() || args.container.is_some();
 
-    if let Some(percent) = args.budget
-        && !(percent.is_finite() && percent > 0.0)
-    {
-        bail!("--budget takes a percent of one CPU above 0, not {percent}");
-    }
-
     let stacks = stacks(args)?;
     if cgroup && stacks.is_some() {
         bail!("-k cannot unwind a cgroup's stacks yet; trace a program or -p PID");
@@ -801,7 +789,6 @@ fn bpf_options(args: &SyscallsArgs, plan: &Plan, ring: Option<u32>) -> BpfOption
             AttachArg::Tracepoint => AttachMode::Tracepoints,
             AttachArg::Fentry => AttachMode::Functions,
         },
-        budget: args.budget,
         exceptions: None,
     }
 }
@@ -1075,9 +1062,6 @@ struct Printer {
 
     /// The cgroup traced, said once its programs are attached.
     cgroup: Option<PathBuf>,
-
-    /// The budget's notes so far, each a setting of the capture's.
-    budget_notes: u32,
     continuous: Option<Continuous>,
 
     /// Set by SIGUSR2, which saves a continuous trace's window.
@@ -1520,10 +1504,6 @@ const fn style(args: &SyscallsArgs) -> Style {
 }
 
 impl Printer {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "initializes the trace printer's independent settings"
-    )]
     fn new(args: &SyscallsArgs, plan: &Plan) -> Result<Self> {
         let open = |path: &std::path::Path| -> Result<File> {
             std::fs::OpenOptions::new()
@@ -1605,7 +1585,6 @@ impl Printer {
             sampled: 0,
             in_flight: plan.in_flight,
             cgroup: None,
-            budget_notes: 0,
             continuous: None,
             trigger: Arc::new(AtomicBool::new(false)),
             columns: plan.columns.clone(),
@@ -2632,17 +2611,6 @@ impl Sink for Printer {
         {
             let directory = continuous.directory().display().to_string();
             self.message(&format!("writing a segment to {directory} failed: {error}"));
-        }
-    }
-
-    fn budget(&mut self, _time: u64, note: &str) {
-        self.budget_notes += 1;
-        self.setting(&format!("budget {}", self.budget_notes), note);
-
-        // What the trace leaves out from here, said even beside a file's
-        // trace; -qq silences it.
-        if self.quiet < 2 {
-            self.message(&format!("budget: {note}"));
         }
     }
 

@@ -2607,6 +2607,158 @@ mod bpf {
         assert_eq!(read, Some(reads.values().sum()));
     }
 
+    /// Over its budget, a recording gives up system call detail a rung a
+    /// period, in order, before it gives up samples; once it keeps only
+    /// the calls that failed or were slow, the kernel counts the rest.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn over_budget_a_recording_sheds_calls_before_samples() {
+        let directory = ScratchDir::new("syscalls-record-ladder");
+        let program = ["4", "70000", "25000"].map(str::to_owned);
+        let profile = record_fixture(
+            directory.path(),
+            "prod.usprof",
+            &["--preset", "prod", "--syscalls", "calls"],
+            "syscall-load",
+            &program,
+        );
+
+        let changes = profile.budget_changes();
+        let gave_up: Vec<&str> = changes
+            .iter()
+            .filter_map(|(_, text)| text.strip_prefix("gave up "))
+            .collect();
+        let rungs = [
+            "system call stacks",
+            "15 of every 16 system calls",
+            "every system call that neither failed nor was slow",
+        ];
+        assert!(gave_up.len() >= rungs.len(), "{changes:#?}");
+        for (text, rung) in gave_up.iter().zip(rungs) {
+            assert!(text.starts_with(rung), "{changes:#?}");
+        }
+
+        // Past the last rung, only kept calls stream.
+        let (shed_at, _) = changes
+            .iter()
+            .find(|(_, text)| text.starts_with("gave up every system call"))
+            .expect("the last rung");
+        let late: Vec<_> = profile
+            .syscalls()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.event {
+                microscope::syscalls::TraceEvent::Call(call)
+                    if call.time() > shed_at.cast_unsigned() + 500_000_000 =>
+                {
+                    Some(call)
+                }
+                _ => None,
+            })
+            .filter(|call| matches!(call.call.name(), Some("openat" | "read" | "close")))
+            .collect();
+        assert!(
+            late.iter().all(|call| call.flags.kept()),
+            "{:?}",
+            late.first()
+        );
+
+        // Shedding never sheds counts, nor does a full ring: each of the
+        // 280k rounds' closes is counted, with the loader's few.
+        let counts = profile.syscalls().stats().per_call();
+        let closes = counts
+            .iter()
+            .find(|(call, _)| call.name() == Some("close"))
+            .map_or(0, |(_, stats)| stats.calls);
+        assert!((280_000..280_020).contains(&closes), "{closes}");
+    }
+
+    /// On the load where the old `--budget 1` cost 37% of a CPU, 100k
+    /// calls a second, `--preset prod` settles near 1% once its ladder has
+    /// shed what it must. Debug builds poll at a fixed cost of about 0.6%,
+    /// so this allows 2%.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_production_recording_holds_its_budget_under_a_busy_load() {
+        let directory = ScratchDir::new("syscalls-record-budget");
+        let mut recording = Command::new(launcher())
+            .env_clear()
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args([
+                "record",
+                "-o",
+                "prod.usprof",
+                "--preset",
+                "prod",
+                "--syscalls",
+                "calls",
+                "--",
+            ])
+            .arg(Scenario::fixture("syscall-load"))
+            .args(["4", "133000", "25000"])
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope record");
+
+        // The launcher runs microscope in its own process: its CPU time,
+        // in clock ticks, by the monotonic clock the capture's times use.
+        let pid = recording.id();
+        let mut used = Vec::new();
+        while recording.try_wait().expect("microscope runs").is_none() {
+            let now = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+                .expect("a monotonic clock");
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let ticks: Option<u64> = stat.rsplit_once(") ").map(|(_, fields)| {
+                fields
+                    .split(' ')
+                    .skip(11)
+                    .take(2)
+                    .map(|field| field.parse::<u64>().unwrap_or(0))
+                    .sum()
+            });
+            if let Some(ticks) = ticks {
+                used.push((now.tv_sec() * 1_000_000_000 + now.tv_nsec(), ticks));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        let output = recording.wait_with_output().expect("microscope ends");
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        let profile = microscope::profiler::Profile::read(&directory.path().join("prod.usprof"))
+            .expect("the capture reads")
+            .profile;
+        let changes = profile.budget_changes();
+
+        // From 2 s after the ladder's last step down to 1 s before the
+        // program ended, which leaves out writing the capture.
+        let settled = changes
+            .iter()
+            .filter(|(_, text)| text.starts_with("gave up"))
+            .map(|(time, _)| time + 2_000_000_000)
+            .max()
+            .expect("the ladder gave something up");
+        let ended = used.last().map_or(0, |(time, _)| time - 1_000_000_000);
+        let window: Vec<_> = used
+            .iter()
+            .filter(|(time, _)| (settled..=ended).contains(time))
+            .collect();
+        let (Some((began, before)), Some((until, after))) = (window.first(), window.last()) else {
+            panic!("no time left after the ladder settled: {changes:#?}");
+        };
+        assert!(until - began >= 3_000_000_000, "{changes:#?}");
+
+        #[expect(clippy::cast_precision_loss, reason = "a few hundred ticks")]
+        let share = (after - before) as f64 / 100.0 / ((until - began) as f64 / 1e9);
+        assert!(
+            share < 0.02,
+            "microscope used {:.2}% of a CPU: {changes:#?}",
+            share * 100.0
+        );
+    }
+
     /// Each call a counting recording kept, by name, why it was kept, and
     /// its site.
     fn kept(profile: &microscope::profiler::Profile) -> BTreeMap<(String, &str, String), u64> {
@@ -2718,7 +2870,10 @@ mod bpf {
         // skipped on a busy machine, is counted dropped.
         assert!(failed >= 20_000, "{failed}");
         assert!(kept + lost.capped <= failed, "{kept} kept, {lost:?}");
-        assert!(kept + lost.capped + lost.dropped >= failed, "{kept} kept, {lost:?}");
+        assert!(
+            kept + lost.capped + lost.dropped >= failed,
+            "{kept} kept, {lost:?}"
+        );
         assert!((1..=2_500).contains(&kept), "{kept} kept, {lost:?}");
         assert_eq!(lost.unseen, 0);
     }
@@ -2976,92 +3131,6 @@ mod bpf {
                 .iter()
                 .any(|line| line.starts_with("read(0, \"x\", 1)")),
             "{lines:?}"
-        );
-    }
-
-    /// Over its budget, a trace gives up detail a step a second; once it
-    /// samples, the kernel counts the calls it does not send, so the table
-    /// still counts every one.
-    #[test]
-    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn over_budget_a_trace_samples_and_still_counts_every_call() {
-        let mut command = microscope(&[
-            "--budget",
-            "0.0001",
-            "-e",
-            "trace=getppid",
-            "-C",
-            "-U",
-            "name,calls",
-            "--",
-        ]);
-
-        command
-            .arg(fixture())
-            .arg("spin")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-
-        let mut running = Running::spawn(&mut command);
-        running.line(|line| line.contains("budget: over budget") && line.contains("cut at 16"));
-        running.line(|line| line.contains("budget: over budget") && line.contains("one call in 2"));
-
-        running
-            .child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(b"x")
-            .expect("end the spin");
-
-        let mut asked = String::new();
-        BufReader::new(running.child.stdout.take().expect("stdout"))
-            .read_line(&mut asked)
-            .expect("the count");
-
-        let asked = asked
-            .trim()
-            .strip_prefix("asked ")
-            .expect("a count")
-            .to_owned();
-
-        let (code, lines) = running.finish();
-        assert_eq!(code, Some(0), "{lines:?}");
-
-        let asked: u64 = asked.parse().expect("a number");
-
-        let shown = lines
-            .iter()
-            .filter(|line| line.starts_with("getppid()"))
-            .count() as u64;
-
-        assert!(shown < asked, "{shown} of {asked}");
-
-        // Before it sampled, the ring overflowed, and what it lost is said.
-        let lost: u64 = lines
-            .iter()
-            .filter_map(|line| {
-                line.strip_prefix("--- lost ")?
-                    .split(' ')
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-            })
-            .sum();
-
-        let table = lines
-            .iter()
-            .find_map(
-                |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
-                    ["getppid", calls] => calls.parse::<u64>().ok(),
-                    _ => None,
-                },
-            )
-            .expect("a row");
-
-        assert!(
-            table <= asked && asked <= table + lost,
-            "{table} counted and {lost} lost of {asked}"
         );
     }
 

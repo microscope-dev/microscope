@@ -1728,7 +1728,7 @@ counted: boolean,
  */
 engine: string | null, processes: number, rows: Array<SyscallRow>, };
 
-export type SyscallLosses = { dropped: number, unseen: number, capped: number, };
+export type SyscallLosses = { dropped: number, unseen: number, capped: number, overflowed: number, };
 
 export type SyscallRow = { 
 /**
