@@ -19,7 +19,7 @@ use crate::syscalls::fds::{self, FdTable};
 use crate::syscalls::filter::{self, Filter};
 use crate::syscalls::specs::{self, Class, Ret};
 use crate::syscalls::stats::Folded;
-use crate::syscalls::{CallSet, Errno, Outcome, SyscallEvent, SyscallId, TraceEvent};
+use crate::syscalls::{CallSet, Errno, InFlight, Outcome, SyscallEvent, SyscallId, TraceEvent};
 
 /// How much of each system call a recording keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -294,6 +294,11 @@ struct Shared {
     trigger: Option<String>,
     saving: Option<String>,
     quiet_until: u64,
+
+    /// The calls a watched recording's threads were last seen blocked in,
+    /// and when.
+    blocked: Vec<InFlight>,
+    blocked_at: u64,
 }
 
 /// Sees each event a recording keeps, on the trace's own thread, so that
@@ -364,6 +369,10 @@ struct Held {
     save_on: SaveOn,
     quiet: u64,
     print: Option<Printer>,
+
+    /// Whether someone watches the recording as it goes, who sees the
+    /// calls its threads are blocked in.
+    watched: bool,
 }
 
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -396,6 +405,13 @@ impl Held {
 /// Failed and slow calls a counting recording keeps a second, over every
 /// CPU.
 const KEPT_PER_SECOND: u32 = 2000;
+
+/// How long a call runs before a watched recording shows it blocked.
+const BLOCKED_AFTER: u64 = 1_000_000;
+
+/// The setting of a live capture that says when its unfinished calls were
+/// seen blocked.
+pub const BLOCKED_AT: &str = "syscalls blocked at";
 
 /// How often a cut recording reads the kernel's counts.
 const FLUSH_EVERY: u64 = 1_000_000_000;
@@ -443,6 +459,22 @@ impl Sink for Held {
         }
     }
 
+    fn in_flight(&mut self, calls: &[InFlight]) {
+        let kept = calls.iter().filter(|call| {
+            self.filter
+                .as_ref()
+                .is_none_or(|filter| filter.calls.contains(call.call))
+        });
+        let mut shared = lock(&self.shared);
+        shared.blocked.clear();
+        shared.blocked.extend(kept.copied());
+        shared.blocked_at = super::session::monotonic();
+    }
+
+    fn in_flight_after(&self) -> Option<u64> {
+        self.watched.then_some(BLOCKED_AFTER)
+    }
+
     fn segment_due(&mut self, time: u64) -> bool {
         let mut shared = lock(&self.shared);
         let due = shared.flushing && time.saturating_sub(shared.last_flush) >= FLUSH_EVERY;
@@ -482,11 +514,12 @@ impl SyscallTrace {
     /// Traces the calls `recording` asks for of `traced`, if any; returns
     /// once the trace sees the process. Each call's stack is copied when
     /// the samples copy `stack_bytes`, more than the frame-pointer chain
-    /// needs.
+    /// needs. A `watched` trace keeps the calls its threads are blocked in.
     pub(super) fn beside(
         traced: Traced,
         recording: &RecordOptions,
         stack_bytes: u32,
+        watched: bool,
     ) -> Result<Option<Self>, String> {
         let _span = crate::span!("record syscalls start");
         let options = &recording.syscalls;
@@ -541,6 +574,8 @@ impl SyscallTrace {
             trigger: None,
             saving: None,
             quiet_until: 0,
+            blocked: Vec::new(),
+            blocked_at: 0,
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let budget = Arc::new(Budgeted::default());
@@ -560,6 +595,7 @@ impl SyscallTrace {
                 }
                 Cuts::Whole => 0,
             },
+            watched,
         };
 
         let engine = (options.engine == SyscallEngine::Bpf).then_some(engine);
@@ -643,7 +679,13 @@ impl SyscallTrace {
     /// `samples` with the calls and counts of their span. A segment's go
     /// with it; a window's stay until the window rolls past them.
     pub(super) fn cut(&self, samples: &Capture) -> Capture {
-        cut(&self.shared, self.stacks.as_ref(), samples, false)
+        cut(&self.shared, self.stacks.as_ref(), samples, Taken::Span)
+    }
+
+    /// `samples` with every call and count so far, which all stay, and the
+    /// calls the threads are blocked in, unfinished: what a watcher sees.
+    pub(super) fn live(&self, samples: &Capture) -> Capture {
+        cut(&self.shared, self.stacks.as_ref(), samples, Taken::Live)
     }
 
     /// Ends the trace, its program having ended, and gives `samples` every
@@ -657,7 +699,12 @@ impl SyscallTrace {
         self.thread
             .join()
             .map_err(|_| "the system call trace panicked".to_owned())??;
-        Ok(cut(&self.shared, self.stacks.as_ref(), samples, true))
+        Ok(cut(
+            &self.shared,
+            self.stacks.as_ref(),
+            samples,
+            Taken::Rest,
+        ))
     }
 }
 
@@ -697,13 +744,27 @@ fn run(
     ended.map(|_| ())
 }
 
-/// `samples` with the events and counts `shared` keeps for their span,
-/// or every one that is left at the `end`.
+/// What a cut takes of the calls and counts a trace holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Taken {
+    /// Those of the samples' span: a segment's go with it, and a window's
+    /// stay until the window rolls past them.
+    Span,
+
+    /// Every one so far, which all stay, with the calls the threads are
+    /// blocked in as unfinished: what a watcher sees.
+    Live,
+
+    /// Every one left, as the trace ends.
+    Rest,
+}
+
+/// `samples` with the events and counts `shared` holds, as `taken` says.
 fn cut(
     shared: &Mutex<Shared>,
     stacks: Option<&SharedStacks>,
     samples: &Capture,
-    end: bool,
+    taken: Taken,
 ) -> Capture {
     let (start, stop) = samples.span();
     let (start, stop) = (start.cast_unsigned(), stop.cast_unsigned());
@@ -714,7 +775,9 @@ fn cut(
             capture.setting(key, value);
         }
 
-        if let Some(reason) = shared.saving.take() {
+        if taken != Taken::Live
+            && let Some(reason) = shared.saving.take()
+        {
             capture.setting("trigger", &reason);
         }
 
@@ -739,12 +802,13 @@ fn cut(
             }
         }
 
+        let all = taken != Taken::Span;
         let mut counted = Folded::default();
-        if shared.window.is_some() {
+        if shared.window.is_some() || taken == Taken::Live {
             for event in shared
                 .events
                 .iter()
-                .filter(|event| end || event.time() < stop)
+                .filter(|event| all || event.time() < stop)
             {
                 capture.event(event);
             }
@@ -752,21 +816,21 @@ fn cut(
             for (_, stats) in shared
                 .counted
                 .iter()
-                .filter(|(time, _)| end || *time <= stop)
+                .filter(|(time, _)| all || *time <= stop)
             {
                 counted.merge(stats);
             }
         } else {
             while let Some(event) = shared
                 .events
-                .pop_front_if(|event| end || event.time() < stop)
+                .pop_front_if(|event| all || event.time() < stop)
             {
                 capture.event(&event);
             }
 
             while let Some((_, stats)) = shared
                 .counted
-                .pop_front_if(|(time, _)| end || *time <= stop)
+                .pop_front_if(|(time, _)| all || *time <= stop)
             {
                 counted.merge(&stats);
             }
@@ -774,6 +838,13 @@ fn cut(
 
         if !counted.by_call.is_empty() {
             capture.counted(&counted);
+        }
+
+        if taken == Taken::Live {
+            capture.setting(BLOCKED_AT, &shared.blocked_at.to_string());
+            for call in &shared.blocked {
+                capture.event(&TraceEvent::Call(call.unfinished()));
+            }
         }
     }
 

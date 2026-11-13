@@ -2029,15 +2029,9 @@ connectNs: number, sent: number, received: number, };
 
 export type SyscallProcesses = { processes: Array<SyscallProcess>, };
 
-export type RecordSyscalls = { 
-/**
- * The calls to trace, as `-e` takes them; every call when empty.
- */
-filter: string, 
-/**
- * Unwinds each call's stack, as `-k` does.
- */
-stacks: boolean, };
+export type SyscallsLevel = "off" | "counts" | "calls" | "full";
+
+export type SyscallsEngine = "bpf" | "ptrace";
 
 export type SyscallInFlightQuery = { profile: string, revision?: number, };
 
@@ -2098,9 +2092,14 @@ function?: string | null,
  */
 window?: number | null, 
 /**
- * Traces system calls instead of sampling.
+ * How much of each system call to record: the preset's level when
+ * absent.
  */
-syscalls?: RecordSyscalls | null, };
+syscalls?: SyscallsLevel | null, 
+/**
+ * What records them: BPF when absent.
+ */
+syscallEngine?: SyscallsEngine | null, };
 
 export type RecordPreset = "production" | "development" | "maximum";
 

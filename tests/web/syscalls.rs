@@ -350,8 +350,9 @@ async fn a_familys_processes_and_threads_are_served_in_order() {
     );
 }
 
-/// A trace recorded from the page is published as it grows, says what its
-/// program is blocked in, and ends when stopped.
+/// A recording made from the page holds its program's calls as it grows,
+/// says what the program is blocked in, and ends when stopped. ptrace
+/// cannot count, so the production preset's level is refused with it.
 #[tokio::test]
 async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     let web = Web::start("syscalls-live", &[]);
@@ -360,14 +361,22 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     let refused = tab
         .request(
             "recordProfile",
-            json!({"program": program, "syscalls": {"filter": "trace=nosuchcall"}}),
+            json!({"program": program, "preset": "production", "syscallEngine": "ptrace"}),
         )
         .await;
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        format!("{refused:?}").contains("ptrace cannot count calls"),
+        "{refused:?}"
+    );
     let started = tab
         .ok(
             "recordProfile",
-            json!({"program": program, "arguments": ["pause"], "syscalls": {"stacks": true}}),
+            json!({
+                "program": program,
+                "arguments": ["pause"],
+                "syscalls": "calls",
+                "syscallEngine": "ptrace",
+            }),
         )
         .await;
     let id = started["profile"].as_str().expect("an id").to_owned();

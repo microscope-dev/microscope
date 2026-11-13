@@ -118,7 +118,8 @@ pub fn record_watched(
     let (source, breakpoint) =
         perf_source(&program, &options.source, None, options.function_period)?;
 
-    let mut processor = processor(options, breakpoint, watch.every == Duration::MAX);
+    let watched = watch.every != Duration::MAX;
+    let mut processor = processor(options, breakpoint, !watched);
     ready(&mut command, options, &mut processor);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
@@ -157,7 +158,7 @@ pub fn record_watched(
             }
         }
 
-        syscalls = SyscallTrace::beside(Traced::Held(pid), options, stack_bytes)?;
+        syscalls = SyscallTrace::beside(Traced::Held(pid), options, stack_bytes, watched)?;
 
         Ok(())
     });
@@ -256,7 +257,8 @@ pub fn record_attached(
     let bias = perf::program_bias(pid);
     let (source, breakpoint) =
         perf_source(&program, &options.source, bias, options.function_period)?;
-    let mut processor = processor(options, breakpoint, watch.every == Duration::MAX);
+    let watched = watch.every != Duration::MAX;
+    let mut processor = processor(options, breakpoint, !watched);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
         source,
@@ -284,7 +286,7 @@ pub fn record_attached(
         None
     };
 
-    let syscalls = SyscallTrace::beside(Traced::Running(pid), options, stack_bytes)
+    let syscalls = SyscallTrace::beside(Traced::Running(pid), options, stack_bytes, watched)
         .map_err(RecordError::Syscalls)?;
     processor.attached(Pid::new(pid), monotonic());
     let name = std::fs::read_link(&program).unwrap_or(program);
@@ -767,10 +769,20 @@ fn drive(
         Cuts::Whole | Cuts::Window(_) => None,
     };
     let mut pending_save = None;
+    // A watcher sees the calls so far beside the samples. Copying them
+    // costs the recording CPU, so an unwatched one publishes samples alone.
+    let watched = watch.every != Duration::MAX;
+    let live = |processor: &mut record::Processor| {
+        let capture = processor.snapshot();
+        Profile {
+            capture: match syscalls {
+                Some(trace) if watched => trace.live(&capture),
+                _ => capture,
+            },
+        }
+    };
     if started {
-        (watch.publish)(Profile {
-            capture: processor.snapshot(),
-        });
+        (watch.publish)(live(processor));
     }
 
     let mut published = std::time::Instant::now();
@@ -910,9 +922,7 @@ fn drive(
             if observing.is_none() {
                 processor.observe(monotonic(), events.counts());
             }
-            (watch.publish)(Profile {
-                capture: processor.snapshot(),
-            });
+            (watch.publish)(live(processor));
             published = std::time::Instant::now();
             wait = (wait * 2).min(watch.every);
         }

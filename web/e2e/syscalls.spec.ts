@@ -1,16 +1,16 @@
-// A system call trace explored in the page: what the calls cost, where the
-// failed one came from, its line in the log and what it was passed, and the
-// files the program used, each held in the address bar.
+// A recording's system calls explored in the page: what the calls cost,
+// where the failed one came from, its line in the log and what it was
+// passed, and the files the program used, each held in the address bar.
 
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 
 import { expect, fixture, join, menu, root, test } from "./server";
 
-// The test serves a trace it records, not a program.
+// The test serves a recording it makes, not a program.
 test.use({ program: [] });
 
-test("a trace is explored from its costs to one call's arguments and stack", async ({
+test("a recording's calls are explored from their costs to one call's arguments and stack", async ({
   page,
   microscope,
 }, info) => {
@@ -19,19 +19,18 @@ test("a trace is explored from its costs to one call's arguments and stack", asy
   // and exits with 3.
   const traced = spawnSync(
     path.join(root, "target", "debug", "microscope"),
-    ["syscalls", "--engine", "ptrace", "-f", "-k", "-o", file, "--", fixture("syscalls"), "files"],
+    ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "files"],
     { cwd: info.outputDir, stdio: "ignore" },
   );
   expect(traced.status).toBe(3);
   const served = await microscope.start([file]);
   await join(page, served.link);
 
-  // A trace alone opens in its own view, without sampling's controls.
+  await page.getByRole("tab", { name: /^Syscalls/u }).click();
   const view = page.getByTestId("syscalls");
   await expect(page.getByTestId("syscall-counts")).toContainText("ptrace");
   await expect(page.getByTestId("accounting")).toContainText(/Calls traced[\d,]+ by ptrace/u);
   await expect(page.getByTestId("accounting")).not.toContainText("Calls lost");
-  await expect(page.getByRole("button", { name: /^Options/u })).toHaveCount(0);
   await expect(view.getByRole("img", { name: "Each thread's time in system calls" })).toBeVisible();
 
   // Narrowed to failed opens, the one call left is placed at its line.
@@ -137,32 +136,39 @@ test("a family's processes are listed parents first, each with how it ended", as
   const file = info.outputPath("family.usprof");
   spawnSync(
     path.join(root, "target", "debug", "microscope"),
-    ["syscalls", "--engine", "ptrace", "-f", "-o", file, "--", fixture("syscalls"), "family"],
+    ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "family"],
     { cwd: info.outputDir, stdio: "ignore" },
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
+  await page.getByRole("tab", { name: /^Syscalls/u }).click();
   await page.getByTestId("syscalls").getByRole("button", { name: "Processes" }).click();
   const rows = page.getByTestId("syscall-processes").locator("tbody tr");
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(1)).toContainText("exited with 4");
 });
 
-test("a trace recorded from the page shows what its program is blocked in, until stopped", async ({
+test("a recording made from the page shows what its program is blocked in, until stopped", async ({
   page,
   microscope,
 }) => {
   await join(page, microscope.link);
   await menu(page, "File", "Record a profile…");
   const record = page.getByRole("tabpanel", { name: "Record" });
-  await record.getByRole("button", { name: "System calls" }).click();
   await record.getByLabel("Program").fill(fixture("syscalls"));
   await record.getByLabel("Arguments").fill("pause");
+  // The production preset counts, which ptrace cannot.
+  await record.getByLabel("Preset").selectOption("production");
+  await record.getByLabel("Engine").selectOption("ptrace");
+  await expect(record.getByLabel("System calls")).toHaveValue("counts");
+  await expect(record.getByRole("button", { name: "Record" })).toBeDisabled();
+  await record.getByLabel("System calls").selectOption("calls");
   await record.getByRole("button", { name: "Record" }).click();
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/u);
   await expect(page.getByTestId("recording")).toContainText("Recording syscalls");
 
-  // The pause shows in flight once the trace publishes it.
+  // The pause shows in flight once the recording publishes it.
+  await page.getByRole("tab", { name: /^Syscalls/u }).click();
   const view = page.getByTestId("syscalls");
   await view.getByRole("button", { name: "Processes", exact: true }).click();
   const blocked = page.getByTestId("syscall-in-flight");

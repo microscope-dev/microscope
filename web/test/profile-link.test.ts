@@ -33,7 +33,6 @@ import {
   open,
   type Pane,
   type PaneId,
-  splits,
 } from "../src/workbench/layout";
 
 const summary = (change: Partial<ProfileSummary> = {}): ProfileSummary =>
@@ -52,11 +51,6 @@ function only(layout: Layout, view: ProfileView | null): PaneId {
 
 const kindsIn = (layout: Layout, pane: PaneId) =>
   groupOf(layout, pane)?.tabs.map((tab) => viewOf(layout.panes[tab] as Pane));
-
-const weightOf = (layout: Layout) =>
-  splits(layout.root)
-    .find((each) => each.axis === "column")
-    ?.children.map((child) => child.weight);
 
 const focusedPane = (layout: Layout) =>
   groups(layout).find((group) => group.id === layout.focused)?.active;
@@ -87,12 +81,6 @@ describe("a profile's panes", () => {
     const again = arrange(closed, link, summary());
     expect(again).toBe(closed);
     expect(viewOpen(again, "p1", "tree")).toBe(false);
-  });
-
-  it("give a trace's calls the room its overview, with no timeline, does not need", () => {
-    expect(weightOf(arranged().layout)).toEqual([0.5, 0.5]);
-    const trace = arranged({}, summary({ samples: 0, syscalls: 5, zoneSites: [] })).layout;
-    expect(weightOf(trace)).toEqual([0.2, 0.8]);
   });
 
   it("open as a recording grows into them, each once, leaving what is shown alone", () => {
@@ -127,7 +115,7 @@ describe("a profile's panes", () => {
     expect(arrange(closed, link, summary(), false)).toBe(closed);
   });
 
-  it("open a live trace's calls, not stacks it has none of", () => {
+  it("open a live recording's calls as they come, and its stacks once it has them", () => {
     const opened = openProfile(emptyLayout(), "p1", "live", {}, G0);
     const link = linkOf(opened.layout.panes[opened.pane] as Pane) as LinkId;
     const empty = summary({ samples: 0, syscalls: 0, zoneSites: [] });
@@ -139,14 +127,22 @@ describe("a profile's panes", () => {
       true,
     );
     expect(Object.values(traced.panes).map((pane) => viewOf(pane))).toEqual([null, "syscalls"]);
-    // Done, and still without samples, it calls for no stacks.
-    const done = summary({ samples: 0, syscalls: 9, zoneSites: [] });
-    expect(arrange(traced, link, done, false)).toBe(traced);
+    const sampled = arrange(
+      traced,
+      link,
+      summary({ samples: 4, syscalls: 9, zoneSites: [] }),
+      true,
+    );
+    expect(Object.values(sampled.panes).map((pane) => viewOf(pane))).toEqual([
+      null,
+      "syscalls",
+      "flame",
+      "tree",
+      "functions",
+    ]);
   });
 
   it("open only what a profile has", () => {
-    const traced = arranged({}, summary({ samples: 0, syscalls: 5, zoneSites: [] })).layout;
-    expect(Object.values(traced.panes).map((pane) => viewOf(pane))).toEqual([null, "syscalls"]);
     const unzoned = arranged({}, summary({ zoneSites: [] })).layout;
     expect(viewOpen(unzoned, "p1", "zones")).toBe(false);
   });

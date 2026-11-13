@@ -24,7 +24,7 @@ import {
 import { assert } from "../assert";
 import { KIND } from "../documents";
 import { targetName } from "../model";
-import type { PathEntry, Process, RecordPreset } from "../protocol";
+import type { PathEntry, Process, RecordPreset, SyscallsEngine, SyscallsLevel } from "../protocol";
 import { RequestError } from "../protocol";
 import { isRecentLaunches, type RecentLaunch, read, rememberLaunch } from "../storage";
 import { useConnection, useModel } from "../store";
@@ -321,6 +321,37 @@ const PRESETS: { preset: RecordPreset; label: string }[] = [
   { preset: "maximum", label: "Maximum: 9999 Hz" },
 ];
 
+const LEVELS: { level: SyscallsLevel; label: string; note: string }[] = [
+  { level: "off", label: "Off", note: "No system calls." },
+  {
+    level: "counts",
+    label: "Counts",
+    note: "Every call counted in the kernel; the failed and slow ones kept whole.",
+  },
+  { level: "calls", label: "Calls", note: "Every call with its arguments, result, and stack." },
+  { level: "full", label: "Full", note: "Calls with whole strings and the bytes behind pointers." },
+];
+
+const ENGINES: { engine: SyscallsEngine; label: string; note: string }[] = [
+  {
+    engine: "bpf",
+    label: "BPF",
+    note: "Needs CAP_BPF and CAP_PERFMON. Without them, the preset's level records no calls and the profile says why.",
+  },
+  {
+    engine: "ptrace",
+    label: "ptrace",
+    note: "Needs no privilege, but stops the program at each call, so each call's time includes the stop.",
+  },
+];
+
+/** The level of system calls each preset records at, as `record` does. */
+const PRESET_LEVELS: Readonly<Record<RecordPreset, SyscallsLevel>> = {
+  production: "counts",
+  development: "calls",
+  maximum: "full",
+};
+
 /** Records a program, opening its profile as it grows. */
 function RecordForm({ onRecording }: { onRecording(): void }) {
   const connection = useConnection();
@@ -334,17 +365,21 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
   const [preset, setPreset] = useState<RecordPreset>("development");
   const [function_, setFunction] = useState("");
   const [window_, setWindow] = useState("");
-  // System calls are traced with ptrace instead of sampled.
-  const [traced, setTraced] = useState(false);
-  const [calls, setCalls] = useState("");
-  const [stacks, setStacks] = useState(false);
+  // The preset's level until one is chosen.
+  const [level, setLevel] = useState<SyscallsLevel | null>(null);
+  const [engine, setEngine] = useState<SyscallsEngine>("bpf");
+  const shownLevel = level ?? PRESET_LEVELS[preset];
+  // ptrace sees a call only by stopping it, so it cannot count without
+  // stopping every one.
+  const counting = engine === "ptrace" && shownLevel === "counts";
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const words = splitWords(form.arguments);
   const environment = parseEnvironment(form.environment);
   const seconds = window_.trim() === "" ? null : Number(window_);
   const validWindow = seconds === null || (Number.isFinite(seconds) && seconds > 0);
-  const valid = form.program.trim() !== "" && words.ok && environment.ok && validWindow;
+  const valid =
+    form.program.trim() !== "" && words.ok && environment.ok && validWindow && !counting;
   const fields = useLaunchFields(setForm);
 
   const record = useCallback(
@@ -362,9 +397,10 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
           cwd: form.cwd.trim() || null,
           environment: environment.pairs,
           preset,
-          function: traced ? null : function_.trim() || null,
-          window: traced ? null : seconds,
-          syscalls: traced ? { filter: calls.trim(), stacks } : null,
+          function: function_.trim() || null,
+          window: seconds,
+          syscalls: level,
+          syscallEngine: engine,
         });
         onRecording();
         void navigate({ to: "/profile/$profile", params: { profile: started.profile } });
@@ -381,24 +417,21 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
       connection,
       form,
       preset,
-      traced,
       function_,
       seconds,
-      calls,
-      stacks,
+      level,
+      engine,
       onRecording,
       navigate,
     ],
   );
   const submit = useCallback((event: FormEvent) => void record(event), [record]);
-  const sample = useCallback(() => setTraced(false), []);
-  const trace = useCallback(() => setTraced(true), []);
-  const typeCalls = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setCalls(event.target.value),
+  const chooseEngine = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setEngine(event.target.value as SyscallsEngine),
     [],
   );
-  const toggleStacks = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => setStacks(event.target.checked),
+  const chooseLevel = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => setLevel(event.target.value as SyscallsLevel),
     [],
   );
   const choosePreset = useCallback(
@@ -421,22 +454,7 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
           {error}
         </div>
       )}
-      <div className="segmented">
-        <button type="button" aria-pressed={!traced} onClick={sample}>
-          CPU samples
-        </button>
-        <button type="button" aria-pressed={traced} onClick={trace}>
-          System calls
-        </button>
-      </div>
-      <Field
-        label="Program"
-        note={
-          traced
-            ? "Traced with ptrace, which stops it a few microseconds at each call it traces."
-            : "Sampled from outside, so it runs at full speed."
-        }
-      >
+      <Field label="Program">
         {(id) => (
           <PathInput
             id={id}
@@ -488,69 +506,81 @@ function RecordForm({ onRecording }: { onRecording(): void }) {
           )}
         </Field>
       </div>
-      {traced ? (
-        <div className="two">
-          <Field label="Calls" note="Same syntax as strace -e. Leave empty to trace every call.">
-            {(id) => (
-              <input
-                id={id}
-                className="input mono"
-                value={calls}
-                onChange={typeCalls}
-                placeholder="trace=%file,%net"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <label className="check">
-            <input type="checkbox" checked={stacks} onChange={toggleStacks} />
-            Each call&apos;s stack, as -k unwinds it
-          </label>
-        </div>
-      ) : (
-        <>
-          <div className="two">
-            <Field label="Preset">
-              {(id) => (
-                <select id={id} className="input" value={preset} onChange={choosePreset}>
-                  {PRESETS.map((each) => (
-                    <option key={each.preset} value={each.preset}>
-                      {each.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-            <Field label="Calls of" note="Sample every call of this function instead of CPU time.">
-              {(id) => (
-                <input
-                  id={id}
-                  className="input"
-                  value={function_}
-                  onChange={typeFunction}
-                  placeholder="app::handle"
-                  spellCheck={false}
-                />
-              )}
-            </Field>
-          </div>
-          <div className="two">
-            <Field label="Keep the last" note="Seconds to keep. Leave empty to keep everything.">
-              {(id) => (
-                <input
-                  id={id}
-                  className="input"
-                  value={window_}
-                  onChange={typeWindow}
-                  placeholder="all"
-                  inputMode="decimal"
-                  aria-invalid={!validWindow}
-                />
-              )}
-            </Field>
-          </div>
-        </>
-      )}
+      <div className="two">
+        <Field label="Preset">
+          {(id) => (
+            <select id={id} className="input" value={preset} onChange={choosePreset}>
+              {PRESETS.map((each) => (
+                <option key={each.preset} value={each.preset}>
+                  {each.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+        <Field label="Keep the last" note="Seconds to keep. Leave empty to keep everything.">
+          {(id) => (
+            <input
+              id={id}
+              className="input"
+              value={window_}
+              onChange={typeWindow}
+              placeholder="all"
+              inputMode="decimal"
+              aria-invalid={!validWindow}
+            />
+          )}
+        </Field>
+      </div>
+      <div className="two">
+        <Field
+          label="System calls"
+          note={
+            counting
+              ? "ptrace cannot count calls without stopping each one: record calls, or use BPF."
+              : LEVELS.find((each) => each.level === shownLevel)?.note
+          }
+        >
+          {(id) => (
+            <select
+              id={id}
+              className="input"
+              value={shownLevel}
+              aria-invalid={counting}
+              onChange={chooseLevel}
+            >
+              {LEVELS.map((each) => (
+                <option key={each.level} value={each.level}>
+                  {each.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+        <Field label="Engine" note={ENGINES.find((each) => each.engine === engine)?.note}>
+          {(id) => (
+            <select id={id} className="input" value={engine} onChange={chooseEngine}>
+              {ENGINES.map((each) => (
+                <option key={each.engine} value={each.engine}>
+                  {each.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+      </div>
+      <Field label="Function" note="Sample every call of this function instead of CPU time.">
+        {(id) => (
+          <input
+            id={id}
+            className="input"
+            value={function_}
+            onChange={typeFunction}
+            placeholder="app::handle"
+            spellCheck={false}
+          />
+        )}
+      </Field>
       <div className="actions">
         <button type="submit" className="button primary" disabled={!valid || working}>
           Record

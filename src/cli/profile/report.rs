@@ -79,10 +79,6 @@ pub fn write(
         options.min_percent.is_finite() && (0.0..=100.0).contains(&options.min_percent),
         "--min-percent must be between 0 and 100"
     );
-    ensure!(
-        !current.is_trace() && base.is_none_or(|profile| !profile.is_trace()),
-        "a profile report needs samples, not a syscall trace alone"
-    );
     let unit = unit(current, options.source);
     if let Some(base) = base {
         ensure!(

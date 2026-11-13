@@ -96,13 +96,6 @@ impl Profile {
             || !capture.syscall_stats.is_empty()
     }
 
-    /// Whether the capture is a system call trace alone, which no recording
-    /// sampled.
-    #[must_use]
-    pub fn is_trace(&self) -> bool {
-        self.has_syscalls() && self.setting("weight").is_none()
-    }
-
     /// Events of the system call trace the engine lost.
     #[must_use]
     pub fn syscalls_lost(&self) -> Losses {

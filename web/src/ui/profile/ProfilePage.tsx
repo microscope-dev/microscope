@@ -52,16 +52,7 @@ import { CommandBlock, FileDetails } from "./FileDetails";
 import { FlameView } from "./FlameView";
 import { FunctionsView } from "./FunctionsView";
 import { Lanes } from "./Lanes";
-import {
-  arrange,
-  drawsTimeline,
-  leadingPane,
-  lookOf,
-  paneParams,
-  readLink,
-  storeLook,
-  viewOf,
-} from "./link";
+import { arrange, leadingPane, lookOf, paneParams, readLink, storeLook, viewOf } from "./link";
 import { Chip, ClearChip, LaneChip, LookButton, ShareBar } from "./parts";
 import { SyscallsView } from "./SyscallsView";
 import { TreeView } from "./TreeView";
@@ -332,7 +323,7 @@ const Overview = memo(function Overview() {
       <Accounting summary={summary} />
       {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
       <ProfileHead />
-      {drawsTimeline(summary) ? <Lanes /> : null}
+      <Lanes />
     </>
   );
 });

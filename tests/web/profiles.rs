@@ -660,11 +660,23 @@ async fn a_recording_grows_live_stops_when_asked_and_downloads_whole() {
     }
 
     let summary = tab.ok("profile", json!({"profile": id})).await;
-    let pid: u64 = summary["settings"]
-        .as_array()
-        .and_then(|settings| settings.iter().find(|setting| setting["name"] == "pid"))
-        .and_then(|setting| setting["value"].as_str()?.parse().ok())
+    let setting = |name: &str| {
+        summary["settings"]
+            .as_array()
+            .and_then(|settings| settings.iter().find(|setting| setting["name"] == name))
+            .and_then(|setting| setting["value"].as_str())
+            .map(str::to_owned)
+    };
+    let pid: u64 = setting("pid")
+        .and_then(|pid| pid.parse().ok())
         .expect("the program's pid");
+
+    // The preset's calls, or why there are none.
+    match setting("syscalls").as_deref() {
+        Some("calls") => assert_eq!(setting("syscall engine").as_deref(), Some("bpf")),
+        Some("off") => assert!(setting("syscalls not recorded").is_some(), "{summary}"),
+        level => panic!("{level:?}: {summary}"),
+    }
 
     // A viewer may look but not stop it.
     let link = tab.ok("share", json!({"role": "view", "to": "/"})).await;

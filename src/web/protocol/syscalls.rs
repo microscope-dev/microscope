@@ -472,21 +472,6 @@ pub struct SyscallProcess {
     pub end: Option<String>,
 }
 
-/// A system call trace a recording makes instead of samples, with the
-/// ptrace engine, which needs no privilege.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct RecordSyscalls {
-    /// The calls to trace, as `-e` takes them; every call when empty.
-    #[serde(default)]
-    pub filter: String,
-
-    /// Unwinds each call's stack, as `-k` does.
-    #[serde(default)]
-    pub stacks: bool,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]

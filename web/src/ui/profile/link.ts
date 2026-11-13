@@ -22,17 +22,14 @@ import {
   type KindId,
   type Layout,
   type LinkId,
-  type Node,
   linkOf,
   move,
   open,
   openLinked,
   type Pane,
   type PaneId,
-  resize,
   setLink,
   setParams,
-  splits,
 } from "../../workbench/layout";
 
 /** Each view's pane kind; the overview's is KIND.profile. */
@@ -354,46 +351,15 @@ export function openProfile(
 }
 
 /** The views a profile's summary calls for, in their tabs' order: its
- * stacks when it has samples, or nothing else and is done recording, its
- * calls when traced, and its zones when it has any. */
+ * stacks once it has samples or is done recording, its calls when it has
+ * any, and its zones when it has any. */
 function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
-  const sampled = summary.samples > 0 || (summary.syscalls === 0 && !live);
+  const sampled = summary.samples > 0 || !live;
   return [
     ...(sampled ? (["flame", "tree", "functions"] as const) : []),
     ...(summary.syscalls > 0 ? (["syscalls"] as const) : []),
     ...(summary.zoneSites.length > 0 ? (["zones"] as const) : []),
   ];
-}
-
-/** Whether a profile's overview draws its timeline: not for a trace alone,
- * whose Syscalls pane draws its lanes. */
-export function drawsTimeline(summary: ProfileSummary): boolean {
-  const traceOnly = summary.samples === 0 && summary.syscalls > 0 && summary.zoneSites.length === 0;
-  return !traceOnly;
-}
-
-/** An overview with no timeline is short, so its views below it get the
- * room, when the two share a split with nothing else's. */
-function shrinkOverview(layout: Layout, link: LinkId): Layout {
-  const front = paneOfView(layout, link, null);
-  const group = front ? groupOf(layout, front) : null;
-  const ours = (node: Node) =>
-    node.type === "group" && node.tabs.every((tab) => linkOf(layout.panes[tab] as Pane) === link);
-  const parent = splits(layout.root).find(
-    (each) =>
-      each.axis === "column" &&
-      each.children.length === 2 &&
-      each.children.some((child) => child.node.id === group?.id) &&
-      each.children.every((child) => ours(child.node)),
-  );
-  if (!group || !parent) {
-    return layout;
-  }
-  return resize(
-    layout,
-    parent.id,
-    parent.children.map((child) => (child.node.id === group.id ? 0.2 : 0.8)),
-  );
 }
 
 /** Opens the panes a profile's summary calls for that it has not called
@@ -437,9 +403,6 @@ export function arrange(
   for (const [group, pane] of firsts) {
     const kept = shownBefore.get(group);
     next = activate(next, !first && kept && next.panes[kept] ? kept : pane);
-  }
-  if (firsts.size > 0 && !drawsTimeline(summary)) {
-    next = shrinkOverview(next, link);
   }
 
   // What the address asked for is shown when views are first offered, or

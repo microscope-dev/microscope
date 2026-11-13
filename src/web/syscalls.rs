@@ -12,9 +12,7 @@ use microscope::syscalls::filter::{self, Filter};
 use microscope::syscalls::procs::ProcessTree;
 use microscope::syscalls::specs::{self, Class};
 use microscope::syscalls::stats::{self, Folded, SyscallStats, bytes_moved};
-use microscope::syscalls::{
-    Errno, EventFlags, InFlight, Outcome, Pid, ProcessEnd, SyscallEvent, Tid, TraceEvent,
-};
+use microscope::syscalls::{Errno, Outcome, Pid, ProcessEnd, SyscallEvent, Tid, TraceEvent};
 use serde_json::{Value, json};
 
 use super::protocol::{
@@ -169,36 +167,53 @@ pub fn end_text(end: ProcessEnd) -> String {
     }
 }
 
-/// The calls `blocked` lists, as a recording last saw them at `at`.
-pub fn in_flight(blocked: &[InFlight], at: u64, live: bool) -> SyscallInFlight {
-    let calls = blocked
-        .iter()
-        .map(|call| {
-            let event = SyscallEvent {
-                thread: call.thread,
-                process: call.process,
-                call: call.call,
-                args: call.args,
-                captured: Vec::new(),
-                outcome: Outcome::Unfinished,
-                entered: Some(call.entered),
-                exited: None,
-                stack: None,
-                flags: EventFlags::default(),
-            };
+/// How a recorded program ended, in the words of [`end_text`].
+pub fn exit_text(status: std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt as _;
 
-            SyscallBlocked {
-                tid: call.thread.get(),
-                pid: call.process.get(),
-                tokens: tokens(present::entry(
-                    &event,
-                    Context {
-                        fds: None,
-                        before: true,
-                    },
-                )),
-                blocked_ns: at.saturating_sub(call.entered),
-            }
+    match (status.code(), status.signal()) {
+        (Some(code), _) => end_text(ProcessEnd::Exited(code)),
+        (None, Some(signal)) => end_text(ProcessEnd::Killed {
+            signal,
+            core: status.core_dumped(),
+        }),
+        (None, None) => status.to_string(),
+    }
+}
+
+/// The calls a live recording's threads were blocked in when it was last
+/// published: those it holds unfinished. An ended one has none.
+pub fn in_flight(profile: &Profile, live: bool) -> SyscallInFlight {
+    if !live {
+        return SyscallInFlight {
+            live,
+            calls: Vec::new(),
+        };
+    }
+
+    let at = profile
+        .setting(microscope::profiler::BLOCKED_AT)
+        .and_then(|at| at.parse().ok())
+        .unwrap_or_else(|| profile.span().1.cast_unsigned());
+    let calls = profile
+        .syscalls()
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            TraceEvent::Call(call) if call.outcome == Outcome::Unfinished => Some(call),
+            _ => None,
+        })
+        .map(|call| SyscallBlocked {
+            tid: call.thread.get(),
+            pid: call.process.get(),
+            tokens: tokens(present::entry(
+                call,
+                Context {
+                    fds: None,
+                    before: true,
+                },
+            )),
+            blocked_ns: call.entered.map_or(0, |entered| at.saturating_sub(entered)),
         })
         .collect();
 

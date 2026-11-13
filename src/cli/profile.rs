@@ -1103,11 +1103,6 @@ fn ordinary_report(
 ) -> Result<()> {
     let view = args.look.view();
 
-    // A trace alone, which no recording sampled.
-    if profile.is_trace() {
-        return calls::summary(profile, args.limit, out);
-    }
-
     summary(profile, args.limit, out)?;
 
     if profile.has_syscalls() {

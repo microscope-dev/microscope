@@ -14,18 +14,17 @@ use std::time::Duration;
 use microscope::profiler::{
     CodeLine, Cuts, DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, LineCost, Look,
     MarkerKind, NO_KEY, NO_TASK, Preset, Profile, Query, RecordOptions, SampleSource, Side, Source,
-    Transform, Watch, ZoneScope, diff_costs, diff_trees, record_watched,
+    SyscallEngine, SyscallLevel, Transform, Watch, ZoneScope, diff_costs, diff_trees,
+    record_watched,
 };
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
-
-use microscope::syscalls::InFlight;
 
 use super::protocol::{
     self, ErrorKind, ProfileBaseWeight, ProfileCost, ProfileFunctions, ProfileGranularity,
     ProfileInfo, ProfileKey, ProfileKeyKind, ProfileLane, ProfileList, ProfileLook, ProfileQuery,
     ProfileSetting, ProfileSource, ProfileSummary, ProfileTimeline, ProfileTree, RecordPreset,
-    RecordProfile, RecordStarted, Request, Role, TransformOp,
+    RecordProfile, RecordStarted, Request, Role, SyscallsEngine, SyscallsLevel, TransformOp,
 };
 
 use super::session::Failure;
@@ -61,10 +60,6 @@ struct Entry {
 
     /// The file it was read from, if any.
     file: Option<protocol::ProfileFile>,
-
-    /// The calls a live trace's threads were blocked in, and when it saw
-    /// them, on its clock.
-    in_flight: (Vec<InFlight>, u64),
 }
 
 struct Recorder {
@@ -153,7 +148,6 @@ impl Profiles {
                 ended: None,
             },
             read.profile,
-            (Vec::new(), 0),
             Some(protocol::ProfileFile {
                 bytes,
                 chunks: read.chunks as u64,
@@ -172,7 +166,6 @@ impl Profiles {
         &self,
         info: ProfileInfo,
         profile: Profile,
-        in_flight: (Vec<InFlight>, u64),
         file: Option<protocol::ProfileFile>,
     ) {
         let mut entries = self.entries.write().unwrap_or_else(PoisonError::into_inner);
@@ -185,7 +178,6 @@ impl Profiles {
                 syscalls: std::sync::OnceLock::new(),
                 inspection: std::sync::OnceLock::new(),
                 file,
-                in_flight,
             }),
         );
         let profiles = entries.values().map(|entry| entry.info.clone()).collect();
@@ -285,20 +277,6 @@ impl Profiles {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        let traced = spec
-            .syscalls
-            .as_ref()
-            .map(|syscalls| {
-                if spec.function.is_some() || spec.window.is_some() {
-                    return Err(Failure::new(
-                        ErrorKind::Invalid,
-                        "a system call trace samples no function and keeps no window",
-                    ));
-                }
-
-                super::live::options(syscalls)
-            })
-            .transpose()?;
         let options = sampling(&spec)?;
         let count = self.recorded.fetch_add(1, Ordering::Relaxed);
         let id = format!(
@@ -319,25 +297,9 @@ impl Profiles {
         let stop = Arc::new(AtomicBool::new(false));
         let (started, starting) = oneshot::channel::<Result<(), String>>();
         let profiles = Arc::clone(self);
-        let arguments: Vec<String> = std::iter::once(&spec.program)
-            .chain(&spec.arguments)
-            .cloned()
-            .collect();
         let run = {
             let (id, stop) = (id.clone(), Arc::clone(&stop));
-            move || match traced {
-                Some(traced) => {
-                    let publisher = super::live::Publisher {
-                        profiles: &profiles,
-                        id: &id,
-                        name: &name,
-                        started: Some(started),
-                    };
-
-                    super::live::record(publisher, command, &arguments, &traced, &stop);
-                }
-                None => profiles.run_recording(&id, &name, command, &options, &stop, started),
-            }
+            move || profiles.run_recording(&id, &name, command, &options, &stop, started)
         };
 
         let unlisted = self
@@ -387,7 +349,7 @@ impl Profiles {
             &mut Watch {
                 every: LIVE_EVERY,
                 publish: &mut |profile| {
-                    self.publish(info(revision, None), profile, (Vec::new(), 0), None);
+                    self.publish(info(revision, None), profile, None);
                     revision += 1;
                     if let Some(started) = started.take() {
                         let _ = started.send(Ok(()));
@@ -402,9 +364,8 @@ impl Profiles {
         match recorded {
             Ok(recording) => {
                 self.publish(
-                    info(revision, Some(recording.status.to_string())),
+                    info(revision, Some(super::syscalls::exit_text(recording.status))),
                     recording.profile,
-                    (Vec::new(), 0),
                     None,
                 );
             }
@@ -416,7 +377,6 @@ impl Profiles {
                     self.publish(
                         info(revision, Some(format!("failed: {error}"))),
                         profile,
-                        (Vec::new(), 0),
                         None,
                     );
                 }
@@ -700,10 +660,8 @@ impl Profiles {
             }
             Request::SyscallInFlight(query) => {
                 let entry = self.entry(&query.profile)?;
-                let (calls, at) = &entry.in_flight;
                 Ok(json(&super::syscalls::in_flight(
-                    calls,
-                    *at,
+                    &entry.profile,
                     entry.info.recording,
                 )))
             }
@@ -742,6 +700,25 @@ fn sampling(spec: &RecordProfile) -> Result<RecordOptions, Failure> {
     {
         options.source = SampleSource::Function { symbol };
     }
+
+    if let Some(level) = spec.syscalls {
+        options.syscalls.level = match level {
+            SyscallsLevel::Off => SyscallLevel::Off,
+            SyscallsLevel::Counts => SyscallLevel::Counts,
+            SyscallsLevel::Calls => SyscallLevel::Calls,
+            SyscallsLevel::Full => SyscallLevel::Full,
+        };
+        options.syscalls.asked = true;
+    }
+
+    if spec.syscall_engine == Some(SyscallsEngine::Ptrace) {
+        options.syscalls.engine = SyscallEngine::Ptrace;
+    }
+
+    options
+        .syscalls
+        .check()
+        .map_err(|why| Failure::new(ErrorKind::Invalid, why))?;
 
     if let Some(seconds) = spec.window {
         options.cuts = Cuts::Window(

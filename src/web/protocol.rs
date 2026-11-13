@@ -946,6 +946,7 @@ pub struct ProfileRef {
 /// A program to record.
 #[derive(Debug, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 pub struct RecordProfile {
     pub program: String,
 
@@ -975,10 +976,45 @@ pub struct RecordProfile {
     #[cfg_attr(test, ts(optional = nullable))]
     pub window: Option<f64>,
 
-    /// Traces system calls instead of sampling.
+    /// How much of each system call to record: the preset's level when
+    /// absent.
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    pub syscalls: Option<RecordSyscalls>,
+    pub syscalls: Option<SyscallsLevel>,
+
+    /// What records them: BPF when absent.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub syscall_engine: Option<SyscallsEngine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum SyscallsEngine {
+    /// Programs in the kernel, which need `CAP_BPF` and `CAP_PERFMON`.
+    Bpf,
+
+    /// The debugger's interface, which needs no privilege and stops the
+    /// program at each call.
+    Ptrace,
+}
+
+/// How much of each system call a recording keeps, as `--syscalls` takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum SyscallsLevel {
+    Off,
+
+    /// Every call counted, and the failed and slow ones kept.
+    Counts,
+
+    /// Every call with its arguments and stack.
+    Calls,
+
+    /// As calls, with whole strings and the bytes behind pointers.
+    Full,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -3232,7 +3268,8 @@ mod tests {
         SyscallNetwork::decl,
         SyscallEndpoint::decl,
         SyscallProcesses::decl,
-        RecordSyscalls::decl,
+        SyscallsLevel::decl,
+        SyscallsEngine::decl,
         SyscallInFlightQuery::decl,
         SyscallInFlight::decl,
         SyscallBlocked::decl,

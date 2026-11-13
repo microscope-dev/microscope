@@ -558,3 +558,22 @@ pub struct InFlight {
     /// `CLOCK_MONOTONIC` nanoseconds at entry.
     pub entered: u64,
 }
+
+impl InFlight {
+    /// The call as a trace records one that has not returned.
+    #[must_use]
+    pub fn unfinished(&self) -> SyscallEvent {
+        SyscallEvent {
+            thread: self.thread,
+            process: self.process,
+            call: self.call,
+            args: self.args,
+            captured: Vec::new(),
+            outcome: Outcome::Unfinished,
+            entered: Some(self.entered),
+            exited: None,
+            stack: None,
+            flags: EventFlags::default(),
+        }
+    }
+}

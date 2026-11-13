@@ -41,7 +41,7 @@ pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, 
 pub use collector::ProbeSelection;
 pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};
 pub use symbols::ModuleSymbols;
-pub use syscall_trace::{Printer, SyscallEngine, SyscallLevel, SyscallOptions};
+pub use syscall_trace::{BLOCKED_AT, Printer, SyscallEngine, SyscallLevel, SyscallOptions};
 pub use tasks::THREAD;
 pub use zones::{
     PlotValue, ProbeCounts, ProfileZone, ProgramMarker, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN,

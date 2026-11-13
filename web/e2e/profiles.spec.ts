@@ -257,7 +257,7 @@ test("a program recorded from the page grows live, stops, and saves", async ({
   await expect(main).toBeVisible({ timeout: 10_000 });
 
   await page.getByRole("button", { name: "Stop" }).click();
-  await expect(page.getByTestId("recording")).toContainText("spin ended: signal: 9");
+  await expect(page.getByTestId("recording")).toContainText("spin ended: killed by SIGKILL");
   await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
 
   const saving = page.waitForEvent("download");
