@@ -783,7 +783,7 @@ impl Sampler {
         if let Some(missing) = probe.lacks_privileges() {
             if kernel {
                 return Err(SamplerError::Unavailable(format!(
-                    "--kernel needs CAP_BPF and CAP_PERFMON to capture syscall attribution; this \
+                    "--kernel-stacks needs CAP_BPF and CAP_PERFMON to capture syscall attribution; this \
                      process {missing}. Run through /run/wrappers/bin/microscope-bpf or a unit \
                      with AmbientCapabilities=CAP_BPF CAP_PERFMON"
                 )));

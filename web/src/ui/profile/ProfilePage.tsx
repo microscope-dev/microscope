@@ -721,7 +721,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
   const setting = (name: string) => summary.settings.find((each) => each.name === name)?.value;
   const source = setting("source");
   const rate = source?.match(/^CPU time at (\d+ Hz)$/u)?.[1];
-  const kernel = setting("kernel") === "on";
+  const kernel = setting("kernel stacks") === "on";
   const paused = summary.gaps.reduce((sum, [from, to]) => sum + (to - from), 0);
   const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
   const span = Math.max(summary.duration, 1);

@@ -20,7 +20,7 @@ fn kernel_sampling_without_privileges_explains_how_to_enable_it() {
     let output = Command::new(env!("CARGO_BIN_EXE_microscope"))
         .args([
             "record",
-            "--kernel",
+            "--kernel-stacks",
             "-o",
             "denied.usprof",
             "--",
@@ -54,7 +54,7 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
             .args(["record", "--preset", "dev", "-o"])
             .arg(&path);
         if kernel {
-            command.arg("--kernel");
+            command.arg("--kernel-stacks");
         }
         let output = command
             .arg("--")

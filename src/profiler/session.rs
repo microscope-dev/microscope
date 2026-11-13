@@ -110,7 +110,7 @@ pub fn record_watched(
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
     let options = &resolved(options)?;
-    if options.kernel || options.python == Some(PythonEngine::Bpf) {
+    if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
         crate::backend::bpf::sampler::check_namespace()?;
     }
     let program = PathBuf::from(command.get_program());
@@ -123,7 +123,7 @@ pub fn record_watched(
     let events = perf::EventOptions {
         source,
         stack_bytes,
-        kernel: options.kernel,
+        kernel: options.kernel_stacks,
         ring_pages: options.ring_pages,
         switches: options.off_cpu,
     };
@@ -144,8 +144,8 @@ pub fn record_watched(
     let launched = perf::launch(command, &events, launch, |pid, events| {
         // The program runs on the events before the program can start a
         // thread that would inherit them without it.
-        if options.kernel || options.python == Some(PythonEngine::Bpf) {
-            match Walker::attach(events, &mut processor, options.kernel) {
+        if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
+            match Walker::attach(events, &mut processor, options.kernel_stacks) {
                 Ok(mut attached) => {
                     attached.lay_out_before(&mut processor, pid, &program);
                     walker = Some(attached);
@@ -237,7 +237,7 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
-    if options.kernel || options.python == Some(PythonEngine::Bpf) {
+    if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
         crate::backend::bpf::sampler::check_namespace()?;
     }
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
@@ -249,7 +249,7 @@ pub fn record_attached(
     let events = perf::EventOptions {
         source,
         stack_bytes,
-        kernel: options.kernel,
+        kernel: options.kernel_stacks,
         ring_pages: options.ring_pages,
         switches: options.off_cpu,
     };
@@ -260,10 +260,14 @@ pub fn record_attached(
         processor.fixed_period(period);
     }
 
-    let held = options.kernel || options.python == Some(PythonEngine::Bpf);
+    let held = options.kernel_stacks || options.python == Some(PythonEngine::Bpf);
     let perf::Attached { events, process } = perf::attach(pid, &events, options.max_events, held)?;
     let mut walker = if held {
-        Some(Walker::attach(&events, &mut processor, options.kernel)?)
+        Some(Walker::attach(
+            &events,
+            &mut processor,
+            options.kernel_stacks,
+        )?)
     } else {
         None
     };
@@ -612,7 +616,10 @@ fn settings(
         ("pid", pid.to_string()),
         ("ring pages", ring_pages.to_string()),
         ("requested ring pages", options.ring_pages.to_string()),
-        ("kernel", if options.kernel { "on" } else { "off" }.into()),
+        (
+            "kernel stacks",
+            if options.kernel_stacks { "on" } else { "off" }.into(),
+        ),
         ("source", options.source.to_string()),
         // Which build recorded it, as another may name frames otherwise.
         ("recorder", env!("MICROSCOPE_SOURCES_DIGEST").to_owned()),

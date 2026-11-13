@@ -1003,7 +1003,8 @@ fn continuous(
     );
     let options = ContinuousOptions {
         directory: directory.to_owned(),
-        keep: super::profile::duration(&args.keep).context("--keep")?,
+        keep: super::profile::duration(&args.keep)
+            .map_err(|error| anyhow::anyhow!("--keep: {error}"))?,
         segment,
         // -c keeps no calls to hold.
         window: if args.summary_only {

@@ -243,7 +243,7 @@ pub struct RecordOptions {
     pub function_period: u64,
 
     /// Include kernel CPU time, attributed to the interrupted user stack.
-    pub kernel: bool,
+    pub kernel_stacks: bool,
 
     /// The most frames a stack keeps, at least one.
     pub max_frames: usize,
@@ -308,7 +308,7 @@ impl RecordOptions {
             },
             stack: preset.stack_copy(),
             function_period: 1024,
-            kernel: false,
+            kernel_stacks: false,
             max_frames: 512,
             ring_pages: 128,
             max_events: 16_384,

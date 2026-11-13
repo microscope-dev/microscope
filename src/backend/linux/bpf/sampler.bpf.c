@@ -16,7 +16,7 @@
 
 const volatile u32 KERNEL_SAMPLES = 0;
 
-// Appended outside the interpreter record's size, only with --kernel.
+// Appended outside the interpreter record's size, only with --kernel-stacks.
 struct kernel_sample_record {
 	u64 syscall;
 	u32 abi;

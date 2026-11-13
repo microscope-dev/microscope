@@ -62,10 +62,11 @@ pub struct RecordArgs {
     #[arg(long, value_name = "HZ")]
     rate: Option<u32>,
 
-    /// Include kernel CPU time, naming the syscall on its calling user stack.
-    /// Requires `CAP_PERFMON` and `CAP_BPF` (or `CAP_SYS_ADMIN`).
+    /// Include kernel CPU time in samples, naming the system call on its
+    /// calling user stack. Requires `CAP_PERFMON` and `CAP_BPF` (or
+    /// `CAP_SYS_ADMIN`).
     #[arg(long, conflicts_with = "function")]
-    kernel: bool,
+    kernel_stacks: bool,
 
     /// Bytes of stack each sample copies, over the preset's: 0 to 65528,
     /// rounded up to a multiple of 8.
@@ -97,15 +98,16 @@ pub struct RecordArgs {
     #[arg(long, value_name = "PID", conflicts_with = "command")]
     pid: Option<u32>,
 
-    /// Stop recording after SECONDS; a started program is then killed.
-    #[arg(long, value_name = "SECONDS")]
-    duration: Option<f64>,
+    /// Stop recording after DURATION, such as 30s or 5m; a started program
+    /// is then killed.
+    #[arg(long, value_name = "DURATION", value_parser = duration)]
+    duration: Option<Duration>,
 
-    /// Stop the program every SECONDS to read where its tasks, such as
-    /// goroutines and tokio tasks, wait. Each stop pauses the program, and
-    /// the report says for how long.
-    #[arg(long, value_name = "SECONDS")]
-    task_snapshots: Option<f64>,
+    /// Stop the program every DURATION, such as 100ms, to read where its
+    /// tasks, such as goroutines and tokio tasks, wait. Each stop pauses
+    /// the program, and the report says for how long.
+    #[arg(long, value_name = "DURATION", value_parser = positive_duration)]
+    task_snapshots: Option<Duration>,
 
     /// Read task snapshots from the program's memory as it runs, without
     /// stopping it. A task that changes while read is left out, and the
@@ -116,19 +118,19 @@ pub struct RecordArgs {
     /// Read where a Python or Node program's threads are, by ENGINE: `bpf`
     /// walks each sampled thread's Python or JavaScript frames as the
     /// sample is taken, which needs `CAP_BPF` and `CAP_PERFMON`;
-    /// `snapshot[=SECONDS]` stops the program every SECONDS (0.1 if not
-    /// given) and reads each thread's stack, interpreted and native;
-    /// `live[=SECONDS]` reads each thread's Python frames every SECONDS
-    /// (0.01 if not given) as the program runs, leaving out each that
+    /// `snapshot[=DURATION]` stops the program every DURATION (100ms if
+    /// not given) and reads each thread's stack, interpreted and native;
+    /// `live[=DURATION]` reads each thread's Python frames every DURATION
+    /// (10ms if not given) as the program runs, leaving out each that
     /// changes while read.
     #[arg(long, visible_alias = "node", value_name = "ENGINE")]
     python: Option<String>,
 
-    /// Keep only the last SECONDS of the recording. SIGUSR2 saves the
-    /// window as it is to FILE-1.usprof, FILE-2.usprof, and so on, as the
-    /// recording goes on; FILE gets the last window.
-    #[arg(long, value_name = "SECONDS")]
-    window: Option<f64>,
+    /// Keep only the last DURATION of the recording, such as 30s. SIGUSR2
+    /// saves the window as it is to FILE-1.usprof, FILE-2.usprof, and so
+    /// on, as the recording goes on; FILE gets the last window.
+    #[arg(long, value_name = "DURATION", value_parser = positive_duration)]
+    window: Option<Duration>,
 
     /// Record without end into DIR, as a segment file every --segment,
     /// each a complete profile of its span, deleting segments older than
@@ -137,24 +139,25 @@ pub struct RecordArgs {
     #[arg(long, value_name = "DIR", conflicts_with_all = ["window", "output"])]
     continuous: Option<PathBuf>,
 
-    /// How long each segment of --continuous lasts, in seconds.
+    /// How long each segment of --continuous lasts.
     #[arg(
         long,
-        value_name = "SECONDS",
-        default_value = "60",
+        value_name = "DURATION",
+        default_value = "1m",
+        value_parser = positive_duration,
         requires = "continuous"
     )]
-    segment: f64,
+    segment: Duration,
 
-    /// How long --continuous keeps segments: seconds, or a number of
-    /// minutes, hours, or days, such as 30m, 24h, or 7d.
+    /// How long --continuous keeps segments, such as 30m, 24h, or 7d.
     #[arg(
         long,
         value_name = "DURATION",
         default_value = "24h",
+        value_parser = duration,
         requires = "continuous"
     )]
-    keep: String,
+    keep: Duration,
 
     /// The instrumentation sites to switch on in a program built with
     /// microscope's probes SDK: all, off, or names separated by commas, where a
@@ -165,8 +168,8 @@ pub struct RecordArgs {
     /// How long the program goes on writing its instrumentation once microscope
     /// stops reading it, as when microscope is killed, before it switches it
     /// off.
-    #[arg(long, value_name = "SECONDS", default_value_t = 10.0)]
-    probe_timeout: f64,
+    #[arg(long, value_name = "DURATION", default_value = "10s", value_parser = duration)]
+    probe_timeout: Duration,
 
     /// When frames get their source lines.
     #[arg(long, value_enum, default_value = "now")]
@@ -436,27 +439,17 @@ fn stack_bytes(text: &str) -> Result<u32, String> {
 
 /// The engine `--python ENGINE` names.
 fn python_engine(engine: &str) -> Result<PythonEngine> {
-    let (name, seconds) = engine
+    let (name, given) = engine
         .split_once('=')
-        .map_or((engine, None), |(name, seconds)| (name, Some(seconds)));
+        .map_or((engine, None), |(name, every)| (name, Some(every)));
     let every = |unless: Duration| -> Result<Duration> {
-        let Some(seconds) = seconds else {
-            return Ok(unless);
-        };
-
-        let seconds: f64 = seconds
-            .parse()
-            .with_context(|| format!("--python {engine}: {seconds} is not a number of seconds"))?;
-        let every = Duration::try_from_secs_f64(seconds).context("--python")?;
-        anyhow::ensure!(
-            !every.is_zero(),
-            "--python {engine}: the time between reads must be more than 0"
-        );
-        Ok(every)
+        given.map_or(Ok(unless), |every| {
+            positive_duration(every).map_err(|error| anyhow::anyhow!("--python {engine}: {error}"))
+        })
     };
 
     match name {
-        "bpf" if seconds.is_none() => Ok(PythonEngine::Bpf),
+        "bpf" if given.is_none() => Ok(PythonEngine::Bpf),
         "snapshot" => Ok(PythonEngine::Snapshot {
             every: every(SNAPSHOT_EVERY)?,
         }),
@@ -464,7 +457,7 @@ fn python_engine(engine: &str) -> Result<PythonEngine> {
             every: every(LIVE_EVERY)?,
         }),
         _ => anyhow::bail!(
-            "--python {engine}: the engines are bpf, snapshot[=SECONDS], and live[=SECONDS]"
+            "--python {engine}: the engines are bpf, snapshot[=DURATION], and live[=DURATION]"
         ),
     }
 }
@@ -567,7 +560,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         PresetArg::Dev => Preset::Development,
         PresetArg::Max => Preset::Maximum,
     });
-    options.kernel = args.kernel;
+    options.kernel_stacks = args.kernel_stacks;
 
     if let Some(rate) = args.rate {
         options.source = SampleSource::Clock { rate };
@@ -602,9 +595,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         });
     }
 
-    if let Some(seconds) = args.task_snapshots {
-        let every = Duration::try_from_secs_f64(seconds).context("--task-snapshots")?;
-        anyhow::ensure!(!every.is_zero(), "--task-snapshots is a number of seconds");
+    if let Some(every) = args.task_snapshots {
         options.task_snapshots = Some(every);
         options.live_snapshots = args.live_snapshots;
     }
@@ -613,8 +604,8 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         options.python = Some(python_engine(engine)?);
     }
 
-    if let Some(seconds) = args.window {
-        options.cuts = Cuts::Window(Duration::try_from_secs_f64(seconds).context("--window")?);
+    if let Some(window) = args.window {
+        options.cuts = Cuts::Window(window);
     }
 
     let syscalls = &mut options.syscalls;
@@ -642,9 +633,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     }
 
     if args.continuous.is_some() {
-        let every = Duration::try_from_secs_f64(args.segment).context("--segment")?;
-        anyhow::ensure!(!every.is_zero(), "--segment is a number of seconds");
-        options.cuts = Cuts::Segments(every);
+        options.cuts = Cuts::Segments(args.segment);
     }
 
     options.probes = match args.probes.as_str() {
@@ -653,8 +642,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         names => ProbeSelection::Named(names.split(',').map(str::to_owned).collect()),
     };
 
-    options.probe_timeout =
-        Duration::try_from_secs_f64(args.probe_timeout).context("--probe-timeout")?;
+    options.probe_timeout = args.probe_timeout;
     options.symbols_later = matches!(args.symbols, SymbolsArg::Later);
     Ok(options)
 }
@@ -671,8 +659,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
         Arc::clone(&trigger),
     )?;
 
-    if let Some(seconds) = args.duration {
-        let duration = Duration::try_from_secs_f64(seconds).context("--duration")?;
+    if let Some(duration) = args.duration {
         let stop = Arc::clone(&stop);
         std::thread::spawn(move || {
             std::thread::sleep(duration);
@@ -684,14 +671,13 @@ fn record(args: &RecordArgs) -> Result<i32> {
         Some(directory) => {
             std::fs::create_dir_all(directory)
                 .with_context(|| format!("creating {}", directory.display()))?;
-            let keep = duration(&args.keep).context("--keep")?;
             eprintln!(
-                "microscope: writing a segment every {} s to {}, keeping {}",
-                args.segment,
+                "microscope: writing a segment every {} s to {}, keeping {} s",
+                args.segment.as_secs_f64(),
                 directory.display(),
-                args.keep
+                args.keep.as_secs_f64()
             );
-            Some((directory.as_path(), keep))
+            Some((directory.as_path(), args.keep))
         }
         None => None,
     };
@@ -845,25 +831,42 @@ fn behind(profile: &Profile) -> Option<String> {
     })
 }
 
-/// A duration in seconds, or with a unit: `90`, `30m`, `24h`, or `7d`.
-pub(super) fn duration(text: &str) -> Result<Duration> {
-    let (number, unit) = match text.char_indices().last() {
-        Some((at, unit @ ('s' | 'm' | 'h' | 'd'))) => (&text[..at], unit),
-        _ => (text, 's'),
-    };
-
+/// A duration as the flags take it: a number with a unit of ns, us, ms,
+/// s, m, h, or d, or a bare number of seconds.
+pub(super) fn duration(text: &str) -> Result<Duration, String> {
+    let split = text
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(split);
     let scale = match unit {
-        'm' => 60.0,
-        'h' => 3600.0,
-        'd' => 86400.0,
-        _ => 1.0,
+        "ns" => 1e-9,
+        "us" => 1e-6,
+        "ms" => 1e-3,
+        "" | "s" => 1.0,
+        "m" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => {
+            return Err(format!(
+                "{text} is not a duration, such as 250ms, 30s, 5m, or 24h"
+            ));
+        }
     };
 
     let number: f64 = number
         .parse()
-        .with_context(|| format!("{text} is not a duration, such as 90, 30m, 24h, or 7d"))?;
+        .map_err(|_| format!("{text} is not a duration, such as 250ms, 30s, 5m, or 24h"))?;
+    Duration::try_from_secs_f64(number * scale).map_err(|error| format!("{text}: {error}"))
+}
 
-    Ok(Duration::try_from_secs_f64(number * scale)?)
+/// A duration longer than none.
+fn positive_duration(text: &str) -> Result<Duration, String> {
+    let duration = duration(text)?;
+    if duration.is_zero() {
+        return Err(format!("{text} is no time: give a duration longer than 0"));
+    }
+
+    Ok(duration)
 }
 
 /// `path` with `-number` before its extension.
@@ -1426,11 +1429,15 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
             seconds(counted),
             if paused { " while sampling was on" } else { "" }
         )?;
-        if profile.setting("kernel") != Some("on") && total < counted / 2 && !paused && lost == 0 {
+        if profile.setting("kernel stacks") != Some("on")
+            && total < counted / 2
+            && !paused
+            && lost == 0
+        {
             writeln!(
                 out,
                 "Low coverage may mean CPU time was in the kernel or in short-lived threads; \
-                 record with --kernel, raise --rate, or trace with microscope syscalls -c."
+                 record with --kernel-stacks, or raise --rate."
             )?;
         }
     }
@@ -2388,5 +2395,35 @@ fn start_recording(pid: u32, options: RecordOptions) -> SessionRecording {
         trigger,
         saved,
         thread,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn durations_read_in_each_unit_and_bare_numbers_are_seconds() {
+        for (text, seconds) in [
+            ("250ms", 0.25),
+            ("1.5", 1.5),
+            ("2m", 120.0),
+            ("7d", 604_800.0),
+            ("10us", 0.000_01),
+            ("40ns", 0.000_000_04),
+        ] {
+            assert_eq!(
+                super::duration(text),
+                Ok(Duration::from_secs_f64(seconds)),
+                "{text}"
+            );
+        }
+
+        for wrong in ["soon", "5x", "", "ms", "-1s"] {
+            assert!(super::duration(wrong).is_err(), "{wrong}");
+        }
+
+        assert!(super::positive_duration("0s").is_err());
+        assert!(super::positive_duration("1ms").is_ok());
     }
 }

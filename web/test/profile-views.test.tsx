@@ -2660,7 +2660,7 @@ it("leads with what was recorded, and shows only the losses there were", async (
     ],
     settings: [
       { name: "source", value: "CPU time at 999 Hz" },
-      { name: "kernel", value: "on" },
+      { name: "kernel stacks", value: "on" },
     ],
   });
   const server = await mountPage(summary, true);

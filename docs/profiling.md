@@ -26,13 +26,13 @@ reports, and focused subtrees.
 
 ## Include kernel CPU time
 
-`microscope record --kernel -- ./program` also samples time spent in the
+`microscope record --kernel-stacks -- ./program` also samples time spent in the
 kernel. It keeps the calling user stack and adds a leaf such as `[kernel: read]`.
 Interrupts or contexts without a syscall are labeled `[kernel: unknown]`.
 The recorder needs CAP_PERFMON and CAP_BPF, or CAP_SYS_ADMIN. On hosts configured
 with the BPF wrapper, prefix the command with
 `/run/wrappers/bin/microscope-bpf`. Restrictive `kernel.perf_event_paranoid`
-settings can also prohibit kernel sampling. Without `--kernel`, recording
+settings can also prohibit kernel sampling. Without `--kernel-stacks`, recording
 continues to sample user CPU time only, including with the production preset.
 
 ## Count function calls
@@ -69,7 +69,7 @@ amount of data written.
 
 The report separates startup from the remaining recorder CPU time, including
 processing after the target exits. Startup includes loading BPF programs with
-`--kernel`. These totals are not concurrent overhead percentages: draining and
+`--kernel-stacks`. These totals are not concurrent overhead percentages: draining and
 symbolizing a queued capture can continue beyond the target's interval. The
 sampling budget does not cap startup or final processing.
 
