@@ -1,9 +1,9 @@
-//! What tracing system calls costs a program, measured on a getppid loop.
+//! What recording system calls costs a program, measured on a getppid loop.
 //!
 //! The loop times its own calls and prints the nanoseconds each took, bare
-//! and under each engine, and, as the tax every other process pays while
-//! the BPF engine's tracepoints are attached, untraced beside a trace of
-//! another program. Setups are interleaved so that drift in the machine
+//! and recorded at each level with the preset that picks it, and, as the
+//! tax every other process pays while the BPF engine's tracepoints are
+//! attached, unrecorded beside a recording of another program. Setups are interleaved so that drift in the machine
 //! falls on every one alike. The loop runs on cores of its own, and microscope
 //! on others that share their last-level cache, as `overhead` places them.
 
@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use super::overhead::{Placement, median};
 
-/// The ways the loop runs: bare, traced by each engine, and untraced while
-/// the BPF engine traces another program.
-pub const SETUPS: [&str; 5] = ["bare", "ptrace", "bpf-count", "bpf-stream", "untargeted"];
+/// The ways the loop runs: bare, recorded at the production preset's
+/// counts and the development preset's calls, and unrecorded while
+/// another program is recorded.
+pub const SETUPS: [&str; 4] = ["bare", "counts", "calls", "untargeted"];
 
 /// One run of the loop under one setup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,8 +44,7 @@ pub struct Options {
     /// Runs of each setup.
     pub runs: usize,
 
-    /// Calls each run of the loop makes; a hundredth of them under ptrace,
-    /// which takes microseconds a call.
+    /// Calls each run of the loop makes.
     pub calls: u64,
 }
 
@@ -84,13 +84,7 @@ pub fn measure(options: &Options, mut progress: impl FnMut(&Run)) -> Result<Vec<
 
 fn run(setup: &str, options: &Options, placement: &Placement, taskset: &Path) -> Result<f64> {
     let burst = options.programs.join("syscall-burst");
-    let calls = if setup == "ptrace" {
-        options.calls / 100
-    } else {
-        options.calls
-    }
-    .max(1)
-    .to_string();
+    let calls = options.calls.max(1).to_string();
 
     // The loop runs on the program's CPUs, wherever microscope does.
     let mut looping = Command::new(taskset);
@@ -100,13 +94,12 @@ fn run(setup: &str, options: &Options, placement: &Placement, taskset: &Path) ->
         .arg(&burst)
         .arg(&calls);
 
-    let traced = |engine: &[&str]| {
+    let recorded = |preset: &str, level: &str| {
         let mut command = Command::new(&options.launcher);
         command
             .arg(&options.microscope)
-            .arg("syscalls")
-            .args(engine)
-            .args(["-e", "trace=getppid", "-o", "/dev/null", "--"])
+            .args(["record", "--preset", preset, "--syscalls", level])
+            .args(["--syscall-filter", "trace=getppid", "-o", "/dev/null", "--"])
             .arg(taskset)
             .arg("--cpu-list")
             .arg(placement.program_list())
@@ -117,23 +110,8 @@ fn run(setup: &str, options: &Options, placement: &Placement, taskset: &Path) ->
 
     match setup {
         "bare" => timed(looping),
-        // A tracer and its tracee hand the CPU back and forth at every
-        // stop, so they share the program's CPUs, as the scheduler would
-        // place them: on separate cores, each stop wakes an idle one.
-        "ptrace" => {
-            let mut command = Command::new(taskset);
-            command
-                .arg("--cpu-list")
-                .arg(placement.program_list())
-                .arg(&options.microscope)
-                .args(["syscalls", "--engine", "ptrace", "-c"])
-                .args(["-e", "trace=getppid", "-o", "/dev/null", "--"])
-                .arg(&burst)
-                .arg(&calls);
-            timed(command)
-        }
-        "bpf-count" => timed(traced(&["--engine", "bpf", "-c"])),
-        "bpf-stream" => timed(traced(&["--engine", "bpf"])),
+        "counts" => timed(recorded("prod", "counts")),
+        "calls" => timed(recorded("dev", "calls")),
         "untargeted" => {
             let mut other = Tracing::start(options)?;
             let measured = timed(looping);
@@ -167,8 +145,8 @@ fn timed(mut command: Command) -> Result<f64> {
         .with_context(|| format!("the loop printed no time: {stdout:?}"))
 }
 
-/// The BPF engine tracing a program that waits on its input, so that its
-/// tracepoints stay attached while the loop runs untraced.
+/// A recording of a program that waits on its input, so that the BPF
+/// engine's tracepoints stay attached while the loop runs unrecorded.
 struct Tracing {
     child: Child,
 }
@@ -178,14 +156,14 @@ impl Tracing {
         let shell = which("sh")?;
         let mut child = Command::new(&options.launcher)
             .arg(&options.microscope)
-            .args(["syscalls", "-o", "/dev/null", "--"])
+            .args(["record", "--syscalls", "calls", "-o", "/dev/null", "--"])
             .arg(shell)
             .args(["-c", "echo ready; read line || true"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("starting the BPF engine on another program")?;
+            .context("recording another program")?;
 
         // The program runs only once the engine's programs are attached.
         let stdout = child.stdout.take().context("the traced program's output")?;
@@ -194,7 +172,7 @@ impl Tracing {
         if line.trim() != "ready" {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("the program the BPF engine traced never started");
+            bail!("the program recorded beside the loop never started");
         }
 
         Ok(Self { child })
@@ -210,7 +188,7 @@ impl Tracing {
                 stderr.read_to_string(&mut error)?;
             }
 
-            bail!("the BPF engine ended with {status}: {error}");
+            bail!("the recording beside the loop ended with {status}: {error}");
         }
 
         Ok(())

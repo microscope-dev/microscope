@@ -1,102 +1,50 @@
 [
   {
     "setup": "bare",
-    "ns_per_call": 33.3
+    "ns_per_call": 42.2
   },
   {
-    "setup": "ptrace",
-    "ns_per_call": 4965.8
+    "setup": "counts",
+    "ns_per_call": 170.7
   },
   {
-    "setup": "bpf-count",
-    "ns_per_call": 109.9
-  },
-  {
-    "setup": "bpf-stream",
-    "ns_per_call": 157.3
+    "setup": "calls",
+    "ns_per_call": 1040.1
   },
   {
     "setup": "untargeted",
-    "ns_per_call": 67.9
+    "ns_per_call": 111.6
   },
   {
     "setup": "bare",
-    "ns_per_call": 38.2
+    "ns_per_call": 42.3
   },
   {
-    "setup": "ptrace",
-    "ns_per_call": 4856.1
+    "setup": "counts",
+    "ns_per_call": 171.4
   },
   {
-    "setup": "bpf-count",
-    "ns_per_call": 103.8
-  },
-  {
-    "setup": "bpf-stream",
-    "ns_per_call": 148.7
+    "setup": "calls",
+    "ns_per_call": 1169.7
   },
   {
     "setup": "untargeted",
-    "ns_per_call": 59.7
+    "ns_per_call": 111.7
   },
   {
     "setup": "bare",
-    "ns_per_call": 33.2
+    "ns_per_call": 42.8
   },
   {
-    "setup": "ptrace",
-    "ns_per_call": 4911.9
+    "setup": "counts",
+    "ns_per_call": 170.9
   },
   {
-    "setup": "bpf-count",
-    "ns_per_call": 103.2
-  },
-  {
-    "setup": "bpf-stream",
-    "ns_per_call": 150.2
+    "setup": "calls",
+    "ns_per_call": 1158.3
   },
   {
     "setup": "untargeted",
-    "ns_per_call": 60.4
-  },
-  {
-    "setup": "bare",
-    "ns_per_call": 34.2
-  },
-  {
-    "setup": "ptrace",
-    "ns_per_call": 4787.2
-  },
-  {
-    "setup": "bpf-count",
-    "ns_per_call": 104.6
-  },
-  {
-    "setup": "bpf-stream",
-    "ns_per_call": 153.7
-  },
-  {
-    "setup": "untargeted",
-    "ns_per_call": 60.6
-  },
-  {
-    "setup": "bare",
-    "ns_per_call": 33.9
-  },
-  {
-    "setup": "ptrace",
-    "ns_per_call": 4789.2
-  },
-  {
-    "setup": "bpf-count",
-    "ns_per_call": 103.7
-  },
-  {
-    "setup": "bpf-stream",
-    "ns_per_call": 151.8
-  },
-  {
-    "setup": "untargeted",
-    "ns_per_call": 60.3
+    "ns_per_call": 111.1
   }
 ]
