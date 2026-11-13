@@ -1569,6 +1569,155 @@ fn a_ptrace_recording_holds_samples_and_calls_on_one_clock() {
     );
 }
 
+/// Runs `microscope` with `arguments` in `directory`, which must succeed,
+/// and returns its standard output and error.
+fn succeeds(directory: &Path, arguments: &[&str]) -> (String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_microscope"))
+        .args(arguments)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope");
+    let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+    assert!(output.status.success(), "{arguments:?}: {stderr}");
+    (stdout, stderr)
+}
+
+/// A log line without its time: the thread and the call.
+fn untimed(line: &str) -> Option<&str> {
+    let (time, rest) = line.trim_start().split_once(' ')?;
+    time.parse::<f64>().ok()?;
+    Some(rest.trim_start())
+}
+
+/// `syscall-exceptions` makes 3 getppid calls, 2 closes of -1 that fail
+/// with EBADF from `failed`, and one 30 ms nanosleep from `slow`.
+/// `record --print` streams each call as `report --syscalls` prints it,
+/// `record` names the failures and the slowest site when it ends, and the
+/// report's filter, `--focus`, and `--summary` pick from the same calls.
+#[test]
+fn a_recordings_calls_print_live_and_in_its_report_alike() {
+    let directory = ScratchDir::new("syscalls-report-log");
+    let fixture = Scenario::fixture("syscall-exceptions");
+    let fixture = fixture.to_str().expect("a UTF-8 path");
+    let (_, said) = succeeds(
+        directory.path(),
+        &[
+            "record",
+            "--syscall-engine",
+            "ptrace",
+            "--syscalls",
+            "calls",
+            "--print",
+            "-o",
+            "calls.usprof",
+            "--",
+            fixture,
+            "3",
+            "2",
+            "1",
+        ],
+    );
+    assert!(said.contains("system calls, "), "{said}");
+    assert!(said.contains("close EBADF × 2"), "{said}");
+    assert!(said.contains("slow · syscall-exceptions.c:16"), "{said}");
+
+    let (log, _) = succeeds(directory.path(), &["report", "calls.usprof", "--syscalls"]);
+    let printed: Vec<&str> = said.lines().filter_map(untimed).collect();
+    let logged: Vec<&str> = log.lines().filter_map(untimed).collect();
+    assert!(logged.len() > 20, "{log}");
+    assert_eq!(printed, logged);
+    let times: Vec<f64> = log
+        .lines()
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect();
+    assert!(times.is_sorted(), "{log}");
+
+    let calls = |found: &str, call: &str| found.lines().filter(|line| line.contains(call)).count();
+    assert_eq!(calls(&log, "getppid() = "), 3, "{log}");
+    assert_eq!(calls(&log, "close(-1) = -1 EBADF"), 2, "{log}");
+
+    let (failed, _) = succeeds(
+        directory.path(),
+        &[
+            "report",
+            "calls.usprof",
+            "--syscalls",
+            "trace=close status=failed",
+        ],
+    );
+    // The exit line stays, as it does in every log.
+    let failed: Vec<&str> = failed.lines().filter_map(untimed).collect();
+    assert_eq!(failed.len(), 3, "{failed:?}");
+    assert_eq!(calls(&failed.join("\n"), "close(-1) = -1 EBADF"), 2, "{failed:?}");
+    let (focused, _) = succeeds(
+        directory.path(),
+        &["report", "calls.usprof", "--syscalls", "--focus", "slow"],
+    );
+    let focused: Vec<&str> = focused.lines().filter_map(untimed).collect();
+    assert_eq!(focused.len(), 1, "{focused:?}");
+    assert!(focused[0].contains("clock_nanosleep("), "{focused:?}");
+
+    let (table, _) = succeeds(
+        directory.path(),
+        &["report", "calls.usprof", "--syscalls", "--summary"],
+    );
+    assert!(
+        table
+            .lines()
+            .any(|line| line.ends_with(" close") && line.split_whitespace().any(|cell| cell == "2")),
+        "{table}"
+    );
+}
+
+/// What `--print` and `report --syscalls` refuse, and why.
+#[test]
+fn printing_calls_needs_calls_to_print() {
+    let directory = ScratchDir::new("syscalls-report-refusals");
+    let (_, _) = succeeds(
+        directory.path(),
+        &[
+            "record",
+            "--syscalls",
+            "off",
+            "-o",
+            "off.usprof",
+            "--",
+            "true",
+        ],
+    );
+    for (arguments, wanted) in [
+        (
+            &["record", "--syscalls", "counts", "--print", "--", "true"][..],
+            "--print shows each call, which --syscalls counts does not keep",
+        ),
+        (
+            &["report", "off.usprof", "--syscalls"],
+            "the recording kept no system calls",
+        ),
+        (
+            &[
+                "report",
+                "off.usprof",
+                "--syscalls",
+                "trace=read",
+                "--summary",
+            ],
+            "--summary counts every call",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_microscope"))
+            .args(arguments)
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope");
+        let message = text(&output.stderr);
+        assert!(!output.status.success(), "{arguments:?}: {message}");
+        assert!(message.contains(wanted), "{arguments:?}: {message}");
+    }
+}
+
 /// The BPF engine, held to the ptrace engine's output for the same
 /// program. It needs `CAP_BPF` and `CAP_PERFMON`, so these run only
 /// through `just test-bpf`, which starts microscope with the `microscope-bpf`

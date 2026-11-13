@@ -14,9 +14,10 @@ use microscope::profiler::budget::Budget;
 use microscope::profiler::{
     CommandIdentity, Cuts, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
     ProbeSelection, Profile, PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy,
-    StackView, SyscallEngine, SyscallLevel, Watch,
+    StackView, SyscallEngine, SyscallLevel, SyscallOptions, Watch,
 };
 
+mod calls;
 mod report;
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -199,6 +200,11 @@ pub struct RecordArgs {
     #[arg(long, value_name = "ERRNOS")]
     save_on_errno: Option<String>,
 
+    /// Also print each system call to standard error as it returns, in
+    /// the layout of `report --syscalls`. Needs --syscalls calls or full.
+    #[arg(long)]
+    print: bool,
+
     /// What sees system calls: bpf, which never stops the program, or
     /// ptrace, which stops it at each call and needs no privileges.
     #[arg(long, value_name = "ENGINE", default_value = "bpf")]
@@ -219,9 +225,20 @@ pub struct ReportArgs {
     #[arg(long, value_name = "FILE")]
     base: Option<PathBuf>,
 
-    /// Show this exact function's callers and callees; --tree shows its subtree.
+    /// Show this exact function's callers and callees; --tree shows its
+    /// subtree. With --syscalls, only the calls whose stack passes through it.
     #[arg(long, value_name = "SYMBOL")]
     focus: Option<String>,
+
+    /// Print the system calls the recording kept, in the order they
+    /// returned, or those FILTER keeps: `trace=openat status=failed`, with
+    /// expressions apart by spaces.
+    #[arg(long, value_name = "FILTER", num_args = 0..=1, default_missing_value = "")]
+    syscalls: Option<String>,
+
+    /// With --syscalls, a table of the calls and their sites instead.
+    #[arg(long, requires = "syscalls")]
+    summary: bool,
 
     /// Show the call tree instead of the most expensive functions.
     #[arg(long)]
@@ -618,38 +635,7 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         options.cuts = Cuts::Window(window);
     }
 
-    let syscalls = &mut options.syscalls;
-    if let Some(level) = args.syscalls {
-        syscalls.level = level;
-        syscalls.asked = true;
-    }
-
-    syscalls.engine = args.syscall_engine;
-    if let Some(text) = &args.syscall_filter {
-        let expressions: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
-        let filter = microscope::syscalls::Filter::parse(
-            &expressions,
-            &crate::present::syscalls::signal_named,
-        )
-        .map_err(|error| anyhow::anyhow!("--syscall-filter: {error}"))?;
-        syscalls.filter = Some((text.clone(), filter));
-    }
-
-    syscalls.save_on.slow = args.save_on_slow;
-    if let Some(names) = &args.save_on_errno {
-        for name in names.split(',') {
-            let errno = crate::present::syscalls::errno_named(name)
-                .ok_or_else(|| anyhow::anyhow!("--save-on-errno: {name} is not an errno"))?;
-            syscalls.save_on.errnos.push(errno);
-        }
-    }
-
-    syscalls
-        .check()
-        .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))?;
-    if let Some(note) = syscalls.resolve().map_err(anyhow::Error::msg)? {
-        eprintln!("microscope: {note}");
-    }
+    syscall_options(args, &mut options.syscalls)?;
 
     if args.continuous.is_some() {
         options.cuts = Cuts::Segments(args.segment);
@@ -675,6 +661,61 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     options.probe_timeout = args.probe_timeout;
     options.symbols_later = matches!(args.symbols, SymbolsArg::Later);
     Ok(options)
+}
+
+/// The system call options `args` choose.
+fn syscall_options(args: &RecordArgs, syscalls: &mut SyscallOptions) -> Result<()> {
+    if let Some(level) = args.syscalls {
+        syscalls.level = level;
+        syscalls.asked = true;
+    }
+
+    syscalls.engine = args.syscall_engine;
+    if let Some(text) = &args.syscall_filter {
+        let expressions: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+        let filter = microscope::syscalls::Filter::parse(
+            &expressions,
+            &crate::present::syscalls::signal_named,
+        )
+        .map_err(|error| anyhow::anyhow!("--syscall-filter: {error}"))?;
+        syscalls.filter = Some((text.clone(), filter));
+    }
+
+    syscalls.save_on.slow = args.save_on_slow;
+    if let Some(names) = &args.save_on_errno {
+        for name in names.split(',') {
+            let errno = crate::present::syscalls::errno_named(name)
+                .ok_or_else(|| anyhow::anyhow!("--save-on-errno: {name} is not an errno"))?;
+            syscalls.save_on.errnos.push(errno);
+        }
+    }
+
+    if args.print {
+        anyhow::ensure!(
+            syscalls.level >= SyscallLevel::Calls,
+            "--print shows each call, which --syscalls {} does not keep: give --syscalls calls",
+            syscalls.level
+        );
+        let renderer = super::Renderers::detect(super::terminal::ColorChoice::Auto, false).stderr;
+        let lines = std::sync::Mutex::new(calls::Lines::new(None, None, renderer));
+        syscalls.print = Some(microscope::profiler::Printer(Arc::new(move |event| {
+            let mut lines = lines
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(line) = lines.line(event, true) {
+                eprintln!("{line}");
+            }
+        })));
+    }
+
+    syscalls
+        .check()
+        .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))?;
+    if let Some(note) = syscalls.resolve().map_err(anyhow::Error::msg)? {
+        eprintln!("microscope: {note}");
+    }
+
+    Ok(())
 }
 
 fn record(args: &RecordArgs) -> Result<i32> {
@@ -776,6 +817,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
     }
 
     report_losses(&profile);
+    calls::brief(&profile, &mut std::io::stderr().lock())?;
 
     Ok(code)
 }
@@ -1006,11 +1048,44 @@ fn report(args: &ReportArgs, out: &mut impl std::io::Write) -> Result<()> {
 
     symbolize_here(&mut profile, out)?;
 
+    if let Some(text) = &args.syscalls {
+        return calls_report(&profile, args, text, out);
+    }
+
     if args.base.is_some() || args.focus.is_some() {
         return selected_report(&profile, args, out);
     }
     let _span = microscope::span!("report tables");
     ordinary_report(&profile, args, out)
+}
+
+/// `report --syscalls`: the calls' log, or with `--summary` their table.
+fn calls_report(
+    profile: &Profile,
+    args: &ReportArgs,
+    filter: &str,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    if args.summary {
+        anyhow::ensure!(
+            filter.is_empty() && args.focus.is_none(),
+            "--summary counts every call: a filter or --focus picks calls for the log"
+        );
+        return calls::summary(profile, args.limit, out);
+    }
+
+    let expressions: Vec<String> = filter.split_whitespace().map(str::to_owned).collect();
+    let filter = (!expressions.is_empty())
+        .then(|| {
+            microscope::syscalls::Filter::parse(
+                &expressions,
+                &crate::present::syscalls::signal_named,
+            )
+        })
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))?;
+    let renderer = super::Renderers::detect(super::terminal::ColorChoice::Auto, false).stdout;
+    calls::log(profile, filter, args.focus.as_deref(), renderer, out)
 }
 
 #[expect(
@@ -1030,14 +1105,14 @@ fn ordinary_report(
 
     // A trace alone, which no recording sampled.
     if profile.is_trace() {
-        return syscall_summary(profile, args.limit, out);
+        return calls::summary(profile, args.limit, out);
     }
 
     summary(profile, args.limit, out)?;
 
     if profile.has_syscalls() {
         writeln!(out)?;
-        syscall_summary(profile, args.limit, out)?;
+        calls::summary(profile, args.limit, out)?;
     }
 
     let (source, total) = if args.waits {
@@ -1696,139 +1771,6 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
             out,
             "Task snapshot diagnostics: {}; first: {first}.",
             plural(problems.len() as u64, "note"),
-        )?;
-    }
-
-    Ok(())
-}
-
-/// What shaped a trace's counts: an engine that stretched them, and what
-/// the engine lost or kept only as counts.
-fn trace_notes(
-    profile: &Profile,
-    lost: microscope::syscalls::Losses,
-    out: &mut impl std::io::Write,
-) -> Result<()> {
-    if profile.setting("syscall engine") == Some("ptrace") {
-        writeln!(
-            out,
-            "Traced with ptrace, which stops the program at each traced call: it ran slower than it would, and each call's time includes the stop."
-        )?;
-    }
-
-    for (count, says) in [
-        (
-            lost.dropped,
-            "records the kernel had no room for, or program runs it skipped: some calls lack detail, and counts may be short",
-        ),
-        (
-            lost.unseen,
-            "calls never returned where the trace could see: they are not counted",
-        ),
-        (
-            lost.capped,
-            "failed or slow calls were over the cap: counted, but not kept",
-        ),
-        (
-            lost.overflowed,
-            "calls came while the kernel's ring was full: counted, but not kept",
-        ),
-    ] {
-        if count > 0 {
-            writeln!(out, "{count} {says}.")?;
-        }
-    }
-
-    Ok(())
-}
-
-/// The system calls a capture holds, as `microscope syscalls -c` shows them,
-/// then the `limit` call sites that took the most time.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "seconds need no more precision than f64's"
-)]
-fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
-    use crate::present::syscalls::errno;
-    use crate::present::syscalls::summary::{self, Column};
-    let syscalls = profile.syscalls();
-    let calls = syscalls.stats().per_call();
-    let (start, end) = profile.span();
-    let program = profile.setting("program").unwrap_or("the program");
-    let made: u64 = calls.values().map(|stats| stats.calls).sum();
-    let failed: u64 = calls.values().map(|stats| stats.errors).sum();
-
-    writeln!(
-        out,
-        "{program}: {made} system calls, {failed} failed, over {:.3} s",
-        end.saturating_sub(start) as f64 / 1e9
-    )?;
-
-    trace_notes(profile, syscalls.lost, out)?;
-
-    writeln!(out)?;
-    let errno = |number: u16| errno(microscope::syscalls::Errno(number)).0;
-    let sort = summary::sort_key("time").map_err(anyhow::Error::msg)?;
-
-    for line in summary::table(
-        &calls,
-        &summary::Column::DEFAULT,
-        sort,
-        summary::Unit::Microseconds,
-        &errno,
-    ) {
-        writeln!(out, "{line}")?;
-    }
-
-    let mut recorded = syscalls
-        .events
-        .iter()
-        .filter(|event| matches!(event.event, microscope::syscalls::TraceEvent::Call(_)));
-    if !recorded.clone().any(|call| call.stack.is_some()) {
-        if recorded.next().is_some() {
-            writeln!(out)?;
-            writeln!(
-                out,
-                "The calls have no stacks, so where they were made is unknown; trace with -k to record stacks."
-            )?;
-        }
-
-        return Ok(());
-    }
-
-    let sites = profile.syscall_sites(&syscalls);
-    let columns = [
-        Column::TimePercent,
-        Column::TotalTime,
-        Column::Calls,
-        Column::Errors,
-        Column::P99,
-        Column::Name,
-    ];
-
-    writeln!(out)?;
-    writeln!(out, "By call site:")?;
-    let rows = sites
-        .iter()
-        .map(|(site, stats)| (site.clone(), stats))
-        .collect();
-    for line in summary::labelled(
-        rows,
-        &columns,
-        sort,
-        "site",
-        limit,
-        summary::Unit::Microseconds,
-        &errno,
-    ) {
-        writeln!(out, "{line}")?;
-    }
-
-    if sites.len() > limit {
-        writeln!(
-            out,
-            "and {} more sites, counted in the total; --limit shows more",
-            sites.len() - limit
         )?;
     }
 

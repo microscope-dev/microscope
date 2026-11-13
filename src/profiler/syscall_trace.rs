@@ -128,6 +128,9 @@ pub struct SyscallOptions {
     /// The calls that save the recording as SIGUSR2 does.
     pub save_on: SaveOn,
 
+    /// What sees each event the recording keeps, as the trace sees it.
+    pub print: Option<Printer>,
+
     /// Why a level stepped down to `Off`, once it has.
     pub unavailable: Option<String>,
 }
@@ -145,6 +148,7 @@ impl SyscallOptions {
                 slow: None,
                 errnos: Vec::new(),
             },
+            print: None,
             unavailable: None,
         }
     }
@@ -286,6 +290,25 @@ struct Shared {
     quiet_until: u64,
 }
 
+/// Sees each event a recording keeps, on the trace's own thread, so that
+/// the last events of a trace are seen too.
+#[derive(Clone)]
+pub struct Printer(pub Arc<dyn Fn(&TraceEvent) + Send + Sync>);
+
+impl std::fmt::Debug for Printer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Printer")
+    }
+}
+
+impl PartialEq for Printer {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Printer {}
+
 /// The calls that save a recording's window, or end its segment, as SIGUSR2
 /// does.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -334,6 +357,7 @@ struct Held {
     /// a window's span, or a segment's.
     save_on: SaveOn,
     quiet: u64,
+    print: Option<Printer>,
 }
 
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -374,6 +398,10 @@ impl Sink for Held {
     fn event(&mut self, event: TraceEvent) {
         if !self.keeps(&event) {
             return;
+        }
+
+        if let Some(print) = &self.print {
+            (print.0)(&event);
         }
 
         let reason = match &event {
@@ -517,6 +545,7 @@ impl SyscallTrace {
             filter: options.filter.as_ref().map(|(_, filter)| filter.clone()),
             fds: FdTable::default(),
             save_on: options.save_on.clone(),
+            print: options.print.clone(),
             quiet: match recording.cuts {
                 Cuts::Window(span) | Cuts::Segments(span) => {
                     u64::try_from(span.as_nanos()).unwrap_or(u64::MAX)
