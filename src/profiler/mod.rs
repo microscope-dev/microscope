@@ -16,6 +16,7 @@ pub(crate) use record::{OwnedLine, hex, symbolize as symbolize_lines};
 mod inspect;
 mod segments;
 mod session;
+mod syscall_trace;
 pub use inspect::{InspectedCommand, InspectedModule, InspectedProcess, Inspection, TIME_BINS};
 mod symbols;
 mod syscalls;
@@ -39,6 +40,7 @@ pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, 
 pub use collector::ProbeSelection;
 pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};
 pub use symbols::ModuleSymbols;
+pub use syscall_trace::{SyscallEngine, SyscallLevel, SyscallOptions};
 pub use tasks::THREAD;
 pub use zones::{
     PlotValue, ProbeCounts, ProfileZone, ProgramMarker, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN,
@@ -293,9 +295,8 @@ pub struct RecordOptions {
     /// keep no debug information.
     pub symbols_later: bool,
 
-    /// The system calls to trace beside the samples, with the BPF engine,
-    /// each with its stack: a program the recording starts only.
-    pub syscalls: Option<crate::syscalls::CallSet>,
+    /// The system calls to record beside the samples.
+    pub syscalls: SyscallOptions,
 }
 
 impl RecordOptions {
@@ -321,7 +322,7 @@ impl RecordOptions {
             probe_timeout: std::time::Duration::from_secs(10),
             debug_directories: Vec::new(),
             symbols_later: false,
-            syscalls: None,
+            syscalls: SyscallOptions::preset(preset),
         }
     }
 }

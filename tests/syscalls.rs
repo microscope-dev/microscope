@@ -1452,7 +1452,8 @@ fn the_bpf_engine_is_the_default_and_never_falls_back() {
     assert!(!output.status.success(), "{message}");
 
     assert!(
-        message.contains("needs CAP_BPF and CAP_PERFMON") && message.contains("--engine ptrace"),
+        message.contains("has neither CAP_BPF nor CAP_PERFMON")
+            && message.contains("--syscall-engine ptrace"),
         "{message}"
     );
 
@@ -2376,8 +2377,8 @@ mod bpf {
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args([
                 "record",
-                "--syscalls",
-                "write,getppid",
+                "--syscall-filter",
+                "trace=write,getppid",
                 "-o",
                 "recorded.usprof",
             ])
@@ -2407,6 +2408,137 @@ mod bpf {
         let lines = text(&report.stdout);
         assert!(lines.contains(" samples, "), "{lines}");
         assert!(lines.contains(" system calls, "), "{lines}");
+    }
+
+    /// Records `syscall-load` on `threads` threads of `rounds` rounds each
+    /// with `arguments`, into `file` in `directory`, and reads it.
+    fn record_load(
+        directory: &Path,
+        file: &str,
+        arguments: &[&str],
+        threads: u32,
+        rounds: u32,
+    ) -> microscope::profiler::Profile {
+        let recorded = Command::new(launcher())
+            .env_clear()
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "-o", file])
+            .args(arguments)
+            .arg("--")
+            .arg(Scenario::fixture("syscall-load"))
+            .args([threads.to_string(), rounds.to_string()])
+            .current_dir(directory)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope record");
+        assert!(recorded.status.success(), "{}", text(&recorded.stderr));
+        microscope::profiler::Profile::read(&directory.join(file))
+            .expect("the capture reads")
+            .profile
+    }
+
+    /// Each kept call's site, and how many calls it made.
+    fn sites(profile: &microscope::profiler::Profile) -> BTreeMap<String, u64> {
+        let mut sites = BTreeMap::new();
+        for event in profile.syscalls().events {
+            if let (microscope::syscalls::TraceEvent::Call(_), Some(stack)) =
+                (&event.event, event.stack)
+            {
+                *sites.entry(profile.syscall_site_name(stack)).or_insert(0) += 1;
+            }
+        }
+
+        sites
+    }
+
+    /// Worker threads make their calls through glibc's cancellable
+    /// wrappers, which keep no frame pointer. A recording copies each
+    /// call's stack, as it does each sample's, so every call names the
+    /// line that made it rather than the wrapper.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_recordings_calls_name_the_lines_that_made_them_on_every_thread() {
+        let directory = ScratchDir::new("syscalls-record-sites");
+        let profile = record_load(directory.path(), "load.usprof", &[], 4, 300);
+        assert_eq!(profile.setting("syscalls"), Some("calls"));
+        let sites = sites(&profile);
+        for line in [26, 30, 31] {
+            assert_eq!(
+                sites.get(&format!("one_round · syscall-load.c:{line}")),
+                Some(&1200),
+                "{sites:#?}"
+            );
+        }
+    }
+
+    /// The filter keeps what its qualifiers say, all of them, while the
+    /// kernel still follows every descriptor the kept calls name.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_recording_keeps_only_the_calls_its_filter_selects() {
+        let directory = ScratchDir::new("syscalls-record-filter");
+        let profile = record_load(
+            directory.path(),
+            "failed.usprof",
+            &["--syscall-filter", "trace=openat status=failed"],
+            1,
+            50,
+        );
+        assert_eq!(
+            profile.setting("syscall filter"),
+            Some("trace=openat status=failed")
+        );
+
+        let calls: Vec<_> = profile
+            .syscalls()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.event {
+                microscope::syscalls::TraceEvent::Call(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        // The loader's searches for libraries fail; the program's own
+        // opens of /dev/zero do not.
+        assert!(!calls.is_empty());
+        assert!(
+            calls.iter().all(|call| call.call.name() == Some("openat")
+                && call.outcome.raw().is_some_and(|ret| ret < 0)),
+            "{calls:#?}"
+        );
+    }
+
+    /// The production preset counts every call in the kernel and keeps
+    /// none: the same counts a recording of every call makes of the same
+    /// program.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_production_recording_counts_every_call_and_keeps_none() {
+        let directory = ScratchDir::new("syscalls-record-counts");
+        let counted = record_load(
+            directory.path(),
+            "prod.usprof",
+            &["--preset", "prod"],
+            2,
+            100,
+        );
+        let streamed = record_load(directory.path(), "dev.usprof", &[], 2, 100);
+        assert_eq!(counted.setting("syscalls"), Some("counts"));
+        assert!(sites(&counted).is_empty());
+
+        let per_call = |profile: &microscope::profiler::Profile| -> BTreeMap<String, u64> {
+            profile
+                .syscalls()
+                .stats()
+                .per_call()
+                .into_iter()
+                .filter(|(call, _)| matches!(call.name(), Some("openat" | "read" | "close")))
+                .map(|(call, stats)| (call.name().unwrap_or("?").to_owned(), stats.calls))
+                .collect()
+        };
+        let counts = per_call(&counted);
+        assert!(counts["read"] >= 200, "{counts:?}");
+        assert_eq!(counts, per_call(&streamed));
     }
 
     /// Copied and unwound by call-frame information, the BPF engine's
@@ -2899,8 +3031,8 @@ mod bpf {
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args([
                 "record",
-                "--syscalls",
-                "read",
+                "--syscall-filter",
+                "trace=read",
                 "--continuous",
                 "segments",
                 "--segment",

@@ -916,9 +916,40 @@ const REMEDY: &str =
   not fall back to ptrace on its own. To continue, one of:
     - run it from a unit with AmbientCapabilities=CAP_BPF CAP_PERFMON
     - on NixOS or system-manager, import microscope's bpf module and run through
-      /run/wrappers/bin/microscope-bpf (docs/syscalls.md#give-microscope-the-bpf-privileges)
-    - trace a program you launch with --engine ptrace, which stops the
+      /run/wrappers/bin/microscope-bpf (docs/profiling.md#give-microscope-the-bpf-privileges)
+    - record a program you launch with --syscall-engine ptrace, which stops the
       program at each chosen call";
+
+/// The one thing the engine lacks to run here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Missing {
+    /// A kernel older than 5.15, by its release.
+    Kernel(String),
+    Btf,
+
+    /// `CAP_BPF`, `CAP_PERFMON`, or both, as the end of a sentence.
+    Privileges(&'static str),
+    UserNamespace,
+    Lockdown,
+}
+
+impl std::fmt::Display for Missing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kernel(release) => {
+                write!(f, "Linux 5.15 or newer is needed, and this is {release}")
+            }
+            Self::Btf => write!(f, "the kernel's BTF, /sys/kernel/btf/vmlinux, is missing"),
+            Self::Privileges(missing) => write!(f, "this process {missing}"),
+            Self::UserNamespace => write!(
+                f,
+                "this process runs in a user namespace, whose capabilities do not reach the \
+                 kernel's BPF"
+            ),
+            Self::Lockdown => write!(f, "the kernel is locked down for confidentiality"),
+        }
+    }
+}
 
 /// Where a BPF filesystem mounted with `delegate_cmds` is, as a container
 /// manager mounts one to hand out tokens.
@@ -960,6 +991,10 @@ pub struct Probe {
 
     /// A BPF filesystem that delegates commands, which offers a token.
     pub token: Option<std::path::PathBuf>,
+
+    /// Whether the process runs in a user namespace other than the
+    /// host's, where its capabilities do not reach the kernel's BPF.
+    pub user_namespace: bool,
 }
 
 impl Probe {
@@ -988,6 +1023,9 @@ impl Probe {
             capabilities,
             lockdown,
             token: delegating_bpffs(),
+            user_namespace: std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|map| {
+                map.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"]
+            }),
         }
     }
 
@@ -1004,10 +1042,33 @@ impl Probe {
         let perfmon = self.has(CAP_PERFMON) || self.has(CAP_SYS_ADMIN);
         match (bpf, perfmon) {
             (true, true) => None,
-            (false, false) => Some("has neither"),
+            (false, false) => Some("has neither CAP_BPF nor CAP_PERFMON"),
             (false, true) => Some("lacks CAP_BPF"),
             (true, false) => Some("lacks CAP_PERFMON"),
         }
+    }
+
+    /// The first thing the engine lacks, in the order a reader fixes
+    /// them, if any.
+    #[must_use]
+    pub fn missing(&self) -> Option<Missing> {
+        if self.version.is_none_or(|version| version < (5, 15)) {
+            return Some(Missing::Kernel(self.release.clone()));
+        }
+
+        if !self.btf {
+            return Some(Missing::Btf);
+        }
+
+        if let Some(missing) = self.lacks_privileges() {
+            return Some(Missing::Privileges(missing));
+        }
+
+        if self.user_namespace {
+            return Some(Missing::UserNamespace);
+        }
+
+        (self.lockdown.as_deref() == Some("confidentiality")).then_some(Missing::Lockdown)
     }
 
     /// Whether the engine can run, or the one specific reason it cannot,
@@ -1017,46 +1078,38 @@ impl Probe {
     ///
     /// The first missing piece, in the order a reader fixes them.
     pub fn check(&self) -> Result<(), BpfError> {
-        if self.version.is_none_or(|version| version < (5, 15)) {
-            return Err(BpfError::Unavailable(format!(
-                "microscope syscalls' BPF engine needs Linux 5.15 or newer, and this kernel is {}.\n  \
-                 Trace a program you launch with --engine ptrace instead.",
-                self.release
-            )));
-        }
+        let Some(missing) = self.missing() else {
+            return Ok(());
+        };
 
-        if !self.btf {
-            return Err(BpfError::Unavailable(
-                "microscope syscalls' BPF engine needs the kernel's BTF, and /sys/kernel/btf/vmlinux \
-                 is missing.\n  Build the kernel with CONFIG_DEBUG_INFO_BTF=y, or trace a program \
-                 you launch with --engine ptrace."
-                    .to_owned(),
-            ));
-        }
+        let fix = match &missing {
+            Missing::Kernel(_) => {
+                "\n  Record a program you launch with --syscall-engine ptrace instead.".to_owned()
+            }
+            Missing::Btf => {
+                "\n  Build the kernel with CONFIG_DEBUG_INFO_BTF=y, or record a program \
+                             you launch with --syscall-engine ptrace."
+                    .to_owned()
+            }
+            Missing::Privileges(_) | Missing::UserNamespace => {
+                let token = self.token.as_ref().map_or_else(String::new, |path| {
+                    format!(
+                        "\n  {} offers a BPF token, which microscope cannot use: aya, which loads \
+                         its programs, has no way to pass one to the kernel.",
+                        path.display()
+                    )
+                });
+                format!("\n{REMEDY}{token}")
+            }
+            Missing::Lockdown => "\n  BPF programs may not read kernel memory. Boot with \
+                                  lockdown=integrity or none, or record a program you launch \
+                                  with --syscall-engine ptrace."
+                .to_owned(),
+        };
 
-        if let Some(missing) = self.lacks_privileges() {
-            let token = self.token.as_ref().map_or_else(String::new, |path| {
-                format!(
-                    "\n  {} offers a BPF token, which microscope cannot use: aya, which loads its \
-                     programs, has no way to pass one to the kernel.",
-                    path.display()
-                )
-            });
-            return Err(BpfError::Unavailable(format!(
-                "microscope syscalls needs CAP_BPF and CAP_PERFMON, and this process {missing}.\n{REMEDY}{token}"
-            )));
-        }
-
-        if self.lockdown.as_deref() == Some("confidentiality") {
-            return Err(BpfError::Unavailable(
-                "the kernel is locked down for confidentiality, which forbids BPF programs to \
-                 read kernel memory.\n  Boot with lockdown=integrity or none, or trace a program \
-                 you launch with --engine ptrace."
-                    .to_owned(),
-            ));
-        }
-
-        Ok(())
+        Err(BpfError::Unavailable(format!(
+            "system calls need the BPF engine, and {missing}.{fix}"
+        )))
     }
 }
 
@@ -3179,11 +3232,12 @@ mod tests {
             capabilities: 0,
             lockdown: None,
             token: None,
+            user_namespace: false,
         };
 
         let message = probe.check().expect_err("unprivileged").to_string();
         assert!(message.contains("has neither"), "{message}");
-        assert!(message.contains("--engine ptrace"), "{message}");
+        assert!(message.contains("--syscall-engine ptrace"), "{message}");
 
         // A token a container offers is named, and why it goes unused.
         let offered = Probe {
@@ -3202,6 +3256,11 @@ mod tests {
         };
 
         assert!(able.check().is_ok());
+        let contained = Probe {
+            user_namespace: true,
+            ..able.clone()
+        };
+        assert_eq!(contained.missing(), Some(Missing::UserNamespace));
         let old = Probe {
             version: version("5.10.0-23-amd64"),
             ..able

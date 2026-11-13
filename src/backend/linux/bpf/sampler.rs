@@ -635,7 +635,7 @@ const REMEDY: &str =
   taken, which needs both. To continue, one of:
     - run microscope from a unit with AmbientCapabilities=CAP_BPF CAP_PERFMON
     - on NixOS or system-manager, import microscope's bpf module and run through
-      /run/wrappers/bin/microscope-bpf (docs/syscalls.md#give-microscope-the-bpf-privileges)
+      /run/wrappers/bin/microscope-bpf (docs/profiling.md#give-microscope-the-bpf-privileges)
     - record with --python snapshot or --python live, which need no privilege";
 
 /// The kernel's initial PID namespace inode (linux/nsfs.h). BPF's

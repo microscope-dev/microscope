@@ -18,14 +18,9 @@ use super::{
     SampleSource, StackCopy,
 };
 
+use super::syscall_trace::{SyscallEngine, SyscallLevel, SyscallTrace};
 use crate::backend::bpf::sampler::{Sampler, SamplerError};
 use crate::backend::perf;
-use crate::backend::syscall_engines::bpf::{self, BpfOptions};
-use crate::backend::syscall_engines::capture::SyscallCapture;
-use crate::backend::syscall_engines::stacks::SharedStacks;
-use crate::backend::syscall_engines::{Sink, TraceOptions};
-use crate::capture::Capture;
-use crate::capture::builder::CaptureBuilder;
 use crate::capture::records::{AccountKind, GapReason, MarkerKind};
 use crate::model::Pid;
 
@@ -114,6 +109,7 @@ pub fn record_watched(
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
+    let options = &resolved(options)?;
     if options.kernel || options.python == Some(PythonEngine::Bpf) {
         crate::backend::bpf::sampler::check_namespace()?;
     }
@@ -162,9 +158,7 @@ pub fn record_watched(
             }
         }
 
-        if let Some(calls) = &options.syscalls {
-            syscalls = Some(SyscallTrace::start(pid, calls, options)?);
-        }
+        syscalls = SyscallTrace::beside(pid, options, stack_bytes)?;
 
         Ok(())
     });
@@ -598,6 +592,10 @@ fn settings(
     if let SampleSource::Function { .. } = options.source {
         builder.setting("function stacks", "sampled");
     }
+
+    for (key, value) in options.syscalls.settings() {
+        builder.setting(key, &value);
+    }
     if ring_pages < options.ring_pages.next_power_of_two() {
         builder.setting(
             "ring warning",
@@ -668,6 +666,22 @@ fn settings(
     ] {
         builder.setting(key, &value);
     }
+}
+
+/// `options` with their system calls stepped down where the engine cannot
+/// run and the level was the preset's.
+fn resolved(options: &RecordOptions) -> Result<RecordOptions, RecordError> {
+    let mut options = options.clone();
+    options.syscalls.resolve().map_err(RecordError::Syscalls)?;
+    if options.syscalls.engine == SyscallEngine::Ptrace
+        && options.syscalls.level != SyscallLevel::Off
+    {
+        return Err(RecordError::Syscalls(
+            "recording system calls with ptrace is not supported yet".to_owned(),
+        ));
+    }
+
+    Ok(options)
 }
 
 /// Drains `events` into `processor` until `ended`, which waits up to a
@@ -1446,254 +1460,6 @@ pub(super) fn which(program: &Path) -> Option<PathBuf> {
             .map(|directory| directory.join(program))
             .find(|candidate| candidate.is_file())
     })
-}
-
-/// The system call trace a recording runs beside its samples, on the
-/// same clock, with the BPF engine.
-struct SyscallTrace {
-    stop: std::sync::Arc<AtomicBool>,
-    thread: std::thread::JoinHandle<Result<(), String>>,
-    shared: std::sync::Arc<std::sync::Mutex<Shared>>,
-    stacks: Option<SharedStacks>,
-}
-
-/// What a recording keeps of its trace until the profile is taken.
-enum Kept {
-    /// Every call, for a profile of the whole recording.
-    All(Box<SyscallCapture>),
-
-    /// The calls since the last segment.
-    Since(std::collections::VecDeque<crate::syscalls::TraceEvent>),
-
-    /// The calls of the last span of this many nanoseconds.
-    Window(u64, std::collections::VecDeque<crate::syscalls::TraceEvent>),
-}
-
-impl Kept {
-    /// Keeps `event`, letting a window's oldest go.
-    fn keep(&mut self, event: crate::syscalls::TraceEvent) {
-        match self {
-            Self::All(capture) => capture.event(&event),
-            Self::Since(events) => events.push_back(event),
-            Self::Window(span, events) => {
-                events.push_back(event);
-                Self::trim(*span, events, monotonic());
-            }
-        }
-    }
-
-    fn trim(
-        span: u64,
-        events: &mut std::collections::VecDeque<crate::syscalls::TraceEvent>,
-        now: u64,
-    ) {
-        let since = now.saturating_sub(span);
-        while events.front().is_some_and(|event| event.time() < since) {
-            events.pop_front();
-        }
-    }
-}
-
-/// The trace's settings and what it keeps, shared by its sink and the
-/// recording that cuts it.
-struct Shared {
-    kept: Kept,
-    settings: Vec<(String, String)>,
-}
-
-/// The trace's sink, which says when the trace sees its process.
-struct Held {
-    shared: std::sync::Arc<std::sync::Mutex<Shared>>,
-    ready: Option<std::sync::mpsc::Sender<()>>,
-}
-
-impl Held {
-    fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-impl Sink for Held {
-    fn event(&mut self, event: crate::syscalls::TraceEvent) {
-        self.shared().kept.keep(event);
-    }
-
-    fn attached_by(&mut self, attachment: &crate::syscall_engines::bpf::Attachment) {
-        let mut shared = self.shared();
-        shared
-            .settings
-            .push(("attach".into(), attachment.name().into()));
-        shared
-            .settings
-            .push(("attach reason".into(), attachment.reason.clone()));
-        if let Kept::All(capture) = &mut shared.kept {
-            capture.setting("attach", attachment.name());
-            capture.setting("attach reason", &attachment.reason);
-        }
-    }
-
-    fn attached(&mut self, _process: u32) {
-        if let Some(ready) = self.ready.take() {
-            let _ = ready.send(());
-        }
-    }
-}
-
-impl SyscallTrace {
-    /// Traces `calls` of process `pid`, held at its gate, and every
-    /// process it starts; returns once the trace sees it.
-    fn start(
-        pid: u32,
-        calls: &crate::syscalls::CallSet,
-        recording: &RecordOptions,
-    ) -> Result<Self, String> {
-        let _span = crate::span!("record syscalls start");
-        let options = TraceOptions {
-            calls: calls.clone(),
-            limits: crate::syscalls::captures::Limits::default(),
-            verbose: false,
-            follow: true,
-            stacks: Some(SharedStacks::default()),
-        };
-
-        let stacks = options.stacks.clone();
-        let kept = match recording.cuts {
-            Cuts::Window(window) => Kept::Window(
-                u64::try_from(window.as_nanos()).unwrap_or(u64::MAX),
-                std::collections::VecDeque::new(),
-            ),
-            Cuts::Segments(_) => Kept::Since(std::collections::VecDeque::new()),
-            Cuts::Whole => {
-                let mut capture = SyscallCapture::new(stacks.clone());
-                capture.setting("syscalls", "bpf");
-                Kept::All(Box::new(capture))
-            }
-        };
-
-        let shared = std::sync::Arc::new(std::sync::Mutex::new(Shared {
-            kept,
-            settings: vec![("syscalls".into(), "bpf".into())],
-        }));
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let (ready, seen) = std::sync::mpsc::channel();
-        let stopped = std::sync::Arc::clone(&stop);
-        let mut sink = Held {
-            shared: std::sync::Arc::clone(&shared),
-            ready: Some(ready),
-        };
-
-        let thread = std::thread::Builder::new()
-            .name("microscope-record-syscalls".into())
-            .spawn(move || {
-                bpf::trace_held(pid, &options, BpfOptions::default(), &stopped, &mut sink)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(|error| error.to_string())?;
-        if seen.recv().is_ok() {
-            return Ok(Self {
-                stop,
-                thread,
-                shared,
-                stacks,
-            });
-        }
-
-        // The trace ended before it saw the process: why is its error.
-        Err(match thread.join() {
-            Ok(Err(why)) => why,
-            _ => "the trace ended before it began".to_owned(),
-        })
-    }
-
-    /// `samples` with the calls of their span: a segment's since the last,
-    /// or a window's last span.
-    fn cut(&self, samples: &Capture) -> Capture {
-        cut(&self.shared, self.stacks.as_ref(), samples)
-    }
-
-    /// Ends the trace, its program having ended, and merges it with the
-    /// samples.
-    fn merge(self, samples: &Capture) -> Result<Capture, String> {
-        let _span = crate::span!("record syscalls merge");
-        // Whatever the program's last calls sent is in the ring, which the
-        // trace drains before it ends; a process the program left running
-        // goes on untraced.
-        let Self {
-            stop,
-            thread,
-            shared,
-            stacks,
-        } = self;
-        stop.store(true, Ordering::Relaxed);
-        thread
-            .join()
-            .map_err(|_| "the system call trace panicked".to_owned())??;
-        let kept = {
-            let mut shared = shared
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::replace(
-                &mut shared.kept,
-                Kept::Since(std::collections::VecDeque::new()),
-            )
-        };
-
-        match kept {
-            Kept::All(capture) => {
-                let mut builder = CaptureBuilder::new();
-                builder.absorb(samples);
-                builder.absorb(&capture.finish().capture);
-                Ok(builder.finish())
-            }
-            kept => {
-                shared
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .kept = kept;
-                Ok(cut(&shared, stacks.as_ref(), samples))
-            }
-        }
-    }
-}
-
-/// `samples` with the calls `shared` keeps for their span.
-fn cut(
-    shared: &std::sync::Mutex<Shared>,
-    stacks: Option<&SharedStacks>,
-    samples: &Capture,
-) -> Capture {
-    let mut capture = SyscallCapture::new(stacks.cloned());
-    {
-        let mut shared = shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (key, value) in &shared.settings {
-            capture.setting(key, value);
-        }
-
-        match &mut shared.kept {
-            Kept::All(_) => return samples.clone(),
-            Kept::Since(events) => {
-                for event in events.drain(..) {
-                    capture.event(&event);
-                }
-            }
-            Kept::Window(span, events) => {
-                Kept::trim(*span, events, monotonic());
-                for event in events.iter() {
-                    capture.event(event);
-                }
-            }
-        }
-    }
-
-    let mut builder = CaptureBuilder::new();
-    builder.absorb(samples);
-    builder.absorb(&capture.finish().capture);
-    builder.finish()
 }
 
 #[cfg(test)]

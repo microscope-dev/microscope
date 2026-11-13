@@ -433,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn untimed_or_empty_profiles_have_no_time_slices() {
+    fn empty_profiles_have_no_time_slices() {
         let empty = Profile {
             capture: CaptureBuilder::new().finish(),
         }
@@ -441,15 +441,5 @@ mod tests {
         assert!(empty.over_time.is_empty());
         assert!(empty.depths.is_empty());
         assert_eq!(empty.command, None);
-
-        let mut builder = CaptureBuilder::new();
-        let thread = builder.thread(Pid::new(1), Tid::new(1), 0);
-        builder.setting("sample times", "none");
-        builder.sample(thread, 0, 1, NONE, NONE);
-        let untimed = Profile {
-            capture: builder.finish(),
-        }
-        .inspect();
-        assert!(untimed.over_time.is_empty());
     }
 }

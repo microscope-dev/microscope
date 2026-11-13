@@ -125,6 +125,93 @@ fn symbolize_writes_in_symbols_a_recording_left_for_later() {
     assert_in_order(&named, &["breakpoint_target", "main"]);
 }
 
+/// Without the BPF engine's privileges, as the tests run, the preset's
+/// level of system calls steps down to none: the recording goes on, says
+/// why in one line, and keeps why in the capture. A level asked for
+/// refuses, as does a filter that does not parse.
+#[test]
+fn a_recording_without_bpf_records_no_calls_unless_they_were_asked_for() {
+    let scratch = support::ScratchDir::new("cli-record-unprivileged");
+    let profile = scratch.path().join("plain.usprof");
+    let recorded = microscope(&[
+        "record",
+        "-o",
+        &profile.to_string_lossy(),
+        "--",
+        "build/test-programs/syscall-load",
+        "1",
+        "10",
+    ]);
+    assert!(recorded.status.success(), "{recorded:?}");
+    let said = String::from_utf8_lossy(&recorded.stderr);
+    assert!(
+        said.contains("system calls not recorded: this process ")
+            && said.contains("--syscall-engine ptrace")
+            && said.contains("--syscalls off"),
+        "{said}"
+    );
+    let profile = microscope::profiler::Profile::read(&profile)
+        .expect("read the profile")
+        .profile;
+    assert_eq!(profile.setting("syscalls"), Some("off"));
+    assert!(
+        profile
+            .setting("syscalls not recorded")
+            .is_some_and(|why| why.contains("CAP_")),
+        "{:?}",
+        profile.setting("syscalls not recorded")
+    );
+
+    let quiet = microscope(&[
+        "record",
+        "--syscalls",
+        "off",
+        "-o",
+        &scratch.path().join("quiet.usprof").to_string_lossy(),
+        "--",
+        "true",
+    ]);
+    assert!(quiet.status.success(), "{quiet:?}");
+    assert!(!String::from_utf8_lossy(&quiet.stderr).contains("system calls"));
+
+    let asked = microscope(&[
+        "record",
+        "--syscalls",
+        "calls",
+        "-o",
+        "/dev/null",
+        "--",
+        "true",
+    ]);
+    assert!(!asked.status.success());
+    let said = String::from_utf8_lossy(&asked.stderr);
+    assert!(said.contains("--syscall-engine ptrace"), "{said}");
+
+    let unparsed = microscope(&[
+        "record",
+        "--syscall-filter",
+        "trace=nosuchcall",
+        "--",
+        "true",
+    ]);
+    assert!(!unparsed.status.success());
+    let said = String::from_utf8_lossy(&unparsed.stderr);
+    assert!(said.contains("--syscall-filter"), "{said}");
+
+    let counted = microscope(&[
+        "record",
+        "--preset",
+        "prod",
+        "--syscall-engine",
+        "ptrace",
+        "--",
+        "true",
+    ]);
+    assert!(!counted.status.success());
+    let said = String::from_utf8_lossy(&counted.stderr);
+    assert!(said.contains("ptrace cannot count"), "{said}");
+}
+
 /// A profile of the probes fixture's zones, in `scratch`.
 fn record_zones(scratch: &support::ScratchDir) -> PathBuf {
     let mut command = Command::new(fixture("build/test-programs/probes"));
@@ -5919,7 +6006,7 @@ fn a_signal_saves_a_recordings_window_as_it_goes_on() {
     let scratch = support::ScratchDir::new("cli-window");
     let profile = scratch.path().join("phases.usprof");
     let mut recording = microscope_command()
-        .args(["record", "--window", "0.1", "-o"])
+        .args(["record", "--syscalls", "off", "--window", "0.1", "-o"])
         .arg(&profile)
         .arg("--")
         .arg(fixture("build/test-programs/profile-phases"))
@@ -5978,6 +6065,8 @@ fn a_continuous_recording_writes_segments_that_report_reads_as_one() {
     let mut recording = microscope_command()
         .args([
             "record",
+            "--syscalls",
+            "off",
             "--segment",
             "3600",
             "--keep",
@@ -6344,12 +6433,18 @@ fn report_folds_inlined_functions_into_their_callers() {
 #[test]
 fn report_inverts_the_call_tree_into_callers() {
     let scratch = support::ScratchDir::new("cli-report-invert");
-    let profile = scratch.path().join("spin.folded");
-    std::fs::write(
-        &profile,
-        "_start;main;a;leaf 30\n_start;main;b;leaf 10\n_start;main;setup 10\n",
+    let profile = scratch.path().join("spin.usprof");
+    let at = |function| (function, "spin.c", 1);
+    microscope::profiler::Profile::of_stacks(
+        "nanoseconds",
+        &[
+            (&[at("_start"), at("main"), at("a"), at("leaf")], 30),
+            (&[at("_start"), at("main"), at("b"), at("leaf")], 10),
+            (&[at("_start"), at("main"), at("setup")], 10),
+        ],
     )
-    .unwrap();
+    .write(&profile)
+    .expect("write the profile");
     let profile = profile.to_string_lossy();
 
     let callers = assert_success(microscope(&["report", "--invert", "--tree", &profile]));

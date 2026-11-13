@@ -14,7 +14,7 @@ use microscope::profiler::budget::Budget;
 use microscope::profiler::{
     CommandIdentity, Cuts, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
     ProbeSelection, Profile, PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy,
-    StackView, Watch,
+    StackView, SyscallEngine, SyscallLevel, Watch,
 };
 
 mod report;
@@ -172,11 +172,24 @@ pub struct RecordArgs {
     #[arg(long, value_enum, default_value = "now")]
     symbols: SymbolsArg,
 
-    /// Trace these system calls too, with their stacks, as `microscope syscalls
-    /// -e trace=SET` names them: `all`, or names and classes such as
-    /// `%file,%net,connect`. Needs the BPF engine's privileges.
-    #[arg(long, value_name = "SET", conflicts_with = "pid")]
-    syscalls: Option<String>,
+    /// How much of each system call to record, over the preset's: off;
+    /// counts, every call counted in the kernel, with the failed and slow
+    /// ones kept (prod); calls, every call with its arguments and stack
+    /// (dev); or full, also whole strings and the bytes behind pointers
+    /// (max). The BPF engine needs `CAP_BPF` and `CAP_PERFMON`; without
+    /// them the preset's level records no calls and says why.
+    #[arg(long, value_name = "LEVEL")]
+    syscalls: Option<SyscallLevel>,
+
+    /// Keep only the system calls FILTER selects, expressions apart by
+    /// spaces: `trace=%net,openat status=failed fd=3 signal=SIGTERM`.
+    #[arg(long, value_name = "FILTER")]
+    syscall_filter: Option<String>,
+
+    /// What sees system calls: bpf, which never stops the program, or
+    /// ptrace, which stops it at each call and needs no privileges.
+    #[arg(long, value_name = "ENGINE", default_value = "bpf")]
+    syscall_engine: SyscallEngine,
 
     /// The program to record and its arguments.
     #[arg(last = true, required_unless_present = "pid", value_name = "PROGRAM")]
@@ -604,13 +617,28 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         options.cuts = Cuts::Window(Duration::try_from_secs_f64(seconds).context("--window")?);
     }
 
-    if let Some(set) = &args.syscalls {
+    let syscalls = &mut options.syscalls;
+    if let Some(level) = args.syscalls {
+        syscalls.level = level;
+        syscalls.asked = true;
+    }
+
+    syscalls.engine = args.syscall_engine;
+    if let Some(text) = &args.syscall_filter {
+        let expressions: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
         let filter = microscope::syscalls::Filter::parse(
-            &[format!("trace={set}")],
+            &expressions,
             &crate::present::syscalls::signal_named,
         )
+        .map_err(|error| anyhow::anyhow!("--syscall-filter: {error}"))?;
+        syscalls.filter = Some((text.clone(), filter));
+    }
+
+    syscalls
+        .check()
         .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))?;
-        options.syscalls = Some(filter.calls);
+    if let Some(note) = syscalls.resolve().map_err(anyhow::Error::msg)? {
+        eprintln!("microscope: {note}");
     }
 
     if args.continuous.is_some() {

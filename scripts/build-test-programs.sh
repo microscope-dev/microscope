@@ -1840,7 +1840,7 @@ build_tls_modules_fixture musl-gcc "$output_dir/tls-modules-musl-gcc-static" -O0
     -DSTATIC_BUILD "$tls_modules_dir/main.c" "$tls_modules_dir/library.c"
 build_tls_modules_fixture musl-clang "$output_dir/tls-modules-musl-clang-static-pie" -O2 \
     -static-pie -fPIE -DSTATIC_BUILD "$tls_modules_dir/main.c" "$tls_modules_dir/library.c"
-for variant in gcc-o0 clang-o2-nopie gcc-static clang-static-pie; do
+for variant in gcc-o0 gcc-static clang-static-pie; do
     require_musl "$output_dir/tls-modules-musl-${variant}"
 done
 # Statically linked glibc, with and without its thread library.
