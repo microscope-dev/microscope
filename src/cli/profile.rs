@@ -1702,29 +1702,20 @@ fn snapshots(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
     Ok(())
 }
 
-/// The system calls a capture holds, as `microscope syscalls -c` shows them,
-/// then the `limit` call sites that took the most time.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "seconds need no more precision than f64's"
-)]
-fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
-    use crate::present::syscalls::errno;
-    use crate::present::syscalls::summary::{self, Column};
-    let syscalls = profile.syscalls();
-    let calls = syscalls.stats().per_call();
-    let (start, end) = profile.span();
-    let program = profile.setting("program").unwrap_or("the program");
-    let made: u64 = calls.values().map(|stats| stats.calls).sum();
-    let failed: u64 = calls.values().map(|stats| stats.errors).sum();
+/// What shaped a trace's counts: an engine that stretched them, and what
+/// the engine lost or kept only as counts.
+fn trace_notes(
+    profile: &Profile,
+    lost: microscope::syscalls::Losses,
+    out: &mut impl std::io::Write,
+) -> Result<()> {
+    if profile.setting("syscall engine") == Some("ptrace") {
+        writeln!(
+            out,
+            "Traced with ptrace, which stops the program at each traced call: it ran slower than it would, and each call's time includes the stop."
+        )?;
+    }
 
-    writeln!(
-        out,
-        "{program}: {made} system calls, {failed} failed, over {:.3} s",
-        end.saturating_sub(start) as f64 / 1e9
-    )?;
-
-    let lost = syscalls.lost;
     for (count, says) in [
         (
             lost.dropped,
@@ -1747,6 +1738,33 @@ fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Writ
             writeln!(out, "{count} {says}.")?;
         }
     }
+
+    Ok(())
+}
+
+/// The system calls a capture holds, as `microscope syscalls -c` shows them,
+/// then the `limit` call sites that took the most time.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "seconds need no more precision than f64's"
+)]
+fn syscall_summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Result<()> {
+    use crate::present::syscalls::errno;
+    use crate::present::syscalls::summary::{self, Column};
+    let syscalls = profile.syscalls();
+    let calls = syscalls.stats().per_call();
+    let (start, end) = profile.span();
+    let program = profile.setting("program").unwrap_or("the program");
+    let made: u64 = calls.values().map(|stats| stats.calls).sum();
+    let failed: u64 = calls.values().map(|stats| stats.errors).sum();
+
+    writeln!(
+        out,
+        "{program}: {made} system calls, {failed} failed, over {:.3} s",
+        end.saturating_sub(start) as f64 / 1e9
+    )?;
+
+    trace_notes(profile, syscalls.lost, out)?;
 
     writeln!(out)?;
     let errno = |number: u16| errno(microscope::syscalls::Errno(number)).0;

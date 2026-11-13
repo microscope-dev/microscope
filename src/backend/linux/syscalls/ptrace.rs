@@ -984,6 +984,65 @@ pub fn trace(
         }
     };
 
+    let result = follow(mode, first, initial, gate.is_some(), options, stop, sink);
+    let spawn = gate.as_mut().map(Gate::finish);
+    let finished = result?;
+    if finished.end.is_none()
+        && let Some(Err(error)) = spawn
+    {
+        return Err(TraceError::Spawn(error));
+    }
+
+    Ok(finished)
+}
+
+/// Traces process `pid`, held at another launcher's gate, as [`trace`]
+/// traces a program it launches.
+///
+/// The process installs [`seccomp::filter`] of the chosen calls once its
+/// gate opens, which it may once the sink hears [`Sink::attached`]. The
+/// launcher's own wait for the program waits for the trace to end, so that
+/// it takes none of the trace's stops.
+///
+/// # Errors
+///
+/// As [`trace`]'s.
+pub fn trace_held(
+    pid: u32,
+    options: &TraceOptions,
+    stop: &AtomicBool,
+    sink: &mut dyn Sink,
+) -> Result<Finished, TraceError> {
+    let _held = super::super::reaped::REAPED.hold(pid);
+    record!("syscalls ptrace: seize held {pid}");
+    ptrace::seize(
+        Pid::from_raw(pid.cast_signed()),
+        trace_options(true, options.follow),
+    )
+    .map_err(|errno| TraceError::Attach { pid, errno })?;
+    sink.attached(pid);
+    follow(
+        Mode::Filtered,
+        pid,
+        BTreeSet::from([pid]),
+        true,
+        options,
+        stop,
+        sink,
+    )
+}
+
+/// Follows the processes `initial` names until each ends or `stop` is set,
+/// which kills them when they were `launched` and detaches them otherwise.
+fn follow(
+    mode: Mode,
+    first: u32,
+    initial: BTreeSet<u32>,
+    launched: bool,
+    options: &TraceOptions,
+    stop: &AtomicBool,
+    sink: &mut dyn Sink,
+) -> Result<Finished, TraceError> {
     let mut tracer = Tracer {
         mode,
         options,
@@ -997,11 +1056,11 @@ pub fn trace(
         sink,
     };
 
-    let result = run(&mut tracer, stop, gate.is_some());
+    let result = run(&mut tracer, stop, launched);
 
     // A launched program dies with its tracer; the filter would otherwise
     // fail its chosen calls.
-    if gate.is_some() && result.is_err() {
+    if launched && result.is_err() {
         for &tid in tracer.threads.keys() {
             let _ = nix::sys::signal::kill(
                 Pid::from_raw(tid.cast_signed()),
@@ -1010,15 +1069,7 @@ pub fn trace(
         }
     }
 
-    let spawn = gate.as_mut().map(Gate::finish);
-    let finished = result?;
-    if finished.end.is_none()
-        && let Some(Err(error)) = spawn
-    {
-        return Err(TraceError::Spawn(error));
-    }
-
-    Ok(finished)
+    result
 }
 
 /// How often the tracer looks up from waiting: to notice a request to

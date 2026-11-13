@@ -91,12 +91,20 @@ interface TraceNote {
   warn?: boolean;
 }
 
-/** How the calls were traced: the engine and, for BPF, how it attached. */
+/** What ptrace does to the times it shows. */
+export const PTRACE_DISTORTS =
+  "ptrace stops the program at each traced call: it ran slower than it would, and each call's time includes the stop.";
+
+/** How the calls were traced: the engine and, for BPF, how it attached.
+ * ptrace warns, as it distorts what it measures. */
 export function tracedBy(settings: readonly Setting[]): TraceNote {
   const setting = (name: string) => settings.find((each) => each.name === name)?.value;
-  const engine = setting("syscalls");
+  const engine = setting("syscall engine");
   if (!engine) {
     return { text: "" };
+  }
+  if (engine === "ptrace") {
+    return { text: " by ptrace", title: PTRACE_DISTORTS, warn: true };
   }
   const attach = setting("attach");
   const reason = setting("attach reason");

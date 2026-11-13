@@ -812,7 +812,7 @@ fn trace(args: &SyscallsArgs) -> Result<i32> {
             EngineArg::Ptrace => "ptrace",
         };
 
-        capture.setting("syscalls", engine);
+        capture.setting("syscall engine", engine);
     }
 
     for &pid in &plan.attached {

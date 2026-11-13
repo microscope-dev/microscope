@@ -313,8 +313,9 @@ microscope record --syscalls %file,%net -o server.usprof -- ./server
 ```
 
 It takes the same sets as `-e trace=`, or `all`. In the browser, the calls
-appear on the timeline beside the samples. It uses the BPF engine and needs
-its privileges. See
+appear on the timeline beside the samples. It uses the BPF engine, which needs
+its privileges; `--syscall-engine ptrace` needs none, but stops the program at
+each traced call, which slows it and stretches each call's time. See
 [Profiling](profiling.md#record-system-calls-too).
 
 ## Stop at a system call in the debugger

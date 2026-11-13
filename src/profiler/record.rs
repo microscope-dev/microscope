@@ -4605,11 +4605,13 @@ mod tests {
             .join("build/test-programs/profile-stacks-gcc-o2-nofp");
         let mut command = std::process::Command::new(program);
         command.arg("30000000");
-        let perf::Launched { events, exit, .. } =
-            perf::launch(command, &options, perf::LaunchOptions::default(), |_, _| {
-                Ok(())
-            })
-            .expect("launch the program");
+        let perf::Launched { events, exit, .. } = perf::launch(
+            command,
+            &options,
+            &perf::LaunchOptions::default(),
+            |_, _| Ok(()),
+        )
+        .expect("launch the program");
 
         // Read as the program runs, as recording does: the rings may be far
         // smaller than asked when other recordings hold the user's share of

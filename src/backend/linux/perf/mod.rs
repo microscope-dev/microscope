@@ -1331,11 +1331,15 @@ impl Killer {
 }
 
 /// How to start the program.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchOptions {
     /// Runs it at the addresses its image names, as breakpoint sources
     /// need to know where code is before it runs.
     pub no_address_randomization: bool,
+
+    /// A seccomp filter it installs once its gate opens, which stops the
+    /// calls the ptrace engine traces.
+    pub filter: Option<Vec<super::syscalls::seccomp::Instruction>>,
 }
 
 /// Starts `command` with its events open before it executes, so the first
@@ -1351,7 +1355,7 @@ pub struct LaunchOptions {
 pub fn launch(
     mut command: Command,
     options: &EventOptions,
-    launch: LaunchOptions,
+    launch: &LaunchOptions,
     held: impl FnOnce(u32, &Events) -> Result<(), String>,
 ) -> Result<Launched, LaunchError> {
     let cpus = online_cpus().map_err(|error| LaunchError::Events(OpenError::Cpus(error)))?;
@@ -1501,8 +1505,13 @@ fn write_all(fd: &OwnedFd, buffer: &[u8]) -> std::io::Result<()> {
 fn gate(
     command: &mut Command,
     [pid_write, go_read, go_write]: [&OwnedFd; 3],
-    launch: LaunchOptions,
+    launch: &LaunchOptions,
 ) {
+    // Built before the fork: the child may not allocate.
+    let filter = launch
+        .filter
+        .as_ref()
+        .map(|program| program.iter().copied().map(Into::into).collect());
     super::sys::before_exec(
         command,
         super::sys::BeforeExec {
@@ -1513,6 +1522,7 @@ fn gate(
                 go_read: go_read.as_raw_fd(),
                 go_write: go_write.as_raw_fd(),
             }),
+            filter,
             ..Default::default()
         },
     );
@@ -2116,7 +2126,7 @@ mod tests {
         let launched = launch(
             Command::new(program),
             &options,
-            LaunchOptions::default(),
+            &LaunchOptions::default(),
             |_, _| Ok(()),
         )
         .expect("launch the program");
@@ -2248,7 +2258,7 @@ mod tests {
         let mut command = Command::new(program);
         command.args(["0", "750", "8"]);
         let Launched { events, exit, .. } =
-            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
+            launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
                 .expect("launch the program");
         (events, exit)
     }
@@ -2269,7 +2279,7 @@ mod tests {
         let Launched { events, exit, .. } = launch(
             Command::new("true"),
             &options,
-            LaunchOptions::default(),
+            &LaunchOptions::default(),
             |_, _| Ok(()),
         )
         .expect("launch the program");
@@ -2304,7 +2314,7 @@ mod tests {
             .stdin(reader)
             .stdout(saying);
         let Launched { events, exit, .. } =
-            launch(command, &options, LaunchOptions::default(), |_, _| Ok(()))
+            launch(command, &options, &LaunchOptions::default(), |_, _| Ok(()))
                 .expect("launch the program");
 
         let status = events.read_while(|| {

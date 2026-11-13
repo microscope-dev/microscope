@@ -1499,6 +1499,76 @@ fn a_cgroup_target_is_one_and_named_rightly() {
     }
 }
 
+/// `record` traces calls with ptrace without privileges, beside its
+/// samples and on their clock: each round's calls are traced, each falls
+/// inside the recording's span, and the report warns that ptrace stretched
+/// them. The load spins between rounds, so it is sampled too.
+#[test]
+fn a_ptrace_recording_holds_samples_and_calls_on_one_clock() {
+    let directory = ScratchDir::new("syscalls-record-ptrace");
+    let file = directory.path().join("ptrace.usprof");
+    let recorded = Command::new(env!("CARGO_BIN_EXE_microscope"))
+        .args([
+            "record",
+            "--syscall-engine",
+            "ptrace",
+            "--syscalls",
+            "calls",
+            "-o",
+        ])
+        .arg(&file)
+        .arg("--")
+        .arg(Scenario::fixture("syscall-load"))
+        .args(["1", "200", "1000"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run microscope record");
+    assert!(recorded.status.success(), "{}", text(&recorded.stderr));
+
+    let profile = microscope::profiler::Profile::read(&file)
+        .expect("the capture reads")
+        .profile;
+    assert_eq!(profile.setting("syscall engine"), Some("ptrace"));
+    assert!(profile.samples() > 50, "{} samples", profile.samples());
+    let counts = profile.syscalls().stats().per_call();
+    // The rounds' calls, and the loader's few.
+    for name in ["read", "close"] {
+        let calls = counts
+            .iter()
+            .find(|(call, _)| call.name() == Some(name))
+            .map_or(0, |(_, stats)| stats.calls);
+        assert!((200..210).contains(&calls), "{calls} {name}");
+    }
+
+    let (start, end) = profile.span();
+    let (start, end) = (start.cast_unsigned(), end.cast_unsigned());
+    let calls: Vec<u64> = profile
+        .syscalls()
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            microscope::syscalls::TraceEvent::Call(call) => Some(call.time()),
+            _ => None,
+        })
+        .collect();
+    assert!(calls.len() >= 600);
+    assert!(
+        calls.iter().all(|time| (start..=end).contains(time)),
+        "calls outside {start}..{end}"
+    );
+
+    let report = Command::new(env!("CARGO_BIN_EXE_microscope"))
+        .arg("report")
+        .arg(&file)
+        .output()
+        .expect("run microscope report");
+    let report = text(&report.stdout);
+    assert!(
+        report.contains("Traced with ptrace, which stops the program"),
+        "{report}"
+    );
+}
+
 /// The BPF engine, held to the ptrace engine's output for the same
 /// program. It needs `CAP_BPF` and `CAP_PERFMON`, so these run only
 /// through `just test-bpf`, which starts microscope with the `microscope-bpf`

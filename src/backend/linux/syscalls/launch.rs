@@ -8,8 +8,6 @@ use std::process::{Command, ExitStatus};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use nix::libc;
-
 use super::seccomp::Instruction;
 
 /// A child released at its gate.
@@ -127,17 +125,7 @@ fn gate(
     filter: Option<Vec<Instruction>>,
 ) {
     // Built before the fork: the child may not allocate.
-    let filter = filter.map(|program| {
-        program
-            .into_iter()
-            .map(|instruction| libc::sock_filter {
-                code: instruction.code,
-                jt: instruction.jt,
-                jf: instruction.jf,
-                k: instruction.k,
-            })
-            .collect()
-    });
+    let filter = filter.map(|program| program.into_iter().map(Into::into).collect());
     super::super::sys::before_exec(
         command,
         super::super::sys::BeforeExec {
@@ -185,7 +173,7 @@ mod tests {
 
         assert_eq!(
             ended.expect("the child ends"),
-            Err(Some(libc::ECANCELED)),
+            Err(Some(nix::libc::ECANCELED)),
             "the child did not execute"
         );
     }

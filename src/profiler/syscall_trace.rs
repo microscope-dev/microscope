@@ -11,7 +11,7 @@ use super::{Cuts, Preset, RecordOptions};
 use crate::backend::syscall_engines::bpf::{self, BpfOptions, Exceptions, Shed};
 use crate::backend::syscall_engines::capture::SyscallCapture;
 use crate::backend::syscall_engines::stacks::SharedStacks;
-use crate::backend::syscall_engines::{Sink, Target, TraceOptions};
+use crate::backend::syscall_engines::{Sink, Target, TraceOptions, ptrace};
 use crate::capture::Capture;
 use crate::capture::builder::CaptureBuilder;
 use crate::syscalls::captures::Limits;
@@ -200,9 +200,9 @@ impl SyscallOptions {
         )))
     }
 
-    /// The calls the kernel must see: those kept, and every call that
+    /// The calls the engine must see: those kept, and every call that
     /// changes a descriptor, so that the paths of those kept are right.
-    fn traced(&self) -> CallSet {
+    pub(super) fn traced(&self) -> CallSet {
         let Some((_, filter)) = &self.filter else {
             return CallSet::all();
         };
@@ -239,13 +239,14 @@ impl SyscallOptions {
 }
 
 /// The system call trace a recording runs beside its samples, on the
-/// same clock, with the BPF engine.
+/// same clock.
 pub(super) struct SyscallTrace {
     stop: Arc<AtomicBool>,
     thread: std::thread::JoinHandle<Result<(), String>>,
     shared: Arc<Mutex<Shared>>,
     stacks: Option<SharedStacks>,
     level: SyscallLevel,
+    engine: SyscallEngine,
     budget: Arc<Budgeted>,
 }
 
@@ -524,22 +525,10 @@ impl SyscallTrace {
             },
         };
 
+        let engine = (options.engine == SyscallEngine::Bpf).then_some(engine);
         let thread = std::thread::Builder::new()
             .name("microscope-record-syscalls".into())
-            .spawn(move || {
-                match traced {
-                    Traced::Held(pid) => bpf::trace_held(pid, &trace, engine, &stopped, &mut sink),
-                    Traced::Running(pid) => bpf::trace(
-                        Target::Attach(vec![pid]),
-                        &trace,
-                        engine,
-                        &stopped,
-                        &mut sink,
-                    ),
-                }
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-            })
+            .spawn(move || run(traced, engine, &trace, &stopped, &mut sink))
             .map_err(|error| error.to_string())?;
         if seen.recv().is_ok() {
             return Ok(Some(Self {
@@ -548,6 +537,7 @@ impl SyscallTrace {
                 shared,
                 stacks,
                 level,
+                engine: options.engine,
                 budget,
             }));
         }
@@ -562,6 +552,10 @@ impl SyscallTrace {
     /// The rungs of the budget's ladder this trace can give up.
     pub(super) fn rungs(&self) -> Vec<Rung> {
         let mut rungs = Vec::new();
+        if self.engine == SyscallEngine::Ptrace {
+            return rungs;
+        }
+
         if self.level >= SyscallLevel::Calls {
             rungs.extend([Rung::Stacks, Rung::Sampled, Rung::ExceptionsOnly]);
         }
@@ -628,6 +622,32 @@ impl SyscallTrace {
             .map_err(|_| "the system call trace panicked".to_owned())??;
         Ok(cut(&self.shared, self.stacks.as_ref(), samples, true))
     }
+}
+
+/// Traces `traced` with the BPF engine run as `bpf` says, or with ptrace.
+fn run(
+    traced: Traced,
+    bpf: Option<BpfOptions>,
+    trace: &TraceOptions,
+    stop: &AtomicBool,
+    sink: &mut Held,
+) -> Result<(), String> {
+    let ended = match (traced, bpf) {
+        (Traced::Held(pid), Some(engine)) => {
+            bpf::trace_held(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
+        }
+        (Traced::Running(pid), Some(engine)) => {
+            bpf::trace(Target::Attach(vec![pid]), trace, engine, stop, sink)
+                .map_err(|error| error.to_string())
+        }
+        (Traced::Held(pid), None) => {
+            ptrace::trace_held(pid, trace, stop, sink).map_err(|error| error.to_string())
+        }
+        (Traced::Running(pid), None) => ptrace::trace(Target::Attach(vec![pid]), trace, stop, sink)
+            .map_err(|error| error.to_string()),
+    };
+
+    ended.map(|_| ())
 }
 
 /// `samples` with the events and counts `shared` keeps for their span,

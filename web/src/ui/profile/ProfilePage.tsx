@@ -775,7 +775,11 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
         </Stat>
       ) : null}
       {summary.syscalls > 0 ? (
-        <Stat label="Calls traced" title={by.title ? `${by.title}\n${vdso}` : vdso}>
+        <Stat
+          label="Calls traced"
+          title={by.title ? `${by.title}\n${vdso}` : vdso}
+          warn={by.warn ?? false}
+        >
           {formatCount(summary.syscalls)}
           {by.text}
         </Stat>

@@ -135,14 +135,12 @@ pub fn record_watched(
         processor.fixed_period(period);
     }
 
-    let launch = perf::LaunchOptions {
-        no_address_randomization: breakpoint.is_some(),
-    };
+    let launch = launch_options(options, breakpoint.is_some());
 
     let mut syscalls = None;
     let mut walker = None;
     let mut refused = None;
-    let launched = perf::launch(command, &events, launch, |pid, events| {
+    let launched = perf::launch(command, &events, &launch, |pid, events| {
         // The program runs on the events before the program can start a
         // thread that would inherit them without it.
         if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
@@ -226,6 +224,18 @@ pub fn record_watched(
     }
 
     Ok(Recording { profile, status })
+}
+
+/// How to start the program: at fixed addresses for a breakpoint source,
+/// and stopping only the calls the ptrace engine traces.
+fn launch_options(options: &RecordOptions, fixed: bool) -> perf::LaunchOptions {
+    let ptraced = options.syscalls.engine == SyscallEngine::Ptrace
+        && options.syscalls.level != SyscallLevel::Off;
+    perf::LaunchOptions {
+        no_address_randomization: fixed,
+        filter: ptraced
+            .then(|| crate::backend::syscall_engines::seccomp::filter(&options.syscalls.traced())),
+    }
 }
 
 /// Records the running process `pid`, which goes on as it was.
@@ -687,11 +697,17 @@ fn settings(
 fn resolved(options: &RecordOptions) -> Result<RecordOptions, RecordError> {
     let mut options = options.clone();
     options.syscalls.resolve().map_err(RecordError::Syscalls)?;
+    // A process has one tracer, which a snapshot that stops it needs too.
+    let stops = (options.task_snapshots.is_some() && !options.live_snapshots)
+        || matches!(options.python, Some(PythonEngine::Snapshot { .. }));
     if options.syscalls.engine == SyscallEngine::Ptrace
         && options.syscalls.level != SyscallLevel::Off
+        && stops
     {
         return Err(RecordError::Syscalls(
-            "recording system calls with ptrace is not supported yet".to_owned(),
+            "the ptrace engine and snapshots that stop the program both need to trace it; \
+             take live snapshots, or record system calls with the BPF engine"
+                .to_owned(),
         ));
     }
 
@@ -1732,8 +1748,9 @@ mod tests {
         let super::perf::Launched { events, exit, .. } = super::perf::launch(
             command,
             &options,
-            super::perf::LaunchOptions {
+            &super::perf::LaunchOptions {
                 no_address_randomization: true,
+                filter: None,
             },
             // Both threads must write the same ring, whose 128 KiB
             // holds only three 32 KiB samples, not all six calls.
@@ -1794,8 +1811,9 @@ mod tests {
         } = super::perf::launch(
             command,
             &options,
-            super::perf::LaunchOptions {
+            &super::perf::LaunchOptions {
                 no_address_randomization: true,
+                filter: None,
             },
             |_, _| Ok(()),
         )
@@ -1849,8 +1867,9 @@ mod tests {
         } = super::perf::launch(
             command,
             &options,
-            super::perf::LaunchOptions {
+            &super::perf::LaunchOptions {
                 no_address_randomization: true,
+                filter: None,
             },
             // Pinned before it executes, the program writes all its records
             // to one ring, which bounds what collection can hold below.

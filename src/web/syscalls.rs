@@ -98,7 +98,7 @@ impl Trace {
             calls,
             start,
             end,
-            engine: profile.setting("syscalls").map(str::to_owned),
+            engine: profile.setting("syscall engine").map(str::to_owned),
             processes,
         }
     }

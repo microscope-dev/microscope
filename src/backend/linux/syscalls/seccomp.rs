@@ -15,6 +15,17 @@ pub struct Instruction {
     pub k: u32,
 }
 
+impl From<Instruction> for nix::libc::sock_filter {
+    fn from(instruction: Instruction) -> Self {
+        Self {
+            code: instruction.code,
+            jt: instruction.jt,
+            jf: instruction.jf,
+            k: instruction.k,
+        }
+    }
+}
+
 const LOAD_WORD: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
 const JUMP: u16 = 0x05; // BPF_JMP | BPF_JA
 const JUMP_EQUAL: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K

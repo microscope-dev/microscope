@@ -79,7 +79,7 @@ pub fn record(
         microscope::profiler::ARGUMENTS,
         &microscope::profiler::encode_arguments(arguments),
     );
-    capture.setting("syscalls", "ptrace");
+    capture.setting("syscall engine", "ptrace");
     let mut live = Live {
         publisher: &mut publisher,
         capture,

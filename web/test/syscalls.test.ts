@@ -14,6 +14,7 @@ import {
   shownBuckets,
   stacked,
   tracedBy,
+  PTRACE_DISTORTS,
   traceNotes,
 } from "../src/profile/syscalls";
 
@@ -93,11 +94,16 @@ const settings = (pairs: [string, string][]) => pairs.map(([name, value]) => ({ 
 
 describe("what a trace's footer says of how it was made", () => {
   it("names the engine and how it attached, with the reason on hover", () => {
-    expect(tracedBy(settings([["syscalls", "ptrace"]]))).toEqual({ text: " by ptrace" });
+    expect(tracedBy(settings([["syscall engine", "ptrace"]]))).toEqual({
+      text: " by ptrace",
+      title: PTRACE_DISTORTS,
+      warn: true,
+    });
     expect(
       tracedBy(
         settings([
-          ["syscalls", "bpf"],
+          ["syscalls", "calls"],
+          ["syscall engine", "bpf"],
           ["attach", "tp_btf"],
           ["attach reason", "the list names 40 calls"],
         ]),
