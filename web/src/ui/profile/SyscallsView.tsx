@@ -2,9 +2,9 @@ import { type ChangeEvent, type FormEvent, useCallback, useMemo, useState } from
 
 import { type SyscallTab, syscallQueryOf, withLook } from "../../profile/look";
 import { formatCount } from "../../profile/paint";
-import { bucketLabel, lossNotes } from "../../profile/syscalls";
+import { lossNotes, unkept } from "../../profile/syscalls";
 import { useAnswer, useProfile } from "./context";
-import { ClearChip, LookButton } from "./parts";
+import { LookButton } from "./parts";
 import { Lanes } from "./SyscallLanes";
 import { Log } from "./SyscallLog";
 import { Summary } from "./SyscallSummary";
@@ -18,10 +18,72 @@ const TABS: { tab: SyscallTab | undefined; label: string }[] = [
   { tab: "processes", label: "Processes" },
 ];
 
+/** What the kernel did for the program. System calls are its first kind,
+ * and the one it has so far. */
+export function KernelPane() {
+  return (
+    <div className="kernel" data-testid="kernel">
+      <div className="segmented kernel-tabs" role="tablist" aria-label="Kernel data">
+        <button type="button" role="tab" id="kernel-syscalls" aria-selected="true">
+          Syscalls
+        </button>
+      </div>
+      <div className="kernel-body" role="tabpanel" aria-labelledby="kernel-syscalls">
+        <SyscallsView />
+      </div>
+    </div>
+  );
+}
+
 /** The profile's system calls: what they cost, when, from where, and what
  * they did. Every panel reads the same selection, in strace's `-e`
- * syntax, over the same time range as the rest of the profile. */
-export function SyscallsView() {
+ * syntax, over the same time range as the rest of the profile. A
+ * recording that kept none, or only the exceptions, says so in their
+ * place, with the flag that would have kept them. */
+function SyscallsView() {
+  const { summary, look } = useProfile();
+  const missing = unkept(summary.settings);
+  return (
+    <div className="syscalls" data-testid="syscalls">
+      {missing && summary.syscalls === 0 ? (
+        <>
+          <div className="syscalls-bar">
+            <Tabs tab={look.st} />
+          </div>
+          <Unkept {...missing} />
+        </>
+      ) : (
+        <Calls missing={missing} />
+      )}
+    </div>
+  );
+}
+
+function Tabs({ tab: shown }: { tab: SyscallTab | undefined }) {
+  return (
+    <div className="segmented">
+      {TABS.map(({ tab, label }) => (
+        <LookButton key={label} field="st" value={tab} pressed={shown === tab}>
+          {label}
+        </LookButton>
+      ))}
+    </div>
+  );
+}
+
+type Missing = NonNullable<ReturnType<typeof unkept>>;
+
+function Unkept({ text, flag }: Missing) {
+  return (
+    <p className="profile-untimed muted" data-testid="syscalls-unkept">
+      {text} Record with <code>{flag}</code> to keep each call.
+    </p>
+  );
+}
+
+/** The calls the recording kept, under what it left out when it kept
+ * only some. */
+function Calls({ missing }: { missing: Missing | null }) {
   const { profile, look, query } = useProfile();
   const base = useMemo(
     () => syscallQueryOf(profile, look, query.revision ?? 0),
@@ -29,24 +91,10 @@ export function SyscallsView() {
   );
   const summary = useAnswer("syscallSummary", { ...base, group: look.sg ?? "syscall" });
   return (
-    <div className="syscalls" data-testid="syscalls">
+    <>
       <div className="syscalls-bar">
         <FilterBar error={summary.error?.message} />
-        <div className="segmented">
-          {TABS.map(({ tab, label }) => (
-            <LookButton key={label} field="st" value={tab} pressed={look.st === tab}>
-              {label}
-            </LookButton>
-          ))}
-        </div>
-        {look.sl ? (
-          <ClearChip
-            field="sl"
-            label={bucketLabel(Number(look.sl))}
-            title="Calls of this latency"
-            removeLabel="Remove the latency band"
-          />
-        ) : null}
+        <Tabs tab={look.st} />
         {summary.data ? (
           <span className="muted syscalls-counts" data-testid="syscall-counts">
             {formatCount(summary.data.calls)} of {formatCount(summary.data.total, "call")} ·{" "}
@@ -61,13 +109,7 @@ export function SyscallsView() {
           </span>
         ) : null}
       </div>
-      {summary.data?.counted ? (
-        <div className="profile-untimed muted">
-          The kernel counted these calls without reporting each, so there is only the summary.
-        </div>
-      ) : (
-        <Lanes query={base} />
-      )}
+      {missing ? <Unkept {...missing} /> : <Lanes query={base} />}
       <div className="syscalls-body">
         {look.st === "log" ? (
           // A new selection starts at its first page.
@@ -82,7 +124,7 @@ export function SyscallsView() {
           <Summary summary={summary} query={base} />
         )}
       </div>
-    </div>
+    </>
   );
 }
 

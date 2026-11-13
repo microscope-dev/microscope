@@ -16,6 +16,7 @@ import {
   tracedBy,
   PTRACE_DISTORTS,
   traceNotes,
+  unkept,
 } from "../src/profile/syscalls";
 
 const roundTrip = (look: ProfileLook) =>
@@ -24,7 +25,7 @@ const roundTrip = (look: ProfileLook) =>
 describe("the Syscalls view's address", () => {
   it("holds the selection, grouping, call, tab, and expanded line", () => {
     const look: ProfileLook = {
-      view: "syscalls",
+      view: "kernel",
       range: "10-90",
       sf: "trace=%file,!close status=failed path=/a b&c",
       sg: "process",
@@ -133,6 +134,30 @@ describe("what a trace's footer says of how it was made", () => {
       { text: "saved when close failed with errno 9", warn: true },
     ]);
     expect(traceNotes(settings([["syscalls", "bpf"]]))).toEqual([]);
+  });
+});
+
+describe("what a recording did not keep of its calls", () => {
+  it("names the flag that would have kept each call, by level and reason", () => {
+    expect(unkept(settings([["syscalls", "calls"]]))).toBeNull();
+    expect(unkept(settings([["syscalls", "full"]]))).toBeNull();
+    expect(unkept(settings([["syscalls", "counts"]]))?.flag).toBe("--syscalls calls");
+    expect(unkept(settings([["syscalls", "off"]]))).toEqual({
+      text: "System calls were not recorded.",
+      flag: "--syscalls calls",
+    });
+    // Off because BPF was out of reach, which ptrace does not need.
+    expect(
+      unkept(
+        settings([
+          ["syscalls", "off"],
+          ["syscalls not recorded", "CAP_BPF missing"],
+        ]),
+      ),
+    ).toEqual({
+      text: "System calls were not recorded: CAP_BPF missing.",
+      flag: "--syscall-engine ptrace",
+    });
   });
 });
 

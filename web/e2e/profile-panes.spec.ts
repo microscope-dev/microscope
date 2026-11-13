@@ -87,7 +87,8 @@ test("a profile opens as panes that share what is selected and keep how each dra
   await expect(views.nth(0)).toHaveAccessibleName("Flame graph calls.usprof");
   await expect(views.nth(1)).toHaveAccessibleName("Call tree calls.usprof");
   await expect(views.nth(2)).toHaveAccessibleName("Functions calls.usprof");
-  await expect(views).toHaveCount(3);
+  await expect(views.nth(3)).toHaveAccessibleName("Kernel calls.usprof");
+  await expect(views).toHaveCount(4);
   await expect(tab(page, "Flame graph")).toHaveAttribute("aria-selected", "true");
   await expect(tab(page, "Zones")).toHaveCount(0);
   await expect(page).not.toHaveURL(/view=/u);
@@ -95,8 +96,8 @@ test("a profile opens as panes that share what is selected and keep how each dra
   // The pane being worked in marks the tabs of the panes that share its
   // selection, wherever they are docked, and nothing else's.
   await tab(page, "calls.usprof").click();
-  await expect(marked(page)).toHaveCount(3);
-  for (const title of ["Flame graph", "Call tree", "Functions"]) {
+  await expect(marked(page)).toHaveCount(4);
+  for (const title of ["Flame graph", "Call tree", "Functions", "Kernel"]) {
     await expect(holding(tab(page, title))).toHaveAttribute("data-linked");
   }
   await tab(page, "Explorer").click();
@@ -195,7 +196,7 @@ test("a view's pane is duplicated to share its selection, or copied to keep one 
   await expect(marked(page)).toHaveCount(1);
   await expect(holding(tab(page, "Functions").nth(1))).toHaveAttribute("data-linked");
   await tab(page, "Functions").nth(0).click();
-  await expect(marked(page)).toHaveCount(4);
+  await expect(marked(page)).toHaveCount(5);
   await expect(holding(tab(page, "Functions").nth(1))).not.toHaveAttribute("data-linked");
   await tab(page, "Functions").nth(1).click();
 
@@ -309,7 +310,7 @@ test("closed panes reopen as they looked, Back and Forward step through looks, a
 
   // Every pane of the profile closed, the address names none; the last
   // reopened brings back what they shared.
-  for (const title of ["Call tree", "Flame graph", "Functions", "calls.usprof"]) {
+  for (const title of ["Call tree", "Flame graph", "Functions", "Kernel", "calls.usprof"]) {
     await page.getByRole("button", { name: `Close ${title}`, exact: true }).click();
   }
   await expect.poll(() => pathname(page)).toBe("/");

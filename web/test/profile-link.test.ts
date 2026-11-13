@@ -70,7 +70,7 @@ describe("a profile's panes", () => {
     const overview = only(layout, null);
     const flame = only(layout, "flame");
     expect(kindsIn(layout, overview)).toEqual([null]);
-    expect(kindsIn(layout, flame)).toEqual(["flame", "tree", "functions"]);
+    expect(kindsIn(layout, flame)).toEqual(["flame", "tree", "functions", "kernel"]);
     expect(groupOf(layout, flame)?.active).toBe(flame);
     expect(kindsIn(layout, only(layout, "zones"))).toEqual(["zones"]);
     // The overview keeps the focus it had.
@@ -115,7 +115,7 @@ describe("a profile's panes", () => {
     expect(arrange(closed, link, summary(), false)).toBe(closed);
   });
 
-  it("open a live recording's calls as they come, and its stacks once it has them", () => {
+  it("open a live recording's kernel pane once it has calls, and its stacks once it has them", () => {
     const opened = openProfile(emptyLayout(), "p1", "live", {}, G0);
     const link = linkOf(opened.layout.panes[opened.pane] as Pane) as LinkId;
     const empty = summary({ samples: 0, syscalls: 0, zoneSites: [] });
@@ -126,7 +126,7 @@ describe("a profile's panes", () => {
       summary({ samples: 0, syscalls: 3, zoneSites: [] }),
       true,
     );
-    expect(Object.values(traced.panes).map((pane) => viewOf(pane))).toEqual([null, "syscalls"]);
+    expect(Object.values(traced.panes).map((pane) => viewOf(pane))).toEqual([null, "kernel"]);
     const sampled = arrange(
       traced,
       link,
@@ -135,7 +135,7 @@ describe("a profile's panes", () => {
     );
     expect(Object.values(sampled.panes).map((pane) => viewOf(pane))).toEqual([
       null,
-      "syscalls",
+      "kernel",
       "flame",
       "tree",
       "functions",
@@ -224,6 +224,7 @@ describe("a profile's panes", () => {
       "details",
       "flame",
       "functions",
+      "kernel",
       "tree",
     ]);
     expect(focusedPane(shown.layout)).toBe(shown.pane);
@@ -266,7 +267,7 @@ describe("another pane like one", () => {
 
     // Two twins do not collide, and the fork outlives what it was copied from.
     const third = duplicate(twin.layout, flame, false);
-    expect(third && Object.keys(third.layout.panes)).toHaveLength(7);
+    expect(third && Object.keys(third.layout.panes)).toHaveLength(8);
     let alone = fork.layout;
     for (const id of Object.keys(alone.panes) as PaneId[]) {
       if (id !== fork.pane) {

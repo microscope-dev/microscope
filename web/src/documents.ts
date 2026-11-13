@@ -51,7 +51,7 @@ export const KIND = {
   profileFlame: kind("profile-flame"),
   profileTree: kind("profile-tree"),
   profileFunctions: kind("profile-functions"),
-  profileSyscalls: kind("profile-syscalls"),
+  profileKernel: kind("profile-kernel"),
   profileZones: kind("profile-zones"),
   profileDetails: kind("profile-details"),
   settings: kind("settings"),

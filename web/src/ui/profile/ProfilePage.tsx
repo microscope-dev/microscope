@@ -34,7 +34,7 @@ import {
   formatSpan,
   formatWeight,
 } from "../../profile/paint";
-import { lossNotes, tracedBy, traceNotes } from "../../profile/syscalls";
+import { bucketLabel, lossNotes, tracedBy, traceNotes } from "../../profile/syscalls";
 import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
@@ -54,7 +54,7 @@ import { FunctionsView } from "./FunctionsView";
 import { Lanes } from "./Lanes";
 import { arrange, leadingPane, lookOf, paneParams, readLink, storeLook, viewOf } from "./link";
 import { Chip, ClearChip, LaneChip, LookButton, ShareBar } from "./parts";
-import { SyscallsView } from "./SyscallsView";
+import { KernelPane } from "./SyscallsView";
 import { TreeView } from "./TreeView";
 import { ZonesPane } from "./ZonesPane";
 
@@ -167,8 +167,8 @@ const ViewBody = memo(function ViewBody({ view }: { view: ProfileView }) {
     <FileDetails />
   ) : (
     <div className="profile-view">
-      {view === "syscalls" ? (
-        <SyscallsView />
+      {view === "kernel" ? (
+        <KernelPane />
       ) : view === "functions" ? (
         <FunctionsView />
       ) : view === "tree" ? (
@@ -397,6 +397,22 @@ function ProfileHead() {
         {(look.tf ?? []).map((entry, index) => (
           <TransformChip key={entry} entry={entry} index={index} />
         ))}
+        {look.sf ? (
+          <ClearChip
+            field="sf"
+            label={`syscalls: ${look.sf}`}
+            title="System calls this selection keeps, in strace's -e syntax"
+            removeLabel="Remove the system call filter"
+          />
+        ) : null}
+        {look.sl ? (
+          <ClearChip
+            field="sl"
+            label={`syscalls ${bucketLabel(Number(look.sl))}`}
+            title="System calls of this latency"
+            removeLabel="Remove the latency band"
+          />
+        ) : null}
         {sampled && look.bz !== "rest" ? <Compare /> : null}
       </div>
     </div>

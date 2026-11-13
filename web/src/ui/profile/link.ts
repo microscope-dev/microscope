@@ -1,5 +1,5 @@
 // A profile's panes in the workbench. Its overview, flame graph, call
-// tree, functions, syscalls and zones each are a pane of their own, and
+// tree, functions, kernel data and zones each are a pane of their own, and
 // every pane that looks at the profile the same way reads one link: which
 // profile, which of its samples, and what is selected. What a pane draws
 // on its own, such as the flame graph's zoom, it keeps in its params.
@@ -37,7 +37,7 @@ const VIEW_KINDS: Readonly<Record<ProfileView, KindId>> = {
   flame: KIND.profileFlame,
   tree: KIND.profileTree,
   functions: KIND.profileFunctions,
-  syscalls: KIND.profileSyscalls,
+  kernel: KIND.profileKernel,
   zones: KIND.profileZones,
   details: KIND.profileDetails,
 };
@@ -62,7 +62,7 @@ const STACKS: ReadonlySet<ProfileView> = new Set([
   "flame",
   "tree",
   "functions",
-  "syscalls",
+  "kernel",
   "details",
 ]);
 
@@ -351,13 +351,14 @@ export function openProfile(
 }
 
 /** The views a profile's summary calls for, in their tabs' order: its
- * stacks once it has samples or is done recording, its calls when it has
- * any, and its zones when it has any. */
+ * stacks once it has samples or is done recording, its kernel data then
+ * too or once it has calls, saying what it lacks when it has none, and its
+ * zones when it has any. */
 function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
   const sampled = summary.samples > 0 || !live;
   return [
     ...(sampled ? (["flame", "tree", "functions"] as const) : []),
-    ...(summary.syscalls > 0 ? (["syscalls"] as const) : []),
+    ...(sampled || summary.syscalls > 0 ? (["kernel"] as const) : []),
     ...(summary.zoneSites.length > 0 ? (["zones"] as const) : []),
   ];
 }

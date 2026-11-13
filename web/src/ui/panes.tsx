@@ -145,7 +145,7 @@ export const KINDS = kinds<Need>([
   profileKind(KIND.profileFlame, () => "Flame graph"),
   profileKind(KIND.profileTree, () => "Call tree"),
   profileKind(KIND.profileFunctions, () => "Functions"),
-  profileKind(KIND.profileSyscalls, () => "Syscalls"),
+  profileKind(KIND.profileKernel, () => "Kernel"),
   profileKind(KIND.profileZones, () => "Zones"),
   profileKind(KIND.profileDetails, () => "File details"),
 ]);

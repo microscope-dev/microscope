@@ -1,4 +1,4 @@
-// What the Syscalls view draws, apart from React: each class's hue, the
+// What the Syscalls tab draws, apart from React: each class's hue, the
 // heat map's ramp, histogram buckets' names, and stacked series.
 
 import { assert } from "../assert";
@@ -147,6 +147,26 @@ export function lossNotes(lost: SyscallLosses): TraceNote[] {
     });
   }
   return notes;
+}
+
+/** What the recording did not keep of its system calls, and the flag that
+ * would have kept each call; null when it kept them. */
+export function unkept(settings: readonly Setting[]): { text: string; flag: string } | null {
+  const setting = (name: string) => settings.find((each) => each.name === name)?.value;
+  const level = setting("syscalls") ?? "off";
+  if (level === "counts") {
+    return {
+      text: "The kernel counted every system call and kept only the failed and slow ones.",
+      flag: "--syscalls calls",
+    };
+  }
+  if (level !== "off") {
+    return null;
+  }
+  const why = setting("syscalls not recorded");
+  return why
+    ? { text: `System calls were not recorded: ${why}.`, flag: "--syscall-engine ptrace" }
+    : { text: "System calls were not recorded.", flag: "--syscalls calls" };
 }
 
 /** What else shaped the trace: its cgroup, and what saved a window. */

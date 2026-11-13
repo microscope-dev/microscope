@@ -28,7 +28,7 @@ import { Lanes } from "../src/ui/profile/Lanes";
 import { Options } from "../src/ui/profile/Options";
 import { LaneChip } from "../src/ui/profile/parts";
 import { Profile } from "../src/ui/profile/ProfilePage";
-import { SyscallsView } from "../src/ui/profile/SyscallsView";
+import { KernelPane } from "../src/ui/profile/SyscallsView";
 import { TreeView } from "../src/ui/profile/TreeView";
 import { ZonesPane } from "../src/ui/profile/ZonesPane";
 import { POLL } from "./fake-server";
@@ -2226,7 +2226,8 @@ it("offers no zone scope of waits, which zones never hold", async () => {
   }
 });
 
-const traced = () => summaryOf({ samples: 0, syscalls: 10 });
+const CALLS_KEPT = [{ name: "syscalls", value: "calls" }];
+const traced = () => summaryOf({ samples: 0, syscalls: 10, settings: CALLS_KEPT });
 
 const ROW = {
   key: "read",
@@ -2258,7 +2259,7 @@ const sorting = (column: string) =>
   page.getByRole("button", { name: column, exact: true }).element().closest("th")?.ariaSort;
 
 it("selects a call from its name's button, and sorts by a column it names", async () => {
-  const server = await mount(<SyscallsView />, { summary: traced() });
+  const server = await mount(<KernelPane />, { summary: traced() });
   server.answer(await server.next("syscallSummary"), SUMMARY);
   const call = page.getByRole("button", { name: "read", exact: true });
   await expect.element(call).toHaveAttribute("aria-pressed", "false");
@@ -2277,7 +2278,7 @@ it("selects a call from its name's button, and sorts by a column it names", asyn
 });
 
 it("says it is reading a call's detail, and why it could not", async () => {
-  const server = await mount(<SyscallsView />, { summary: traced(), look: { sc: "read" } });
+  const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
   const detail = page.getByTestId("syscall-detail");
   await expect.element(detail.getByText("Reading read's calls…")).toBeVisible();
@@ -2289,7 +2290,7 @@ it("says it is reading a call's detail, and why it could not", async () => {
 });
 
 it("reads a click on a heat map's top edge as its highest row, in the slice clicked", async () => {
-  const server = await mount(<SyscallsView />, { summary: traced(), look: { sc: "read" } });
+  const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
   server.answer(await server.next("syscallSummary"), SUMMARY);
   // Two slices of three rows: the first's calls are slow, the second's fast.
   server.answer(await server.next("syscallHeatmap"), {
@@ -2312,7 +2313,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
 });
 
 it("says why the lanes and the rate could not be read", async () => {
-  const server = await mount(<SyscallsView />, { summary: traced() });
+  const server = await mount(<KernelPane />, { summary: traced() });
   server.fail(await server.next("syscallLanes"), "the lanes are cut short");
   server.fail(await server.next("syscallRate"), "the rate is cut short");
   await expect.element(page.getByText("the lanes are cut short")).toBeVisible();
@@ -2320,7 +2321,7 @@ it("says why the lanes and the rate could not be read", async () => {
 });
 
 it("says it is reading the log, and why a call could not be read", async () => {
-  const server = await mount(<SyscallsView />, { summary: traced(), look: { st: "log" } });
+  const server = await mount(<KernelPane />, { summary: traced(), look: { st: "log" } });
   await expect.element(page.getByText("Reading calls…")).toBeVisible();
   server.answer(await server.next("syscallLog"), {
     total: 1,
@@ -2343,7 +2344,7 @@ it("says it is reading the log, and why a call could not be read", async () => {
 });
 
 it("says why the log could not be read", async () => {
-  const server = await mount(<SyscallsView />, { summary: traced(), look: { st: "log" } });
+  const server = await mount(<KernelPane />, { summary: traced(), look: { st: "log" } });
   server.fail(await server.next("syscallLog"), "the log is cut short");
   await expect.element(page.getByText("the log is cut short")).toBeVisible();
 });
@@ -2354,7 +2355,7 @@ for (const [tab, method, reading, empty] of [
   ["network", "syscallNetwork", "Reading sockets…", "No socket was used."],
 ] as const) {
   it(`says it is reading ${tab}, and why it could not, rather than that there are none`, async () => {
-    const server = await mount(<SyscallsView />, { summary: traced(), look: { st: tab } });
+    const server = await mount(<KernelPane />, { summary: traced(), look: { st: tab } });
     await expect.element(page.getByText(reading)).toBeVisible();
     await expect.element(page.getByText(empty)).not.toBeInTheDocument();
     server.fail(await server.next(method), `the ${tab} are cut short`);
@@ -2365,7 +2366,7 @@ for (const [tab, method, reading, empty] of [
 
 it("says it is reading blocked threads, and why it could not", async () => {
   const summary = traced();
-  const server = await mount(<SyscallsView />, { summary, look: { st: "processes" } });
+  const server = await mount(<KernelPane />, { summary, look: { st: "processes" } });
   server.send({
     type: "profiles",
     profiles: [{ id: summary.id, name: "live", recording: true, revision: 0, ended: null }],
@@ -2373,6 +2374,44 @@ it("says it is reading blocked threads, and why it could not", async () => {
   await expect.element(page.getByText("Reading blocked threads…")).toBeVisible();
   server.fail(await server.next("syscallInFlight"), "the threads are gone");
   await expect.element(page.getByText("the threads are gone")).toBeVisible();
+});
+
+it("keeps its tabs at every level, and says what a level left out and the flag that keeps it", async () => {
+  const off = summaryOf({ syscalls: 0, settings: [{ name: "syscalls", value: "off" }] });
+  const server = await mount(<KernelPane />, { summary: off });
+  await expect.element(page.getByRole("tab", { name: "Syscalls" })).toBeVisible();
+  const said = page.getByTestId("syscalls-unkept");
+  await expect
+    .element(said)
+    .toHaveTextContent(
+      "System calls were not recorded. Record with --syscalls calls to keep each call.",
+    );
+  for (const tab of ["Summary", "Log", "Files", "Network", "Processes"]) {
+    await expect.element(page.getByRole("button", { name: tab, exact: true })).toBeVisible();
+  }
+  // There is nothing to ask the server for.
+  await page.getByRole("button", { name: "Log", exact: true }).click();
+  await expect.element(said).toBeVisible();
+  expect(server.requests.filter((asked) => asked.method.startsWith("syscall"))).toEqual([]);
+  cleanup();
+
+  // At counts, the kept exceptions show under the sentence, without lanes.
+  const counts = summaryOf({ syscalls: 4, settings: [{ name: "syscalls", value: "counts" }] });
+  const counted = await mount(<KernelPane />, { summary: counts });
+  counted.answer(await counted.next("syscallSummary"), SUMMARY);
+  await expect
+    .element(page.getByTestId("syscalls-unkept"))
+    .toHaveTextContent(
+      "The kernel counted every system call and kept only the failed and slow ones. Record with --syscalls calls to keep each call.",
+    );
+  await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
+  expect(counted.requests.some((asked) => asked.method === "syscallLanes")).toBe(false);
+  cleanup();
+
+  // At calls, there is nothing to say.
+  const kept = await mount(<KernelPane />, { summary: traced() });
+  await kept.next("syscallLanes");
+  await expect.element(page.getByTestId("syscalls-unkept")).not.toBeInTheDocument();
 });
 
 /** Mounts a profile's pane of `view`, or its overview. */

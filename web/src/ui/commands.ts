@@ -471,7 +471,7 @@ export const COMMANDS = registry({
   profileFlame: profileView("flame", "Flame graph"),
   profileTree: profileView("tree", "Call tree"),
   profileFunctions: profileView("functions", "Functions"),
-  profileSyscalls: profileView("syscalls", "Syscalls"),
+  profileKernel: profileView("kernel", "Kernel"),
   profileZones: profileView("zones", "Zones"),
   profileDetails: profileView("details", "File details"),
   duplicateLinked: duplicatePane(false, "New pane like this"),

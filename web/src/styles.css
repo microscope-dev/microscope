@@ -4488,9 +4488,35 @@ textarea.input {
   }
 }
 
+/* Kernel */
+
+.kernel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.kernel-tabs {
+  align-self: flex-start;
+  margin: 6px 12px 0;
+}
+
+.kernel-tabs button[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.kernel-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
 /* Syscalls */
 
 .syscalls {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -4503,6 +4529,10 @@ textarea.input {
   gap: 6px 12px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--line);
+}
+
+.syscalls-bar .segmented {
+  margin-left: 0;
 }
 
 .syscalls-filter {

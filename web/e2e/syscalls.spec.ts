@@ -26,7 +26,7 @@ test("a recording's calls are explored from their costs to one call's arguments 
   const served = await microscope.start([file]);
   await join(page, served.link);
 
-  await page.getByRole("tab", { name: /^Syscalls/u }).click();
+  await page.getByRole("tab", { name: /^Kernel/u }).click();
   const view = page.getByTestId("syscalls");
   await expect(page.getByTestId("syscall-counts")).toContainText("ptrace");
   await expect(page.getByTestId("accounting")).toContainText(/Calls traced[\d,]+ by ptrace/u);
@@ -37,6 +37,7 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await page.getByLabel("Selection").fill("trace=openat status=failed");
   await page.getByLabel("Selection").press("Enter");
   await expect(page).toHaveURL(/sf=trace%3Dopenat/u);
+  await expect(page.getByRole("button", { name: "Remove the system call filter" })).toBeVisible();
   const table = page.getByTestId("syscall-table");
   await expect(table.locator("tbody tr")).toHaveCount(1);
   await table.locator('tr[data-row="openat"] td').nth(1).click();
@@ -104,7 +105,8 @@ test("a recording's calls are explored from their costs to one call's arguments 
   });
   await expect(page).toHaveURL(/st=log/u);
   await expect(page).toHaveURL(/sl=\d+/u);
-  const band = view.getByRole("button", { name: "Remove the latency band" });
+  // The band is a chip in the row every pane's selection shows in.
+  const band = page.getByRole("button", { name: "Remove the latency band" });
   await expect(band).toBeVisible();
   const calls = page.getByTestId("syscall-log").getByRole("button");
   await expect(calls.first()).toContainText("openat(");
@@ -129,6 +131,39 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(page).toHaveURL(/range=\d+-\d+/u);
 });
 
+test("a recording without calls opens the same Kernel pane, saying how to record them", async ({
+  page,
+  microscope,
+}, info) => {
+  const file = info.outputPath("off.usprof");
+  const recorded = spawnSync(
+    path.join(root, "target", "debug", "microscope"),
+    ["record", "--syscalls", "off", "-o", file, "--", fixture("syscalls"), "files"],
+    { cwd: info.outputDir, stdio: "ignore" },
+  );
+  expect(recorded.status).toBe(3);
+  const served = await microscope.start([file]);
+  await join(page, served.link);
+
+  await page.getByRole("tab", { name: /^Kernel/u }).click();
+  const kernel = page.getByTestId("kernel");
+  await expect(kernel.getByRole("tab", { name: "Syscalls" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByTestId("syscalls-unkept")).toContainText(
+    "System calls were not recorded. Record with --syscalls calls",
+  );
+  for (const tab of ["Summary", "Log", "Files", "Network", "Processes"]) {
+    await expect(kernel.getByRole("button", { name: tab, exact: true })).toBeVisible();
+  }
+  await kernel.getByRole("button", { name: "Log", exact: true }).click();
+  await expect(page).toHaveURL(/st=log/u);
+  await expect(page.getByTestId("syscalls-unkept")).toBeVisible();
+  // The stacks are there as for any recording.
+  await expect(page.getByRole("tab", { name: /^Flame graph/u })).toBeVisible();
+});
+
 test("a family's processes are listed parents first, each with how it ended", async ({
   page,
   microscope,
@@ -141,7 +176,7 @@ test("a family's processes are listed parents first, each with how it ended", as
   );
   const served = await microscope.start([file]);
   await join(page, served.link);
-  await page.getByRole("tab", { name: /^Syscalls/u }).click();
+  await page.getByRole("tab", { name: /^Kernel/u }).click();
   await page.getByTestId("syscalls").getByRole("button", { name: "Processes" }).click();
   const rows = page.getByTestId("syscall-processes").locator("tbody tr");
   await expect(rows).toHaveCount(2);
@@ -168,7 +203,7 @@ test("a recording made from the page shows what its program is blocked in, until
   await expect(page.getByTestId("recording")).toContainText("Recording syscalls");
 
   // The pause shows in flight once the recording publishes it.
-  await page.getByRole("tab", { name: /^Syscalls/u }).click();
+  await page.getByRole("tab", { name: /^Kernel/u }).click();
   const view = page.getByTestId("syscalls");
   await view.getByRole("button", { name: "Processes", exact: true }).click();
   const blocked = page.getByTestId("syscall-in-flight");
