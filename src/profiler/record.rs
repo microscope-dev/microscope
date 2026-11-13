@@ -2555,9 +2555,18 @@ impl Processor {
     /// which begins the next. A segment is a complete capture of that span
     /// alone, every frame symbolized. What spans the cut, a thread off its
     /// CPU or an open zone, is in each segment for the part of it there.
-    pub fn save(&mut self) -> Capture {
+    /// A segment spans time: until counts are counted past its start,
+    /// there is none to save, and the next save ends it later.
+    pub fn save(&mut self) -> Option<Capture> {
         if !matches!(self.cut, Cut::Segments { .. }) {
-            return self.snapshot();
+            return Some(self.snapshot());
+        }
+
+        let End::At(mark) = self.cut.end() else {
+            return None;
+        };
+        if self.start_time().is_none_or(|start| mark.time <= start) {
+            return None;
         }
 
         self.symbolize_new();
@@ -2576,7 +2585,7 @@ impl Processor {
                 accounts,
             });
         }
-        builder.finish()
+        Some(builder.finish())
     }
 
     /// Where the capture begins: the cut's start once it has one, or else

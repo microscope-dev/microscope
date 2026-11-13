@@ -922,7 +922,10 @@ holds each observation until records before its timestamp have arrived, then
 records both the perf totals and the record-derived accounts at that boundary.
 Snapshots stop at the latest such boundary; later records stay for the next
 snapshot or segment. A save trigger requests an observation and waits for its
-earlier records, so the saved window includes the trigger. Reading counts
+earlier records, so the saved window includes the trigger. A segment always
+spans time: under load a save can come before any counts are counted past
+the segment's start, and then `save` returns nothing and the session tries
+again, so the segment ends at a later boundary. Reading counts
 after processing and labeling them with the older watermark instead subtracts
 future work from a retained window.
 The final disabled-event observation advances the window even if the target

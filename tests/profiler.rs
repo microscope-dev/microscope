@@ -1019,6 +1019,16 @@ fn a_rolling_window_saves_on_a_trigger_and_keeps_only_its_last_span() {
     assert_cpu_accounting(profile);
 }
 
+/// Whether a thread of `profile-phases` other than its main one blocked:
+/// the helper waiting to be released. The main thread only spins, so under
+/// load it is preempted, which is no sign of the helper's wait.
+fn helper_waits(profile: &Profile) -> bool {
+    profile
+        .off_cpu()
+        .iter()
+        .any(|interval| !interval.preempted && interval.tid != interval.pid)
+}
+
 /// A recording cut into segments tiles its time with them: each holds
 /// only its own span's samples, time off a CPU, and counts, an interval
 /// that spans a cut counting in each segment for its part there, and the
@@ -1059,7 +1069,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
                 to: &mut |profile| {
                     // Once the helper thread waits, three cuts cross its
                     // wait before it is released.
-                    if blocked.is_none() && !profile.off_cpu().is_empty() {
+                    if blocked.is_none() && helper_waits(&profile) {
                         blocked = Some(segments.len());
                     }
 
@@ -1081,6 +1091,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
     let scratch = support::ScratchDir::new("profiler-segments");
     for (number, segment) in segments.iter().enumerate() {
         let (start, end) = segment.span();
+        assert!(start < end, "segment {number} spans {start}..{end}");
         assert_cpu_accounting(segment);
         if let Some(next) = segments.get(number + 1) {
             assert_eq!(
@@ -1105,11 +1116,7 @@ fn segments_tile_a_recording_and_read_back_as_one() {
 
     // The helper thread's wait is in each segment it spanned.
     let first = blocked.expect("a segment saw the helper thread wait");
-    assert!(
-        segments[first..=first + 3]
-            .iter()
-            .all(|segment| !segment.off_cpu().is_empty())
-    );
+    assert!(segments[first..=first + 3].iter().all(helper_waits));
 
     let all = Profile::read(scratch.path())
         .expect("read the directory")

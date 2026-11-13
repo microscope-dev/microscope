@@ -233,7 +233,7 @@ mod tests {
             self.processor.observed(at)
         }
 
-        fn save(&mut self) -> Capture {
+        fn save(&mut self) -> Option<Capture> {
             self.processor.save()
         }
 
@@ -327,14 +327,14 @@ mod tests {
             "segments after a cut" => {
                 recording.observe(25);
                 recording.ingest(&early, 35);
-                recording.save();
+                recording.save().expect("a segment to 25");
                 recording.observe(35);
                 recording.ingest(&[sample(40)], 45);
             }
             "segments cut at its last record" => {
                 recording.observe(25);
                 recording.ingest(&early[..3], 30);
-                recording.save();
+                recording.save().expect("a segment to 25");
             }
             _ => unreachable!("{name}"),
         }
@@ -383,6 +383,11 @@ mod tests {
         )
     }
 
+    /// A save's capture, or `none` where a segment would span no time.
+    fn saved(capture: Option<&Capture>) -> String {
+        capture.map_or_else(|| "none".to_owned(), describe)
+    }
+
     /// One event in one phase: the captures it makes, and what a save
     /// asked for knew of its counts on the way.
     fn outcome(name: &str, event: &str) -> String {
@@ -390,7 +395,7 @@ mod tests {
         let later = [sample(60), switch(62, false), sample(70)];
         let captures = match event {
             "snapshot" => describe(&recording.processor.snapshot()),
-            "save" => describe(&recording.save()),
+            "save" => saved(recording.save().as_ref()),
             "save asked" => {
                 recording.observe(65);
                 let before = recording.observed(65);
@@ -398,7 +403,7 @@ mod tests {
                 let after = recording.observed(65);
                 format!(
                     "observed {before} then {after}: {}",
-                    describe(&recording.save())
+                    saved(recording.save().as_ref())
                 )
             }
             "records arrive" => {
@@ -413,8 +418,8 @@ mod tests {
             }
             "end" => describe(&recording.end(80)),
             "save then end" => {
-                let saved = describe(&recording.save());
-                format!("{saved}, then {}", describe(&recording.end(80)))
+                let first = saved(recording.save().as_ref());
+                format!("{first}, then {}", describe(&recording.end(80)))
             }
             _ => unreachable!("{event}"),
         };
@@ -458,6 +463,8 @@ mod tests {
         /// Each time the sleeper left its CPU and came back, if it did.
         off: Vec<(u64, Option<u64>)>,
         saves: Vec<(u64, Capture)>,
+        /// Each save that made no segment, and where the one before ended.
+        skipped: Vec<(u64, Option<i64>)>,
         /// The samples processed after a later record was.
         late: Vec<u64>,
     }
@@ -547,7 +554,12 @@ mod tests {
                 }
                 Step::Save => {
                     if recording.observed(0) {
-                        run.saves.push((watermark, recording.save()));
+                        if let Some(capture) = recording.save() {
+                            run.saves.push((watermark, capture));
+                        } else {
+                            let before = run.saves.last().map(|(_, capture)| capture.span().1);
+                            run.skipped.push((watermark, before));
+                        }
                     }
                 }
             }
@@ -601,6 +613,19 @@ mod tests {
                 let end = observed_by(&run, *watermark).expect("observed");
                 prop_assert_eq!(capture.span().1, i64::try_from(end).expect("small"));
                 prop_assert_eq!(capture.span().1, next.span().0);
+            }
+
+            // A segment spans time, and a save makes none only where
+            // nothing was observed since the last segment ended.
+            for (watermark, capture) in &run.saves {
+                let (from, to) = capture.span();
+                prop_assert!(from < to, "segment {:?} saved by {}", (from, to), watermark);
+            }
+            for (watermark, before) in &run.skipped {
+                let end = observed_by(&run, *watermark).expect("observed");
+                if let Some(before) = before {
+                    prop_assert!(i64::try_from(end).expect("small") <= *before, "{} after {}", end, before);
+                }
             }
 
             // Every sample is within its segment's span. One on time is in
@@ -754,12 +779,12 @@ mod tests {
             "window rolling / end: 45..80 counted 35 samples [50] off [\"<45+35>\"]",
             "window rolling / save then end: 25..55 counted 30 samples [30, 40, 50] off [\"<25+30>\"], then 45..80 counted 35 samples [50] off [\"<45+35>\"]",
             "segments waiting / snapshot: 0..0 counted 0 samples [] off []",
-            "segments waiting / save: 4..4 counted 0 samples [] off []",
+            "segments waiting / save: none",
             "segments waiting / save asked: observed false then true: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
             "segments waiting / records arrive: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
             "segments waiting / late record: 10..65 counted 65 samples [10, 20, 21, 30] off [\"22+43>\"]",
             "segments waiting / end: 10..80 counted 80 samples [10, 20, 30] off [\"22+58>\"]",
-            "segments waiting / save then end: 4..4 counted 0 samples [] off [], then 4..80 counted 80 samples [10, 20, 30] off [\"22+58>\"]",
+            "segments waiting / save then end: none, then 10..80 counted 80 samples [10, 20, 30] off [\"22+58>\"]",
             "segments before a cut / snapshot: 10..25 counted 25 samples [10, 20] off [\"22+3>\"]",
             "segments before a cut / save: 10..25 counted 25 samples [10, 20] off [\"22+3>\"]",
             "segments before a cut / save asked: observed false then true: 10..65 counted 65 samples [10, 20, 30, 60] off [\"22+40\"]",
@@ -775,12 +800,12 @@ mod tests {
             "segments after a cut / end: 25..80 counted 55 samples [30, 40] off [\"<25+55>\"]",
             "segments after a cut / save then end: 25..35 counted 10 samples [30] off [\"<25+10>\"], then 35..80 counted 45 samples [40] off [\"<35+45>\"]",
             "segments cut at its last record / snapshot: 25..25 counted 0 samples [] off []",
-            "segments cut at its last record / save: 25..25 counted 0 samples [] off []",
+            "segments cut at its last record / save: none",
             "segments cut at its last record / save asked: observed false then true: 25..65 counted 40 samples [60] off [\"<25+37\"]",
             "segments cut at its last record / records arrive: 25..65 counted 40 samples [60] off [\"<25+37\"]",
             "segments cut at its last record / late record: 25..65 counted 40 samples [] off [\"<25+40>\"] late 1",
             "segments cut at its last record / end: 25..80 counted 55 samples [] off [\"<25+55>\"]",
-            "segments cut at its last record / save then end: 25..25 counted 0 samples [] off [], then 25..80 counted 55 samples [] off [\"<25+55>\"]",
+            "segments cut at its last record / save then end: none, then 25..80 counted 55 samples [] off [\"<25+55>\"]",
         ];
         assert_eq!(actual, expected, "\n{}", actual.join("\n"));
     }

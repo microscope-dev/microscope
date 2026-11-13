@@ -933,13 +933,15 @@ fn save_when_due(
         return;
     }
 
+    let _span = crate::span!("record save");
+    let Some(capture) = processor.save() else {
+        return;
+    };
     *pending = None;
     record!("record: saved, segment due {due}");
-    let _span = crate::span!("record save");
     if let Some((_, cut)) = segments {
         *cut = std::time::Instant::now();
     }
-    let capture = processor.save();
 
     // The calls of the same span, on the same clock.
     let capture = syscalls.map_or_else(|| capture.clone(), |trace| trace.cut(&capture));
