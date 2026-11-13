@@ -15,7 +15,6 @@ use anyhow::{Context as _, Result, bail};
 use microscope::syscall_engines::bpf::{self, AttachMode, Attachment, BpfOptions};
 use microscope::syscall_engines::capture::SyscallCapture;
 use microscope::syscall_engines::cgroup::{self, Cgroup};
-use microscope::syscall_engines::continuous::{Continuous, ContinuousOptions, Saved};
 use microscope::syscall_engines::ptrace;
 use microscope::syscall_engines::stacks::{Frame, SharedStacks};
 use microscope::syscall_engines::{Finished, Sink, Target, TraceOptions, monotonic};
@@ -306,47 +305,6 @@ pub struct SyscallsArgs {
     #[arg(long, value_name = "DURATION")]
     duration: Option<String>,
 
-    /// Trace without end into DIR: a file every --segment holding that
-    /// span's statistics, and the last --window of calls in DIR/windows on
-    /// SIGUSR2 or a trigger. `microscope report DIR` reads the segments as one.
-    #[arg(long, value_name = "DIR", conflicts_with = "output")]
-    continuous: Option<PathBuf>,
-
-    /// How long each segment of --continuous spans: 60s, 5m.
-    #[arg(
-        long,
-        value_name = "DURATION",
-        default_value = "60s",
-        requires = "continuous"
-    )]
-    segment: String,
-
-    /// How long --continuous keeps its files: 30m, 24h, 7d.
-    #[arg(
-        long,
-        value_name = "DURATION",
-        default_value = "24h",
-        requires = "continuous"
-    )]
-    keep: String,
-
-    /// How much of the latest calls --continuous holds for a trigger.
-    #[arg(
-        long,
-        value_name = "DURATION",
-        default_value = "10s",
-        requires = "continuous"
-    )]
-    window: String,
-
-    /// Save the window when a call takes at least this long: 100ms.
-    #[arg(long, value_name = "DURATION", requires = "continuous")]
-    trigger_slower_than: Option<String>,
-
-    /// Save the window when a call fails with one of these: EIO,ENOSPC.
-    #[arg(long, value_name = "ERRNOS", requires = "continuous")]
-    trigger_errno: Option<String>,
-
     /// The program to trace and its arguments.
     #[arg(last = true, value_name = "PROGRAM")]
     command: Vec<OsString>,
@@ -627,7 +585,6 @@ fn check_targets(args: &SyscallsArgs, attached: &[u32]) -> Result<()> {
         for (given, flag) in [
             (args.cgroup.is_some(), "--cgroup"),
             (args.container.is_some(), "--container"),
-            (args.continuous.is_some(), "--continuous"),
             (args.ring.is_some(), "--ring"),
             (args.attach != AttachArg::Auto, "--attach"),
         ] {
@@ -657,10 +614,6 @@ fn check_targets(args: &SyscallsArgs, attached: &[u32]) -> Result<()> {
         )
     {
         bail!("-c's table shows microseconds or nanoseconds: give --syscall-times=us or ns");
-    }
-
-    if args.summary_only && (args.trigger_slower_than.is_some() || args.trigger_errno.is_some()) {
-        bail!("a trigger needs the calls themselves, which -c does not keep");
     }
 
     if cgroup && args.no_follow {
@@ -805,7 +758,7 @@ fn trace(args: &SyscallsArgs) -> Result<i32> {
 
     let stop = Arc::new(AtomicBool::new(false));
     let trigger = Arc::new(AtomicBool::new(false));
-    super::profile::handle_signals(Some(stop.clone()), trigger.clone())?;
+    super::profile::handle_signals(Some(stop.clone()), trigger)?;
     if let Some(text) = &args.duration {
         stop_after(text, stop.clone())?;
     }
@@ -848,10 +801,6 @@ fn trace(args: &SyscallsArgs) -> Result<i32> {
 
     let mut printer = Printer::new(args, &plan)?;
     printer.stacks.clone_from(&options.stacks);
-    printer.trigger = trigger;
-    if let Some(directory) = &args.continuous {
-        printer.continuous = Some(continuous(args, directory, options.stacks.clone())?);
-    }
 
     if let Some((_, capture)) = &mut printer.capture {
         *capture = SyscallCapture::new(options.stacks.clone());
@@ -951,77 +900,6 @@ fn stop_after(text: &str, stop: Arc<AtomicBool>) -> Result<()> {
     Ok(())
 }
 
-/// A continuous trace into `directory`, as the flags ask.
-fn continuous(
-    args: &SyscallsArgs,
-    directory: &std::path::Path,
-    stacks: Option<SharedStacks>,
-) -> Result<Continuous> {
-    std::fs::create_dir_all(directory)
-        .with_context(|| format!("creating {}", directory.display()))?;
-    let segment = nanoseconds(&args.segment).context("--segment")?;
-    if segment == 0 {
-        bail!("--segment must be longer than nothing");
-    }
-
-    let errnos = match &args.trigger_errno {
-        Some(names) => names
-            .split(',')
-            .map(|name| {
-                present::errno_named(name)
-                    .map(|errno| errno.0)
-                    .with_context(|| format!("--trigger-errno: {name} is not an errno"))
-            })
-            .collect::<Result<Vec<_>>>()?,
-        None => Vec::new(),
-    };
-
-    let mut settings = vec![(
-        "syscalls".to_owned(),
-        match args.engine {
-            EngineArg::Bpf => "bpf",
-            EngineArg::Ptrace => "ptrace",
-        }
-        .to_owned(),
-    )];
-    settings.extend(
-        program_settings(&args.command)
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value)),
-    );
-    let options = ContinuousOptions {
-        directory: directory.to_owned(),
-        keep: super::profile::duration(&args.keep)
-            .map_err(|error| anyhow::anyhow!("--keep: {error}"))?,
-        segment,
-        // -c keeps no calls to hold.
-        window: if args.summary_only {
-            0
-        } else {
-            nanoseconds(&args.window).context("--window")?
-        },
-        slower_than: args
-            .trigger_slower_than
-            .as_deref()
-            .map(nanoseconds)
-            .transpose()
-            .context("--trigger-slower-than")?,
-        errnos,
-        settings,
-    };
-
-    eprintln!(
-        "microscope: writing a segment every {} to {}, keeping {}; `kill -USR2 {}` saves the last {}",
-        args.segment,
-        directory.display(),
-        args.keep,
-        std::process::id(),
-        args.window
-    );
-
-    Ok(Continuous::new(options, stacks, monotonic()))
-}
-
 /// Where one process's lines go.
 type Output = Box<dyn Write + Send>;
 
@@ -1062,10 +940,6 @@ struct Printer {
 
     /// The cgroup traced, said once its programs are attached.
     cgroup: Option<PathBuf>,
-    continuous: Option<Continuous>,
-
-    /// Set by SIGUSR2, which saves a continuous trace's window.
-    trigger: Arc<AtomicBool>,
     columns: Vec<Column>,
     sort: Option<Column>,
 
@@ -1525,7 +1399,6 @@ impl Printer {
         let (output, renderer, per_process): (Output, Option<Renderer>, _) =
             match (&args.output, to_file) {
                 (_, Some(_)) if capture.is_some() => (Box::new(io::sink()), None, None),
-                _ if args.continuous.is_some() => (Box::new(io::sink()), None, None),
                 (_, Some(path)) if args.follow >= 2 => (
                     Box::new(io::sink()),
                     None,
@@ -1558,7 +1431,7 @@ impl Printer {
             output,
             bare_pid: to_file.is_some() && plan.follow,
             per_process,
-            show_calls: !args.summary_only && args.continuous.is_none(),
+            show_calls: !args.summary_only,
             summarize: args.summary_only || args.summary_too,
             stats: BTreeMap::new(),
             fds: FdTable::default(),
@@ -1575,7 +1448,7 @@ impl Printer {
             comm: args.comm,
             // As under strace, a trace written to a file says nothing
             // more on standard error.
-            quiet: if to_file.is_some() || args.continuous.is_some() {
+            quiet: if to_file.is_some() {
                 args.quiet.max(1)
             } else {
                 args.quiet
@@ -1585,8 +1458,6 @@ impl Printer {
             sampled: 0,
             in_flight: plan.in_flight,
             cgroup: None,
-            continuous: None,
-            trigger: Arc::new(AtomicBool::new(false)),
             columns: plan.columns.clone(),
             sort: plan.sort,
             realtime,
@@ -1613,15 +1484,10 @@ impl Printer {
         })
     }
 
-    /// Records how the trace was made in its capture and in a continuous
-    /// trace's files.
+    /// Records how the trace was made in its capture.
     fn setting(&mut self, key: &str, value: &str) {
         if let Some((_, capture)) = &mut self.capture {
             capture.setting(key, value);
-        }
-
-        if let Some(continuous) = &mut self.continuous {
-            continuous.setting(key, value);
         }
     }
 
@@ -1811,10 +1677,6 @@ impl Printer {
         });
         if shows && let Some((_, capture)) = &mut self.capture {
             capture.call(event);
-        }
-
-        if shows && self.continuous.is_some() {
-            self.continue_with(&TraceEvent::Call(event.clone()));
         }
 
         if shows && self.summarize {
@@ -2161,28 +2023,6 @@ impl Printer {
         self.write(process, &line);
     }
 
-    /// Adds an event to the continuous trace, if there is one.
-    fn continue_with(&mut self, event: &TraceEvent) {
-        if let Some(continuous) = &mut self.continuous {
-            let saved = continuous.event(event);
-            self.saved(saved);
-        }
-    }
-
-    /// Says where a triggered window went.
-    fn saved(&mut self, saved: io::Result<Option<Saved>>) {
-        match saved {
-            Ok(Some(saved)) if self.quiet < 2 => self.message(&format!(
-                "{}: saved the last {} calls to {}",
-                saved.reason,
-                saved.calls,
-                saved.path.display()
-            )),
-            Err(error) => self.message(&format!("saving a window failed: {error}")),
-            _ => {}
-        }
-    }
-
     /// Prints a signal, exit, or loss line.
     fn other(&mut self, event: &TraceEvent) {
         let (thread, process) = match *event {
@@ -2328,15 +2168,6 @@ impl Printer {
                 "{count} stacks ended early because {module} doesn't keep frame pointers; -k=dwarf unwinds them"
             ));
         }
-        if let Some(mut continuous) = self.continuous.take() {
-            let path = continuous.end_segment(monotonic()).with_context(|| {
-                format!("writing a segment to {}", continuous.directory().display())
-            })?;
-            if self.quiet < 2 {
-                self.message(&format!("recorded the last segment to {}", path.display()));
-            }
-        }
-
         if self.summarize {
             let errno = |number: u16| present::errno(microscope::syscalls::Errno(number)).0;
 
@@ -2429,10 +2260,6 @@ impl Sink for Printer {
             && !matches!(event, TraceEvent::Call(_))
         {
             capture.event(&event);
-        }
-
-        if !matches!(event, TraceEvent::Call(_)) {
-            self.continue_with(&event);
         }
 
         match &event {
@@ -2590,30 +2417,6 @@ impl Sink for Printer {
         self.in_flight
     }
 
-    fn tick(&mut self, time: u64) {
-        if self.trigger.swap(false, Ordering::Relaxed)
-            && let Some(continuous) = &mut self.continuous
-        {
-            let saved = continuous.trigger("SIGUSR2", time);
-            self.saved(saved);
-        }
-    }
-
-    fn segment_due(&mut self, time: u64) -> bool {
-        self.continuous
-            .as_ref()
-            .is_some_and(|continuous| continuous.segment_due(time))
-    }
-
-    fn end_segment(&mut self, time: u64) {
-        if let Some(continuous) = &mut self.continuous
-            && let Err(error) = continuous.end_segment(time)
-        {
-            let directory = continuous.directory().display().to_string();
-            self.message(&format!("writing a segment to {directory} failed: {error}"));
-        }
-    }
-
     fn attached_by(&mut self, attachment: &Attachment) {
         self.setting("attach", attachment.name());
         self.setting("attach reason", &attachment.reason);
@@ -2652,10 +2455,6 @@ impl Sink for Printer {
 
         for (&(_, _, call), stats) in &stats.by_call {
             self.stats.entry(call).or_default().merge(stats);
-        }
-
-        if let Some(continuous) = &mut self.continuous {
-            continuous.counted(&stats);
         }
 
         if let Some((_, capture)) = &mut self.capture {

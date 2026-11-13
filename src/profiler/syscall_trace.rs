@@ -18,7 +18,7 @@ use crate::syscalls::captures::Limits;
 use crate::syscalls::fds::{self, FdTable};
 use crate::syscalls::filter::{self, Filter};
 use crate::syscalls::stats::Folded;
-use crate::syscalls::{CallSet, TraceEvent};
+use crate::syscalls::{CallSet, Errno, Outcome, SyscallEvent, TraceEvent};
 
 /// How much of each system call a recording keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,6 +125,9 @@ pub struct SyscallOptions {
     /// How long a call takes before `Counts` keeps it as slow.
     pub slow: Duration,
 
+    /// The calls that save the recording as SIGUSR2 does.
+    pub save_on: SaveOn,
+
     /// Why a level stepped down to `Off`, once it has.
     pub unavailable: Option<String>,
 }
@@ -138,6 +141,10 @@ impl SyscallOptions {
             engine: SyscallEngine::Bpf,
             filter: None,
             slow: Duration::from_millis(10),
+            save_on: SaveOn {
+                slow: None,
+                errnos: Vec::new(),
+            },
             unavailable: None,
         }
     }
@@ -270,6 +277,48 @@ struct Shared {
     /// cut while it runs, or only at its end.
     flushing: bool,
     last_flush: u64,
+
+    /// Why a call asked to save, until the recording takes it; why the
+    /// next cut is saved; and when calls may ask again.
+    trigger: Option<String>,
+    saving: Option<String>,
+    quiet_until: u64,
+}
+
+/// The calls that save a recording's window, or end its segment, as SIGUSR2
+/// does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SaveOn {
+    /// A call that took at least this long.
+    pub slow: Option<Duration>,
+
+    /// A call that failed with one of these.
+    pub errnos: Vec<Errno>,
+}
+
+impl SaveOn {
+    #[must_use]
+    pub const fn any(&self) -> bool {
+        self.slow.is_some() || !self.errnos.is_empty()
+    }
+
+    /// Why `call` saves the recording, if it does.
+    fn reason(&self, call: &SyscallEvent) -> Option<String> {
+        let name = call.call.display_name();
+        if let (Some(slow), Some(took)) = (self.slow, call.duration())
+            && Duration::from_nanos(took) >= slow
+        {
+            #[expect(clippy::cast_precision_loss, reason = "milliseconds to show")]
+            return Some(format!("{name} took {:.1} ms", took as f64 / 1e6));
+        }
+
+        match call.outcome {
+            Outcome::Failed(errno) if self.errnos.contains(&errno) => {
+                Some(format!("{name} failed with errno {}", errno.0))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The trace's sink, which says when the trace sees its process.
@@ -279,6 +328,11 @@ struct Held {
     ready: Option<std::sync::mpsc::Sender<()>>,
     filter: Option<Filter>,
     fds: FdTable,
+
+    /// The calls that save, and how long after one the next is let go:
+    /// a window's span, or a segment's.
+    save_on: SaveOn,
+    quiet: u64,
 }
 
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
@@ -317,9 +371,25 @@ const FLUSH_EVERY: u64 = 1_000_000_000;
 
 impl Sink for Held {
     fn event(&mut self, event: TraceEvent) {
-        if self.keeps(&event) {
-            lock(&self.shared).events.push_back(event);
+        if !self.keeps(&event) {
+            return;
         }
+
+        let reason = match &event {
+            TraceEvent::Call(call) => self.save_on.reason(call),
+            _ => None,
+        };
+        let mut shared = lock(&self.shared);
+        let time = event.time();
+        if let Some(reason) = reason
+            && shared.trigger.is_none()
+            && time >= shared.quiet_until
+        {
+            shared.trigger = Some(reason);
+            shared.quiet_until = time.saturating_add(self.quiet);
+        }
+
+        shared.events.push_back(event);
     }
 
     fn attached_by(&mut self, attachment: &bpf::Attachment) {
@@ -412,8 +482,12 @@ impl SyscallTrace {
             count_only: !streams,
             stack_copy,
             // Calls that stream need these only once the budget sheds them.
+            // A counting recording keeps every call slow enough to save it.
             exceptions: Some(Exceptions {
-                slow: options.slow,
+                slow: options
+                    .save_on
+                    .slow
+                    .map_or(options.slow, |slow| slow.min(options.slow)),
                 per_second: KEPT_PER_SECOND,
             }),
             ..BpfOptions::default()
@@ -427,6 +501,9 @@ impl SyscallTrace {
             windowed: matches!(recording.cuts, Cuts::Window(_)),
             flushing: recording.cuts != Cuts::Whole,
             last_flush: 0,
+            trigger: None,
+            saving: None,
+            quiet_until: 0,
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let budget = Arc::new(Budgeted::default());
@@ -438,6 +515,13 @@ impl SyscallTrace {
             ready: Some(ready),
             filter: options.filter.as_ref().map(|(_, filter)| filter.clone()),
             fds: FdTable::default(),
+            save_on: options.save_on.clone(),
+            quiet: match recording.cuts {
+                Cuts::Window(span) | Cuts::Segments(span) => {
+                    u64::try_from(span.as_nanos()).unwrap_or(u64::MAX)
+                }
+                Cuts::Whole => 0,
+            },
         };
 
         let thread = std::thread::Builder::new()
@@ -513,6 +597,18 @@ impl SyscallTrace {
         )
     }
 
+    /// Whether a call asked to save the recording since last asked; the
+    /// next cut says why it was saved.
+    pub(super) fn take_trigger(&self) -> bool {
+        let mut shared = lock(&self.shared);
+        let Some(reason) = shared.trigger.take() else {
+            return false;
+        };
+
+        shared.saving = Some(reason);
+        true
+    }
+
     /// `samples` with the calls and counts of their span. Those after it
     /// stay for the next cut; a window's before it go.
     pub(super) fn cut(&self, samples: &Capture) -> Capture {
@@ -549,6 +645,10 @@ fn cut(
         let mut shared = lock(shared);
         for (key, value) in &shared.settings {
             capture.setting(key, value);
+        }
+
+        if let Some(reason) = shared.saving.take() {
+            capture.setting("trigger", &reason);
         }
 
         let windowed = shared.windowed;

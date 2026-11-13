@@ -874,15 +874,17 @@ fn drive(
             }
         }
 
-        // A program's trigger saves the window as microscope's does.
+        // A program's trigger, or a call's, saves the window as
+        // microscope's does.
         let triggered = processor.take_triggered();
+        let called = syscalls.is_some_and(SyscallTrace::take_trigger);
         if let Some(save) = &mut watch.save {
             save_when_due(
                 save,
                 processor,
                 events,
                 syscalls,
-                triggered,
+                triggered || called,
                 &mut pending_save,
                 &mut segments,
             );
@@ -918,7 +920,8 @@ fn drive(
     if observing.is_some() {
         processor.ingest(&[], None);
     }
-    if pending_save.is_some()
+    let called = syscalls.is_some_and(SyscallTrace::take_trigger);
+    if (pending_save.is_some() || called)
         && let Some(save) = &mut watch.save
     {
         save_when_due(
@@ -926,7 +929,7 @@ fn drive(
             processor,
             events,
             syscalls,
-            false,
+            called,
             &mut pending_save,
             &mut segments,
         );

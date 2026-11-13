@@ -1030,6 +1030,36 @@ fn command_line_errors_explain_themselves() {
             &["record", "--stack-bytes", "1000000", "--", "true"],
             "--stack-bytes is at most 65528, the most stack perf copies per sample",
         ),
+        (
+            &["record", "--save-on-slow", "10ms", "--", "true"],
+            "save a window or end a segment: give --window or --continuous",
+        ),
+        (
+            &[
+                "record",
+                "--window",
+                "1s",
+                "--save-on-errno",
+                "ENOPE",
+                "--",
+                "true",
+            ],
+            "--save-on-errno: ENOPE is not an errno",
+        ),
+        (
+            &[
+                "record",
+                "--window",
+                "1s",
+                "--syscalls",
+                "off",
+                "--save-on-errno",
+                "EIO",
+                "--",
+                "true",
+            ],
+            "need system calls, which this recording does not keep",
+        ),
     ] {
         assert_failure(&microscope(arguments), expected);
     }

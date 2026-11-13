@@ -189,6 +189,16 @@ pub struct RecordArgs {
     #[arg(long, value_name = "FILTER")]
     syscall_filter: Option<String>,
 
+    /// Save the window, or end the segment, when a system call takes at
+    /// least DURATION, such as 100ms, as SIGUSR2 does.
+    #[arg(long, value_name = "DURATION", value_parser = positive_duration)]
+    save_on_slow: Option<Duration>,
+
+    /// Save the window, or end the segment, when a system call fails with
+    /// one of ERRNOS, such as EIO,ENOSPC, as SIGUSR2 does.
+    #[arg(long, value_name = "ERRNOS")]
+    save_on_errno: Option<String>,
+
     /// What sees system calls: bpf, which never stops the program, or
     /// ptrace, which stops it at each call and needs no privileges.
     #[arg(long, value_name = "ENGINE", default_value = "bpf")]
@@ -625,6 +635,15 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         syscalls.filter = Some((text.clone(), filter));
     }
 
+    syscalls.save_on.slow = args.save_on_slow;
+    if let Some(names) = &args.save_on_errno {
+        for name in names.split(',') {
+            let errno = crate::present::syscalls::errno_named(name)
+                .ok_or_else(|| anyhow::anyhow!("--save-on-errno: {name} is not an errno"))?;
+            syscalls.save_on.errnos.push(errno);
+        }
+    }
+
     syscalls
         .check()
         .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))?;
@@ -634,6 +653,17 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
 
     if args.continuous.is_some() {
         options.cuts = Cuts::Segments(args.segment);
+    }
+
+    if options.syscalls.save_on.any() {
+        anyhow::ensure!(
+            options.cuts != Cuts::Whole,
+            "--save-on-slow and --save-on-errno save a window or end a segment: give --window or --continuous"
+        );
+        anyhow::ensure!(
+            options.syscalls.level != SyscallLevel::Off,
+            "--save-on-slow and --save-on-errno need system calls, which this recording does not keep"
+        );
     }
 
     options.probes = match args.probes.as_str() {
@@ -684,29 +714,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
 
     let mut saves = 0;
 
-    let mut save = |profile: Profile| {
-        if let Some((directory, keep)) = continuous {
-            if let Err(error) = profile.write_segment(directory, keep) {
-                eprintln!(
-                    "microscope: writing a segment to {} failed: {error}",
-                    directory.display()
-                );
-            }
-
-            return;
-        }
-
-        saves += 1;
-        let path = numbered(&args.output, saves);
-        match profile.write(&path) {
-            Ok(()) => eprintln!(
-                "microscope: saved {} samples of the window to {}",
-                profile.samples(),
-                path.display()
-            ),
-            Err(error) => eprintln!("microscope: writing {} failed: {error}", path.display()),
-        }
-    };
+    let mut save = |profile: Profile| save_cut(&profile, continuous, &args.output, &mut saves);
 
     if let Cuts::Window(window) = options.cuts {
         eprintln!(
@@ -770,6 +778,46 @@ fn record(args: &RecordArgs) -> Result<i32> {
     report_losses(&profile);
 
     Ok(code)
+}
+
+/// Writes a cut the recording saved as it went on: a segment into the
+/// continuous recording's directory, or the next numbered window beside
+/// `output`, saying why when a call asked for it.
+fn save_cut(
+    profile: &Profile,
+    continuous: Option<(&std::path::Path, Duration)>,
+    output: &std::path::Path,
+    saves: &mut u32,
+) {
+    let why = profile
+        .setting("trigger")
+        .map(|reason| format!("{reason}: "))
+        .unwrap_or_default();
+    if let Some((directory, keep)) = continuous {
+        match profile.write_segment(directory, keep) {
+            Ok(path) if !why.is_empty() => {
+                eprintln!("microscope: {why}ended the segment {}", path.display());
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!(
+                "microscope: writing a segment to {} failed: {error}",
+                directory.display()
+            ),
+        }
+
+        return;
+    }
+
+    *saves += 1;
+    let path = numbered(output, *saves);
+    match profile.write(&path) {
+        Ok(()) => eprintln!(
+            "microscope: {why}saved {} samples of the window to {}",
+            profile.samples(),
+            path.display()
+        ),
+        Err(error) => eprintln!("microscope: writing {} failed: {error}", path.display()),
+    }
 }
 
 fn report_losses(profile: &Profile) {

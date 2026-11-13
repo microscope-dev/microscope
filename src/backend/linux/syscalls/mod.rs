@@ -4,7 +4,6 @@
 pub mod bpf;
 pub mod capture;
 pub mod cgroup;
-pub mod continuous;
 pub mod info;
 pub mod launch;
 pub mod ptrace;

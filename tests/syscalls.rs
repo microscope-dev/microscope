@@ -3270,8 +3270,8 @@ mod bpf {
     }
 
     /// Counted continuously, every segment holds its own span's calls: the
-    /// kernel counts into one half of its statistics while microscope reads and
-    /// clears the other, so the segments together count every call.
+    /// kernel counts into one half of its statistics while microscope reads
+    /// and clears the other, so the segments together count every call.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn continuous_counts_split_into_segments_that_sum_to_every_call() {
@@ -3281,25 +3281,25 @@ mod bpf {
         // Made here, so that the test can clean up what a launcher running
         // as another user writes in it.
         std::fs::create_dir(&segments).expect("make the directory");
-
-        // Relative to the working directory, which a launcher shares.
-        let mut command = microscope(&[
-            "-c",
-            "--continuous",
-            "segments",
-            "--segment",
-            "200ms",
-            "-e",
-            "trace=getppid",
-            "--",
-        ]);
-        command
+        let mut recording = Command::new(launcher())
+            .env_clear()
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args([
+                "record",
+                "--syscalls",
+                "counts",
+                "--syscall-filter",
+                "trace=getppid",
+            ])
+            .args(["--continuous", "segments", "--segment", "200ms", "--"])
             .arg(fixture())
             .arg("spin")
             .current_dir(directory.path())
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-        let mut running = Running::spawn(&mut command);
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope record");
 
         let written = || {
             std::fs::read_dir(&segments).map_or(0, |entries| {
@@ -3310,33 +3310,26 @@ mod bpf {
             })
         };
 
+        // Polls for files the recording writes and says nothing of.
         let end = Instant::now() + DEADLINE;
-
-        // Polls for files the trace writes and says nothing of.
         while written() < 3 {
             assert!(Instant::now() < end, "only {} segments", written());
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        running
-            .child
+        recording
             .stdin
             .take()
             .expect("stdin")
             .write_all(b"x")
             .expect("end the spin");
-        let mut asked = String::new();
-        BufReader::new(running.child.stdout.take().expect("stdout"))
-            .read_line(&mut asked)
-            .expect("the count");
+        let output = recording.wait_with_output().expect("microscope ends");
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        let asked = text(&output.stdout);
         let asked = asked
             .trim()
             .strip_prefix("asked ")
-            .expect("a count")
-            .to_owned();
-
-        let (code, lines) = running.finish();
-        assert_eq!(code, Some(0), "{lines:?}");
+            .unwrap_or_else(|| panic!("a count: {asked}"));
 
         let report = Command::new(env!("CARGO_BIN_EXE_microscope"))
             .arg("report")
@@ -3353,54 +3346,77 @@ mod bpf {
         );
     }
 
-    /// A call that fails as a trigger names saves the calls before it.
+    /// Runs `record` with `arguments` on `syscall-exceptions` with
+    /// `program`, keeping a window into `window.usprof`, and returns what it
+    /// said and the window a call saved.
+    fn saved_by_a_call(
+        directory: &Path,
+        arguments: &[&str],
+        program: &[&str],
+    ) -> (String, microscope::profiler::Profile) {
+        let recorded = Command::new(launcher())
+            .env_clear()
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["record", "--window", "10s", "-o", "window.usprof"])
+            .args(arguments)
+            .arg("--")
+            .arg(Scenario::fixture("syscall-exceptions"))
+            .args(program)
+            .current_dir(directory)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run microscope record");
+        let said = text(&recorded.stderr);
+        assert!(recorded.status.success(), "{said}");
+
+        // One call saves; the rest come within the window's span after it.
+        assert_eq!(said.matches("saved ").count(), 1, "{said}");
+        let saved = microscope::profiler::Profile::read(&directory.join("window-1.usprof"))
+            .unwrap_or_else(|error| panic!("{error}: {said}"))
+            .profile;
+        (said, saved)
+    }
+
+    /// A call that fails as `--save-on-errno` names saves the window,
+    /// which holds it, and says why.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn a_failing_call_saves_the_window_before_it() {
-        let directory = ScratchDir::new("syscalls-trigger");
-        std::fs::create_dir_all(directory.path().join("segments/windows"))
-            .expect("make the directories");
-        let output = microscope(&[
-            "--continuous",
-            "segments",
-            "--trigger-errno",
-            "EBADF",
-            "-e",
-            "trace=write,close",
-            "--",
-        ])
-        .arg(fixture())
-        .arg("fails")
-        .current_dir(directory.path())
-        .output()
-        .expect("run microscope");
-        let message = text(&output.stderr);
-        assert_eq!(output.status.code(), Some(0), "{message}");
+    fn a_failing_call_saves_the_window_that_holds_it() {
+        let directory = ScratchDir::new("syscalls-save-on-errno");
+        let (said, saved) = saved_by_a_call(
+            directory.path(),
+            &["--syscalls", "calls", "--save-on-errno", "EBADF"],
+            &["100", "3", "10"],
+        );
+        assert!(
+            said.contains("microscope: close failed with errno 9: saved "),
+            "{said}"
+        );
+        assert_eq!(saved.setting("trigger"), Some("close failed with errno 9"));
+        assert!(counted(&saved, "close") >= 1);
+        assert_eq!(counted(&saved, "getppid"), 100);
+    }
 
-        let saved = message
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("microscope: close failed with errno 9: saved the last ")?
-                    .split_once(" calls to ")
-            })
-            .unwrap_or_else(|| panic!("{message}"));
+    /// A counting recording keeps the slow call that saves its window.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_slow_call_saves_the_window_that_holds_it() {
+        let directory = ScratchDir::new("syscalls-save-on-slow");
+        let (said, saved) = saved_by_a_call(
+            directory.path(),
+            &["--preset", "prod", "--save-on-slow", "25ms"],
+            &["100", "0", "10"],
+        );
+        assert!(said.contains("microscope: clock_nanosleep took "), "{said}");
+        let reason = saved.setting("trigger").unwrap_or_default();
+        assert!(reason.starts_with("clock_nanosleep took "), "{reason}");
 
-        let window = Command::new(env!("CARGO_BIN_EXE_microscope"))
-            .arg("report")
-            .arg(directory.path().join(saved.1))
-            .output()
-            .expect("run microscope report");
-        let table = text(&window.stdout);
-        let calls = |name: &str| {
-            table.lines().find_map(|line| {
-                let cells: Vec<&str> = line.split_whitespace().collect();
-                (cells.last() == Some(&name)).then(|| cells[cells.len() - 2].to_owned())
-            })
-        };
-
-        // The window holds the write before the failed close.
-        assert_eq!(calls("write").as_deref(), Some("1"), "{table}");
-        assert!(calls("close").is_some(), "{table}");
+        let kept = kept(&saved);
+        assert!(
+            kept.keys()
+                .any(|(name, why, _)| name == "clock_nanosleep" && *why == "slow"),
+            "{kept:#?}"
+        );
     }
 
     /// A continuous recording cuts its calls with its samples: each

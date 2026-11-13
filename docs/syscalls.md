@@ -286,30 +286,22 @@ finally only counts calls. It never truncates paths and still counts every
 call. It prints each step, saves it in the trace, and shows it below the trace
 in the browser.
 
-## Trace continuously
+## Save around a problem
 
-`--continuous DIR` traces until stopped and writes a file of statistics every
-minute:
+A recording that keeps a window (`--window`) or writes segments
+(`--continuous`) saves on `SIGUSR2`, and on a call that names a problem:
+
+- `--save-on-slow DURATION`: a call takes at least DURATION;
+- `--save-on-errno ERRNOS`: a call fails with one of ERRNOS, such as
+  `EIO,ENOSPC`.
 
 ```sh
-microscope syscalls --continuous traces --keep 24h --container 3f9c2a1b8e07
+microscope record --preset prod --continuous traces --save-on-errno EIO -- ./server
 ```
 
-`--segment` sets how long each file covers, and `--keep` how long files are
-kept. `microscope report traces` and `microscope web traces` read the files as
-one trace.
-
-The files hold counts and latencies, not individual calls. To keep the calls
-around a problem, microscope holds the latest `--window` of calls (10 seconds by
-default) and saves them to `traces/windows` when:
-
-- a call takes at least `--trigger-slower-than`;
-- a call fails with an error named by `--trigger-errno`, such as
-  `EIO,ENOSPC`;
-- microscope receives `SIGUSR2`.
-
-microscope saves at most one window per window length, avoiding duplicate
-windows during bursts of failures.
+A window is saved beside the output file, and a segment ends early. Each
+saved file says which call saved it. After one call saves, the calls in the
+next window's or segment's span are let go, so a burst of failures saves once.
 
 ## Record system calls with a profile
 
@@ -322,7 +314,7 @@ microscope record --syscalls %file,%net -o server.usprof -- ./server
 
 It takes the same sets as `-e trace=`, or `all`. In the browser, the calls
 appear on the timeline beside the samples. It uses the BPF engine and needs
-its privileges, and it cannot be used with `--pid`. See
+its privileges. See
 [Profiling](profiling.md#record-system-calls-too).
 
 ## Stop at a system call in the debugger
