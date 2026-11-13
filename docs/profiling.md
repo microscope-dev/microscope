@@ -426,27 +426,6 @@ their compiler-written locations or beside the program. Missing files leave
 profile frames without their inlines; `record` and `report` name the program
 and first missing file.
 
-## Convert profile formats
-
-`microscope convert` reads microscope profiles, pprof files, and folded stacks.
-The output extension chooses microscope, pprof, folded-stack, or Chrome-trace
-output:
-
-```sh
-microscope convert server.usprof server.pb.gz
-microscope convert server.usprof server.folded
-microscope convert server.usprof server.json
-```
-
-Formats have different data models. Converting can lose tasks, blocked-time
-intervals, zones, or other information the destination cannot represent.
-
-A trace that `microscope syscalls -o` saved has no samples; pprof and folded
-stacks get its calls instead, as
-[System calls](syscalls.md#save-a-trace-and-open-it-later) describes. A
-recording made with `--syscalls` converts its samples to pprof and folded
-stacks, and its calls only to a Chrome trace.
-
 ## Instrument work in the program
 
 The probes SDK lets a program mark named work and values at instrumentation

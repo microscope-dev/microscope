@@ -125,13 +125,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "profile-import"
-path = "fuzz_targets/profile_import.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "syscall-filter"
 path = "fuzz_targets/syscall_filter.rs"
 test = false

@@ -92,7 +92,12 @@ impl Profiles {
     /// Serves the profile in `bytes`, read from `path`, returning its id.
     pub fn add(&self, path: &Path, bytes: &[u8]) -> anyhow::Result<String> {
         let id = format!("{:016x}", twox_hash::XxHash3_64::oneshot(bytes));
-        Ok(self.add_read(path, Profile::import(bytes)?, id, Some(bytes.len() as u64)))
+        Ok(self.add_read(
+            path,
+            Profile::from_bytes(bytes)?,
+            id,
+            Some(bytes.len() as u64),
+        ))
     }
 
     /// Serves the segments of a continuous recording in `directory` as one
@@ -815,7 +820,6 @@ fn summary(entry: &Entry) -> ProfileSummary {
             .unwrap_or("nanoseconds")
             .to_owned(),
         source: profile.setting("source").map(str::to_owned),
-        timed: profile.timed(),
         samples: profile.samples() as u64,
         weight: profile.total_weight(),
         syscalls: profile.syscall_count(),

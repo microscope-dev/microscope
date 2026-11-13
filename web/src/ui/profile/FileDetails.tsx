@@ -175,9 +175,7 @@ function Metadata({
       <div className="details-columns">
         <Section title="Recording">
           <Facts>
-            {summary.timed ? (
-              <Fact name="Recorded" value={formatDuration(summary.duration)} />
-            ) : null}
+            <Fact name="Recorded" value={formatDuration(summary.duration)} />
             <Fact name="Threads" value={formatCount(summary.threads.length)} />
             {summary.syscalls > 0 ? (
               <Fact name="System calls" value={formatCount(summary.syscalls)} />

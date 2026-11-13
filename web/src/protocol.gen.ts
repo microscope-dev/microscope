@@ -1131,19 +1131,13 @@ program: string | null,
  */
 command: ProfileCommand | null, 
 /**
- * What a sample weighs: `nanoseconds` of CPU time, `executions`,
- * `bytes`, or what an imported profile counts.
+ * What a sample weighs: `nanoseconds` of CPU time or `executions`.
  */
 unit: string, 
 /**
- * What made the samples, such as a clock or an imported pprof file.
+ * What made the samples, such as a clock or a function's calls.
  */
-source: string | null, 
-/**
- * Whether the samples carry their times and threads, which an
- * imported pprof or folded profile's do not.
- */
-timed: boolean, samples: number, weight: number, 
+source: string | null, samples: number, weight: number, 
 /**
  * System calls its trace holds, which the Syscalls view shows.
  */

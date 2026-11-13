@@ -332,16 +332,7 @@ const Overview = memo(function Overview() {
       <Accounting summary={summary} />
       {info && (info.recording || info.ended) ? <Recording info={info} /> : null}
       <ProfileHead />
-      {summary.timed ? (
-        drawsTimeline(summary) ? (
-          <Lanes />
-        ) : null
-      ) : (
-        <div className="profile-untimed muted" data-testid="untimed">
-          Read from {summary.source ?? "a file"}, which keeps no times or threads: this profile has
-          no timeline.
-        </div>
-      )}
+      {drawsTimeline(summary) ? <Lanes /> : null}
     </>
   );
 });
@@ -354,7 +345,7 @@ function ProfileHead() {
   const snapshots = summary.snapshots > 0;
   // A trace of system calls alone has no frames to compare.
   const sampled = summary.samples > 0 || summary.syscalls === 0;
-  const zoned = summary.timed && summary.zoneSites.length > 0;
+  const zoned = summary.zoneSites.length > 0;
   const showZones = useCallback(
     () => setLook((prev) => withLook(prev, "view", "zones"), true),
     [setLook],
@@ -735,7 +726,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
   const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
   const span = Math.max(summary.duration, 1);
   const offCpu = summary.threads.reduce((sum, each) => sum + each.blocked + each.preempted, 0);
-  const cpu = summary.unit === "nanoseconds" && summary.timed;
+  const cpu = summary.unit === "nanoseconds";
   const busy = summary.weight / span;
   const by = tracedBy(summary.settings);
   const vdso =
@@ -756,11 +747,9 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
           {kernel ? " + kernel" : ""}
         </Stat>
       ) : null}
-      {summary.timed ? (
-        <Stat label="Ran for" title="How long the recording ran">
-          {formatDuration(summary.duration)}
-        </Stat>
-      ) : null}
+      <Stat label="Ran for" title="How long the recording ran">
+        {formatDuration(summary.duration)}
+      </Stat>
       {summary.threads.length > 0 ? (
         <Stat label="Threads">{formatCount(summary.threads.length)}</Stat>
       ) : null}

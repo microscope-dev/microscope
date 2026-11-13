@@ -18,7 +18,7 @@ formats, counts, or saves it.
 | `src/backend/linux/catchpoints.rs` | Debugger catchpoints |
 | `src/cli/syscalls.rs` | The `microscope syscalls` command |
 | `src/profiler/syscalls.rs`, `src/profiler/session.rs` | Captures read back, call sites, and `record --syscalls` |
-| `src/cli/profile.rs`, `src/profiler/formats/syscalls.rs` | `microscope report`'s table of call sites, and a trace's calls as samples for `convert` |
+| `src/cli/profile.rs` | `microscope report`'s table of call sites |
 | `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | The browser's Syscalls view |
 | `src/sim/tracing.rs`, `src/sim/catches.rs` | The simulator's models of the tracepoint stream and of catchpoints |
 | `tests/syscalls.rs`, `tests/catchpoints.rs`, `tests/dap/catchpoints.rs`, `tests/web/syscalls.rs` | Integration tests |
@@ -341,16 +341,6 @@ A call's site is `Profile::syscall_site_name`: `syscall_site`, or else the
 stack's innermost function. The browser's grouping by site and `report`'s
 table of sites (`Profile::syscall_sites`, printed through
 `present::syscalls::summary::labelled`) both use it, so they agree.
-
-`convert` gives pprof and folded stacks a trace's calls when the capture has
-no samples (`formats/syscalls.rs`). It absorbs the capture into a new one and
-adds each call as a sample of its thread, whose stack is the call's with a
-frame named for the call innermost. That frame is a native frame of no
-module at an address in the kernel's half, which no frame of a user stack
-has. pprof gets two such captures, one weighing calls and one nanoseconds,
-and merges their trees by each location's function, file, and line. A
-recording with samples keeps exporting its samples; its calls go only to a
-Chrome trace, as spans of the calls that returned.
 
 `record --syscalls` starts a BPF trace at the profiler's launch gate, so it
 sees the program's first call, and merges it with the samples on one clock.

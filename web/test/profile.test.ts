@@ -323,7 +323,6 @@ describe("a diff in time", () => {
     expect(weightChange(0, 0, "nanoseconds")).toBe("±0");
     expect(weightChange(5, 5, "executions")).toBe("±0");
     expect(weightChange(3, 4, "executions")).toBe("−1 execution −25.0%");
-    expect(weightChange(3 * 1024, 1024, "bytes")).toBe("+2.00 KiB +200.0%");
   });
 
   it("goes the way the cost went, where shares can go the other", () => {
@@ -568,14 +567,10 @@ describe("a zones answer", () => {
 });
 
 describe("a weight", () => {
-  it("reads in its unit: time, bytes, executions, or what a profile counts", () => {
+  it("reads in its unit: time or executions", () => {
     expect(formatWeight(1_500_000, "nanoseconds")).toBe("1.50 ms");
-    expect(formatWeight(64_000, "bytes")).toBe("62.5 KiB");
-    expect(formatWeight(512, "bytes")).toBe("512 B");
     expect(formatWeight(1, "executions")).toBe("1 execution");
-    expect(formatWeight(3, "goroutine")).toBe("3 goroutines");
-    expect(formatWeight(1, "goroutine")).toBe("1 goroutine");
-    expect(formatWeight(1200, "samples")).toBe("1,200 samples");
+    expect(formatWeight(1200, "executions")).toBe("1,200 executions");
   });
 
   it("never reads in exponents, however large", () => {

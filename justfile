@@ -535,7 +535,7 @@ probe-cost COUNT="100000000": build-test-programs
 
 # Runs one fuzz target: expression-parse, dwarf-expression, core-dump, dispatch,
 # elf-symbols, gopclntab, disassembly, debug-register-plan, dap-transport,
-# dap-request, views, image, perf-records, capture, profile-import,
+# dap-request, views, image, perf-records, capture,
 # syscall-filter, js-source-map, cdp-message, dwarf-load, jit-code,
 # runtime-go, runtime-tokio, runtime-python, or runtime-node. Arguments go to libFuzzer.
 # The runtime targets load a test program, CPython, or Node from the dev

@@ -1,68 +1,7 @@
 #[path = "../src/cli/profile/report.rs"]
 mod report;
 
-use std::io::Write as _;
-
-use microscope::profiler::{Granularity, Look, Profile, Source};
-use prost::Message as _;
-
-#[derive(Clone, prost::Message)]
-struct Pprof {
-    #[prost(message, repeated, tag = "1")]
-    types: Vec<ValueType>,
-    #[prost(message, repeated, tag = "2")]
-    samples: Vec<Sample>,
-    #[prost(message, repeated, tag = "4")]
-    locations: Vec<Location>,
-    #[prost(message, repeated, tag = "5")]
-    functions: Vec<Function>,
-    #[prost(string, repeated, tag = "6")]
-    strings: Vec<String>,
-}
-
-#[derive(Clone, prost::Message)]
-struct ValueType {
-    #[prost(int64, tag = "1")]
-    name: i64,
-    #[prost(int64, tag = "2")]
-    unit: i64,
-}
-
-#[derive(Clone, prost::Message)]
-struct Sample {
-    #[prost(uint64, repeated, tag = "1")]
-    locations: Vec<u64>,
-    #[prost(uint64, repeated, tag = "2")]
-    values: Vec<u64>,
-}
-
-#[derive(Clone, prost::Message)]
-struct Location {
-    #[prost(uint64, tag = "1")]
-    id: u64,
-    #[prost(message, repeated, tag = "4")]
-    lines: Vec<Line>,
-}
-
-#[derive(Clone, prost::Message)]
-struct Line {
-    #[prost(uint64, tag = "1")]
-    function: u64,
-    #[prost(uint64, tag = "2")]
-    number: u64,
-}
-
-#[derive(Clone, prost::Message)]
-struct Function {
-    #[prost(uint64, tag = "1")]
-    id: u64,
-    #[prost(uint64, tag = "2")]
-    name: u64,
-    #[prost(uint64, tag = "4")]
-    file: u64,
-    #[prost(uint64, tag = "5")]
-    declared: u64,
-}
+use microscope::profiler::{Granularity, Look, Profile, Source, SourceFrame};
 
 const fn options() -> report::Options<'static> {
     report::Options {
@@ -80,60 +19,27 @@ const fn options() -> report::Options<'static> {
     }
 }
 
+/// A profile of `paths`, each outermost frame first as `name@file` or
+/// `name` in fixture.c, and its line.
 fn fixture(unit: &str, paths: &[(&[(&str, u32)], u64)]) -> Profile {
-    let mut profile = Pprof {
-        strings: vec![
-            String::new(),
-            "cost".into(),
-            unit.into(),
-            "fixture.c".into(),
-        ],
-        types: vec![ValueType { name: 1, unit: 2 }],
-        ..Pprof::default()
-    };
-    let mut functions = std::collections::BTreeMap::new();
-    let mut known = std::collections::BTreeMap::new();
-    for &(path, weight) in paths {
-        let locations = path
-            .iter()
-            .rev()
-            .map(|&(name, line)| {
-                let next = known.len() as u64 + 1;
-                *known.entry((name, line)).or_insert_with(|| {
-                    let id = functions.len() as u64 + 1;
-                    let function = *functions.entry(name).or_insert_with(|| {
-                        let (name, file) = name.split_once('@').unwrap_or((name, "fixture.c"));
-                        let index = profile.strings.len() as u64;
-                        profile.strings.push(name.into());
-                        let file_index = profile.strings.len() as u64;
-                        profile.strings.push(file.into());
-                        profile.functions.push(Function {
-                            id,
-                            name: index,
-                            file: file_index,
-                            declared: 1,
-                        });
-                        id
-                    });
-                    profile.locations.push(Location {
-                        id: next,
-                        lines: vec![Line {
-                            function,
-                            number: u64::from(line),
-                        }],
-                    });
-                    next
+    let paths: Vec<(Vec<SourceFrame<'_>>, u64)> = paths
+        .iter()
+        .map(|&(path, weight)| {
+            let frames = path
+                .iter()
+                .map(|&(name, line)| {
+                    let (name, file) = name.split_once('@').unwrap_or((name, "fixture.c"));
+                    (name, file, line)
                 })
-            })
-            .collect();
-        profile.samples.push(Sample {
-            locations,
-            values: vec![weight],
-        });
-    }
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    gzip.write_all(&profile.encode_to_vec()).unwrap();
-    Profile::import(&gzip.finish().unwrap()).unwrap().profile
+                .collect();
+            (frames, weight)
+        })
+        .collect();
+    let stacks: Vec<(&[SourceFrame<'_>], u64)> = paths
+        .iter()
+        .map(|(frames, weight)| (frames.as_slice(), *weight))
+        .collect();
+    Profile::of_stacks(unit, &stacks)
 }
 
 fn render(current: &Profile, base: Option<&Profile>, options: &report::Options<'_>) -> String {

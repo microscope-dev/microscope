@@ -361,15 +361,15 @@ function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
   return [
     ...(sampled ? (["flame", "tree", "functions"] as const) : []),
     ...(summary.syscalls > 0 ? (["syscalls"] as const) : []),
-    ...(summary.timed && summary.zoneSites.length > 0 ? (["zones"] as const) : []),
+    ...(summary.zoneSites.length > 0 ? (["zones"] as const) : []),
   ];
 }
 
-/** Whether a profile's overview draws its timeline: not when it keeps no
- * times, nor for a trace alone, whose Syscalls pane draws its lanes. */
+/** Whether a profile's overview draws its timeline: not for a trace alone,
+ * whose Syscalls pane draws its lanes. */
 export function drawsTimeline(summary: ProfileSummary): boolean {
   const traceOnly = summary.samples === 0 && summary.syscalls > 0 && summary.zoneSites.length === 0;
-  return summary.timed && !traceOnly;
+  return !traceOnly;
 }
 
 /** An overview with no timeline is short, so its views below it get the

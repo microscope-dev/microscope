@@ -6,7 +6,6 @@ mod annotate;
 pub mod budget;
 mod calls;
 mod collector;
-mod formats;
 mod frame_pointers;
 mod interpreted;
 mod jit;
@@ -38,9 +37,6 @@ pub use crate::capture::records::MarkerKind;
 pub use crate::unwind::sample::CHAIN_LIMIT;
 pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, LineCosts};
 pub use collector::ProbeSelection;
-pub use formats::Format;
-#[cfg(feature = "fuzzing")]
-pub use formats::fuzz_import;
 pub use session::{Attachment, Recording, Save, Watch, record, record_attached, record_watched};
 pub use symbols::ModuleSymbols;
 pub use tasks::THREAD;
@@ -385,6 +381,9 @@ pub enum RecordError {
     Misplaced { expected: u64, actual: u64 },
 }
 
+/// A frame by its function, file, and line.
+pub type SourceFrame<'a> = (&'a str, &'a str, u32);
+
 /// A recorded profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -592,14 +591,57 @@ pub struct ReadProfile {
 }
 
 impl Profile {
-    /// Reads a profile file, in any format [`Profile::import`] reads, or a
-    /// directory of a continuous recording's segments.
+    /// Reads a profile file, or a directory of a continuous recording's
+    /// segments.
     pub fn read(path: &Path) -> Result<ReadProfile, ProfileFileError> {
         if path.is_dir() {
             return Self::read_segments(path);
         }
 
-        Self::import(&std::fs::read(path)?)
+        Self::from_bytes(&std::fs::read(path)?)
+    }
+
+    /// A profile of one thread's samples at time 0, each stack given
+    /// outermost frame first with its weight, in `unit`, each function
+    /// declared at line 1 of its file: for tests that need exactly these
+    /// stacks.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn of_stacks(unit: &str, stacks: &[(&[SourceFrame<'_>], u64)]) -> Self {
+        use crate::capture::builder::{CaptureBuilder, LineInput};
+
+        let mut builder = CaptureBuilder::new();
+        builder.setting("weight", unit);
+        let thread = builder.thread(crate::model::Pid::new(1), crate::model::Tid::new(1), 0);
+        let mut frames = std::collections::BTreeMap::new();
+        for (path, weight) in stacks {
+            let stack: Vec<u32> = path
+                .iter()
+                .rev()
+                .map(|&(function, file, line)| {
+                    let next = frames.len() as u64;
+                    *frames.entry((function, file, line)).or_insert_with(|| {
+                        let frame = builder.frame(FrameKind::Native, NONE, next, 0);
+                        let line = LineInput {
+                            function,
+                            file: Some(file),
+                            line,
+                            column: 0,
+                            declared: Some((file, 1)),
+                            role: 0,
+                        };
+                        builder.symbolize(frame, NONE, &[line]);
+                        frame
+                    })
+                })
+                .collect();
+            let stack = builder.stack(&stack);
+            builder.sample(thread, 0, *weight, stack, NONE);
+        }
+
+        Self {
+            capture: builder.finish(),
+        }
     }
 
     /// Whether `bytes` begin as a profile file does.

@@ -1328,16 +1328,11 @@ pub struct ProfileSummary {
     /// The command recorded: its first process's, or a trace's program.
     pub command: Option<ProfileCommand>,
 
-    /// What a sample weighs: `nanoseconds` of CPU time, `executions`,
-    /// `bytes`, or what an imported profile counts.
+    /// What a sample weighs: `nanoseconds` of CPU time or `executions`.
     pub unit: String,
 
-    /// What made the samples, such as a clock or an imported pprof file.
+    /// What made the samples, such as a clock or a function's calls.
     pub source: Option<String>,
-
-    /// Whether the samples carry their times and threads, which an
-    /// imported pprof or folded profile's do not.
-    pub timed: bool,
     pub samples: u64,
     pub weight: u64,
 

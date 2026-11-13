@@ -219,7 +219,7 @@ impl Profile {
     /// end yet, so its last sample stands for it.
     fn over_time(&self) -> Vec<u64> {
         let samples = &self.capture.samples;
-        if !self.timed() || samples.is_empty() {
+        if samples.is_empty() {
             return Vec::new();
         }
 

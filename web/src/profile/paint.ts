@@ -4,18 +4,13 @@
 
 import type { ProfileKey } from "../protocol";
 
-/** A weight in its unit: CPU time, bytes, or a count of what the
- * profile counts, such as executions or an imported profile's goroutines. */
+/** A weight in its unit: CPU time, or a count of executions. */
 export function formatWeight(weight: number, unit: string): string {
   if (unit === "nanoseconds") {
     return formatDuration(weight);
   }
-  if (unit === "bytes") {
-    return formatBytes(weight);
-  }
   const count = Math.round(weight).toLocaleString("en-US");
-  const one = unit.endsWith("s") ? unit.slice(0, -1) : unit;
-  return `${count} ${weight === 1 ? one : unit.endsWith("s") ? unit : `${unit}s`}`;
+  return `${count} ${weight === 1 ? "execution" : "executions"}`;
 }
 
 /** A diff's fill for a frame's share of its samples now and in the base:

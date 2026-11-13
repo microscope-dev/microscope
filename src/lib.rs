@@ -323,14 +323,6 @@ pub fn fuzz_capture(data: &[u8]) {
     capture::file::fuzz(data);
 }
 
-/// Reads a profile in any format microscope imports, and writes one it accepts
-/// in every format, for the fuzz harness.
-#[cfg(feature = "fuzzing")]
-#[doc(hidden)]
-pub fn fuzz_profile_import(data: &[u8]) {
-    profiler::fuzz_import(data);
-}
-
 /// Decodes one message from Node's inspector, workers' tunnels included,
 /// for the fuzz harness.
 #[cfg(feature = "fuzzing")]

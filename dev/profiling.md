@@ -12,7 +12,7 @@ The main code is split across three layers:
 - `src/analysis` builds call trees, function costs, diffs, timelines, and
   instrumentation-zone results.
 
-The CLI commands `record`, `report`, `convert`, and `symbolize` are adapters
+The CLI commands `record`, `report`, and `symbolize` are adapters
 over those layers. The browser reads the same profile and analysis results.
 
 ## Code map
@@ -26,10 +26,9 @@ over those layers. The browser reads the same profile and analysis results.
 | `src/backend/linux/bpf/v8.bpf.h`, `src/runtime_model/node/sampled.rs`, `src/unwind/code_copies.rs` | The BPF walker of JavaScript frames, the proof that names what it read, and V8's anonymous code as modules |
 | `src/profiler/jit.rs`, `src/debug_info/perf_map.rs`, `src/debug_info/gdb_jit.rs` | Perf maps and registered JIT objects: anonymous code as modules |
 | `src/profiler/annotate.rs`, `src/profiler/symbols.rs`, `src/profiler/zones.rs` | Symbol, source, and instrumentation annotation |
-| `src/profiler/formats/` | Chrome, folded-stack, and pprof output |
 | `src/capture/` | Validated capture file format and table builder |
 | `src/analysis/` | Queries, call trees, diffs, costs, and zones |
-| `src/cli/profile.rs` | `record`, `report`, `convert`, and `symbolize` command adapters |
+| `src/cli/profile.rs` | `record`, `report`, and `symbolize` command adapters |
 | `src/web/profiles.rs`, `web/src/profile/`, `web/src/ui/profile/` | Profile transport, browser model, and profile pages |
 | `sdk/c/microscope_kernel.h`, `sdk/rust-probes/`, `sdk/zig/microscope_kernel.zig` | Target-side profiling and instrumentation interfaces |
 | `sdk/python/`, `sdk/node/` | The Python and Node packages over the probes SDK's run-time sites |
@@ -875,8 +874,8 @@ modules, mappings, threads, tasks, frames, stacks, samples, intervals, probes,
 and records.
 
 Writers build tables in deterministic order and seal them. Readers validate
-all counts, indexes, ranges, and cross-references before analysis. Importers
-for pprof and folded stacks must satisfy the same validated model.
+all counts, indexes, ranges, and cross-references before analysis.
+microscope reads and writes only its own captures.
 
 A frame of a kind keyed by a string (`FrameKind::named`), an awaited
 future's or an interpreted frame's, has the string's id as its address and
@@ -890,11 +889,7 @@ Format changes need:
 - a compatibility decision and version update;
 - round-trip tests for preserved fields;
 - malformed-input tests or fuzz coverage;
-- import and export tests for affected external formats;
 - browser and report tests for the new meaning.
-
-Do not let an external format dictate the internal model. Conversion may lose
-facts; make that loss a property of the converter.
 
 A capture can also hold system calls, from `microscope syscalls -o` or
 `record --syscalls`. Their tables, and how a recording merges a trace with its
@@ -1002,7 +997,7 @@ just profile-overhead
 change. Compare with `bench/overhead.json`; do not record a new baseline until
 the cause is understood and accepted.
 
-For capture or analysis changes, also run import/export, malformed-input, and
+For capture or analysis changes, also run malformed-input and
 web profile tests. For lifecycle changes, test cancellation, target exit,
 recorder death, file publication, and the absence of surviving processes or
 open workers.

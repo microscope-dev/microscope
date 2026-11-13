@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    Attachment, CallNode, CommandIdentity, Cuts, DEEP_STACK_COPY, GapReason, Granularity,
-    MarkerKind, Preset, ProbeSelection, Profile, Query, RecordError, RecordOptions,
-    SMALL_STACK_COPY, SampleSource, SampledStack, Save, StackCopy, StackEnding, StackView, Watch,
-    ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN, record, record_attached, record_watched,
+    Attachment, CallNode, CommandIdentity, Cuts, DEEP_STACK_COPY, GapReason, MarkerKind, Preset,
+    ProbeSelection, Profile, Query, RecordError, RecordOptions, SMALL_STACK_COPY, SampleSource,
+    SampledStack, Save, StackCopy, StackEnding, StackView, Watch, ZONE_BEGAN_UNSEEN,
+    ZONE_ENDED_UNSEEN, record, record_attached, record_watched,
 };
 use nix::sys::time::TimeValLike as _;
 use support::Scenario;
@@ -1269,9 +1269,10 @@ fn a_segment_deletes_only_segments_older_than_kept() {
     let other = scratch.path().join("notes.txt");
     std::fs::write(&old, b"").expect("an old segment");
     std::fs::write(&other, b"").expect("another file");
-    let profile = Profile::import(b"main;work 3\n")
-        .expect("a profile")
-        .profile;
+    let profile = Profile::of_stacks(
+        "nanoseconds",
+        &[(&[("main", "main.c", 1), ("work", "main.c", 2)], 3)],
+    );
 
     let written = profile
         .write_segment(scratch.path(), Duration::from_hours(1))
@@ -2188,52 +2189,6 @@ fn clock_samples_are_valid_stacks_and_survive_a_file() {
     }
 }
 
-/// A Go program's own pprof profiles read as exactly what it recorded:
-/// every one of its allocations, in bytes, and its parked goroutines,
-/// under the label they were started in.
-#[test]
-fn a_go_programs_own_profiles_read_as_it_wrote_them() {
-    let scratch = support::ScratchDir::new("go-pprof");
-    let allocs = scratch.path().join("allocs.pb.gz");
-    let goroutines = scratch.path().join("goroutine.pb.gz");
-    let status = Command::new(Scenario::fixture("pprof-files"))
-        .arg(&allocs)
-        .arg(&goroutines)
-        .status()
-        .expect("run the fixture");
-    assert!(status.success());
-
-    let allocs = Profile::read(&allocs).expect("the allocations").profile;
-    assert_eq!(allocs.setting("weight"), Some("bytes"));
-    assert!(!allocs.timed());
-    let top = allocs.top(StackView::Native);
-    let allocate = top
-        .iter()
-        .find(|cost| cost.name == "main.allocate")
-        .unwrap_or_else(|| panic!("main.allocate in {top:?}"));
-    assert_eq!(allocate.own, 64_000);
-
-    let goroutines = Profile::read(&goroutines).expect("the goroutines").profile;
-    assert_eq!(goroutines.setting("weight"), Some("goroutine"));
-
-    let keys = goroutines.keys(Granularity::Function);
-    let parked = keys.aggregate(&Query {
-        labels: vec![("worker".to_owned(), "parked".to_owned())],
-        ..Query::default()
-    });
-    assert_eq!(parked.weight, 3);
-    let park = goroutines
-        .top(StackView::Native)
-        .into_iter()
-        .find(|cost| cost.name == "main.park")
-        .expect("main.park");
-    assert_eq!(park.total, 3);
-}
-
-/// A function's samples land on its lines and its instructions: each call
-/// of leaf on leaf's first instruction and line, and on the calls in
-/// middle that made them, which name it; a file changed since its
-/// recording shows no code.
 #[test]
 fn a_functions_samples_land_on_its_lines_and_its_instructions() {
     let scratch = support::ScratchDir::new("annotate");

@@ -94,7 +94,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 toml = "1.1"
 mimalloc = { version = "0.1", default-features = false }
 foldhash = "0.2"
-# pprof's profiles are gzipped, and ELF sections may be zlib-compressed.
+# ELF sections may be zlib-compressed.
 flate2 = "1.1"
 # `alloc` for zeroed vectors the allocator can take from fresh, already
 # zero pages instead of filling.
@@ -139,8 +139,6 @@ jsonschema = { version = "0.58", default-features = false }
 # shrink; see dev/testing.md.
 proptest = { version = "1.11", default-features = false, features = ["fork", "std", "timeout"] }
 proptest-state-machine = "0.6"
-# Decodes the pprof profiles `convert` writes.
-prost = "0.14"
 tokio-tungstenite = "0.29"
 ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
 

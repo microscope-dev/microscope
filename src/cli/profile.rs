@@ -1,4 +1,4 @@
-//! `microscope record`, `microscope report`, and `microscope convert`: the
+//! `microscope record`, `microscope report`, and `microscope symbolize`: the
 //! sampling profiler from the command line.
 
 use std::ffi::OsString;
@@ -12,7 +12,7 @@ use super::format::plural;
 use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
-    CommandIdentity, Cuts, Format, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
+    CommandIdentity, Cuts, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
     ProbeSelection, Profile, PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy,
     StackView, Watch,
 };
@@ -364,26 +364,7 @@ pub struct SymbolizeArgs {
     debuginfod: bool,
 }
 
-#[derive(Debug, clap::Args)]
-pub struct ConvertArgs {
-    /// The profile to read: microscope's own, pprof's, gzipped or not, or
-    /// folded stacks.
-    input: PathBuf,
-
-    /// Where to write it, in the format its name says: `.usprof`,
-    /// `.pb.gz` or `.pprof`, `.folded`, or `.json` for a Chrome trace.
-    output: PathBuf,
-
-    /// The format to write, whatever the output's name: usprof, pprof,
-    /// folded, or chrome.
-    #[arg(long, value_name = "FORMAT")]
-    to: Option<Format>,
-
-    #[command(flatten)]
-    look: LookArgs,
-}
-
-/// How a report or a conversion sees each stack's frames.
+/// How a report sees each stack's frames.
 #[derive(Debug, clap::Args)]
 pub struct LookArgs {
     /// The frames threads ran, not each async task's own stack.
@@ -473,73 +454,6 @@ fn python_engine(engine: &str) -> Result<PythonEngine> {
             "--python {engine}: the engines are bpf, snapshot[=SECONDS], and live[=SECONDS]"
         ),
     }
-}
-
-/// Runs `microscope convert`.
-pub fn run_convert(args: &ConvertArgs) -> std::process::ExitCode {
-    match convert(args) {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: {error:#}");
-            std::process::ExitCode::FAILURE
-        }
-    }
-}
-
-fn convert(args: &ConvertArgs) -> Result<()> {
-    let format = args
-        .to
-        .or_else(|| Format::of_path(&args.output))
-        .with_context(|| {
-            format!(
-                "{} does not say which format to write; choose one with --to",
-                args.output.display()
-            )
-        })?;
-    let read =
-        Profile::read(&args.input).with_context(|| format!("reading {}", args.input.display()))?;
-    if read.truncated {
-        eprintln!(
-            "warning: {} was cut short; converting the part that was complete",
-            args.input.display()
-        );
-    }
-
-    let view = args.look.view();
-
-    let bytes = read
-        .profile
-        .export(format, view)
-        .with_context(|| format!("converting {}", args.input.display()))?;
-    std::fs::write(&args.output, bytes)
-        .with_context(|| format!("writing {}", args.output.display()))?;
-    let (calls, trace) = (read.profile.has_syscalls(), read.profile.is_trace());
-    let kept = match format {
-        Format::Usprof => return Ok(()),
-        Format::Pprof if trace => {
-            "each call's stack, with the call as its innermost frame, counting calls and \
-             nanoseconds, without times or threads"
-        }
-        Format::Folded if trace => {
-            "each call's stack, with the call as its innermost frame, counting calls only"
-        }
-        Format::Pprof if calls => {
-            "the samples' stacks and their weights, without times, threads, instrumentation, or \
-             system calls"
-        }
-        Format::Folded if calls => {
-            "the samples' stacks and their weights only, without system calls"
-        }
-        Format::Pprof => "stacks and their weights, without times, threads, or instrumentation",
-        Format::Folded => "stacks and their weights only",
-        Format::Chrome if calls => {
-            "instrumentation, threads, and the calls that returned, without samples or stacks"
-        }
-        Format::Chrome => "instrumentation and threads, without samples",
-    };
-
-    eprintln!("note: {} holds {kept}", args.output.display());
-    Ok(())
 }
 
 /// Runs `microscope symbolize`.
@@ -1449,7 +1363,7 @@ fn coverage(profile: &Profile, unit: &str, lost: u64, out: &mut impl std::io::Wr
     let paused = !profile.gaps().is_empty();
     let judged = profile.samples() >= FEWEST_JUDGED_SAMPLES
         && (unit != "nanoseconds" || counted == 0 || counted >= LEAST_JUDGED_CPU);
-    if !judged && profile.timed() {
+    if !judged {
         if unit == "nanoseconds" && counted > 0 && counted < LEAST_JUDGED_CPU {
             writeln!(
                 out,
@@ -1840,11 +1754,6 @@ fn summary(profile: &Profile, limit: usize, out: &mut impl std::io::Write) -> Re
             profile.samples(),
             weight(total)
         )?;
-    }
-
-    if !profile.timed() {
-        let source = profile.setting("source").unwrap_or("its file");
-        writeln!(out, "Read from {source}, which keeps no times or threads.")?;
     }
 
     let lost = profile.lost_samples();

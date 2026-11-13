@@ -540,25 +540,6 @@ test("a recording without zones has no Zones pane, and its lanes ask for none", 
   await expect(page.getByText("no zones are named nowhere")).toBeHidden();
 });
 
-test("a Go program's own pprof profile opens in its unit, without a timeline", async ({
-  page,
-  microscope,
-}, info) => {
-  const allocs = info.outputPath("allocs.pb.gz");
-  execFileSync(fixture("pprof-files"), [allocs, info.outputPath("goroutine.pb.gz")], {
-    stdio: "ignore",
-  });
-  const served = await microscope.start([allocs]);
-  await join(page, served.link);
-  await expect(page.getByTestId("untimed")).toContainText("pprof's alloc_space (bytes)");
-  await showView(page, "Functions");
-  const allocate = page
-    .getByRole("listbox", { name: "Functions" })
-    .getByRole("option")
-    .filter({ hasText: "main.allocate" });
-  await expect(allocate).toHaveAttribute("title", "62.5 KiB");
-});
-
 test("a profile is diffed with a range of its own, and with another profile", async ({
   page,
   microscope,

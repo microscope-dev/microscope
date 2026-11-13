@@ -37,7 +37,7 @@ import {
 } from "../src/workbench/layout";
 
 const summary = (change: Partial<ProfileSummary> = {}): ProfileSummary =>
-  ({ samples: 10, syscalls: 0, timed: true, zoneSites: [{}], ...change }) as ProfileSummary;
+  ({ samples: 10, syscalls: 0, zoneSites: [{}], ...change }) as ProfileSummary;
 
 const G0 = "g0" as GroupId;
 
@@ -147,8 +147,8 @@ describe("a profile's panes", () => {
   it("open only what a profile has", () => {
     const traced = arranged({}, summary({ samples: 0, syscalls: 5, zoneSites: [] })).layout;
     expect(Object.values(traced.panes).map((pane) => viewOf(pane))).toEqual([null, "syscalls"]);
-    const untimed = arranged({}, summary({ timed: false })).layout;
-    expect(viewOpen(untimed, "p1", "zones")).toBe(false);
+    const unzoned = arranged({}, summary({ zoneSites: [] })).layout;
+    expect(viewOpen(unzoned, "p1", "zones")).toBe(false);
   });
 
   it("show the view an address asked for, with what it keeps, once arranged", () => {

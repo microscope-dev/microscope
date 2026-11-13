@@ -23,7 +23,6 @@ Use `microscope --help` for all options or `microscope TOOL --help` for a tool.
 | `record` | Record a profile |
 | `syscalls` | Trace system calls, as strace does; see [System calls](../syscalls.md) |
 | `report` | Print a profile summary or call tree |
-| `convert` | Convert microscope, pprof, folded-stack, and Chrome-trace formats |
 | `symbolize` | Add source lines to a profile recorded for later symbolization |
 
 ## Target options

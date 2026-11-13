@@ -333,10 +333,6 @@ criteria = "safe-to-deploy"
 version = "1.70.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.itertools]]
-version = "0.14.0"
-criteria = "safe-to-run"
-
 [[exemptions.itoa]]
 version = "1.0.18"
 criteria = "safe-to-deploy"
@@ -495,14 +491,6 @@ criteria = "safe-to-run"
 
 [[exemptions.proptest-state-machine]]
 version = "0.6.0"
-criteria = "safe-to-run"
-
-[[exemptions.prost]]
-version = "0.14.4"
-criteria = "safe-to-run"
-
-[[exemptions.prost-derive]]
-version = "0.14.4"
 criteria = "safe-to-run"
 
 [[exemptions.ptyprocess]]

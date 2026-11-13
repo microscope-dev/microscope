@@ -137,7 +137,6 @@ function summaryOf(change: Partial<ProfileSummary> = {}): ProfileSummary {
     command: null,
     unit: "nanoseconds",
     source: null,
-    timed: false,
     samples: 10,
     weight: 10,
     syscalls: 0,
@@ -1195,7 +1194,7 @@ it("paints the lanes again when they change, not when a function is chosen", asy
     <div style={WIDE}>
       <Lanes />
     </div>,
-    { summary: summaryOf({ timed: true }) },
+    { summary: summaryOf({}) },
   );
   const asked = await server.next("profileTimeline");
   server.answer(asked, { range: [0, 1e9], lanes: [] });
@@ -1230,7 +1229,7 @@ it("draws a lane per thread for hundreds of threads", async () => {
     blocked: 0,
     preempted: 0,
   }));
-  const summary = summaryOf({ timed: true, threads });
+  const summary = summaryOf({ threads });
   const server = await mount(
     <div style={WIDE}>
       <Lanes />
@@ -1286,7 +1285,7 @@ it("marks round times, the pointer's time, and a range's ends and length", async
     <div style={SECOND_WIDE}>
       <Lanes />
     </div>,
-    { summary: summaryOf({ timed: true }) },
+    { summary: summaryOf({}) },
   );
   await server.next("profileTimeline");
   const all = [
@@ -1378,7 +1377,7 @@ it("names the lanes it cuts samples to with the other chips, not over the lanes"
       <Lanes />
       <LaneChip />
     </>,
-    { summary: summaryOf({ timed: true, threads }) },
+    { summary: summaryOf({ threads }) },
   );
 
   await page.getByRole("button", { name: "main 10" }).click();
@@ -1437,7 +1436,7 @@ it("offers no Options for a trace of system calls alone", async () => {
 });
 
 it("says why the timeline could not be read", async () => {
-  const server = await mount(<Lanes />, { summary: summaryOf({ timed: true }) });
+  const server = await mount(<Lanes />, { summary: summaryOf({}) });
   server.fail(await server.next("profileTimeline"), "the timeline is cut short");
   await expect.element(page.getByText("the timeline is cut short")).toBeVisible();
 });
@@ -1500,7 +1499,6 @@ const DRAIN = { name: "drain", label: false, count: 2, total: 220e6, longest: 20
  * `offCpu`, the drain was blocked for 120 ms and preempted for 20. */
 async function zonedLanes(look: ProfileLook = NO_LOOK, offCpu = false): Promise<Server> {
   const summary = summaryOf({
-    timed: true,
     threads: ZONED_THREADS,
     zoneSites: [DRAIN, { ...DRAIN, name: "parse", count: 1, total: 50e6, longest: 50e6 }],
   });
@@ -1527,7 +1525,7 @@ async function zonedLanes(look: ProfileLook = NO_LOOK, offCpu = false): Promise<
 const lanesCanvas = () => page.getByRole("img", { name: /^CPU and zones over/u });
 
 it("says why the zones could not be read, and still draws the samples", async () => {
-  const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
+  const summary = summaryOf({ threads: ZONED_THREADS, zoneSites: [DRAIN] });
   const server = await mount(<Lanes />, { summary });
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
   server.fail(await server.next("profileZones"), "the zones are cut short");
@@ -1536,7 +1534,7 @@ it("says why the zones could not be read, and still draws the samples", async ()
 });
 
 it("waits on no zones in a box too narrow to draw them", async () => {
-  const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
+  const summary = summaryOf({ threads: ZONED_THREADS, zoneSites: [DRAIN] });
   const server = await mount(
     <div style={NAMES_WIDE}>
       <Lanes />
@@ -1561,7 +1559,7 @@ it("puts a range's ends side by side where it is too near an edge for both", asy
 
 it("asks for no zones in a recording without any, nor of task lanes", async () => {
   const server = await mount(<Lanes />, {
-    summary: summaryOf({ timed: true, threads: ZONED_THREADS }),
+    summary: summaryOf({ threads: ZONED_THREADS }),
   });
   await server.next("profileTimeline");
   await settled();
@@ -1615,7 +1613,7 @@ it("puts threads with zones first, and folds the rest into a lane that opens to 
 it("folds no lane when every thread has zones, or none does", async () => {
   const both = ZONED_THREADS.map((thread) => ({ ...thread, zones: 1 }));
   await mount(<Lanes />, {
-    summary: summaryOf({ timed: true, threads: both, zoneSites: [DRAIN] }),
+    summary: summaryOf({ threads: both, zoneSites: [DRAIN] }),
   });
   await expect.element(page.getByRole("button", { name: "main 10" })).toBeVisible();
   await expect.element(page.getByRole("button", { name: "worker 11" })).toBeVisible();
@@ -1623,7 +1621,7 @@ it("folds no lane when every thread has zones, or none does", async () => {
   cleanup();
 
   const neither = ZONED_THREADS.map((thread) => ({ ...thread, zones: 0 }));
-  await mount(<Lanes />, { summary: summaryOf({ timed: true, threads: neither }) });
+  await mount(<Lanes />, { summary: summaryOf({ threads: neither }) });
   await expect.element(page.getByRole("button", { name: "main 10" })).toBeVisible();
   await expect.element(page.getByRole("button", { name: "worker 11" })).toBeVisible();
   expect(document.body.textContent).not.toContain("without zones");
@@ -1725,7 +1723,7 @@ it("outlines the chosen site's zones even where they fold, and asks for them by 
     }
     strokeRect.call(this, x, ...rest);
   });
-  const summary = summaryOf({ timed: true, threads: ZONED_THREADS, zoneSites: [DRAIN] });
+  const summary = summaryOf({ threads: ZONED_THREADS, zoneSites: [DRAIN] });
   const server = await mount(
     <div style={SECOND_WIDE}>
       <Lanes />
@@ -1793,7 +1791,7 @@ it("scrolls a zone chosen elsewhere into view, once, so the lanes scroll away fr
     <div style={SECOND_WIDE_SHORT}>
       <Lanes />
     </div>,
-    { summary: summaryOf({ timed: true, threads, zoneSites: [DRAIN] }) },
+    { summary: summaryOf({ threads, zoneSites: [DRAIN] }) },
   );
   server.answer(await server.next("profileTimeline"), { range: [0, 1e9], lanes: [] });
   const [answer, columns] = zonesOf(
@@ -2477,7 +2475,6 @@ const RG = { arguments: ["/bin/rg", "-c", "a b", "it's"], text: "/bin/rg -c a b 
 it("shows the file's details in a pane: its whole command, then its samples", async () => {
   const summary = summaryOf({
     command: RG,
-    timed: true,
     truncations: [{ what: "Stack copy ran out", count: 3 }],
     recorderCpu: 20e6,
     recorderLoading: 8e6,
@@ -2652,7 +2649,6 @@ it("leads with what was recorded, and shows only the losses there were", async (
   const thread = { pid: 1, samples: 1, weight: 1, zones: 0, blocked: 0, preempted: 0 };
   const summary = summaryOf({
     command: RG,
-    timed: true,
     duration: 2e9,
     weight: 3e9,
     samples: 3000,

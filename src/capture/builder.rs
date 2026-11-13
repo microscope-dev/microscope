@@ -1415,16 +1415,6 @@ impl Remap {
     fn module(&self, id: u32) -> u32 {
         Self::get(&self.modules, id)
     }
-
-    /// The new row of thread `id`.
-    pub fn thread(&self, id: u32) -> u32 {
-        Self::get(&self.threads, id)
-    }
-
-    /// The new row of stack `id`, keeping [`NONE`].
-    pub fn stack(&self, id: u32) -> u32 {
-        Self::get(&self.stacks, id)
-    }
 }
 
 /// A row of a table grouped by thread and ordered by time.

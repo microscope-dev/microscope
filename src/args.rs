@@ -271,10 +271,6 @@ pub enum Tool {
     /// Summarize a recorded profile.
     Report(cli::profile::ReportArgs),
 
-    /// Write a profile in another format: pprof, folded stacks, or a
-    /// Chrome trace, or read one of theirs.
-    Convert(cli::profile::ConvertArgs),
-
     /// Give a profile recorded with `--symbols later` its source lines.
     Symbolize(cli::profile::SymbolizeArgs),
 

@@ -202,20 +202,6 @@ number of sites shown (default 20).
 filter calls, group them by file, process, or call site, see latency over
 time, and open any call to read its arguments and stack.
 
-`microscope convert` exports saved calls for other tools:
-
-| Format | Call representation |
-|---|---|
-| pprof | Stack samples with the call's name as the innermost frame, weighted by call count and duration in nanoseconds |
-| Folded stacks | The same stacks, weighted only by call count |
-| Chrome trace | Each returned call as a span on its thread, with result and call site |
-
-```sh
-microscope convert server.usprof server.pb.gz
-microscope convert server.usprof server.folded
-microscope convert server.usprof server.json
-```
-
 ## Choose an engine
 
 The default **BPF engine** runs small programs in the kernel. The traced

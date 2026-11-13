@@ -2572,10 +2572,6 @@ build_go_fixture "$go_fixtures_dir/scale" "$output_dir/scale-go"
 # A large real program, many packages of the standard library's.
 build_go_command cmd/gofmt "$output_dir/gofmt-go-o0" -buildmode=pie "-gcflags=all=-N -l"
 build_go_command cmd/gofmt "$output_dir/gofmt-go-o2"
-# Go's own pprof, which reads the profiles microscope writes, and a program
-# that writes profiles of its own for microscope to read.
-build_go_command cmd/pprof "$output_dir/pprof"
-build_go_fixture "$go_fixtures_dir/pprof-files" "$output_dir/pprof-files"
 build_go_fixture "$go_fixtures_dir/stacks" "$output_dir/stacks-go-o0" \
     -buildmode=pie "-gcflags=all=-N -l"
 build_go_fixture "$go_fixtures_dir/stacks" "$output_dir/stacks-go-o2"
