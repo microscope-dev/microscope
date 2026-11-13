@@ -510,6 +510,12 @@ impl<'a> Keys<'a> {
         super::aggregate(self.capture, self, query)
     }
 
+    /// Which system calls `query` keeps, by row.
+    #[must_use]
+    pub fn syscalls(&self, query: &Query) -> Vec<bool> {
+        super::syscalls(self.capture, self, query)
+    }
+
     /// What each key costs under `query`, most own weight first.
     #[must_use]
     pub fn functions(&self, query: &Query) -> Costs {

@@ -116,16 +116,16 @@ impl Trace {
 /// The profile a syscall request asks about.
 pub fn profile_of(request: &Request) -> Option<&str> {
     Some(match request {
-        Request::SyscallSummary(query) => &query.query.profile,
-        Request::SyscallRate(query) => &query.query.profile,
-        Request::SyscallHeatmap(query) => &query.query.profile,
-        Request::SyscallDetail(query) => &query.query.profile,
-        Request::SyscallLog(query) => &query.query.profile,
-        Request::SyscallLanes(query) => &query.query.profile,
+        Request::SyscallSummary(query) => &query.query.link.profile,
+        Request::SyscallRate(query) => &query.query.link.profile,
+        Request::SyscallHeatmap(query) => &query.query.link.profile,
+        Request::SyscallDetail(query) => &query.query.link.profile,
+        Request::SyscallLog(query) => &query.query.link.profile,
+        Request::SyscallLanes(query) => &query.query.link.profile,
         Request::SyscallCall(query) => &query.profile,
         Request::SyscallFiles(query)
         | Request::SyscallNetwork(query)
-        | Request::SyscallProcesses(query) => &query.profile,
+        | Request::SyscallProcesses(query) => &query.link.profile,
         Request::SyscallInFlight(query) => &query.profile,
         _ => return None,
     })
@@ -135,15 +135,15 @@ pub fn profile_of(request: &Request) -> Option<&str> {
 pub fn answer(profile: &Profile, trace: &Trace, request: Request) -> Result<Value, Failure> {
     match request {
         Request::SyscallSummary(query) => Ok(json(&summary(profile, trace, &query)?)),
-        Request::SyscallRate(query) => Ok(json(&rate(trace, &query)?)),
-        Request::SyscallHeatmap(query) => Ok(json(&heatmap(trace, &query)?)),
+        Request::SyscallRate(query) => Ok(json(&rate(profile, trace, &query)?)),
+        Request::SyscallHeatmap(query) => Ok(json(&heatmap(profile, trace, &query)?)),
         Request::SyscallDetail(query) => Ok(json(&detail(profile, trace, &query)?)),
-        Request::SyscallLog(query) => Ok(json(&log(trace, &query)?)),
+        Request::SyscallLog(query) => Ok(json(&log(profile, trace, &query)?)),
         Request::SyscallCall(query) => Ok(json(&call(profile, trace, &query)?)),
-        Request::SyscallLanes(query) => Ok(json(&lanes(trace, &query)?)),
-        Request::SyscallFiles(query) => Ok(json(&files(trace, &query)?)),
-        Request::SyscallNetwork(query) => Ok(json(&network(trace, &query)?)),
-        Request::SyscallProcesses(query) => Ok(json(&processes(trace, &query)?)),
+        Request::SyscallLanes(query) => Ok(json(&lanes(profile, trace, &query)?)),
+        Request::SyscallFiles(query) => Ok(json(&files(profile, trace, &query)?)),
+        Request::SyscallNetwork(query) => Ok(json(&network(profile, trace, &query)?)),
+        Request::SyscallProcesses(query) => Ok(json(&processes(profile, trace, &query)?)),
         _ => Err(Failure::new(
             ErrorKind::Failed,
             "internal: only syscall requests come here, and in-flight ones go to their recording",
@@ -227,7 +227,9 @@ struct Selection {
     /// Calls that ended in `[from, to)`, on the trace's clock.
     from: i64,
     to: i64,
-    threads: Option<BTreeSet<u32>>,
+
+    /// The calls the link keeps, by row, when it keeps fewer than all.
+    kept: Option<Vec<bool>>,
 
     /// Calls whose duration falls in this log2 bucket.
     latency: Option<usize>,
@@ -238,11 +240,28 @@ struct Selection {
 }
 
 impl Selection {
-    fn new(trace: &Trace, query: &SyscallQuery) -> Result<Self, Failure> {
+    fn new(profile: &Profile, trace: &Trace, query: &SyscallQuery) -> Result<Self, Failure> {
         let expressions: Vec<String> = query.filter.split_whitespace().map(str::to_owned).collect();
         let filter = Filter::parse(&expressions, &present::signal_named)
             .map_err(|error| Failure::new(ErrorKind::Invalid, error.to_string()))?;
-        let (from, to) = query.range.map_or((i64::MIN, i64::MAX), |[from, to]| {
+        let link = &query.link;
+        let narrows = link.threads.is_some()
+            || !link.labels.is_empty()
+            || link.zones.is_some()
+            || !link.transforms.is_empty();
+        let kept = if narrows {
+            // The range is the selection's own, as lanes draw calls that
+            // overlap it.
+            let mut unranged = link.clone();
+            unranged.range = None;
+            let keys = profile.keys(super::profiles::granularity(link.granularity));
+            let resolved = super::profiles::resolve(profile, &keys, &unranged)?;
+            Some(keys.syscalls(&resolved))
+        } else {
+            None
+        };
+
+        let (from, to) = link.range.map_or((i64::MIN, i64::MAX), |[from, to]| {
             (
                 trace.start.saturating_add(from),
                 trace.start.saturating_add(to),
@@ -253,10 +272,7 @@ impl Selection {
             filter,
             from,
             to,
-            threads: query
-                .threads
-                .as_ref()
-                .map(|threads| threads.iter().copied().collect()),
+            kept,
             latency: query
                 .latency
                 .map(|bucket| usize::try_from(bucket).unwrap_or(usize::MAX)),
@@ -268,7 +284,8 @@ impl Selection {
         (self.from..self.to).contains(&time.cast_signed())
     }
 
-    fn shows(&self, call: &SyscallEvent, fds: &FdTable) -> bool {
+    /// Whether the call at `row` of the capture's calls is selected.
+    fn shows(&self, row: usize, call: &SyscallEvent, fds: &FdTable) -> bool {
         let inside = if self.overlapping {
             let entered = call.entered.unwrap_or_else(|| call.time()).cast_signed();
             entered < self.to && self.from <= call.time().cast_signed()
@@ -278,9 +295,9 @@ impl Selection {
 
         if !inside
             || self
-                .threads
+                .kept
                 .as_ref()
-                .is_some_and(|threads| !threads.contains(&call.thread.get()))
+                .is_some_and(|kept| !kept.get(row).copied().unwrap_or(false))
             || self
                 .latency
                 .is_some_and(|band| call.duration().map(stats::bucket) != Some(band))
@@ -322,10 +339,12 @@ enum Seen<'a> {
 /// Walks the trace in order, keeping its descriptor table.
 fn walk(trace: &Trace, selection: &Selection, mut visit: impl FnMut(Seen<'_>)) {
     let mut fds = FdTable::default();
+    let mut row = 0;
     for (index, recorded) in trace.events.iter().enumerate() {
         match &recorded.event {
             TraceEvent::Call(call) => {
-                let shown = selection.shows(call, &fds);
+                let shown = selection.shows(row, call, &fds);
+                row += 1;
                 if shown {
                     visit(Seen::Before(index, call, &fds));
                 }
@@ -448,7 +467,7 @@ fn summary(
     trace: &Trace,
     query: &SyscallSummaryQuery,
 ) -> Result<SyscallSummary, Failure> {
-    let selection = Selection::new(trace, &query.query)?;
+    let selection = Selection::new(profile, trace, &query.query)?;
     let mut sites: HashMap<u32, String> = HashMap::new();
     #[expect(
         clippy::indexing_slicing,
@@ -598,8 +617,12 @@ impl Slices {
     clippy::indexing_slicing,
     reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
 )]
-fn rate(trace: &Trace, query: &SyscallRateQuery) -> Result<SyscallRate, Failure> {
-    let selection = Selection::new(trace, &query.query)?;
+fn rate(
+    profile: &Profile,
+    trace: &Trace,
+    query: &SyscallRateQuery,
+) -> Result<SyscallRate, Failure> {
+    let selection = Selection::new(profile, trace, &query.query)?;
     let slices = Slices::new(selection.span(trace), query.buckets);
     let mut series: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     let mut errors = vec![0; slices.count];
@@ -651,8 +674,12 @@ fn rate(trace: &Trace, query: &SyscallRateQuery) -> Result<SyscallRate, Failure>
     clippy::indexing_slicing,
     reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
 )]
-fn heatmap(trace: &Trace, query: &SyscallHeatmapQuery) -> Result<SyscallHeatmap, Failure> {
-    let selection = Selection::new(trace, &query.query)?;
+fn heatmap(
+    profile: &Profile,
+    trace: &Trace,
+    query: &SyscallHeatmapQuery,
+) -> Result<SyscallHeatmap, Failure> {
+    let selection = Selection::new(profile, trace, &query.query)?;
     let slices = Slices::new(selection.span(trace), query.buckets);
     let rows = stats::BUCKETS;
     let mut counts = vec![0_u32; slices.count * rows];
@@ -691,7 +718,7 @@ fn detail(
         }
     }
 
-    let selection = Selection::new(trace, &query.query)?;
+    let selection = Selection::new(profile, trace, &query.query)?;
     let mut selected = SyscallStats::default();
     let mut chosen = Vec::new();
     calls(trace, &selection, |index, call, _| {
@@ -765,8 +792,8 @@ fn tokens(tokens: Tokens) -> Vec<SyscallToken> {
         .collect()
 }
 
-fn log(trace: &Trace, query: &SyscallLogQuery) -> Result<SyscallLog, Failure> {
-    let selection = Selection::new(trace, &query.query)?;
+fn log(profile: &Profile, trace: &Trace, query: &SyscallLogQuery) -> Result<SyscallLog, Failure> {
+    let selection = Selection::new(profile, trace, &query.query)?;
     let first = query.offset;
     let last = first.saturating_add(u64::from(query.limit.min(MOST_LINES)));
     let mut total = 0_u64;
@@ -936,10 +963,14 @@ fn call(
     clippy::indexing_slicing,
     reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
 )]
-fn lanes(trace: &Trace, query: &SyscallLanesQuery) -> Result<SyscallLanes, Failure> {
+fn lanes(
+    profile: &Profile,
+    trace: &Trace,
+    query: &SyscallLanesQuery,
+) -> Result<SyscallLanes, Failure> {
     let selection = Selection {
         overlapping: true,
-        ..Selection::new(trace, &query.query)?
+        ..Selection::new(profile, trace, &query.query)?
     };
 
     let slices = Slices::new(selection.span(trace), query.buckets);
@@ -1013,8 +1044,8 @@ fn opens(call: &SyscallEvent) -> bool {
         .is_some_and(|name| matches!(name, "open" | "openat" | "openat2" | "creat"))
 }
 
-fn files(trace: &Trace, query: &SyscallQuery) -> Result<SyscallFiles, Failure> {
-    let selection = Selection::new(trace, query)?;
+fn files(profile: &Profile, trace: &Trace, query: &SyscallQuery) -> Result<SyscallFiles, Failure> {
+    let selection = Selection::new(profile, trace, query)?;
     let mut files: BTreeMap<String, SyscallFile> = BTreeMap::new();
     calls(trace, &selection, |_, call, fds| {
         if opens(call)
@@ -1075,8 +1106,12 @@ fn files(trace: &Trace, query: &SyscallQuery) -> Result<SyscallFiles, Failure> {
     Ok(SyscallFiles { files })
 }
 
-fn network(trace: &Trace, query: &SyscallQuery) -> Result<SyscallNetwork, Failure> {
-    let selection = Selection::new(trace, query)?;
+fn network(
+    profile: &Profile,
+    trace: &Trace,
+    query: &SyscallQuery,
+) -> Result<SyscallNetwork, Failure> {
+    let selection = Selection::new(profile, trace, query)?;
     let mut endpoints: BTreeMap<String, SyscallEndpoint> = BTreeMap::new();
     walk(trace, &selection, |seen| {
         // A connect is known by the endpoint it made; the rest by the one
@@ -1138,8 +1173,12 @@ fn is_connect(call: &SyscallEvent) -> bool {
     call.call.name() == Some("connect")
 }
 
-fn processes(trace: &Trace, query: &SyscallQuery) -> Result<SyscallProcesses, Failure> {
-    let selection = Selection::new(trace, query)?;
+fn processes(
+    profile: &Profile,
+    trace: &Trace,
+    query: &SyscallQuery,
+) -> Result<SyscallProcesses, Failure> {
+    let selection = Selection::new(profile, trace, query)?;
     let mut counts: BTreeMap<Pid, (u64, u64)> = BTreeMap::new();
 
     calls(trace, &selection, |_, call, _| {

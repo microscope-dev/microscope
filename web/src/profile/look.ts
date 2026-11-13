@@ -239,14 +239,14 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   return look;
 }
 
-/** The Syscalls view's query of `profile`: the look's selection over its
- * time range. */
+/** The Syscalls view's query of `profile`: the calls of the look's
+ * selection, through its filter and latency band. */
 export function syscallQueryOf(profile: string, look: ProfileLook, revision: number): SyscallQuery {
-  const range = rangeOf(look);
+  // The calls of what the sample views select; a comparison is theirs.
+  const { base: _base, ...link } = queryOf(profile, look);
   return {
-    profile,
+    ...link,
     revision,
-    ...(range ? { range } : {}),
     ...(look.sl ? { latency: Number(look.sl) } : {}),
     filter: look.sf ?? "",
   };

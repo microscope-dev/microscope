@@ -2054,3 +2054,267 @@ proptest! {
         a_diff_holds_each_profiles_weight((&ours, &theirs), (&our_order, &their_order))?;
     }
 }
+
+/// A call: its thread, when it entered and returned, and its stack's
+/// functions, innermost first, or none.
+type Call = (u32, i64, i64, Option<Vec<usize>>);
+
+/// A capture of `calls` and `samples` (thread, time, stack of functions)
+/// on threads 0 and 1, of the functions `a` to `e`, and of one zone site,
+/// `phase`, with `zones` (thread, start, end).
+fn traced(
+    calls: &[Call],
+    samples: &[(u32, i64, Vec<usize>)],
+    zones: &[(u32, i64, i64)],
+) -> Capture {
+    use zerocopy::FromZeros as _;
+
+    let mut builder = CaptureBuilder::new();
+    let module = builder.module("/bin/app", None, [0; 16], 0);
+    let frames: Vec<u32> = (0_u64..)
+        .zip(FUNCTIONS)
+        .map(|(index, name)| {
+            let frame = builder.frame(FrameKind::Native, module, 0x10 * index, 0);
+            builder.symbolize(frame, module, &[line(name)]);
+            frame
+        })
+        .collect();
+    let threads = [
+        builder.thread(Pid::new(1), Tid::new(1), 0),
+        builder.thread(Pid::new(1), Tid::new(2), 0),
+    ];
+    assert_eq!(threads, [0, 1], "threads are their own rows");
+
+    let mut stack = |choices: &[usize]| {
+        let stack: Vec<u32> = choices.iter().map(|&choice| frames[choice]).collect();
+        builder.stack(&stack)
+    };
+    let call_stacks: Vec<u32> = calls
+        .iter()
+        .map(|(.., choices)| choices.as_deref().map_or(NONE, &mut stack))
+        .collect();
+    let sample_stacks: Vec<u32> = samples
+        .iter()
+        .map(|(_, _, choices)| stack(choices))
+        .collect();
+
+    for (&(thread, entered, exited, _), stack) in calls.iter().zip(call_stacks) {
+        let mut call = crate::capture::records::Syscall::new_zeroed();
+        call.thread = thread.into();
+        call.entered = entered.into();
+        call.exited = exited.into();
+        call.stack = stack.into();
+        builder.syscall(call, &[]);
+    }
+
+    for (&(thread, time, _), stack) in samples.iter().zip(sample_stacks) {
+        builder.sample(thread, time, 1, stack, NONE);
+    }
+
+    let site = builder.site(
+        "phase",
+        "app.rs",
+        1,
+        module,
+        microscope_probes::abi::SITE_ZONE,
+    );
+    for &(thread, start, end) in zones {
+        builder.zone(
+            thread,
+            crate::capture::records::Zone {
+                start: start.into(),
+                end: end.into(),
+                site: site.into(),
+                flags: 0.into(),
+                value: NONE.into(),
+                reserved: 0.into(),
+            },
+        );
+    }
+
+    builder.finish()
+}
+
+/// A transform and the name of the function it applies to.
+type OfFunction<'n> = (fn(u32) -> Transform, &'n str);
+
+/// The rows of the calls `query` keeps, with `transform` of the function
+/// `name`, if any.
+fn kept_calls(capture: &Capture, query: &Query, transform: Option<OfFunction<'_>>) -> Vec<usize> {
+    let keys = Keys::new(capture, Granularity::Function);
+    let mut query = query.clone();
+    if let Some((transform, name)) = transform {
+        query.transforms = keys.named(name).into_iter().map(transform).collect();
+    }
+
+    keys.syscalls(&query)
+        .iter()
+        .enumerate()
+        .filter_map(|(row, kept)| kept.then_some(row))
+        .collect()
+}
+
+#[test]
+fn a_query_keeps_the_calls_made_under_its_function_on_its_threads_and_in_its_zones() {
+    let calls: [Call; 5] = [
+        // d under b under a, on each thread, and d under c under a.
+        (0, 10, 12, Some(vec![3, 1, 0])),
+        (1, 20, 22, Some(vec![3, 1, 0])),
+        (0, 30, 32, Some(vec![3, 2, 0])),
+        // No stack, and one whose entry went unseen.
+        (0, 40, 41, None),
+        (1, crate::capture::records::UNSEEN, 52, Some(vec![1, 0])),
+    ];
+    let capture = traced(&calls, &[], &[(0, 25, 35)]);
+    let all = Query::default();
+
+    assert_eq!(kept_calls(&capture, &all, None), [0, 1, 2, 3, 4]);
+    let under_b = Some((Transform::Focus as fn(u32) -> Transform, "b"));
+    assert_eq!(kept_calls(&capture, &all, under_b), [0, 1, 4]);
+    assert_eq!(
+        kept_calls(&capture, &all, Some((Transform::Drop, "b"))),
+        [2, 3]
+    );
+    assert_eq!(
+        kept_calls(&capture, &all, Some((Transform::Merge, "b"))),
+        [0, 1, 2, 3, 4]
+    );
+
+    let second = Query {
+        threads: Some(vec![1]),
+        ..Query::default()
+    };
+    assert_eq!(kept_calls(&capture, &second, under_b), [1, 4]);
+
+    // By when each returned.
+    let ranged = Query {
+        range: Some((12, 41)),
+        ..Query::default()
+    };
+    assert_eq!(kept_calls(&capture, &ranged, None), [0, 1, 2]);
+
+    let zoned = Query {
+        zones: Some(ZoneScope {
+            sites: sites_named(&capture, "phase"),
+            band: None,
+            outside: false,
+        }),
+        ..Query::default()
+    };
+    assert_eq!(kept_calls(&capture, &zoned, None), [2]);
+}
+
+#[test]
+fn samples_during_calls_are_those_their_threads_took_inside_them() {
+    let calls: [Call; 3] = [
+        (0, 10, 20, Some(vec![3])),
+        (1, 10, 20, Some(vec![3])),
+        // Still running at the end.
+        (0, 50, crate::capture::records::UNSEEN, Some(vec![3])),
+    ];
+    let samples = [
+        (0, 9, vec![0]),
+        (0, 10, vec![1]),
+        (0, 19, vec![2]),
+        (0, 20, vec![0]),
+        (1, 15, vec![4]),
+        (0, 70, vec![4]),
+    ];
+    let capture = traced(&calls, &samples, &[]);
+    let keys = Keys::new(&capture, Granularity::Function);
+    let during = |rows: Vec<u32>| {
+        keys.aggregate(&Query {
+            during: Some(rows),
+            ..Query::default()
+        })
+        .samples
+    };
+
+    assert_eq!(during(vec![0]), 2);
+    assert_eq!(during(vec![0, 1]), 3);
+    assert_eq!(during(vec![2]), 1);
+    assert_eq!(during(Vec::new()), 0);
+}
+
+/// A sample's thread, time, and stack of indexes into `FUNCTIONS`.
+type Sampled = (u32, i64, Vec<usize>);
+
+fn calls_and_samples() -> impl Strategy<Value = (Vec<Call>, Vec<Sampled>)> {
+    let stack = prop::collection::vec(0..FUNCTIONS.len(), 1..4);
+    let call = (
+        0..2_u32,
+        0..100_i64,
+        0..10_i64,
+        prop::option::of(stack.clone()),
+    )
+        .prop_map(|(thread, entered, length, stack)| (thread, entered, entered + length, stack));
+    (
+        prop::collection::vec(call, 0..24),
+        prop::collection::vec((0..2_u32, 0..120_i64, stack), 0..24),
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// A query keeps a call of its threads that returned in its range and
+    /// whose stack names its focus, or does not name what it drops.
+    #[test]
+    fn the_calls_a_query_keeps_are_those_its_selection_names(
+        (calls, _) in calls_and_samples(),
+        thread in prop::option::of(0..2_u32),
+        range in prop::option::of((0..110_i64, 0..40_i64)),
+        transform in prop::option::of((any::<bool>(), 0..FUNCTIONS.len())),
+    ) {
+        let capture = traced(&calls, &[], &[]);
+        let query = Query {
+            threads: thread.map(|thread| vec![thread]),
+            range: range.map(|(start, length)| (start, start + length)),
+            ..Query::default()
+        };
+        let named: Option<OfFunction<'_>> = transform.map(|(focus, function)| {
+            let make: fn(u32) -> Transform = if focus { Transform::Focus } else { Transform::Drop };
+            (make, FUNCTIONS[function])
+        });
+
+        let expected: Vec<usize> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, (called, _, exited, stack))| {
+                let names = |function: usize| stack.as_ref().is_some_and(|stack| stack.contains(&function));
+                thread.is_none_or(|thread| thread == *called)
+                    && query.range.is_none_or(|(start, end)| (start..end).contains(exited))
+                    && transform.is_none_or(|(focus, function)| names(function) == focus)
+            })
+            .map(|(row, _)| row)
+            .collect();
+        prop_assert_eq!(kept_calls(&capture, &query, named), expected);
+    }
+
+    /// The samples during chosen calls are those each thread took while
+    /// inside one of its own.
+    #[test]
+    fn the_samples_during_calls_are_those_inside_them(
+        (calls, samples) in calls_and_samples(),
+        chosen in prop::collection::vec(any::<bool>(), 24),
+    ) {
+        let capture = traced(&calls, &samples, &[]);
+        let rows: Vec<u32> = (0..calls.len())
+            .filter(|&row| chosen[row])
+            .map(|row| u32::try_from(row).unwrap_or(u32::MAX))
+            .collect();
+        let expected = samples
+            .iter()
+            .filter(|(thread, time, _)| {
+                rows.iter().any(|&row| {
+                    let (called, entered, exited, _) = &calls[row as usize];
+                    called == thread && (*entered..*exited).contains(time)
+                })
+            })
+            .count() as u64;
+
+        let keys = Keys::new(&capture, Granularity::Function);
+        let kept = keys.aggregate(&Query { during: Some(rows), ..Query::default() }).samples;
+        prop_assert_eq!(kept, expected);
+    }
+}

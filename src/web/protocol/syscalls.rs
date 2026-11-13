@@ -2,35 +2,25 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Which of a trace's calls a view shows.
+use super::ProfileQuery;
+
+/// Which of a recording's calls a view shows: those the selection the
+/// sample views share keeps, by their range, threads, labels, zones, and
+/// stacks, that the filter selects.
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallQuery {
-    pub profile: String,
+    /// Calls that ended in its range, of its threads, by row, made inside
+    /// its zones with its labels, whose stacks its transforms keep: a
+    /// focus keeps the calls made under the function.
+    #[serde(flatten)]
+    pub link: ProfileQuery,
 
-    /// The revision the tab has seen, which keeps its cached answers
-    /// apart; the server answers from the newest.
-    #[serde(default)]
-    #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
-    pub revision: u32,
-
-    /// Calls that ended in `[start, end)`, in nanoseconds from the
-    /// profile's start, or all.
-    #[serde(default)]
-    #[cfg_attr(test, ts(optional = nullable))]
-    pub range: Option<[i64; 2]>,
-
-    /// strace's selection, as `-e` takes it, expressions apart by spaces:
+    /// The selection, as `-e` takes it, expressions apart by spaces:
     /// `trace=%file status=failed`.
     #[serde(default)]
     pub filter: String,
-
-    /// Calls of these threads, by id, or of all.
-    #[serde(default)]
-    #[cfg_attr(test, ts(optional = nullable))]
-    pub threads: Option<Vec<u32>>,
 
     /// Calls whose duration falls in this log2 bucket, as a heat map's
     /// row names it, or all.

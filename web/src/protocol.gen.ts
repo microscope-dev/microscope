@@ -1659,59 +1659,141 @@ shorter: number,
  */
 values: Array<ProfileLabelValue>, };
 
-export type SyscallQuery = { profile: string, 
+export type SyscallQuery = { 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallGroup = "syscall" | "class" | "process" | "thread" | "path" | "site";
 
-export type SyscallSummaryQuery = { group: SyscallGroup, profile: string, 
+export type SyscallSummaryQuery = { group: SyscallGroup, 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallSummary = { 
 /**
@@ -1749,31 +1831,72 @@ export type SyscallCount = { name: string, count: number, };
 
 export type SyscallRateBy = "class" | "syscall";
 
-export type SyscallRateQuery = { buckets: number, by: SyscallRateBy, profile: string, 
+export type SyscallRateQuery = { buckets: number, by: SyscallRateBy, 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallRate = { 
 /**
@@ -1787,31 +1910,72 @@ series: Array<SyscallSeries>, errors: Array<number>, };
 
 export type SyscallSeries = { name: string, counts: Array<number>, };
 
-export type SyscallHeatmapQuery = { buckets: number, profile: string, 
+export type SyscallHeatmapQuery = { buckets: number, 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallHeatmap = { start: number, width: number, 
 /**
@@ -1827,31 +1991,72 @@ export type SyscallDetailQuery = {
 /**
  * The call, by name.
  */
-call: string, profile: string, 
+call: string, 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallDetail = { 
 /**
@@ -1877,31 +2082,72 @@ export type SyscallCaller = {
  */
 site: string, slow: number, failed: number, };
 
-export type SyscallLogQuery = { offset: number, limit: number, profile: string, 
+export type SyscallLogQuery = { offset: number, limit: number, 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallLog = { 
 /**
@@ -1961,31 +2207,72 @@ export type SyscallSite = { function: string, path: string, line: number,
  */
 first: number, text: Array<string> | null, unread: string | null, };
 
-export type SyscallLanesQuery = { buckets: number, profile: string, 
+export type SyscallLanesQuery = { buckets: number, 
+/**
+ * The selection, as `-e` takes it, expressions apart by spaces:
+ * `trace=%file status=failed`.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, as a heat map's
+ * row names it, or all.
+ */
+latency?: number | null, profile: string, 
 /**
  * The revision the tab has seen, which keeps its cached answers
  * apart; the server answers from the newest.
  */
 revision?: number, 
 /**
- * Calls that ended in `[start, end)`, in nanoseconds from the
- * profile's start, or all.
+ * Samples taken in `[start, end)`, in nanoseconds from the profile's
+ * start, or all.
  */
 range?: [number, number] | null, 
 /**
- * strace's selection, as `-e` takes it, expressions apart by spaces:
- * `trace=%file status=failed`.
- */
-filter: string, 
-/**
- * Calls of these threads, by id, or of all.
+ * Samples of these threads, by row, or of all.
  */
 threads?: Array<number> | null, 
 /**
- * Calls whose duration falls in this log2 bucket, as a heat map's
- * row names it, or all.
+ * What the query aggregates.
  */
-latency?: number | null, };
+source: ProfileSource, 
+/**
+ * Samples or waits of these tasks, by row, or of any; `null` in the
+ * list is what no snapshot named.
+ */
+tasks?: Array<number | null> | null, 
+/**
+ * Roots each path at its task.
+ */
+byTask: boolean, 
+/**
+ * Samples or waits that carry each of these labels, `key=value`.
+ */
+labels: Array<string>, 
+/**
+ * Roots each path, outside any task, at its label of this key.
+ */
+byLabel?: string | null, 
+/**
+ * Applied in order, to keys by the names views show.
+ */
+transforms: Array<ProfileTransform>, 
+/**
+ * Paths from the innermost frame out: a tree of callers.
+ */
+invert: boolean, 
+/**
+ * How each stack's frames are seen.
+ */
+look: ProfileLook, granularity: ProfileGranularity, 
+/**
+ * Samples taken inside one site's zones, nested ones included.
+ */
+zones?: ProfileZoneScope | null, 
+/**
+ * What a tree or functions answer compares itself with.
+ */
+base?: ProfileBase | null, };
 
 export type SyscallLanes = { start: number, width: number, lanes: Array<SyscallLane>, };
 

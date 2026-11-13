@@ -912,7 +912,7 @@ fn tasks(profile: &Profile) -> Vec<protocol::ProfileTask> {
     tasks
 }
 
-const fn granularity(granularity: ProfileGranularity) -> Granularity {
+pub(super) const fn granularity(granularity: ProfileGranularity) -> Granularity {
     match granularity {
         ProfileGranularity::Function => Granularity::Function,
         ProfileGranularity::Physical => Granularity::PhysicalFunction,
@@ -924,7 +924,11 @@ const fn granularity(granularity: ProfileGranularity) -> Granularity {
 /// The analysis's query for a tab's, its transforms' names resolved to
 /// keys. A name no key has is an error rather than a transform that
 /// silently does nothing, and so is a focus on a name several keys share.
-fn resolve(profile: &Profile, keys: &Keys<'_>, query: &ProfileQuery) -> Result<Query, Failure> {
+pub(super) fn resolve(
+    profile: &Profile,
+    keys: &Keys<'_>,
+    query: &ProfileQuery,
+) -> Result<Query, Failure> {
     resolve_in(profile, keys, query, false)
 }
 
@@ -1033,6 +1037,7 @@ fn resolve_in(
             ProfileLook::Python => Look::Python,
         },
         by_task: query.by_task,
+        during: None,
     })
 }
 

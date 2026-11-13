@@ -38,6 +38,13 @@ describe("the Syscalls view's address", () => {
       profile: "p",
       revision: 3,
       range: [10, 90],
+      source: "samples",
+      look: "logical",
+      granularity: "function",
+      byTask: false,
+      invert: false,
+      labels: [],
+      transforms: [],
       filter: "trace=%file,!close status=failed path=/a b&c",
     });
   });

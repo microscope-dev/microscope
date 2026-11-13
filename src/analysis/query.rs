@@ -13,12 +13,14 @@
 //! distinct stack first, and group, so the work is linear in the samples
 //! selected and the stacks they use.
 
+use std::collections::BTreeMap;
+
 use foldhash::HashMap;
 
 use super::{Keys, index};
 use crate::CodeRole;
 use crate::capture::Capture;
-use crate::capture::records::NONE;
+use crate::capture::records::{NONE, UNSEEN};
 
 /// What a query aggregates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -70,6 +72,10 @@ pub struct Query {
     /// Samples taken inside these zones, on their own thread. Zones are a
     /// thread's, so a scope selects no waits.
     pub zones: Option<ZoneScope>,
+
+    /// Samples taken while their thread was inside one of these system
+    /// calls, by row. Calls are a thread's, so this selects no waits.
+    pub during: Option<Vec<u32>>,
 }
 
 /// Which zones a query's samples must be inside.
@@ -112,23 +118,53 @@ impl ZoneScope {
             }
         }
 
-        spans.sort_unstable();
-        let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
-        for (start, end) in spans {
-            match merged.last_mut() {
-                Some(last) if start <= last.1 => last.1 = last.1.max(end),
-                _ => merged.push((start, end)),
-            }
-        }
-
-        debug_assert!(
-            merged
-                .windows(2)
-                .all(|pair| matches!(pair, [a, b] if a.1 < b.0)),
-            "merged zone spans overlap"
-        );
-        merged
+        merged(spans)
     }
+}
+
+/// `spans` sorted and joined where they overlap.
+fn merged(mut spans: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    spans.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+
+    debug_assert!(
+        merged
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if a.1 < b.0)),
+        "merged spans overlap"
+    );
+    merged
+}
+
+/// Each thread's spans inside the calls `rows` names, by thread row. A
+/// call whose exit went unseen runs on to the end.
+fn call_spans(capture: &Capture, rows: &[u32]) -> HashMap<u32, Vec<(i64, i64)>> {
+    let mut spans: HashMap<u32, Vec<(i64, i64)>> = HashMap::default();
+    for call in rows
+        .iter()
+        .filter_map(|&row| capture.syscalls.get(row as usize))
+    {
+        let (entered, exited) = (call.entered.get(), call.exited.get());
+        let start = if entered == UNSEEN { exited } else { entered };
+        let end = if exited == UNSEEN { i64::MAX } else { exited };
+        if start != UNSEEN && end > start {
+            spans
+                .entry(call.thread.get())
+                .or_default()
+                .push((start, end));
+        }
+    }
+
+    spans
+        .into_iter()
+        .map(|(thread, spans)| (thread, merged(spans)))
+        .collect()
 }
 
 /// A thread's spans inside a scope's zones, asked of its samples in time
@@ -139,11 +175,8 @@ struct Inside {
 }
 
 impl Inside {
-    fn new(scope: &ZoneScope, capture: &Capture, thread: u32) -> Self {
-        Self {
-            spans: scope.spans(capture, thread),
-            next: 0,
-        }
+    const fn new(spans: Vec<(i64, i64)>) -> Self {
+        Self { spans, next: 0 }
     }
 
     const fn is_empty(&self) -> bool {
@@ -324,6 +357,37 @@ struct Selected {
     weight: u64,
 }
 
+/// A thread's label spans, `(start, end, label)` by start, walked in time
+/// order: those that began by the last time asked and had not ended.
+struct OpenLabels<'s> {
+    spans: &'s [(i64, i64, u32)],
+    next: usize,
+    open: Vec<(i64, u32)>,
+}
+
+impl<'s> OpenLabels<'s> {
+    const fn new(spans: &'s [(i64, i64, u32)]) -> Self {
+        Self {
+            spans,
+            next: 0,
+            open: Vec::new(),
+        }
+    }
+
+    /// The labels open at `time`, no earlier than the last asked.
+    fn at(&mut self, time: i64) -> impl Iterator<Item = u32> + '_ {
+        while let Some(&(start, end, label)) = self.spans.get(self.next)
+            && start <= time
+        {
+            self.open.push((end, label));
+            self.next += 1;
+        }
+
+        self.open.retain(|(end, _)| *end > time);
+        self.open.iter().map(|(_, label)| *label)
+    }
+}
+
 /// What a query asks of labels: the rows a sample must carry, and the key
 /// it is grouped by.
 struct LabelQuery<'a> {
@@ -391,6 +455,7 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
             .is_none_or(|tasks| tasks.contains(&task))
     };
 
+    let during = query.during.as_ref().map(|rows| call_spans(capture, rows));
     match query.source {
         Source::Samples => {
             for range in &capture.sample_ranges {
@@ -403,16 +468,18 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
                     continue;
                 }
 
-                // The thread's label spans that began by a sample's time
-                // and have not ended.
-                let spans = keys.spans(thread);
-                let (mut next, mut open) = (0, Vec::new());
+                let mut open = OpenLabels::new(keys.spans(thread));
 
                 let mut inside = query
                     .zones
                     .as_ref()
-                    .map(|scope| Inside::new(scope, capture, thread));
-                if inside.as_ref().is_some_and(Inside::is_empty) {
+                    .map(|scope| Inside::new(scope.spans(capture, thread)));
+                let mut calling = during
+                    .as_ref()
+                    .map(|spans| Inside::new(spans.get(&thread).cloned().unwrap_or_default()));
+                if inside.as_ref().is_some_and(Inside::is_empty)
+                    || calling.as_ref().is_some_and(Inside::is_empty)
+                {
                     continue;
                 }
 
@@ -424,22 +491,16 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
                         continue;
                     }
 
-                    if inside.as_mut().is_some_and(|inside| !inside.holds(time)) {
+                    if inside.as_mut().is_some_and(|inside| !inside.holds(time))
+                        || calling.as_mut().is_some_and(|calling| !calling.holds(time))
+                    {
                         continue;
                     }
 
                     let label = if labels.active() {
-                        while let Some(&(start, end, label)) = spans.get(next)
-                            && start <= time
-                        {
-                            open.push((end, label));
-                            next += 1;
-                        }
-
-                        open.retain(|(end, _)| *end > time);
                         labels.carried.clear();
                         labels.carried.extend_from_slice(keys.task_labels(task));
-                        labels.carried.extend(open.iter().map(|(_, label)| *label));
+                        labels.carried.extend(open.at(time));
                         let Some(judged) = labels.judge(keys) else {
                             continue;
                         };
@@ -461,7 +522,7 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
             }
         }
         Source::Waits => {
-            if query.zones.is_some() {
+            if query.zones.is_some() || during.is_some() {
                 return;
             }
 
@@ -495,6 +556,87 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
             }
         }
     }
+}
+
+/// Which of the capture's system calls `query` keeps, by row: those of its
+/// threads and range, by when each returned, inside its zones, carrying
+/// its labels, whose stacks its transforms keep. A call without a stack
+/// has no path, so a focus keeps none of them. Calls are of no task.
+pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> {
+    let _span = crate::span!("analysis syscalls");
+    let mut kept = vec![false; capture.syscalls.len()];
+    let Some(mut labels) = LabelQuery::new(keys, query) else {
+        return kept;
+    };
+
+    let paths_of = Query {
+        by_task: false,
+        by_label: None,
+        ..query.clone()
+    };
+    let mut paths = Paths::new(capture, keys, &paths_of);
+    let focused = query
+        .transforms
+        .iter()
+        .any(|transform| matches!(transform, Transform::Focus(_)));
+
+    // Each thread's calls in time order, as its label spans and zones are
+    // walked.
+    let mut threads: BTreeMap<u32, Vec<(i64, usize, u32)>> = BTreeMap::new();
+    for (row, call) in capture.syscalls.iter().enumerate() {
+        let time = if call.exited.get() == UNSEEN {
+            call.entered.get()
+        } else {
+            call.exited.get()
+        };
+        let thread = call.thread.get();
+        let shown = query
+            .threads
+            .as_ref()
+            .is_none_or(|threads| threads.contains(&thread));
+        let inside = query
+            .range
+            .is_none_or(|(start, end)| (start..end).contains(&time));
+        if shown && inside && time != UNSEEN {
+            threads
+                .entry(thread)
+                .or_default()
+                .push((time, row, call.stack.get()));
+        }
+    }
+
+    for (thread, mut calls) in threads {
+        calls.sort_unstable();
+        let mut open = OpenLabels::new(keys.spans(thread));
+        let mut inside = query
+            .zones
+            .as_ref()
+            .map(|scope| Inside::new(scope.spans(capture, thread)));
+        for (time, row, stack) in calls {
+            if inside.as_mut().is_some_and(|inside| !inside.holds(time)) {
+                continue;
+            }
+
+            if labels.active() {
+                labels.carried.clear();
+                labels.carried.extend(open.at(time));
+                if labels.judge(keys).is_none() {
+                    continue;
+                }
+            }
+
+            let shown = if stack == NONE {
+                !focused
+            } else {
+                paths.of(stack, NONE, NONE).is_some()
+            };
+            if let Some(slot) = kept.get_mut(row) {
+                *slot = shown;
+            }
+        }
+    }
+
+    kept
 }
 
 /// One stack's selection: its stack, and the task and label key a query

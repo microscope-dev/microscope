@@ -132,6 +132,7 @@ async fn a_trace_is_served_as_costs_lines_callers_files_and_lanes() {
     );
     assert_eq!(sum(&detail["whole"]), sum(&detail["selected"]));
 
+    under_a_function(&mut tab, &id).await;
     files_and_charts(&mut tab, &id, scratch.path()).await;
     groups_and_bands(&mut tab, &id, scratch.path()).await;
 
@@ -192,6 +193,47 @@ async fn expanded(tab: &mut Client, id: &str, event: &Value) {
 }
 
 /// The files the program used, and every selected call charted once.
+/// The selection the sample views share picks calls too: a focus on
+/// `files` keeps the calls made under it, and leaves the loader's.
+async fn under_a_function(tab: &mut Client, id: &str) {
+    let focused = json!({"profile": id, "transforms": [{"op": "focus", "name": "files"}]});
+    let summary = tab.ok("syscallSummary", focused.clone()).await;
+    let (total, calls) = (summary["total"].as_u64(), summary["calls"].as_u64());
+    assert!(calls > Some(0) && calls < total, "{summary}");
+
+    let mut sites = focused;
+    sites["group"] = json!("site");
+    let sites = tab.ok("syscallSummary", sites).await;
+    let names: Vec<&str> = sites["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .filter_map(|row| row["name"].as_str())
+        .collect();
+    assert!(
+        !names.is_empty() && names.iter().all(|name| name.starts_with("files ·")),
+        "{sites}"
+    );
+
+    let dropped = json!({"profile": id, "transforms": [{"op": "drop", "name": "files"}]});
+    let dropped = tab.ok("syscallSummary", dropped).await;
+    assert_eq!(
+        dropped["calls"]
+            .as_u64()
+            .zip(calls)
+            .map(|(left, right)| left + right),
+        total,
+        "{dropped}"
+    );
+
+    let unknown = json!({"profile": id, "transforms": [{"op": "focus", "name": "nosuchfunction"}]});
+    let refused = tab.request("syscallSummary", unknown).await;
+    assert!(
+        format!("{refused:?}").contains("nosuchfunction"),
+        "{refused:?}"
+    );
+}
+
 async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
     let present = scratch.join("present").display().to_string();
     let files = tab.ok("syscallFiles", json!({"profile": id})).await;
