@@ -2677,12 +2677,12 @@ impl Sink for Printer {
     }
 
     fn counted(&mut self, mut stats: Folded) {
-        stats.by_call.retain(|&(process, call), _| {
+        stats.by_call.retain(|&(process, _, call), _| {
             self.filter.calls.contains(call)
                 && (self.follow || self.processes.is_empty() || self.processes.contains(&process))
         });
 
-        for (&(_, call), stats) in &stats.by_call {
+        for (&(_, _, call), stats) in &stats.by_call {
             self.stats.entry(call).or_default().merge(stats);
         }
 

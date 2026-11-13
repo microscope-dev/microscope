@@ -323,7 +323,7 @@ impl SyscallCapture {
     /// calls.
     pub fn counted(&mut self, stats: &Folded) {
         let at = signed(self.last);
-        for (&(process, call), stats) in &stats.by_call {
+        for (&(process, thread, call), stats) in &stats.by_call {
             let errnos: Vec<SyscallErrno> = stats
                 .errors_by_errno
                 .iter()
@@ -348,11 +348,17 @@ impl SyscallCapture {
                 bytes: stats.bytes.into(),
                 log2_ns,
                 process: self.builder.process(process, at).into(),
+                thread: if thread.get() == 0 {
+                    NONE
+                } else {
+                    self.builder.thread(process, thread, at)
+                }
+                .into(),
                 number: call.number.into(),
                 errnos: 0.into(),
                 errno_count: 0.into(),
                 abi: call.abi as u8,
-                reserved: [0; 7],
+                reserved: [0; 3],
             };
 
             self.builder.syscall_stat(row, &errnos);

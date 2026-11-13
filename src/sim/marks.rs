@@ -368,6 +368,10 @@ marks! {
     /// The decoder read a call from the model of the tracepoint stream.
     TraceDecoded,
 
+    /// A call was counted with no thread, the kernel's threads' statistics
+    /// being full.
+    TraceStatsSpilled,
+
     /// The client sent a kill with a launch, before it was answered.
     KillDuringLaunch,
 

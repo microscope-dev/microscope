@@ -1184,6 +1184,7 @@ impl CaptureBuilder {
             let errnos = capture.stat_errnos(stat);
             let row = SyscallStat {
                 process: Remap::get(&map.processes, stat.process.get()).into(),
+                thread: Remap::get(&map.threads, stat.thread.get()).into(),
                 ..*stat
             };
 

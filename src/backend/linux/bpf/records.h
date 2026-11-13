@@ -319,7 +319,18 @@ struct stat_value {
 	u64 log2_ns[40];
 };
 
+// A thread's statistics of one call: `row` is the call_spec.stat, in the
+// half the generation names.
+struct stat_key {
+	u32 tid;
+	u32 tgid;
+	u32 row;
+	u32 reserved;
+};
+
 struct errno_key {
+	u32 tid;
+	u32 tgid;
 	u32 slot;
 	u32 err;
 };

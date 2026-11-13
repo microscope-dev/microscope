@@ -496,7 +496,7 @@ fn summary(
     // A trace the kernel counted holds its calls only as statistics, of
     // each process and call over the whole trace.
     let counted = !trace.counted.by_call.is_empty();
-    for (&(pid, id), stats) in &trace.counted.by_call {
+    for (&(pid, tid, id), stats) in &trace.counted.by_call {
         if !selection.filter.calls.contains(id) {
             continue;
         }
@@ -504,6 +504,7 @@ fn summary(
         processes.insert(pid);
         let name = id.display_name().into_owned();
         let (key, name) = match query.group {
+            SyscallGroup::Thread if tid.get() != 0 => (tid.to_string(), tid.to_string()),
             SyscallGroup::Syscall
             | SyscallGroup::Thread
             | SyscallGroup::Path

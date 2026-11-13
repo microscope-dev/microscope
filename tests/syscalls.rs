@@ -2560,6 +2560,53 @@ mod bpf {
         assert_eq!(counts, per_call(&streamed));
     }
 
+    /// Counting, the kernel keeps each thread's calls apart: each worker
+    /// made its rounds' reads, and the threads' counts add up to the
+    /// process's.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_counting_recording_counts_each_threads_calls() {
+        let directory = ScratchDir::new("syscalls-record-threads");
+        let profile = record_load(
+            directory.path(),
+            "prod.usprof",
+            &["--preset", "prod"],
+            3,
+            100,
+        );
+        let syscalls = profile.syscalls();
+        let reads: BTreeMap<_, u64> = syscalls
+            .counted
+            .by_call
+            .iter()
+            .filter(|((_, _, call), _)| call.name() == Some("read"))
+            .map(|(&(process, thread, _), stats)| ((process, thread), stats.calls))
+            .collect();
+
+        let processes: BTreeSet<_> = reads.keys().map(|&(process, _)| process).collect();
+        assert_eq!(processes.len(), 1, "{reads:?}");
+        let process = processes.into_iter().next().expect("one process");
+        let workers: Vec<u64> = reads
+            .iter()
+            .filter(|&(&(_, thread), _)| thread.get() != process.get())
+            .map(|(_, &count)| count)
+            .collect();
+        assert_eq!(workers, [100, 100], "{reads:?}");
+        assert!(
+            reads
+                .get(&(process, microscope::syscalls::Tid::new(process.get())))
+                .is_some_and(|&count| count >= 100),
+            "{reads:?}"
+        );
+
+        let total = syscalls.stats().per_call();
+        let read = total
+            .iter()
+            .find(|(call, _)| call.name() == Some("read"))
+            .map(|(_, stats)| stats.calls);
+        assert_eq!(read, Some(reads.values().sum()));
+    }
+
     /// Each call a counting recording kept, by name, why it was kept, and
     /// its site.
     fn kept(profile: &microscope::profiler::Profile) -> BTreeMap<(String, &str, String), u64> {
@@ -2638,11 +2685,7 @@ mod bpf {
         assert_eq!(count("getppid"), Some((1000, 0)));
         assert_eq!(count("close").map(|(_, errors)| errors), Some(5));
         assert_eq!(count("clock_nanosleep"), Some((3, 0)));
-        assert!(
-            !profile.syscalls_lost().any(),
-            "{:?}",
-            profile.syscalls_lost()
-        );
+        assert_eq!(profile.syscalls_lost().capped, 0);
     }
 
     /// A burst of failures past the cap keeps at most what every CPU's

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::model::{Errno, Outcome, Pid, SyscallEvent, SyscallId};
+use super::model::{Errno, Outcome, Pid, SyscallEvent, SyscallId, Tid};
 use super::specs::{self, Arg, Count, Direction, MemKind};
 
 /// Buckets in a latency histogram. Bucket 0 holds 0 ns; bucket `i` holds
@@ -220,10 +220,11 @@ const COPIES: [&str; 6] = [
     "copy_file_range",
 ];
 
-/// Statistics folded per process and call.
+/// Statistics folded per process, thread, and call. Thread 0 holds calls
+/// whose thread is unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folded {
-    pub by_call: BTreeMap<(Pid, SyscallId), SyscallStats>,
+    pub by_call: BTreeMap<(Pid, Tid, SyscallId), SyscallStats>,
 }
 
 impl Folded {
@@ -236,7 +237,7 @@ impl Folded {
 
     pub fn add(&mut self, event: &SyscallEvent) {
         self.by_call
-            .entry((event.process, event.call))
+            .entry((event.process, event.thread, event.call))
             .or_default()
             .add(event.outcome, event.duration(), bytes_moved(event));
     }
@@ -246,7 +247,7 @@ impl Folded {
     pub fn per_call(&self) -> BTreeMap<SyscallId, SyscallStats> {
         let mut calls: BTreeMap<SyscallId, SyscallStats> = BTreeMap::new();
 
-        for (&(_, call), stats) in &self.by_call {
+        for (&(_, _, call), stats) in &self.by_call {
             calls.entry(call).or_default().merge(stats);
         }
 

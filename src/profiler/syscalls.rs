@@ -286,9 +286,13 @@ impl Profile {
                 number: row.number.get(),
             };
 
+            let thread = capture
+                .threads
+                .get(row.thread.get() as usize)
+                .map_or(Tid::new(0), |thread| Tid::new(thread.tid.get()));
             counted
                 .by_call
-                .entry((pid(row.process.get()), call))
+                .entry((pid(row.process.get()), thread, call))
                 .or_default()
                 .merge(&stats);
         }

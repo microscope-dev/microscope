@@ -19,24 +19,49 @@ use crate::syscalls::{Abi, Outcome, Pid, SyscallId, Tid};
 /// The CPUs calls are counted on.
 const CPUS: u32 = 4;
 
+/// The threads' statistics the kernel has room for: few, so that runs
+/// spill into the per-CPU statistics.
+const THREAD_ROWS: usize = 6;
+
 /// The statistics, and what the oracle compares them with.
 #[derive(Default)]
 pub struct TraceModel {
     served: u64,
-    stats: BTreeMap<SyscallId, BTreeMap<u32, RawStatValue>>,
 
-    /// Failures by slot and errno.
-    errnos: BTreeMap<(u32, u32), u64>,
+    /// Each thread's, by tgid, tid, and call, and those of threads with no
+    /// room, by call and CPU.
+    threads: BTreeMap<(u32, u32, SyscallId), RawStatValue>,
+    spilled: BTreeMap<(SyscallId, u32), RawStatValue>,
+
+    /// Failures by tgid, tid, slot, and errno.
+    errnos: BTreeMap<(u32, u32, u32, u32), u64>,
 
     /// Each call's calls and errors, by errno, as served.
     expected: BTreeMap<SyscallId, (u64, u64, BTreeMap<u16, u64>)>,
+
+    /// Calls served by each thread that had room, and by every other
+    /// thread as thread 0 of process 0.
+    by_thread: BTreeMap<(Pid, Tid, SyscallId), u64>,
 }
+
+const BLANK: RawStatValue = RawStatValue {
+    calls: 0,
+    errors: 0,
+    timed: 0,
+    total_ns: 0,
+    min_ns: 0,
+    max_ns: 0,
+    bytes: 0,
+    log2_ns: [0; BUCKETS],
+};
 
 impl TraceModel {
     /// Writes, reads back, and counts each call served.
     pub fn feed(&mut self, served: Vec<Served>, marks: &mut Marks) -> Result<(), String> {
         for call in served {
-            self.count(&call);
+            if self.count(&call) {
+                marks.hit(Mark::TraceStatsSpilled);
+            }
             self.served += 1;
             decode(&call, &record(&call, self.served))?;
             marks.hit(Mark::TraceDecoded);
@@ -45,25 +70,25 @@ impl TraceModel {
         Ok(())
     }
 
-    /// Counts a call as the count program does, on a CPU of its thread's.
-    fn count(&mut self, call: &Served) {
+    /// Counts a call as the count program does: into its thread's
+    /// statistics, or once there is no room, a CPU's of its thread's;
+    /// returns whether it spilled.
+    fn count(&mut self, call: &Served) -> bool {
         let id = SyscallId::new(Abi::X86_64, call.number);
-        let stat = self
-            .stats
-            .entry(id)
-            .or_default()
-            .entry(call.tid.cast_unsigned() % CPUS)
-            .or_insert(RawStatValue {
-                calls: 0,
-                errors: 0,
-                timed: 0,
-                total_ns: 0,
-                min_ns: 0,
-                max_ns: 0,
-                bytes: 0,
-                log2_ns: [0; BUCKETS],
-            });
+        let thread = (call.tgid.id().cast_unsigned(), call.tid.cast_unsigned());
+        let key = (thread.0, thread.1, id);
+        let (stat, (process, thread)) =
+            if self.threads.contains_key(&key) || self.threads.len() < THREAD_ROWS {
+                (self.threads.entry(key).or_insert(BLANK), thread)
+            } else {
+                let cpu = thread.1 % CPUS;
+                (self.spilled.entry((id, cpu)).or_insert(BLANK), (0, 0))
+            };
         stat.calls += 1;
+        *self
+            .by_thread
+            .entry((Pid::new(process), Tid::new(thread), id))
+            .or_default() += 1;
 
         let expected = self.expected.entry(id).or_default();
         expected.0 += 1;
@@ -73,26 +98,43 @@ impl TraceModel {
             *expected.2.entry(errno).or_default() += 1;
             *self
                 .errnos
-                .entry((bpf::errno_slot(id), u32::from(errno)))
+                .entry((process, thread, bpf::errno_slot(id), u32::from(errno)))
                 .or_default() += 1;
         }
+
+        process == 0
     }
 
     /// Judges the run's statistics: the folded statistics count each call
-    /// served.
+    /// served, each under the thread that made it while there was room.
     pub fn finish(&self) -> Result<(), String> {
+        let threads = self
+            .threads
+            .iter()
+            .map(|(&(tgid, tid, call), &value)| (tgid, tid, call, value));
+        let spilled = self
+            .spilled
+            .iter()
+            .map(|(&(call, _), &value)| (0, 0, call, value));
         let folded = bpf::fold(
             Pid::new(0),
-            self.stats
-                .iter()
-                .map(|(&call, cpus)| (call, cpus.values().copied().collect())),
-            self.errnos
-                .iter()
-                .map(|(&(slot, err), &count)| (RawErrnoKey { slot, err }, count)),
+            threads.chain(spilled),
+            self.errnos.iter().map(|(&(tgid, tid, slot, err), &count)| {
+                (
+                    RawErrnoKey {
+                        tid,
+                        tgid,
+                        slot,
+                        err,
+                    },
+                    count,
+                )
+            }),
         );
 
+        let per_call = folded.per_call();
         for (call, (calls, errors, errnos)) in &self.expected {
-            let stats = folded.by_call.get(&(Pid::new(0), *call));
+            let stats = per_call.get(call);
             let counted = stats.map(|stats| (stats.calls, stats.errors, &stats.errors_by_errno));
             if counted != Some((*calls, *errors, errnos)) {
                 return Err(format!(
@@ -101,6 +143,18 @@ impl TraceModel {
                     call.display_name()
                 ));
             }
+        }
+
+        let by_thread: BTreeMap<_, _> = folded
+            .by_call
+            .iter()
+            .map(|(&key, stats)| (key, stats.calls))
+            .collect();
+        if by_thread != self.by_thread {
+            return Err(format!(
+                "the threads served {:?}, but the statistics count {by_thread:?}",
+                self.by_thread
+            ));
         }
 
         Ok(())

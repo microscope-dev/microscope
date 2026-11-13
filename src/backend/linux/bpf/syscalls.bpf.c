@@ -88,8 +88,18 @@ struct {
 	__type(value, u64);
 } PY_STATES SEC(".maps");
 
-// Each chosen call's statistics, by its call_spec.stat; microscope sizes it
-// to the calls it chooses.
+// Each thread's statistics of each chosen call. A thread counts on one CPU
+// at a time, so its values need no atomics.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 8192);
+	__type(key, struct stat_key);
+	__type(value, struct stat_value);
+} THREAD_STATS SEC(".maps");
+
+// Each chosen call's statistics, by its call_spec.stat, of threads
+// THREAD_STATS has no room for; microscope sizes it to the calls it
+// chooses.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -97,9 +107,17 @@ struct {
 	__type(value, struct stat_value);
 } STATS SEC(".maps");
 
+// Zeroes, to start a thread's statistics from: too large for the stack.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct stat_value);
+} BLANK SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-	__uint(max_entries, 4096);
+	__uint(max_entries, 8192);
 	__type(key, struct errno_key);
 	__type(value, u64);
 } ERRNOS SEC(".maps");
@@ -745,19 +763,45 @@ static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u3
 		lost();
 }
 
-// Folds one call into its process's statistics.
+// The statistics thread `tid` counts into: its own, or once THREAD_STATS
+// is full, every such thread's, with `tid` and `tgid` cleared.
+static __always_inline struct stat_value *stats_of(u32 *tid, u32 *tgid, u32 row)
+{
+	struct stat_key key = { .tid = *tid, .tgid = *tgid, .row = row };
+	struct stat_value *value = bpf_map_lookup_elem(&THREAD_STATS, &key);
+	if (value)
+		return value;
+	u32 zero = 0;
+	struct stat_value *blank = bpf_map_lookup_elem(&BLANK, &zero);
+	if (blank && !bpf_map_update_elem(&THREAD_STATS, &key, blank, BPF_NOEXIST)) {
+		value = bpf_map_lookup_elem(&THREAD_STATS, &key);
+		if (value)
+			return value;
+	}
+	*tid = 0;
+	*tgid = 0;
+	return bpf_map_lookup_elem(&STATS, &row);
+}
+
+// Folds one call into its thread's statistics.
 static __always_inline void count(struct config *settings, struct call_spec *spec, u32 slot,
-				  u64 entered, u64 exited, s64 ret, int returned)
+				  u32 tid, u32 tgid, u64 entered, u64 exited, s64 ret,
+				  int returned)
 {
 	u32 generation = (settings->flags & CONFIG_GENERATION) ? 1 : 0;
 	u32 row = spec->stat + generation * settings->rows;
-	struct stat_value *value = bpf_map_lookup_elem(&STATS, &row);
+	struct stat_value *value = stats_of(&tid, &tgid, row);
 	if (!value)
 		return;
 	value->calls += 1;
 	if (returned && failed(ret)) {
 		value->errors += 1;
-		struct errno_key which = { .slot = slot | (generation << 31), .err = (u32)-ret };
+		struct errno_key which = {
+			.tid = tid,
+			.tgid = tgid,
+			.slot = slot | (generation << 31),
+			.err = (u32)-ret,
+		};
 		u64 one = 1;
 		u64 *errors = bpf_map_lookup_elem(&ERRNOS, &which);
 		if (errors)
@@ -1080,7 +1124,7 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	u32 slot = slot_of(entry.abi, entry.nr);
 	int send = sent(settings, entry.flags);
 	if ((settings->flags & CONFIG_COUNT) && !send) {
-		count(settings, spec, slot, entry.entered, now, ret, 1);
+		count(settings, spec, slot, tid, tgid, entry.entered, now, ret, 1);
 		u8 kept = exception(settings, entry.entered, now, ret, 1);
 		if (kept && admitted(settings, now)) {
 			entry.flags |= kept;
@@ -1268,7 +1312,7 @@ int process_exit(void *ctx)
 		struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
 		if (spec && spec->selected) {
 			if ((settings->flags & CONFIG_COUNT) && !sent(settings, entry.flags))
-				count(settings, spec, slot, 0, 0, 0, 0);
+				count(settings, spec, slot, tid, tgid, 0, 0, 0, 0);
 			if (sent(settings, entry.flags))
 				send_call(tid, tgid, &entry, RECORD_CALL, READ_EXIT + 1, 0, 0);
 		}

@@ -731,6 +731,7 @@ impl Capture {
                 self.processes.len(),
                 "statistics' process",
             )?;
+            index(stat.thread.get(), self.threads.len(), "statistics' thread")?;
             let end = u64::from(stat.errnos.get()) + u64::from(stat.errno_count.get());
             if end > self.syscall_errnos.len() as u64 || stat.abi > 2 {
                 return Err("statistics refer to missing errnos or an unknown ABI".into());

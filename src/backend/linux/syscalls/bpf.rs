@@ -351,12 +351,26 @@ pub struct RawStatValue {
     pub log2_ns: [u64; BUCKETS],
 }
 
+/// `struct stat_key`.
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
+)]
+pub struct RawStatKey {
+    pub tid: u32,
+    pub tgid: u32,
+    pub row: u32,
+    pub reserved: u32,
+}
+
 /// `struct errno_key`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout,
 )]
 pub struct RawErrnoKey {
+    pub tid: u32,
+    pub tgid: u32,
     pub slot: u32,
     pub err: u32,
 }
@@ -365,6 +379,7 @@ pub struct RawErrnoKey {
 type Bytes<const N: usize> = [u8; N];
 const SPEC_BYTES: usize = size_of::<RawCallSpec>();
 const STAT_BYTES: usize = size_of::<RawStatValue>();
+const STAT_KEY_BYTES: usize = size_of::<RawStatKey>();
 const ERRNO_KEY_BYTES: usize = size_of::<RawErrnoKey>();
 const CONFIG_BYTES: usize = size_of::<RawConfig>();
 
@@ -851,19 +866,30 @@ fn descriptor(process: Pid, raw: &RawFileRecord, name: &[u8]) -> TraceEvent {
     }
 }
 
-/// Folds the kernel's per-CPU statistics into one per call, which the
-/// kernel counts over every traced process and `Folded` names by `process`.
+/// Folds the kernel's statistics, each a thread's by its tgid and tid,
+/// and with both zero, a CPU's of the threads it had no room for, which
+/// `Folded` names by `process`.
 #[must_use]
 pub fn fold(
     process: Pid,
-    stats: impl IntoIterator<Item = (SyscallId, Vec<RawStatValue>)>,
+    stats: impl IntoIterator<Item = (u32, u32, SyscallId, RawStatValue)>,
     errnos: impl IntoIterator<Item = (RawErrnoKey, u64)>,
 ) -> Folded {
+    let key = |tgid: u32, tid: u32, call| {
+        if tid == 0 {
+            (process, Tid::new(0), call)
+        } else {
+            (Pid::new(tgid), Tid::new(tid), call)
+        }
+    };
+
     let mut folded = Folded::default();
-    for (call, per_cpu) in stats {
-        let into = folded.by_call.entry((process, call)).or_default();
-        for value in per_cpu {
-            into.merge(&SyscallStats {
+    for (tgid, tid, call, value) in stats {
+        folded
+            .by_call
+            .entry(key(tgid, tid, call))
+            .or_default()
+            .merge(&SyscallStats {
                 calls: value.calls,
                 errors: value.errors,
                 errors_by_errno: BTreeMap::new(),
@@ -874,18 +900,17 @@ pub fn fold(
                 log2_ns: value.log2_ns.to_vec(),
                 bytes: value.bytes,
             });
-        }
     }
 
-    for (key, count) in errnos {
-        let (Some(call), Ok(errno)) = (call_of(key.slot), u16::try_from(key.err)) else {
+    for (which, count) in errnos {
+        let (Some(call), Ok(errno)) = (call_of(which.slot), u16::try_from(which.err)) else {
             continue;
         };
 
         if count > 0 {
             *folded
                 .by_call
-                .entry((process, call))
+                .entry(key(which.tgid, which.tid, call))
                 .or_default()
                 .errors_by_errno
                 .entry(errno)
@@ -1736,6 +1761,21 @@ impl Loaded {
             }
         }
 
+        if let Some(map) = self.ebpf.map_mut("THREAD_STATS") {
+            let mut threads = HashMap::<_, Bytes<STAT_KEY_BYTES>, Bytes<STAT_BYTES>>::try_from(map)
+                .map_err(load_error)?;
+            let keys: Vec<_> = threads
+                .keys()
+                .flatten()
+                .filter(|key| {
+                    RawStatKey::read_from_bytes(key).is_ok_and(|key| key.row / rows == old)
+                })
+                .collect();
+            for key in keys {
+                threads.remove(&key).map_err(load_error)?;
+            }
+        }
+
         if let Some(map) = self.ebpf.map_mut("ERRNOS") {
             let mut errnos = PerCpuHashMap::<_, Bytes<ERRNO_KEY_BYTES>, u64>::try_from(map)
                 .map_err(load_error)?;
@@ -1754,31 +1794,51 @@ impl Loaded {
         Ok(folded)
     }
 
-    /// The statistics in half `half` of the maps.
+    /// The statistics in half `half` of the maps: each thread's, then
+    /// those of threads they had no room for.
     fn half(&self, half: u32, process: Pid) -> Folded {
         let rows = u32::try_from(self.rows.len().max(1)).unwrap_or(u32::MAX);
-        let stats = self
-            .ebpf
-            .map("STATS")
-            .and_then(|map| PerCpuArray::<_, Bytes<STAT_BYTES>>::try_from(map).ok())
-            .map(|map| {
-                (0_u32..)
-                    .zip(&self.rows)
-                    .filter_map(|(row, &call)| {
-                        let values = map
-                            .get(&(half * rows + row), 0)
-                            .ok()?
-                            .iter()
-                            .filter_map(|value| RawStatValue::read_from_bytes(value).ok())
-                            .collect::<Vec<_>>();
-                        values
-                            .iter()
-                            .any(|value| value.calls > 0)
-                            .then_some((call, values))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let mut stats = Vec::new();
+        if let Some(map) = self.ebpf.map("THREAD_STATS")
+            && let Ok(map) = HashMap::<_, Bytes<STAT_KEY_BYTES>, Bytes<STAT_BYTES>>::try_from(map)
+        {
+            for (key, value) in map.iter().flatten() {
+                let (Ok(key), Ok(value)) = (
+                    RawStatKey::read_from_bytes(&key),
+                    RawStatValue::read_from_bytes(&value),
+                ) else {
+                    continue;
+                };
+
+                let call = key
+                    .row
+                    .checked_sub(half * rows)
+                    .filter(|&row| row < rows)
+                    .and_then(|row| self.rows.get(row as usize));
+                if let Some(&call) = call {
+                    stats.push((key.tgid, key.tid, call, value));
+                }
+            }
+        }
+
+        if let Some(map) = self.ebpf.map("STATS")
+            && let Ok(map) = PerCpuArray::<_, Bytes<STAT_BYTES>>::try_from(map)
+        {
+            for (row, &call) in (0_u32..).zip(&self.rows) {
+                let Ok(values) = map.get(&(half * rows + row), 0) else {
+                    continue;
+                };
+
+                for value in values.iter() {
+                    if let Ok(value) = RawStatValue::read_from_bytes(value)
+                        && value.calls > 0
+                    {
+                        stats.push((0, 0, call, value));
+                    }
+                }
+            }
+        }
+
         let errnos = self
             .ebpf
             .map("ERRNOS")
@@ -3048,7 +3108,8 @@ mod tests {
                     calls, errors, timed, total_ns, min_ns, max_ns, bytes, log2_ns
                 ]
             ),
-            (RawErrnoKey, "errno_key", [slot, err]),
+            (RawStatKey, "stat_key", [tid, tgid, row, reserved]),
+            (RawErrnoKey, "errno_key", [tid, tgid, slot, err]),
             (
                 RawStackRecord,
                 "stack_record",
@@ -3259,24 +3320,38 @@ mod tests {
         one.log2_ns[7] = 3;
         let mut two = one;
         two.min_ns = 20;
+        // x86-64 calls fill the first slots.
+        let errno = |tgid, tid| RawErrnoKey {
+            tid,
+            tgid,
+            slot: openat.number,
+            err: 2,
+        };
         let folded = fold(
             Pid::new(7),
-            [(openat, vec![one, two])],
-            [(
-                RawErrnoKey {
-                    // x86-64 calls fill the first slots.
-                    slot: openat.number,
-                    err: 2,
-                },
-                2,
-            )],
+            [
+                (0, 0, openat, one),
+                (0, 0, openat, two),
+                (9, 10, openat, one),
+            ],
+            [(errno(0, 0), 2), (errno(9, 10), 1)],
         );
-        let stats = &folded.by_call[&(Pid::new(7), openat)];
+
+        // Threads the kernel had no room for are the trace's process's.
+        let spilled = &folded.by_call[&(Pid::new(7), Tid::new(0), openat)];
         assert_eq!(
-            (stats.calls, stats.min_ns, stats.max_ns, stats.log2_ns[7]),
+            (
+                spilled.calls,
+                spilled.min_ns,
+                spilled.max_ns,
+                spilled.log2_ns[7]
+            ),
             (6, 20, 200, 6)
         );
-        assert_eq!(stats.errors_by_errno[&2], 2);
+        assert_eq!(spilled.errors_by_errno[&2], 2);
+
+        let thread = &folded.by_call[&(Pid::new(9), Tid::new(10), openat)];
+        assert_eq!((thread.calls, thread.errors_by_errno[&2]), (3, 1));
     }
 
     #[test]

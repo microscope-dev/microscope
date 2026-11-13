@@ -1104,13 +1104,17 @@ pub struct SyscallStat {
 
     /// The process's row, or [`NONE`] for every process.
     pub process: U32,
+
+    /// The thread's row, or [`NONE`] for threads the kernel had no room
+    /// to count apart.
+    pub thread: U32,
     pub number: U32,
 
     /// Its rows of errnos.
     pub errnos: U32,
     pub errno_count: U32,
     pub abi: u8,
-    pub reserved: [u8; 7],
+    pub reserved: [u8; 3],
 }
 
 /// How many of a call's failures had one errno.
