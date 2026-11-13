@@ -55,12 +55,12 @@ they apply.
 - The ptrace engine stops the program at each traced call, at a cost of
   several microseconds a call. Attaching it stops every call.
 - Calls answered in the vDSO, such as `clock_gettime`, are not traced.
-- The BPF engine can drop calls under load and reports how many it lost.
+- Under load the BPF engine keeps fewer calls whole, down to those that
+  fail or are slow, but counts every call.
 - A cgroup or container trace cannot show stacks.
 - BPF Python stacks require the initial PID namespace and interpreter metadata,
   which takes a few milliseconds to read after the interpreter is mapped.
   Otherwise they end with `interpreted frames unknown`.
-- `record --syscalls` cannot be used with `--pid`.
 - While a debugger catchpoint exists, every system call stops its thread
   briefly.
 

@@ -2759,6 +2759,141 @@ mod bpf {
         );
     }
 
+    /// How many calls named `name` the profile counted.
+    fn counted(profile: &microscope::profiler::Profile, name: &str) -> u64 {
+        profile
+            .syscalls()
+            .stats()
+            .per_call()
+            .iter()
+            .find(|(call, _)| call.name() == Some(name))
+            .map_or(0, |(_, stats)| stats.calls)
+    }
+
+    /// A recording attached to a running process traces its calls from
+    /// then on, each with its site, beside its samples.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_recording_attached_to_a_process_holds_its_calls() {
+        let directory = ScratchDir::new("syscalls-record-pid");
+        let mut program = Command::new(fixture())
+            .arg("spin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start the fixture");
+        let mut recording = Command::new(launcher())
+            .env_clear()
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args([
+                "record",
+                "--syscalls",
+                "calls",
+                "-o",
+                "attached.usprof",
+                "--pid",
+            ])
+            .arg(program.id().to_string())
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run microscope record");
+
+        // Once the recording says it began, the program's calls are traced.
+        let mut said = BufReader::new(recording.stderr.take().expect("stderr")).lines();
+        let begun = said
+            .by_ref()
+            .map_while(Result::ok)
+            .find(|line| line.starts_with("microscope: recording process "));
+        assert!(begun.is_some(), "the recording never began");
+        std::thread::sleep(Duration::from_millis(200));
+        program
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(b"x")
+            .expect("end the spin");
+        let output = program.wait_with_output().expect("the fixture ends");
+        assert!(output.status.success());
+        let asked: u64 = text(&output.stdout)
+            .trim()
+            .strip_prefix("asked ")
+            .and_then(|count| count.parse().ok())
+            .expect("a count");
+        let rest: Vec<String> = said.map_while(Result::ok).collect();
+        assert!(
+            recording.wait().expect("microscope ends").success(),
+            "{rest:?}"
+        );
+
+        let profile =
+            microscope::profiler::Profile::read(&directory.path().join("attached.usprof"))
+                .expect("the capture reads")
+                .profile;
+        let traced = counted(&profile, "getppid");
+        assert!((1..=asked).contains(&traced), "{traced} of {asked}");
+        assert!(profile.samples() > 0);
+        let sites = sites(&profile);
+        assert!(sites.keys().any(|site| site.contains("spin")), "{sites:#?}");
+    }
+
+    /// A debugging session's `profile start` records its program's calls
+    /// from the moment it returns: every round the program runs after is
+    /// counted.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_debugging_session_profiles_its_programs_calls() {
+        let directory = ScratchDir::new("syscalls-session");
+        let file = directory.path().join("session.usprof");
+        let session = Command::new(launcher())
+            .env_clear()
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .arg("--batch")
+            .args([
+                "--eval",
+                "break work",
+                "--eval",
+                "run",
+                "--eval",
+                "profile start",
+            ])
+            .args([
+                "--eval",
+                "delete 1",
+                "--eval",
+                "continue",
+                "--eval",
+                "profile stop",
+            ])
+            .arg("--eval")
+            .arg(format!("profile save {}", file.display()))
+            .arg(Scenario::fixture("syscall-load"))
+            .args(["--", "1", "2000", "0"])
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run a microscope session");
+        let stdout = text(&session.stdout);
+        assert!(
+            session.status.success(),
+            "{stdout}{}",
+            text(&session.stderr)
+        );
+        assert!(stdout.contains("Profiling process "), "{stdout}");
+
+        let profile = microscope::profiler::Profile::read(&file)
+            .expect("the capture reads")
+            .profile;
+        assert_eq!(counted(&profile, "openat"), 2000);
+        assert_eq!(counted(&profile, "read"), 2000);
+        let sites = sites(&profile);
+        assert!(
+            sites.keys().any(|site| site.contains("one_round")),
+            "{sites:#?}"
+        );
+    }
+
     /// Each call a counting recording kept, by name, why it was kept, and
     /// its site.
     fn kept(profile: &microscope::profiler::Profile) -> BTreeMap<(String, &str, String), u64> {

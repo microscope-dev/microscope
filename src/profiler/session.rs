@@ -19,7 +19,7 @@ use super::{
     SampleSource, StackCopy,
 };
 
-use super::syscall_trace::{SyscallEngine, SyscallLevel, SyscallTrace};
+use super::syscall_trace::{SyscallEngine, SyscallLevel, SyscallTrace, Traced};
 use crate::backend::bpf::sampler::{Sampler, SamplerError};
 use crate::backend::perf;
 use crate::capture::records::{AccountKind, GapReason, MarkerKind};
@@ -159,7 +159,7 @@ pub fn record_watched(
             }
         }
 
-        syscalls = SyscallTrace::beside(pid, options, stack_bytes)?;
+        syscalls = SyscallTrace::beside(Traced::Held(pid), options, stack_bytes)?;
 
         Ok(())
     });
@@ -238,6 +238,7 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
+    let options = &resolved(options)?;
     if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
         crate::backend::bpf::sampler::check_namespace()?;
     }
@@ -273,6 +274,8 @@ pub fn record_attached(
         None
     };
 
+    let syscalls = SyscallTrace::beside(Traced::Running(pid), options, stack_bytes)
+        .map_err(RecordError::Syscalls)?;
     processor.attached(Pid::new(pid), monotonic());
     let name = std::fs::read_link(&program).unwrap_or(program);
     let pages = events.pages();
@@ -301,7 +304,7 @@ pub fn record_attached(
             watch,
             options,
             Some(pid),
-            None,
+            syscalls.as_ref(),
             walker.as_mut(),
             |timeout| process.exited(timeout),
             || {
@@ -318,10 +321,13 @@ pub fn record_attached(
         processor.exited(Pid::new(pid));
     }
 
+    let mut capture = processor.finish();
+    if let Some(syscalls) = syscalls {
+        capture = syscalls.merge(&capture).map_err(RecordError::Syscalls)?;
+    }
+
     Ok(Attachment {
-        profile: Profile {
-            capture: processor.finish(),
-        },
+        profile: Profile { capture },
         exited: !stopped,
     })
 }

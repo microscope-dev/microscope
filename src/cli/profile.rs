@@ -716,9 +716,18 @@ fn record(args: &RecordArgs) -> Result<i32> {
         );
     }
 
+    // An attached process goes on once the recording ends, so the user is
+    // told when it begins.
+    let mut announce = args.pid;
     let mut watch = Watch {
         every: Duration::MAX,
-        publish: &mut |_| {},
+        publish: &mut |_| {
+            if let Some(pid) = announce.take() {
+                eprintln!(
+                    "microscope: recording process {pid}; Ctrl-C ends the recording and leaves it running"
+                );
+            }
+        },
         stop: &stop,
         save: (options.cuts != Cuts::Whole).then_some(Save {
             trigger: &trigger,
@@ -2329,6 +2338,12 @@ impl Profiling {
                 let pid = u32::try_from(pid.get()).context("the program's process id")?;
 
                 let mut options = RecordOptions::default();
+                let note = options
+                    .syscalls
+                    .resolve()
+                    .map_err(anyhow::Error::msg)?
+                    .map(|note| format!("{note}\n"))
+                    .unwrap_or_default();
                 if let [seconds] = window {
                     let seconds: f64 = seconds.parse().context("a window in seconds")?;
                     options.cuts = Cuts::Window(
@@ -2336,11 +2351,11 @@ impl Profiling {
                     );
                 }
 
-                self.recording = Some(start_recording(pid, options));
+                self.recording = Some(start_recording(pid, options)?);
                 self.recorded = None;
 
                 Ok(format!(
-                    "Profiling process {pid}{}.\n",
+                    "{note}Profiling process {pid}{}.\n",
                     window
                         .first()
                         .map(|seconds| format!(", keeping the last {seconds} s"))
@@ -2375,11 +2390,14 @@ impl Profiling {
     }
 }
 
-/// Records `pid` on a thread of its own until it exits or is stopped.
-fn start_recording(pid: u32, options: RecordOptions) -> SessionRecording {
+/// Records `pid` on a thread of its own until it exits or is stopped, and
+/// returns once the recording has begun, so that nothing the program does
+/// after goes unrecorded.
+fn start_recording(pid: u32, options: RecordOptions) -> Result<SessionRecording> {
     let stop = Arc::new(AtomicBool::new(false));
     let trigger = Arc::new(AtomicBool::new(false));
     let (send, saved) = std::sync::mpsc::channel();
+    let (started, begun) = std::sync::mpsc::channel();
 
     let thread = std::thread::spawn({
         let (stop, trigger) = (Arc::clone(&stop), Arc::clone(&trigger));
@@ -2393,7 +2411,9 @@ fn start_recording(pid: u32, options: RecordOptions) -> SessionRecording {
                 &options,
                 &mut Watch {
                     every: Duration::MAX,
-                    publish: &mut |_| {},
+                    publish: &mut |_| {
+                        let _ = started.send(());
+                    },
                     stop: &stop,
                     save: Some(Save {
                         trigger: &trigger,
@@ -2406,12 +2426,20 @@ fn start_recording(pid: u32, options: RecordOptions) -> SessionRecording {
         }
     });
 
-    SessionRecording {
+    if begun.recv().is_err() {
+        let error = match thread.join() {
+            Ok(Err(error)) => error,
+            _ => "the profiler ended before it began".to_owned(),
+        };
+        anyhow::bail!("profiling failed: {error}");
+    }
+
+    Ok(SessionRecording {
         stop,
         trigger,
         saved,
         thread,
-    }
+    })
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use super::{Cuts, Preset, RecordOptions};
 use crate::backend::syscall_engines::bpf::{self, BpfOptions, Exceptions, Shed};
 use crate::backend::syscall_engines::capture::SyscallCapture;
 use crate::backend::syscall_engines::stacks::SharedStacks;
-use crate::backend::syscall_engines::{Sink, TraceOptions};
+use crate::backend::syscall_engines::{Sink, Target, TraceOptions};
 use crate::capture::Capture;
 use crate::capture::builder::CaptureBuilder;
 use crate::syscalls::captures::Limits;
@@ -363,13 +363,23 @@ impl Sink for Held {
     }
 }
 
+/// The process a trace follows, and every process it starts.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Traced {
+    /// Held at its launcher's gate, traced from its first call.
+    Held(u32),
+
+    /// Already running, traced from its next call.
+    Running(u32),
+}
+
 impl SyscallTrace {
-    /// Traces the calls `recording` asks for of process `pid`, held at its
-    /// gate, and of every process it starts, if any; returns once the
-    /// trace sees the process. Each call's stack is copied when the
-    /// samples copy `stack_bytes`, more than the frame-pointer chain needs.
+    /// Traces the calls `recording` asks for of `traced`, if any; returns
+    /// once the trace sees the process. Each call's stack is copied when
+    /// the samples copy `stack_bytes`, more than the frame-pointer chain
+    /// needs.
     pub(super) fn beside(
-        pid: u32,
+        traced: Traced,
         recording: &RecordOptions,
         stack_bytes: u32,
     ) -> Result<Option<Self>, String> {
@@ -433,9 +443,18 @@ impl SyscallTrace {
         let thread = std::thread::Builder::new()
             .name("microscope-record-syscalls".into())
             .spawn(move || {
-                bpf::trace_held(pid, &trace, engine, &stopped, &mut sink)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
+                match traced {
+                    Traced::Held(pid) => bpf::trace_held(pid, &trace, engine, &stopped, &mut sink),
+                    Traced::Running(pid) => bpf::trace(
+                        Target::Attach(vec![pid]),
+                        &trace,
+                        engine,
+                        &stopped,
+                        &mut sink,
+                    ),
+                }
+                .map(|_| ())
+                .map_err(|error| error.to_string())
             })
             .map_err(|error| error.to_string())?;
         if seen.recv().is_ok() {
