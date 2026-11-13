@@ -234,6 +234,18 @@ impl EventFlags {
     /// the 64-bit table.
     pub const ABI_UNCERTAIN: Self = Self(4);
 
+    /// A recording that counted calls kept this one whole because it
+    /// failed, or because it was slow.
+    pub const KEPT_FAILED: Self = Self(64);
+    pub const KEPT_SLOW: Self = Self(128);
+
+    /// Whether a counting recording kept the call, so its count already
+    /// holds it.
+    #[must_use]
+    pub const fn kept(self) -> bool {
+        self.0 & (Self::KEPT_FAILED.0 | Self::KEPT_SLOW.0) != 0
+    }
+
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -246,6 +258,48 @@ impl EventFlags {
     #[must_use]
     pub const fn with(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+}
+
+/// Why events are missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Loss {
+    /// Records the kernel had no room for, or a program's run it skipped.
+    Dropped,
+
+    /// Calls whose return the engine never saw.
+    Unseen,
+
+    /// Failed or slow calls past a counting recording's cap: counted, not
+    /// kept.
+    Capped,
+}
+
+impl Loss {
+    /// Every kind, in the order the kernel counts them.
+    pub const ALL: [Self; 3] = [Self::Dropped, Self::Unseen, Self::Capped];
+}
+
+/// How many events a trace is missing, by why.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Losses {
+    pub dropped: u64,
+    pub unseen: u64,
+    pub capped: u64,
+}
+
+impl Losses {
+    pub const fn add(&mut self, why: Loss, count: u64) {
+        match why {
+            Loss::Dropped => self.dropped += count,
+            Loss::Unseen => self.unseen += count,
+            Loss::Capped => self.capped += count,
+        }
+    }
+
+    #[must_use]
+    pub const fn any(&self) -> bool {
+        self.dropped + self.unseen + self.capped > 0
     }
 }
 
@@ -430,10 +484,12 @@ pub enum TraceEvent {
 
     /// Events the engine lost, on one CPU or thread, since the last such
     /// report. Every count the trace shows is a lower bound once one has
-    /// occurred.
+    /// occurred, but for calls over a counting recording's cap, which are
+    /// counted.
     Lost {
         time: u64,
         count: u64,
+        why: Loss,
     },
 
     /// What a descriptor refers to, as the engine read it from the system

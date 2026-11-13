@@ -2,7 +2,8 @@
 // heat map's ramp, histogram buckets' names, and stacked series.
 
 import { assert } from "../assert";
-import { formatDuration, hue } from "./paint";
+import type { SyscallLosses } from "../protocol.gen";
+import { formatCount, formatDuration, hue } from "./paint";
 
 /** Each class the server shows calls under, with a hue of its own. Red is
  * left for errors. */
@@ -103,6 +104,34 @@ export function tracedBy(settings: readonly Setting[]): TraceNote {
     text: attach ? ` by ${engine} through ${attach}` : ` by ${engine}`,
     ...(reason ? { title: reason } : {}),
   };
+}
+
+/** What the trace is missing, by why: records the kernel dropped and
+ * returns it never saw leave every count short; calls over the cap were
+ * counted. */
+export function lossNotes(lost: SyscallLosses): TraceNote[] {
+  const notes: TraceNote[] = [];
+  if (lost.dropped > 0) {
+    notes.push({
+      text: `${formatCount(lost.dropped)} dropped`,
+      title: "Records the kernel had no room for: every count is a lower bound.",
+      warn: true,
+    });
+  }
+  if (lost.unseen > 0) {
+    notes.push({
+      text: `${formatCount(lost.unseen)} unseen`,
+      title: "Calls whose return the trace never saw: they are not counted.",
+      warn: true,
+    });
+  }
+  if (lost.capped > 0) {
+    notes.push({
+      text: `${formatCount(lost.capped)} over the cap`,
+      title: "Failed or slow calls past the cap: counted, but not kept.",
+    });
+  }
+  return notes;
 }
 
 /** What else shaped the trace: its cgroup, each step the budget took, and

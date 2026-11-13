@@ -41,8 +41,8 @@ use crate::syscalls::captures::{self, CopyKind};
 use crate::syscalls::specs::{self, Arg, Count, MemKind, Ret, Struct};
 use crate::syscalls::stats::{self, BUCKETS, Folded};
 use crate::syscalls::{
-    Abi, CallStack, Capture, CaptureState, Device, EventFlags, InFlight, Outcome, Pid, ProcessEnd,
-    ReadAt, SyscallEvent, SyscallId, SyscallStats, Tid, TraceEvent,
+    Abi, CallStack, Capture, CaptureState, Device, EventFlags, InFlight, Loss, Outcome, Pid,
+    ProcessEnd, ReadAt, SyscallEvent, SyscallId, SyscallStats, Tid, TraceEvent,
 };
 
 use crate::capture::records::Truncation;
@@ -90,6 +90,7 @@ const CONFIG_SKIP_UNSEEN: u32 = 8;
 const CONFIG_STACKS: u32 = 16;
 const CONFIG_STACK_COPY: u32 = 32;
 const CONFIG_GENERATION: u32 = 64;
+const CONFIG_EXCEPTIONS: u32 = 128;
 
 const CALL_PROCESS_EXITED: u8 = 8;
 const CALL_STACK_LOST: u8 = 32;
@@ -105,7 +106,10 @@ fn lost_stack() -> CallStack {
 }
 
 /// The flags a call record shares with [`EventFlags`].
-const CALL_EVENT_FLAGS: u8 = EventFlags::ENTRY_UNSEEN.0 | EventFlags::ABI_UNCERTAIN.0;
+const CALL_EVENT_FLAGS: u8 = EventFlags::ENTRY_UNSEEN.0
+    | EventFlags::ABI_UNCERTAIN.0
+    | EventFlags::KEPT_FAILED.0
+    | EventFlags::KEPT_SLOW.0;
 
 /// A call's slot in the CALLS map: its ABI and number.
 const SLOTS: u32 = 3072;
@@ -170,6 +174,9 @@ pub struct RawConfig {
     pub elements: u32,
     pub sample: u32,
     pub rows: u32,
+    pub slow_ns: u64,
+    pub cap: u32,
+    pub burst: u32,
 }
 
 /// A thread's call in progress (`struct entry`).
@@ -785,6 +792,7 @@ fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
         return Ok(Record::Event(TraceEvent::Lost {
             time: monotonic(),
             count: 1,
+            why: Loss::Unseen,
         }));
     }
 
@@ -1136,6 +1144,17 @@ pub struct BpfOptions {
     /// Percent of one CPU the trace may cost, giving up detail to stay
     /// inside it.
     pub budget: Option<f64>,
+
+    /// While counting, the failed and slow calls to send whole.
+    pub exceptions: Option<Exceptions>,
+}
+
+/// The calls counting sends whole: each that fails or takes `slow`, up to
+/// `per_second` a second over every CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exceptions {
+    pub slow: std::time::Duration,
+    pub per_second: u32,
 }
 
 impl Default for BpfOptions {
@@ -1146,6 +1165,55 @@ impl Default for BpfOptions {
             stack_copy: false,
             attach: AttachMode::Auto,
             budget: None,
+            exceptions: None,
+        }
+    }
+}
+
+impl RawConfig {
+    /// The programs' settings for a trace of `options` run as `engine`
+    /// says, of `rows` calls' statistics.
+    fn new(options: &TraceOptions, engine: BpfOptions, launch: bool, rows: u32) -> Self {
+        let mut flags = if engine.count_only {
+            CONFIG_COUNT
+        } else {
+            CONFIG_STREAM
+        };
+
+        if options.follow {
+            flags |= CONFIG_FOLLOW;
+        }
+
+        if launch {
+            flags |= CONFIG_SKIP_UNSEEN;
+        }
+
+        if options.stacks.is_some() {
+            flags |= CONFIG_STACKS;
+            if engine.stack_copy {
+                flags |= CONFIG_STACK_COPY;
+            }
+        }
+
+        let (slow_ns, cap, burst) = engine.exceptions.map_or((0, 0, 0), |exceptions| {
+            flags |= CONFIG_EXCEPTIONS;
+            let cpus = u32::try_from(aya::util::nr_cpus().unwrap_or(1)).unwrap_or(1);
+            let cap = (exceptions.per_second / cpus).max(1);
+            (
+                u64::try_from(exceptions.slow.as_nanos()).unwrap_or(u64::MAX),
+                cap,
+                cap,
+            )
+        });
+
+        Self {
+            flags,
+            elements: u32::try_from(options.limits.elements).unwrap_or(u32::MAX),
+            sample: 0,
+            rows,
+            slow_ns,
+            cap,
+            burst,
         }
     }
 }
@@ -1405,34 +1473,7 @@ impl Loaded {
             let mut config: Array<_, Bytes<CONFIG_BYTES>> =
                 Array::try_from(ebpf.map_mut("CONFIG").ok_or_else(|| missing("CONFIG"))?)
                     .map_err(load_error)?;
-            let mut flags = if engine.count_only {
-                CONFIG_COUNT
-            } else {
-                CONFIG_STREAM
-            };
-
-            if options.follow {
-                flags |= CONFIG_FOLLOW;
-            }
-
-            if launch {
-                flags |= CONFIG_SKIP_UNSEEN;
-            }
-
-            if options.stacks.is_some() {
-                flags |= CONFIG_STACKS;
-                if engine.stack_copy {
-                    flags |= CONFIG_STACK_COPY;
-                }
-            }
-
-            let raw = RawConfig {
-                flags,
-                elements: u32::try_from(options.limits.elements).unwrap_or(u32::MAX),
-                sample: 0,
-                rows,
-            };
-
+            let raw = RawConfig::new(options, engine, launch, rows);
             let mut value = [0; CONFIG_BYTES];
             value.copy_from_slice(raw.as_bytes());
             config.set(0, value, 0).map_err(load_error)?;
@@ -1626,14 +1667,20 @@ impl Loaded {
     /// program because it was already running on that CPU: a bound on
     /// what the trace is missing, since a skip may have been of a thread
     /// it does not trace.
-    fn lost(&self) -> u64 {
-        let dropped = self.ebpf.map("LOST").map_or(0, |map| {
-            PerCpuArray::<_, u64>::try_from(map)
-                .ok()
-                .and_then(|lost| lost.get(&0, 0).ok())
-                .map_or(0, |values| values.iter().sum())
-        });
-        dropped + self.skipped()
+    fn lost(&self) -> [u64; 3] {
+        let mut lost = [0; 3];
+        if let Some(map) = self.ebpf.map("LOST")
+            && let Ok(counts) = PerCpuArray::<_, u64>::try_from(map)
+        {
+            for (index, count) in (0..).zip(&mut lost) {
+                *count = counts
+                    .get(&index, 0)
+                    .map_or(0, |values| values.iter().sum());
+            }
+        }
+
+        lost[0] += self.skipped();
+        lost
     }
 
     /// The kernel's count of skipped runs of every loaded program, which
@@ -1999,7 +2046,7 @@ fn run(
         mappings,
         batch: Vec::new(),
         perf: Vec::new(),
-        lost: 0,
+        lost: [0; 3],
         untrusted: 0,
         unwinder: options
             .stacks
@@ -2198,7 +2245,7 @@ struct Reader<'a> {
     mappings: Vec<perf::Events>,
     batch: Vec<Record>,
     perf: Vec<u8>,
-    lost: u64,
+    lost: [u64; 3],
 
     /// The mapping rings' heads that could not be trusted, as last counted.
     untrusted: u64,
@@ -2429,14 +2476,17 @@ impl Reader<'_> {
 
     fn report_lost(&mut self, loaded: &Loaded, time: u64) {
         let lost = loaded.lost();
-        if lost > self.lost {
-            record!("syscalls bpf: {} records lost", lost - self.lost);
-            self.emit(TraceEvent::Lost {
-                time,
-                count: lost - self.lost,
-            });
-            self.lost = lost;
+        for ((why, now), before) in Loss::ALL.into_iter().zip(lost).zip(self.lost) {
+            if now > before {
+                record!("syscalls bpf: {} {why:?}", now - before);
+                self.emit(TraceEvent::Lost {
+                    time,
+                    count: now - before,
+                    why,
+                });
+            }
         }
+        self.lost = lost;
     }
 
     fn drain(&mut self, ring: &mut RingBuf<MapData>) {
@@ -2454,6 +2504,7 @@ impl Reader<'_> {
                     self.emit(TraceEvent::Lost {
                         time: monotonic(),
                         count: 1,
+                        why: Loss::Dropped,
                     });
                 }
             }
@@ -2490,6 +2541,7 @@ impl Reader<'_> {
             self.emit(TraceEvent::Lost {
                 time: monotonic(),
                 count: untrusted - self.untrusted,
+                why: Loss::Dropped,
             });
             self.untrusted = untrusted;
         }
@@ -2950,7 +3002,11 @@ mod tests {
                 "file_record",
                 [header, fd, mode, ino, magic, rdev, len, cloexec, pad]
             ),
-            (RawConfig, "config", [flags, elements, sample, rows]),
+            (
+                RawConfig,
+                "config",
+                [flags, elements, sample, rows, slow_ns, cap, burst]
+            ),
             (
                 RawEntry,
                 "entry",

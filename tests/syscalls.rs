@@ -2419,14 +2419,27 @@ mod bpf {
         threads: u32,
         rounds: u32,
     ) -> microscope::profiler::Profile {
+        let program = [threads.to_string(), rounds.to_string()];
+        record_fixture(directory, file, arguments, "syscall-load", &program)
+    }
+
+    /// Records `fixture` run with `program` with `arguments`, into `file`
+    /// in `directory`, and reads it.
+    fn record_fixture(
+        directory: &Path,
+        file: &str,
+        arguments: &[&str],
+        fixture: &str,
+        program: &[String],
+    ) -> microscope::profiler::Profile {
         let recorded = Command::new(launcher())
             .env_clear()
             .arg(env!("CARGO_BIN_EXE_microscope"))
             .args(["record", "-o", file])
             .args(arguments)
             .arg("--")
-            .arg(Scenario::fixture("syscall-load"))
-            .args([threads.to_string(), rounds.to_string()])
+            .arg(Scenario::fixture(fixture))
+            .args(program)
             .current_dir(directory)
             .stdin(Stdio::null())
             .output()
@@ -2509,8 +2522,8 @@ mod bpf {
     }
 
     /// The production preset counts every call in the kernel and keeps
-    /// none: the same counts a recording of every call makes of the same
-    /// program.
+    /// none that succeeded quickly: the same counts a recording of every
+    /// call makes of the same program.
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_production_recording_counts_every_call_and_keeps_none() {
@@ -2524,7 +2537,13 @@ mod bpf {
         );
         let streamed = record_load(directory.path(), "dev.usprof", &[], 2, 100);
         assert_eq!(counted.setting("syscalls"), Some("counts"));
-        assert!(sites(&counted).is_empty());
+        assert!(
+            !sites(&counted)
+                .keys()
+                .any(|site| site.contains("syscall-load.c")),
+            "{:#?}",
+            sites(&counted)
+        );
 
         let per_call = |profile: &microscope::profiler::Profile| -> BTreeMap<String, u64> {
             profile
@@ -2539,6 +2558,123 @@ mod bpf {
         let counts = per_call(&counted);
         assert!(counts["read"] >= 200, "{counts:?}");
         assert_eq!(counts, per_call(&streamed));
+    }
+
+    /// Each call a counting recording kept, by name, why it was kept, and
+    /// its site.
+    fn kept(profile: &microscope::profiler::Profile) -> BTreeMap<(String, &str, String), u64> {
+        use microscope::syscalls::{EventFlags, Outcome, TraceEvent};
+
+        let mut kept = BTreeMap::new();
+        for event in profile.syscalls().events {
+            let TraceEvent::Call(call) = &event.event else {
+                continue;
+            };
+
+            let failed = call.flags.contains(EventFlags::KEPT_FAILED);
+            let slow = call.flags.contains(EventFlags::KEPT_SLOW);
+            assert!(failed != slow, "{call:?}");
+            if failed {
+                assert!(matches!(call.outcome, Outcome::Failed(_)), "{call:?}");
+            } else {
+                assert!(
+                    call.duration().is_some_and(|ns| ns >= 10_000_000),
+                    "{call:?}"
+                );
+            }
+
+            let site = event.stack.map_or_else(
+                || "no stack".to_owned(),
+                |row| profile.syscall_site_name(row),
+            );
+            let why = if failed { "failed" } else { "slow" };
+            let name = call.call.name().unwrap_or("?").to_owned();
+            *kept.entry((name, why, site)).or_insert(0) += 1;
+        }
+
+        kept
+    }
+
+    /// Counting, a recording keeps whole each call that failed or took
+    /// longer than the threshold, with the line that made it, and counts
+    /// every call, the kept ones once.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_counting_recording_keeps_the_calls_that_failed_or_were_slow() {
+        let directory = ScratchDir::new("syscalls-record-exceptions");
+        let program = ["1000", "5", "3"].map(str::to_owned);
+        let profile = record_fixture(
+            directory.path(),
+            "prod.usprof",
+            &["--preset", "prod"],
+            "syscall-exceptions",
+            &program,
+        );
+        assert_eq!(profile.setting("syscall slow"), Some("10ms"));
+
+        let kept = kept(&profile);
+        // Each function is named for why its calls are kept.
+        let site = |name: &str, why: &'static str, line: u32| {
+            kept.get(&(
+                name.to_owned(),
+                why,
+                format!("{why} · syscall-exceptions.c:{line}"),
+            ))
+        };
+        assert_eq!(site("close", "failed", 12), Some(&5), "{kept:#?}");
+        assert_eq!(site("clock_nanosleep", "slow", 16), Some(&3), "{kept:#?}");
+        assert!(
+            !kept.keys().any(|(name, ..)| name == "getppid"),
+            "{kept:#?}"
+        );
+
+        let counts = profile.syscalls().stats().per_call();
+        let count = |name: &str| {
+            counts
+                .iter()
+                .find(|(call, _)| call.name() == Some(name))
+                .map(|(_, stats)| (stats.calls, stats.errors))
+        };
+        assert_eq!(count("getppid"), Some((1000, 0)));
+        assert_eq!(count("close").map(|(_, errors)| errors), Some(5));
+        assert_eq!(count("clock_nanosleep"), Some((3, 0)));
+        assert!(
+            !profile.syscalls_lost().any(),
+            "{:?}",
+            profile.syscalls_lost()
+        );
+    }
+
+    /// A burst of failures past the cap keeps at most what every CPU's
+    /// bucket holds, and counts the rest as capped: kept and capped add up
+    /// to every failure.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_counting_recording_caps_the_calls_it_keeps() {
+        let directory = ScratchDir::new("syscalls-record-cap");
+        let program = ["0", "20000", "0"].map(str::to_owned);
+        let profile = record_fixture(
+            directory.path(),
+            "prod.usprof",
+            &["--preset", "prod"],
+            "syscall-exceptions",
+            &program,
+        );
+        assert_eq!(profile.setting("syscall cap"), Some("2000/s"));
+
+        let kept: u64 = kept(&profile).values().sum();
+        let lost = profile.syscalls_lost();
+        let failed: u64 = profile
+            .syscalls()
+            .stats()
+            .per_call()
+            .values()
+            .map(|stats| stats.errors)
+            .sum();
+        assert!(failed >= 20_000, "{failed}");
+        assert_eq!(kept + lost.capped, failed, "{lost:?}");
+        assert!((1..=2_500).contains(&kept), "{kept} kept, {lost:?}");
+        assert_eq!((lost.dropped, lost.unseen), (0, 0));
     }
 
     /// Copied and unwound by call-frame information, the BPF engine's
@@ -3105,7 +3241,7 @@ mod bpf {
                             && call.args[0] == 0)
                 })
                 .count();
-            found.push((byte, syscalls.lost));
+            found.push((byte, syscalls.lost.dropped + syscalls.lost.unseen));
         }
 
         // A read whose return went unseen, as when another tracer attached

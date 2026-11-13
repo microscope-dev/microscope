@@ -34,7 +34,7 @@ import {
   formatSpan,
   formatWeight,
 } from "../../profile/paint";
-import { tracedBy, traceNotes } from "../../profile/syscalls";
+import { lossNotes, tracedBy, traceNotes } from "../../profile/syscalls";
 import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
@@ -780,11 +780,6 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
           {by.text}
         </Stat>
       ) : null}
-      {summary.syscallsLost > 0 ? (
-        <Stat label="Calls lost" warn>
-          {formatCount(summary.syscallsLost)}
-        </Stat>
-      ) : null}
       {summary.throttles > 0 ? (
         <Stat label="Throttled" warn>
           {formatCount(summary.throttles)}
@@ -848,7 +843,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
           {formatCount(summary.snapshots)}, stopped {formatPercent(summary.snapshotPause, span)}
         </Stat>
       ) : null}
-      {traceNotes(summary.settings).map((note) => (
+      {[...lossNotes(summary.syscallsLost), ...traceNotes(summary.settings)].map((note) => (
         <span
           key={note.text}
           className={note.warn ? "stat-note warn" : "stat-note"}

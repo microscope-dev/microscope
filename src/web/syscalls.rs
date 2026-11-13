@@ -61,7 +61,7 @@ const CLASSES: [Class; 8] = [
 pub struct Trace {
     events: Vec<RecordedEvent>,
     counted: Folded,
-    lost: u64,
+    lost: microscope::syscalls::Losses,
     calls: u64,
 
     /// The profile's span, on the trace's clock.
@@ -82,7 +82,7 @@ impl Trace {
         for event in &recorded.events {
             match &event.event {
                 TraceEvent::Call(call) => {
-                    calls += 1;
+                    calls += u64::from(!call.flags.kept());
                     if processes.get(call.process).is_none() {
                         processes.root(call.process, call.time(), None);
                     }
@@ -480,7 +480,12 @@ fn summary(
             .merge(stats);
     };
 
+    // The kernel's count already holds the calls it kept.
     calls(trace, &selection, |index, call, fds| {
+        if call.flags.kept() {
+            return;
+        }
+
         processes.insert(call.process);
         let (key, name) = group(index, call, fds);
         let mut one = SyscallStats::default();
@@ -539,7 +544,7 @@ fn summary(
                 .sum::<u64>(),
         calls: rows.iter().map(|row| row.calls).sum(),
         errors: rows.iter().map(|row| row.errors).sum(),
-        lost: trace.lost,
+        lost: trace.lost.into(),
         counted,
         engine: trace.engine.clone(),
         processes: u32::try_from(processes.len()).unwrap_or(u32::MAX),

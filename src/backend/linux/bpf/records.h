@@ -61,6 +61,9 @@ enum config_flags {
 	// Count into the second half of STATS, and ERRNOS keys with their top
 	// bit set, while microscope reads and clears the first, and the reverse.
 	CONFIG_GENERATION = 64,
+	// While counting, send each call that failed or took config.slow_ns,
+	// as many a second as config.cap lets through.
+	CONFIG_EXCEPTIONS = 128,
 };
 
 // Bits of call_record.flags, as EventFlags.
@@ -73,6 +76,20 @@ enum call_flags {
 	CALL_SAMPLED_OUT = 16,
 	// Its stack, which goes before it, did not fit in the ring.
 	CALL_STACK_LOST = 32,
+	// Sent while counting because it failed, or because it was slow.
+	CALL_KEPT_FAILED = 64,
+	CALL_KEPT_SLOW = 128,
+};
+
+// Why a record or call is missing, as LOST's index.
+enum loss {
+	// No room in the ring, or a program's run the kernel skipped.
+	LOSS_DROPPED = 0,
+	// A call whose return the exit programs never saw.
+	LOSS_UNSEEN = 1,
+	// A failed or slow call over config.cap, counted but not sent.
+	LOSS_CAPPED = 2,
+	LOSSES = 3,
 };
 
 enum signal_flags {
@@ -157,6 +174,19 @@ struct config {
 	u32 sample;
 	// The rows of statistics in each half of STATS.
 	u32 rows;
+	// A call this long or longer is slow.
+	u64 slow_ns;
+	// Failed and slow calls sent a second on each CPU, at most `burst` at
+	// once; 0 sends every one.
+	u32 cap;
+	u32 burst;
+};
+
+// Each CPU's token bucket for failed and slow calls: its credit, in calls
+// times nanoseconds, and when it was last filled.
+struct bucket {
+	u64 credit;
+	u64 filled;
 };
 
 // A thread's call in progress.

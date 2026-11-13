@@ -1143,9 +1143,9 @@ source: string | null, samples: number, weight: number,
  */
 syscalls: number, 
 /**
- * Records of calls the trace's engine lost.
+ * Events the trace's engine lost.
  */
-syscallsLost: number, 
+syscallsLost: SyscallLosses, 
 /**
  * Nanoseconds from the first sample to the last.
  */
@@ -1717,11 +1717,7 @@ export type SyscallSummary = {
 /**
  * Every call the trace holds, and those the query selects.
  */
-total: number, calls: number, errors: number, 
-/**
- * Records the engine lost: counts are lower bounds when above zero.
- */
-lost: number, 
+total: number, calls: number, errors: number, lost: SyscallLosses, 
 /**
  * Whether the kernel counted the calls without reporting them, so
  * that only the summary has them.
@@ -1731,6 +1727,8 @@ counted: boolean,
  * The engine that traced, `bpf` or `ptrace`.
  */
 engine: string | null, processes: number, rows: Array<SyscallRow>, };
+
+export type SyscallLosses = { dropped: number, unseen: number, capped: number, };
 
 export type SyscallRow = { 
 /**

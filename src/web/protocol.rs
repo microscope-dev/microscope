@@ -1339,8 +1339,8 @@ pub struct ProfileSummary {
     /// System calls its trace holds, which the Syscalls view shows.
     pub syscalls: u64,
 
-    /// Records of calls the trace's engine lost.
-    pub syscalls_lost: u64,
+    /// Events the trace's engine lost.
+    pub syscalls_lost: SyscallLosses,
 
     /// Nanoseconds from the first sample to the last.
     pub duration: i64,
@@ -3204,6 +3204,7 @@ mod tests {
         SyscallGroup::decl,
         SyscallSummaryQuery::decl,
         SyscallSummary::decl,
+        SyscallLosses::decl,
         SyscallRow::decl,
         SyscallCount::decl,
         SyscallRateBy::decl,

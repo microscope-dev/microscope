@@ -2,7 +2,7 @@ import { type ChangeEvent, type FormEvent, useCallback, useMemo, useState } from
 
 import { type SyscallTab, syscallQueryOf, withLook } from "../../profile/look";
 import { formatCount } from "../../profile/paint";
-import { bucketLabel } from "../../profile/syscalls";
+import { bucketLabel, lossNotes } from "../../profile/syscalls";
 import { useAnswer, useProfile } from "./context";
 import { ClearChip, LookButton } from "./parts";
 import { Lanes } from "./SyscallLanes";
@@ -52,9 +52,12 @@ export function SyscallsView() {
             {formatCount(summary.data.calls)} of {formatCount(summary.data.total, "call")} ·{" "}
             {formatCount(summary.data.errors)} failed
             {summary.data.engine ? ` · ${summary.data.engine}` : ""}
-            {summary.data.lost > 0 ? (
-              <span className="warn"> · lost {formatCount(summary.data.lost)}</span>
-            ) : null}
+            {lossNotes(summary.data.lost).map((note) => (
+              <span key={note.text} className={note.warn ? "warn" : undefined} title={note.title}>
+                {" "}
+                · {note.text}
+              </span>
+            ))}
           </span>
         ) : null}
       </div>

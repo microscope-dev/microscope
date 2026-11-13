@@ -607,8 +607,16 @@ pub enum AccountKind {
     /// out.
     LiveRead = 31,
 
-    /// System call records the kernel's ring had no room for.
+    /// System call records the kernel's ring had no room for, or that a
+    /// skipped program run never made.
     SyscallsLost = 27,
+
+    /// System calls whose return went unseen.
+    SyscallsUnseen = 36,
+
+    /// Failed and slow calls past a counting recording's cap: counted,
+    /// not kept.
+    SyscallsCapped = 37,
 
     /// Records of interpreted frames the kernel's rings had no room for.
     InterpretedLost = 28,

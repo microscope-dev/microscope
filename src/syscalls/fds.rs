@@ -865,7 +865,11 @@ mod tests {
         table.apply(&call("pipe2", &[0, 0], 0, vec![(0, &fds)]));
         assert_eq!(text(&table, 4).as_deref(), Some("pipe:[]"));
 
-        table.apply(&TraceEvent::Lost { time: 5, count: 1 });
+        table.apply(&TraceEvent::Lost {
+            time: 5,
+            count: 1,
+            why: crate::syscalls::Loss::Dropped,
+        });
         assert_eq!(
             table.stale().collect::<Vec<_>>(),
             [Pid::new(7), Pid::new(8)]

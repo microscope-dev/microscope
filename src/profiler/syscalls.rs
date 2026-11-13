@@ -11,8 +11,8 @@ use crate::capture::records::{
 
 use crate::syscalls::stats::{Folded, SyscallStats};
 use crate::syscalls::{
-    Abi, Device, Errno, EventFlags, Outcome, Pid, ProcessEnd, SyscallEvent, SyscallId, Tid,
-    TraceEvent,
+    Abi, Device, Errno, EventFlags, Loss, Losses, Outcome, Pid, ProcessEnd, SyscallEvent,
+    SyscallId, Tid, TraceEvent,
 };
 
 /// One event of a recorded trace, with the stack it was recorded with.
@@ -35,19 +35,22 @@ pub struct RecordedSyscalls {
     /// Statistics the kernel counted, for a trace that kept no calls.
     pub counted: Folded,
 
-    /// Records the engine lost: every count is a lower bound once this is
-    /// above zero.
-    pub lost: u64,
+    /// Events the engine lost: counts are lower bounds once any record was
+    /// dropped or return unseen.
+    pub lost: Losses,
 }
 
 impl RecordedSyscalls {
     /// Statistics per process and call: the kernel's count, or the calls'.
+    /// The kernel's count already holds the calls it kept.
     #[must_use]
     pub fn stats(&self) -> Folded {
         let mut folded = self.counted.clone();
 
         for event in &self.events {
-            if let TraceEvent::Call(call) = &event.event {
+            if let TraceEvent::Call(call) = &event.event
+                && !call.flags.kept()
+            {
                 folded.add(call);
             }
         }
@@ -100,17 +103,27 @@ impl Profile {
         self.has_syscalls() && self.setting("weight").is_none()
     }
 
-    /// Records of calls the engine lost.
+    /// Events of the system call trace the engine lost.
     #[must_use]
-    pub fn syscalls_lost(&self) -> u64 {
-        self.capture.account(AccountKind::SyscallsLost as u32)
+    pub fn syscalls_lost(&self) -> Losses {
+        let account = |kind: AccountKind| self.capture.account(kind as u32);
+        Losses {
+            dropped: account(AccountKind::SyscallsLost),
+            unseen: account(AccountKind::SyscallsUnseen),
+            capped: account(AccountKind::SyscallsCapped),
+        }
     }
 
     /// How many system calls the capture holds, as calls or counted.
     #[must_use]
     pub fn syscall_count(&self) -> u64 {
         let capture = &self.capture;
-        capture.syscalls.len() as u64
+        let kept = EventFlags::KEPT_FAILED.0 | EventFlags::KEPT_SLOW.0;
+        capture
+            .syscalls
+            .iter()
+            .filter(|call| call.flags & kept == 0)
+            .count() as u64
             + capture
                 .syscall_stats
                 .iter()
@@ -190,7 +203,7 @@ impl Profile {
         RecordedSyscalls {
             events,
             counted: self.kernel_counted(&pid),
-            lost: capture.account(AccountKind::SyscallsLost as u32),
+            lost: self.syscalls_lost(),
         }
     }
 
@@ -365,6 +378,11 @@ impl Profile {
             Some(NoteKind::Lost) | None => TraceEvent::Lost {
                 time,
                 count: value.cast_unsigned(),
+                why: match extra {
+                    1 => Loss::Unseen,
+                    2 => Loss::Capped,
+                    _ => Loss::Dropped,
+                },
             },
         };
 
@@ -569,6 +587,7 @@ mod tests {
             TraceEvent::Lost {
                 time: 240,
                 count: 3,
+                why: Loss::Capped,
             },
             TraceEvent::ThreadExit {
                 thread: Tid::new(11),
@@ -619,7 +638,11 @@ mod tests {
         let read = Profile::from_bytes(&bytes).expect("the file reads").profile;
         assert_eq!(events(&read), trace());
         let syscalls = read.syscalls();
-        assert_eq!((syscalls.lost, &syscalls.counted), (3, &counted));
+        let lost = Losses {
+            capped: 3,
+            ..Losses::default()
+        };
+        assert_eq!((syscalls.lost, &syscalls.counted), (lost, &counted));
 
         // A window keeps each note among the calls it came between, and
         // only the bytes its rows still name.

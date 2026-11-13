@@ -106,10 +106,17 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, LOSSES);
 	__type(key, u32);
 	__type(value, u64);
 } LOST SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct bucket);
+} BUCKETS SEC(".maps");
 
 // A map of maps whose only use is that setting its element waits until
 // every program running has finished: after a generation's switch, none
@@ -300,17 +307,60 @@ static __always_inline void shown_current(u32 *tid, u32 *tgid)
 		shown(bpf_get_current_task_btf(), tid, tgid);
 }
 
-static __always_inline void lost(void)
+static __always_inline void lost_as(u32 why)
 {
-	u32 zero = 0;
-	u64 *count = bpf_map_lookup_elem(&LOST, &zero);
+	u64 *count = bpf_map_lookup_elem(&LOST, &why);
 	if (count)
 		*count += 1;
+}
+
+static __always_inline void lost(void)
+{
+	lost_as(LOSS_DROPPED);
+}
+
+// Whether this CPU's bucket lets one more failed or slow call through at
+// `now`. It fills at config.cap calls a second up to config.burst, and
+// starts full.
+static __always_inline int admitted(struct config *settings, u64 now)
+{
+	if (!settings->cap)
+		return 1;
+	u32 zero = 0;
+	struct bucket *bucket = bpf_map_lookup_elem(&BUCKETS, &zero);
+	if (!bucket)
+		return 0;
+	u64 one = 1000000000ULL;
+	u64 full = (u64)settings->burst * one;
+	u64 elapsed = now - bucket->filled;
+	bucket->filled = now;
+	u64 credit = elapsed >= full / settings->cap ? full : bucket->credit + elapsed * settings->cap;
+	if (credit > full)
+		credit = full;
+	if (credit < one) {
+		bucket->credit = credit;
+		return 0;
+	}
+	bucket->credit = credit - one;
+	return 1;
 }
 
 static __always_inline int failed(s64 ret)
 {
 	return ret < 0 && ret >= -MAX_ERRNO;
+}
+
+// Why counting keeps a call whole: CALL_KEPT_FAILED, CALL_KEPT_SLOW, or 0.
+static __always_inline u8 exception(struct config *settings, u64 entered, u64 exited, s64 ret,
+				    int returned)
+{
+	if (!(settings->flags & CONFIG_EXCEPTIONS))
+		return 0;
+	if (returned && failed(ret))
+		return CALL_KEPT_FAILED;
+	if (entered && exited - entered >= settings->slow_ns)
+		return CALL_KEPT_SLOW;
+	return 0;
 }
 
 // The ABI of the current call: compat when the thread entered through
@@ -943,8 +993,9 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
 	struct config *settings = config();
 	if (!settings)
 		return 0;
-	// Counting needs only when the call began.
-	if (settings->flags & CONFIG_STREAM)
+	// Counting needs only when the call began, unless it keeps the
+	// calls that fail or are slow.
+	if (settings->flags & (CONFIG_STREAM | CONFIG_EXCEPTIONS))
 		read_args(regs, entry.abi, entry.args);
 	entry.tgid = tgid;
 	entry.exec_tid = spec->execs ? tid : 0;
@@ -961,7 +1012,7 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
 	// programs are skipped for calls in progress when another tracer
 	// attaches to it.
 	if (held->entered)
-		lost();
+		lost_as(LOSS_UNSEEN);
 	*held = entry;
 	if (!sent(settings, entry.flags))
 		return 0;
@@ -1027,9 +1078,18 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	if (!spec || !spec->selected)
 		return 0;
 	u32 slot = slot_of(entry.abi, entry.nr);
-	if ((settings->flags & CONFIG_COUNT) && !sent(settings, entry.flags))
+	int send = sent(settings, entry.flags);
+	if ((settings->flags & CONFIG_COUNT) && !send) {
 		count(settings, spec, slot, entry.entered, now, ret, 1);
-	if (sent(settings, entry.flags)) {
+		u8 kept = exception(settings, entry.entered, now, ret, 1);
+		if (kept && admitted(settings, now)) {
+			entry.flags |= kept;
+			send = 1;
+		} else if (kept) {
+			lost_as(LOSS_CAPPED);
+		}
+	}
+	if (send) {
 		if (spec->makes)
 			send_files(tid, tgid, spec, &entry, ret);
 		if ((settings->flags & CONFIG_STACKS) &&

@@ -1523,6 +1523,8 @@ build_fixture gcc "$c_fixtures_dir/syscall-sweep.c" "$output_dir/syscall-sweep" 
 build_fixture gcc "$c_fixtures_dir/syscall-burst.c" "$output_dir/syscall-burst" -O2 -g
 build_fixture gcc "$c_fixtures_dir/syscall-load.c" "$output_dir/syscall-load" \
     -O1 -g -fno-omit-frame-pointer -pthread
+build_fixture gcc "$c_fixtures_dir/syscall-exceptions.c" "$output_dir/syscall-exceptions" \
+    -O1 -g -fno-omit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/profile-calls.c" "$output_dir/profile-calls" \
     -O2 -g -fno-omit-frame-pointer
 build_fixture gcc "$c_fixtures_dir/profile-kernel.c" "$output_dir/profile-kernel" \

@@ -9,6 +9,7 @@ import {
   bucketFloor,
   bucketLabel,
   heatAlpha,
+  lossNotes,
   seriesColor,
   shownBuckets,
   stacked,
@@ -127,5 +128,17 @@ describe("what a trace's footer says of how it was made", () => {
       { text: "saved when close failed with errno 9", warn: true },
     ]);
     expect(traceNotes(settings([["syscalls", "bpf"]]))).toEqual([]);
+  });
+});
+
+describe("a trace's losses", () => {
+  it("warn only of those that leave the counts short", () => {
+    expect(lossNotes({ dropped: 0, unseen: 0, capped: 0 })).toEqual([]);
+    const notes = lossNotes({ dropped: 1200, unseen: 1, capped: 40 });
+    expect(notes.map((note) => [note.text, note.warn ?? false])).toEqual([
+      ["1,200 dropped", true],
+      ["1 unseen", true],
+      ["40 over the cap", false],
+    ]);
   });
 });

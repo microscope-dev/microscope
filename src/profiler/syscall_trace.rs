@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use super::{Cuts, Preset, RecordOptions};
-use crate::backend::syscall_engines::bpf::{self, BpfOptions};
+use crate::backend::syscall_engines::bpf::{self, BpfOptions, Exceptions};
 use crate::backend::syscall_engines::capture::SyscallCapture;
 use crate::backend::syscall_engines::stacks::SharedStacks;
 use crate::backend::syscall_engines::{Sink, TraceOptions};
@@ -219,6 +219,11 @@ impl SyscallOptions {
             if let Some((text, _)) = &self.filter {
                 settings.push(("syscall filter", text.clone()));
             }
+
+            if self.level == SyscallLevel::Counts {
+                settings.push(("syscall slow", format!("{:?}", self.slow)));
+                settings.push(("syscall cap", format!("{KEPT_PER_SECOND}/s")));
+            }
         }
 
         settings
@@ -288,6 +293,10 @@ impl Held {
         kept
     }
 }
+
+/// Failed and slow calls a counting recording keeps a second, over every
+/// CPU.
+const KEPT_PER_SECOND: u32 = 2000;
 
 /// How often a cut recording reads the kernel's counts.
 const FLUSH_EVERY: u64 = 1_000_000_000;
@@ -364,11 +373,15 @@ impl SyscallTrace {
             limits,
             verbose: level == SyscallLevel::Full,
             follow: true,
-            stacks: streams.then(SharedStacks::default),
+            stacks: Some(SharedStacks::default()),
         };
         let engine = BpfOptions {
             count_only: !streams,
             stack_copy,
+            exceptions: (!streams).then_some(Exceptions {
+                slow: options.slow,
+                per_second: KEPT_PER_SECOND,
+            }),
             ..BpfOptions::default()
         };
 

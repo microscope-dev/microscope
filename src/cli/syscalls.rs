@@ -802,6 +802,7 @@ fn bpf_options(args: &SyscallsArgs, plan: &Plan, ring: Option<u32>) -> BpfOption
             AttachArg::Fentry => AttachMode::Functions,
         },
         budget: args.budget,
+        exceptions: None,
     }
 }
 
@@ -2329,7 +2330,7 @@ impl Printer {
                 insert_end(&mut object, end);
                 object
             }
-            TraceEvent::Lost { time, count } => {
+            TraceEvent::Lost { time, count, .. } => {
                 let mut object = self.base("lost", time, None, NO_PROCESS);
                 object.remove("pid");
                 object.insert("count".into(), count.into());

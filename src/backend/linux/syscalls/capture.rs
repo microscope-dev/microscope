@@ -12,7 +12,8 @@ use zerocopy::little_endian::{I64, U32, U64};
 use crate::profiler::Profile;
 use crate::syscalls::stats::Folded;
 use crate::syscalls::{
-    CallStack, CaptureState, InFlight, Outcome, Pid, ProcessEnd, ReadAt, SyscallEvent, TraceEvent,
+    CallStack, CaptureState, InFlight, Loss, Outcome, Pid, ProcessEnd, ReadAt, SyscallEvent,
+    TraceEvent,
 };
 
 use super::Sink;
@@ -239,10 +240,16 @@ impl SyscallCapture {
                 note.value = status(*end).into();
                 self.builder.thread_exit(*thread, at);
             }
-            TraceEvent::Lost { count, .. } => {
+            TraceEvent::Lost { count, why, .. } => {
                 note.kind = NoteKind::Lost as u8;
                 note.value = count.cast_signed().into();
-                self.builder.count(AccountKind::SyscallsLost as u32, *count);
+                let (extra, account) = match why {
+                    Loss::Dropped => (0, AccountKind::SyscallsLost),
+                    Loss::Unseen => (1, AccountKind::SyscallsUnseen),
+                    Loss::Capped => (2, AccountKind::SyscallsCapped),
+                };
+                note.extra = U64::new(extra);
+                self.builder.count(account as u32, *count);
             }
             TraceEvent::Call(_) | TraceEvent::Signal { .. } | TraceEvent::Descriptor { .. } => {}
         }
