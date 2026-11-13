@@ -290,7 +290,7 @@ pub struct SyscallsArgs {
     #[arg(long, value_enum, default_value = "auto")]
     attach: AttachArg,
 
-    /// The BPF engine's ring buffer: bytes, with K or M.
+    /// Each CPU's ring buffer of the BPF engine: bytes, with K or M.
     #[arg(long, value_name = "SIZE")]
     ring: Option<String>,
 

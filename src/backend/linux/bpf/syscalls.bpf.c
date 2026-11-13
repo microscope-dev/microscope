@@ -206,9 +206,20 @@ struct {
 	__type(value, struct scratch);
 } BUFFER SEC(".maps");
 
-struct {
+// A CPU's ring of records; microscope sizes each.
+struct ring {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 16 << 20);
+	__uint(max_entries, 4096);
+};
+
+// Each CPU's ring, by its number: CPUs writing one ring between them
+// contend for its lock, which slows each call eightfold over eight
+// threads. Microscope merges the rings by the records' times.
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__array(values, struct ring);
 } EVENTS SEC(".maps");
 
 // Each Python process's layout, by its process id as the kernel's initial
@@ -335,6 +346,28 @@ static __always_inline void lost_as(u32 why)
 static __always_inline void lost(void)
 {
 	lost_as(LOSS_DROPPED);
+}
+
+static __always_inline void *ring(void)
+{
+	u32 cpu = bpf_get_smp_processor_id();
+	return bpf_map_lookup_elem(&EVENTS, &cpu);
+}
+
+static __always_inline void *reserve(u64 size)
+{
+	void *events = ring();
+	return events ? bpf_ringbuf_reserve(events, size, 0) : 0;
+}
+
+// Sends `size` bytes from `data`, or counts them lost; nonzero when lost.
+static __always_inline int output(void *data, u64 size)
+{
+	void *events = ring();
+	if (events && !bpf_ringbuf_output(events, data, size, 0))
+		return 0;
+	lost();
+	return -1;
 }
 
 // Whether this CPU's bucket lets one more failed or slow call through at
@@ -720,7 +753,7 @@ static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u3
 {
 	// Exec can change a worker's id even when loading the new image fails.
 	if (kind == RECORD_CALL && entry->exec_tid && entry->exec_tid != tid) {
-		struct handoff_record *handoff = bpf_ringbuf_reserve(&EVENTS, sizeof(*handoff), 0);
+		struct handoff_record *handoff = reserve(sizeof(*handoff));
 		if (handoff) {
 			handoff->header.kind = RECORD_HANDOFF;
 			handoff->header.size = sizeof(*handoff);
@@ -759,8 +792,7 @@ static __always_inline void send_call(u32 tid, u32 tgid, struct entry *entry, u3
 	if (off > SCRATCH)
 		off = SCRATCH;
 	record->header.size = off;
-	if (bpf_ringbuf_output(&EVENTS, buffer->data, off, 0))
-		lost();
+	output(buffer->data, off);
 }
 
 // The statistics thread `tid` counts into: its own, or once THREAD_STATS
@@ -871,8 +903,7 @@ static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 	if (size > sizeof(*record) + NAME_MAX + 1)
 		size = sizeof(*record) + NAME_MAX + 1;
 	record->header.size = size;
-	if (bpf_ringbuf_output(&EVENTS, buffer->data, size, 0))
-		lost();
+	output(buffer->data, size);
 }
 
 // Sends the current thread's Python frames, when microscope told the walker
@@ -903,8 +934,7 @@ static __always_inline void send_python(u32 tid, u32 tgid)
 	header->header.size = size;
 	if (size > sizeof(struct py_stack))
 		return;
-	if (bpf_ringbuf_output(&EVENTS, stack, size, 0))
-		lost();
+	output(stack, size);
 }
 
 // Sends the current thread's JavaScript frames, from the frame pointer and
@@ -934,8 +964,7 @@ static __always_inline void send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 	header->header.size = size;
 	if (size > sizeof(struct v8_stack))
 		return;
-	if (bpf_ringbuf_output(&EVENTS, stack, size, 0))
-		lost();
+	output(stack, size);
 }
 
 // Sends the stack of the current thread, whose user registers `regs`
@@ -994,10 +1023,8 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 	record->copied = copied;
 	u32 size = sizeof(*record) + frames * 8 + copied;
 	record->header.size = size;
-	if (bpf_ringbuf_output(&EVENTS, buffer->data, bounded(size, 16383), 0)) {
-		lost();
+	if (output(buffer->data, bounded(size, 16383)))
 		return -1;
-	}
 	send_python(tid, tgid);
 	send_v8(tid, tgid, regs);
 	return 0;
@@ -1207,7 +1234,7 @@ int process_fork(u64 *ctx)
 		bpf_map_update_elem(&TARGETS, &child_tgid, &one, BPF_ANY);
 	}
 	// Sent in count mode too: microscope follows which processes live by them.
-	struct spawn_record *record = bpf_ringbuf_reserve(&EVENTS, sizeof(*record), 0);
+	struct spawn_record *record = reserve(sizeof(*record));
 	if (!record) {
 		lost();
 		return 0;
@@ -1258,14 +1285,13 @@ int process_exec(u64 *ctx)
 	if (size > SCRATCH)
 		size = SCRATCH;
 	record->header.size = size;
-	if (bpf_ringbuf_output(&EVENTS, buffer->data, size, 0))
-		lost();
+	output(buffer->data, size);
 	return 0;
 }
 
 static __always_inline void send_exit(u32 tid, u32 tgid, u64 now, s32 code, u32 last)
 {
-	struct exit_record *record = bpf_ringbuf_reserve(&EVENTS, sizeof(*record), 0);
+	struct exit_record *record = reserve(sizeof(*record));
 	if (!record) {
 		lost();
 		return;
@@ -1373,7 +1399,7 @@ int signal_deliver(u64 *ctx)
 		if (send_stack(ctx, tid, tgid, regs, settings->flags))
 			flags = CALL_STACK_LOST;
 	}
-	struct signal_record *record = bpf_ringbuf_reserve(&EVENTS, sizeof(*record), 0);
+	struct signal_record *record = reserve(sizeof(*record));
 	if (!record) {
 		lost();
 		return 0;

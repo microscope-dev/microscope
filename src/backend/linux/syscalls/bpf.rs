@@ -37,6 +37,7 @@ use super::ptrace::{
     Finished, Target, TraceOptions, monotonic, seed_descriptors, seed_descriptors_as,
 };
 
+use super::rings::Merge;
 use crate::syscalls::captures::{self, CopyKind};
 use crate::syscalls::specs::{self, Arg, Count, MemKind, Ret, Struct};
 use crate::syscalls::stats::{self, BUCKETS, Folded};
@@ -117,19 +118,22 @@ const SLOTS: u32 = 3072;
 // Each chosen call's statistics row is a `u16` in its CALLS entry.
 const _: () = assert!(SLOTS <= 1 << 16, "statistics rows outgrow their u16");
 
-/// The ring's default size, which a 3 M calls per second burst fills in
-/// no less than a few milliseconds.
-pub const DEFAULT_RING: u32 = 16 << 20;
+/// Each CPU's ring's default size, which a thread making 3 M calls a
+/// second fills in no less than a few milliseconds.
+pub const DEFAULT_RING: u32 = 2 << 20;
 
-/// The ring's default size when each call copies its stack.
+/// Each CPU's ring's default size when each call copies its stack.
 ///
 /// A call's records then take about 8.6 KiB, 20 times what they take with
-/// the kernel's walk alone, so that a 16 MiB ring holds fewer than 2,000
-/// calls and a 64 MiB one some 7,700: a burst of that many loses none, nor
-/// does a thread making 60,000 calls a second while the reader is held up
-/// for a tenth of a second. A memory cgroup that cannot hold the ring gets
-/// a smaller one, down to [`DEFAULT_RING`].
-pub const STACK_COPY_RING: u32 = 64 << 20;
+/// the kernel's walk alone, so that a 2 MiB ring holds some 240 calls and
+/// an 8 MiB one some 970: a burst of that many on one CPU loses none, nor
+/// does a thread making 10,000 calls a second while the reader is held up
+/// for a tenth of a second. A memory cgroup that cannot hold the rings
+/// gets smaller ones, down to [`SMALLEST_RING`].
+pub const STACK_COPY_RING: u32 = 8 << 20;
+
+/// The smallest ring a memory cgroup short of room for the default gets.
+const SMALLEST_RING: u32 = 256 << 10;
 
 /// How one argument is copied (`struct arg_copy`).
 #[repr(C)]
@@ -560,6 +564,21 @@ pub enum Record {
         thread: Tid,
         record: Vec<u8>,
     },
+}
+
+impl Record {
+    /// When it happened, by which the rings are merged; none for a record
+    /// that goes with the next one its program sent.
+    fn time(&self) -> Option<u64> {
+        match self {
+            Self::Call(call) | Self::Entry(call) => Some(call.time()),
+            Self::Event(TraceEvent::Descriptor { .. })
+            | Self::Handoff { .. }
+            | Self::Stack(_)
+            | Self::Python { .. } => None,
+            Self::Event(event) => Some(event.time()),
+        }
+    }
 }
 
 /// A thread's stack as the kernel saw it, to unwind.
@@ -1157,7 +1176,7 @@ pub struct BpfOptions {
     /// Count in the kernel and report no calls, only their statistics.
     pub count_only: bool,
 
-    /// The ring buffer's bytes: a power of two, in pages. By default,
+    /// Each CPU's ring's bytes: a power of two, in pages. By default,
     /// [`DEFAULT_RING`], or [`STACK_COPY_RING`] with stack copies.
     pub ring: Option<u32>,
 
@@ -1370,49 +1389,77 @@ fn load_error(error: impl std::fmt::Display) -> BpfError {
 }
 
 /// Loads the programs, with `rows` rows of statistics, for `scope`.
-fn load_object(btf: &Btf, engine: BpfOptions, rows: u32, scope: Scope) -> Result<Ebpf, BpfError> {
+fn load_object(btf: &Btf, rows: u32, scope: Scope) -> Result<Ebpf, BpfError> {
     let (cgroup_id, cgroup_level) = scope.cgroup.unwrap_or_default();
     let (ns_inum, ns_level) = scope
         .namespace
         .map_or((0, 0), |namespace| (namespace.inum, namespace.level));
-    let mut ring = engine.ring.unwrap_or(if engine.stack_copy {
+    let cpus = u32::try_from(aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?)
+        .unwrap_or(u32::MAX);
+    EbpfLoader::new()
+        .btf(Some(btf))
+        .map_max_entries("EVENTS", cpus)
+        // Two halves, one counted into while the other is read.
+        .map_max_entries("STATS", rows * 2)
+        .override_global("cgroup_id", &cgroup_id, true)
+        .override_global("cgroup_level", &cgroup_level, true)
+        .override_global("ns_inum", &ns_inum, true)
+        .override_global("ns_level", &ns_level, true)
+        .override_global(
+            "loop_helper",
+            &crate::backend::linux::bpf::loop_helper(),
+            true,
+        )
+        // aya cannot open task storage itself, which only the
+        // programs use.
+        .allow_unsupported_maps()
+        .load(OBJECT)
+        .map_err(load_error)
+}
+
+/// A ring for each CPU, set in EVENTS for the programs: `engine.ring`
+/// bytes each, or the default, halved while microscope's memory cgroup has
+/// no room for them.
+fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, BpfError> {
+    let mut events: ArrayOfMaps<&mut MapData, MapData> =
+        ArrayOfMaps::try_from(ebpf.map_mut("EVENTS").ok_or_else(|| missing("EVENTS"))?)
+            .map_err(load_error)?;
+    let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
+    let mut bytes = engine.ring.unwrap_or(if engine.stack_copy {
         STACK_COPY_RING
     } else {
         DEFAULT_RING
     });
-    loop {
-        let loaded = EbpfLoader::new()
-            .btf(Some(btf))
-            .map_max_entries("EVENTS", ring)
-            // Two halves, one counted into while the other is read.
-            .map_max_entries("STATS", rows * 2)
-            .override_global("cgroup_id", &cgroup_id, true)
-            .override_global("cgroup_level", &cgroup_level, true)
-            .override_global("ns_inum", &ns_inum, true)
-            .override_global("ns_level", &ns_level, true)
-            .override_global(
-                "loop_helper",
-                &crate::backend::linux::bpf::loop_helper(),
-                true,
-            )
-            // aya cannot open task storage itself, which only the
-            // programs use.
-            .allow_unsupported_maps()
-            .load(OBJECT);
-        match loaded {
-            // The kernel charges the ring to microscope's memory cgroup,
-            // which may not hold the larger default.
-            Err(aya::EbpfError::MapError(aya::maps::MapError::CreateError { name, io_error }))
-                if engine.ring.is_none()
-                    && ring > DEFAULT_RING
-                    && name == "EVENTS"
-                    && io_error.raw_os_error() == Some(nix::libc::ENOMEM) =>
-            {
-                record!("syscalls bpf: no memory for a ring of {ring} bytes");
-                ring /= 2;
-            }
-            loaded => return loaded.map_err(load_error),
+
+    'sizes: loop {
+        let mut rings = Vec::with_capacity(cpus);
+        for cpu in (0_u32..).take(cpus) {
+            let ring = aya_obj::Map::new_from_params(
+                aya_obj::generated::bpf_map_type::BPF_MAP_TYPE_RINGBUF as u32,
+                0,
+                0,
+                bytes,
+                0,
+            );
+            let ring = match MapData::create(ring, &format!("EVENTS_{cpu}"), None) {
+                Ok(ring) => ring,
+                Err(aya::maps::MapError::CreateError { io_error, .. })
+                    if engine.ring.is_none()
+                        && bytes > SMALLEST_RING
+                        && io_error.raw_os_error() == Some(nix::libc::ENOMEM) =>
+                {
+                    record!("syscalls bpf: no memory for rings of {bytes} bytes");
+                    bytes /= 2;
+                    continue 'sizes;
+                }
+                Err(error) => return Err(load_error(error)),
+            };
+
+            events.set(cpu, &ring, 0).map_err(load_error)?;
+            rings.push(RingBuf::try_from(aya::maps::Map::RingBuf(ring)).map_err(load_error)?);
         }
+
+        return Ok(rings);
     }
 }
 
@@ -1420,6 +1467,9 @@ fn load_object(btf: &Btf, engine: BpfOptions, rows: u32, scope: Scope) -> Result
 struct Loaded {
     ebpf: Ebpf,
     targets: HashMap<MapData, u32, u8>,
+
+    /// Each CPU's ring of records, by the CPU's number.
+    rings: Vec<RingBuf<MapData>>,
 
     /// The call each row of statistics counts.
     rows: Vec<SyscallId>,
@@ -1481,7 +1531,8 @@ impl Loaded {
             attachment.functions
         );
 
-        let mut ebpf = load_object(&btf, engine, rows, scope)?;
+        let mut ebpf = load_object(&btf, rows, scope)?;
+        let rings = rings(&mut ebpf, engine)?;
         {
             let mut calls: Array<_, Bytes<SPEC_BYTES>> =
                 Array::try_from(ebpf.map_mut("CALLS").ok_or_else(|| missing("CALLS"))?)
@@ -1526,6 +1577,7 @@ impl Loaded {
         Ok(Self {
             ebpf,
             targets,
+            rings,
             fence,
             generation: 0,
             rows: calls,
@@ -2113,6 +2165,7 @@ fn run(
             .as_ref()
             .and_then(|_| super::unwinder::Unwinder::spawn().ok()),
         pending: std::collections::VecDeque::new(),
+        merge: Merge::new(0),
         arrived: std::collections::VecDeque::new(),
         next_job: 0,
     };
@@ -2318,6 +2371,10 @@ struct Reader<'a> {
     /// before it.
     pending: std::collections::VecDeque<Pending>,
 
+    /// Records read from the rings that may yet have earlier ones behind
+    /// them in another.
+    merge: Merge<Record>,
+
     /// The stacks unwound that the events at the front have not reached,
     /// in the order the events wait for them.
     arrived: std::collections::VecDeque<super::unwinder::Done>,
@@ -2359,6 +2416,10 @@ const TICK_MS: u16 = 100;
 /// stacks, which it then gives the sink.
 const WAITING_TICK_MS: u16 = 10;
 
+/// How long after its time a record is surely in its ring: a program
+/// stamps its record before it writes it.
+const SETTLED_NS: u64 = 5_000_000;
+
 /// The most events that wait for their stacks before the reader waits for
 /// them rather than drain more: with `-k=dwarf`, each holds 8 KiB of stack.
 const MOST_PENDING: usize = 2048;
@@ -2370,13 +2431,8 @@ impl Reader<'_> {
         stop: &AtomicBool,
         launched: Option<u32>,
     ) -> Result<(), BpfError> {
-        let mut ring = RingBuf::try_from(
-            loaded
-                .ebpf
-                .take_map("EVENTS")
-                .ok_or_else(|| missing("EVENTS"))?,
-        )
-        .map_err(load_error)?;
+        let mut rings = std::mem::take(&mut loaded.rings);
+        self.merge = Merge::new(rings.len());
 
         // The walker finds a process's layout by the kernel's process id,
         // which is the one microscope sees only in the initial namespace;
@@ -2416,7 +2472,7 @@ impl Reader<'_> {
                             || !std::path::Path::new(&format!("/proc/{}", pid.get())).exists())
                 })
                 .collect();
-            self.drain(&mut ring);
+            self.drain(&mut rings, false);
             self.release(Until::Waiting);
             for pid in gone {
                 self.live.remove(&pid);
@@ -2432,7 +2488,7 @@ impl Reader<'_> {
             };
 
             if ended {
-                self.drain(&mut ring);
+                self.drain(&mut rings, true);
                 self.release(Until::None);
 
                 // Whatever was lost since the last tick.
@@ -2463,11 +2519,11 @@ impl Reader<'_> {
                 }
             }
 
-            let mut fds = [nix::poll::PollFd::new(
-                ring.as_fd(),
-                nix::poll::PollFlags::POLLIN,
-            )];
-            let tick = if self.pending.is_empty() {
+            let mut fds: Vec<_> = rings
+                .iter()
+                .map(|ring| nix::poll::PollFd::new(ring.as_fd(), nix::poll::PollFlags::POLLIN))
+                .collect();
+            let tick = if self.pending.is_empty() && !self.merge.holds() {
                 TICK_MS
             } else {
                 WAITING_TICK_MS
@@ -2549,27 +2605,33 @@ impl Reader<'_> {
         self.lost = lost;
     }
 
-    fn drain(&mut self, ring: &mut RingBuf<MapData>) {
-        // A stack's code was mapped before the stack was sent, so the
-        // mappings read after the records name all it needs.
-        let mut batch = std::mem::take(&mut self.batch);
-        while let Some(item) = ring.next() {
-            match decode(&item) {
-                Ok(record) => batch.push(record),
-                // Only the flight recorder, which release builds leave
-                // out, reads the error.
-                #[cfg_attr(not(debug_assertions), expect(unused_variables))]
-                Err(error) => {
-                    record!("syscalls bpf: undecodable record: {error}");
-                    self.emit(TraceEvent::Lost {
-                        time: monotonic(),
-                        count: 1,
-                        why: Loss::Dropped,
-                    });
+    /// Reads every ring, and handles the records old enough that no ring
+    /// can still be writing one before them, or with `every`, all of them.
+    fn drain(&mut self, rings: &mut [RingBuf<MapData>], every: bool) {
+        let cut = (!every).then(|| monotonic().saturating_sub(SETTLED_NS));
+        for (index, ring) in rings.iter_mut().enumerate() {
+            while let Some(item) = ring.next() {
+                match decode(&item) {
+                    Ok(record) => self.merge.push(index, record),
+                    // Only the flight recorder, which release builds leave
+                    // out, reads the error.
+                    #[cfg_attr(not(debug_assertions), expect(unused_variables))]
+                    Err(error) => {
+                        record!("syscalls bpf: undecodable record: {error}");
+                        self.emit(TraceEvent::Lost {
+                            time: monotonic(),
+                            count: 1,
+                            why: Loss::Dropped,
+                        });
+                    }
                 }
             }
         }
 
+        // A stack's code was mapped before the stack was sent, so the
+        // mappings read after the records name all it needs.
+        let mut batch = std::mem::take(&mut self.batch);
+        self.merge.release(cut, Record::time, &mut batch);
         self.map();
         self.lay_out();
         for record in std::mem::take(&mut batch) {

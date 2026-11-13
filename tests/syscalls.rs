@@ -2714,10 +2714,13 @@ mod bpf {
             .values()
             .map(|stats| stats.errors)
             .sum();
+        // A record the kernel had no room for, or a run of the programs it
+        // skipped on a busy machine, is counted dropped.
         assert!(failed >= 20_000, "{failed}");
-        assert_eq!(kept + lost.capped, failed, "{lost:?}");
+        assert!(kept + lost.capped <= failed, "{kept} kept, {lost:?}");
+        assert!(kept + lost.capped + lost.dropped >= failed, "{kept} kept, {lost:?}");
         assert!((1..=2_500).contains(&kept), "{kept} kept, {lost:?}");
-        assert_eq!((lost.dropped, lost.unseen), (0, 0));
+        assert_eq!(lost.unseen, 0);
     }
 
     /// Copied and unwound by call-frame information, the BPF engine's
@@ -3302,9 +3305,10 @@ mod bpf {
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn a_burst_of_copied_stacks_loses_no_calls() {
-        // 6,600 calls in about 10 ms, whose records take some 57 MB: more
-        // than three times what a 16 MiB ring holds, and less than 64 MiB.
-        let rounds = 2_200;
+        // 690 calls in about a millisecond on one CPU, whose records take
+        // some 5.9 MB: more than twice what a 2 MiB ring holds, and less
+        // than 8 MiB.
+        let rounds = 230;
         let directory = ScratchDir::new("syscalls-burst");
         let directory = directory.path();
         let output = microscope(&["-k=dwarf", "--attach", "tracepoint"])

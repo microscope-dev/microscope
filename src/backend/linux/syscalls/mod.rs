@@ -9,6 +9,7 @@ pub mod continuous;
 pub mod info;
 pub mod launch;
 pub mod ptrace;
+pub mod rings;
 pub mod seccomp;
 pub mod stacks;
 pub mod unwinder;
