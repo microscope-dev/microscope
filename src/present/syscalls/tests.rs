@@ -34,10 +34,9 @@ fn event(name: &str, args: &[u64], result: i64, captured: &[(u8, &[u8])]) -> Sys
     }
 }
 
-fn line(event: &SyscallEvent, style: &Style) -> String {
+fn line(event: &SyscallEvent) -> String {
     call(
         event,
-        style,
         Context {
             fds: None,
             before: false,
@@ -50,7 +49,6 @@ const AT_FDCWD: u64 = (-100_i64).cast_unsigned();
 
 #[test]
 fn file_calls_print_as_strace_prints_them() {
-    let style = Style::default();
     let open = event(
         "openat",
         &[AT_FDCWD, 0x7ff0, 0o2_000_000],
@@ -58,7 +56,7 @@ fn file_calls_print_as_strace_prints_them() {
         &[(1, b"/etc/hostname\0")],
     );
     assert_eq!(
-        line(&open, &style),
+        line(&open),
         r#"openat(AT_FDCWD, "/etc/hostname", O_RDONLY|O_CLOEXEC) = 3"#
     );
 
@@ -69,19 +67,16 @@ fn file_calls_print_as_strace_prints_them() {
         &[(1, b"/nope\0")],
     );
     assert_eq!(
-        line(&missing, &style),
+        line(&missing),
         r#"openat(AT_FDCWD, "/nope", O_WRONLY|O_CREAT, 0644) = -1 ENOENT (No such file or directory)"#
     );
 
     let read = event("read", &[3, 0x5000, 4096], 13, &[(1, b"hello,\nworld\x01")]);
-    assert_eq!(
-        line(&read, &style),
-        r#"read(3, "hello,\nworld\1", 4096) = 13"#
-    );
+    assert_eq!(line(&read), r#"read(3, "hello,\nworld\1", 4096) = 13"#);
 
     let long = event("write", &[1, 0x5000, 40], 40, &[(1, &[b'a'; 40])]);
     assert_eq!(
-        line(&long, &style),
+        line(&long),
         format!(r#"write(1, "{}"..., 40) = 40"#, "a".repeat(32))
     );
 
@@ -93,7 +88,7 @@ fn file_calls_print_as_strace_prints_them() {
         bytes: Arc::from(&[][..]),
     });
     assert_eq!(
-        line(&unreadable, &style),
+        line(&unreadable),
         "openat(AT_FDCWD, 0x7ffd1000 <unreadable>, O_RDONLY) = -1 EFAULT (Bad address)"
     );
 
@@ -102,19 +97,18 @@ fn file_calls_print_as_strace_prints_them() {
     stat[48..56].copy_from_slice(&412u64.to_le_bytes());
     let fstat = event("fstat", &[3, 0x6000], 0, &[(1, &stat)]);
     assert_eq!(
-        line(&fstat, &style),
+        line(&fstat),
         "fstat(3, {st_mode=S_IFREG|0644, st_size=412, ...}) = 0"
     );
     let failed = event("fstat", &[9, 0x6000], -9, &[(1, &stat)]);
     assert_eq!(
-        line(&failed, &style),
+        line(&failed),
         "fstat(9, 0x6000) = -1 EBADF (Bad file descriptor)"
     );
 }
 
 #[test]
 fn memory_process_and_network_calls_decode_their_constants() {
-    let style = Style::default();
     let mmap = event(
         "mmap",
         &[0, 8192, 3, 0x22, (-1_i64).cast_unsigned(), 0],
@@ -122,28 +116,28 @@ fn memory_process_and_network_calls_decode_their_constants() {
         &[],
     );
     assert_eq!(
-        line(&mmap, &style),
+        line(&mmap),
         "mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f3a2c000000"
     );
     let clone = event("clone", &[0x0120_0011, 0, 0, 0x7f00, 0], 4243, &[]);
     assert_eq!(
-        line(&clone, &style),
+        line(&clone),
         "clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7f00) = 4243"
     );
     let futex = event("futex", &[0x7f3a_2c00_09d0, 128, 0, 0, 0, 0], -110, &[]);
     assert_eq!(
-        line(&futex, &style),
+        line(&futex),
         "futex(0x7f3a2c0009d0, FUTEX_WAIT_PRIVATE, 0, NULL) = -1 ETIMEDOUT (Connection timed out)"
     );
     let address = [2, 0, 0x15, 0x38, 10, 0, 3, 9, 0, 0, 0, 0, 0, 0, 0, 0];
     let connect = event("connect", &[7, 0x7000, 16], -115, &[(1, &address)]);
     assert_eq!(
-        line(&connect, &style),
+        line(&connect),
         "connect(7, {sa_family=AF_INET, sin_port=htons(5432), sin_addr=inet_addr(\"10.0.3.9\")}, 16) = -1 EINPROGRESS (Operation now in progress)"
     );
     let socket = event("socket", &[2, 0x80801, 0], 7, &[]);
     assert_eq!(
-        line(&socket, &style),
+        line(&socket),
         "socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, IPPROTO_IP) = 7"
     );
 
@@ -160,21 +154,33 @@ fn memory_process_and_network_calls_decode_their_constants() {
         &[(0, b"/bin/ls\0"), (1, &argv), (2, &envp)],
     );
     assert_eq!(
-        line(&exec, &style),
+        line(&exec),
         r#"execve("/bin/ls", ["ls", "-l"], 0x3000 /* 23 vars */) = 0"#
+    );
+    let mut empty = Vec::new();
+    blobs::start_strings(&mut empty, Some(0));
+    let at = event(
+        "execveat",
+        &[3, 0x1000, 0x2000, 0x3000, 0x1000],
+        0,
+        &[(1, b"\0"), (2, &argv), (3, &empty)],
+    );
+    assert_eq!(
+        line(&at),
+        r#"execveat(3, "", ["ls", "-l"], 0x3000 /* 0 vars */, AT_EMPTY_PATH) = 0"#
     );
     let mut exit = event("exit_group", &[0], 0, &[]);
     exit.outcome = Outcome::ProcessExited;
-    assert_eq!(line(&exit, &style), "exit_group(0) = ?");
+    assert_eq!(line(&exit), "exit_group(0) = ?");
     let restart = event("read", &[0, 0x5000, 10], -512, &[]);
     assert_eq!(
-        line(&restart, &style),
+        line(&restart),
         "read(0, 0x5000, 10) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)"
     );
 }
 
 #[test]
-fn styles_change_descriptors_constants_and_names() {
+fn descriptors_name_their_paths_and_unknown_calls_print_words() {
     let mut table = FdTable::default();
     table.set(
         Pid::new(42),
@@ -186,15 +192,9 @@ fn styles_change_descriptors_constants_and_names() {
         },
     );
     let read = event("read", &[3, 0x5000, 64], 5, &[(1, b"host\n")]);
-    let paths = Style {
-        fds: FdStyle::Paths,
-        ..Style::default()
-    };
-
     assert_eq!(
         call(
             &read,
-            &paths,
             Context {
                 fds: Some(&table),
                 before: false
@@ -207,7 +207,6 @@ fn styles_change_descriptors_constants_and_names() {
     assert_eq!(
         call(
             &unknown,
-            &paths,
             Context {
                 fds: Some(&table),
                 before: false
@@ -216,81 +215,21 @@ fn styles_change_descriptors_constants_and_names() {
         .text(),
         r#"read(4<?>, "host\n", 64) = 5"#
     );
-    let open = event(
-        "openat",
-        &[AT_FDCWD, 0x7ff0, 0o2_000_000],
-        3,
-        &[(1, b"/etc/hostname\0")],
-    );
-    let raw = Style {
-        constants: Constants::Raw,
-        ..Style::default()
-    };
-
-    assert_eq!(
-        line(&open, &raw),
-        r#"openat(-100, "/etc/hostname", 0x80000) = 3"#
-    );
-    let verbose = Style {
-        constants: Constants::Verbose,
-        ..Style::default()
-    };
-
-    assert_eq!(
-        line(&open, &verbose),
-        r#"openat(-100 /* AT_FDCWD */, "/etc/hostname", 0x80000 /* O_RDONLY|O_CLOEXEC */) = 3"#
-    );
-    let named = Style {
-        arg_names: true,
-        ..Style::default()
-    };
-
-    assert_eq!(
-        line(&open, &named),
-        r#"openat(dfd=AT_FDCWD, filename="/etc/hostname", flags=O_RDONLY|O_CLOEXEC) = 3"#
-    );
-    let hex = Style {
-        hex: Hex::All,
-        ..Style::default()
-    };
-
-    assert_eq!(
-        line(&read, &hex),
-        r#"read(3, "\x68\x6f\x73\x74\x0a", 64) = 5"#
-    );
     let i386 = SyscallEvent {
         call: SyscallId::named(Abi::X86_32, "getpid").expect("getpid"),
         ..event("getpid", &[], 42, &[])
     };
 
-    assert_eq!(line(&i386, &Style::default()), "getpid() = 42");
+    assert_eq!(line(&i386), "getpid() = 42");
     let unknown_call = SyscallEvent {
         call: SyscallId::new(Abi::X86_64, 999),
         ..event("getpid", &[1, 2], -38, &[])
     };
 
     assert_eq!(
-        line(&unknown_call, &Style::default()),
+        line(&unknown_call),
         "syscall_0x3e7(0x1, 0x2, 0, 0, 0, 0) = -1 ENOSYS (Function not implemented)"
     );
-}
-
-#[test]
-fn times_print_to_each_precision_cut_as_strace_cuts_them() {
-    let time = 1_500_012_345;
-    for (name, text) in [
-        ("s", "1"),
-        ("ms", "1.500"),
-        ("us", "1.500012"),
-        ("NS", "1.500012345"),
-    ] {
-        let precision = Precision::named(name).expect(name);
-        assert_eq!(seconds(time, precision), text);
-    }
-
-    assert_eq!(seconds(987, Precision::Nanoseconds), "0.000000987");
-    assert_eq!(seconds(987, Precision::default()), "0.000000");
-    assert_eq!(Precision::named("usec"), None);
 }
 
 /// Every error number prints a name of its own, so a printed result names
@@ -311,16 +250,11 @@ fn every_error_prints_a_name_of_its_own() {
 #[test]
 fn futex_shows_the_bits_it_does_not_name() {
     let mut out = Tokens::default();
-    enumeration(&mut out, "futex", 0x8000_0000, &Style::default());
+    enumeration(&mut out, "futex", 0x8000_0000);
     assert_eq!(out.text(), "FUTEX_WAIT|0x80000000");
 
     let mut out = Tokens::default();
-    enumeration(
-        &mut out,
-        "futex",
-        0x200 | 0x100 | 0x80 | 9,
-        &Style::default(),
-    );
+    enumeration(&mut out, "futex", 0x200 | 0x100 | 0x80 | 9);
     assert_eq!(
         out.text(),
         "FUTEX_WAIT_BITSET_PRIVATE|FUTEX_CLOCK_REALTIME|0x200"
@@ -381,16 +315,8 @@ mod properties {
         }
     }
 
-    /// The value a printed constant stands for, in any `-X` style.
+    /// The value a printed constant stands for.
     fn read_constant(set: &str, text: &str) -> u64 {
-        // -X verbose: the number, then the names in a comment.
-        if let Some((number, names)) = text.split_once(" /* ") {
-            let number = read_part(set, number);
-            let names = names.strip_suffix(" */").expect("a comment");
-            assert_eq!(read_constant(set, names), number, "{text}");
-            return number;
-        }
-
         text.split('|')
             .fold(0, |all, part| all | read_part(set, part))
     }
@@ -433,20 +359,6 @@ mod properties {
                 (set, chosen.iter().fold(noise, |all, value| all | value))
             })
         })
-    }
-
-    fn styles() -> [Style; 3] {
-        [
-            Style::default(),
-            Style {
-                constants: Constants::Raw,
-                ..Style::default()
-            },
-            Style {
-                constants: Constants::Verbose,
-                ..Style::default()
-            },
-        ]
     }
 
     /// Bytes back from a string `quote` printed, and whether `...`
@@ -562,8 +474,8 @@ mod properties {
         // Futex is one set of about fifty, so its bad bits need more cases.
         #![proptest_config(ProptestConfig::with_cases(1024))]
 
-        /// A flag or enumeration constant reads back, in every `-X`
-        /// style, as the argument's value, cut to the set's width.
+        /// A flag or enumeration constant reads back as the argument's
+        /// value, cut to the set's width.
         #[test]
         fn constants_read_back_as_their_value((set, word) in set_and_word()) {
             let definition = sets::set(set).expect("a set");
@@ -571,16 +483,14 @@ mod properties {
             let call = if set == "clone" { "clone" } else { "getpid" };
             let event = event(call, &[], 0, &[]);
 
-            for style in styles() {
-                let mut out = Tokens::default();
-                match definition.shape {
-                    sets::Shape::Flags => flags(&mut out, &event, set, word, &style),
-                    sets::Shape::Enum => enumeration(&mut out, set, word, &style),
-                }
-
-                let text = out.text();
-                prop_assert_eq!(read_constant(set, &text), value, "{} {:?}: {}", set, style.constants, text);
+            let mut out = Tokens::default();
+            match definition.shape {
+                sets::Shape::Flags => flags(&mut out, &event, set, word),
+                sets::Shape::Enum => enumeration(&mut out, set, word),
             }
+
+            let text = out.text();
+            prop_assert_eq!(read_constant(set, &text), value, "{}: {}", set, text);
         }
 
         /// A quoted string unescapes to the bytes shown, and `...`
@@ -593,10 +503,10 @@ mod properties {
             ),
             limit in prop::option::of(0_usize..40),
             truncated in any::<bool>(),
-            hex in prop::sample::select(vec![Hex::Never, Hex::NonAscii, Hex::All]),
+            hex in any::<bool>(),
         ) {
             let mut out = Tokens::default();
-            quote(&mut out, &bytes, limit, truncated, &Style { hex, ..Style::default() });
+            quote(&mut out, &bytes, limit, truncated, hex);
 
             let shown = &bytes[..limit.map_or(bytes.len(), |limit| limit.min(bytes.len()))];
             let (read, cut) = unquote(&out.text());
@@ -626,14 +536,10 @@ mod properties {
             let event = SyscallEvent { call, args, captured, outcome: Outcome::of_return(result), ..event("getpid", &[], 0, &[]) };
             let fds = FdTable::default();
 
-            for style in [
-                Style::default(),
-                Style { verbose: true, hex: Hex::NonAscii, fds: FdStyle::All, arg_names: true, ..Style::default() },
-                Style { constants: Constants::Verbose, string_limit: 0, raw: true, ..Style::default() },
-            ] {
-                let context = Context { fds: Some(&fds), before: false };
-                let line = super::call(&event, &style, context).text();
-                let tail = returned(&event, &style, context).text();
+            for fds in [None, Some(&fds)] {
+                let context = Context { fds, before: false };
+                let line = super::call(&event, context).text();
+                let tail = returned(&event, context).text();
 
                 prop_assert!(line.starts_with(&format!("{}(", call.display_name())), "{}", line);
                 prop_assert!(line.ends_with(&tail), "{} does not end in {}", line, tail);

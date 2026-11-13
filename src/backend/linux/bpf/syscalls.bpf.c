@@ -70,14 +70,6 @@ struct {
 	__type(value, struct entry);
 } ENTRIES SEC(".maps");
 
-// A death notification may run in another process, outside the traced cgroup.
-struct {
-	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
-	__type(key, int);
-	__type(value, u8);
-} ENDINGS SEC(".maps");
-
 // The Python thread state the walker last found each thread's frames from,
 // which it tries first: searching every interpreter's threads costs a read
 // for each, at every call.
@@ -288,61 +280,16 @@ static __always_inline u32 forget(struct scratch *buffer, u32 value, u32 mask)
 	return *spare & mask;
 }
 
-// Fixed as microscope loads the programs, so the verifier drops what they
-// leave unused: a cgroup's processes, by its id and depth, rather than
-// TARGETS'; and the pid namespace ids are shown in, by its inode and depth.
-const volatile u64 cgroup_id = 0;
-const volatile u32 cgroup_level = 0;
-const volatile u32 ns_inum = 0;
-const volatile u32 ns_level = 0;
-
 static __always_inline struct config *config(void)
 {
 	u32 zero = 0;
 	return bpf_map_lookup_elem(&CONFIG, &zero);
 }
 
-// Whether the current task is traced: it is in the cgroup, or its
-// process is a target.
+// Whether the current task's process is a target.
 static __always_inline int traced(u32 tgid)
 {
-	if (cgroup_id)
-		return bpf_get_current_ancestor_cgroup_id(cgroup_level) == cgroup_id;
 	return bpf_map_lookup_elem(&TARGETS, &tgid) != 0;
-}
-
-// The number `pid` has in the namespace ids are shown in, or `host` when
-// there is none or it is not in it.
-static __always_inline u32 shown_id(struct pid *pid, u32 host)
-{
-	if (!pid)
-		return host;
-	u32 level = ns_level & 31;
-	if (BPF_CORE_READ(pid, level) < level)
-		return host;
-	struct upid upid = {};
-	void *numbers = __builtin_preserve_access_index(&pid->numbers[0]);
-	if (bpf_probe_read_kernel(&upid, sizeof(upid), numbers + level * sizeof(struct upid)))
-		return host;
-	if (BPF_CORE_READ(upid.ns, ns.inum) != ns_inum)
-		return host;
-	return upid.nr;
-}
-
-// A task's thread and process ids as the trace shows them.
-static __always_inline void shown(struct task_struct *task, u32 *tid, u32 *tgid)
-{
-	if (!ns_inum)
-		return;
-	*tid = shown_id(BPF_CORE_READ(task, thread_pid), *tid);
-	*tgid = shown_id(BPF_CORE_READ(task, group_leader, thread_pid), *tgid);
-}
-
-// The current task's ids as the trace shows them.
-static __always_inline void shown_current(u32 *tid, u32 *tgid)
-{
-	if (ns_inum)
-		shown(bpf_get_current_task_btf(), tid, tgid);
 }
 
 static __always_inline void lost_as(u32 why)
@@ -1083,7 +1030,6 @@ static __always_inline int on_enter(struct pt_regs *regs, u64 id, int ending)
 	u32 tgid = ids >> 32, tid = (u32)ids;
 	if (!traced(tgid))
 		return 0;
-	shown_current(&tid, &tgid);
 	struct entry entry = {};
 	entry.abi = abi_of(id, &entry.flags);
 	entry.nr = entry.abi == ABI_X32 ? (id & ~X32_SYSCALL_BIT) : id;
@@ -1135,7 +1081,6 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret)
 	u32 tgid = ids >> 32, tid = (u32)ids;
 	if (!traced(tgid))
 		return 0;
-	shown_current(&tid, &tgid);
 	u64 now = bpf_ktime_get_ns();
 	struct config *settings = config();
 	if (!settings)
@@ -1281,9 +1226,7 @@ int process_fork(u64 *ctx)
 		return 0;
 	}
 	u32 parent_tid = (u32)bpf_get_current_pid_tgid();
-	shown(parent, &parent_tid, &parent_tgid);
 	u32 child_tid = BPF_CORE_READ(child, pid);
-	shown(child, &child_tid, &child_tgid);
 	record->header.kind = RECORD_SPAWN;
 	record->header.size = sizeof(*record);
 	record->header.tid = parent_tid;
@@ -1310,7 +1253,6 @@ int process_exec(u64 *ctx)
 		return 0;
 	struct exec_record *record = (void *)buffer->data;
 	u32 tid = BPF_CORE_READ(task, pid);
-	shown(task, &tid, &tgid);
 	record->header.kind = RECORD_EXEC;
 	record->header.tid = tid;
 	record->header.tgid = tgid;
@@ -1356,15 +1298,6 @@ int process_exit(void *ctx)
 	u32 tid = BPF_CORE_READ(task, pid);
 	if (!traced(tgid))
 		return 0;
-	if (cgroup_id) {
-		u8 one = 1;
-		u8 *ending = bpf_task_storage_get(&ENDINGS, task->group_leader, &one,
-						BPF_LOCAL_STORAGE_GET_F_CREATE);
-		// A concurrent creator can win BPF_NOEXIST inside the helper.
-		if (!ending && !bpf_task_storage_get(&ENDINGS, task->group_leader, 0, 0))
-			lost();
-	}
-	shown(task, &tid, &tgid);
 	u64 now = bpf_ktime_get_ns();
 	struct config *settings = config();
 	if (!settings)
@@ -1398,22 +1331,14 @@ int process_end(u64 *ctx)
 {
 	struct task_struct *task = (struct task_struct *)ctx[0];
 	u32 host = BPF_CORE_READ(task, tgid);
-	if (!cgroup_id && !bpf_map_lookup_elem(&TARGETS, &host))
+	if (!bpf_map_lookup_elem(&TARGETS, &host))
 		return 0;
 	if (task != task->group_leader || BPF_CORE_READ(task, signal, live.counter) != 0 ||
 	    BPF_CORE_READ(task, signal, nr_threads) != 1)
 		return 0;
-	// All worker exit callbacks finished before their group membership was removed.
-	if (cgroup_id) {
-		u8 *ending = bpf_task_storage_get(&ENDINGS, task, 0, 0);
-		if (!ending || !*ending)
-			return 0;
-		*ending = 0;
-	}
 	u32 tgid = BPF_CORE_READ(task, tgid), tid = BPF_CORE_READ(task, pid);
 	s32 code = BPF_CORE_READ(task, signal, flags) & SIGNAL_GROUP_EXIT
 		? BPF_CORE_READ(task, signal, group_exit_code) : BPF_CORE_READ(task, exit_code);
-	shown(task, &tid, &tgid);
 	send_exit(tid, tgid, bpf_ktime_get_ns(), code, 1);
 	bpf_map_delete_elem(&TARGETS, &host);
 	return 0;
@@ -1432,7 +1357,6 @@ int signal_deliver(u64 *ctx)
 	// The exit record, not this synthetic signal, carries the fatal reason.
 	if (signal == 9 && !info)
 		return 0;
-	shown_current(&tid, &tgid);
 	struct config *settings = config();
 	if (!settings || !(settings->flags & CONFIG_STREAM))
 		return 0;
@@ -1470,20 +1394,17 @@ int in_flight(struct bpf_iter__task *ctx)
 	struct task_struct *task = ctx->task;
 	if (!task)
 		return 0;
-	// Only a traced thread holds an entry; a cgroup's are not the
-	// iterator's own, which traced() asks about.
+	// Only a traced thread holds an entry.
 	struct config *settings = config();
 	if (!settings)
 		return 0;
-	if (!cgroup_id && !bpf_map_lookup_elem(&TARGETS, &(u32){BPF_CORE_READ(task, tgid)}))
+	if (!bpf_map_lookup_elem(&TARGETS, &(u32){BPF_CORE_READ(task, tgid)}))
 		return 0;
 	struct entry *held = bpf_task_storage_get(&ENTRIES, task, 0, 0);
 	if (!held || !held->entered)
 		return 0;
 	struct in_flight_record record = {};
-	u32 tgid = held->tgid;
 	record.tid = BPF_CORE_READ(task, pid);
-	shown(task, &record.tid, &tgid);
 	record.entry = *held;
 	bpf_seq_write(ctx->meta->seq, &record, sizeof(record));
 	return 0;

@@ -1,10 +1,11 @@
-//! `microscope syscalls -k` on a Node program: each call's stack names the
-//! JavaScript frames that made it, in every tier, as V8's own call sites
-//! named them just before the call (`tests/fixtures/node/syscalls.js`).
+//! A recording of a Node program's system calls: each call's stack names
+//! the JavaScript frames that made it, in every tier, as V8's own call
+//! sites named them just before the call (`tests/fixtures/node/syscalls.js`).
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
+use microscope::profiler::Profile;
 use serde_json::Value;
 
 use crate::support::truth::Report;
@@ -62,7 +63,7 @@ pub fn reported(output: &str) -> BTreeMap<String, Call> {
     calls
 }
 
-/// The JavaScript frames of an ndjson record's stack, innermost first, past
+/// The JavaScript frames of a call's record's stack, innermost first, past
 /// those of Node's own scripts that run the call, with its thread.
 pub fn traced(record: &Value) -> Call {
     let frames = record["stack"]
@@ -126,59 +127,56 @@ pub fn lies(reported: &BTreeMap<String, Call>, records: &[Value]) -> Vec<String>
     lies
 }
 
-/// `microscope syscalls`, run as `command`, tracing the fixture's opens
-/// with `arguments` into `trace`, `-` for standard output; with `hold`,
-/// the fixture waits for its standard input (`syscalls.js`).
-pub fn command(
-    mut command: Command,
-    arguments: &[&str],
-    trace: &std::path::Path,
-    hold: bool,
-) -> Command {
-    command
-        .args(["syscalls", "-f", "-e", "trace=openat", "--format", "ndjson"])
-        .args(arguments)
-        .arg("-o")
-        .arg(trace)
-        .arg("--")
-        .arg(node::node(ENTRY))
+/// The fixture as the tests run it; with `hold`, it waits for its
+/// standard input (`syscalls.js`).
+pub fn program(hold: bool) -> Command {
+    let mut program = Command::new(node::node(ENTRY));
+    program
         .arg("--allow-natives-syntax")
         .arg(node::fixture("syscalls.js"))
-        .args(hold.then_some("--hold"))
+        .args(hold.then_some("--hold"));
+    program
+}
+
+/// `microscope record`, run as `command`, keeping the fixture's opens by
+/// the ptrace engine into `trace`.
+pub fn command(mut command: Command, trace: &std::path::Path) -> Command {
+    let program = program(false);
+    command
+        .args(["record", "--syscall-engine", "ptrace"])
+        .args(["--syscall-filter", "trace=openat", "-o"])
+        .arg(trace)
+        .arg("--")
+        .arg(program.get_program())
+        .args(program.get_args())
         .env_remove("NODE_OPTIONS")
         .stdin(Stdio::null());
     command
 }
-
-/// Runs `command`, which traces into `trace`: what the fixture reported,
-/// and the trace's records.
+/// Runs `command`, which records into `trace`: what the fixture reported,
+/// and the records of the calls kept.
 pub fn run(mut command: Command, trace: &std::path::Path) -> (BTreeMap<String, Call>, Vec<Value>) {
     let output = command.output().expect("run microscope");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "microscope failed: {stderr}");
-    let text = std::fs::read_to_string(trace).unwrap_or_else(|error| panic!("{error}: {stderr}"));
-    let records = text
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{line}: {error}")))
-        .collect();
-    (reported(&String::from_utf8_lossy(&output.stdout)), records)
+    let profile = Profile::read(trace)
+        .unwrap_or_else(|error| panic!("{error}: {stderr}"))
+        .profile;
+    (
+        reported(&String::from_utf8_lossy(&output.stdout)),
+        held::records(&profile),
+    )
 }
-
 /// The ptrace engine names each call's JavaScript frames, of every tier,
 /// on the main thread and a worker, as V8 named them.
 #[test]
 fn each_calls_javascript_frames_are_the_ones_v8_reported() {
     let scratch = ScratchDir::new("node-syscalls");
-    let trace = scratch.path().join("trace.ndjson");
-    let microscope = Command::new(env!("CARGO_BIN_EXE_microscope"));
-    let (reported, records) = run(
-        command(microscope, &["--engine", "ptrace", "-k"], &trace, false),
-        &trace,
-    );
+    let trace = scratch.path().join("trace.usprof");
+    let (reported, records) = run(command(held::unprivileged(), &trace), &trace);
     let lies = lies(&reported, &records);
     assert!(lies.is_empty(), "{}", lies.join("\n"));
 }
-
 /// The functions whose frames the fixture runs compiled where they open
 /// their paths, whose lines the BPF engine leaves unknown: it does not
 /// prove which compiled code a frame ran (`runtime_model/node/sampled.rs`).
@@ -266,22 +264,43 @@ pub fn bpf_lies(
     lies
 }
 
-/// The fixture, traced by `command` with `--hold` onto standard output:
-/// once a record satisfies `ready`, the fixture is told to make its calls,
-/// and once each of them is traced its standard input ends, which ends it.
-/// What the fixture reported, and the trace's records.
+/// The fixture, recorded by `microscope` with `engine` and `--hold`: once a window's
+/// records hold one that satisfies `ready`, the fixture is told to make
+/// its calls, and once each of them is kept its standard input ends, which
+/// ends it. What the fixture reported, and the records.
 pub fn run_held(
-    command: Command,
+    microscope: Command,
+    engine: &str,
     ready: impl Fn(&Value) -> bool,
 ) -> (BTreeMap<String, Call>, Vec<Value>) {
-    let (records, stderr) = held::trace(command, ready, |records| {
+    let mut program = program(true);
+    program.env_remove("NODE_OPTIONS");
+    let opened = |records: &[Value]| {
         OPENS
             .iter()
             .all(|(path, _)| records.iter().any(|record| record["path"] == *path))
-    });
-    (reported(&stderr), records)
+    };
+    let (profile, stderr) = held::recorded_until(
+        microscope,
+        &program,
+        &[
+            "--syscall-engine",
+            engine,
+            "--syscall-filter",
+            "trace=openat",
+        ],
+        2,
+        |window| {
+            let records = held::records(window);
+            match (records.iter().any(&ready), opened(&records)) {
+                (false, _) => 0,
+                (true, false) => 1,
+                (true, true) => 2,
+            }
+        },
+    );
+    (reported(&stderr), held::records(&profile))
 }
-
 /// Whether `record` is of an open the fixture probes with while it waits,
 /// with the probing function among its JavaScript frames.
 pub fn probed(record: &Value) -> bool {
@@ -291,7 +310,7 @@ pub fn probed(record: &Value) -> bool {
             .is_some_and(|stack| stack.iter().any(|frame| frame["function"] == "probe"))
 }
 
-/// An ndjson record of an open of `path` on thread 7 whose stack holds
+/// A call's record of an open of `path` on thread 7 whose stack holds
 /// `frames`, each a function and, where known, its file and line.
 fn record(path: &str, frames: &[(&str, Option<&str>, Option<u32>)]) -> Value {
     let stack: Vec<Value> = frames
@@ -305,7 +324,6 @@ fn record(path: &str, frames: &[(&str, Option<&str>, Option<u32>)]) -> Value {
         .collect();
     serde_json::json!({"path": path, "tid": 7, "stack": stack})
 }
-
 /// How the opens of `frameless.js --opens` traced in `records`, in the
 /// order they were made, hide that JavaScript frames are missing, one line
 /// per open. Every open of /dev/zero is made by `framelessOpens`, through
@@ -510,33 +528,8 @@ mod bpf {
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn the_bpf_engine_names_the_javascript_frames_v8_and_the_ptrace_engine_do() {
-        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
-            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
-        let stdout = std::path::Path::new("-");
-
-        let (_, ptrace) = run_held(
-            command(
-                Command::new(env!("CARGO_BIN_EXE_microscope")),
-                &["--engine", "ptrace", "-k"],
-                stdout,
-                true,
-            ),
-            |_| true,
-        );
-
-        let mut microscope = Command::new(&launcher);
-        microscope.arg(env!("CARGO_BIN_EXE_microscope"));
-        // The engine unwinds native frames by a copy of the stack, as
-        // glibc's system call wrappers keep no frame pointer.
-        let (reported, records) = run_held(
-            command(
-                microscope,
-                &["--engine", "bpf", "-k=dwarf", "-k"],
-                stdout,
-                true,
-            ),
-            probed,
-        );
+        let (_, ptrace) = run_held(held::unprivileged(), "ptrace", |_| true);
+        let (reported, records) = run_held(held::bpf(), "bpf", probed);
         let lies = bpf_lies(&reported, &records, &ptrace);
         assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
@@ -548,90 +541,35 @@ mod bpf {
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn a_call_the_walk_cannot_follow_says_its_javascript_frames_are_missing() {
-        use std::io::BufRead as _;
-
-        /// How long the engine may take to read V8, which waits for
-        /// Node's debug information to load, and then to trace the opens.
-        const DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
-
-        /// The opens of /dev/zero traced once the engine names JavaScript
+        /// The opens of /dev/zero kept once the engine names JavaScript
         /// frames, past which the fixture is ended.
         const OPENS: usize = 20;
 
-        /// Kills and reaps the traced command if the test fails.
-        struct Running(std::process::Child);
-        impl Drop for Running {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-
-        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
-            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
-        let child = Command::new(launcher)
-            .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["syscalls", "-f", "-e", "trace=openat", "--format", "ndjson"])
-            .args(["--engine", "bpf", "-k=dwarf", "-k", "-o", "-", "--"])
-            .arg(node::node(ENTRY))
+        let mut program = Command::new(node::node(ENTRY));
+        program
             .arg(node::fixture("frameless.js"))
             .arg(crate::support::Scenario::fixture("node-frameless.node"))
             .arg("--opens")
-            .env_remove("NODE_OPTIONS")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("run microscope");
-        let mut running = Running(child);
-        let mut stdin = running.0.stdin.take();
-        let stdout = running.0.stdout.take().expect("microscope's stdout");
-        let (sent, read) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for line in std::io::BufReader::new(stdout).lines() {
-                if sent.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-
-        let deadline = std::time::Instant::now() + DEADLINE;
-        let mut records: Vec<Value> = Vec::new();
-        let mut ready = false;
-        let mut after = 0;
-        // Until the fixture is told to end, then until microscope closes
-        // its output; either fails at the deadline, and the child is
-        // killed as `running` drops.
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            let line = match read.recv_timeout(left) {
-                Ok(line) => line.expect("read the trace"),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) if stdin.is_none() => break,
-                Err(error) => panic!(
-                    "the trace ended or stalled ({error}) after {after} of {OPENS} opens: {records:#?}"
-                ),
-            };
-            let record: Value =
-                serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}"));
-            ready |= record["path"] == "/dev/random"
-                && record["stack"]
-                    .as_array()
-                    .is_some_and(|stack| stack.iter().any(|frame| frame["function"] == "probe"));
-            after += usize::from(ready && record["path"] == "/dev/zero");
-            records.push(record);
-            if after >= OPENS {
-                stdin = None;
-            }
-        }
-        let status = running.0.wait().expect("reap microscope");
-        let mut stderr = String::new();
-        std::io::Read::read_to_string(
-            running.0.stderr.as_mut().expect("microscope's stderr"),
-            &mut stderr,
-        )
-        .expect("read microscope's stderr");
-        assert!(status.success(), "the trace failed ({status}): {stderr}");
-        let lies = frameless_lies(&records);
+            .env_remove("NODE_OPTIONS");
+        let enough = |profile: &Profile| {
+            let records = held::records(profile);
+            let ready = records.iter().position(probed);
+            ready.is_some_and(|ready| {
+                records[ready..]
+                    .iter()
+                    .filter(|record| record["path"] == "/dev/zero")
+                    .count()
+                    >= OPENS
+            })
+        };
+        let (profile, _) = held::recorded_until(
+            held::bpf(),
+            &program,
+            &["--syscall-filter", "trace=openat"],
+            1,
+            |window| usize::from(enough(window)),
+        );
+        let lies = frameless_lies(&held::records(&profile));
         assert!(lies.is_empty(), "{}", lies.join("\n"));
     }
 }

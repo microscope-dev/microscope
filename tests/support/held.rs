@@ -1,100 +1,186 @@
-//! A fixture traced with `--hold`, so a test waits on what the trace shows
-//! rather than on time: the fixture probes until the test tells it to go,
-//! makes its calls, and lives until the test has read their records. A BPF
-//! engine reads a runtime a moment after the program starts, and reads a
-//! frame's code as it drains, which a program that exited has taken away.
+//! Fixtures held on their standard input while microscope records them, so
+//! a test waits on what the recording shows rather than on time. The BPF
+//! engine reads a runtime a moment after the program starts, and a frame's
+//! code as it drains, which a program that exited has taken away: the test
+//! asks for the recording's window with SIGUSR2 and lets the fixture go, a
+//! line at a time, as the windows show what it waits for.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufRead as _, Write as _};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::channel;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use serde_json::Value;
+use microscope::profiler::{Profile, StackEnding};
+use microscope::syscalls::TraceEvent;
+use microscope::syscalls::filter::paths;
+use serde_json::{Value, json};
 
-/// How long the engine may take to read the runtime, which waits for its
-/// debug information to load, and then to trace the calls.
-const DEADLINE: Duration = Duration::from_secs(180);
+use super::released::READY_DEADLINE;
 
-/// Runs `command`, which traces a fixture as ndjson onto standard output.
-/// Once a record satisfies `ready`, the fixture is told to go; once the
-/// records satisfy `done`, its standard input ends, which ends it. The
-/// trace's records, and microscope's standard error.
-pub fn trace(
-    mut command: Command,
-    ready: impl Fn(&Value) -> bool,
-    done: impl Fn(&[Value]) -> bool,
-) -> (Vec<Value>, String) {
-    /// Kills and reaps the traced command if the test fails.
-    struct Running(std::process::Child);
-    impl Drop for Running {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
+/// The `microscope-bpf` wrapper that `just test-bpf` names.
+pub fn launcher() -> PathBuf {
+    std::env::var_os("MICROSCOPE_BPF_LAUNCHER").map_or_else(
+        || {
+            panic!(
+                "MICROSCOPE_BPF_LAUNCHER names no launcher: run these with `just test-bpf`, \
+                 which records through the microscope-bpf wrapper"
+            )
+        },
+        PathBuf::from,
+    )
+}
 
-    let child = command
+/// microscope, run through the BPF launcher.
+pub fn bpf() -> Command {
+    let mut command = Command::new(launcher());
+    command.arg(env!("CARGO_BIN_EXE_microscope"));
+    command
+}
+
+/// microscope, run as it is.
+pub fn unprivileged() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_microscope"))
+}
+
+/// The recording of `program` by `microscope` with `arguments`, held on
+/// its standard input: the test asks for each window in turn and gives the
+/// program as many lines as `lines` says of it, until it has given
+/// `release` of them, or the deadline passes, and then ends its input.
+/// The profile, and what microscope and the program said on standard error.
+pub fn recorded_until(
+    mut microscope: Command,
+    program: &Command,
+    arguments: &[&str],
+    release: usize,
+    mut lines: impl FnMut(&Profile) -> usize,
+) -> (Profile, String) {
+    let scratch = super::ScratchDir::new("held");
+    let output = scratch.path().join("held.usprof");
+    let mut child = microscope
+        .args(["record", "--window", "3600", "--output"])
+        .arg(&output)
+        .args(arguments)
+        .arg("--")
+        .arg(program.get_program())
+        .args(program.get_args())
+        .envs(
+            program
+                .get_envs()
+                .filter_map(|(name, value)| Some((name, value?))),
+        )
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("run microscope");
-    let mut running = Running(child);
-    let mut stdin = running.0.stdin.take();
-    let stdout = running.0.stdout.take().expect("microscope's stdout");
-    let mut stderr = running.0.stderr.take().expect("microscope's stderr");
-    let (lines, read) = channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let errors = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text);
-        text
-    });
 
-    // A fixture reports the truth about itself on standard output as it
-    // loads, which the trace shares.
-    let record = |line: String| {
-        (!line.starts_with("TRUTH\t"))
-            .then(|| serde_json::from_str(&line).unwrap_or_else(|error| panic!("{line}: {error}")))
+    // microscope's lines, each sent as it comes, and all of them once it
+    // ends.
+    let (said, heard) = std::sync::mpsc::channel();
+    let stderr = std::io::BufReader::new(child.stderr.take().expect("its errors"));
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in stderr.lines() {
+            let line = line.expect("microscope's errors");
+            all.push_str(&line);
+            all.push('\n');
+            let _ = said.send(line);
+        }
+        all
+    });
+    let deadline = Instant::now() + READY_DEADLINE;
+    let next = |what: &str| loop {
+        let Ok(line) = heard.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        else {
+            return None;
+        };
+        if let Some(rest) = line.strip_prefix(what) {
+            return Some(rest.to_owned());
+        }
     };
 
-    let deadline = Instant::now() + DEADLINE;
-    let mut records: Vec<Value> = Vec::new();
-    let mut told = false;
-    while stdin.is_some() {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let line = read
-            .recv_timeout(left)
-            .unwrap_or_else(|error| panic!("the trace ended or stalled ({error}): {records:#?}"))
-            .expect("read the trace");
-        let Some(record) = record(line) else {
-            continue;
+    // The window's saves, and the pid they are asked of, once microscope
+    // handles SIGUSR2.
+    let pid = next("microscope: keeping the last ")
+        .and_then(|rest| {
+            let (_, pid) = rest.split_once("`kill -USR2 ")?;
+            pid.split_once('`')?.0.parse().ok()
+        })
+        .map(nix::unistd::Pid::from_raw);
+    let mut input = child.stdin.take().expect("its input");
+    let mut given = 0;
+    while let Some(pid) = pid
+        && given < release
+    {
+        nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGUSR2).expect("ask for the window");
+        let Some(saved) = next("microscope: saved ") else {
+            break;
         };
-        if !told && ready(&record) {
-            stdin
-                .as_mut()
-                .expect("the fixture's stdin")
-                .write_all(b"go\n")
-                .expect("tell the fixture to go");
-            told = true;
-        }
-        records.push(record);
-        if told && done(&records) {
-            stdin = None;
+        let path = saved
+            .split_once(" samples of the window to ")
+            .expect("where the window went")
+            .1;
+        let window = Profile::read(std::path::Path::new(path))
+            .expect("read the window")
+            .profile;
+        let wanted = lines(&window).min(release);
+        while given < wanted {
+            // A program that ended on its own has nothing to let go.
+            let _ = input.write_all(b"go\n");
+            given += 1;
         }
     }
+    drop(input);
 
-    for line in &read {
-        records.extend(record(line.expect("read the trace")));
-    }
-    let status = running.0.wait().expect("reap microscope");
-    let stderr = errors.join().expect("read microscope's stderr");
-    assert!(status.success(), "microscope failed: {stderr}");
-    (records, stderr)
+    let status = child.wait().expect("microscope finishes");
+    let stderr = reader.join().expect("microscope's errors");
+    assert!(status.success(), "{stderr}");
+    let profile = Profile::read(&output).expect("read the profile").profile;
+    (profile, stderr)
+}
+
+/// Each call a recording kept, in order, as a record of its path, its
+/// thread, and its stack, innermost first: an interpreted frame as its
+/// function and, where known, its file and line; a native one as its
+/// symbol; and, where the stack ends early, why.
+pub fn records(profile: &Profile) -> Vec<Value> {
+    profile
+        .syscalls()
+        .events
+        .iter()
+        .filter_map(|event| {
+            let TraceEvent::Call(call) = &event.event else {
+                return None;
+            };
+
+            let mut stack = Vec::new();
+            if let Some(row) = event.stack {
+                for frame in profile.syscall_frames(row) {
+                    if !frame.interpreted {
+                        stack.push(json!({ "symbol": frame.function }));
+                        continue;
+                    }
+
+                    let mut object = json!({ "function": frame.function });
+                    if let Some((file, line)) = frame.place {
+                        object["file"] = file.into();
+                        if line != 0 {
+                            object["line"] = line.into();
+                        }
+                    }
+                    stack.push(object);
+                }
+
+                if let StackEnding::Truncated(reason) = profile.syscall_stack(row).1 {
+                    stack.push(json!({ "ends": reason }));
+                }
+            }
+
+            Some(json!({
+                "path": paths(call).into_iter().next(),
+                "tid": call.thread.get(),
+                "stack": stack,
+            }))
+        })
+        .collect()
 }

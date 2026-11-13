@@ -405,6 +405,43 @@ impl Profile {
         self.names(row)
     }
 
+    /// The functions of a recorded call's or signal's stack, innermost
+    /// first as [`Self::syscall_stack`] names them, each with its line where
+    /// the capture has one.
+    #[must_use]
+    pub fn syscall_frames(&self, row: u32) -> Vec<SyscallFrame> {
+        let capture = &self.capture;
+        let mut frames = Vec::new();
+        for frame in capture.stack_frames(row) {
+            let record = capture.frame(frame);
+            if record.kind == FrameKind::Truncated as u8 {
+                continue;
+            }
+
+            let interpreted = record.kind == FrameKind::Interpreted as u8;
+            let lines = capture.frame_lines(frame);
+            if lines.is_empty() {
+                frames.push(SyscallFrame {
+                    function: self.address_name(frame),
+                    place: None,
+                    interpreted,
+                });
+            }
+
+            for line in lines {
+                let file = line.file.get();
+                frames.push(SyscallFrame {
+                    function: super::function_name(capture, line.function.get()).to_owned(),
+                    place: (file != NONE)
+                        .then(|| (capture.string(file).to_owned(), line.number.get())),
+                    interpreted,
+                });
+            }
+        }
+
+        frames
+    }
+
     /// Where a recorded stack's call came from: its innermost frame with a
     /// source line, as `recv · db.rs:212`. A C library without debug
     /// information has none, so this is the program's own code that made
@@ -502,6 +539,15 @@ const C_LIBRARY: [&str; 5] = [
     "ld-musl",
     "libc.musl",
 ];
+
+/// One function of a recorded stack: its file and line where known, and
+/// whether an interpreter ran it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyscallFrame {
+    pub function: String,
+    pub place: Option<(String, u32)>,
+    pub interpreted: bool,
+}
 
 /// Where a call was made: a function, and a line of a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

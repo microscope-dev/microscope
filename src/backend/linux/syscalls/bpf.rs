@@ -1,5 +1,5 @@
-//! The BPF engine for `microscope syscalls`, which never stops the traced
-//! program.
+//! The BPF engine for a recording's system calls, which never stops the
+//! traced program.
 //!
 //! Programs in the kernel filter by process, time each chosen call, copy
 //! the bytes behind its arguments, and send one record per call through a
@@ -30,11 +30,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 use super::super::bpf::sampler::{self, PythonLayouts, V8Layouts};
 use super::super::perf;
 use super::Sink;
-use super::cgroup::{self, Cgroup, PidNamespace};
-use super::launch::{self, Gate, GateOptions};
-use super::ptrace::{
-    Finished, Target, TraceOptions, monotonic, seed_descriptors, seed_descriptors_as,
-};
+use super::ptrace::{Finished, TraceOptions, monotonic, seed_descriptors};
 
 use super::rings::Merge;
 use crate::syscalls::captures::{self, CopyKind};
@@ -1000,9 +996,6 @@ pub enum BpfError {
     #[error("{0}")]
     Unavailable(String),
 
-    #[error("starting the program failed: {0}")]
-    Spawn(#[source] std::io::Error),
-
     #[error("process {0} does not exist")]
     NoProcess(u32),
 
@@ -1225,19 +1218,14 @@ fn version(release: &str) -> Option<(u32, u32)> {
 }
 
 /// How the BPF engine runs, beyond what to trace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BpfOptions {
     /// Count in the kernel and report no calls, only their statistics.
     pub count_only: bool,
 
-    /// Each CPU's ring's bytes: a power of two, in pages. By default,
-    /// [`DEFAULT_RING`], or [`STACK_COPY_RING`] with stack copies.
-    pub ring: Option<u32>,
-
     /// With stacks, copy each stack's top to unwind by call-frame
     /// information, rather than trust the kernel's walk alone.
     pub stack_copy: bool,
-    pub attach: AttachMode,
 
     /// While counting, the failed and slow calls to send whole.
     pub exceptions: Option<Exceptions>,
@@ -1249,18 +1237,6 @@ pub struct BpfOptions {
 pub struct Exceptions {
     pub slow: std::time::Duration,
     pub per_second: u32,
-}
-
-impl Default for BpfOptions {
-    fn default() -> Self {
-        Self {
-            count_only: false,
-            ring: None,
-            stack_copy: false,
-            attach: AttachMode::Auto,
-            exceptions: None,
-        }
-    }
 }
 
 impl RawConfig {
@@ -1313,20 +1289,6 @@ impl RawConfig {
     }
 }
 
-/// Where the programs attach.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AttachMode {
-    /// The chosen calls' functions when they can, else the tracepoints.
-    #[default]
-    Auto,
-
-    /// The tracepoints every call on the host passes.
-    Tracepoints,
-
-    /// The chosen calls' functions, or not at all.
-    Functions,
-}
-
 /// The most kernel functions the programs attach to: their slots.
 const FUNCTION_SLOTS: usize = 32;
 
@@ -1355,25 +1317,21 @@ fn function_of(call: SyscallId, has: &impl Fn(&str) -> bool) -> Option<String> {
     call.kernel_function().filter(|function| has(function))
 }
 
-/// Where the programs attach to see `chosen`, every call when `all`, as
-/// `mode` asks; `has` says which kernel functions BTF describes. Without
+/// Where the programs attach to see `chosen`, every call when `all`: the
+/// calls' functions when they can, else the tracepoints every call on the
+/// host passes. `has` says which kernel functions BTF describes. Without
 /// `x32` in the kernel, its calls fail before any function is entered;
 /// it is asked only when that matters.
 fn attachment(
     all: bool,
     chosen: &[SyscallId],
-    mode: AttachMode,
     x32: impl FnOnce() -> bool,
     has: &impl Fn(&str) -> bool,
-) -> Result<Attachment, String> {
+) -> Attachment {
     let tracepoints = |reason: String| Attachment {
         functions: Vec::new(),
         reason,
     };
-
-    if mode == AttachMode::Tracepoints {
-        return Ok(tracepoints("asked for".to_owned()));
-    }
 
     let why = if all {
         "every call is traced".to_owned()
@@ -1401,23 +1359,19 @@ fn attachment(
                 functions.len()
             ),
             None => {
-                return Ok(Attachment {
+                return Attachment {
                     reason: format!(
                         "{} calls enter through {} kernel functions",
                         chosen.len(),
                         functions.len()
                     ),
                     functions,
-                });
+                };
             }
         }
     };
 
-    if mode == AttachMode::Functions {
-        Err(format!("--attach fentry cannot be used: {why}"))
-    } else {
-        Ok(tracepoints(why))
-    }
+    tracepoints(why)
 }
 
 /// Whether the kernel runs x32 calls, by the dispatcher it then has: a
@@ -1439,12 +1393,8 @@ fn load_error(error: impl std::fmt::Display) -> BpfError {
     BpfError::Load(error.to_string())
 }
 
-/// Loads the programs, with `rows` rows of statistics, for `scope`.
-fn load_object(btf: &Btf, rows: u32, scope: Scope) -> Result<Ebpf, BpfError> {
-    let (cgroup_id, cgroup_level) = scope.cgroup.unwrap_or_default();
-    let (ns_inum, ns_level) = scope
-        .namespace
-        .map_or((0, 0), |namespace| (namespace.inum, namespace.level));
+/// Loads the programs, with `rows` rows of statistics.
+fn load_object(btf: &Btf, rows: u32) -> Result<Ebpf, BpfError> {
     let cpus = u32::try_from(aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?)
         .unwrap_or(u32::MAX);
     EbpfLoader::new()
@@ -1452,10 +1402,6 @@ fn load_object(btf: &Btf, rows: u32, scope: Scope) -> Result<Ebpf, BpfError> {
         .map_max_entries("EVENTS", cpus)
         // Two halves, one counted into while the other is read.
         .map_max_entries("STATS", rows * 2)
-        .override_global("cgroup_id", &cgroup_id, true)
-        .override_global("cgroup_level", &cgroup_level, true)
-        .override_global("ns_inum", &ns_inum, true)
-        .override_global("ns_level", &ns_level, true)
         .override_global(
             "loop_helper",
             &crate::backend::linux::bpf::loop_helper(),
@@ -1468,19 +1414,19 @@ fn load_object(btf: &Btf, rows: u32, scope: Scope) -> Result<Ebpf, BpfError> {
         .map_err(load_error)
 }
 
-/// A ring for each CPU, set in EVENTS for the programs: `engine.ring`
-/// bytes each, or the default, halved while microscope's memory cgroup has
-/// no room for them.
+/// A ring for each CPU, set in EVENTS for the programs: [`DEFAULT_RING`]
+/// bytes each, or [`STACK_COPY_RING`] with stack copies, halved while
+/// microscope's memory cgroup has no room for them.
 fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, BpfError> {
     let mut events: ArrayOfMaps<&mut MapData, MapData> =
         ArrayOfMaps::try_from(ebpf.map_mut("EVENTS").ok_or_else(|| missing("EVENTS"))?)
             .map_err(load_error)?;
     let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
-    let mut bytes = engine.ring.unwrap_or(if engine.stack_copy {
+    let mut bytes = if engine.stack_copy {
         STACK_COPY_RING
     } else {
         DEFAULT_RING
-    });
+    };
 
     'sizes: loop {
         let mut rings = Vec::with_capacity(cpus);
@@ -1495,8 +1441,7 @@ fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, B
             let ring = match MapData::create(ring, &format!("EVENTS_{cpu}"), None) {
                 Ok(ring) => ring,
                 Err(aya::maps::MapError::CreateError { io_error, .. })
-                    if engine.ring.is_none()
-                        && bytes > SMALLEST_RING
+                    if bytes > SMALLEST_RING
                         && io_error.raw_os_error() == Some(nix::libc::ENOMEM) =>
                 {
                     record!("syscalls bpf: no memory for rings of {bytes} bytes");
@@ -1548,12 +1493,7 @@ struct Loaded {
 }
 
 impl Loaded {
-    fn load(
-        options: &TraceOptions,
-        engine: BpfOptions,
-        launch: bool,
-        scope: Scope,
-    ) -> Result<Self, BpfError> {
+    fn load(options: &TraceOptions, engine: BpfOptions, launch: bool) -> Result<Self, BpfError> {
         let _span = crate::span!("syscalls bpf load");
         // Every slot when every call is chosen, numbers no table names
         // among them. Each chosen call has a row of statistics.
@@ -1571,8 +1511,7 @@ impl Loaded {
                 "the kernel's BTF has no do_notify_parent hook for complete process exits".into(),
             ));
         }
-        let attachment = attachment(all, &calls, engine.attach, || has_x32(&has), &has)
-            .map_err(BpfError::Unavailable)?;
+        let attachment = attachment(all, &calls, || has_x32(&has), &has);
         let terminal: BTreeSet<_> = calls
             .iter()
             .filter(|call| matches!(call.name(), Some("exit" | "exit_group")))
@@ -1586,7 +1525,7 @@ impl Loaded {
             attachment.functions
         );
 
-        let mut ebpf = load_object(&btf, rows, scope)?;
+        let mut ebpf = load_object(&btf, rows)?;
         let rings = rings(&mut ebpf, engine)?;
         let mut specs = Vec::with_capacity(chosen.len());
         let base;
@@ -2100,38 +2039,31 @@ fn ended(process: u32) -> bool {
     })
 }
 
-/// Traces `target` until every traced process ends, or until `stop` is set,
-/// which kills a launched program and leaves attached ones running. Each
-/// event goes to `sink` as it arrives.
+/// Traces running process `pid` until it ends or `stop` is set, which
+/// leaves it running untraced. Each event goes to `sink` as it arrives.
 ///
 /// # Errors
 ///
 /// What the probe found missing, a failure to load or attach the
-/// programs, or to start the program.
-pub fn trace(
-    target: Target,
+/// programs, or a process that has ended.
+pub fn trace_running(
+    pid: u32,
     options: &TraceOptions,
     engine: BpfOptions,
     stop: &AtomicBool,
     sink: &mut dyn Sink,
 ) -> Result<Finished, BpfError> {
-    let start = match target {
-        Target::Launch(command) => Start::Launch(command),
-        Target::Attach(pids) => Start::Attach(pids),
-    };
-
-    run(start, options, engine, stop, sink)
+    run(Start::Attach(pid), options, engine, stop, sink)
 }
 
 /// Traces process `pid`, held at another launcher's gate, from its first
 /// call.
 ///
-/// It is traced as [`trace`] traces a program it launches. The sink hears
-/// [`Sink::attached`] once the gate may open.
+/// The sink hears [`Sink::attached`] once the gate may open.
 ///
 /// # Errors
 ///
-/// As [`trace`]'s.
+/// As [`trace_running`]'s.
 pub fn trace_held(
     pid: u32,
     options: &TraceOptions,
@@ -2143,46 +2075,10 @@ pub fn trace_held(
 }
 
 /// How a trace finds its first process.
+#[derive(Clone, Copy)]
 enum Start {
-    Launch(std::process::Command),
-    Attach(Vec<u32>),
+    Attach(u32),
     Held(u32),
-    Cgroup(Cgroup, Option<PidNamespace>),
-}
-
-/// Which processes the kernel's programs trace beyond the target set, and
-/// the namespace they show ids in.
-#[derive(Debug, Clone, Copy, Default)]
-struct Scope {
-    /// A cgroup's id and level.
-    cgroup: Option<(u64, u32)>,
-    namespace: Option<PidNamespace>,
-}
-
-/// Traces every process in `cgroup` until `stop` is set or the cgroup is
-/// removed.
-///
-/// Processes that join it are traced as they do. Ids are shown as
-/// `namespace` sees them, when given, and as the host does otherwise.
-///
-/// # Errors
-///
-/// As [`trace`]'s.
-pub fn trace_cgroup(
-    cgroup: Cgroup,
-    namespace: Option<PidNamespace>,
-    options: &TraceOptions,
-    engine: BpfOptions,
-    stop: &AtomicBool,
-    sink: &mut dyn Sink,
-) -> Result<Finished, BpfError> {
-    run(
-        Start::Cgroup(cgroup, namespace),
-        options,
-        engine,
-        stop,
-        sink,
-    )
 }
 
 fn run(
@@ -2193,30 +2089,16 @@ fn run(
     sink: &mut dyn Sink,
 ) -> Result<Finished, BpfError> {
     Probe::read().check()?;
-    let scope = match &start {
-        Start::Cgroup(cgroup, namespace) => Scope {
-            cgroup: Some((cgroup.id, cgroup.level)),
-            namespace: *namespace,
-        },
-        _ => Scope::default(),
-    };
-
-    let launch = matches!(start, Start::Launch(_) | Start::Held(_));
-    let mut loaded = Loaded::load(options, engine, launch, scope)?;
+    let mut loaded = Loaded::load(options, engine, matches!(start, Start::Held(_)))?;
     sink.attached_by(&loaded.attachment);
     let Begun {
         first,
         live,
         mappings,
-        mut gate,
-        cgroup,
     } = begin(start, &mut loaded, options, sink)?;
     let mut reader = Reader {
         sink,
-        // A cgroup's processes are known by the cgroup, and their ids may
-        // not be the host's.
-        follow: options.follow && cgroup.is_none(),
-        cgroup,
+        follow: options.follow,
         live,
         first,
         end: None,
@@ -2242,31 +2124,11 @@ fn run(
         next_job: 0,
     };
 
-    let result = reader.run(&mut loaded, stop, gate.as_ref().map(|gate| gate.pid));
-    let ring_end = reader.end;
+    let result = reader.run(&mut loaded, stop);
+    let end = reader.end;
     let Reader { sink, .. } = reader;
     sink.counted(loaded.counted(first));
-
-    drop(loaded);
-    let status = gate.as_mut().map(Gate::finish);
     result?;
-
-    // The launched program's status is the one its parent reaped.
-    let end = match status {
-        Some(Ok(Some(status))) => {
-            use std::os::unix::process::ExitStatusExt as _;
-            Some(status.code().map_or_else(
-                || ProcessEnd::Killed {
-                    signal: status.signal().unwrap_or(0),
-                    core: status.core_dumped(),
-                },
-                ProcessEnd::Exited,
-            ))
-        }
-        Some(Err(error)) if ring_end.is_none() => return Err(BpfError::Spawn(error)),
-        _ => ring_end,
-    };
-
     Ok(Finished { end })
 }
 
@@ -2275,21 +2137,17 @@ struct Begun {
     first: Pid,
     live: BTreeSet<Pid>,
     mappings: Vec<perf::Events>,
-    gate: Option<Gate>,
-    cgroup: Option<Cgroup>,
 }
 
-/// Starts or attaches to the target, once the programs are attached.
+/// Takes the target on, once the programs are attached.
 fn begin(
     start: Start,
     loaded: &mut Loaded,
     options: &TraceOptions,
     sink: &mut dyn Sink,
 ) -> Result<Begun, BpfError> {
-    let mut gate: Option<Gate> = None;
     let mut live = BTreeSet::new();
     let mut mappings = Vec::new();
-    let mut cgroup = None;
     let first = match start {
         Start::Held(pid) => {
             loaded.target(pid)?;
@@ -2302,68 +2160,32 @@ fn begin(
             sink.attached(pid);
             Pid::new(pid)
         }
-        Start::Launch(command) => {
-            let mut launched = launch::launch(
-                command,
-                GateOptions {
-                    filter: None,
-                    reap: true,
-                },
-            )
-            .map_err(BpfError::Spawn)?;
-            let pid = launched.pid;
+        Start::Attach(pid) => {
+            if ended(pid) {
+                return Err(BpfError::NoProcess(pid));
+            }
+
             loaded.target(pid)?;
             if options.stacks.is_some() {
-                // Enabled as it executes, as the profiler's are.
-                mappings.push(perf::Events::open(pid, &MAPPINGS).map_err(BpfError::Mappings)?);
+                mappings.push(
+                    perf::Events::attach(pid, &MAPPINGS, MAPPING_EVENTS)
+                        .map_err(BpfError::Mappings)?,
+                );
             }
 
-            // Held at its gate, it has the descriptors it will execute with.
-            seed_descriptors(pid, sink);
             live.insert(Pid::new(pid));
-            launched.open().map_err(BpfError::Spawn)?;
-            gate = Some(launched);
+            // The recording samples from here: reading the modules can take
+            // seconds, and no stack unwinds before the reader starts.
+            sink.attached(pid);
+            if let Some(stacks) = &options.stacks {
+                // What it mapped before, while it is there to read.
+                stacks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .read_maps(Pid::new(pid));
+            }
+
             Pid::new(pid)
-        }
-        Start::Attach(pids) => {
-            for &pid in &pids {
-                if ended(pid) {
-                    return Err(BpfError::NoProcess(pid));
-                }
-
-                loaded.target(pid)?;
-                if let Some(stacks) = &options.stacks {
-                    mappings.push(
-                        perf::Events::attach(pid, &MAPPINGS, MAPPING_EVENTS)
-                            .map_err(BpfError::Mappings)?,
-                    );
-
-                    // What it mapped before, while it is there to read.
-                    stacks
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .read_maps(Pid::new(pid));
-                }
-
-                live.insert(Pid::new(pid));
-                sink.attached(pid);
-            }
-
-            Pid::new(pids.first().copied().unwrap_or(0))
-        }
-        Start::Cgroup(traced, namespace) => {
-            // Its processes as they are now, with their ids as shown.
-            for process in traced.processes() {
-                let shown = namespace.map_or(Some(process), |namespace| {
-                    cgroup::id_in(process, namespace.level)
-                });
-                if let Some(shown) = shown {
-                    seed_descriptors_as(process, shown, sink);
-                }
-            }
-
-            cgroup = Some(traced);
-            Pid::new(0)
         }
     };
 
@@ -2371,8 +2193,6 @@ fn begin(
         first,
         live,
         mappings,
-        gate,
-        cgroup,
     })
 }
 
@@ -2392,9 +2212,6 @@ const MAPPING_EVENTS: usize = 65_536;
 struct Reader<'a> {
     sink: &'a mut dyn Sink,
     follow: bool,
-
-    /// The cgroup traced, which the trace lasts as long as.
-    cgroup: Option<Cgroup>,
 
     /// The traced processes still running.
     live: BTreeSet<Pid>,
@@ -2496,12 +2313,7 @@ const SETTLED_NS: u64 = 5_000_000;
 const MOST_PENDING: usize = 2048;
 
 impl Reader<'_> {
-    fn run(
-        &mut self,
-        loaded: &mut Loaded,
-        stop: &AtomicBool,
-        launched: Option<u32>,
-    ) -> Result<(), BpfError> {
+    fn run(&mut self, loaded: &mut Loaded, stop: &AtomicBool) -> Result<(), BpfError> {
         let mut rings = std::mem::take(&mut loaded.rings);
         self.merge = Merge::new(rings.len());
 
@@ -2518,17 +2330,8 @@ impl Reader<'_> {
             if stop.load(Ordering::Relaxed) && !stopping {
                 stopping = true;
                 record!("syscalls bpf: stop requested");
-                match launched {
-                    Some(pid) => {
-                        let _ = nix::sys::signal::kill(
-                            nix::unistd::Pid::from_raw(pid.cast_signed()),
-                            nix::sys::signal::Signal::SIGKILL,
-                        );
-                    }
-
-                    // Attached processes run on untraced.
-                    None => self.live.clear(),
-                }
+                // The traced processes run on untraced.
+                self.live.clear();
             }
 
             // Target removal follows the final record, even if the ring was full.
@@ -2549,16 +2352,7 @@ impl Reader<'_> {
                 self.live.remove(&pid);
             }
 
-            if stopping && launched.is_some_and(|pid| !self.live.contains(&Pid::new(pid))) {
-                self.live.clear();
-            }
-
-            let ended = match &self.cgroup {
-                Some(cgroup) => stopping || !cgroup.exists(),
-                None => self.live.is_empty(),
-            };
-
-            if ended {
+            if self.live.is_empty() {
                 self.drain(&mut rings, true);
                 self.release(Until::None);
 
@@ -3084,8 +2878,7 @@ mod tests {
     use super::*;
 
     /// A short list attaches to its calls' functions, each once; anything
-    /// that cannot falls back to the tracepoints and says why, unless
-    /// functions were insisted on.
+    /// that cannot falls back to the tracepoints and says why.
     #[test]
     fn short_lists_attach_to_their_functions_and_the_rest_say_why_not() {
         let has = |name: &str| !name.contains("getppid");
@@ -3095,8 +2888,7 @@ mod tests {
             named(Abi::X32, "openat"),
             named(Abi::X86_32, "openat"),
         ];
-        let chosen =
-            attachment(false, &open, AttachMode::Auto, || true, &has).expect("an attachment");
+        let chosen = attachment(false, &open, || true, &has);
         assert_eq!(
             chosen.functions,
             ["__x64_sys_openat", "__ia32_compat_sys_openat"]
@@ -3104,8 +2896,7 @@ mod tests {
         assert_eq!(chosen.name(), "fentry");
 
         let without = [named(Abi::X86_64, "getppid")];
-        let fallen =
-            attachment(false, &without, AttachMode::Auto, || true, &has).expect("tracepoints");
+        let fallen = attachment(false, &without, || true, &has);
         assert_eq!(
             (fallen.name(), fallen.reason.as_str()),
             (
@@ -3113,23 +2904,14 @@ mod tests {
                 "getppid has no kernel function that BTF describes"
             )
         );
-        assert!(attachment(false, &without, AttachMode::Functions, || true, &has).is_err());
-        let all = attachment(
-            true,
-            &[],
-            AttachMode::Auto,
-            || unreachable!("every call needs no x32"),
-            &has,
-        )
-        .expect("tracepoints");
+        let all = attachment(true, &[], || unreachable!("every call needs no x32"), &has);
         assert_eq!(all.reason, "every call is traced");
 
         let many: Vec<SyscallId> = (0..=40)
             .map(|number| SyscallId::new(Abi::X86_64, number))
             .filter(|call| call.name().is_some())
             .collect();
-        let wide = attachment(false, &many, AttachMode::Auto, || true, &|_: &str| true)
-            .expect("tracepoints");
+        let wide = attachment(false, &many, || true, &|_: &str| true);
         assert_eq!(wide.name(), "tp_btf", "{wide:?}");
 
         // A kernel without x32 has none of its compat functions, and no x32
@@ -3139,11 +2921,9 @@ mod tests {
             named(Abi::X86_64, "rt_sigaction"),
             named(Abi::X32, "rt_sigaction"),
         ];
-        let chosen = attachment(false, &sigaction, AttachMode::Auto, || false, &no_x32)
-            .expect("an attachment");
+        let chosen = attachment(false, &sigaction, || false, &no_x32);
         assert_eq!(chosen.functions, ["__x64_sys_rt_sigaction"]);
-        let fallen =
-            attachment(false, &sigaction, AttachMode::Auto, || true, &no_x32).expect("tracepoints");
+        let fallen = attachment(false, &sigaction, || true, &no_x32);
         assert_eq!(fallen.name(), "tp_btf");
     }
 

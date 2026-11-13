@@ -27,7 +27,7 @@ use super::protocol::{
 };
 
 use super::session::Failure;
-use crate::present::syscalls::{self as present, Context, FdStyle, Style, Tokens};
+use crate::present::syscalls::{self as present, Context, Tokens};
 
 /// The working directory, as a `dirfd`.
 const AT_FDCWD: i64 = -100;
@@ -171,7 +171,6 @@ pub fn end_text(end: ProcessEnd) -> String {
 
 /// The calls `blocked` lists, as a recording last saw them at `at`.
 pub fn in_flight(blocked: &[InFlight], at: u64, live: bool) -> SyscallInFlight {
-    let style = style();
     let calls = blocked
         .iter()
         .map(|call| {
@@ -193,7 +192,6 @@ pub fn in_flight(blocked: &[InFlight], at: u64, live: bool) -> SyscallInFlight {
                 pid: call.process.get(),
                 tokens: tokens(present::entry(
                     &event,
-                    &style,
                     Context {
                         fds: None,
                         before: true,
@@ -741,14 +739,6 @@ fn detail(
     })
 }
 
-/// How the web shows calls: with what descriptors refer to, as `-y`.
-fn style() -> Style {
-    Style {
-        fds: FdStyle::Paths,
-        ..Style::default()
-    }
-}
-
 fn tokens(tokens: Tokens) -> Vec<SyscallToken> {
     tokens
         .0
@@ -764,7 +754,6 @@ fn log(trace: &Trace, query: &SyscallLogQuery) -> Result<SyscallLog, Failure> {
     let selection = Selection::new(trace, &query.query)?;
     let first = query.offset;
     let last = first.saturating_add(u64::from(query.limit.min(MOST_LINES)));
-    let style = style();
     let mut total = 0_u64;
     let mut lines = Vec::new();
     let mut entry = Tokens::default();
@@ -773,7 +762,6 @@ fn log(trace: &Trace, query: &SyscallLogQuery) -> Result<SyscallLog, Failure> {
             if (first..last).contains(&total) {
                 entry = present::entry(
                     call,
-                    &style,
                     Context {
                         fds: Some(fds),
                         before: true,
@@ -787,7 +775,6 @@ fn log(trace: &Trace, query: &SyscallLogQuery) -> Result<SyscallLog, Failure> {
                 line.0.extend(
                     present::returned(
                         call,
-                        &style,
                         Context {
                             fds: Some(fds),
                             before: false,
@@ -866,13 +853,12 @@ fn call(
         }
     }
 
-    let style = style();
     let before = Context {
         fds: Some(&fds),
         before: true,
     };
 
-    let arguments = present::argument_values(target, &style, before)
+    let arguments = present::argument_values(target, before)
         .into_iter()
         .map(|(name, value)| SyscallArgument {
             name,
@@ -884,7 +870,6 @@ fn call(
     after.apply_call(target);
     let result = present::returned(
         target,
-        &style,
         Context {
             fds: Some(&after),
             before: false,

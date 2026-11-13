@@ -1,9 +1,9 @@
-//! `microscope syscalls -k` on a Python program: each call's stack names
+//! A recording of a Python program's system calls: each call's stack names
 //! the Python lines that made it, each activation of the interpreter's
 //! loop after the frames it runs; and a catchpoint's stop, whose backtrace
 //! shows them as any stop's does.
 
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use microscope::syscalls::{Abi, SyscallId, TraceEvent};
 use microscope::{CatchPhase, Condition, DebugFileOptions, FrameKind, LaunchOptions, StopReason};
 use serde_json::Value;
 
-use crate::support::{Scenario, ScratchDir, python};
+use crate::support::{Scenario, ScratchDir, held, python};
 
 /// The line of the syscalls fixture marked `marker`.
 fn line(marker: &str) -> u64 {
@@ -24,43 +24,7 @@ fn line(marker: &str) -> u64 {
         .unwrap_or_else(|| panic!("no line marked {marker}"))
 }
 
-/// Traces the fixture's opens under `interpreter` with `arguments`.
-fn trace(interpreter: &str, arguments: &[&str]) -> Output {
-    command(interpreter, arguments)
-        .output()
-        .expect("run microscope")
-}
-
-/// The command that traces the fixture's opens.
-fn command(interpreter: &str, arguments: &[&str]) -> Command {
-    engine_command(
-        Command::new(env!("CARGO_BIN_EXE_microscope")),
-        "ptrace",
-        interpreter,
-        arguments,
-    )
-}
-
-/// `microscope`, run as `command`, tracing the fixture's opens by
-/// `engine`.
-fn engine_command(
-    mut command: Command,
-    engine: &str,
-    interpreter: &str,
-    arguments: &[&str],
-) -> Command {
-    command
-        .args(["syscalls", "--engine", engine, "-f", "-e", "trace=openat"])
-        .args(arguments)
-        .arg("--")
-        .arg(python::interpreter(interpreter))
-        .args(["-I", "-B"])
-        .arg(python::fixture("syscalls.py"))
-        .stdin(Stdio::null());
-    command
-}
-
-/// The ndjson record of the open of `path`.
+/// The record of the open of `path`.
 fn opened<'a>(records: &'a [Value], path: &str) -> &'a Value {
     records
         .iter()
@@ -68,6 +32,41 @@ fn opened<'a>(records: &'a [Value], path: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no open of {path} in {records:#?}"))
 }
 
+/// The fixture under `interpreter`, run as the tests run it.
+fn program(interpreter: &str) -> Command {
+    let mut program = Command::new(python::interpreter(interpreter));
+    program
+        .args(["-I", "-B"])
+        .arg(python::fixture("syscalls.py"));
+    program
+}
+
+/// The fixture's opens under `interpreter`, recorded by the ptrace engine.
+fn recorded(interpreter: &str) -> Profile {
+    let directory = ScratchDir::new("python-syscalls");
+    let saved = directory.path().join("trace.usprof");
+    let program = program(interpreter);
+    let mut command = held::unprivileged();
+    command
+        .args(["record", "--syscall-engine", "ptrace"])
+        .args(["--syscall-filter", "trace=openat", "-o"])
+        .arg(&saved)
+        .arg("--")
+        .arg(program.get_program())
+        .args(program.get_args())
+        .stdin(Stdio::null());
+    if let Some(debug) = python::debug_directory(interpreter) {
+        command.env("NIX_DEBUG_INFO_DIRS", debug);
+    }
+
+    let output = command.output().expect("run microscope");
+    assert!(
+        output.status.success(),
+        "{interpreter}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Profile::read(&saved).expect("the recording reads").profile
+}
 /// The Python frames of a record's stack, innermost first, as
 /// `function:line`, and the index in the stack of each.
 fn python_frames(record: &Value) -> Vec<(usize, String)> {
@@ -97,16 +96,6 @@ fn python_frames(record: &Value) -> Vec<(usize, String)> {
 /// The interpreters traced: before 3.13's debug offsets, a GIL build, and
 /// a free-threaded one.
 const TRACED: [&str; 4] = ["3.12", "3.14", "3.15t", "standalone-3.14"];
-
-/// The ndjson records of a trace.
-fn records(interpreter: &str, traced: &Output) -> Vec<Value> {
-    let stderr = String::from_utf8_lossy(&traced.stderr);
-    assert!(traced.status.success(), "{interpreter}: {stderr}");
-    String::from_utf8_lossy(&traced.stdout)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{line}: {error}")))
-        .collect()
-}
 
 /// That the main thread's open shows `opens` called from the module, and
 /// the worker's the frames of both its activations of the loop.
@@ -160,64 +149,39 @@ fn check_frames(interpreter: &str, records: &[Value]) {
 #[test]
 fn a_python_programs_calls_name_the_python_lines_that_made_them() {
     for interpreter in TRACED {
-        let traced = trace(interpreter, &["-k", "--format", "ndjson", "-o", "-"]);
-        check_frames(interpreter, &records(interpreter, &traced));
+        let profile = recorded(interpreter);
+        check_frames(interpreter, &held::records(&profile));
+        if interpreter != "3.14" {
+            continue;
+        }
+
+        // A call's site is its Python line, not the interpreter's, whose
+        // debug information names its C lines.
+        let stacks: Vec<Vec<String>> = profile
+            .syscalls()
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                TraceEvent::Call(_) => event.stack,
+                _ => None,
+            })
+            .filter(|&stack| {
+                profile.syscall_site(stack)
+                    == Some(format!("opens · syscalls.py:{}", line("OPENS")))
+            })
+            .map(|stack| profile.syscall_stack(stack).0)
+            .collect();
+
+        assert_eq!(stacks.len(), 2, "{stacks:#?}");
+        assert!(
+            stacks.iter().any(|functions| {
+                let at = |name| functions.iter().position(|function| function == name);
+                at("opens") < at("_PyEval_EvalFrameDefault") && at("through_c").is_some()
+            }),
+            "{stacks:#?}"
+        );
     }
-
-    // The text names each Python frame by its file and line.
-    let traced = trace("3.14", &["-k"]);
-    let stderr = String::from_utf8_lossy(&traced.stderr);
-    assert!(traced.status.success(), "{stderr}");
-
-    let wanted = format!(
-        " > opens at {}:{}",
-        python::fixture("syscalls.py").display(),
-        line("OPENS")
-    );
-
-    assert!(stderr.lines().any(|text| text == wanted), "{stderr}");
-
-    // A saved trace keeps them, and a call's site is its Python line,
-    // not the interpreter's, whose debug information names its C lines.
-    let directory = ScratchDir::new("python-syscalls");
-    let saved = directory.path().join("trace.usprof");
-    let mut traced = command("3.14", &["-k", "-o", saved.to_str().expect("a path")]);
-    if let Some(debug) = python::debug_directory("3.14") {
-        traced.env("NIX_DEBUG_INFO_DIRS", debug);
-    }
-
-    let traced = traced.output().expect("run microscope");
-    assert!(
-        traced.status.success(),
-        "{}",
-        String::from_utf8_lossy(&traced.stderr)
-    );
-
-    let profile = Profile::read(&saved).expect("the trace reads").profile;
-    let syscalls = profile.syscalls();
-    let stacks: Vec<Vec<String>> = syscalls
-        .events
-        .iter()
-        .filter_map(|event| match &event.event {
-            TraceEvent::Call(_) => event.stack,
-            _ => None,
-        })
-        .filter(|&stack| {
-            profile.syscall_site(stack) == Some(format!("opens · syscalls.py:{}", line("OPENS")))
-        })
-        .map(|stack| profile.syscall_stack(stack).0)
-        .collect();
-
-    assert_eq!(stacks.len(), 2, "{stacks:#?}");
-    assert!(
-        stacks.iter().any(|functions| {
-            let at = |name| functions.iter().position(|function| function == name);
-            at("opens") < at("_PyEval_EvalFrameDefault") && at("through_c").is_some()
-        }),
-        "{stacks:#?}"
-    );
 }
-
 #[tokio::test]
 async fn a_catchpoint_stops_with_the_python_frames_that_made_the_call() {
     let interpreter = "3.14t";
@@ -300,40 +264,39 @@ mod bpf {
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON: run with `just test-bpf`"]
     fn the_bpf_engine_names_the_python_lines_the_ptrace_engine_does() {
-        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER")
-            .expect("MICROSCOPE_BPF_LAUNCHER names the microscope-bpf wrapper");
-        for interpreter in TRACED {
-            let mut command = Command::new(&launcher);
-            command.arg(env!("CARGO_BIN_EXE_microscope"));
-
-            // The engine unwinds native frames by a copy of the stack, as
-            // glibc's system call wrappers keep no frame pointer. The
-            // fixture probes until the engine names its Python frames, and
-            // lives until its calls are traced: their code is read as the
-            // engine drains them, which a program that exited takes away.
-            let mut command = engine_command(
-                command,
-                "bpf",
-                interpreter,
-                &["-k=dwarf", "-k", "--format", "ndjson", "-o", "-"],
-            );
-            command.arg("--hold");
-            let (records, _) = crate::support::held::trace(
-                command,
-                |record| {
-                    record["path"] == "/dev/random"
-                        && python_frames(record)
-                            .iter()
-                            .any(|(_, name)| name.starts_with("probe:"))
-                },
-                |records| {
-                    ["/proc/self/stat", "/dev/null"]
+        // The fixture probes until the engine names its Python frames, and
+        // lives until its calls are kept: their code is read as the engine
+        // drains them, which a program that exited takes away.
+        let probed = |profile: &Profile| {
+            held::records(profile).iter().any(|record| {
+                record["path"] == "/dev/random"
+                    && python_frames(record)
                         .iter()
-                        .all(|path| records.iter().any(|record| record["path"] == *path))
+                        .any(|(_, name)| name.starts_with("probe:"))
+            })
+        };
+        let opened = |profile: &Profile| {
+            let records = held::records(profile);
+            ["/proc/self/stat", "/dev/null"]
+                .iter()
+                .all(|path| records.iter().any(|record| record["path"] == *path))
+        };
+
+        for interpreter in TRACED {
+            let mut program = program(interpreter);
+            program.arg("--hold");
+            let (profile, _) = held::recorded_until(
+                held::bpf(),
+                &program,
+                &["--syscall-filter", "trace=openat"],
+                2,
+                |window| match (probed(window), opened(window)) {
+                    (false, _) => 0,
+                    (true, false) => 1,
+                    (true, true) => 2,
                 },
             );
-
-            check_frames(interpreter, &records);
+            check_frames(interpreter, &held::records(&profile));
         }
     }
 }

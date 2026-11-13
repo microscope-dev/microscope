@@ -273,9 +273,6 @@ pub enum Tool {
 
     /// Give a profile recorded with `--symbols later` its source lines.
     Symbolize(cli::profile::SymbolizeArgs),
-
-    /// Trace the system calls a program makes, as strace does.
-    Syscalls(Box<cli::syscalls::SyscallsArgs>),
 }
 
 pub fn parse_environment_variable(text: &str) -> std::result::Result<(OsString, OsString), String> {

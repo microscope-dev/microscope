@@ -172,7 +172,6 @@ async fn async_main() -> ExitCode {
         Some(Tool::Record(record)) => return cli::profile::run_record(record),
         Some(Tool::Report(report)) => return cli::profile::run_report(report),
         Some(Tool::Symbolize(symbolize)) => return cli::profile::run_symbolize(symbolize),
-        Some(Tool::Syscalls(syscalls)) => return cli::syscalls::run(syscalls),
         Some(Tool::Config(config)) => {
             return match run_config(config) {
                 Ok(true) => ExitCode::SUCCESS,

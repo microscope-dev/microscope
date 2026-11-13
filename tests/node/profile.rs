@@ -317,14 +317,12 @@ fn profiling_and_tracing_write_nothing() {
         written.join("\n")
     );
 
-    let trace = scratch.path().join("trace.ndjson");
+    let trace = scratch.path().join("trace.usprof");
     let tracing = scratch.path().join("syscalls.log");
     let mut microscope = Command::new(env!("CARGO_BIN_EXE_microscope"));
     microscope.env("MICROSCOPE_FLIGHT_RECORDING", &tracing);
-    let (reported, records) = crate::syscalls::run(
-        crate::syscalls::command(microscope, &["--engine", "ptrace", "-k"], &trace, false),
-        &trace,
-    );
+    let (reported, records) =
+        crate::syscalls::run(crate::syscalls::command(microscope, &trace), &trace);
     assert!(!reported.is_empty() && !records.is_empty());
     let text = std::fs::read_to_string(&tracing).expect("the recording");
     let written = writes(&text);

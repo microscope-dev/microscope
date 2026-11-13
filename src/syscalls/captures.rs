@@ -302,6 +302,11 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
     };
 
     let name = call.name().unwrap_or_default();
+    let environment = match name {
+        "execve" => Some(2),
+        "execveat" => Some(3),
+        _ => None,
+    };
     let buffer = limits.string.max(limits.dump);
     let mut copies = Vec::new();
 
@@ -325,7 +330,7 @@ pub fn copies(call: SyscallId, limits: Limits, verbose: bool) -> Vec<ArgCopy> {
                 0,
                 limits.string.min(MOST_BYTES - 2),
             ),
-            Arg::StrArray if index == 2 && !verbose => {
+            Arg::StrArray if Some(index) == environment && !verbose => {
                 (Direction::In, CopyKind::StringsCounted, Count::One, 0, 4)
             }
             Arg::StrArray => (
@@ -638,6 +643,25 @@ mod tests {
         );
         let (count, elements) = blobs::strings(&entry[1].bytes);
         assert_eq!((count, elements), (Some(2), vec![&b"ls"[..], &b"-l"[..]]));
+
+        // execveat's argv is its third argument, and its environment, which
+        // only counts, its fourth.
+        let exec_at = [3, 0x3000, 0x1000, 0x1000, 0, 0];
+        let entry = capture(
+            id("execveat"),
+            &exec_at,
+            ReadAt::Entry,
+            None,
+            Limits::default(),
+            false,
+            &mut memory,
+        );
+        let strings = |arg| {
+            let capture = entry.iter().find(|capture| capture.arg == arg);
+            blobs::strings(&capture.expect("a capture").bytes)
+        };
+        assert_eq!(strings(2), (Some(2), vec![&b"ls"[..], &b"-l"[..]]));
+        assert_eq!(strings(3), (Some(2), Vec::new()));
 
         let vector: Vec<u8> = [0x5000u64, 3, 0x6000, 10]
             .iter()

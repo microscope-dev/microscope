@@ -21,7 +21,7 @@ mod syscall_trace;
 pub use inspect::{InspectedCommand, InspectedModule, InspectedProcess, Inspection, TIME_BINS};
 mod symbols;
 mod syscalls;
-pub use syscalls::{RecordedEvent, RecordedSyscalls, SyscallPlace};
+pub use syscalls::{RecordedEvent, RecordedSyscalls, SyscallFrame, SyscallPlace};
 mod tasks;
 pub(crate) use interpreted::{Sampled, positions, read_record};
 pub(crate) use tasks::{InterpretedWait, LiveStop};

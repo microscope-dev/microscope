@@ -190,45 +190,6 @@ static void block(void) {
     }
 }
 
-// A child alone in new user and pid namespaces, where it is pid 1, which
-// starts a grandchild for each byte it reads until its input closes; each
-// asks its pid and exits. The parent prints the child's pid as the host
-// knows it, then waits for it.
-static void namespaced(const char *program) {
-    if (unshare(CLONE_NEWUSER | CLONE_NEWPID) != 0) {
-        _exit(20);
-    }
-    pid_t child = fork();
-    if (child < 0) {
-        _exit(21);
-    }
-    if (child == 0) {
-        char byte;
-        while (read(0, &byte, 1) > 0) {
-            if (program) {
-                alarm(10);
-                execl(program, program, (char *)NULL);
-                _exit(24);
-            }
-            pid_t grandchild = fork();
-            if (grandchild == 0) {
-                syscall(SYS_getpid);
-                _exit(0);
-            }
-            if (grandchild < 0 || waitpid(grandchild, NULL, 0) != grandchild) {
-                _exit(23);
-            }
-        }
-        _exit(0);
-    }
-    printf(program ? "READY child %d\n" : "child %d\n", child);
-    fflush(stdout);
-    int status;
-    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) {
-        _exit(22);
-    }
-}
-
 // Asks for its parent's pid until a byte arrives on its input, then prints
 // how many times it asked.
 static void spin(void) {
@@ -327,17 +288,8 @@ int main(int argc, char **argv) {
         block();
         return 0;
     }
-    if (strcmp(mode, "fails") == 0) {
-        // A write, then a close that fails as nothing before it does.
-        syscall(SYS_write, 1, "a\n", 2);
-        return close(-1) == -1 && errno == EBADF ? 0 : 1;
-    }
     if (strcmp(mode, "spin") == 0) {
         spin();
-        return 0;
-    }
-    if (strcmp(mode, "namespaced") == 0) {
-        namespaced(argc > 2 ? argv[2] : NULL);
         return 0;
     }
     if (strcmp(mode, "pause") == 0) {

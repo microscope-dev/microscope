@@ -7,7 +7,7 @@ use microscope::syscalls::sockaddr::SocketAddress;
 use microscope::syscalls::specs::{Arg, Count, Direction, Spec, Struct};
 use nix::libc;
 
-use super::{Kind, Style, Tokens, sets};
+use super::{Kind, Tokens, sets};
 
 /// Little-endian reads that come back `None` past the end.
 struct Bytes<'a>(&'a [u8]);
@@ -181,7 +181,6 @@ pub(super) struct Decode<'a, 'b> {
     pub event: &'b SyscallEvent,
     pub index: usize,
     pub spec: &'b Spec,
-    pub style: &'b Style,
     pub context: super::Context<'b>,
 }
 
@@ -203,25 +202,13 @@ impl Decode<'_, '_> {
         self.out.push(Kind::Constant, text.into());
     }
 
-    /// A value with a name, as `-X` asks: the name, the number, or both.
-    fn named_value(&mut self, number: String, name: String) {
-        match self.style.constants {
-            super::Constants::Abbrev => self.constant(name),
-            super::Constants::Raw => self.number(number),
-            super::Constants::Verbose => {
-                self.number(number);
-                self.out.push(Kind::Comment, format!(" /* {name} */"));
-            }
-        }
-    }
-
     /// A resource limit: infinity, or kibibytes when it is a whole number
     /// of them, as strace names them.
     fn limit(&mut self, value: u64) {
         if value == u64::MAX {
-            self.named_value(value.to_string(), "RLIM64_INFINITY".to_owned());
+            self.constant("RLIM64_INFINITY");
         } else if value > 1024 && value.is_multiple_of(1024) {
-            self.named_value(value.to_string(), format!("{}*1024", value / 1024));
+            self.constant(format!("{}*1024", value / 1024));
         } else {
             self.number(value);
         }
@@ -229,8 +216,7 @@ impl Decode<'_, '_> {
 
     /// A file mode: its type and permissions.
     fn mode(&mut self, mode: u32) {
-        let octal = format!("{mode:#o}").replacen("0o", "0", 1);
-        self.named_value(octal, file_mode(mode));
+        self.constant(file_mode(mode));
     }
 
     fn address(&mut self, value: u64) {
@@ -315,11 +301,8 @@ impl Decode<'_, '_> {
                 self.punct(", ");
                 self.field("cpu_id");
                 match b.i32(4)? {
-                    -1 => self.named_value("-1".to_owned(), "RSEQ_CPU_ID_UNINITIALIZED".to_owned()),
-                    -2 => self.named_value(
-                        "-2".to_owned(),
-                        "RSEQ_CPU_ID_REGISTRATION_FAILED".to_owned(),
-                    ),
+                    -1 => self.constant("RSEQ_CPU_ID_UNINITIALIZED"),
+                    -2 => self.constant("RSEQ_CPU_ID_REGISTRATION_FAILED"),
                     cpu => self.number(cpu),
                 }
 
@@ -373,36 +356,10 @@ impl Decode<'_, '_> {
             }
             Struct::Stat => {
                 self.punct("{");
-                if self.style.verbose {
-                    self.field("st_dev");
-                    self.number(makedev(b.u64(0)?));
-                    self.punct(", ");
-                    self.field("st_ino");
-                    self.number(b.u64(8)?);
-                    self.punct(", ");
-                }
-
                 self.field("st_mode");
                 let mode = b.u32(24)?;
                 self.mode(mode);
                 self.punct(", ");
-                if self.style.verbose {
-                    self.field("st_nlink");
-                    self.number(b.u64(16)?);
-                    self.punct(", ");
-                    self.field("st_uid");
-                    self.number(b.u32(28)?);
-                    self.punct(", ");
-                    self.field("st_gid");
-                    self.number(b.u32(32)?);
-                    self.punct(", ");
-                    self.field("st_blksize");
-                    self.number(b.i64(56)?);
-                    self.punct(", ");
-                    self.field("st_blocks");
-                    self.number(b.i64(64)?);
-                    self.punct(", ");
-                }
 
                 // A device has numbers where a file has a size.
                 let kind = b.u32(24)? & 0o170_000;
@@ -414,10 +371,7 @@ impl Decode<'_, '_> {
                     self.number(b.i64(48)?);
                 }
 
-                if !self.style.verbose {
-                    self.more();
-                }
-
+                self.more();
                 self.punct("}");
             }
             Struct::Statx => {
@@ -516,20 +470,7 @@ impl Decode<'_, '_> {
                 self.punct(", ");
                 self.field("nodename");
                 self.out.push(Kind::String, field(65)?);
-                if self.style.verbose {
-                    for (name, at) in [
-                        ("release", 130),
-                        ("version", 195),
-                        ("machine", 260),
-                        ("domainname", 325),
-                    ] {
-                        self.punct(", ");
-                        self.field(name);
-                        self.out.push(Kind::String, field(at)?);
-                    }
-                } else {
-                    self.more();
-                }
+                self.more();
 
                 self.punct("}");
             }
@@ -650,9 +591,9 @@ impl Decode<'_, '_> {
                 };
 
                 self.punct("[");
-                super::descriptor(self.out, process, b.i32(0)?.into(), self.style, made);
+                super::descriptor(self.out, process, b.i32(0)?.into(), made);
                 self.punct(", ");
-                super::descriptor(self.out, process, b.i32(4)?.into(), self.style, made);
+                super::descriptor(self.out, process, b.i32(4)?.into(), made);
                 self.punct("]");
             }
             Struct::Siginfo => siginfo(self.out, b.0)?,
@@ -681,7 +622,7 @@ impl Decode<'_, '_> {
                 self.punct("{");
                 self.field("flags");
                 let mut tokens = Tokens::default();
-                super::flags(&mut tokens, self.event, "open", b.u64(0)?, self.style);
+                super::flags(&mut tokens, self.event, "open", b.u64(0)?);
                 self.out.0.extend(tokens.0);
                 self.punct(", ");
                 self.field("mode");
@@ -765,9 +706,9 @@ impl Decode<'_, '_> {
             super::quote(
                 self.out,
                 shown,
-                Some(self.style.string_limit),
+                Some(super::STRING_LIMIT),
                 shown.len() < length,
-                self.style,
+                false,
             );
             self.punct(", ");
             self.field("iov_len");

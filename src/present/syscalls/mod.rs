@@ -14,7 +14,7 @@ mod tests;
 use std::fmt::Write as _;
 
 use microscope::syscalls::blobs;
-use microscope::syscalls::fds::{FdTable, Kind as FdKind};
+use microscope::syscalls::fds::FdTable;
 use microscope::syscalls::filter::fd_value;
 use microscope::syscalls::specs::{self, Arg, Count, Direction, MemKind, Ret, Spec};
 use microscope::syscalls::{
@@ -88,70 +88,8 @@ pub struct Token {
     pub text: String,
 }
 
-/// How strings are escaped (`-x`, `-xx`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Hex {
-    #[default]
-    Never,
-    NonAscii,
-    All,
-}
-
-/// How constants print (`-X`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Constants {
-    /// Names, as `O_RDONLY|O_CLOEXEC`.
-    #[default]
-    Abbrev,
-
-    /// Numbers only.
-    Raw,
-
-    /// Numbers with their names in comments.
-    Verbose,
-}
-
-/// What `-y` prints beside descriptors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FdStyle {
-    #[default]
-    Number,
-    Paths,
-    All,
-}
-
-/// Everything that changes how a call prints.
-#[derive(Debug, Clone)]
-pub struct Style {
-    /// `-s`: bytes of a string or buffer shown.
-    pub string_limit: usize,
-    pub hex: Hex,
-    pub constants: Constants,
-
-    /// `-v`: whole structures and environments.
-    pub verbose: bool,
-    pub fds: FdStyle,
-
-    /// `-N`: arguments named as the kernel names them.
-    pub arg_names: bool,
-
-    /// `-e raw=`: this call prints raw words.
-    pub raw: bool,
-}
-
-impl Default for Style {
-    fn default() -> Self {
-        Self {
-            string_limit: 32,
-            hex: Hex::Never,
-            constants: Constants::Abbrev,
-            verbose: false,
-            fds: FdStyle::Number,
-            arg_names: false,
-            raw: false,
-        }
-    }
-}
+/// Bytes of a string or buffer shown.
+const STRING_LIMIT: usize = 32;
 
 /// Builds a line of tokens.
 #[derive(Debug, Default)]
@@ -315,47 +253,42 @@ pub fn caught(stop: &microscope::SyscallStop) -> String {
         flags: microscope::syscalls::EventFlags::default(),
     };
 
-    let style = Style::default();
     let context = Context {
         fds: None,
         before: true,
     };
 
     if stop.returned.is_some() {
-        call(&event, &style, context).text()
+        call(&event, context).text()
     } else {
-        entry(&event, &style, context).text()
+        entry(&event, context).text()
     }
 }
 
 /// Formats `name(arguments) = result`, without a prefix or duration.
 #[must_use]
-pub fn call(event: &SyscallEvent, style: &Style, context: Context<'_>) -> Tokens {
-    let mut out = entry(event, style, context);
-    let spec = (!style.raw).then(|| specs::spec(event.call)).flatten();
-    result(&mut out, event, spec, style, context);
+pub fn call(event: &SyscallEvent, context: Context<'_>) -> Tokens {
+    let mut out = entry(event, context);
+    let spec = specs::spec(event.call);
+    result(&mut out, event, spec, context);
     out
 }
 
 /// Formats ` = result`: what follows [`entry`], read against the
 /// descriptors as the call left them.
 #[must_use]
-pub fn returned(event: &SyscallEvent, style: &Style, context: Context<'_>) -> Tokens {
+pub fn returned(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     let mut out = Tokens::default();
-    let spec = (!style.raw).then(|| specs::spec(event.call)).flatten();
-    result(&mut out, event, spec, style, context);
+    let spec = specs::spec(event.call);
+    result(&mut out, event, spec, context);
     out
 }
 
 /// Each argument a call shows, with the kernel's name for it, apart: what
 /// scripts read.
 #[must_use]
-pub fn argument_values(
-    event: &SyscallEvent,
-    style: &Style,
-    context: Context<'_>,
-) -> Vec<(String, Tokens)> {
-    let Some(spec) = (!style.raw).then(|| specs::spec(event.call)).flatten() else {
+pub fn argument_values(event: &SyscallEvent, context: Context<'_>) -> Vec<(String, Tokens)> {
+    let Some(spec) = specs::spec(event.call) else {
         return event
             .args
             .iter()
@@ -377,7 +310,7 @@ pub fn argument_values(
         .take(shown)
         .map(|(index, arg)| {
             let mut out = Tokens::default();
-            argument(&mut out, event, index, *arg, spec, style, context);
+            argument(&mut out, event, index, *arg, spec, context);
             let name = names
                 .and_then(|names| names.get(index))
                 .map_or_else(|| format!("arg{index}"), |&name| name.to_owned());
@@ -388,15 +321,15 @@ pub fn argument_values(
 
 /// Formats `name(arguments)`: a call as its entry shows it.
 #[must_use]
-pub fn entry(event: &SyscallEvent, style: &Style, context: Context<'_>) -> Tokens {
+pub fn entry(event: &SyscallEvent, context: Context<'_>) -> Tokens {
     let mut out = Tokens::default();
     let name = event.call.display_name();
     out.push(Kind::Name, name.as_ref());
     out.punct("(");
-    let spec = (!style.raw).then(|| specs::spec(event.call)).flatten();
+    let spec = specs::spec(event.call);
 
     match spec {
-        Some(spec) => arguments(&mut out, event, spec, style, context),
+        Some(spec) => arguments(&mut out, event, spec, context),
         None => {
             // Without a spec every word prints, in hex.
             for (index, &word) in event.args.iter().enumerate() {
@@ -440,7 +373,7 @@ fn shown_arguments(event: &SyscallEvent, spec: &Spec) -> usize {
 
 /// strace's own form of `clone`: named arguments, of which only those
 /// the flags use.
-fn clone_arguments(out: &mut Tokens, event: &SyscallEvent, style: &Style) {
+fn clone_arguments(out: &mut Tokens, event: &SyscallEvent) {
     const CLONE_SETTLS: u64 = 0x0008_0000;
     const CLONE_PARENT_SETTID: u64 = 0x0010_0000;
     const CLONE_CHILD_CLEARTID: u64 = 0x0020_0000;
@@ -450,7 +383,7 @@ fn clone_arguments(out: &mut Tokens, event: &SyscallEvent, style: &Style) {
     pointer(out, stack);
     out.punct(", ");
     out.field("flags");
-    flags(out, event, "clone", flag_word, style);
+    flags(out, event, "clone", flag_word);
     if flag_word & CLONE_PARENT_SETTID != 0 {
         out.punct(", ");
         out.field("parent_tid");
@@ -470,25 +403,12 @@ fn clone_arguments(out: &mut Tokens, event: &SyscallEvent, style: &Style) {
     }
 }
 
-fn arguments(
-    out: &mut Tokens,
-    event: &SyscallEvent,
-    spec: &Spec,
-    style: &Style,
-    context: Context<'_>,
-) {
-    if event.call.name() == Some("clone")
-        && event.call.abi == Abi::X86_64
-        && style.constants != Constants::Raw
-    {
-        clone_arguments(out, event, style);
+fn arguments(out: &mut Tokens, event: &SyscallEvent, spec: &Spec, context: Context<'_>) {
+    if event.call.name() == Some("clone") && event.call.abi == Abi::X86_64 {
+        clone_arguments(out, event);
         return;
     }
 
-    let names = style
-        .arg_names
-        .then(|| specs::arg_names(event.call))
-        .flatten();
     let shown = shown_arguments(event, spec);
 
     for (index, arg) in spec.args.iter().enumerate().take(shown) {
@@ -496,11 +416,7 @@ fn arguments(
             out.punct(", ");
         }
 
-        if let Some(name) = names.and_then(|names| names.get(index)) {
-            out.field(name);
-        }
-
-        argument(out, event, index, *arg, spec, style, context);
+        argument(out, event, index, *arg, spec, context);
     }
 }
 
@@ -541,58 +457,34 @@ fn octal(out: &mut Tokens, value: u64) {
     }
 }
 
-/// A descriptor, with what it refers to under `-y`.
-pub(super) fn descriptor(
-    out: &mut Tokens,
-    process: Pid,
-    fd: i64,
-    style: &Style,
-    context: Context<'_>,
-) {
+/// A descriptor, with what it refers to when the descriptors are known.
+pub(super) fn descriptor(out: &mut Tokens, process: Pid, fd: i64, context: Context<'_>) {
     out.push(Kind::Fd, fd.to_string());
-    if style.fds == FdStyle::Number || fd < 0 {
+    let Some(table) = context.fds.filter(|_| fd >= 0) else {
         return;
-    }
+    };
 
-    let described = context.fds.and_then(|table| {
+    let described = {
         if context.before {
             table.describe_before(process, fd)
         } else {
             table.describe(process, fd)
         }
-    });
-    if described.is_none() && closed(process, context) {
+    };
+
+    // A descriptor the table lacks is known not to be open once the table
+    // knows its process, and then prints as a bare number.
+    if described.is_none() && table.knows(process) {
         return;
     }
 
     out.punct("<");
     match described {
-        Some(description) => {
-            out.push(Kind::Path, description.text.as_ref());
-            if let (FdStyle::All, FdKind::Device(device)) = (style.fds, &description.kind) {
-                out.punct("<");
-                out.push(
-                    Kind::Path,
-                    format!(
-                        "{} {}:{}",
-                        if device.block { "block" } else { "char" },
-                        device.major,
-                        device.minor
-                    ),
-                );
-                out.punct(">");
-            }
-        }
+        Some(description) => out.push(Kind::Path, description.text.as_ref()),
         None => out.push(Kind::Missing, "?"),
     }
 
     out.punct(">");
-}
-
-/// Whether a descriptor the table lacks is known not to be open, which
-/// strace prints as a bare number.
-fn closed(process: Pid, context: Context<'_>) -> bool {
-    context.fds.is_some_and(|table| table.knows(process))
 }
 
 fn argument(
@@ -601,7 +493,6 @@ fn argument(
     index: usize,
     arg: Arg,
     spec: &Spec,
-    style: &Style,
     context: Context<'_>,
 ) {
     #[expect(
@@ -610,7 +501,6 @@ fn argument(
     )]
     let word = event.args[index];
 
-    // -X raw changes only names: numbers, sizes, and NULL print as ever.
     match arg {
         Arg::Int | Arg::Pid | Arg::Uid | Arg::Gid => out.number(int(word)),
         Arg::Long => out.number(long(word)),
@@ -619,62 +509,34 @@ fn argument(
         Arg::Hex => hex(out, word),
         Arg::Octal | Arg::Mode => octal(out, word & 0xffff_ffff),
         Arg::Ptr => pointer(out, word),
-        Arg::Fd => descriptor(out, event.process, fd_value(word), style, context),
+        Arg::Fd => descriptor(out, event.process, fd_value(word), context),
         Arg::DirFd => {
             if int(word) == libc::AT_FDCWD {
-                match style.constants {
-                    Constants::Abbrev => out.push(Kind::Constant, "AT_FDCWD"),
-                    Constants::Raw => out.number(libc::AT_FDCWD),
-                    Constants::Verbose => {
-                        out.number(libc::AT_FDCWD);
-                        out.push(Kind::Comment, " /* AT_FDCWD */");
-                    }
-                }
-
-                // strace names the working directory under -y.
-                if style.fds != FdStyle::Number
-                    && let Some(cwd) = context
-                        .fds
-                        .and_then(|table| table.describe(event.process, i64::from(libc::AT_FDCWD)))
+                out.push(Kind::Constant, "AT_FDCWD");
+                if let Some(cwd) = context
+                    .fds
+                    .and_then(|table| table.describe(event.process, i64::from(libc::AT_FDCWD)))
                 {
                     out.punct("<");
                     out.push(Kind::Path, cwd.text.as_ref());
                     out.punct(">");
                 }
             } else {
-                descriptor(out, event.process, fd_value(word), style, context);
+                descriptor(out, event.process, fd_value(word), context);
             }
         }
-        Arg::Signal => constant(
-            out,
-            &signal(int(word)),
-            u64::from(int(word).cast_unsigned()),
-            style,
-        ),
-        Arg::Flags(set) => flags(out, event, set, word, style),
+        Arg::Signal => out.push(Kind::Constant, signal(int(word))),
+        Arg::Flags(set) => flags(out, event, set, word),
         // Protocols have names only within the internet families.
         Arg::Enum("ipproto") if !matches!(event.args[0], 2 | 10) => out.number(int(word)),
-        Arg::Enum(set) => enumeration(out, set, word, style),
-        Arg::Path | Arg::Str => string_argument(out, event, index, word, arg == Arg::Path, style),
-        Arg::StrArray => string_array(out, event, index, word, style),
+        Arg::Enum(set) => enumeration(out, set, word),
+        Arg::Path | Arg::Str => string_argument(out, event, index, word, arg == Arg::Path),
+        Arg::StrArray => string_array(out, event, index, word),
         Arg::Mem {
             direction,
             kind,
             count,
-        } => memory(
-            out, event, index, direction, kind, count, spec, style, context,
-        ),
-    }
-}
-
-fn constant(out: &mut Tokens, name: &str, value: u64, style: &Style) {
-    match style.constants {
-        Constants::Abbrev => out.push(Kind::Constant, name),
-        Constants::Raw => hex(out, value),
-        Constants::Verbose => {
-            hex(out, value);
-            out.push(Kind::Comment, format!(" /* {name} */"));
-        }
+        } => memory(out, event, index, direction, kind, count, spec, context),
     }
 }
 
@@ -695,7 +557,7 @@ fn named_bits(names: &[(u64, &str)], mut value: u64) -> Vec<String> {
     parts
 }
 
-fn flags(out: &mut Tokens, event: &SyscallEvent, set: &str, word: u64, style: &Style) {
+fn flags(out: &mut Tokens, event: &SyscallEvent, set: &str, word: u64) {
     let Some(definition) = sets::set(set) else {
         hex(out, word);
         return;
@@ -787,10 +649,10 @@ fn flags(out: &mut Tokens, event: &SyscallEvent, set: &str, word: u64, style: &S
         }
     }
 
-    constant(out, &parts.join("|"), value, style);
+    out.push(Kind::Constant, parts.join("|"));
 }
 
-fn enumeration(out: &mut Tokens, set: &str, word: u64, style: &Style) {
+fn enumeration(out: &mut Tokens, set: &str, word: u64) {
     let Some(definition) = sets::set(set) else {
         hex(out, word);
         return;
@@ -826,12 +688,12 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64, style: &Style) {
             let _ = write!(text, "|{rest:#x}");
         }
 
-        constant(out, &text, value, style);
+        out.push(Kind::Constant, text);
         return;
     }
 
     match definition.names.iter().find(|&&(v, _)| v == value) {
-        Some(&(_, name)) => constant(out, name, value, style),
+        Some(&(_, name)) => out.push(Kind::Constant, name),
         None if definition.shape == Shape::Enum => {
             if set == "ioctl" {
                 hex(out, value);
@@ -843,16 +705,11 @@ fn enumeration(out: &mut Tokens, set: &str, word: u64, style: &Style) {
     }
 }
 
-/// Escapes bytes as strace quotes them.
-fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, style: &Style) {
+/// Escapes bytes as strace quotes them, or every byte in hex.
+fn quote(out: &mut Tokens, bytes: &[u8], limit: Option<usize>, truncated: bool, all_hex: bool) {
     let shown = limit.map_or(bytes, |limit| bytes.get(..limit).unwrap_or(bytes));
     let mut text = String::with_capacity(shown.len() + 2);
     text.push('"');
-    let all_hex = style.hex == Hex::All
-        || (style.hex == Hex::NonAscii
-            && shown
-                .iter()
-                .any(|&byte| !(0x20..0x7f).contains(&byte) && !b"\t\n\r".contains(&byte)));
 
     for (position, &byte) in shown.iter().enumerate() {
         if all_hex {
@@ -896,14 +753,7 @@ fn unread(out: &mut Tokens, word: u64, capture: Option<&Capture>) {
     }
 }
 
-fn string_argument(
-    out: &mut Tokens,
-    event: &SyscallEvent,
-    index: usize,
-    word: u64,
-    path: bool,
-    style: &Style,
-) {
+fn string_argument(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u64, path: bool) {
     #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
     let capture = event.capture(index as u8);
 
@@ -925,16 +775,16 @@ fn string_argument(
             quote(
                 out,
                 bytes,
-                (!path).then_some(style.string_limit),
+                (!path).then_some(STRING_LIMIT),
                 truncated,
-                style,
+                false,
             );
         }
         _ => unread(out, word, capture),
     }
 }
 
-fn string_array(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u64, style: &Style) {
+fn string_array(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u64) {
     #[expect(clippy::cast_possible_truncation, reason = "six arguments")]
     let capture = event.capture(index as u8);
     let Some(capture) = capture.filter(|capture| {
@@ -949,14 +799,13 @@ fn string_array(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u64,
 
     let (count, elements) = blobs::strings(&capture.bytes);
 
-    // The environment, the second array, abbreviates to its size.
-    if index == 2
-        && !style.verbose
-        && event
-            .call
-            .name()
-            .is_some_and(|name| name.starts_with("execve"))
-    {
+    // The environment abbreviates to its size.
+    let environment = match event.call.name() {
+        Some("execve") => Some(2),
+        Some("execveat") => Some(3),
+        _ => None,
+    };
+    if environment == Some(index) {
         pointer(out, word);
         let vars = count.map_or_else(|| format!("{}+", elements.len()), |count| count.to_string());
         out.push(Kind::Comment, format!(" /* {vars} vars */"));
@@ -969,7 +818,7 @@ fn string_array(out: &mut Tokens, event: &SyscallEvent, index: usize, word: u64,
             out.punct(", ");
         }
 
-        quote(out, element, Some(style.string_limit), false, style);
+        quote(out, element, Some(STRING_LIMIT), false, false);
     }
 
     let complete = count.is_some_and(|count| count as usize == elements.len());
@@ -996,7 +845,6 @@ fn memory(
     kind: MemKind,
     count: Count,
     spec: &Spec,
-    style: &Style,
     context: Context<'_>,
 ) {
     #[expect(
@@ -1042,18 +890,8 @@ fn memory(
                 matches!(capture.state, CaptureState::Truncated { .. }) || shown.len() < length;
 
             // Random bytes are not text; strace prints them in hex.
-            let random = Style {
-                hex: Hex::All,
-                ..style.clone()
-            };
-
-            let style = if event.call.name() == Some("getrandom") {
-                &random
-            } else {
-                style
-            };
-
-            quote(out, shown, Some(style.string_limit), truncated, style);
+            let random = event.call.name() == Some("getrandom");
+            quote(out, shown, Some(STRING_LIMIT), truncated, random);
         }
         MemKind::Struct(structure) if event.call.abi != Abi::X86_64 => {
             // Compat layouts differ; the address is all that prints.
@@ -1078,7 +916,6 @@ fn memory(
                 event,
                 index,
                 spec,
-                style,
                 context,
             };
 
@@ -1093,13 +930,7 @@ fn memory(
 }
 
 /// The ` = result` part.
-fn result(
-    out: &mut Tokens,
-    event: &SyscallEvent,
-    spec: Option<&Spec>,
-    style: &Style,
-    context: Context<'_>,
-) {
+fn result(out: &mut Tokens, event: &SyscallEvent, spec: Option<&Spec>, context: Context<'_>) {
     out.punct(" = ");
     match event.outcome {
         Outcome::Returned(value) => {
@@ -1108,7 +939,7 @@ fn result(
             match ret {
                 Ret::Hex => hex(out, value.cast_unsigned()),
                 Ret::Octal => octal(out, value.cast_unsigned()),
-                Ret::Fd => descriptor(out, event.process, value, style, context),
+                Ret::Fd => descriptor(out, event.process, value, context),
                 Ret::Int | Ret::Uint | Ret::Pid | Ret::None => out.number(value),
             }
         }
@@ -1140,51 +971,6 @@ fn result(
 
     if event.flags.contains(EventFlags::ABI_UNCERTAIN) {
         out.push(Kind::Comment, " /* ABI uncertain */");
-    }
-}
-
-/// How finely `-T` and `-r` print a time: strace's PRECISION.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Precision {
-    Seconds,
-    Milliseconds,
-    #[default]
-    Microseconds,
-    Nanoseconds,
-}
-
-impl Precision {
-    /// strace's names, in any case: `s`, `ms`, `us`, `ns`.
-    #[must_use]
-    pub fn named(name: &str) -> Option<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "s" => Some(Self::Seconds),
-            "ms" => Some(Self::Milliseconds),
-            "us" => Some(Self::Microseconds),
-            "ns" => Some(Self::Nanoseconds),
-            _ => None,
-        }
-    }
-
-    /// The digits after the point, and the nanoseconds in the last.
-    const fn digits(self) -> (usize, u64) {
-        match self {
-            Self::Seconds => (0, 1_000_000_000),
-            Self::Milliseconds => (3, 1_000_000),
-            Self::Microseconds => (6, 1_000),
-            Self::Nanoseconds => (9, 1),
-        }
-    }
-}
-
-/// Seconds to `precision`, cut rather than rounded, as `-T` and `-r` print
-/// them: `0.000003` in microseconds, `0` in seconds.
-#[must_use]
-pub fn seconds(nanoseconds: u64, precision: Precision) -> String {
-    let whole = nanoseconds / 1_000_000_000;
-    match precision.digits() {
-        (0, _) => whole.to_string(),
-        (digits, unit) => format!("{whole}.{:0digits$}", nanoseconds % 1_000_000_000 / unit),
     }
 }
 

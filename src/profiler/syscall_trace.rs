@@ -17,8 +17,9 @@ use crate::capture::builder::CaptureBuilder;
 use crate::syscalls::captures::Limits;
 use crate::syscalls::fds::{self, FdTable};
 use crate::syscalls::filter::{self, Filter};
+use crate::syscalls::specs::{self, Class, Ret};
 use crate::syscalls::stats::Folded;
-use crate::syscalls::{CallSet, Errno, Outcome, SyscallEvent, TraceEvent};
+use crate::syscalls::{CallSet, Errno, Outcome, SyscallEvent, SyscallId, TraceEvent};
 
 /// How much of each system call a recording keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -204,16 +205,20 @@ impl SyscallOptions {
         )))
     }
 
-    /// The calls the engine must see: those kept, and every call that
-    /// changes a descriptor, so that the paths of those kept are right.
+    /// The calls the engine must see: those kept, and when they name
+    /// paths or descriptors, every call that changes a descriptor, so that
+    /// the paths are right. A few calls that name neither attach through
+    /// their kernel functions alone.
     pub(super) fn traced(&self) -> CallSet {
         let Some((_, filter)) = &self.filter else {
             return CallSet::all();
         };
 
         let mut calls = filter.calls.clone();
-        for call in fds::followed() {
-            calls.insert(call);
+        if !filter.paths.is_empty() || filter.fds.is_some() || calls.iter().any(names_files) {
+            for call in fds::followed() {
+                calls.insert(call);
+            }
         }
 
         calls
@@ -275,8 +280,9 @@ struct Shared {
     /// Each setting the engine reported.
     settings: Vec<(String, String)>,
 
-    /// Whether to drop events before a cut's start: a window's.
-    windowed: bool,
+    /// A window's length: its cuts copy events and counts, which go only
+    /// once they are older than every window that could hold them.
+    window: Option<u64>,
 
     /// Whether the engine reads its counts every second, for a recording
     /// cut while it runs, or only at its end.
@@ -519,7 +525,6 @@ impl SyscallTrace {
                     .map_or(options.slow, |slow| slow.min(options.slow)),
                 per_second: KEPT_PER_SECOND,
             }),
-            ..BpfOptions::default()
         };
 
         let stacks = trace.stacks.clone();
@@ -527,7 +532,10 @@ impl SyscallTrace {
             events: VecDeque::new(),
             counted: VecDeque::new(),
             settings: Vec::new(),
-            windowed: matches!(recording.cuts, Cuts::Window(_)),
+            window: match recording.cuts {
+                Cuts::Window(span) => Some(u64::try_from(span.as_nanos()).unwrap_or(u64::MAX)),
+                Cuts::Whole | Cuts::Segments(_) => None,
+            },
             flushing: recording.cuts != Cuts::Whole,
             last_flush: 0,
             trigger: None,
@@ -632,8 +640,8 @@ impl SyscallTrace {
         true
     }
 
-    /// `samples` with the calls and counts of their span. Those after it
-    /// stay for the next cut; a window's before it go.
+    /// `samples` with the calls and counts of their span. A segment's go
+    /// with it; a window's stay until the window rolls past them.
     pub(super) fn cut(&self, samples: &Capture) -> Capture {
         cut(&self.shared, self.stacks.as_ref(), samples, false)
     }
@@ -653,6 +661,17 @@ impl SyscallTrace {
     }
 }
 
+/// Whether `call` takes or makes a descriptor or names a path. One without
+/// a spec is never decoded, so names neither.
+fn names_files(call: SyscallId) -> bool {
+    specs::spec(call).is_some_and(|spec| {
+        spec.ret == Ret::Fd
+            || spec.classes.contains(Class::Net)
+            || spec.classes.contains(Class::Desc)
+            || spec.classes.contains(Class::File)
+    })
+}
+
 /// Traces `traced` with the BPF engine run as `bpf` says, or with ptrace.
 fn run(
     traced: Traced,
@@ -666,8 +685,7 @@ fn run(
             bpf::trace_held(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
         }
         (Traced::Running(pid), Some(engine)) => {
-            bpf::trace(Target::Attach(vec![pid]), trace, engine, stop, sink)
-                .map_err(|error| error.to_string())
+            bpf::trace_running(pid, trace, engine, stop, sink).map_err(|error| error.to_string())
         }
         (Traced::Held(pid), None) => {
             ptrace::trace_held(pid, trace, stop, sink).map_err(|error| error.to_string())
@@ -700,38 +718,58 @@ fn cut(
             capture.setting("trigger", &reason);
         }
 
-        let windowed = shared.windowed;
-        while windowed
-            && shared
+        // Calls before the profiler's first record are in a window until it
+        // rolls past them.
+        if let Some(length) = shared.window {
+            let passed = start.min(stop.saturating_sub(length));
+            while shared
                 .events
                 .front()
-                .is_some_and(|event| event.time() < start)
-        {
-            shared.events.pop_front();
-        }
+                .is_some_and(|event| event.time() < passed)
+            {
+                shared.events.pop_front();
+            }
 
-        while windowed
-            && shared
+            while shared
                 .counted
                 .front()
-                .is_some_and(|(time, _)| *time <= start)
-        {
-            shared.counted.pop_front();
-        }
-
-        while let Some(event) = shared
-            .events
-            .pop_front_if(|event| end || event.time() < stop)
-        {
-            capture.event(&event);
+                .is_some_and(|(time, _)| *time <= passed)
+            {
+                shared.counted.pop_front();
+            }
         }
 
         let mut counted = Folded::default();
-        while let Some((_, stats)) = shared
-            .counted
-            .pop_front_if(|(time, _)| end || *time <= stop)
-        {
-            counted.merge(&stats);
+        if shared.window.is_some() {
+            for event in shared
+                .events
+                .iter()
+                .filter(|event| end || event.time() < stop)
+            {
+                capture.event(event);
+            }
+
+            for (_, stats) in shared
+                .counted
+                .iter()
+                .filter(|(time, _)| end || *time <= stop)
+            {
+                counted.merge(stats);
+            }
+        } else {
+            while let Some(event) = shared
+                .events
+                .pop_front_if(|event| end || event.time() < stop)
+            {
+                capture.event(&event);
+            }
+
+            while let Some((_, stats)) = shared
+                .counted
+                .pop_front_if(|(time, _)| end || *time <= stop)
+            {
+                counted.merge(&stats);
+            }
         }
 
         if !counted.by_call.is_empty() {
@@ -777,6 +815,27 @@ mod tests {
             .check()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn only_calls_that_name_files_follow_descriptors() {
+        let traced = |expression: &str| {
+            let filter = Filter::parse(&[expression.to_owned()], &|_| None).expect("a filter");
+            SyscallOptions {
+                filter: Some((expression.to_owned(), filter)),
+                ..SyscallOptions::preset(Preset::Development)
+            }
+            .traced()
+        };
+        let named = |name| SyscallId::named(crate::syscalls::Abi::X86_64, name).expect("a call");
+
+        let exits = traced("trace=rt_sigprocmask,clone,clone3,wait4,exit,exit_group,kill");
+        assert!(exits.contains(named("kill")));
+        assert!(!exits.contains(named("openat")));
+
+        for expression in ["trace=read", "trace=connect", "trace=unlink", "trace=pipe2"] {
+            assert!(traced(expression).contains(named("dup2")), "{expression}");
+        }
     }
 
     #[test]

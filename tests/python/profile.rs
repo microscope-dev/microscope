@@ -3,7 +3,6 @@
 //! the GIL.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::ops::RangeInclusive;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1063,21 +1062,8 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
 /// so these run only through `just test-bpf`, which records through the
 /// `microscope-bpf` wrapper.
 mod bpf {
-    use std::path::PathBuf;
-
     use super::*;
-
-    fn launcher() -> PathBuf {
-        std::env::var_os("MICROSCOPE_BPF_LAUNCHER").map_or_else(
-            || {
-                panic!(
-                    "MICROSCOPE_BPF_LAUNCHER names no launcher: run these with `just test-bpf`, \
-                     which records through the microscope-bpf wrapper"
-                )
-            },
-            PathBuf::from,
-        )
-    }
+    use crate::support::held;
 
     /// `fixture` run by `interpreter` with `environment`, as the BPF
     /// tests record it.
@@ -1099,102 +1085,15 @@ mod bpf {
     }
 
     /// The profile of `program`, recorded by the BPF engine while it is
-    /// held on its standard input. The recording runs in a process of its
-    /// own, so the test asks it for its window with SIGUSR2 and gives the
-    /// program as many lines as `lines` says of each window, until it has
-    /// given `release` of them, or the deadline passes.
+    /// held on its standard input, given lines as `lines` says of each
+    /// window until it has `release` of them ([`held::recorded_until`]).
     fn recorded_until(
         program: &Command,
         release: usize,
-        mut lines: impl FnMut(&Profile) -> usize,
+        lines: impl FnMut(&Profile) -> usize,
     ) -> Profile {
-        use std::io::BufRead as _;
-
-        let scratch = crate::support::ScratchDir::new("python-bpf");
-        let output = scratch.path().join("bpf.usprof");
-        let mut child = Command::new(launcher())
-            .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--python", "bpf", "--window", "3600", "--output"])
-            .arg(&output)
-            .arg("--")
-            .arg(program.get_program())
-            .args(program.get_args())
-            .envs(
-                program
-                    .get_envs()
-                    .filter_map(|(name, value)| Some((name, value?))),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("run microscope");
-
-        // microscope's lines, each sent as it comes, and all of them once
-        // it ends.
-        let (said, heard) = std::sync::mpsc::channel();
-        let stderr = std::io::BufReader::new(child.stderr.take().expect("its errors"));
-        let reader = std::thread::spawn(move || {
-            let mut all = String::new();
-            for line in stderr.lines() {
-                let line = line.expect("microscope's errors");
-                all.push_str(&line);
-                all.push('\n');
-                let _ = said.send(line);
-            }
-            all
-        });
-        let deadline = Instant::now() + READY_DEADLINE;
-        let next = |what: &str| loop {
-            let Ok(line) = heard.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            else {
-                return None;
-            };
-            if let Some(rest) = line.strip_prefix(what) {
-                return Some(rest.to_owned());
-            }
-        };
-
-        // The window's saves, and the pid they are asked of, once
-        // microscope handles SIGUSR2.
-        let pid = next("microscope: keeping the last ")
-            .and_then(|rest| {
-                let (_, pid) = rest.split_once("`kill -USR2 ")?;
-                pid.split_once('`')?.0.parse().ok()
-            })
-            .map(nix::unistd::Pid::from_raw);
-        let mut input = child.stdin.take().expect("its input");
-        let mut given = 0;
-        while let Some(pid) = pid
-            && given < release
-        {
-            nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGUSR2)
-                .expect("ask for the window");
-            let Some(saved) = next("microscope: saved ") else {
-                break;
-            };
-            let path = saved
-                .split_once(" samples of the window to ")
-                .expect("where the window went")
-                .1;
-            let window = Profile::read(std::path::Path::new(path))
-                .expect("read the window")
-                .profile;
-            let wanted = lines(&window).min(release);
-            while given < wanted {
-                // A program that ended on its own has nothing to let go.
-                let _ = input.write_all(b"\n");
-                given += 1;
-            }
-        }
-        drop(input);
-
-        let status = child.wait().expect("microscope finishes");
-        let stderr = reader.join().expect("microscope's errors");
-        assert!(status.success(), "{stderr}");
-        Profile::read(&output).expect("read the profile").profile
+        held::recorded_until(held::bpf(), program, &["--python", "bpf"], release, lines).0
     }
-
     /// [`recorded_until`] for a program held once, until `ready`.
     fn recorded_when(program: &Command, mut ready: impl FnMut(&Profile) -> bool) -> Profile {
         recorded_until(program, 1, |window| usize::from(ready(window)))
@@ -1283,7 +1182,7 @@ mod bpf {
         let scratch = crate::support::ScratchDir::new("python-bpf-short");
         for interpreter in PROFILED {
             let output = scratch.path().join(format!("{interpreter}.usprof"));
-            let finished = Command::new(launcher())
+            let finished = Command::new(held::launcher())
                 .arg(env!("CARGO_BIN_EXE_microscope"))
                 .args(["record", "--python", "bpf", "--output"])
                 .arg(&output)

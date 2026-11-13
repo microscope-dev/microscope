@@ -10,13 +10,13 @@ use crate::profiles::listed;
 use crate::support::{Scenario, ScratchDir, flight_recordings};
 use crate::web::{Client, Web};
 
-/// The syscalls fixture's trace in `mode`, by the ptrace engine with
-/// stacks, written in `directory`, where the program runs.
+/// A recording of the syscalls fixture in `mode`, its calls by the ptrace
+/// engine with stacks, written in `directory`, where the program runs.
 fn trace(directory: &Path, mode: &str) -> PathBuf {
     let path = directory.join(format!("{mode}.usprof"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
     command
-        .args(["syscalls", "--engine", "ptrace", "-f", "-k", "-o"])
+        .args(["record", "--syscall-engine", "ptrace", "-o"])
         .arg(&path)
         .arg("--")
         .arg(Scenario::fixture("syscalls"))
@@ -27,7 +27,7 @@ fn trace(directory: &Path, mode: &str) -> PathBuf {
 
     // A failing test keeps the tracer's recording beside the server's.
     let recording = flight_recordings::watch_adapter(&mut command);
-    let status = command.status().expect("run microscope syscalls");
+    let status = command.status().expect("run microscope record");
     if let Some(recording) = &recording {
         flight_recordings::adapter_finished(recording);
     }

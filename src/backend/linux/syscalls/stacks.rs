@@ -823,19 +823,6 @@ impl Stacks {
         unwinding.unwind(&mut self.rules, sample)
     }
 
-    /// The module where a frame-pointer chain broke, if known.
-    #[must_use]
-    pub fn frame_pointer_break(&self, process: Pid, stack: &CallStack) -> Option<Arc<str>> {
-        (stack.truncation() == Some(Truncation::FramePointerNotKept)).then_some(())?;
-        let &last = stack.addresses.last()?;
-        let code = if stack.addresses.len() == 1 {
-            last
-        } else {
-            last.wrapping_sub(1)
-        };
-        Some(self.mapping_at(process, code)?.path)
-    }
-
     /// Reads `process`'s mappings again when `frames` end at code in no
     /// module the reading knows, or at a return address into such code,
     /// as a runtime's that it mapped since, which a remap of code may have

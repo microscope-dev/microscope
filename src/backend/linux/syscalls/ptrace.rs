@@ -1,4 +1,4 @@
-//! The ptrace engine's tracer for `microscope syscalls --engine ptrace`: exact
+//! The ptrace engine's tracer for `record --syscall-engine ptrace`: exact
 //! and synchronous, for programs it launches or, at a high price, attaches
 //! to.
 //!
@@ -977,6 +977,7 @@ pub fn trace(
         Target::Attach(pids) => {
             for &pid in &pids {
                 seize_process(pid, trace_options(false, options.follow), &mut initial)?;
+                seed_descriptors(pid, sink);
                 sink.attached(pid);
             }
 
@@ -1020,6 +1021,9 @@ pub fn trace_held(
         trace_options(true, options.follow),
     )
     .map_err(|errno| TraceError::Attach { pid, errno })?;
+
+    // Held at its gate, it has the descriptors it will execute with.
+    seed_descriptors(pid, sink);
     sink.attached(pid);
     follow(
         Mode::Filtered,
@@ -1201,11 +1205,6 @@ fn run(tracer: &mut Tracer<'_>, stop: &AtomicBool, launched: bool) -> Result<Fin
 
 /// Reports every descriptor a process holds, as tracing begins.
 pub fn seed_descriptors(process: u32, sink: &mut dyn Sink) {
-    seed_descriptors_as(process, process, sink);
-}
-
-/// As [`seed_descriptors`], for a process whose id is shown as `shown`.
-pub fn seed_descriptors_as(process: u32, shown: u32, sink: &mut dyn Sink) {
     let Ok(entries) = std::fs::read_dir(format!("/proc/{process}/fd")) else {
         return;
     };
@@ -1217,11 +1216,7 @@ pub fn seed_descriptors_as(process: u32, shown: u32, sink: &mut dyn Sink) {
         .collect();
     fds.sort_unstable();
     for fd in std::iter::once(AT_FDCWD).chain(fds) {
-        if let Some(mut event) = descriptor(process, fd, time, false) {
-            if let TraceEvent::Descriptor { process, .. } = &mut event {
-                *process = syscalls::Pid::new(shown);
-            }
-
+        if let Some(event) = descriptor(process, fd, time, false) {
             sink.event(event);
         }
     }

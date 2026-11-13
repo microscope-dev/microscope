@@ -11,7 +11,7 @@ use microscope::syscalls::{Errno, Filter, Losses, SyscallStats, TraceEvent};
 
 use crate::cli::terminal::{Renderer, Role};
 use crate::present::syscalls::summary::{self, Column};
-use crate::present::syscalls::{self as present, Context, FdStyle, Kind, Style, Tokens};
+use crate::present::syscalls::{self as present, Context, Kind, Tokens};
 
 /// Writes a trace's events as lines, in the one layout: seconds since the
 /// recording began, the thread, the call with its descriptors' paths, and
@@ -23,7 +23,6 @@ pub struct Lines {
     fds: FdTable,
     filter: Option<Filter>,
     renderer: Renderer,
-    style: Style,
 }
 
 impl Lines {
@@ -33,11 +32,6 @@ impl Lines {
             fds: FdTable::default(),
             filter,
             renderer,
-            style: Style {
-                fds: FdStyle::Paths,
-                string_limit: 64,
-                ..Style::default()
-            },
         }
     }
 
@@ -80,16 +74,14 @@ impl Lines {
             fds: Some(&self.fds),
             before: true,
         };
-        let mut tokens = shown.then(|| present::entry(call, &self.style, before));
+        let mut tokens = shown.then(|| present::entry(call, before));
         self.fds.apply_call(call);
         let mut tokens = tokens.take()?;
         let after = Context {
             fds: Some(&self.fds),
             before: false,
         };
-        tokens
-            .0
-            .extend(present::returned(call, &self.style, after).0);
+        tokens.0.extend(present::returned(call, after).0);
         if let Some(took) = call.duration() {
             tokens.push(Kind::Time, format!(" <{}>", present::duration(took)));
         }
@@ -251,14 +243,7 @@ pub fn summary(profile: &Profile, limit: usize, out: &mut impl Write) -> Result<
 
     trace_notes(profile, syscalls.lost, out)?;
     writeln!(out)?;
-    let sort = summary::sort_key("time").map_err(anyhow::Error::msg)?;
-    for line in summary::table(
-        &calls,
-        &Column::DEFAULT,
-        sort,
-        summary::Unit::Microseconds,
-        &errno_name,
-    ) {
+    for line in summary::table(&calls, &Column::DEFAULT) {
         writeln!(out, "{line}")?;
     }
 
@@ -282,15 +267,7 @@ pub fn summary(profile: &Profile, limit: usize, out: &mut impl Write) -> Result<
         .iter()
         .map(|(site, stats)| (site.clone(), stats))
         .collect();
-    for line in summary::labelled(
-        rows,
-        &columns,
-        sort,
-        "site",
-        limit,
-        summary::Unit::Microseconds,
-        &errno_name,
-    ) {
+    for line in summary::labelled(rows, &columns, "site", limit) {
         writeln!(out, "{line}")?;
     }
 
@@ -329,11 +306,12 @@ pub fn brief(profile: &Profile, out: &mut impl Write) -> Result<()> {
         .iter()
         .take(BRIEF)
         .map(|(call, stats)| {
+            let plural = if stats.calls == 1 { "" } else { "s" };
             format!(
-                "{} {} × {}",
+                "{} {} in {} call{plural}",
                 named(call),
+                present::duration(stats.total_ns),
                 stats.calls,
-                present::duration(stats.total_ns)
             )
         })
         .collect();
