@@ -2318,3 +2318,119 @@ proptest! {
         prop_assert_eq!(kept, expected);
     }
 }
+
+#[test]
+fn a_kernel_lane_counts_calls_where_they_returned_and_spans_the_calls_a_thread_waited_in() {
+    let calls: [Call; 6] = [
+        (0, 5, 8, None),
+        (0, 12, 47, None),
+        (1, 95, 130, None),
+        (1, 50, 52, None),
+        (0, 200, 210, None),
+        (1, 70, UNSEEN_TIME, None),
+    ];
+    let mut capture = traced(&calls, &[], &[]);
+    capture.syscalls[3].outcome = crate::capture::records::CallOutcome::Failed as u8;
+    capture.syscalls[5].outcome = crate::capture::records::CallOutcome::Unfinished as u8;
+    let keys = Keys::new(&capture, Granularity::Function);
+    let query = Query {
+        range: Some((0, 100)),
+        ..Query::default()
+    };
+
+    let lanes = kernel_lanes(&capture, &keys, &query, 10);
+    let slices = |marked: &[(usize, u32)]| {
+        let mut counts = vec![0; 10];
+        for &(slice, count) in marked {
+            counts[slice] = count;
+        }
+        counts
+    };
+    assert_eq!(
+        lanes,
+        [
+            KernelLane {
+                thread: 0,
+                calls: slices(&[(0, 1), (4, 1)]),
+                failed: slices(&[]),
+                long: vec![(1, 12, 47)],
+            },
+            // The call still running at the end waits to it, and counts
+            // where it entered.
+            KernelLane {
+                thread: 1,
+                calls: slices(&[(5, 1), (7, 1)]),
+                failed: slices(&[(5, 1)]),
+                long: vec![(5, 70, 100), (2, 95, 100)],
+            },
+        ]
+    );
+
+    // A thread chosen keeps only its lane, and no range draws nothing.
+    let one = kernel_lanes(
+        &capture,
+        &keys,
+        &Query {
+            threads: Some(vec![1]),
+            ..query
+        },
+        10,
+    );
+    assert_eq!(one.iter().map(|lane| lane.thread).collect::<Vec<_>>(), [1]);
+    assert!(kernel_lanes(&capture, &keys, &Query::default(), 10).is_empty());
+}
+
+const UNSEEN_TIME: i64 = crate::capture::records::UNSEEN;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Each call the query keeps that returned in the range counts once,
+    /// in the slice its return falls in, and a call that spans a slice's
+    /// width is drawn over its part of the range.
+    #[test]
+    fn a_kernel_lane_holds_each_kept_call_once(
+        (calls, _) in calls_and_samples(),
+        thread in prop::option::of(0..2_u32),
+        (start, length) in (0..60_i64, 1..80_i64),
+        buckets in 1..12_usize,
+    ) {
+        let capture = traced(&calls, &[], &[]);
+        let keys = Keys::new(&capture, Granularity::Function);
+        let end = start + length;
+        let query = Query {
+            threads: thread.map(|thread| vec![thread]),
+            range: Some((start, end)),
+            ..Query::default()
+        };
+        let lanes = kernel_lanes(&capture, &keys, &query, buckets);
+
+        let mut expected: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        let width = length / i64::try_from(buckets).unwrap();
+        let mut long: BTreeMap<u32, Vec<(u32, i64, i64)>> = BTreeMap::new();
+        for (row, &(called, entered, exited, _)) in calls.iter().enumerate() {
+            if thread.is_some_and(|thread| thread != called) {
+                continue;
+            }
+            if (start..end).contains(&exited) {
+                let slice = usize::try_from((exited - start) * i64::try_from(buckets).unwrap() / length).unwrap();
+                expected.entry(called).or_insert_with(|| vec![0; buckets])[slice] += 1;
+            }
+            if exited - entered >= width.max(1) && entered.max(start) < exited.min(end) {
+                long.entry(called).or_default().push((u32::try_from(row).unwrap(), entered.max(start), exited.min(end)));
+            }
+        }
+
+        let threads: Vec<u32> = expected.keys().chain(long.keys()).copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        prop_assert_eq!(lanes.iter().map(|lane| lane.thread).collect::<Vec<_>>(), threads);
+        for lane in &lanes {
+            prop_assert_eq!(&lane.calls, &expected.get(&lane.thread).cloned().unwrap_or_else(|| vec![0; buckets]));
+            prop_assert!(lane.failed.iter().all(|&failed| failed == 0));
+            let mut spans = long.get(&lane.thread).cloned().unwrap_or_default();
+            spans.sort_by_key(|&(row, from, _)| (from, row));
+            let mut drawn = lane.long.clone();
+            drawn.sort_by_key(|&(row, from, _)| (from, row));
+            prop_assert_eq!(drawn, spans);
+        }
+    }
+}

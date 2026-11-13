@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import { assert } from "../../assert";
+import { kernelLines, stepAt, waitAt } from "../../profile/kernel";
 import {
   formatRange,
   type Instance,
@@ -36,7 +37,14 @@ import {
   timeTicks,
   zoomed,
 } from "../../profile/zones";
-import type { ProfileLane, ProfileMark, ProfilePlot, ProfileSummary } from "../../protocol";
+import type {
+  ProfileLane,
+  ProfileMark,
+  ProfileMarker,
+  ProfilePlot,
+  ProfileSummary,
+  ProfileWait,
+} from "../../protocol";
 import { useShownScheme } from "../../theme";
 import { NAMES, NAMES_STYLE, prepare, useWidth } from "./canvas";
 import { type ProfileFocus, token, useAnswer, useProfile } from "./context";
@@ -48,6 +56,8 @@ const RIBBON = 8;
 const ZONED_RIBBON = 4;
 const ROW = 16;
 const PLOT = 40;
+/** A thread's system calls, under its CPU when the profile has calls. */
+const KERNEL = 12;
 /** How far a press moves before it drags rather than clicks. */
 const DRAG = 4;
 /** Show only the tasks with the greatest weight. */
@@ -127,12 +137,16 @@ function rows(
   return tasks;
 }
 
-/** What the pointer is over: a zone block, a mark, or a lane's samples. */
+/** What the pointer is over: a zone block, a mark, a lane's samples or
+ * calls, and the budget's step there. */
 interface Hit {
   time: number;
   lane: number;
   block: number | null;
   mark: ProfileMark | null;
+  kernel: string[] | null;
+  wait: ProfileWait | null;
+  step: ProfileMarker | null;
 }
 
 /** `value`, once it has stayed put for `wait` milliseconds. */
@@ -248,7 +262,20 @@ export function Lanes() {
       }),
     [lanes, byTask, depths, collapsed],
   );
-  const laid = useMemo(() => layLanes(shownRows, STRIP, ROW), [shownRows]);
+  // Every lane's head holds its calls when any thread's could.
+  const kernel = !byTask && summary.syscalls > 0;
+  const head = kernel ? STRIP + KERNEL : STRIP;
+  const laid = useMemo(() => layLanes(shownRows, head, ROW), [shownRows, head]);
+  const answered = useMemo(
+    () =>
+      new Map(
+        (timeline.data?.lanes ?? []).map((lane) => [
+          (byTask ? lane.task : lane.thread) ?? -1,
+          lane,
+        ]),
+      ),
+    [timeline.data, byTask],
+  );
   const laneOf = useMemo(() => new Map(lanes.map((row, at) => [row.lane, at])), [lanes]);
   const height = laid.height;
 
@@ -334,11 +361,11 @@ export function Lanes() {
       element.getBoundingClientRect().top +
       element.scrollTop +
       (laid.tops[lane] ?? 0);
-    const bottom = top + STRIP + (shownRows[lane] ?? 0) * ROW;
+    const bottom = top + head + (shownRows[lane] ?? 0) * ROW;
     if (top < element.scrollTop + ruler || bottom > element.scrollTop + element.clientHeight) {
       element.scrollTop = top - ruler;
     }
-  }, [look.zi, instance, laneOf, laid, shownRows]);
+  }, [look.zi, instance, laneOf, laid, shownRows, head]);
 
   useEffect(() => {
     const element = box.current;
@@ -413,11 +440,11 @@ export function Lanes() {
       context.globalAlpha = 1;
     }
 
-    const answered = new Map(
-      (timeline.data?.lanes ?? []).map((lane) => [(byTask ? lane.task : lane.thread) ?? -1, lane]),
-    );
     const sliced = timeline.data?.range ?? asked;
     paintCpu(context, { answered, rows: lanes, tops: laid.tops, selected, x, range: sliced });
+    if (kernel) {
+      paintKernel(context, { answered, rows: lanes, tops: laid.tops, selected, x, range: sliced });
+    }
 
     if (blocks && index) {
       const folded = token("--line-strong");
@@ -433,7 +460,7 @@ export function Lanes() {
         if (lane === undefined || depth >= (shownRows[lane] ?? 0)) {
           continue;
         }
-        const top = (laid.tops[lane] ?? 0) + STRIP + depth * ROW;
+        const top = (laid.tops[lane] ?? 0) + head + depth * ROW;
         const start = blocks.start[at] ?? 0;
         const end = blocks.end[at] ?? 0;
         const from = x(start);
@@ -523,6 +550,21 @@ export function Lanes() {
     }
     context.globalAlpha = 1;
 
+    // The budget's steps, as marks down every lane.
+    context.strokeStyle = token("--changed");
+    context.lineWidth = 1;
+    context.setLineDash([2, 3]);
+    for (const step of summary.budgetChanges) {
+      const at = Math.round(x(step.time)) + 0.5;
+      if (at >= 0 && at <= plot) {
+        context.beginPath();
+        context.moveTo(at, 0);
+        context.lineTo(at, height);
+        context.stroke();
+      }
+    }
+    context.setLineDash([]);
+
     // The range's edges, and the zone chosen outlined.
     if (marked) {
       const [from, to] = [x(marked[0]), x(marked[1])];
@@ -540,7 +582,7 @@ export function Lanes() {
           blocks.end[at] === instance.span[1] &&
           (blocks.depth[at] ?? 0) < (shownRows[lane] ?? 0)
         ) {
-          const top = (laid.tops[lane] ?? 0) + STRIP + (blocks.depth[at] ?? 0) * ROW;
+          const top = (laid.tops[lane] ?? 0) + head + (blocks.depth[at] ?? 0) * ROW;
           const from = x(instance.span[0]);
           context.strokeStyle = token("--ink");
           context.lineWidth = 2;
@@ -550,6 +592,9 @@ export function Lanes() {
     }
   }, [
     timeline.data,
+    answered,
+    kernel,
+    head,
     asked,
     blocks,
     index,
@@ -558,7 +603,6 @@ export function Lanes() {
     laid,
     laneOf,
     shownRows,
-    byTask,
     selected,
     plot,
     height,
@@ -571,6 +615,7 @@ export function Lanes() {
     palette,
     summary.gaps,
     summary.behind,
+    summary.budgetChanges,
     scheme,
   ]);
 
@@ -588,6 +633,19 @@ export function Lanes() {
       }
       const inside = py - (laid.tops[lane] ?? 0);
       const slack = (2 * span) / Math.max(plot, 1);
+      const step = stepAt(summary.budgetChanges, time, slack);
+      const none = { block: null, mark: null, kernel: null, wait: null, step };
+      if (inside >= STRIP && inside < head) {
+        const calls = row.others ? undefined : answered.get(row.lane);
+        const sliced = timeline.data?.range ?? asked;
+        return {
+          ...none,
+          time,
+          lane,
+          kernel: calls ? kernelLines(calls, sliced, time, slack) : null,
+          wait: calls ? waitAt(calls, time, slack) : null,
+        };
+      }
       if (inside < STRIP) {
         let mark: ProfileMark | null = null;
         for (const each of marks) {
@@ -599,13 +657,28 @@ export function Lanes() {
             mark = each;
           }
         }
-        return { time, lane, block: null, mark };
+        return { ...none, time, lane, mark };
       }
-      const depth = Math.floor((inside - STRIP) / ROW);
+      const depth = Math.floor((inside - head) / ROW);
       const block = blocks && index ? blockAt(blocks, index, row.lane, depth, time, slack) : null;
-      return { time, lane, block, mark: null };
+      return { ...none, time, lane, block };
     },
-    [plot, height, shownView, span, laid, lanes, marks, blocks, index],
+    [
+      plot,
+      height,
+      shownView,
+      span,
+      laid,
+      lanes,
+      marks,
+      blocks,
+      index,
+      head,
+      answered,
+      timeline.data,
+      asked,
+      summary.budgetChanges,
+    ],
   );
 
   const canvasLeft = useCallback(() => canvas.current?.getBoundingClientRect().left ?? 0, []);
@@ -696,6 +769,8 @@ export function Lanes() {
       const found = at(...local(event));
       if (found?.block !== null && found?.block !== undefined) {
         select(found.block, false);
+      } else if (found?.wait) {
+        chooseRange(found.wait.start, found.wait.end);
       } else {
         // A click off the zones lets go of the range, as one on the ruler does.
         setLook((prev) => {
@@ -908,6 +983,7 @@ export function Lanes() {
               open={row.others ? othersOpen : !collapsed.has(row.lane)}
               expand={row.others ? flipOthers : expand}
               rows={shownRows[lane] ?? 0}
+              kernel={kernel}
             />
           ))}
         </div>
@@ -1017,6 +1093,73 @@ function paintCpu(
   context.globalAlpha = 1;
 }
 
+/** Each thread's system calls in a strip under its CPU: how many returned
+ * in each slice, by log scale, failed ones in red over them, and the calls
+ * it waited in as bars that name the call where there is room. */
+function paintKernel(
+  context: CanvasRenderingContext2D,
+  {
+    answered,
+    rows: shown,
+    tops,
+    selected,
+    x,
+    range,
+  }: {
+    answered: ReadonlyMap<number, ProfileLane>;
+    rows: Row[];
+    tops: Float64Array;
+    selected: ReadonlySet<string> | null;
+    x: (time: number) => number;
+    range: readonly [number, number];
+  },
+) {
+  let most = 1;
+  for (const lane of answered.values()) {
+    most = largest(lane.syscalls, most);
+  }
+  const calls = token("--accent");
+  const failed = token("--error");
+  const ink = token("--ink");
+  const glyph = context.measureText("0").width;
+  for (const [at, row] of shown.entries()) {
+    const lane = row.others ? undefined : answered.get(row.lane);
+    if (!lane) {
+      continue;
+    }
+    const top = (tops[at] ?? 0) + STRIP;
+    const dim = selected && !selected.has(row.id) ? 0.3 : 1;
+    const count = lane.syscalls.length;
+    const slice = (range[1] - range[0]) / Math.max(count, 1);
+    const step = Math.max(x(range[0] + slice) - x(range[0]), 1);
+
+    context.fillStyle = calls;
+    for (const wait of lane.waits) {
+      const from = x(wait.start);
+      const wide = Math.max(x(wait.end) - from, 1);
+      context.globalAlpha = dim * 0.35;
+      context.fillRect(from, top + 1, wide, KERNEL - 2);
+      const text = fitting([wait.call], wide - 6, glyph);
+      if (text) {
+        context.globalAlpha = dim;
+        context.fillStyle = ink;
+        context.fillText(text, Math.max(from, 0) + 3, top + KERNEL / 2);
+        context.fillStyle = calls;
+      }
+    }
+    for (let bucket = 0; bucket < count; bucket += 1) {
+      const n = lane.syscalls[bucket] ?? 0;
+      if (n > 0) {
+        const tall = Math.max(2, ((KERNEL - 2) * Math.log1p(n)) / Math.log1p(most));
+        context.globalAlpha = dim * 0.8;
+        context.fillStyle = (lane.failed[bucket] ?? 0) > 0 ? failed : calls;
+        context.fillRect(x(range[0] + bucket * slice), top + KERNEL - 1 - tall, step, tall);
+      }
+    }
+  }
+  context.globalAlpha = 1;
+}
+
 /** The share of a single zone's time its thread was on its CPU, or null
  * when that was not traced. */
 function onCpu(blocks: ZoneBlocks, at: number): number | null {
@@ -1108,6 +1251,30 @@ function tipLines(
   },
 ): string[] | null {
   const pixel = span / Math.max(plot, 1);
+  const step = hit.step
+    ? [`budget at ${formatInstant(hit.step.time, pixel)}: ${hit.step.text}`]
+    : [];
+  const lines = ownLines(hit, { blocks, index, summary, pixel });
+  return lines || step.length > 0 ? [...(lines ?? []), ...step] : null;
+}
+
+function ownLines(
+  hit: Hit,
+  {
+    blocks,
+    index,
+    summary,
+    pixel,
+  }: {
+    blocks: ReturnType<typeof decodeZones> | null;
+    index: ReturnType<typeof indexBlocks> | null;
+    summary: ProfileSummary;
+    pixel: number;
+  },
+): string[] | null {
+  if (hit.kernel) {
+    return hit.kernel;
+  }
   if (hit.mark) {
     return [
       `${hit.mark.kind} ${hit.mark.name} at ${formatInstant(hit.mark.time, pixel)}`,
@@ -1304,6 +1471,7 @@ const LaneName = memo(function LaneName({
   open,
   expand,
   rows: shown,
+  kernel,
 }: {
   row: Row;
   selected: boolean;
@@ -1312,6 +1480,7 @@ const LaneName = memo(function LaneName({
   open: boolean;
   expand: (thread: number) => void;
   rows: number;
+  kernel: boolean;
 }) {
   const click = useCallback(() => toggle(row.id), [toggle, row.id]);
   const flip = useCallback(() => expand(row.lane), [expand, row.lane]);
@@ -1330,6 +1499,8 @@ const LaneName = memo(function LaneName({
       </button>
     );
   }
+  // Beside a thread's calls, which have no name of their own.
+  const calls = kernel ? <div className="lane-kernel" aria-hidden="true" /> : null;
   return (
     <>
       <button
@@ -1341,6 +1512,7 @@ const LaneName = memo(function LaneName({
       >
         {row.label} {row.dim ? <span className="dim">{row.dim}</span> : null}
       </button>
+      {calls}
       {shown > 0 ? (
         <div className="lane-zones" style={style}>
           {depth > 1 ? (

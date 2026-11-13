@@ -10,9 +10,7 @@ import {
   bucketLabel,
   heatAlpha,
   lossNotes,
-  seriesColor,
   shownBuckets,
-  stacked,
   tracedBy,
   PTRACE_DISTORTS,
   traceNotes,
@@ -31,7 +29,6 @@ describe("the Syscalls view's address", () => {
       sg: "process",
       sc: "openat",
       st: "log",
-      sr: "syscall",
       ev: "42",
     };
     expect(roundTrip(look)).toEqual(look);
@@ -51,9 +48,7 @@ describe("the Syscalls view's address", () => {
   });
 
   it("drops what it cannot read", () => {
-    expect(
-      validateProfileLook({ sg: "syscall", st: "flame", sr: "class", ev: "-1", sf: "" }),
-    ).toEqual({});
+    expect(validateProfileLook({ sg: "syscall", st: "flame", ev: "-1", sf: "" })).toEqual({});
   });
 });
 
@@ -62,18 +57,6 @@ describe("what the Syscalls view draws", () => {
     expect([0, 1, 2, 11].map((bucket) => bucketFloor(bucket))).toEqual([0, 1, 2, 1024]);
     expect(bucketLabel(0)).toBe("0");
     expect(bucketLabel(11)).toMatch(/^≥ 1\.0\d* µs$/u);
-  });
-
-  it("stacks series from the bottom in each slice", () => {
-    expect(
-      stacked([
-        [1, 0, 2],
-        [3, 4, 0],
-      ]),
-    ).toEqual([
-      [1, 0, 2],
-      [4, 4, 2],
-    ]);
   });
 
   it("shows only the buckets that hold calls, across histograms", () => {
@@ -86,15 +69,6 @@ describe("what the Syscalls view draws", () => {
     expect(heatAlpha(1, 100)).toBeGreaterThan(0.15);
     expect(heatAlpha(100, 100)).toBeCloseTo(1);
     expect(heatAlpha(10, 100)).toBeLessThan(heatAlpha(50, 100));
-  });
-
-  it("gives each class its own hue, none of them the red that failures are drawn in", () => {
-    const classes = ["file", "net", "desc", "memory", "process", "signal", "ipc", "clock"];
-    const hues = classes.map((name) => Number(/hsl\((\d+)/u.exec(seriesColor(name, false))?.[1]));
-    expect(new Set(hues).size).toBe(classes.length);
-    for (const hue of hues) {
-      expect(hue > 20 && hue < 340).toBe(true);
-    }
   });
 });
 

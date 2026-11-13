@@ -5,7 +5,6 @@ import { formatCount } from "../../profile/paint";
 import { lossNotes, unkept } from "../../profile/syscalls";
 import { useAnswer, useProfile } from "./context";
 import { LookButton } from "./parts";
-import { Lanes } from "./SyscallLanes";
 import { Log } from "./SyscallLog";
 import { Summary } from "./SyscallSummary";
 import { Files, Network, Processes } from "./SyscallTables";
@@ -109,7 +108,7 @@ function Calls({ missing }: { missing: Missing | null }) {
           </span>
         ) : null}
       </div>
-      {missing ? <Unkept {...missing} /> : <Lanes query={base} />}
+      {missing ? <Unkept {...missing} /> : null}
       <div className="syscalls-body">
         {look.st === "log" ? (
           // A new selection starts at its first page.

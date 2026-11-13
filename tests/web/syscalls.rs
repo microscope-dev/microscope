@@ -259,28 +259,28 @@ async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
         (&json!(1), &json!(1))
     );
 
-    // Every selected call lands in the charts once.
+    // Every selected call lands in the heat map once.
     let selected = json!({"profile": id, "filter": "trace=%file", "buckets": 16});
-    let rate = tab.ok("syscallRate", selected.clone()).await;
-    let charted: u64 = rate["series"]
-        .as_array()
-        .expect("series")
-        .iter()
-        .map(|series| sum(&series["counts"]))
-        .sum();
     let of_files = tab
         .ok(
             "syscallSummary",
             json!({"profile": id, "filter": "trace=%file"}),
         )
         .await;
-    assert_eq!(Some(charted), of_files["calls"].as_u64(), "{rate}");
-    let heat = tab.ok("syscallHeatmap", selected.clone()).await;
+    let heat = tab.ok("syscallHeatmap", selected).await;
     assert_eq!(heat["counts"].as_array().expect("counts").len(), 16 * 40);
     assert_eq!(Some(sum(&heat["counts"])), of_files["calls"].as_u64());
-    let busy = tab.ok("syscallLanes", selected).await;
-    assert_eq!(busy["lanes"].as_array().expect("lanes").len(), 1, "{busy}");
-    assert!(sum(&busy["lanes"][0]["busy"]) > 0);
+
+    // And every call in its thread's kernel lane on the timeline once.
+    let all = tab.ok("syscallSummary", json!({"profile": id})).await;
+    let timeline = tab
+        .ok("profileTimeline", json!({"profile": id, "buckets": 16}))
+        .await;
+    let lanes = timeline["lanes"].as_array().expect("lanes");
+    let counted: u64 = lanes.iter().map(|lane| sum(&lane["syscalls"])).sum();
+    assert_eq!(Some(counted), all["calls"].as_u64(), "{timeline}");
+    let failed: u64 = lanes.iter().map(|lane| sum(&lane["failed"])).sum();
+    assert_eq!(Some(failed), all["errors"].as_u64(), "{timeline}");
 }
 
 /// Calls grouped by what they name and where they were made, and a heat
@@ -344,14 +344,16 @@ async fn a_familys_processes_and_threads_are_served_in_order() {
     assert_eq!(child["parent"], parent["pid"]);
     assert_eq!(child["end"], "exited with 4");
     assert_eq!(parent["threads"], 2, "{parent}");
-    let lanes = tab
-        .ok("syscallLanes", json!({"profile": id, "buckets": 8}))
+    let timeline = tab
+        .ok("profileTimeline", json!({"profile": id, "buckets": 8}))
         .await;
-    assert_eq!(
-        lanes["lanes"].as_array().expect("lanes").len(),
-        3,
-        "{lanes}"
-    );
+    let called = timeline["lanes"]
+        .as_array()
+        .expect("lanes")
+        .iter()
+        .filter(|lane| sum(&lane["syscalls"]) > 0)
+        .count();
+    assert_eq!(called, 3, "{timeline}");
 
     // The parent is blocked across the middle of its wait for the child.
     let waits = tab
@@ -373,21 +375,28 @@ async fn a_familys_processes_and_threads_are_served_in_order() {
         wait["durationNs"].as_i64().expect("a duration"),
     );
     let middle = [ended - took * 3 / 4, ended - took / 4];
-    let lanes = tab
+    let summary = tab.ok("profile", json!({"profile": id})).await;
+    let row = summary["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .find(|thread| thread["tid"] == wait["tid"])
+        .map_or_else(|| panic!("{summary}"), |thread| thread["row"].clone());
+    let timeline = tab
         .ok(
-            "syscallLanes",
+            "profileTimeline",
             json!({"profile": id, "range": middle, "buckets": 4}),
         )
         .await;
-    let waiting = lanes["lanes"]
+    let waiting = timeline["lanes"]
         .as_array()
         .expect("lanes")
         .iter()
-        .find(|lane| lane["tid"] == wait["tid"])
-        .unwrap_or_else(|| panic!("{lanes}"));
+        .find(|lane| lane["thread"] == row)
+        .unwrap_or_else(|| panic!("{timeline}"));
     assert_eq!(
-        waiting["blocked"],
-        json!([true, true, true, true]),
+        waiting["waits"],
+        json!([{"call": "wait4", "start": middle[0], "end": middle[1]}]),
         "{waiting}"
     );
 }

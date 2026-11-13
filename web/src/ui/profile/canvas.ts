@@ -1,12 +1,9 @@
 // What the profile's charts share: the names column their lanes line up
-// under, their width, a canvas at the screen's resolution, and selecting a
-// time range by dragging across one.
+// under, their width, and a canvas at the screen's resolution.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 
 import { assert } from "../../assert";
-import { formatRange, withLook } from "../../profile/look";
-import { token, useProfile } from "./context";
 
 /** The names column beside each chart's lanes, so their times line up. */
 export const NAMES = 180;
@@ -45,77 +42,4 @@ export function prepare(
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, width, height);
   return context;
-}
-
-/** Dragging across a chart of the whole profile selects a range; a click
- * clears it. Returns the handlers and the range being dragged. */
-/** The time under the pointer on a chart spanning `span` nanoseconds. */
-export function timeAt(event: React.PointerEvent, span: number) {
-  const bounds = event.currentTarget.getBoundingClientRect();
-  const fraction = (event.clientX - bounds.left) / Math.max(bounds.width, 1);
-  return Math.min(Math.max(fraction, 0), 1) * span;
-}
-
-export function useRangeDrag(span: number) {
-  assert(span > 0, `chart span ${span} is not positive`);
-  const { setLook } = useProfile();
-  const [dragging, setDragging] = useState<{ from: number; to: number } | null>(null);
-  const time = (event: React.PointerEvent) => timeAt(event, span);
-  const handlers = {
-    onPointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
-      event.currentTarget.setPointerCapture(event.pointerId);
-      const at = time(event);
-      setDragging({ from: at, to: at });
-    },
-    onPointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
-      if (dragging) {
-        setDragging({ ...dragging, to: time(event) });
-      }
-    },
-    onPointerUp(event: React.PointerEvent<HTMLCanvasElement>) {
-      if (!dragging) {
-        return;
-      }
-      const to = time(event);
-      const [from, until] = [Math.min(dragging.from, to), Math.max(dragging.from, to)];
-      const width = event.currentTarget.getBoundingClientRect().width;
-      setDragging(null);
-      // A click, not a drag, clears the selection.
-      const chosen = (until - from) * (width / span) >= 3 ? formatRange([from, until]) : undefined;
-      setLook((look) => withLook(look, "range", chosen), true);
-    },
-    onPointerCancel() {
-      setDragging(null);
-    },
-  };
-  const shown = useMemo(
-    () =>
-      dragging
-        ? ([Math.min(dragging.from, dragging.to), Math.max(dragging.from, dragging.to)] as const)
-        : null,
-    [dragging],
-  );
-  return { handlers, shown };
-}
-
-/** Shades what lies outside the selected range. */
-export function shade(
-  context: CanvasRenderingContext2D,
-  range: readonly [number, number] | null,
-  span: number,
-  width: number,
-  height: number,
-) {
-  if (!range) {
-    return;
-  }
-  assert(span > 0, `chart span ${span} is not positive`);
-  assert(range[0] <= range[1], `shaded range ${range[0]}..${range[1]} is reversed`);
-  const from = (width * range[0]) / span;
-  const to = (width * range[1]) / span;
-  context.fillStyle = token("--accent-soft");
-  context.globalAlpha = 0.6;
-  context.fillRect(0, 0, from, height);
-  context.fillRect(to, 0, width - to, height);
-  context.globalAlpha = 1;
 }

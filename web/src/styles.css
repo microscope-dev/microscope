@@ -3354,14 +3354,6 @@ textarea.input {
   background: var(--surface-2);
 }
 
-/* A trace's lanes, names beside the plot, leave most of its pane to its
- * calls. */
-.syscalls .profile-timeline {
-  flex: 0 1 auto;
-  flex-direction: row;
-  max-height: 40%;
-}
-
 /* Round times over the lanes, kept in view as they scroll, with the
  * pointer's time and a range's ends and length over them. */
 .timeline-ruler {
@@ -3520,6 +3512,11 @@ textarea.input {
 
 .lane-others:hover {
   color: var(--ink);
+}
+
+.lane-kernel {
+  flex: none;
+  height: 12px;
 }
 
 .lane-name.nested {
@@ -4581,47 +4578,6 @@ textarea.input {
   min-height: 0;
 }
 
-.syscalls-rate {
-  display: flex;
-  border-bottom: 1px solid var(--line);
-}
-
-.syscalls-rate canvas {
-  display: block;
-  cursor: crosshair;
-  touch-action: none;
-}
-
-.syscalls-legend {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
-  overflow: hidden;
-  border-right: 1px solid var(--line);
-  font-size: 11px;
-}
-
-.syscalls-legend .segmented {
-  margin: 0 0 4px;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--mono);
-  white-space: nowrap;
-}
-
-.swatch {
-  width: 10px;
-  height: 10px;
-  flex: none;
-  border-radius: 2px;
-}
-
 .syscalls-split {
   display: grid;
   grid-template-rows: auto;
@@ -4894,9 +4850,7 @@ textarea.input {
   overflow: hidden;
 }
 
-.latency-map canvas,
-.syscalls-rate canvas,
-.syscall-lanes canvas {
+.latency-map canvas {
   max-width: 100%;
 }
 

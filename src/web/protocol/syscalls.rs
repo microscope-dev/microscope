@@ -134,49 +134,6 @@ pub struct SyscallCount {
     pub count: u64,
 }
 
-/// What a rate chart stacks.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub enum SyscallRateBy {
-    #[default]
-    Class,
-    Syscall,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SyscallRateQuery {
-    #[serde(flatten)]
-    pub query: SyscallQuery,
-    pub buckets: u32,
-
-    #[serde(default)]
-    pub by: SyscallRateBy,
-}
-
-/// Calls per slice of the query's range.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SyscallRate {
-    /// The range's start and each slice's nanoseconds.
-    pub start: i64,
-    pub width: i64,
-
-    /// Most calls first; the rest past the first few as `other`.
-    pub series: Vec<SyscallSeries>,
-    pub errors: Vec<u64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-pub struct SyscallSeries {
-    pub name: String,
-    pub counts: Vec<u64>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -349,43 +306,6 @@ pub struct SyscallSite {
 pub struct SyscallArgument {
     pub name: String,
     pub tokens: Vec<SyscallToken>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SyscallLanesQuery {
-    #[serde(flatten)]
-    pub query: SyscallQuery,
-    pub buckets: u32,
-}
-
-/// Each thread's calls over the range, as lanes beside the samples'.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SyscallLanes {
-    pub start: i64,
-    pub width: i64,
-    pub lanes: Vec<SyscallLane>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct SyscallLane {
-    pub tid: u32,
-    pub pid: u32,
-
-    /// Its process's program.
-    pub name: Option<String>,
-
-    /// Each slice's nanoseconds spent in calls, and failed calls.
-    pub busy: Vec<u64>,
-    pub failed: Vec<u32>,
-
-    /// Slices one call spans from end to end: the thread was blocked.
-    pub blocked: Vec<bool>,
 }
 
 /// What the trace did with each file.

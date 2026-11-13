@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 06e2fdaaec405f86363124eb0bb81da3c5c67cd14e1df404049a8c5c41fea509 # shrinks to spans = [(1, 35, 27, 0), (1, 35, 27, 1)], samples = [(1, 35, 1, 0)], wanted = 0
+cc 151a5e0522f722728e16cdde24af317b4e4913a1e473081881f19d4276ab1269 # shrinks to (calls, _) = ([(0, 29, 33, None)], []), thread = None, (start, length) = (4, 26), buckets = 6

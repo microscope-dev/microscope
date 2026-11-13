@@ -2312,14 +2312,6 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
   expect(lookShown().range).toBe("1000-1500");
 });
 
-it("says why the lanes and the rate could not be read", async () => {
-  const server = await mount(<KernelPane />, { summary: traced() });
-  server.fail(await server.next("syscallLanes"), "the lanes are cut short");
-  server.fail(await server.next("syscallRate"), "the rate is cut short");
-  await expect.element(page.getByText("the lanes are cut short")).toBeVisible();
-  await expect.element(page.getByText("the rate is cut short")).toBeVisible();
-});
-
 it("says it is reading the log, and why a call could not be read", async () => {
   const server = await mount(<KernelPane />, { summary: traced(), look: { st: "log" } });
   await expect.element(page.getByText("Reading calls…")).toBeVisible();
@@ -2395,7 +2387,7 @@ it("keeps its tabs at every level, and says what a level left out and the flag t
   expect(server.requests.filter((asked) => asked.method.startsWith("syscall"))).toEqual([]);
   cleanup();
 
-  // At counts, the kept exceptions show under the sentence, without lanes.
+  // At counts, the kept exceptions show under the sentence.
   const counts = summaryOf({ syscalls: 4, settings: [{ name: "syscalls", value: "counts" }] });
   const counted = await mount(<KernelPane />, { summary: counts });
   counted.answer(await counted.next("syscallSummary"), SUMMARY);
@@ -2405,12 +2397,12 @@ it("keeps its tabs at every level, and says what a level left out and the flag t
       "The kernel counted every system call and kept only the failed and slow ones. Record with --syscalls calls to keep each call.",
     );
   await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
-  expect(counted.requests.some((asked) => asked.method === "syscallLanes")).toBe(false);
   cleanup();
 
   // At calls, there is nothing to say.
   const kept = await mount(<KernelPane />, { summary: traced() });
-  await kept.next("syscallLanes");
+  kept.answer(await kept.next("syscallSummary"), SUMMARY);
+  await expect.element(page.getByRole("button", { name: "read", exact: true })).toBeVisible();
   await expect.element(page.getByTestId("syscalls-unkept")).not.toBeInTheDocument();
 });
 

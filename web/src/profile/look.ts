@@ -83,8 +83,6 @@ export interface ProfileLook {
   sc?: string;
   /** The Syscalls view's tab. */
   st?: SyscallTab;
-  /** The rate chart stacks calls rather than classes. */
-  sr?: "syscall";
   /** The log line expanded, by its event. */
   ev?: string;
   /** Calls of one log2 latency bucket, as a heat map's row names it. */
@@ -217,9 +215,6 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   const st = text("st");
   if (st && SYSCALL_TABS.has(st)) {
     look.st = st as SyscallTab;
-  }
-  if (text("sr") === "syscall") {
-    look.sr = "syscall";
   }
   const ev = text("ev");
   if (ev && /^\d+$/u.test(ev)) {
@@ -434,7 +429,6 @@ const OWN = [
   "st",
   "sg",
   "sc",
-  "sr",
   "ev",
 ] as const satisfies readonly (keyof ProfileLook)[];
 

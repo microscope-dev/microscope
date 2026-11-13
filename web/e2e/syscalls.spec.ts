@@ -31,7 +31,6 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(page.getByTestId("syscall-counts")).toContainText("ptrace");
   await expect(page.getByTestId("accounting")).toContainText(/Calls traced[\d,]+ by ptrace/u);
   await expect(page.getByTestId("accounting")).not.toContainText("Calls lost");
-  await expect(view.getByRole("img", { name: "Each thread's time in system calls" })).toBeVisible();
 
   // Narrowed to failed opens, the one call left is placed at its line.
   await page.getByLabel("Selection").fill("trace=openat status=failed");
@@ -117,9 +116,9 @@ test("a recording's calls are explored from their costs to one call's arguments 
   await expect(page).not.toHaveURL(/sl=/u);
   await page.getByRole("button", { name: /^Remove .* – /u }).click();
 
-  // Dragging across the lanes selects a range, which a chip names.
+  // Dragging across the timeline selects a range, which a chip names.
   await view.getByRole("button", { name: "Summary", exact: true }).click();
-  const lanes = view.getByRole("img", { name: "Each thread's time in system calls" });
+  const lanes = page.getByTestId("timeline").getByRole("img");
   const area = await lanes.boundingBox();
   if (!area) {
     throw new Error("the lanes have no box");
@@ -181,6 +180,31 @@ test("a family's processes are listed parents first, each with how it ended", as
   const rows = page.getByTestId("syscall-processes").locator("tbody tr");
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(1)).toContainText("exited with 4");
+
+  // The parent's kernel lane, under its CPU on the timeline, names the
+  // call it waited in for its child; a click selects that wait.
+  const timeline = page.getByTestId("timeline").getByRole("img");
+  const box = await timeline.boundingBox();
+  if (!box) {
+    throw new Error("the timeline has no box");
+  }
+  const tip = page.getByTestId("zone-tip");
+  const found = async () => {
+    // Each lane is 30 pixels: its CPU, then its calls.
+    for (let top = 0; top + 30 <= box.height; top += 30) {
+      for (let x = 1; x < box.width; x += 4) {
+        await page.mouse.move(box.x + x, box.y + top + 24);
+        if ((await tip.count()) > 0 && /waited in wait4/u.test((await tip.textContent()) ?? "")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  expect(await found()).toBe(true);
+  await page.mouse.down();
+  await page.mouse.up();
+  await expect(page).toHaveURL(/range=\d+-\d+/u);
 });
 
 test("a recording made from the page shows what its program is blocked in, until stopped", async ({

@@ -244,9 +244,6 @@ pub enum Request {
     /// What a profile's system calls cost, grouped.
     SyscallSummary(SyscallSummaryQuery),
 
-    /// Calls per slice of time, stacked.
-    SyscallRate(SyscallRateQuery),
-
     /// Calls by time and latency.
     SyscallHeatmap(SyscallHeatmapQuery),
 
@@ -258,9 +255,6 @@ pub enum Request {
 
     /// One call of the trace, expanded.
     SyscallCall(SyscallCallQuery),
-
-    /// Each thread's time in calls.
-    SyscallLanes(SyscallLanesQuery),
 
     /// What the calls did with files.
     SyscallFiles(SyscallQuery),
@@ -1908,6 +1902,22 @@ pub struct ProfileLane {
     pub weights: Vec<u64>,
     pub blocked: Vec<u64>,
     pub preempted: Vec<u64>,
+
+    /// A thread's system calls that returned in each slice, those of them
+    /// that failed, and the calls that spanned a whole slice.
+    pub syscalls: Vec<u32>,
+    pub failed: Vec<u32>,
+    pub waits: Vec<ProfileWait>,
+}
+
+/// A call a thread waited in, over the part of it in the range, in
+/// nanoseconds from the profile's start.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileWait {
+    pub call: String,
+    pub start: i64,
+    pub end: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3215,6 +3225,7 @@ mod tests {
         ProfileCost::decl,
         ProfileTimeline::decl,
         ProfileLane::decl,
+        ProfileWait::decl,
         ProfileMarker::decl,
         ProfileProbes::decl,
         ProfileZoneSite::decl,
@@ -3243,10 +3254,6 @@ mod tests {
         SyscallLosses::decl,
         SyscallRow::decl,
         SyscallCount::decl,
-        SyscallRateBy::decl,
-        SyscallRateQuery::decl,
-        SyscallRate::decl,
-        SyscallSeries::decl,
         SyscallHeatmapQuery::decl,
         SyscallHeatmap::decl,
         SyscallDetailQuery::decl,
@@ -3260,9 +3267,6 @@ mod tests {
         SyscallCall::decl,
         SyscallArgument::decl,
         SyscallSite::decl,
-        SyscallLanesQuery::decl,
-        SyscallLanes::decl,
-        SyscallLane::decl,
         SyscallFiles::decl,
         SyscallFile::decl,
         SyscallNetwork::decl,

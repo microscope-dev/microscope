@@ -750,12 +750,10 @@ pub const fn is_profile_request(request: &Request) -> bool {
             | Request::RecordProfile(_)
             | Request::StopRecording(_)
             | Request::SyscallSummary(_)
-            | Request::SyscallRate(_)
             | Request::SyscallHeatmap(_)
             | Request::SyscallDetail(_)
             | Request::SyscallLog(_)
             | Request::SyscallCall(_)
-            | Request::SyscallLanes(_)
             | Request::SyscallFiles(_)
             | Request::SyscallNetwork(_)
             | Request::SyscallProcesses(_)
@@ -1098,6 +1096,9 @@ fn timeline_of(
         weights,
         blocked: Vec::new(),
         preempted: Vec::new(),
+        syscalls: Vec::new(),
+        failed: Vec::new(),
+        waits: Vec::new(),
     };
 
     let mut lanes: std::collections::BTreeMap<u32, ProfileLane> = keys
@@ -1114,6 +1115,23 @@ fn timeline_of(
                 .or_insert_with(|| lane(off.thread, Vec::new()));
             lane.blocked = off.blocked;
             lane.preempted = off.preempted;
+        }
+
+        for kernel in profile.kernel_lanes(&keys, &resolved, buckets) {
+            let lane = lanes
+                .entry(kernel.thread)
+                .or_insert_with(|| lane(kernel.thread, Vec::new()));
+            lane.syscalls = kernel.calls;
+            lane.failed = kernel.failed;
+            lane.waits = kernel
+                .long
+                .into_iter()
+                .map(|(row, from, to)| protocol::ProfileWait {
+                    call: profile.syscall_name(row),
+                    start: from - start,
+                    end: to - start,
+                })
+                .collect();
         }
     }
 

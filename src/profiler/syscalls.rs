@@ -201,6 +201,22 @@ impl Profile {
         }
     }
 
+    /// The name of the call in row `row`.
+    #[must_use]
+    pub fn syscall_name(&self, row: u32) -> String {
+        self.capture.syscalls.get(row as usize).map_or_else(
+            || "?".to_owned(),
+            |call| {
+                SyscallId {
+                    abi: abi(call.abi),
+                    number: call.number.get(),
+                }
+                .display_name()
+                .into_owned()
+            },
+        )
+    }
+
     /// The site calls of stack `row` are grouped under: its
     /// [`syscall_site`](Self::syscall_site), or else its innermost frame's
     /// function, or `?` when it has no frame.

@@ -1,26 +1,12 @@
-import {
-  type ChangeEvent,
-  type MouseEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ChangeEvent, type MouseEvent, useCallback, useMemo, useState } from "react";
 
-import { assert } from "../../assert";
 import type { Requested } from "../../data";
-import { rangeOf, withLook } from "../../profile/look";
-import { formatCount, largest } from "../../profile/paint";
-import { seriesColor, stacked } from "../../profile/syscalls";
+import { withLook } from "../../profile/look";
+import { formatCount } from "../../profile/paint";
 import type { SyscallGroup, SyscallQuery, SyscallRow, SyscallSummary } from "../../protocol";
-import { useShownScheme } from "../../theme";
-import { NAMES, NAMES_STYLE, prepare, shade, useRangeDrag, useWidth } from "./canvas";
-import { token, useAnswer, useProfile } from "./context";
-import { Bytes, Duration, LookButton } from "./parts";
+import { useProfile } from "./context";
+import { Bytes, Duration } from "./parts";
 import { Detail } from "./SyscallDetail";
-
-const CHART = 120;
 
 const GROUPS: { group: SyscallGroup; label: string }[] = [
   { group: "syscall", label: "by call" },
@@ -31,7 +17,7 @@ const GROUPS: { group: SyscallGroup; label: string }[] = [
   { group: "site", label: "by call site" },
 ];
 
-/** The rate chart, the table, and the selected call's detail. */
+/** The table, and the selected call's detail. */
 export function Summary({
   summary,
   query,
@@ -57,7 +43,6 @@ export function Summary({
   );
   return (
     <div className="syscalls-summary">
-      <Rate query={query} />
       <div className="syscalls-split">
         <div className="pane syscalls-table-pane">
           <div className="pane-head">
@@ -257,126 +242,5 @@ function SummaryRow({
           ))
         : null}
     </>
-  );
-}
-
-const RATES = ["class", "syscall"] as const;
-
-function Swatch({ color }: { color: string }) {
-  const style = useMemo(() => ({ background: color }), [color]);
-  return <span className="swatch" style={style} />;
-}
-
-/** Calls per second over the whole profile, stacked by class or by call,
- * with failures as a red line; dragging selects a range. */
-function Rate({ query }: { query: SyscallQuery }) {
-  const { summary, look } = useProfile();
-  const [box, width] = useWidth();
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const plot = Math.max(width - NAMES, 0);
-  const buckets = Math.max(1, Math.min(1024, Math.floor(plot / 4)));
-  const span = Math.max(summary.duration, 1);
-  const scheme = useShownScheme();
-  const { range: _range, ...whole } = query;
-  const by = look.sr ?? "class";
-  const answer = useAnswer(
-    "syscallRate",
-    plot > 0 ? { ...whole, buckets, by: by === "syscall" ? "syscall" : "class" } : null,
-  );
-  const range = useMemo(() => rangeOf({ range: look.range }), [look.range]);
-  const { handlers, shown } = useRangeDrag(span);
-  const series = answer.data?.series ?? [];
-
-  useEffect(() => {
-    const context = prepare(canvas.current, plot, CHART);
-    const data = answer.data;
-    if (!context || !data) {
-      return;
-    }
-    if (canvas.current) {
-      canvas.current.dataset.scheme = scheme;
-    }
-    const tops = stacked(data.series.map((each) => each.counts));
-    const most = largest(tops.at(-1) ?? [], 1);
-    const slice = (plot * data.width) / span;
-    const x = (bucket: number) => (plot * (data.start + bucket * data.width)) / span;
-    const y = (count: number) => CHART - 2 - ((CHART - 6) * count) / most;
-    const dark = scheme === "dark";
-    for (const [index, each] of data.series.entries()) {
-      const column = tops[index];
-      assert(column !== undefined, `series ${index} has no stacked tops`);
-      assert(
-        column.length === each.counts.length,
-        `series ${index} has ${column.length} tops for ${each.counts.length} counts`,
-      );
-      context.fillStyle = seriesColor(each.name, dark);
-      for (const [bucket, count] of each.counts.entries()) {
-        if (count > 0) {
-          const top = column[bucket] ?? 0;
-          context.fillRect(x(bucket), y(top), Math.max(slice, 1), y(top - count) - y(top));
-        }
-      }
-    }
-    context.strokeStyle = token("--error");
-    context.lineWidth = 1.5;
-    context.beginPath();
-    for (const [bucket, count] of data.errors.entries()) {
-      const at = x(bucket) + slice / 2;
-      if (bucket === 0) {
-        context.moveTo(at, y(count));
-      } else {
-        context.lineTo(at, y(count));
-      }
-    }
-    if (data.errors.some((count) => count > 0)) {
-      context.stroke();
-    }
-    shade(context, shown ?? range, span, plot, CHART);
-  }, [answer.data, plot, span, range, shown, scheme]);
-
-  const dark = scheme === "dark";
-  const plotStyle = useMemo(() => ({ width: plot }), [plot]);
-  const canvasStyle = useMemo(() => ({ width: plot, height: CHART }), [plot]);
-  return (
-    <div className="syscalls-rate" ref={box} data-testid="syscall-rate">
-      <div className="syscalls-legend" style={NAMES_STYLE}>
-        <div className="segmented">
-          {RATES.map((each) => (
-            <LookButton
-              key={each}
-              field="sr"
-              value={each === "class" ? undefined : "syscall"}
-              pressed={by === each}
-              replace
-            >
-              {each === "class" ? "Classes" : "Calls"}
-            </LookButton>
-          ))}
-        </div>
-        {series.map((each) => (
-          <span key={each.name} className="legend-item">
-            <Swatch color={seriesColor(each.name, dark)} />
-            {by === "class" && each.name !== "other" ? `%${each.name}` : each.name}
-          </span>
-        ))}
-        {answer.data?.errors.some((count) => count > 0) ? (
-          <span className="legend-item error-text">― failed</span>
-        ) : null}
-      </div>
-      {answer.error ? (
-        <div className="empty error" style={plotStyle}>
-          {answer.error.message}
-        </div>
-      ) : (
-        <canvas
-          ref={canvas}
-          style={canvasStyle}
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
-          role="img"
-          aria-label="Calls over time"
-          {...handlers}
-        />
-      )}
-    </div>
   );
 }

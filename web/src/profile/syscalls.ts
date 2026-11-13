@@ -1,32 +1,9 @@
-// What the Syscalls tab draws, apart from React: each class's hue, the
-// heat map's ramp, histogram buckets' names, and stacked series.
+// What the Syscalls tab draws, apart from React: the heat map's ramp,
+// histogram buckets' names, and what a trace says of how it was made.
 
 import { assert } from "../assert";
 import type { SyscallLosses } from "../protocol.gen";
-import { formatCount, formatDuration, hue } from "./paint";
-
-/** Each class the server shows calls under, with a hue of its own. Red is
- * left for errors. */
-const CLASS_HUES: Record<string, number> = {
-  file: 212,
-  net: 160,
-  desc: 250,
-  memory: 38,
-  process: 290,
-  signal: 190,
-  ipc: 95,
-  clock: 60,
-};
-
-/** A series' color: its class's hue, or for a call or anything else a hue
- * of its name; `other` is grey. */
-export function seriesColor(name: string, dark: boolean): string {
-  if (name === "other") {
-    return dark ? "hsl(215 10% 45%)" : "hsl(215 10% 70%)";
-  }
-  const shade = CLASS_HUES[name] ?? hue(name);
-  return dark ? `hsl(${shade} 55% 55%)` : `hsl(${shade} 60% 52%)`;
-}
+import { formatCount, formatDuration } from "./paint";
 
 /** The heat map's color for a cell of `count` calls when the fullest holds
  * `most`: none when empty, then from faint to the accent, by log scale, so
@@ -48,18 +25,6 @@ export function bucketFloor(bucket: number): number {
 /** A bucket's name, by the shortest duration it holds. */
 export function bucketLabel(bucket: number): string {
   return bucket === 0 ? "0" : `≥ ${formatDuration(bucketFloor(bucket))}`;
-}
-
-/** Each series' running total in each slice, bottom to top, for drawing
- * them stacked: `tops[i][j]` is where series `i` ends in slice `j`. */
-export function stacked(series: readonly (readonly number[])[]): number[][] {
-  const below: number[] = [];
-  return series.map((counts) =>
-    counts.map((count, slice) => {
-      below[slice] = (below[slice] ?? 0) + count;
-      return below[slice];
-    }),
-  );
 }
 
 /** The histogram's buckets worth showing: from the first that holds a

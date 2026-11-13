@@ -12,16 +12,15 @@ use microscope::syscalls::filter::{self, Filter};
 use microscope::syscalls::procs::ProcessTree;
 use microscope::syscalls::specs::{self, Class};
 use microscope::syscalls::stats::{self, Folded, SyscallStats, bytes_moved};
-use microscope::syscalls::{Errno, Outcome, Pid, ProcessEnd, SyscallEvent, Tid, TraceEvent};
+use microscope::syscalls::{Errno, Outcome, Pid, ProcessEnd, SyscallEvent, TraceEvent};
 use serde_json::{Value, json};
 
 use super::protocol::{
     ErrorKind, Request, SyscallArgument, SyscallBlocked, SyscallCall, SyscallCallQuery,
     SyscallCaller, SyscallCount, SyscallDetail, SyscallDetailQuery, SyscallEndpoint, SyscallFile,
-    SyscallFiles, SyscallGroup, SyscallHeatmap, SyscallHeatmapQuery, SyscallInFlight, SyscallLane,
-    SyscallLanes, SyscallLanesQuery, SyscallLine, SyscallLog, SyscallLogQuery, SyscallNetwork,
-    SyscallProcess, SyscallProcesses, SyscallQuery, SyscallRate, SyscallRateBy, SyscallRateQuery,
-    SyscallRow, SyscallSeries, SyscallSite, SyscallSummary, SyscallSummaryQuery, SyscallToken,
+    SyscallFiles, SyscallGroup, SyscallHeatmap, SyscallHeatmapQuery, SyscallInFlight, SyscallLine,
+    SyscallLog, SyscallLogQuery, SyscallNetwork, SyscallProcess, SyscallProcesses, SyscallQuery,
+    SyscallRow, SyscallSite, SyscallSummary, SyscallSummaryQuery, SyscallToken,
 };
 
 use super::session::Failure;
@@ -38,9 +37,6 @@ const MOST_LINES: u32 = 2000;
 
 /// Lines shown on each side of a call's source line.
 const SITE_MARGIN: u64 = 3;
-
-/// The most series a rate chart stacks; the rest are `other`.
-const MOST_SERIES: usize = 8;
 
 /// The classes a call is shown under, first match first: what it does
 /// rather than how it names its target.
@@ -117,11 +113,9 @@ impl Trace {
 pub fn profile_of(request: &Request) -> Option<&str> {
     Some(match request {
         Request::SyscallSummary(query) => &query.query.link.profile,
-        Request::SyscallRate(query) => &query.query.link.profile,
         Request::SyscallHeatmap(query) => &query.query.link.profile,
         Request::SyscallDetail(query) => &query.query.link.profile,
         Request::SyscallLog(query) => &query.query.link.profile,
-        Request::SyscallLanes(query) => &query.query.link.profile,
         Request::SyscallCall(query) => &query.profile,
         Request::SyscallFiles(query)
         | Request::SyscallNetwork(query)
@@ -135,12 +129,10 @@ pub fn profile_of(request: &Request) -> Option<&str> {
 pub fn answer(profile: &Profile, trace: &Trace, request: Request) -> Result<Value, Failure> {
     match request {
         Request::SyscallSummary(query) => Ok(json(&summary(profile, trace, &query)?)),
-        Request::SyscallRate(query) => Ok(json(&rate(profile, trace, &query)?)),
         Request::SyscallHeatmap(query) => Ok(json(&heatmap(profile, trace, &query)?)),
         Request::SyscallDetail(query) => Ok(json(&detail(profile, trace, &query)?)),
         Request::SyscallLog(query) => Ok(json(&log(profile, trace, &query)?)),
         Request::SyscallCall(query) => Ok(json(&call(profile, trace, &query)?)),
-        Request::SyscallLanes(query) => Ok(json(&lanes(profile, trace, &query)?)),
         Request::SyscallFiles(query) => Ok(json(&files(profile, trace, &query)?)),
         Request::SyscallNetwork(query) => Ok(json(&network(profile, trace, &query)?)),
         Request::SyscallProcesses(query) => Ok(json(&processes(profile, trace, &query)?)),
@@ -617,63 +609,6 @@ impl Slices {
     clippy::indexing_slicing,
     reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
 )]
-fn rate(
-    profile: &Profile,
-    trace: &Trace,
-    query: &SyscallRateQuery,
-) -> Result<SyscallRate, Failure> {
-    let selection = Selection::new(profile, trace, &query.query)?;
-    let slices = Slices::new(selection.span(trace), query.buckets);
-    let mut series: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-    let mut errors = vec![0; slices.count];
-    calls(trace, &selection, |_, call, _| {
-        let Some(slice) = slices.of(call.time()) else {
-            return;
-        };
-
-        let name = match query.by {
-            SyscallRateBy::Class => class(call).to_owned(),
-            SyscallRateBy::Syscall => call.call.display_name().into_owned(),
-        };
-
-        series.entry(name).or_insert_with(|| vec![0; slices.count])[slice] += 1;
-        if matches!(call.outcome, Outcome::Failed(_)) {
-            errors[slice] += 1;
-        }
-    });
-
-    let mut series: Vec<SyscallSeries> = series
-        .into_iter()
-        .map(|(name, counts)| SyscallSeries { name, counts })
-        .collect();
-    series.sort_by_key(|series| std::cmp::Reverse(series.counts.iter().sum::<u64>()));
-    if series.len() > MOST_SERIES {
-        let rest = series.split_off(MOST_SERIES - 1);
-        let mut other = vec![0; slices.count];
-        for series in rest {
-            for (total, count) in other.iter_mut().zip(series.counts) {
-                *total += count;
-            }
-        }
-
-        series.push(SyscallSeries {
-            name: "other".to_owned(),
-            counts: other,
-        });
-    }
-
-    Ok(SyscallRate {
-        start: slices.start - trace.start,
-        width: slices.width,
-        series,
-        errors,
-    })
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
-)]
 fn heatmap(
     profile: &Profile,
     trace: &Trace,
@@ -957,84 +892,6 @@ fn call(
                 }
             }),
     })
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "slices.of returns a slice below slices.count, and bucket one below BUCKETS"
-)]
-fn lanes(
-    profile: &Profile,
-    trace: &Trace,
-    query: &SyscallLanesQuery,
-) -> Result<SyscallLanes, Failure> {
-    let selection = Selection {
-        overlapping: true,
-        ..Selection::new(profile, trace, &query.query)?
-    };
-
-    let slices = Slices::new(selection.span(trace), query.buckets);
-    let mut lanes: BTreeMap<(Pid, Tid), Lane> = BTreeMap::new();
-    calls(trace, &selection, |_, call, _| {
-        let Lane {
-            busy,
-            failed,
-            blocked,
-        } = lanes
-            .entry((call.process, call.thread))
-            .or_insert_with(|| Lane {
-                busy: vec![0; slices.count],
-                failed: vec![0; slices.count],
-                blocked: vec![false; slices.count],
-            });
-        if let (Some(entered), Some(exited)) = (call.entered, call.exited) {
-            spread(&slices, entered, exited, busy, blocked);
-        }
-
-        if matches!(call.outcome, Outcome::Failed(_))
-            && let Some(slice) = slices.of(call.time())
-        {
-            failed[slice] += 1;
-        }
-    });
-
-    Ok(SyscallLanes {
-        start: slices.start - trace.start,
-        width: slices.width,
-        lanes: lanes
-            .into_iter()
-            .map(|((pid, tid), lane)| SyscallLane {
-                tid: tid.get(),
-                pid: pid.get(),
-                name: trace.program(pid),
-                busy: lane.busy,
-                failed: lane.failed,
-                blocked: lane.blocked,
-            })
-            .collect(),
-    })
-}
-
-/// One thread's slices.
-struct Lane {
-    busy: Vec<u64>,
-    failed: Vec<u32>,
-    blocked: Vec<bool>,
-}
-
-/// Adds the nanoseconds of `[from, to)` to each slice they overlap, and
-/// marks those it covers whole.
-fn spread(slices: &Slices, from: u64, to: u64, busy: &mut [u64], blocked: &mut [bool]) {
-    let (from, to) = (from.cast_signed(), to.cast_signed());
-    for ((slice, total), whole) in (0_i64..).zip(busy.iter_mut()).zip(blocked.iter_mut()) {
-        let start = slices.start + slices.width * slice;
-        let end = start + slices.width;
-        let overlap = to.min(end) - from.max(start);
-        if overlap > 0 {
-            *total += overlap.unsigned_abs();
-        }
-        *whole |= from <= start && end <= to;
-    }
 }
 
 /// Whether a call opens what its path names.

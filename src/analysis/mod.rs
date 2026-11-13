@@ -10,6 +10,7 @@
 //! Each is a dense key.
 
 pub mod diff;
+pub mod kernel;
 pub mod keys;
 pub mod query;
 #[cfg(test)]
@@ -17,6 +18,7 @@ mod tests;
 pub mod zones;
 
 pub use diff::{DiffCost, DiffTree, Side, diff_costs, diff_trees};
+pub use kernel::{KernelLane, kernel_lanes};
 pub use keys::{Granularity, KeyKind, Keys};
 pub use query::{
     CallTree, Cost, Costs, Lanes, Look, OffCpuLane, Query, Source, Transform, ZoneScope, aggregate,

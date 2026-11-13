@@ -991,6 +991,17 @@ impl Profile {
         crate::analysis::off_cpu(&self.capture, query, buckets)
     }
 
+    /// Each thread's calls over `buckets` slices of the query's range.
+    #[must_use]
+    pub fn kernel_lanes(
+        &self,
+        keys: &Keys<'_>,
+        query: &Query,
+        buckets: usize,
+    ) -> Vec<crate::analysis::KernelLane> {
+        crate::analysis::kernel_lanes(&self.capture, keys, query, buckets)
+    }
+
     /// Each span the recording did not sample, as its start and end, in
     /// time order.
     #[must_use]
