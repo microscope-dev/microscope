@@ -730,14 +730,6 @@ fn record(args: &RecordArgs) -> Result<i32> {
         Arc::clone(&trigger),
     )?;
 
-    if let Some(duration) = args.duration {
-        let stop = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            std::thread::sleep(duration);
-            stop.store(true, Ordering::Relaxed);
-        });
-    }
-
     let continuous = match &args.continuous {
         Some(directory) => {
             std::fs::create_dir_all(directory)
@@ -766,8 +758,10 @@ fn record(args: &RecordArgs) -> Result<i32> {
     }
 
     // An attached process goes on once the recording ends, so the user is
-    // told when it begins.
+    // told when it begins. The duration counts from then too: opening the
+    // events can take seconds.
     let mut announce = args.pid;
+    let mut duration = args.duration;
     let mut watch = Watch {
         every: Duration::MAX,
         publish: &mut |_| {
@@ -775,6 +769,13 @@ fn record(args: &RecordArgs) -> Result<i32> {
                 eprintln!(
                     "microscope: recording process {pid}; Ctrl-C ends the recording and leaves it running"
                 );
+            }
+            if let Some(duration) = duration.take() {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    std::thread::sleep(duration);
+                    stop.store(true, Ordering::Relaxed);
+                });
             }
         },
         stop: &stop,

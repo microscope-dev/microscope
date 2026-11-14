@@ -18,8 +18,8 @@ Or attach to a running process:
 microscope record --pid 1842 -o server.usprof
 ```
 
-Stop an attached recording with Ctrl-C. Use `--duration SECONDS` when the
-recording should stop on its own.
+Stop an attached recording with Ctrl-C. Use `--duration 30s` when the
+recording should stop on its own; it counts from when sampling begins.
 
 See [profile reports](profile-reports.md) for comparisons, focused caller/callee
 reports, and focused subtrees.
