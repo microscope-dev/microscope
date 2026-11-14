@@ -1103,17 +1103,18 @@ struct Leased {
 impl Leased {
     /// The most pages `options` asks for that a lease of rings on `cpus`
     /// CPUs is free for, halved while it is not, and at the fewest pages
-    /// that hold two samples, waited for.
+    /// that hold two samples, waited for. Rings of mappings alone open
+    /// beside a recording's leased sample rings, so they do not wait.
     fn take(options: &EventOptions, cpus: usize) -> Self {
         let fewest = min_pages(options.stack_bytes);
         let mut pages = options.ring_pages.next_power_of_two().max(fewest);
 
         loop {
             let bytes = (pages + 1) * sys::page_size() * cpus;
-            let wanted = if pages == fewest {
-                lease::Wanted::Wait
-            } else {
-                lease::Wanted::Try
+            let wanted = match options.source {
+                _ if pages != fewest => lease::Wanted::Try,
+                Source::Mappings => lease::Wanted::Beside,
+                _ => lease::Wanted::Wait,
             };
             match lease::take(bytes, wanted) {
                 Some(lease) => return Self { pages, lease },

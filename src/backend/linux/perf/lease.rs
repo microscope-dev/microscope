@@ -7,7 +7,8 @@
 //! builds tests, every recording first leases what its rings lock from a
 //! pool that size, held in lock files that every test process shares. A
 //! lease that is not free makes the rings smaller, as the kernel's refusal
-//! does; at the fewest pages, opening waits for one.
+//! does; at the fewest pages, opening waits for one, unless the process
+//! holds a lease of other rings it opens these beside.
 //!
 //! The locks are POSIX record locks, which belong to a process and which
 //! a child does not inherit. A launch's child waits at its gate before it
@@ -26,6 +27,12 @@ pub enum Wanted {
     /// Wait for one, for the fewest pages the rings can have, and go on
     /// without one if it takes too long.
     Wait,
+
+    /// Take one if it is free and otherwise go on without one, for the
+    /// fewest pages of rings a process opens beside rings it holds a lease
+    /// of: two that each held one and waited for another would wait out
+    /// the deadline together.
+    Beside,
 }
 
 #[cfg(not(feature = "ring-lease"))]
@@ -119,9 +126,9 @@ mod imp {
             return Some(nothing());
         };
         let lease = pool.take(bytes, wanted, MOST_WAIT);
-        if lease.is_none() && wanted == Wanted::Wait {
+        if lease.is_none() && wanted != Wanted::Try {
             // The kernel decides.
-            record!("perf: no ring lease of {bytes} bytes after {MOST_WAIT:?}");
+            record!("perf: no ring lease of {bytes} bytes ({wanted:?})");
             return Some(nothing());
         }
         lease
@@ -169,11 +176,11 @@ mod imp {
         }
 
         /// A lease of `bytes`, all of it or none: while another holds what
-        /// it needs, none if `wanted` is [`Wanted::Try`], and otherwise once
-        /// enough is let go, or none after `most`.
+        /// it needs, once enough is let go if `wanted` is [`Wanted::Wait`],
+        /// or none after `most`, and otherwise none.
         pub fn take(&self, bytes: usize, wanted: Wanted, most: Duration) -> Option<Lease> {
             let needed = bytes.div_ceil(self.unit);
-            if needed > SLOTS && wanted == Wanted::Try {
+            if needed > SLOTS && wanted != Wanted::Wait {
                 return None;
             }
 
@@ -185,7 +192,7 @@ mod imp {
                         slots,
                     });
                 }
-                if wanted == Wanted::Try || Instant::now() >= deadline {
+                if wanted != Wanted::Wait || Instant::now() >= deadline {
                     return None;
                 }
 
@@ -351,6 +358,21 @@ mod imp {
                 let taken = pool.take(100, Wanted::Wait, Duration::from_secs(60));
                 assert!(taken.is_some(), "the lease let go of is taken");
             });
+        }
+
+        /// A lease beside another is refused at once while the pool is
+        /// full, where waiting would last as long as it is let wait.
+        #[test]
+        fn a_lease_beside_another_does_not_wait() {
+            let pool = pool("beside");
+            let held = pool.take(SLOTS, Wanted::Try, NONE).expect("all of it");
+            let most = Duration::from_secs(60);
+            let started = Instant::now();
+            assert!(pool.take(1, Wanted::Beside, most).is_none(), "full");
+            assert!(started.elapsed() < most, "it waited");
+
+            drop(held);
+            assert!(pool.take(1, Wanted::Beside, most).is_some(), "free");
         }
 
         /// The pool a run of this test executable by
