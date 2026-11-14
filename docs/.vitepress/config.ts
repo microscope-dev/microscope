@@ -29,7 +29,6 @@ export default defineConfig({
           { text: "Browser", link: "/browser" },
           { text: "Editors", link: "/editors" },
           { text: "Profiling", link: "/profiling" },
-          { text: "System calls", link: "/syscalls" },
         ],
       },
       {

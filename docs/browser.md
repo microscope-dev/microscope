@@ -108,15 +108,17 @@ disassembly costs, blocked time, task stacks, and instrumentation zones when
 recorded. The Python stacks switch hides interpreter frames in profiles
 containing Python stacks.
 
-A recording from `microscope syscalls -o FILE.usprof` or
-`microscope record --syscalls` has a Syscalls view: calls grouped by name, class,
-process, thread, file, or call site; an event log; a latency heat map; and tabs
-for files, network connections, and processes. See [System calls](syscalls.md).
+Every recording has a Kernel pane whose Syscalls tab holds the calls the
+rest of the profile selects: calls grouped by name, class, process, thread,
+file, or call site; an event log; a latency heat map; and tabs for files,
+network connections, and processes. The timeline draws each thread's calls
+under its CPU, and the samples taken during any calls open in the flame
+graph. See [Record system calls](profiling.md#record-system-calls).
 
-With no target, the page can also start a program and trace its system calls.
-It uses the ptrace engine, which needs no privilege. The trace updates every
-two seconds while the program runs, and the Processes tab shows what each
-thread is blocked in.
+With no target, the page can also record a program. Its form picks the
+preset, the system call level, and the engine; ptrace needs no privilege. The
+recording updates while the program runs, and the Processes tab shows what
+each thread is blocked in.
 
 ## Serve through a tunnel or proxy
 

@@ -48,16 +48,15 @@ they apply.
 
 ## System calls
 
-- `microscope syscalls` traces x86-64 programs, including their 32-bit and x32
+- `record` sees the calls of x86-64 programs, including their 32-bit and x32
   calls.
 - The BPF engine needs Linux 5.15 or newer with BTF, `CAP_BPF`, and
   `CAP_PERFMON`. It cannot use a BPF token.
 - The ptrace engine stops the program at each traced call, at a cost of
-  several microseconds a call. Attaching it stops every call.
-- Calls answered in the vDSO, such as `clock_gettime`, are not traced.
+  several microseconds a call, and cannot only count calls.
+- Calls answered in the vDSO, such as `clock_gettime`, are not seen.
 - Under load the BPF engine keeps fewer calls whole, down to those that
   fail or are slow, but counts every call.
-- A cgroup or container trace cannot show stacks.
 - BPF Python stacks require the initial PID namespace and interpreter metadata,
   which takes a few milliseconds to read after the interpreter is mapped.
   Otherwise they end with `interpreted frames unknown`.

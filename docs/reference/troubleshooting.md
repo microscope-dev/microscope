@@ -45,18 +45,20 @@ that both processes are in compatible PID and mount namespaces.
 When a process is in another mount namespace, microscope also uses
 `/proc/PID/root` to find the files that process mapped.
 
-## System call tracing is refused
+## System calls are not recorded
 
-`microscope syscalls` defaults to BPF and never falls back to ptrace
-automatically. The error identifies the missing requirement:
+`record` sees system calls with BPF unless told otherwise, and never falls
+back to ptrace on its own. A preset's level then records no calls and says
+why; a level asked for with `--syscalls` stops the recording. The message
+names the missing requirement:
 
 | Requirement | Check or remedy |
 | --- | --- |
 | Kernel | Linux 5.15 or newer with BTF: build with `CONFIG_DEBUG_INFO_BTF=y`; check `/sys/kernel/btf/vmlinux` |
-| Capabilities | `CAP_BPF` and `CAP_PERFMON`; see [BPF privileges](../syscalls.md#give-microscope-the-bpf-privileges) |
+| Capabilities | `CAP_BPF` and `CAP_PERFMON`; see [BPF privileges](../profiling.md#give-microscope-the-bpf-privileges) |
 | Lockdown | Boot with `lockdown=integrity` or without lockdown |
 
-In each case, `--engine ptrace` still traces a program you launch.
+In each case, `--syscall-engine ptrace` still records a program's calls.
 
 ## A stack ends early
 

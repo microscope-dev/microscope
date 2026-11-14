@@ -222,7 +222,7 @@ stopped at catchpoint c1 as the call returned: openat(AT_FDCWD, "missing", O_RDO
 
 While a catchpoint exists, every system call stops its thread briefly, even
 calls no catchpoint names, so the program runs slower. To watch calls without
-stopping the program, use [`microscope syscalls`](syscalls.md) instead.
+stopping the program, [record them](profiling.md#record-system-calls) instead.
 
 ## Step through code
 

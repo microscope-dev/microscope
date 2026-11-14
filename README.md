@@ -15,7 +15,6 @@ Protocol.
 - [Using the browser](docs/browser.md)
 - [Using an editor](docs/editors.md)
 - [Recording and reading profiles](docs/profiling.md)
-- [Tracing system calls](docs/syscalls.md)
 - [Expressions](docs/expressions.md)
 - [Views](docs/views.md)
 - [Supported languages](docs/languages.md)
@@ -35,8 +34,9 @@ It presents common containers as their contents instead of their internal
 fields. It also understands Go goroutines and async Rust tasks. The profiler
 can record native and logical stacks and open them in the browser interface.
 
-`microscope syscalls` traces the system calls a program makes, as strace does.
-By default it uses eBPF, so the traced program never stops.
+A recording also keeps the program's system calls beside its samples, read
+as strace prints them or explored in the browser. By default it uses eBPF, so
+the program never stops.
 
 When debug information or memory is missing, microscope reports what it could
 not read. It does not fill gaps with guessed values.

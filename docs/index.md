@@ -20,8 +20,8 @@ features:
     details: Inspect Go goroutines and async Rust tasks, including suspended stacks and wait locations.
   - title: Record profiles
     details: Sample native programs externally. Measure CPU time, blocked time, tasks, and instrumented work.
-  - title: Trace system calls
-    details: Trace calls in strace format, or count them in the kernel without stopping the program.
+  - title: See system calls beside samples
+    details: Every recording counts or keeps the program's system calls on the samples' clock, without stopping it.
 ---
 
 microscope runs on Linux x86-64 and understands programs written in C, C++,
@@ -34,7 +34,6 @@ Rust, Go, Zig, Odin, Fortran, D, Nim, and Ada.
 - [Use the browser interface](browser.md)
 - [Connect an editor](editors.md)
 - [Record and inspect a profile](profiling.md)
-- [Trace system calls](syscalls.md)
 
 ## Learn the data model
 

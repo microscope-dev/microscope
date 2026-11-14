@@ -1200,7 +1200,7 @@
         });
       };
 
-      # The privilege `microscope syscalls` needs for its BPF engine, and
+      # The privilege `microscope record` needs for its BPF engines, and
       # `just test-bpf` for its tests: a wrapper around env that raises
       # CAP_BPF and CAP_PERFMON into the ambient set before it runs its
       # command, so they reach microscope through nix develop, systemd-run, and

@@ -245,7 +245,7 @@ microscope report --python --lines server.usprof
 - `bpf` reads Python frames in the kernel at each CPU sample and inserts them
   before the interpreter activations that run them, without stopping the
   program. It needs `CAP_BPF` and `CAP_PERFMON`, like the
-  [`microscope syscalls` BPF engine](syscalls.md#give-microscope-the-bpf-privileges).
+  [BPF engine](#give-microscope-the-bpf-privileges).
   If either is missing, recording stops with an error naming it. It never
   falls back to another engine.
 - `snapshot[=SECONDS]` stops the program every SECONDS (default 0.1) and reads
@@ -392,20 +392,186 @@ microscope record --continuous profiles --segment 60 --keep 24h --pid 1842
 `microscope report profiles` and `microscope web profiles` read the retained
 segments as one profile. Old segments are deleted after the `--keep` duration.
 
-## Record system calls too
+## Record system calls
 
-`--syscalls SET` traces system calls beside the samples, with their stacks:
+Every recording also sees the program's system calls, on the same clock as
+its samples. `--syscalls LEVEL` sets how much of each call it keeps; the
+preset chooses otherwise:
+
+| Level | Keeps | Preset |
+|---|---|---|
+| `off` | No calls | |
+| `counts` | Every call counted in the kernel, by call and thread, with each failed call and each call slower than 10 ms kept whole | `prod` |
+| `calls` | Every call with its arguments, result, short strings, and stack | `dev` |
+| `full` | As `calls`, with whole strings and the bytes behind pointers | `max` |
 
 ```sh
-microscope record --syscalls %file,%net -o server.usprof -- ./server
+microscope record --syscalls calls -o server.usprof -- ./server
 ```
 
-`SET` is `all`, or calls and classes as `microscope syscalls -e trace=` takes
-them. The browser shows the calls on the timeline with the samples. A rolling
-window or continuous recording keeps each saved file's own calls.
+`--syscall-filter` keeps only some calls, in strace's `-e` syntax, with
+expressions apart by spaces:
 
-It works only for a program `record` starts, not with `--pid`, and needs the
-BPF engine's privileges. See [System calls](syscalls.md).
+```sh
+microscope record --syscall-filter 'trace=%file,%net status=failed' -o server.usprof -- ./server
+```
+
+A call's stack is copied as a sample's is, so `--stack-bytes` sets how deep
+both go. A Python or Node program's call stacks hold its Python or JavaScript
+frames; see [Python](languages.md#system-calls) and
+[Node.js](languages.md#system-calls-1).
+
+### Read the calls
+
+`microscope report --syscalls` prints each call in the order it returned, as
+strace does with `-f -y -T`. A filter after it narrows them:
+
+```sh
+microscope report --syscalls 'trace=openat status=failed' server.usprof
+```
+
+```text
+   0.053243 1398973 openat(AT_FDCWD</srv>, "missing", O_RDONLY) = -1 ENOENT (No such file or directory) <9.718 µs>
+   0.054342 1398973 +++ exited with 3 +++
+```
+
+`--summary` prints strace's `-c` table instead, then where the calls were
+made, the sites that took the most time first:
+
+```text
+By call site:
+% time     seconds     calls    errors   p99 usecs site
+------ ----------- --------- --------- ----------- ----------------
+ 63.14    0.000990         1                   990 _start
+  7.68    0.000120        11                    13 mmap
+  1.38    0.000021         1                    21 files · syscalls.c:19
+ ...
+```
+
+A site is the program's own code that made the call, by function, file, and
+line. C and Rust standard-library wrappers are skipped, since every call of a
+kind passes through them. Without debug information, a site is a function.
+`--focus FUNCTION` keeps only the calls whose stack passes through it.
+
+`record --print` also prints each call to standard error as it returns.
+
+### Explore calls in the browser
+
+`microscope web server.usprof` shows each thread's calls in a strip under its
+CPU on the timeline. Hovering a call the thread waited in names it, and
+clicking it selects its time. A zone's tooltip names the calls its thread was
+blocked in.
+
+The Kernel pane's Syscalls tab holds the calls the rest of the profile
+selects: a time range, threads, labels, zones, or a focus on a function keeps
+only the calls made there. Its tabs show:
+
+- **Summary**: strace's `-c` table, grouped by call, class, process, thread,
+  file, or call site. A call's row opens its errors, its latency over time
+  as a heat map, and the callers of its slow and failed calls.
+- **Log**: each call as strace prints it. A call opens to its arguments, the
+  bytes it moved, its stack, and the source line that made it. Each frame of
+  the stack links to its function in the flame graph, the call tree, and its
+  source lines.
+- **Files**, **Network**, and **Processes**: the files and sockets the
+  program used, and its processes and how each ended.
+
+The calls and the samples select each other. **Samples during these calls**,
+or a row's **samples** link, keeps the calls in view and narrows the timeline,
+flame graph, call tree, and functions to the samples taken while a thread was
+inside those calls. **System calls as leaves**, in Options, adds each call as
+a `[syscall]` leaf under the code that made it, weighed by the time no sample
+of its thread stands for: a sleep weighs its whole length, and a call the
+kernel ran on the CPU weighs next to nothing, since samples already cover it.
+A recording made without `--kernel-stacks` samples user code alone, so no
+sample falls inside a call: there, **samples** turns on the leaves too.
+
+A recording made from the browser shows its calls as they arrive, and which
+call each thread is blocked in now.
+
+### Choose an engine
+
+The default **BPF engine** runs small programs in the kernel. The program
+never stops. Counting a call costs it about 130 ns, and keeping it with its
+stack about a microsecond. It needs
+`CAP_BPF` and `CAP_PERFMON`, Linux 5.15 or newer, and the kernel's BTF type
+information. Without them, the preset's level records no calls and says why;
+a level asked for with `--syscalls` stops the recording.
+
+The **ptrace engine** stops the program at each call, as strace does. It
+needs no privilege, but each call costs several microseconds, which slows the
+program and stretches each call's time. Choose it with
+`--syscall-engine ptrace`. It cannot count calls without stopping each one,
+so it records `calls` or `full`, not `counts`.
+
+microscope never switches engines on its own.
+
+### Give microscope the BPF privileges
+
+The BPF engine, `--kernel-stacks`, and `--python bpf` need `CAP_BPF` and
+`CAP_PERFMON`. Without them, microscope says what is missing.
+
+From a systemd unit, grant them as ambient capabilities:
+
+```ini
+[Service]
+AmbientCapabilities=CAP_BPF CAP_PERFMON
+```
+
+On NixOS, microscope's flake has a module that installs a wrapper with these
+capabilities. Import `nixosModules.microscope-bpf`, rebuild, and run microscope
+through it:
+
+```sh
+/run/wrappers/bin/microscope-bpf microscope record -o server.usprof -- ./server
+```
+
+The wrapper is open to members of the `wheel` group.
+
+microscope cannot use a BPF token, which some container managers offer instead
+of capabilities. When it finds one, the error says so.
+
+### Save around a problem
+
+A recording that keeps a window (`--window`) or writes segments
+(`--continuous`) saves on `SIGUSR2`, and on a call that names a problem:
+
+- `--save-on-slow DURATION`: a call takes at least DURATION;
+- `--save-on-errno ERRNOS`: a call fails with one of ERRNOS, such as
+  `EIO,ENOSPC`.
+
+```sh
+microscope record --preset prod --continuous traces --save-on-errno EIO -- ./server
+```
+
+A window is saved beside the output file, and a segment ends early. Each
+saved file says which call saved it. After one call saves, the calls in the
+next window's or segment's span are let go, so a burst of failures saves once.
+
+### Stay within the budget
+
+The budget covers the calls and the samples together. Each period over it,
+the recording gives up one more step: the calls' stacks, then strings past
+16 bytes, then all but one call in 16, which are still counted, then every
+call that neither failed nor was slow, and only then samples. Counting calls
+is never given up. After 5 seconds under budget it takes one step back. It
+says each step as it takes it, saves it in the recording, and draws it on the
+browser's timeline.
+
+### What is not seen
+
+Some calls, such as `clock_gettime` and `gettimeofday`, usually run in the
+vDSO without entering the kernel. Neither engine sees them.
+
+Under heavy load, the BPF engine can fall behind and lose calls. The
+recording counts them, and `report` and the browser say how many. A thread
+that unwinds stacks takes a few microseconds a call; more than about 200,000
+calls a second with stacks can outrun it on a fast machine, and fewer on a
+busy one.
+
+For a short list of calls, the BPF engine attaches to the kernel functions
+behind them, which costs other processes nothing. `exit` and `exit_group`
+attach only at entry; the thread's exit completes their record.
 
 ## Resolve symbols now or later
 

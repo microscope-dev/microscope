@@ -20,7 +20,7 @@ or attach. Only the join form sits outside the workbench.
 | `src/web/group.rs`, `web/src/ui/Processes.tsx` | The selected member of a process group and the process switcher |
 | `src/web/assets.rs`, `src/web/auth.rs` | Built-page serving and access control |
 | `src/web/inspect.rs`, `src/web/values.rs`, `src/web/draw.rs`, `src/web/profiles.rs` | Server adapters for major page features |
-| `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Syscalls view; see [system call tracing](syscalls.md) |
+| `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | A profile's Kernel pane and its Syscalls tab; see [system call tracing](syscalls.md) |
 | `web/src/store.ts`, `web/src/connection.ts`, `web/src/actions.ts` | Browser state, transport, and user actions |
 | `web/src/router.tsx`, `web/src/ui/Routes.tsx`, `web/src/tab.ts` | Addresses, what each opens in the workbench, and per-tab state |
 | `web/src/workbench/` | Generic layout model, frame components, drag geometry, keys, and command registry; depends only on React, Zustand, and the shared assertion helper |

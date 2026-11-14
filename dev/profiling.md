@@ -432,8 +432,8 @@ pages, so the read that needs it reads it alone and fails as it would have.
 On 20 threads that each wake every 2 ms, read every 10 ms, the memory reads
 went from about 72 system calls per thread read, 21 µs in the kernel, to
 about 2, 11 µs: the pages are as many as before, about 54, and the time
-saved is each call's own cost (measured with `microscope syscalls --format
-ndjson` on the recorder).
+saved is each call's own cost (measured by recording the recorder's own
+system calls).
 
 A thread's isolate is found through the thread-local storage of the module
 that carries V8. On Debian's node that is `libnode`, whose block glibc
@@ -891,8 +891,7 @@ Format changes need:
 - malformed-input tests or fuzz coverage;
 - browser and report tests for the new meaning.
 
-A capture can also hold system calls, from `microscope syscalls -o` or
-`record --syscalls`. Their tables, and how a recording merges a trace with its
+A capture also holds the recording's system calls. Their tables, and how a recording merges a trace with its
 samples, are described in [system call tracing](syscalls.md#captures).
 
 ## Rolling and continuous recordings

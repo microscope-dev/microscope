@@ -308,7 +308,6 @@ Unsafe code lives in a few files, which `scripts/unsafe-sites.sh` lists and
 - `backend/linux/syscalls/ptrace.rs`: the SIGURG handler that interrupts a
   blocking `waitpid`.
 - `timings/alloc.rs`: the counting allocator.
-- `cli/syscalls.rs`: `localtime_r`.
 - `main.rs` and `cli/config.rs`: removing environment variables before
   microscope starts any other thread, and the global allocator.
 - `main.rs` and `bin/microscope-tools.rs`: setting mimalloc's purge delay

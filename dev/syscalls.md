@@ -1,25 +1,29 @@
 # System call tracing
 
-microscope sees system calls in three places: `microscope syscalls`, which
-prints them as strace does; `record --syscalls`, which saves them beside a
-profile; and debugger catchpoints, which stop at them. Two engines produce the
-calls, and both turn what they see into one neutral model before anything
-formats, counts, or saves it.
+Every `record` sees the program's system calls, at the level `--syscalls`
+or the preset chooses, and saves them in its capture beside the samples, on
+their clock. `report --syscalls` and the browser read them back from the
+capture. The debugger's catchpoints stop at calls instead. Two engines
+produce the calls, and both turn what they see into one neutral model before
+anything formats, counts, or saves it. This page is about those engines and
+the model; [profiling](profiling.md) covers the recording around them.
 
 ## Code map
 
 | Path | What lives there |
 | --- | --- |
 | `src/syscalls/` | Neutral model: events, call tables, argument specs, the filter language, descriptors, processes, and statistics |
-| `src/present/syscalls/` | strace's text format and the `-c` table, shared by the CLI and the browser |
+| `src/present/syscalls/` | strace's text format and the `-c` table, shared by `report` and the browser |
 | `src/backend/linux/syscalls/ptrace.rs`, `seccomp.rs`, `info.rs`, `launch.rs` | The ptrace engine |
 | `src/backend/linux/syscalls/bpf.rs`, `src/backend/linux/bpf/syscalls.bpf.c`, `bpf/records.h` | The BPF engine: its loader and its kernel programs |
-| `src/backend/linux/syscalls/budget.rs`, `cgroup.rs`, `continuous.rs`, `stacks.rs`, `unwinder.rs`, `capture.rs` | Budgets, cgroup targets, continuous traces, stacks and the thread that unwinds them, and captures |
+| `src/backend/linux/syscalls/rings.rs`, `stacks.rs`, `unwinder.rs`, `capture.rs` | Each CPU's ring merged by time, stacks and the thread that unwinds them, and captures |
 | `src/backend/linux/catchpoints.rs` | Debugger catchpoints |
-| `src/cli/syscalls.rs` | The `microscope syscalls` command |
-| `src/profiler/syscalls.rs`, `src/profiler/session.rs` | Captures read back, call sites, and `record --syscalls` |
-| `src/cli/profile.rs` | `microscope report`'s table of call sites |
-| `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | The browser's Syscalls view |
+| `src/profiler/syscall_trace.rs` | The trace a recording runs beside its samples: levels, the filter, save triggers, cuts, and `--print` |
+| `src/profiler/ladder.rs`, `src/profiler/session.rs` | The one budget's ladder, whose upper rungs shed call detail, and the recording loop that climbs it |
+| `src/profiler/syscalls.rs` | Captures read back, call sites |
+| `src/analysis/query.rs`, `src/analysis/kernel.rs` | Calls selected through the samples' query, samples during calls, calls as leaves, and each thread's kernel lane |
+| `src/cli/profile/report.rs` | `report --syscalls`, its log and `--summary` table |
+| `src/web/syscalls.rs`, `web/src/profile/syscalls.ts`, `web/src/ui/profile/SyscallsView.tsx` | The browser's Kernel pane and its Syscalls tab |
 | `src/sim/tracing.rs`, `src/sim/catches.rs` | The simulator's models of the tracepoint stream and of catchpoints |
 | `tests/syscalls.rs`, `tests/catchpoints.rs`, `tests/dap/catchpoints.rs`, `tests/web/syscalls.rs` | Integration tests |
 | `tests/fixtures/c/syscalls.c` | The fixture most tests trace, one workload per mode |
@@ -47,8 +51,9 @@ writes it from a kernel tree.
 The ptrace engine launches the program with a seccomp filter that returns
 `SECCOMP_RET_TRACE` for the chosen calls, so calls nobody asked for never stop.
 It reads each stop with `PTRACE_GET_SYSCALL_INFO`. A running process cannot be
-given a filter, so attaching stops at every call, and the CLI refuses unless
-`--stop-every-call` is given.
+given a filter, so attaching stops at every call. It stops at each call it
+sees, so it cannot only count them: `SyscallOptions::check` refuses `counts`
+with ptrace.
 
 This engine has its own tracer thread and does not use the debugger's
 controller.
@@ -192,13 +197,13 @@ How it attaches:
 
 - By default it uses `tp_btf` tracepoints, which every process on the host
   pays for: about 33 ns a call, in or out of the trace.
-- For a list of at most 32 calls it attaches `fentry`/`fexit` to their kernel
-  functions instead, which costs other processes nothing. `--attach` chooses.
+- For a `--syscall-filter` of at most 32 calls it attaches `fentry`/`fexit`
+  to their kernel functions instead, which costs other processes nothing.
   A call that BTF does not describe, a call with no arguments (whose wrapper
   pahole leaves out), or an x32 call on a kernel without x32 makes the list
   use tracepoints. microscope says why.
 - Process completion always needs `do_notify_parent` in kernel BTF and an
-  attachable fentry hook, including with `--attach tracepoint`. Missing
+  attachable fentry hook, whatever the calls attach to. Missing
   support is an error, not a return to the racy shared-counter check.
 - Exit tracing also needs an attachable `exit_notify` kprobe and, when
   terminal calls are selected, kprobes on their syscall wrappers. Attachment
@@ -220,14 +225,14 @@ How it reads calls:
   process and entry timestamp match. This also covers exec failures after
   the id changes, which emit no successful exec event. A displaced leader
   entry stays visibly unfinished; a lost handoff counts as a ring loss.
-- Every record goes through one `BPF_MAP_TYPE_RINGBUF`, `EVENTS`, shared by
-  all CPUs: 16 MiB (`DEFAULT_RING`), or 64 MiB (`STACK_COPY_RING`) with
-  `-k=dwarf`, whose 8 KiB copies make a call's records about 8.6 KiB
-  against some 440 bytes with `-k` and 160 without stacks. The kernel
-  charges a ring to the memory cgroup of the process that made it, not to
+- Each CPU has a `BPF_MAP_TYPE_RINGBUF` of its own in `EVENTS`, and
+  `rings.rs` merges them by time: 2 MiB each (`DEFAULT_RING`), or 8 MiB
+  (`STACK_COPY_RING`) when the recording copies stacks, whose 8 KiB copies
+  make a call's records about 8.6 KiB against some 440 bytes with the
+  kernel's walk alone and 160 without stacks. The kernel charges a ring to
+  the memory cgroup of the process that made it, not to
   `perf_event_mlock_kb` or `RLIMIT_MEMLOCK`; a cgroup that cannot hold the
-  larger default gets a ring half as large, down to 16 MiB. `--ring` is
-  never shrunk.
+  rings gets smaller ones, down to 256 KiB (`SMALLEST_RING`).
 - A record that does not fit counts one loss in `LOST`. A stack goes before
   the call or signal it belongs to; when the stack does not fit, that record
   carries `CALL_STACK_LOST`, and the reader shows it with an empty stack
@@ -235,8 +240,8 @@ How it reads calls:
   whose entry record (`execve`, `rseq`) went out is thus never left
   unfinished by a lost stack.
 - The reader copies everything the ring holds out of it and handles the
-  batch: it pairs each stack with its call or signal, and the CLI formats
-  each event. Each stack is unwound on a thread of its own
+  batch: it pairs each stack with its call or signal, and gives each event
+  to the recording's sink. Each stack is unwound on a thread of its own
   (`syscalls/unwinder.rs`), through the process's modules as they are when
   the reader hands it over (`Stacks::unwinding`, an `Arc` of the module
   list that later mappings replace rather than change). The reader keeps
@@ -244,7 +249,7 @@ How it reads calls:
   finishes the stack (`Stacks::finish_sampled`: modules read again for code
   no module held, and the interpreter's frames) and gives the event to the
   sink. Stacks come back in the order they were sent. At most 2,048 events
-  wait (`MOST_PENDING`; with `-k=dwarf` each holds 8 KiB of stack); past
+  wait (`MOST_PENDING`; with stack copies each holds 8 KiB); past
   that, the reader waits for their stacks rather than drain more, and the
   ring fills as before. Before each tick, the reader gives the sink every
   waiting event, so what a tick tells the sink follows them. A panic while
@@ -259,7 +264,7 @@ How it reads calls:
 - Unwinding is cached per image address: the code role and frame-pointer
   rule (`FrameRules`, one per thread), the call-frame row
   (`DwarfUnwindInfo::row`), and the symbol and line (`Stacks::frame`). On a
-  Ryzen 9 9950X, a `-k=dwarf` call costs the reader about 5 µs and the
+  Ryzen 9 9950X, a call with a copied stack costs the reader about 5 µs and the
   unwinder about 3 µs, so the reader, mostly naming frames and formatting
   them, sets the rate a trace keeps up with: about 200,000 calls a second
   from one thread, against 135,000 when the reader unwound them too. One
@@ -269,23 +274,26 @@ How it reads calls:
   before. While a batch is handled, the ring fills; the ring's size only
   decides how long a burst or a stall it rides out.
 - Calls in progress live in task storage. An `iter/task` program lists them
-  every 100 ms tick, for `--in-flight`.
-- Statistics are a per-CPU array with a row per chosen call. For continuous
-  traces the kernel counts into one half of the rows while microscope reads the
-  other. Switching halves updates an array-of-maps (`FENCE`), which waits for
+  every 100 ms tick, for a watched recording's Blocked now table.
+- Statistics are a per-CPU array with a row per chosen call. For cut
+  recordings the kernel counts into one half of the rows while microscope
+  reads the other. Switching halves updates an array-of-maps (`FENCE`), which waits for
   running programs, so counted segments sum exactly.
-- Settings fixed at load, such as the cgroup and PID namespace, are `.rodata`
-  globals, so the verifier drops the code they turn off.
+- Settings fixed at load, such as the PID namespace, are `.rodata` globals,
+  so the verifier drops the code they turn off.
 - Loading is mostly verifier time. The verifier walks every step of a plain
   loop, so the long ones (counting a string array, searching for a Python
   thread's state) run through `bpf_loop` on 5.17 and later, where it checks
   the callback once. That cut `record --syscalls all -- /bin/true` from about
   0.53 s to 0.2 s. Older kernels keep the plain loops (`loop_helper`).
 
-`--budget` measures microscope's own CPU time, plus the programs' run time when
-`kernel.bpf_stats_enabled` is on, and steps down: drop stacks, cut strings,
-sample, then only count. Sampled-out calls are still counted in the kernel.
-The steps never go back up and never cut paths.
+The recording's one budget measures microscope's own CPU time, plus the
+programs' run time when `kernel.bpf_stats_enabled` is on. Over it, the
+ladder in `src/profiler/ladder.rs` sheds one rung a period: stacks, strings,
+all but one call in 16, every call but the failed and slow, then samples.
+The engine is told each rung through `BpfOptions`; calls it lets go are
+still counted in the kernel, and paths are never cut. Under budget for
+`HOLD`, a rung comes back.
 
 ## Privileges in development
 
@@ -333,61 +341,46 @@ and pinned by a dual run in `src/sim/conformance/kernel.rs`.
 
 ## Captures
 
-`-o FILE.usprof` writes a capture, the profiler's file format, at revision 9.
-`capture.rs` writes the calls; `src/profiler/syscalls.rs` reads them back into
-events, so the browser and `microscope report` reuse the same presentation.
+A recording's capture holds its calls. `capture.rs` writes them;
+`src/profiler/syscalls.rs` reads them back into events, so the browser and
+`microscope report` reuse the same presentation.
 
 A call's site is `Profile::syscall_site_name`: `syscall_site`, or else the
 stack's innermost function. The browser's grouping by site and `report`'s
 table of sites (`Profile::syscall_sites`, printed through
 `present::syscalls::summary::labelled`) both use it, so they agree.
 
-`record --syscalls` starts a BPF trace at the profiler's launch gate, so it
-sees the program's first call, and merges it with the samples on one clock.
-With `--window` or `--continuous`, each saved file gets its own span's calls.
+A recording starts its trace at the profiler's launch gate, so it sees the
+program's first call, and merges it with the samples on one clock. With
+`--window` or `--continuous`, each saved file gets its own span's calls. A
+watched recording, as the browser's, publishes the calls so far beside each
+snapshot of its samples, with the calls its threads are blocked in; an
+unwatched one copies none, which would cost it CPU for nobody.
 
 ## Times in the text
 
-Every engine times calls in nanoseconds. `-T` and `-r` print them as
-strace 7.1 does, to the precision of `--syscall-times=` and
-`--relative-timestamps=` (`present::Precision`), cut rather than rounded.
-The short flags take no value and mean microseconds; clap's
-`overrides_with` makes the last of the short and long forms win, as in
-strace.
-
-`--absolute-timestamps` is parsed per value into a `Stamp` naming a format,
-a precision, or both. `absolute` then folds the values in order, as
-strace's `parse_ts_arg` sets its globals: a value without a format keeps
-the last one, or starts `time` when there is none. `-t`, `-tt` and `-ttt`
-are `time,s`, `time,us` and `unix,us`; strace refuses `-t` beside the long
-form, and so do we. The wall clock comes before `-r`'s time, which is then
-put in `(+ )`.
-
-The `-c` table keeps strace's microseconds unless `--syscall-times=ns`
-asks for nanoseconds (`summary::Unit`). Then the per-call columns say
-`nsecs`, and `seconds` gets nine decimals and three more places of width,
-so it holds as many whole seconds as strace's column does. `-c` refuses
-`s` and `ms`, which would turn more calls into 0, not fewer; under `-C` they
-change only the lines. `microscope report` always prints microseconds.
+Every engine times calls in nanoseconds. `report --syscalls` prints each
+call's time since the recording began in seconds and its length in the unit
+that reads best (`present::syscalls::duration`). The `--summary` table keeps
+strace's `-c` columns, in microseconds.
 
 ## Testing
 
 - Pure parts, such as the filter, decoders, statistics, and the budget's
   steps, have unit tests, and the filter has a fuzz target
   (`syscall_filter`).
-- `tests/syscalls.rs` holds the CLI's output to strace's, using the ptrace
-  engine, which needs no privilege. Its `bpf` module runs the dual-engine
-  tests through `just test-bpf`. Times differ between runs, so the tests
-  compare their digit counts and columns with strace's, at every
-  precision. No test asserts how long a call takes: that depends on the
-  machine. Both engines time calls in nanoseconds through the same code,
-  so the ptrace engine's table test covers nanosecond precision for both.
+- `tests/syscalls.rs` records with `record` and reads back with
+  `report --syscalls`, using the ptrace engine, which needs no privilege.
+  strace is only an oracle there: a few tests compare decoded arguments with
+  one strace run's. Its `bpf` module runs the dual-engine tests, the budget,
+  and the cut recordings through `just test-bpf`. No test asserts how long a
+  call takes: that depends on the machine.
 - `tests/catchpoints.rs` covers catchpoints through `Scenario`.
-- `tests/python/syscalls.rs` traces `tests/fixtures/python/syscalls.py` with
-  `-k` on three interpreters. It checks each call's Python lines, a second
+- `tests/python/syscalls.rs` records `tests/fixtures/python/syscalls.py`
+  on three interpreters. It checks each call's Python lines, a second
   activation that C began, the text, and a saved trace's call site. It also
   checks a catchpoint's backtrace. Its `bpf` module holds the BPF engine to
-  the same frames, with `-k=dwarf`, running the fixture under `--hold` as
+  the same frames, running the fixture under `--hold` as
   the Node tests below do (`tests/support/held.rs`). Its probe is `probe`'s
   open of `/dev/random`. The fixture lives until the test has read its
   calls: the engine reads a frame's code object as it drains the record,
@@ -404,8 +397,8 @@ change only the lines. `microscope report` always prints microseconds.
   `/dev/zero` an addon (`frameless.c`) makes with 8 in `rbp`: each must name
   the function that made it or end saying its JavaScript frames are missing.
 - `a_burst_of_copied_stacks_loses_no_calls` traces 6,600 calls of
-  `syscall-load` with `-k=dwarf`, made in about 10 ms: 57 MB of records,
-  which the default ring holds whatever the reader does meanwhile, so that
+  `syscall-load` with copied stacks, made in about 10 ms: 57 MB of records,
+  which the rings hold whatever the reader does meanwhile, so that
   a loaded machine cannot fail it. The reader's rate is measured, not
   tested, since a loaded machine slows it: run `syscall-load 1 ROUNDS RATE`
   under each build, alternating, and compare the losses and microscope's
@@ -424,11 +417,13 @@ Run `just test-bpf` after changing the BPF programs or their loader, and
 
 ## Overhead
 
-`just syscall-overhead` times a `getppid` loop bare, under each engine, and
-untraced beside a BPF trace. Compare a change with
-`--compare bench/syscalls-overhead.json`. On the machine that recorded it,
-the BPF engine adds about 70–90 ns a call when counting and about 120 ns when
-streaming, and ptrace adds about 5 µs.
+`just syscall-overhead` times a `getppid` loop bare, recorded at `counts`
+and at `calls` (the `dev` preset, with its stack copy), and unrecorded beside
+a recording of another program, the tax every process on the host pays for
+the tracepoints. Compare a change with
+`--compare bench/syscalls-overhead.json`. On the machine that recorded it on
+13 November 2026, `counts` added about 130 ns a call, `calls` about 1.1 µs,
+and the untargeted loop about 70 ns.
 
 The machine's own speed drifts over weeks. Before re-recording the baseline
 for a slower result, run the commit that recorded it on the same day to see

@@ -125,9 +125,9 @@ the exception was raised.
 
 ### System calls
 
-`microscope syscalls -k -- python3 app.py` includes Python frames in syscall
-stacks. With the BPF engine, `-k=dwarf` places them among native frames;
-plain `-k` puts them after the first native frame.
+A recording's system call stacks include each Python frame's function, file,
+and line, with either engine. See
+[Record system calls](profiling.md#record-system-calls).
 
 For profiles, see [Record Python programs](profiling.md#record-python-programs).
 
@@ -222,10 +222,12 @@ off by default.
 
 ### System calls
 
-`microscope syscalls -k -- node app.js` includes JavaScript frames in syscall
-stacks. The ptrace engine provides source lines for every frame; the BPF
+A recording's system call stacks include JavaScript frames among the native
+V8 frames that run them. The ptrace engine gives every frame a line; the BPF
 engine names compiled frames by function, with lines for interpreted frames.
-See [Syscall stacks](syscalls.md#show-where-calls-come-from).
+Calls made before microscope reads V8's layout, just after startup, end with
+`interpreted frames unknown`. See
+[Record system calls](profiling.md#record-system-calls).
 
 For profiles, see [Record Node programs](profiling.md#record-node-programs).
 

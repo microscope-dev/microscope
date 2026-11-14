@@ -20,9 +20,8 @@ Use `microscope --help` for all options or `microscope TOOL --help` for a tool.
 | `web` | Serve a debugging or profiling session to browsers |
 | `views` | Check views, explain binding, or replay recorded kernels |
 | `config` | Inspect, check, create, and trust configuration |
-| `record` | Record a profile |
-| `syscalls` | Trace system calls, as strace does; see [System calls](../syscalls.md) |
-| `report` | Print a profile summary or call tree |
+| `record` | Record a profile, with the program's system calls; see [Profiling](../profiling.md) |
+| `report` | Print a profile summary, call tree, or system calls |
 | `symbolize` | Add source lines to a profile recorded for later symbolization |
 
 ## Target options
