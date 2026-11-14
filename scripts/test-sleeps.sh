@@ -28,6 +28,8 @@ poll     tests/debugger/group.rs                      std::thread::sleep(Duratio
 poll     tests/debugger/group.rs                      tokio::time::sleep(Duration::from_millis(1)).await;
 workload tests/fixtures/c/kvstore.c                   nanosleep(&pause, NULL);
 parked   tests/fixtures/c/process-tree.c              snprintf(command, sizeof command, "sleep 100; true");
+workload tests/fixtures/c/syscall-exceptions.c       nanosleep(&pause, NULL);
+workload tests/fixtures/c/syscalls.c                 nanosleep(&two, NULL);
 workload tests/fixtures/c/profile-offcpu.c            while (nanosleep(&nap, &nap) != 0) {
 poll     tests/fixtures/c/thread-exec.c               nanosleep(&wait, NULL);
 workload tests/fixtures/go/kvstore/main.go            time.Sleep(20 * time.Millisecond)
@@ -83,6 +85,8 @@ poll     tests/python/session.rs                      tokio::time::sleep(Duratio
 poll     tests/support/mod.rs                         std::thread::sleep(Duration::from_millis(1));
 poll     tests/support/web.rs                         std::thread::sleep(Duration::from_millis(10));
 poll     tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(10));
+workload tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(200));
+workload tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(250));
 poll     tests/tokio/soak.rs                          tokio::time::sleep(Duration::from_millis(5)).await;
 poll     tests/watch_conditions.rs                    tokio::time::sleep(Duration::from_millis(1)).await;
 poll     tests/web/terminal.rs                        std::thread::sleep(Duration::from_millis(10));

@@ -1022,7 +1022,7 @@ fn a_recordings_calls_print_live_and_in_its_report_alike() {
     );
     let focused: Vec<&str> = focused.lines().filter_map(untimed).collect();
     assert_eq!(focused.len(), 1, "{focused:?}");
-    assert!(focused[0].contains("clock_nanosleep("), "{focused:?}");
+    assert!(focused[0].contains(" clock_nanosleep"), "{focused:?}");
 
     let (table, _) = succeeds(
         directory.path(),
