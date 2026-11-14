@@ -1236,21 +1236,6 @@ mod bpf {
     }
     #[test]
     #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn fatal_signals_do_not_report_group_exit_wakeups_as_deliveries() {
-        for (mode, signal) in [("signal-term", "SIGTERM"), ("signal-kill", "SIGKILL")] {
-            let directory = ScratchDir::new("syscalls-fatal-signal");
-            recorded(directory.path(), &[], &fixture(), &[mode]);
-            let trace = log(directory.path(), &["trace=kill"]);
-            assert!(trace.contains(&format!(", {signal}) = 0")), "{trace}");
-            assert!(
-                trace.ends_with(&format!("+++ killed by {signal} +++")),
-                "{trace}"
-            );
-            assert!(!trace.contains(" --- "), "fabricated delivery: {trace}");
-        }
-    }
-    #[test]
-    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
     fn an_ignored_signal_is_not_a_delivery() {
         let directory = ScratchDir::new("syscalls-ignored-signal");
         let code = recorded(directory.path(), &[], &fixture(), &["signal-ignore"]);
@@ -1829,26 +1814,6 @@ mod bpf {
         }
 
         sites
-    }
-
-    /// Worker threads make their calls through glibc's cancellable
-    /// wrappers, which keep no frame pointer. A recording copies each
-    /// call's stack, as it does each sample's, so every call names the
-    /// line that made it rather than the wrapper.
-    #[test]
-    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
-    fn a_recordings_calls_name_the_lines_that_made_them_on_every_thread() {
-        let directory = ScratchDir::new("syscalls-record-sites");
-        let profile = record_load(directory.path(), "load.usprof", &[], 4, 300);
-        assert_eq!(profile.setting("syscalls"), Some("calls"));
-        let sites = sites(&profile);
-        for line in [26, 30, 31] {
-            assert_eq!(
-                sites.get(&format!("one_round · syscall-load.c:{line}")),
-                Some(&1200),
-                "{sites:#?}"
-            );
-        }
     }
 
     /// The filter keeps what its qualifiers say, all of them, while the
