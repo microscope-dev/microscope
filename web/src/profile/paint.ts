@@ -236,11 +236,14 @@ export function hue(text: string): number {
   return (hash >>> 0) % 360;
 }
 
-/** A frame's fill: warm warnings for truncations, the family's hue for
- * code. Dark themes darken every fill. */
+/** A frame's fill: warm warnings for truncations, gray for time in a
+ * system call, the family's hue for code. Dark themes darken every fill. */
 export function fill(key: ProfileKey, dark: boolean): string {
   if (key.kind === "truncation") {
     return dark ? "hsl(40 70% 30%)" : "hsl(42 90% 75%)";
+  }
+  if (key.kind === "syscall") {
+    return dark ? "hsl(210 8% 32%)" : "hsl(210 10% 82%)";
   }
   const h = key.kind === "task" ? 225 : hue(family(key));
   const saturation = key.kind === "address" ? 10 : 50;

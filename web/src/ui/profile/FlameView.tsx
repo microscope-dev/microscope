@@ -16,7 +16,7 @@ import {
 import { useShownScheme } from "../../theme";
 import { prepare, useWidth } from "./canvas";
 import { token, useProfile, useTree } from "./context";
-import { Unanswered } from "./parts";
+import { NoSamples, Unanswered } from "./parts";
 import { SearchRow, useFrameSearch, useTreeSearch } from "./Search";
 
 // oxlint-disable-next-line unicorn/no-useless-undefined -- withLook takes undefined to remove the key
@@ -66,7 +66,7 @@ export function FlameView() {
         {answer.error || !tree ? (
           <Unanswered error={answer.error} reading="Reading the flame graph…" />
         ) : tree.count === 0 ? (
-          <div className="empty">No samples are selected.</div>
+          <NoSamples />
         ) : (
           <FlameGraph
             tree={tree}

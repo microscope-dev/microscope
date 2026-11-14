@@ -257,6 +257,48 @@ static void dumps(void) {
     }
 }
 
+static long since(const struct timespec *start) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - start->tv_sec) * 1000000000L + now.tv_nsec - start->tv_nsec;
+}
+
+// Runs on its CPU for 2 ms; clock_gettime is the vDSO's, no system call.
+static __attribute__((noinline)) void burn(void) {
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    volatile unsigned long sum = 0;
+    while (since(&start) < 2000000) {
+        for (int i = 0; i < 1000; i++) {
+            sum += i;
+        }
+    }
+}
+
+// Has the kernel run its CPU on a call: 4 MiB of random bytes.
+static unsigned char pool[4 << 20];
+static __attribute__((noinline)) void draw(void) {
+    if (syscall(SYS_getrandom, pool, sizeof pool, 0) != (long)sizeof pool) {
+        _exit(31);
+    }
+}
+
+// Blocks in a call for 2 ms.
+static __attribute__((noinline)) void rest(void) {
+    struct timespec two = {0, 2000000};
+    nanosleep(&two, NULL);
+}
+
+// Samples and calls on one thread: time on its CPU, in a call on its CPU,
+// and blocked in a call.
+static void work(void) {
+    for (int round = 0; round < 25; round++) {
+        burn();
+        draw();
+        rest();
+    }
+}
+
 int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "files";
     if (strcmp(mode, "files") == 0) {
@@ -265,6 +307,10 @@ int main(int argc, char **argv) {
     }
     if (strcmp(mode, "family") == 0) {
         family();
+        return 0;
+    }
+    if (strcmp(mode, "work") == 0) {
+        work();
         return 0;
     }
     if (strcmp(mode, "churn") == 0 && argc > 2) {

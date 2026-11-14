@@ -53,6 +53,10 @@ pub enum KeyKind {
     /// A label, by its row in [`Keys::labels`], under which a query by
     /// label roots each path: [`NONE`] for a key no label has.
     Label { label: u32 },
+
+    /// A system call, by its ABI's index and number, as a leaf under the
+    /// stack that made it.
+    Syscall { abi: u8, number: u32 },
 }
 
 /// A label: a key, and its value, or `None` for its absence.
@@ -81,6 +85,9 @@ pub struct Keys<'a> {
 
     /// The key of each label, by its row, and last, of a key no label has.
     label_roots: Vec<u32>,
+
+    /// The key of each system call the capture holds.
+    syscalls: HashMap<KeyKind, u32>,
 
     /// Each thread's label spans, by its row: start, end, and label, by
     /// start.
@@ -214,7 +221,8 @@ fn code_role(capture: &Capture, kind: KeyKind) -> CodeRole {
         KeyKind::Truncation { .. }
         | KeyKind::Task { .. }
         | KeyKind::Group { .. }
-        | KeyKind::Label { .. } => 0,
+        | KeyKind::Label { .. }
+        | KeyKind::Syscall { .. } => 0,
     };
 
     role_of(number).unwrap_or_default()
@@ -260,7 +268,8 @@ impl<'a> Keys<'a> {
                 KeyKind::Truncation { .. }
                 | KeyKind::Task { .. }
                 | KeyKind::Group { .. }
-                | KeyKind::Label { .. } => {
+                | KeyKind::Label { .. }
+                | KeyKind::Syscall { .. } => {
                     continue;
                 }
             };
@@ -289,6 +298,15 @@ impl<'a> Keys<'a> {
             .map(|label| add(KeyKind::Label { label }))
             .collect();
 
+        let mut syscalls = HashMap::default();
+        for call in &capture.syscalls {
+            let kind = KeyKind::Syscall {
+                abi: call.abi,
+                number: call.number.get(),
+            };
+            syscalls.entry(kind).or_insert_with(|| add(kind));
+        }
+
         tasks.resize(kinds.len(), NONE);
         Self {
             capture,
@@ -303,6 +321,7 @@ impl<'a> Keys<'a> {
             labels: found.labels,
             label_rows: found.rows,
             label_roots,
+            syscalls,
             spans: found.spans,
             task_labels: found.tasks,
             shared: std::sync::OnceLock::new(),
@@ -336,6 +355,14 @@ impl<'a> Keys<'a> {
             .get(label as usize)
             .copied()
             .or_else(|| self.label_roots.last().copied())
+            .unwrap_or(NONE)
+    }
+
+    /// The key of a call of the capture, by its ABI's index and number.
+    pub(crate) fn syscall(&self, abi: u8, number: u32) -> u32 {
+        self.syscalls
+            .get(&KeyKind::Syscall { abi, number })
+            .copied()
             .unwrap_or(NONE)
     }
 
@@ -583,6 +610,13 @@ impl<'a> Keys<'a> {
                     }
                 }
             }
+            KeyKind::Syscall { abi, number } => {
+                let call = crate::syscalls::SyscallId {
+                    abi: crate::syscalls::Abi::from_index(abi),
+                    number,
+                };
+                format!("[syscall] {}", call.display_name())
+            }
             KeyKind::Label { label: NONE } => "[no such label]".to_owned(),
             KeyKind::Label { label } => match self.label_of(label) {
                 (key, Some(value)) => format!("{key}={value}"),
@@ -640,7 +674,8 @@ impl<'a> Keys<'a> {
             | KeyKind::Truncation { .. }
             | KeyKind::Task { .. }
             | KeyKind::Group { .. }
-            | KeyKind::Label { .. } => {
+            | KeyKind::Label { .. }
+            | KeyKind::Syscall { .. } => {
                 return None;
             }
         };
@@ -663,7 +698,7 @@ impl<'a> Keys<'a> {
                 capture.frame(frame).module.get()
             }
             KeyKind::Truncation { module, .. } => module,
-            KeyKind::Group { .. } | KeyKind::Label { .. } => NONE,
+            KeyKind::Group { .. } | KeyKind::Label { .. } | KeyKind::Syscall { .. } => NONE,
         };
 
         self.module_name(module)

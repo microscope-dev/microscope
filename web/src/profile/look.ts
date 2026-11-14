@@ -3,6 +3,7 @@
 
 import { assert } from "../assert";
 import type {
+  ProfileDuring,
   ProfileGranularity,
   ProfileQuery,
   ProfileTransform,
@@ -87,6 +88,12 @@ export interface ProfileLook {
   ev?: string;
   /** Calls of one log2 latency bucket, as a heat map's row names it. */
   sl?: string;
+  /** Samples taken during the calls `sf` and `sl` select: `all`, or those
+   * of one summary row, `GROUP:KEY`. */
+  du?: string;
+  /** Each call the samples' views keep as a leaf under the code that made
+   * it. */
+  sk?: "1";
 }
 
 const VIEWS: readonly ProfileView[] = ["flame", "tree", "functions", "kernel", "zones", "details"];
@@ -224,16 +231,60 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   if (sl && /^\d{1,2}$/u.test(sl)) {
     look.sl = sl;
   }
+  const du = text("du");
+  if (du && (du === "all" || parseDuringRow(du))) {
+    look.du = du;
+  }
+  if (text("sk") === "1") {
+    look.sk = "1";
+  }
   return look;
+}
+
+/** One summary row, `GROUP:KEY`; the key may hold colons of its own. */
+export function parseDuringRow(text: string): { group: SyscallGroup; key: string } | null {
+  const at = text.indexOf(":");
+  const group = text.slice(0, at);
+  return at > 0 && at < text.length - 1 && (group === "syscall" || SYSCALL_GROUPS.has(group))
+    ? { group: group as SyscallGroup, key: text.slice(at + 1) }
+    : null;
+}
+
+export function formatDuringRow(group: SyscallGroup, key: string): string {
+  return `${group}:${key}`;
+}
+
+/** What a chip calls the calls of `du`. */
+export function duringLabel(du: string): string {
+  const row = parseDuringRow(du);
+  if (!row) {
+    return "calls";
+  }
+  return row.group === "process" || row.group === "thread" ? `${row.group} ${row.key}` : row.key;
+}
+
+/** The calls whose samples a look keeps, if it keeps only those. */
+export function duringOf(look: ProfileLook): ProfileDuring | null {
+  if (!look.du) {
+    return null;
+  }
+  const row = look.du === "all" ? null : parseDuringRow(look.du);
+  return {
+    filter: look.sf ?? "",
+    ...(look.sl ? { latency: Number(look.sl) } : {}),
+    ...(row ? { row } : {}),
+  };
 }
 
 /** The Syscalls view's query of `profile`: the calls of the look's
  * selection, through its filter and latency band. */
 export function syscallQueryOf(profile: string, look: ProfileLook, revision: number): SyscallQuery {
-  // The calls of what the sample views select; a comparison is theirs.
-  const { base: _base, ...link } = queryOf(profile, look);
+  // The calls of what the sample views select; a comparison is theirs, and
+  // the calls are not narrowed by the samples taken during them.
+  const { base: _base, during: _during, ...link } = queryOf(profile, look);
   return {
     ...link,
+    syscallLeaves: false,
     revision,
     ...(look.sl ? { latency: Number(look.sl) } : {}),
     filter: look.sf ?? "",
@@ -368,6 +419,7 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
   const range = spanOf(look);
   const zones = scopeOf(look);
   const baseRange = look.br ? parseRange(look.br) : null;
+  const during = duringOf(look);
   // The rest of the band's site, over the same range.
   const rest = look.bz === "rest" && zones?.band ? { ...zones, outside: true } : null;
   const base = rest
@@ -393,6 +445,8 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
     granularity: look.by ?? "function",
     ...(zones ? { zones } : {}),
     ...(base ? { base } : {}),
+    ...(during ? { during } : {}),
+    syscallLeaves: look.sk === "1",
   };
 }
 

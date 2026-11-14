@@ -133,6 +133,17 @@ function Popover() {
           >
             Async stacks
           </LookCheck>
+          {summary.syscalls > 0 && summary.unit === "nanoseconds" && look.src !== "waits" ? (
+            <LookCheck
+              field="sk"
+              title="Show the time each system call spent off its CPU under the code that made it"
+              checked={look.sk === "1"}
+              on="1"
+              off={undefined}
+            >
+              System calls as leaves
+            </LookCheck>
+          ) : null}
           {summary.interpreted ? (
             <LookCheck
               field="py"

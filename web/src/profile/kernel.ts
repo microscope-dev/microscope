@@ -53,6 +53,28 @@ export function kernelLines(
   ];
 }
 
+/** The calls `lane`'s thread waited in during `[start, end)`, the longest
+ * first, as a tooltip's line says them; null when it waited in none. */
+export function blockedIn(lane: ProfileLane, start: number, end: number): string | null {
+  const by = new Map<string, { count: number; ns: number }>();
+  for (const wait of lane.waits) {
+    const overlap = Math.min(wait.end, end) - Math.max(wait.start, start);
+    if (overlap > 0) {
+      const seen = by.get(wait.call) ?? { count: 0, ns: 0 };
+      by.set(wait.call, { count: seen.count + 1, ns: seen.ns + overlap });
+    }
+  }
+  if (by.size === 0) {
+    return null;
+  }
+  const calls = [...by.entries()]
+    .toSorted(([, a], [, b]) => b.ns - a.ns)
+    .map(
+      ([call, { count, ns }]) => `${call}${count > 1 ? ` ×${count}` : ""} ${formatDuration(ns)}`,
+    );
+  return `blocked in ${calls.join(", ")}`;
+}
+
 /** The budget's step nearest `time`, give or take `slack`. */
 export function stepAt(
   steps: readonly { time: number; text: string }[],

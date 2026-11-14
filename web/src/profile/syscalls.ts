@@ -60,6 +60,12 @@ interface TraceNote {
 export const PTRACE_DISTORTS =
   "ptrace stops the program at each traced call: it ran slower than it would, and each call's time includes the stop.";
 
+/** Whether the samples counted kernel CPU time: without it, no sample
+ * falls inside a system call. */
+export function sampledKernel(settings: readonly Setting[]): boolean {
+  return settings.some((each) => each.name === "kernel stacks" && each.value === "on");
+}
+
 /** How the calls were traced: the engine and, for BPF, how it attached.
  * ptrace warns, as it distorts what it measures. */
 export function tracedBy(settings: readonly Setting[]): TraceNote {

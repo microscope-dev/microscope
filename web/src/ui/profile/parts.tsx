@@ -7,6 +7,7 @@ import { type CSSProperties, type ReactNode, useCallback, useMemo } from "react"
 
 import { type ProfileLook, withLook } from "../../profile/look";
 import { formatBytes, formatCount, formatDuration } from "../../profile/paint";
+import { sampledKernel } from "../../profile/syscalls";
 import type { RequestError } from "../../protocol";
 import { useProfile } from "./context";
 
@@ -123,6 +124,19 @@ export function Duration({ ns }: { ns: number }) {
 /** Bytes, rounded, with the exact count on hover. */
 export function Bytes({ bytes }: { bytes: number }) {
   return <span title={formatCount(bytes, "byte")}>{formatBytes(bytes)}</span>;
+}
+
+/** That no sample is selected, and why, when samples during calls of a
+ * recording of user code alone are asked for: none can be. */
+export function NoSamples() {
+  const { look, summary } = useProfile();
+  return (
+    <div className="empty">
+      {look.du && look.sk !== "1" && !sampledKernel(summary.settings)
+        ? "No sample falls inside a system call: this recording sampled user code only. Turn on System calls as leaves in Options to see the calls' own time, or record with --kernel-stacks."
+        : "No samples are selected."}
+    </div>
+  );
 }
 
 /** What a view shows in place of an answer: why it failed, or what it is

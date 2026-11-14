@@ -48,6 +48,23 @@ pub struct Profiles {
     recorded: AtomicU64,
 }
 
+impl Entry {
+    fn trace(&self) -> &Arc<super::syscalls::Trace> {
+        self.syscalls
+            .get_or_init(|| Arc::new(super::syscalls::Trace::of(&self.profile)))
+    }
+
+    /// The analysis's query for a tab's, its calls resolved to their rows.
+    fn resolve(&self, keys: &Keys<'_>, query: &ProfileQuery) -> Result<Query, Failure> {
+        let mut resolved = resolve(&self.profile, keys, query)?;
+        if let Some(during) = &query.during {
+            resolved.during = Some(super::syscalls::rows(&self.profile, self.trace(), during)?);
+        }
+
+        Ok(resolved)
+    }
+}
+
 struct Entry {
     info: ProfileInfo,
     profile: Arc<Profile>,
@@ -474,7 +491,7 @@ impl Profiles {
         let entry = self.entry(&query.profile)?;
         let granularity = granularity(query.granularity);
         let keys = entry.profile.keys(granularity);
-        let tree = keys.aggregate(&resolve(&entry.profile, &keys, query)?);
+        let tree = keys.aggregate(&entry.resolve(&keys, query)?);
         let base = self.base(query)?;
         let base_keys = base
             .as_ref()
@@ -543,7 +560,7 @@ impl Profiles {
         let entry = self.entry(&query.profile)?;
         let granularity = granularity(query.granularity);
         let keys = entry.profile.keys(granularity);
-        let costs = keys.functions(&resolve(&entry.profile, &keys, query)?);
+        let costs = keys.functions(&entry.resolve(&keys, query)?);
         let Some((base, of_base)) = self.base(query)? else {
             let mut named = Named::new(&keys);
             let rows = costs
@@ -637,7 +654,7 @@ impl Profiles {
             Request::ProfileTimeline(timeline) => {
                 let _span = microscope::span!("web profile timeline");
                 let entry = self.entry(&timeline.query.profile)?;
-                Ok(json(&timeline_of(&entry.profile, &timeline)?))
+                Ok(json(&timeline_of(&entry, &timeline)?))
             }
             Request::ProfileZones(query) => {
                 let _span = microscope::span!("web profile zones");
@@ -647,12 +664,12 @@ impl Profiles {
             Request::ProfileLines(query) => {
                 let _span = microscope::span!("web profile lines");
                 let entry = self.entry(&query.query.profile)?;
-                Ok(json(&source(&entry.profile, &query)?))
+                Ok(json(&source(&entry, &query)?))
             }
             Request::ProfileCode(query) => {
                 let _span = microscope::span!("web profile code");
                 let entry = self.entry(&query.query.profile)?;
-                Ok(json(&code(&entry.profile, &query)?))
+                Ok(json(&code(&entry, &query)?))
             }
             Request::ProfileZoneStats(query) => {
                 let entry = self.entry(&query.profile)?;
@@ -676,10 +693,7 @@ impl Profiles {
                 let _span = microscope::span!("web syscalls");
                 let id = id.to_owned();
                 let entry = self.entry(&id)?;
-                let trace = entry
-                    .syscalls
-                    .get_or_init(|| Arc::new(super::syscalls::Trace::of(&entry.profile)));
-                super::syscalls::answer(&entry.profile, trace, request)
+                super::syscalls::answer(&entry.profile, entry.trace(), request)
                     .map(|value| (value, Vec::new()))
             }
         }
@@ -947,6 +961,17 @@ fn resolve_in(
     base: bool,
 ) -> Result<Query, Failure> {
     let (start, _) = profile.span();
+    if query.syscall_leaves
+        && profile
+            .setting("weight")
+            .is_some_and(|unit| unit != "nanoseconds")
+    {
+        return Err(Failure::new(
+            ErrorKind::Invalid,
+            "calls are weighed in time, and these samples are not",
+        ));
+    }
+
     let mut transforms = Vec::new();
     for transform in &query.transforms {
         if transform.op == TransformOp::CollapseCycles {
@@ -1036,6 +1061,7 @@ fn resolve_in(
         },
         by_task: query.by_task,
         during: None,
+        calls: query.syscall_leaves,
     })
 }
 
@@ -1072,11 +1098,12 @@ fn zone_scope(
 
 /// Each thread's, or task's, weight over time, and its time off a CPU.
 fn timeline_of(
-    profile: &Profile,
+    entry: &Entry,
     timeline: &protocol::ProfileTimelineQuery,
 ) -> Result<ProfileTimeline, Failure> {
+    let profile = &entry.profile;
     let keys = profile.keys(granularity(timeline.query.granularity));
-    let mut resolved = resolve(profile, &keys, &timeline.query)?;
+    let mut resolved = entry.resolve(&keys, &timeline.query)?;
     let (start, end) = profile.span();
     let range = resolved
         .range
@@ -1148,20 +1175,23 @@ const MOST_SOURCE_BYTES: u64 = 4 << 20;
 const SOURCE_MARGIN: u64 = 5;
 
 /// A function query's selection, its transforms left out.
-fn selection(profile: &Profile, query: &protocol::ProfileFunctionQuery) -> Result<Query, Failure> {
+fn selection(entry: &Entry, query: &protocol::ProfileFunctionQuery) -> Result<Query, Failure> {
     let mut plain = query.query.clone();
     plain.transforms.clear();
     plain.base = None;
-    let keys = profile.keys(granularity(plain.granularity));
-    resolve(profile, &keys, &plain)
+    plain.syscall_leaves = false;
+    let keys = entry.profile.keys(granularity(plain.granularity));
+    entry.resolve(&keys, &plain)
 }
 
 /// A function's samples on its source lines, with the text around them.
 fn source(
-    profile: &Profile,
+    entry: &Entry,
     query: &protocol::ProfileFunctionQuery,
 ) -> Result<protocol::ProfileLines, Failure> {
-    let costs = profile.line_costs(&selection(profile, query)?, &query.function);
+    let costs = entry
+        .profile
+        .line_costs(&selection(entry, query)?, &query.function);
     Ok(protocol::ProfileLines {
         weight: costs.weight,
         files: source_files(costs.lines),
@@ -1228,10 +1258,11 @@ pub(super) fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<Stri
 
 /// A function's samples on its instructions, or why its code is unknown.
 fn code(
-    profile: &Profile,
+    entry: &Entry,
     query: &protocol::ProfileFunctionQuery,
 ) -> Result<protocol::ProfileCode, Failure> {
-    let selected = selection(profile, query)?;
+    let profile = &entry.profile;
+    let selected = selection(entry, query)?;
     let code = match profile.disassemble(&selected, &query.function) {
         Ok(code) => code,
         Err(why) => {
@@ -1580,6 +1611,7 @@ impl<'a, 'k> Named<'a, 'k> {
                 KeyKind::Task { .. } => ProfileKeyKind::Task,
                 KeyKind::Group { .. } => ProfileKeyKind::Group,
                 KeyKind::Label { .. } => ProfileKeyKind::Label,
+                KeyKind::Syscall { .. } => ProfileKeyKind::Syscall,
             },
             module: keys.module(key).map(str::to_owned),
             file: location.map(|(file, _)| file.to_owned()),

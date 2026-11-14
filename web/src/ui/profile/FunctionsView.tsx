@@ -18,7 +18,7 @@ import { trackPointer } from "../../workbench/gesture";
 import { LEAST } from "../../workbench/SplitView";
 import { Code, SourceLines } from "./Annotated";
 import { useAnswer, useProfile, useTree } from "./context";
-import { LookButton, ownTone, Share, Unanswered } from "./parts";
+import { LookButton, NoSamples, ownTone, Share, Unanswered } from "./parts";
 import { useActiveRow } from "./rows";
 import { SearchRow, useFrameSearch } from "./Search";
 import { Change, ColumnHead, TreeRows } from "./TreeView";
@@ -125,7 +125,7 @@ export function FunctionsView() {
         {answer.error || !answer.data ? (
           <Unanswered error={answer.error} reading="Reading functions…" />
         ) : everyRow?.length === 0 ? (
-          <div className="empty">No samples are selected.</div>
+          <NoSamples />
         ) : rows.length === 0 ? (
           <div className="empty">No function matches.</div>
         ) : (

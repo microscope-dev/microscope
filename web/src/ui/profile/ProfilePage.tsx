@@ -12,6 +12,7 @@ import {
 
 import {
   cleared,
+  duringLabel,
   type ProfileLook,
   type ProfileView,
   parseBand,
@@ -34,7 +35,13 @@ import {
   formatSpan,
   formatWeight,
 } from "../../profile/paint";
-import { bucketLabel, lossNotes, tracedBy, traceNotes } from "../../profile/syscalls";
+import {
+  bucketLabel,
+  lossNotes,
+  sampledKernel,
+  tracedBy,
+  traceNotes,
+} from "../../profile/syscalls";
 import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
@@ -92,7 +99,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
   });
 
   const setLook = useCallback(
-    (by: (look: ProfileLook) => ProfileLook, push = false) => {
+    (by: (look: ProfileLook) => ProfileLook, push = false, carry = false) => {
       const layout = workbench.getState().layout;
       const now = lookOf(layout, id);
       if (!now) {
@@ -101,7 +108,7 @@ export function ProfilePaneBody({ id, pane }: PaneProps) {
       const next = by(now);
       const leading =
         leadingPane(layout) === id && !router.state.location.pathname.startsWith("/s/");
-      change((each) => storeLook(each, id, next).layout);
+      change((each) => storeLook(each, id, next, carry).layout);
       if (leading) {
         void navigate({
           to: "/profile/$profile",
@@ -411,6 +418,14 @@ function ProfileHead() {
             label={`syscalls ${bucketLabel(Number(look.sl))}`}
             title="System calls of this latency"
             removeLabel="Remove the latency band"
+          />
+        ) : null}
+        {look.du ? (
+          <ClearChip
+            field="du"
+            label={`during ${duringLabel(look.du)}`}
+            title="Samples taken while their thread was in these system calls"
+            removeLabel="Keep samples outside these calls too"
           />
         ) : null}
         {sampled && look.bz !== "rest" ? <Compare /> : null}
@@ -728,7 +743,7 @@ function Accounting({ summary }: { summary: ProfileSummary }) {
   const setting = (name: string) => summary.settings.find((each) => each.name === name)?.value;
   const source = setting("source");
   const rate = source?.match(/^CPU time at (\d+ Hz)$/u)?.[1];
-  const kernel = setting("kernel stacks") === "on";
+  const kernel = sampledKernel(summary.settings);
   const paused = summary.gaps.reduce((sum, [from, to]) => sum + (to - from), 0);
   const behind = summary.behind.reduce((sum, [from, to]) => sum + (to - from), 0);
   const span = Math.max(summary.duration, 1);

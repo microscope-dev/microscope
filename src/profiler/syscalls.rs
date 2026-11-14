@@ -59,14 +59,6 @@ impl RecordedSyscalls {
     }
 }
 
-const fn abi(number: u8) -> Abi {
-    match number {
-        1 => Abi::X86_32,
-        2 => Abi::X32,
-        _ => Abi::X86_64,
-    }
-}
-
 /// An end that `wait(2)` encoded.
 #[expect(clippy::cast_possible_truncation, reason = "a status fits 16 bits")]
 const fn end(status: i64) -> ProcessEnd {
@@ -174,7 +166,7 @@ impl Profile {
                     thread,
                     process,
                     call: SyscallId {
-                        abi: abi(call.abi),
+                        abi: Abi::from_index(call.abi),
                         number: call.number.get(),
                     },
                     args: call.args.map(zerocopy::little_endian::U64::get),
@@ -208,7 +200,7 @@ impl Profile {
             || "?".to_owned(),
             |call| {
                 SyscallId {
-                    abi: abi(call.abi),
+                    abi: Abi::from_index(call.abi),
                     number: call.number.get(),
                 }
                 .display_name()
@@ -292,7 +284,7 @@ impl Profile {
             };
 
             let call = SyscallId {
-                abi: abi(row.abi),
+                abi: Abi::from_index(row.abi),
                 number: row.number.get(),
             };
 

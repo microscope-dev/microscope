@@ -15,7 +15,7 @@ import { diffModeOf } from "../../profile/look";
 import { type Changed, changeOf, formatPercent } from "../../profile/paint";
 import { type CallTree, nameOf, revealed } from "../../profile/tree";
 import { type Fetched, useProfile, useTree } from "./context";
-import { ownTone, Share, Unanswered } from "./parts";
+import { NoSamples, ownTone, Share, Unanswered } from "./parts";
 import { type ActiveRow, useActiveRow } from "./rows";
 import { SearchRow, useFrameSearch, useTreeSearch } from "./Search";
 
@@ -119,7 +119,7 @@ export function TreeRows({
     return <Unanswered error={fetched.error} reading={reading} />;
   }
   if (tree.count === 0) {
-    return <div className="empty">No samples are selected.</div>;
+    return <NoSamples />;
   }
   return (
     <TreeBody

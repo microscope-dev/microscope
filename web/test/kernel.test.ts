@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { kernelLines, sliceAt, stepAt, waitAt } from "../src/profile/kernel";
+import { blockedIn, kernelLines, sliceAt, stepAt, waitAt } from "../src/profile/kernel";
 import type { ProfileLane } from "../src/protocol";
 
 const lane = (change: Partial<ProfileLane> = {}): ProfileLane => ({
@@ -59,5 +59,25 @@ describe("a kernel lane under the pointer", () => {
     expect(stepAt(steps, 104, 10)?.text).toBe("sampling at 499 Hz");
     expect(stepAt(steps, 107, 10)?.text).toBe("sampling at 249 Hz");
     expect(stepAt(steps, 50, 10)).toBeNull();
+  });
+});
+
+describe("an off-CPU span's blocking calls", () => {
+  const waited = lane({
+    waits: [
+      { call: "read", start: 0, end: 10 },
+      { call: "futex", start: 20, end: 60 },
+      { call: "read", start: 70, end: 90 },
+      { call: "poll", start: 200, end: 300 },
+    ],
+  });
+
+  it("names each call it overlaps, by the time it spent there, longest first", () => {
+    expect(blockedIn(waited, 5, 80)).toBe("blocked in futex 40 ns, read ×2 15 ns");
+  });
+
+  it("names none where it waited in none, nor at a wait's edges", () => {
+    expect(blockedIn(waited, 100, 200)).toBeNull();
+    expect(blockedIn(waited, 10, 20)).toBeNull();
   });
 });

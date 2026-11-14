@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 
-import { withLook } from "../../profile/look";
+import { type OwnLook, type ProfileView, splitLook, withLook } from "../../profile/look";
 import { formatCount, formatDuration, formatInstant } from "../../profile/paint";
 import type { SyscallLine, SyscallQuery, SyscallSite, SyscallToken } from "../../protocol";
 import { useAnswer, useProfile } from "./context";
@@ -115,12 +115,76 @@ function Call({ event }: { event: number }) {
         <ol className="stack">
           {data.stack.map((name, index) => (
             // oxlint-disable-next-line react/no-array-index-key -- a stack's frames never move
-            <li key={index}>{name}</li>
+            <li key={index}>
+              <Frame name={name} />
+            </li>
           ))}
           {data.stackEnds ? <li className="muted">stack ends: {data.stackEnds}</li> : null}
         </ol>
       ) : null}
     </div>
+  );
+}
+
+/** Where a frame's function goes in the samples' views. */
+const FRAME_LINKS: {
+  label: string;
+  title: string;
+  view: ProfileView;
+  own?: OwnLook;
+}[] = [
+  { label: "flame", title: "in the flame graph", view: "flame" },
+  { label: "tree", title: "in the call tree", view: "tree" },
+  { label: "source", title: "on its source lines", view: "functions", own: { ann: "lines" } },
+];
+
+/** A stack frame's function, which selects it in the samples' views. */
+function Frame({ name }: { name: string }) {
+  return (
+    <span className="frame-links">
+      <span className="mono">{name}</span>
+      {FRAME_LINKS.map((link) => (
+        <FrameLink key={link.label} name={name} {...link} />
+      ))}
+    </span>
+  );
+}
+
+function FrameLink({
+  name,
+  label,
+  title,
+  view,
+  own,
+}: {
+  name: string;
+  label: string;
+  title: string;
+  view: ProfileView;
+  own?: OwnLook | undefined;
+}) {
+  const { setLook } = useProfile();
+  // The view's pane keeps how it draws, but for what the link asks of it.
+  const show = useCallback(
+    () =>
+      setLook(
+        (prev) =>
+          own ? { ...splitLook(prev).shared, ...own, view, fn: name } : { ...prev, view, fn: name },
+        true,
+        own !== undefined,
+      ),
+    [setLook, view, own, name],
+  );
+  return (
+    <button
+      type="button"
+      className="link-button"
+      title={`${name} ${title}`}
+      aria-label={`${name} ${title}`}
+      onClick={show}
+    >
+      {label}
+    </button>
   );
 }
 

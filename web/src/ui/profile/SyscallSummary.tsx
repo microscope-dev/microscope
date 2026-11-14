@@ -1,8 +1,9 @@
 import { type ChangeEvent, type MouseEvent, useCallback, useMemo, useState } from "react";
 
 import type { Requested } from "../../data";
-import { withLook } from "../../profile/look";
+import { formatDuringRow, withLook } from "../../profile/look";
 import { formatCount } from "../../profile/paint";
+import { sampledKernel } from "../../profile/syscalls";
 import type { SyscallGroup, SyscallQuery, SyscallRow, SyscallSummary } from "../../protocol";
 import { useProfile } from "./context";
 import { Bytes, Duration } from "./parts";
@@ -60,7 +61,7 @@ export function Summary({
             </select>
           </div>
           {summary.data ? (
-            <Table rows={summary.data.rows} selectable={group === "syscall"} />
+            <Table rows={summary.data.rows} group={group} />
           ) : summary.error ? null : (
             // The selection's error shows beside it.
             <p className="muted pad">Reading the summary…</p>
@@ -76,7 +77,8 @@ type Sort = "total" | "calls" | "errors" | "p99" | "name";
 
 /** Every row with `-c`'s columns and percentiles, sortable; a call's row
  * selects it. */
-function Table({ rows, selectable }: { rows: SyscallRow[]; selectable: boolean }) {
+function Table({ rows, group }: { rows: SyscallRow[]; group: SyscallGroup }) {
+  const selectable = group === "syscall";
   const { look, setLook } = useProfile();
   const [sort, setSort] = useState<Sort>("total");
   const [open, setOpen] = useState<string | null>(null);
@@ -114,6 +116,8 @@ function Table({ rows, selectable }: { rows: SyscallRow[]; selectable: boolean }
           <SortHeader column="p99" sort={sort} setSort={setSort} />
           <th className="num">max</th>
           <th className="num">bytes</th>
+          {/* oxlint-disable-next-line jsx-a11y/control-has-associated-label -- each row's button names what it shows */}
+          <th />
         </tr>
       </thead>
       <tbody>
@@ -121,6 +125,7 @@ function Table({ rows, selectable }: { rows: SyscallRow[]; selectable: boolean }
           <SummaryRow
             key={row.key}
             row={row}
+            group={group}
             selected={selectable && look.sc === row.key}
             open={open === row.key}
             toggle={toggle}
@@ -161,12 +166,14 @@ const time = (value: number | null) => (value === null ? "–" : <Duration ns={v
 
 function SummaryRow({
   row,
+  group,
   selected,
   open,
   toggle,
   select,
 }: {
   row: SyscallRow;
+  group: SyscallGroup;
   selected: boolean;
   open: boolean;
   toggle: (key: string) => void;
@@ -230,6 +237,9 @@ function SummaryRow({
         <td className="num">{time(row.p99Ns)}</td>
         <td className="num">{row.timed > 0 ? <Duration ns={row.maxNs} /> : "–"}</td>
         <td className="num">{row.bytes > 0 ? <Bytes bytes={row.bytes} /> : ""}</td>
+        <td>
+          <SamplesDuring during={formatDuringRow(group, row.key)} name={row.name} />
+        </td>
       </tr>
       {open
         ? row.errnos.map((errno) => (
@@ -237,10 +247,52 @@ function SummaryRow({
               <td className="mono error-text">{errno.name}</td>
               <td className="num">{formatCount(errno.count)}</td>
               {/* oxlint-disable-next-line jsx-a11y/control-has-associated-label -- an empty cell that fills the row */}
-              <td colSpan={7} />
+              <td colSpan={8} />
             </tr>
           ))
         : null}
     </>
+  );
+}
+
+/** Shows the flame graph of the samples taken during the calls of one row,
+ * as `GROUP:KEY` names it, or of every selected call. */
+export function SamplesDuring({
+  during,
+  name,
+  children = "samples",
+}: {
+  during: string;
+  name: string;
+  children?: string;
+}) {
+  const { setLook, summary } = useProfile();
+  // Samples of user code alone never fall inside a call, so the calls' own
+  // time stands in for them, under the stacks that made them.
+  const kernel = sampledKernel(summary.settings);
+  const show = useCallback(
+    (event: MouseEvent) => {
+      event.stopPropagation();
+      setLook((prev) => {
+        const look = withLook(prev, "du", during);
+        return kernel ? look : withLook(look, "sk", "1");
+      }, true);
+    },
+    [setLook, during, kernel],
+  );
+  return (
+    <button
+      type="button"
+      className="link-button samples-during"
+      title={
+        kernel
+          ? "Keep only the samples taken during these calls"
+          : "Keep only these calls' time, under the stacks that made them"
+      }
+      aria-label={`Samples during ${name}`}
+      onClick={show}
+    >
+      {children}
+    </button>
   );
 }

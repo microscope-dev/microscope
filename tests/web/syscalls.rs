@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
-use crate::profiles::listed;
+use crate::profiles::{listed, tree};
 use crate::support::{Scenario, ScratchDir, flight_recordings};
 use crate::web::{Client, Web};
 
@@ -476,4 +476,104 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     let flight = tab.ok("syscallInFlight", json!({"profile": id})).await;
     assert_eq!(flight, json!({"live": false, "calls": []}));
     crate::web::wait_gone(blocked["pid"].as_u64().expect("a pid"));
+}
+
+/// Calls and samples select each other. Each call as a leaf weighs what no
+/// sample of its thread stands for, under the code that made it; the
+/// samples and leaves during one site's calls are that site's alone.
+#[tokio::test]
+async fn samples_and_calls_are_selected_through_each_other() {
+    let scratch = ScratchDir::new("web-syscalls-work");
+    let path = trace(scratch.path(), "work");
+    let web = Web::start("syscalls-work", &[path.to_str().expect("a path")]);
+    let (mut tab, id) = serve(&web).await;
+
+    let plain = tree(&mut tab, json!({"profile": id})).await;
+    assert!(
+        plain
+            .iter()
+            .all(|(path, _, _)| path.iter().all(|name| !name.starts_with("[syscall]"))),
+        "{plain:?}"
+    );
+
+    // Blocked, the program's rests weigh their whole length.
+    let leaves = tree(&mut tab, json!({"profile": id, "syscallLeaves": true})).await;
+    let ending = |nodes: &[(Vec<String>, u64, u64)], name: &str| -> Vec<Vec<String>> {
+        nodes
+            .iter()
+            .filter(|(path, own, _)| *own > 0 && path.last().is_some_and(|last| last == name))
+            .map(|(path, _, _)| path.clone())
+            .collect()
+    };
+    let slept: u64 = leaves
+        .iter()
+        .filter(|(path, _, _)| {
+            path.last()
+                .is_some_and(|last| last == "[syscall] clock_nanosleep")
+        })
+        .map(|(_, own, _)| own)
+        .sum();
+    assert!(slept >= 25 * 2_000_000 * 9 / 10, "slept {slept} ns");
+    let rests = ending(&leaves, "[syscall] clock_nanosleep");
+    let draws = ending(&leaves, "[syscall] getrandom");
+    assert!(
+        rests
+            .iter()
+            .all(|path| path.iter().any(|name| name == "rest")),
+        "{rests:?}"
+    );
+    // The loader draws too, as it sets up malloc.
+    assert!(
+        draws
+            .iter()
+            .any(|path| path.iter().any(|name| name == "draw")),
+        "{draws:?}"
+    );
+
+    // The rest's site, as the summary names its row.
+    let sites = tab
+        .ok(
+            "syscallSummary",
+            json!({"profile": id, "filter": "trace=clock_nanosleep", "group": "site"}),
+        )
+        .await;
+    let site = sites["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| {
+            row["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("rest"))
+        })
+        .and_then(|row| row["key"].as_str())
+        .unwrap_or_else(|| panic!("{sites}"))
+        .to_owned();
+    let during = |key: &str| {
+        json!({
+            "profile": id,
+            "syscallLeaves": true,
+            "during": {"filter": "", "row": {"group": "site", "key": key}},
+        })
+    };
+    let rested = tree(&mut tab, during(&site)).await;
+    let weighed: u64 = rested.iter().map(|(_, own, _)| own).sum();
+    assert_eq!(weighed, slept, "{rested:?}");
+    assert!(
+        rested
+            .iter()
+            .filter(|(_, own, _)| *own > 0)
+            .all(|(path, _, _)| path.iter().any(|name| name == "rest")),
+        "{rested:?}"
+    );
+    let nowhere = tree(&mut tab, during("nowhere · nosuch.c:1")).await;
+    assert!(nowhere.iter().all(|(_, own, _)| *own == 0), "{nowhere:?}");
+
+    let refused = tab
+        .request(
+            "profileTree",
+            json!({"profile": id, "during": {"filter": "trace=nosuchcall"}}),
+        )
+        .await;
+    assert!(format!("{refused:?}").contains("nosuchcall"), "{refused:?}");
 }

@@ -16,11 +16,12 @@ use microscope::syscalls::{Errno, Outcome, Pid, ProcessEnd, SyscallEvent, TraceE
 use serde_json::{Value, json};
 
 use super::protocol::{
-    ErrorKind, Request, SyscallArgument, SyscallBlocked, SyscallCall, SyscallCallQuery,
-    SyscallCaller, SyscallCount, SyscallDetail, SyscallDetailQuery, SyscallEndpoint, SyscallFile,
-    SyscallFiles, SyscallGroup, SyscallHeatmap, SyscallHeatmapQuery, SyscallInFlight, SyscallLine,
-    SyscallLog, SyscallLogQuery, SyscallNetwork, SyscallProcess, SyscallProcesses, SyscallQuery,
-    SyscallRow, SyscallSite, SyscallSummary, SyscallSummaryQuery, SyscallToken,
+    ErrorKind, ProfileDuring, Request, SyscallArgument, SyscallBlocked, SyscallCall,
+    SyscallCallQuery, SyscallCaller, SyscallCount, SyscallDetail, SyscallDetailQuery,
+    SyscallEndpoint, SyscallFile, SyscallFiles, SyscallGroup, SyscallHeatmap, SyscallHeatmapQuery,
+    SyscallInFlight, SyscallLine, SyscallLog, SyscallLogQuery, SyscallNetwork, SyscallProcess,
+    SyscallProcesses, SyscallQuery, SyscallRow, SyscallSite, SyscallSummary, SyscallSummaryQuery,
+    SyscallToken,
 };
 
 use super::session::Failure;
@@ -225,27 +226,37 @@ struct Selection {
 
     /// Calls whose duration falls in this log2 bucket.
     latency: Option<usize>,
-
-    /// Whether a call that overlaps the range is in it, as lanes draw
-    /// it, rather than only one that ended there.
-    overlapping: bool,
 }
 
 impl Selection {
-    fn new(profile: &Profile, trace: &Trace, query: &SyscallQuery) -> Result<Self, Failure> {
-        let expressions: Vec<String> = query.filter.split_whitespace().map(str::to_owned).collect();
+    /// The calls `filter` and `latency` keep, in the whole trace.
+    fn calls(filter: &str, latency: Option<u32>) -> Result<Self, Failure> {
+        let expressions: Vec<String> = filter.split_whitespace().map(str::to_owned).collect();
         let filter = Filter::parse(&expressions, &present::signal_named)
             .map_err(|error| Failure::new(ErrorKind::Invalid, error.to_string()))?;
+        Ok(Self {
+            filter,
+            from: i64::MIN,
+            to: i64::MAX,
+            kept: None,
+            latency: latency.map(|bucket| usize::try_from(bucket).unwrap_or(usize::MAX)),
+        })
+    }
+
+    fn new(profile: &Profile, trace: &Trace, query: &SyscallQuery) -> Result<Self, Failure> {
+        let calls = Self::calls(&query.filter, query.latency)?;
         let link = &query.link;
         let narrows = link.threads.is_some()
             || !link.labels.is_empty()
             || link.zones.is_some()
             || !link.transforms.is_empty();
         let kept = if narrows {
-            // The range is the selection's own, as lanes draw calls that
-            // overlap it.
+            // The range is the selection's own; samples during calls are
+            // not the calls'.
             let mut unranged = link.clone();
             unranged.range = None;
+            unranged.during = None;
+            unranged.syscall_leaves = false;
             let keys = profile.keys(super::profiles::granularity(link.granularity));
             let resolved = super::profiles::resolve(profile, &keys, &unranged)?;
             Some(keys.syscalls(&resolved))
@@ -261,14 +272,10 @@ impl Selection {
         });
 
         Ok(Self {
-            filter,
             from,
             to,
             kept,
-            latency: query
-                .latency
-                .map(|bucket| usize::try_from(bucket).unwrap_or(usize::MAX)),
-            overlapping: false,
+            ..calls
         })
     }
 
@@ -278,14 +285,7 @@ impl Selection {
 
     /// Whether the call at `row` of the capture's calls is selected.
     fn shows(&self, row: usize, call: &SyscallEvent, fds: &FdTable) -> bool {
-        let inside = if self.overlapping {
-            let entered = call.entered.unwrap_or_else(|| call.time()).cast_signed();
-            entered < self.to && self.from <= call.time().cast_signed()
-        } else {
-            self.holds(call.time())
-        };
-
-        if !inside
+        if !self.holds(call.time())
             || self
                 .kept
                 .as_ref()
@@ -356,6 +356,40 @@ fn walk(trace: &Trace, selection: &Selection, mut visit: impl FnMut(Seen<'_>)) {
     }
 }
 
+/// The rows of the calls `during` selects in the whole trace.
+pub fn rows(profile: &Profile, trace: &Trace, during: &ProfileDuring) -> Result<Vec<u32>, Failure> {
+    let selection = Selection::calls(&during.filter, during.latency)?;
+    let mut row = during
+        .row
+        .as_ref()
+        .map(|row| (Grouping::new(profile, trace, row.group), row.key.as_str()));
+    let mut matched = Vec::new();
+    known(trace, &selection, |index, call, fds| {
+        if row
+            .as_mut()
+            .is_none_or(|(grouping, key)| grouping.row(index, call, fds).0 == *key)
+        {
+            matched.push(index);
+        }
+    });
+
+    // A call's row is how many calls come before it.
+    let mut matched = matched.into_iter().peekable();
+    let mut rows = Vec::new();
+    let mut calls = 0;
+    for (index, recorded) in trace.events.iter().enumerate() {
+        if matches!(recorded.event, TraceEvent::Call(_)) {
+            if matched.next_if_eq(&index).is_some() {
+                rows.push(calls);
+            }
+
+            calls += 1;
+        }
+    }
+
+    Ok(rows)
+}
+
 /// Each selected call, with the descriptors as it found them.
 fn calls(
     trace: &Trace,
@@ -366,6 +400,20 @@ fn calls(
         if let Seen::Before(index, call, fds) = seen {
             visit(index, call, fds);
         }
+    });
+}
+
+/// Each selected call, with the descriptors as it found them; a connect,
+/// which is known by the endpoint it made, with those it left.
+fn known(
+    trace: &Trace,
+    selection: &Selection,
+    mut visit: impl FnMut(usize, &SyscallEvent, &FdTable),
+) {
+    walk(trace, selection, |seen| match seen {
+        Seen::Before(index, call, fds) if !is_connect(call) => visit(index, call, fds),
+        Seen::After(index, call, fds) if is_connect(call) => visit(index, call, fds),
+        _ => {}
     });
 }
 
@@ -453,29 +501,42 @@ fn row(key: String, name: String, stats: &SyscallStats) -> SyscallRow {
     }
 }
 
-#[expect(clippy::too_many_lines, reason = "one arm per grouping")]
-fn summary(
-    profile: &Profile,
-    trace: &Trace,
-    query: &SyscallSummaryQuery,
-) -> Result<SyscallSummary, Failure> {
-    let selection = Selection::new(profile, trace, &query.query)?;
-    let mut sites: HashMap<u32, String> = HashMap::new();
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "calls passes the indices of trace's own events"
-    )]
-    let mut group = |index: usize, call: &SyscallEvent, fds: &FdTable| -> (String, String) {
-        match query.group {
+/// Keys each call by the summary's row it falls under, reading each
+/// stack's site once.
+struct Grouping<'a> {
+    profile: &'a Profile,
+    trace: &'a Trace,
+    group: SyscallGroup,
+    sites: HashMap<u32, String>,
+}
+
+impl<'a> Grouping<'a> {
+    fn new(profile: &'a Profile, trace: &'a Trace, group: SyscallGroup) -> Self {
+        Self {
+            profile,
+            trace,
+            group,
+            sites: HashMap::new(),
+        }
+    }
+
+    /// The key and name of the row of the call at `index` of the trace.
+    fn row(&mut self, index: usize, call: &SyscallEvent, fds: &FdTable) -> (String, String) {
+        match self.group {
             SyscallGroup::Path => {
                 let path = target(call, fds).unwrap_or_else(|| "none".to_owned());
                 (path.clone(), path)
             }
             SyscallGroup::Site => {
-                let site = trace.events[index].stack.map_or_else(
-                    || "no stack".to_owned(),
-                    |stack| site(profile, &mut sites, stack).clone(),
-                );
+                let site = self
+                    .trace
+                    .events
+                    .get(index)
+                    .and_then(|event| event.stack)
+                    .map_or_else(
+                        || "no stack".to_owned(),
+                        |stack| site(self.profile, &mut self.sites, stack).clone(),
+                    );
                 (site.clone(), site)
             }
             SyscallGroup::Syscall => {
@@ -485,15 +546,23 @@ fn summary(
             SyscallGroup::Class => (format!("%{}", class(call)), class(call).to_owned()),
             SyscallGroup::Process => (
                 call.process.to_string(),
-                trace.program(call.process).map_or_else(
+                self.trace.program(call.process).map_or_else(
                     || call.process.to_string(),
                     |program| format!("{} {program}", call.process),
                 ),
             ),
             SyscallGroup::Thread => (call.thread.to_string(), call.thread.to_string()),
         }
-    };
+    }
+}
 
+fn summary(
+    profile: &Profile,
+    trace: &Trace,
+    query: &SyscallSummaryQuery,
+) -> Result<SyscallSummary, Failure> {
+    let selection = Selection::new(profile, trace, &query.query)?;
+    let mut grouping = Grouping::new(profile, trace, query.group);
     let mut groups: BTreeMap<String, (String, SyscallStats)> = BTreeMap::new();
     let mut processes = BTreeSet::new();
     let mut add = |key: String, name: String, stats: &SyscallStats| {
@@ -505,13 +574,13 @@ fn summary(
     };
 
     // The kernel's count already holds the calls it kept.
-    calls(trace, &selection, |index, call, fds| {
+    known(trace, &selection, |index, call, fds| {
         if call.flags.kept() {
             return;
         }
 
         processes.insert(call.process);
-        let (key, name) = group(index, call, fds);
+        let (key, name) = grouping.row(index, call, fds);
         let mut one = SyscallStats::default();
         one.add(call.outcome, call.duration(), bytes_moved(call));
         add(key, name, &one);
@@ -970,14 +1039,8 @@ fn network(
 ) -> Result<SyscallNetwork, Failure> {
     let selection = Selection::new(profile, trace, query)?;
     let mut endpoints: BTreeMap<String, SyscallEndpoint> = BTreeMap::new();
-    walk(trace, &selection, |seen| {
-        // A connect is known by the endpoint it made; the rest by the one
-        // they used.
-        let (call, fds, connect) = match seen {
-            Seen::Before(_, call, fds) if !is_connect(call) => (call, fds, false),
-            Seen::After(_, call, fds) if is_connect(call) => (call, fds, true),
-            _ => return,
-        };
+    known(trace, &selection, |_, call, fds| {
+        let connect = is_connect(call);
 
         let Some(fd) = filter::descriptors(call).next() else {
             return;

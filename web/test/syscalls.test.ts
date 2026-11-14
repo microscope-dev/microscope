@@ -30,8 +30,12 @@ describe("the Syscalls view's address", () => {
       sc: "openat",
       st: "log",
       ev: "42",
+      du: "all",
+      sk: "1",
     };
     expect(roundTrip(look)).toEqual(look);
+    // The calls are not narrowed by the samples taken during them, nor
+    // weighed as the samples' leaves.
     expect(syscallQueryOf("p", look, 3)).toEqual({
       profile: "p",
       revision: 3,
@@ -43,6 +47,7 @@ describe("the Syscalls view's address", () => {
       invert: false,
       labels: [],
       transforms: [],
+      syscallLeaves: false,
       filter: "trace=%file,!close status=failed path=/a b&c",
     });
   });

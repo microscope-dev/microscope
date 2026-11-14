@@ -23,8 +23,10 @@ export interface ProfileFocus {
   query: ProfileQuery;
   /** What the query's weights are: waits are nanoseconds. */
   unit: string;
-  /** Changes the look, replacing the address unless `push` is set. */
-  setLook(change: (look: ProfileLook) => ProfileLook, push?: boolean): void;
+  /** Changes the look, replacing the address unless `push` is set. A look
+   * of another view shows that view's pane, which takes how the look draws
+   * only when `carry` is set. */
+  setLook(change: (look: ProfileLook) => ProfileLook, push?: boolean, carry?: boolean): void;
 }
 
 export const ProfileContext = createContext<ProfileFocus | null>(null);

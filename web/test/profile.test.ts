@@ -13,6 +13,7 @@ import {
 } from "../src/profile/inspect";
 import {
   cleared,
+  duringLabel,
   type ProfileLook,
   parseBand,
   parseInstance,
@@ -99,6 +100,10 @@ describe("a profile's address", () => {
       br: "5-90",
       dm: "share",
       ann: "code",
+      sf: "trace=%file",
+      sl: "12",
+      du: "site:read_config · conf.c:40",
+      sk: "1",
     };
     expect(roundTrip(look)).toEqual(look);
     expect(queryOf("p", look)).toEqual({
@@ -118,6 +123,12 @@ describe("a profile's address", () => {
       look: "native",
       granularity: "line",
       base: { profile: "f00d", range: [5, 90] },
+      during: {
+        filter: "trace=%file",
+        latency: 12,
+        row: { group: "site", key: "read_config · conf.c:40" },
+      },
+      syscallLeaves: true,
     });
     // A base range alone is of the profile itself.
     expect(queryOf("p", { br: "5-90" }).base).toEqual({ profile: "p", range: [5, 90] });
@@ -142,8 +153,12 @@ describe("a profile's address", () => {
         br: "9-3",
         dm: "time",
         ann: "lines-of-code",
+        du: "socket:x",
+        sk: "yes",
       }),
     ).toEqual({});
+    expect(validateProfileLook({ du: "site:" })).toEqual({});
+    expect(validateProfileLook({ du: ":x" })).toEqual({});
     expect(queryOf("p", {})).toEqual({
       profile: "p",
       source: "samples",
@@ -153,7 +168,17 @@ describe("a profile's address", () => {
       invert: false,
       look: "logical",
       granularity: "function",
+      syscallLeaves: false,
     });
+  });
+
+  it("names the calls whose samples it keeps", () => {
+    expect(
+      ["all", "syscall:read", "class:%file", "thread:12", "site:f · a.c:3"].map((du) =>
+        duringLabel(du),
+      ),
+    ).toEqual(["calls", "read", "%file", "thread 12", "f · a.c:3"]);
+    expect(queryOf("p", { du: "all" }).during).toEqual({ filter: "" });
   });
 
   it("looks at stacks as Python sees them unless it looks at native ones", () => {

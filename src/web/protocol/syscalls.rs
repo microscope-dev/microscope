@@ -47,6 +47,14 @@ pub enum SyscallGroup {
     Site,
 }
 
+/// One row of the summary, by its key under `group`.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct SyscallRowKey {
+    pub group: SyscallGroup,
+    pub key: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]

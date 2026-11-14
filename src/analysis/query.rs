@@ -74,8 +74,13 @@ pub struct Query {
     pub zones: Option<ZoneScope>,
 
     /// Samples taken while their thread was inside one of these system
-    /// calls, by row. Calls are a thread's, so this selects no waits.
+    /// calls, by row in order, and of the calls, these alone. Calls are a
+    /// thread's, so this selects no waits.
     pub during: Option<Vec<u32>>,
+
+    /// Each call the query keeps as a leaf under the stack that made it,
+    /// weighted by its time that no sample of its thread stands for.
+    pub calls: bool,
 }
 
 /// Which zones a query's samples must be inside.
@@ -560,13 +565,25 @@ fn each(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(
 
 /// Which of the capture's system calls `query` keeps, by row: those of its
 /// threads and range, by when each returned, inside its zones, carrying
-/// its labels, whose stacks its transforms keep. A call without a stack
-/// has no path, so a focus keeps none of them. Calls are of no task.
+/// its labels, whose paths, with the call as their leaf, its transforms
+/// keep. A call without a stack has its leaf alone, so a focus on a
+/// function keeps none of them. Calls are of no task.
 pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> {
     let _span = crate::span!("analysis syscalls");
     let mut kept = vec![false; capture.syscalls.len()];
+    kept_calls(capture, keys, query, |row, _| {
+        if let Some(slot) = kept.get_mut(row) {
+            *slot = true;
+        }
+    });
+    kept
+}
+
+/// Passes each call `query` keeps, as [`syscalls`] does, by row, with the
+/// label key a query by label roots it at, or [`NONE`].
+fn kept_calls(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl FnMut(usize, u32)) {
     let Some(mut labels) = LabelQuery::new(keys, query) else {
-        return kept;
+        return;
     };
 
     let paths_of = Query {
@@ -575,14 +592,10 @@ pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> 
         ..query.clone()
     };
     let mut paths = Paths::new(capture, keys, &paths_of);
-    let focused = query
-        .transforms
-        .iter()
-        .any(|transform| matches!(transform, Transform::Focus(_)));
 
     // Each thread's calls in time order, as its label spans and zones are
     // walked.
-    let mut threads: BTreeMap<u32, Vec<(i64, usize, u32)>> = BTreeMap::new();
+    let mut threads: BTreeMap<u32, Vec<(i64, usize)>> = BTreeMap::new();
     for (row, call) in capture.syscalls.iter().enumerate() {
         let time = if call.exited.get() == UNSEEN {
             call.entered.get()
@@ -597,11 +610,11 @@ pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> 
         let inside = query
             .range
             .is_none_or(|(start, end)| (start..end).contains(&time));
-        if shown && inside && time != UNSEEN {
-            threads
-                .entry(thread)
-                .or_default()
-                .push((time, row, call.stack.get()));
+        let named = query.during.as_ref().is_none_or(|rows| {
+            u32::try_from(row).is_ok_and(|row| rows.binary_search(&row).is_ok())
+        });
+        if shown && inside && named && time != UNSEEN {
+            threads.entry(thread).or_default().push((time, row));
         }
     }
 
@@ -612,31 +625,76 @@ pub fn syscalls(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<bool> 
             .zones
             .as_ref()
             .map(|scope| Inside::new(scope.spans(capture, thread)));
-        for (time, row, stack) in calls {
+        for (time, row) in calls {
             if inside.as_mut().is_some_and(|inside| !inside.holds(time)) {
                 continue;
             }
 
-            if labels.active() {
+            let label = if labels.active() {
                 labels.carried.clear();
                 labels.carried.extend(open.at(time));
-                if labels.judge(keys).is_none() {
+                let Some(judged) = labels.judge(keys) else {
                     continue;
-                }
-            }
-
-            let shown = if stack == NONE {
-                !focused
+                };
+                judged
             } else {
-                paths.of(stack, NONE, NONE).is_some()
+                NONE
             };
-            if let Some(slot) = kept.get_mut(row) {
-                *slot = shown;
+
+            let Some(call) = capture.syscalls.get(row) else {
+                continue;
+            };
+            let leaf = keys.syscall(call.abi, call.number.get());
+            if paths.of(call.stack.get(), NONE, NONE, leaf).is_some() {
+                take(row, label);
             }
         }
     }
+}
 
-    kept
+/// The groups of calls `query` keeps as leaves: each call's stack, leaf,
+/// and label key, weighted by the nanoseconds of it that no sample of its
+/// thread stands for. A call whose entry or return went unseen has no
+/// length to weigh.
+fn call_groups(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
+    let by_thread: HashMap<u32, &[crate::capture::records::Sample]> = capture
+        .sample_ranges
+        .iter()
+        .map(|range| (range.thread.get(), capture.thread_samples(range)))
+        .collect();
+    let mut groups = Vec::new();
+    kept_calls(capture, keys, query, |row, label| {
+        let Some(call) = capture.syscalls.get(row) else {
+            return;
+        };
+
+        let (entered, exited) = (call.entered.get(), call.exited.get());
+        if entered == UNSEEN || exited == UNSEEN || exited <= entered {
+            return;
+        }
+
+        let sampled: u64 = by_thread
+            .get(&call.thread.get())
+            .map_or(&[][..], |samples| {
+                in_range(samples, |sample| sample.time.get(), Some((entered, exited)))
+            })
+            .iter()
+            .map(|sample| sample.weight.get())
+            .sum();
+        let weight = (exited - entered).unsigned_abs().saturating_sub(sampled);
+        if weight > 0 {
+            groups.push(Group {
+                stack: call.stack.get(),
+                task: NONE,
+                label,
+                leaf: keys.syscall(call.abi, call.number.get()),
+                weight,
+                count: 0,
+            });
+        }
+    });
+
+    groups
 }
 
 /// One stack's selection: its stack, and the task and label key a query
@@ -646,13 +704,26 @@ struct Group {
     stack: u32,
     task: u32,
     label: u32,
+
+    /// The call a call's group ends in, or [`NONE`] for samples.
+    leaf: u32,
     weight: u64,
     count: u32,
 }
 
 /// The weight and count of what `query` selects on each stack and, by
-/// task or label, of each task and label on it.
+/// task or label, of each task and label on it; then, when it asks for
+/// them, of its calls.
 fn select(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
+    let mut selected = select_samples(capture, keys, query);
+    if query.calls && query.source == Source::Samples {
+        selected.extend(call_groups(capture, keys, query));
+    }
+
+    selected
+}
+
+fn select_samples(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
     if query.by_task || query.by_label.is_some() {
         let mut by: HashMap<(u32, u32, u32), (u64, u32)> = HashMap::default();
         each(capture, keys, query, |selected| {
@@ -669,6 +740,7 @@ fn select(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
                 stack,
                 task,
                 label,
+                leaf: NONE,
                 weight,
                 count,
             })
@@ -697,6 +769,7 @@ fn select(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
             stack: index(stack),
             task: NONE,
             label: NONE,
+            leaf: NONE,
             weight,
             count,
         })
@@ -778,8 +851,9 @@ impl<'a> Paths<'a> {
     }
 
     /// The path of `stack`, run or waited on in `task` under the label key
-    /// `label`, under the query, or `None` when a transform removes it.
-    fn of(&mut self, stack: u32, task: u32, label: u32) -> Option<&[u32]> {
+    /// `label`, with the key `leaf` innermost unless it is [`NONE`], under
+    /// the query, or `None` when a transform removes it.
+    fn of(&mut self, stack: u32, task: u32, label: u32, leaf: u32) -> Option<&[u32]> {
         let path = &mut self.path;
         path.clear();
 
@@ -794,6 +868,10 @@ impl<'a> Paths<'a> {
                 logical(self.keys, path);
                 python(self.keys, path);
             }
+        }
+
+        if leaf != NONE {
+            path.insert(0, leaf);
         }
 
         // Innermost first, as stacks are; a tree from the roots starts
@@ -920,7 +998,7 @@ pub fn aggregate(capture: &Capture, keys: &Keys<'_>, query: &Query) -> CallTree 
     let mut tree = CallTree::default();
 
     for group in &selected {
-        let Some(path) = paths.of(group.stack, group.task, group.label) else {
+        let Some(path) = paths.of(group.stack, group.task, group.label, group.leaf) else {
             continue;
         };
 
@@ -1040,7 +1118,7 @@ pub fn functions(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Costs {
     let mut counted = vec![u32::MAX; keys.count()];
     let mut kept = 0;
     for (entry, group) in selected.iter().enumerate() {
-        let Some(path) = paths.of(group.stack, group.task, group.label) else {
+        let Some(path) = paths.of(group.stack, group.task, group.label, group.leaf) else {
             continue;
         };
 
@@ -1224,7 +1302,11 @@ pub fn density(
         let task = if query.by_task { selected.task } else { NONE };
         let keep = *kept
             .entry((selected.stack, task, selected.label))
-            .or_insert_with(|| paths.of(selected.stack, task, selected.label).is_some());
+            .or_insert_with(|| {
+                paths
+                    .of(selected.stack, task, selected.label, NONE)
+                    .is_some()
+            });
         if !keep {
             return;
         }

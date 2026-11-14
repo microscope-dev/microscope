@@ -1105,6 +1105,35 @@ pub struct ProfileQuery {
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
     pub base: Option<ProfileBase>,
+
+    /// Samples taken while their thread was inside one of these calls.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub during: Option<ProfileDuring>,
+
+    /// Each call the query keeps as a leaf under the stack that made it,
+    /// weighted by its time no sample stands for.
+    #[serde(default)]
+    pub syscall_leaves: bool,
+}
+
+/// System calls, as the Syscalls tab selects them.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ProfileDuring {
+    /// As `-e` takes it, expressions apart by spaces.
+    pub filter: String,
+
+    /// Calls whose duration falls in this log2 bucket, or all.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub latency: Option<u32>,
+
+    /// Of those, the calls of one row of the summary, as the group keys
+    /// it; every one when absent.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub row: Option<SyscallRowKey>,
 }
 
 /// The zones whose samples a query keeps.
@@ -1854,6 +1883,9 @@ pub enum ProfileKeyKind {
 
     /// A label value a query by label roots paths at.
     Label,
+
+    /// A system call, as a leaf under the stack that made it.
+    Syscall,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3201,6 +3233,7 @@ mod tests {
         ProfileInfo::decl,
         ProfileRef::decl,
         ProfileQuery::decl,
+        ProfileDuring::decl,
         ProfileTransform::decl,
         TransformOp::decl,
         ProfileGranularity::decl,
@@ -3249,6 +3282,7 @@ mod tests {
         ProfileZoneStats::decl,
         SyscallQuery::decl,
         SyscallGroup::decl,
+        SyscallRowKey::decl,
         SyscallSummaryQuery::decl,
         SyscallSummary::decl,
         SyscallLosses::decl,

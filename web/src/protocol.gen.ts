@@ -1042,7 +1042,31 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
+
+export type ProfileDuring = { 
+/**
+ * As `-e` takes it, expressions apart by spaces.
+ */
+filter: string, 
+/**
+ * Calls whose duration falls in this log2 bucket, or all.
+ */
+latency?: number | null, 
+/**
+ * Of those, the calls of one row of the summary, as the group keys
+ * it; every one when absent.
+ */
+row?: SyscallRowKey | null, };
 
 export type ProfileTransform = { op: TransformOp, 
 /**
@@ -1119,7 +1143,16 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type ProfileSummary = { id: string, name: string, 
 /**
@@ -1321,7 +1354,7 @@ module: string | null,
  */
 file: string | null, line: number | null, };
 
-export type ProfileKeyKind = "function" | "line" | "address" | "truncation" | "task" | "group" | "label";
+export type ProfileKeyKind = "function" | "line" | "address" | "truncation" | "task" | "group" | "label" | "syscall";
 
 export type ProfileTask = { row: number, 
 /**
@@ -1516,7 +1549,16 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type ProfileLines = { 
 /**
@@ -1731,9 +1773,20 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type SyscallGroup = "syscall" | "class" | "process" | "thread" | "path" | "site";
+
+export type SyscallRowKey = { group: SyscallGroup, key: string, };
 
 export type SyscallSummaryQuery = { group: SyscallGroup, 
 /**
@@ -1800,7 +1853,16 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type SyscallSummary = { 
 /**
@@ -1901,7 +1963,16 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type SyscallHeatmap = { start: number, width: number, 
 /**
@@ -1982,7 +2053,16 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type SyscallDetail = { 
 /**
@@ -2073,7 +2153,16 @@ zones?: ProfileZoneScope | null,
 /**
  * What a tree or functions answer compares itself with.
  */
-base?: ProfileBase | null, };
+base?: ProfileBase | null, 
+/**
+ * Samples taken while their thread was inside one of these calls.
+ */
+during?: ProfileDuring | null, 
+/**
+ * Each call the query keeps as a leaf under the stack that made it,
+ * weighted by its time no sample stands for.
+ */
+syscallLeaves: boolean, };
 
 export type SyscallLog = { 
 /**

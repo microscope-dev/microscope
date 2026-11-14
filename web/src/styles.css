@@ -4910,3 +4910,15 @@ textarea.input {
     content: "";
   }
 }
+
+/* A call's stack frame, with links to it in the samples' views that show
+   on hover or focus. */
+.frame-links .link-button {
+  opacity: 0;
+  font-size: 10.5px;
+}
+
+li:hover > .frame-links .link-button,
+.frame-links:focus-within .link-button {
+  opacity: 1;
+}

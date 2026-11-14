@@ -267,7 +267,7 @@ fn nodes(tree: &Value, bytes: &[u8]) -> Vec<(Vec<String>, u64, u64)> {
         .collect()
 }
 
-async fn tree(tab: &mut Client, query: Value) -> Vec<(Vec<String>, u64, u64)> {
+pub async fn tree(tab: &mut Client, query: Value) -> Vec<(Vec<String>, u64, u64)> {
     let (answer, bytes) = tab
         .with_bytes("profileTree", query)
         .await

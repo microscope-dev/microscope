@@ -6,7 +6,7 @@ import { lossNotes, unkept } from "../../profile/syscalls";
 import { useAnswer, useProfile } from "./context";
 import { LookButton } from "./parts";
 import { Log } from "./SyscallLog";
-import { Summary } from "./SyscallSummary";
+import { SamplesDuring, Summary } from "./SyscallSummary";
 import { Files, Network, Processes } from "./SyscallTables";
 
 const TABS: { tab: SyscallTab | undefined; label: string }[] = [
@@ -107,6 +107,9 @@ function Calls({ missing }: { missing: Missing | null }) {
             ))}
           </span>
         ) : null}
+        <SamplesDuring during="all" name="the selected calls">
+          Samples during these calls
+        </SamplesDuring>
       </div>
       {missing ? <Unkept {...missing} /> : null}
       <div className="syscalls-body">

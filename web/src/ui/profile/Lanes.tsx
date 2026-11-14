@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { assert } from "../../assert";
-import { kernelLines, stepAt, waitAt } from "../../profile/kernel";
+import { blockedIn, kernelLines, stepAt, waitAt } from "../../profile/kernel";
 import {
   formatRange,
   type Instance,
@@ -942,7 +942,12 @@ export function Lanes() {
   );
   const plotStyle = useMemo(() => ({ width: plot }), [plot]);
   const canvasStyle = useMemo(() => ({ width: plot, height }), [plot, height]);
-  const tip = hit && !panning ? tipLines(hit, { blocks, index, summary, span, plot }) : null;
+  // Task lanes are keyed by task, which a zone's thread is not.
+  const kernelLanes = kernel ? answered : NO_LANES;
+  const tip =
+    hit && !panning
+      ? tipLines(hit, { blocks, index, summary, span, plot, answered: kernelLanes })
+      : null;
   const tipStyle = useMemo(
     () => (pointer ? { left: pointer.x + 12, top: pointer.y + 16 } : undefined),
     [pointer],
@@ -1233,6 +1238,8 @@ function fitting(labels: readonly string[], room: number, glyph: number): string
   return labels.find((label) => label.length * glyph <= room) ?? null;
 }
 
+const NO_LANES: ReadonlyMap<number, ProfileLane> = new Map();
+
 /** A tooltip's lines for what the pointer is over. */
 function tipLines(
   hit: Hit,
@@ -1242,19 +1249,21 @@ function tipLines(
     summary,
     span,
     plot,
+    answered,
   }: {
     blocks: ReturnType<typeof decodeZones> | null;
     index: ReturnType<typeof indexBlocks> | null;
     summary: ProfileSummary;
     span: number;
     plot: number;
+    answered: ReadonlyMap<number, ProfileLane>;
   },
 ): string[] | null {
   const pixel = span / Math.max(plot, 1);
   const step = hit.step
     ? [`budget at ${formatInstant(hit.step.time, pixel)}: ${hit.step.text}`]
     : [];
-  const lines = ownLines(hit, { blocks, index, summary, pixel });
+  const lines = ownLines(hit, { blocks, index, summary, pixel, answered });
   return lines || step.length > 0 ? [...(lines ?? []), ...step] : null;
 }
 
@@ -1265,11 +1274,13 @@ function ownLines(
     index,
     summary,
     pixel,
+    answered,
   }: {
     blocks: ReturnType<typeof decodeZones> | null;
     index: ReturnType<typeof indexBlocks> | null;
     summary: ProfileSummary;
     pixel: number;
+    answered: ReadonlyMap<number, ProfileLane>;
   },
 ): string[] | null {
   if (hit.kernel) {
@@ -1295,6 +1306,9 @@ function ownLines(
       : `${label}: ${formatDuration(length)}`;
   const inside = nesting(blocks, index, thread, blocks.depth[at] ?? 0, blocks.start[at] ?? 0);
   const running = count > 1 ? null : onCpu(blocks, at);
+  const lane = answered.get(thread);
+  const waited =
+    running === null || !lane ? null : blockedIn(lane, blocks.start[at] ?? 0, blocks.end[at] ?? 0);
   return [
     head,
     ...(running === null
@@ -1302,6 +1316,7 @@ function ownLines(
       : [
           `${Math.round(running * 100)}% on CPU, ${formatDuration(blocks.blocked[at] ?? 0)} blocked, ${formatDuration(blocks.preempted[at] ?? 0)} preempted`,
         ]),
+    ...(waited ? [waited] : []),
     `${threadName(summary.threads, thread)}, from ${formatInstant(blocks.start[at] ?? 0, pixel)}`,
     ...(inside.length > 0 ? [`in ${inside.join(" › ")}`] : []),
     ...describeFlags(blocks.flags[at] ?? 0),

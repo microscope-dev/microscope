@@ -2434,3 +2434,78 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn calls_as_leaves_weigh_what_no_sample_of_their_thread_stands_for() {
+    // Thread 0 calls from a > b, for 100 ns, sampled for 30 of them; thread
+    // 1 calls with no stack, unsampled; one call's return went unseen.
+    let calls: [Call; 3] = [
+        (0, 100, 200, Some(vec![1, 0])),
+        (1, 50, 90, None),
+        (0, 300, UNSEEN_TIME, Some(vec![0])),
+    ];
+    let samples = [(0, 150, vec![1, 0]), (0, 250, vec![2, 0])];
+    let mut capture = traced(&calls, &samples, &[]);
+    for sample in &mut capture.samples {
+        sample.weight = 30.into();
+    }
+    let number = capture.syscalls[0].number.get();
+    capture.syscalls[1].number = (number + 1).into();
+    let keys = Keys::new(&capture, Granularity::Function);
+    let first = keys.name(keys.syscall(0, number));
+    let second = keys.name(keys.syscall(0, number + 1));
+    assert!(first.starts_with("[syscall] "), "{first}");
+
+    let paths = |query: &Query| ending_paths(&keys.aggregate(query), &keys);
+    let leaves = Query {
+        calls: true,
+        ..Query::default()
+    };
+    let path = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+    assert_eq!(
+        paths(&leaves),
+        BTreeMap::from([
+            (path(&["a", "b"]), 30),
+            (path(&["a", "b", &first]), 70),
+            (path(&["a", "c"]), 30),
+            (path(&[&second]), 40),
+        ])
+    );
+    // Calls are no samples, and without asking there are none.
+    assert_eq!(keys.aggregate(&leaves).samples, 2);
+    assert!(
+        paths(&Query::default())
+            .keys()
+            .all(|path| !path.iter().any(|name| name.starts_with('[')))
+    );
+
+    // A call's leaf is a key like any other: a focus on it keeps its calls,
+    // and a drop of it removes them.
+    let focus = Query {
+        transforms: vec![Transform::Focus(keys.syscall(0, number))],
+        ..leaves.clone()
+    };
+    assert_eq!(paths(&focus), BTreeMap::from([(path(&[&first]), 70)]));
+    let drop = Query {
+        transforms: vec![Transform::Drop(keys.syscall(0, number + 1))],
+        ..leaves.clone()
+    };
+    assert!(!paths(&drop).contains_key(&path(&[&second])));
+
+    // Samples during a call keep that call's leaf and no other.
+    let during = Query {
+        during: Some(vec![0]),
+        ..leaves.clone()
+    };
+    assert_eq!(
+        paths(&during),
+        BTreeMap::from([(path(&["a", "b"]), 30), (path(&["a", "b", &first]), 70)])
+    );
+
+    // Inverted, the call is the root its callers hang from.
+    let inverted = Query {
+        invert: true,
+        ..leaves
+    };
+    assert_eq!(paths(&inverted).get(&path(&[&first, "b", "a"])), Some(&70));
+}

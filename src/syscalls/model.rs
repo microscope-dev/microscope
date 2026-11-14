@@ -27,6 +27,16 @@ pub enum Abi {
 impl Abi {
     pub const ALL: [Self; 3] = [Self::X86_64, Self::X86_32, Self::X32];
 
+    /// The ABI a capture stores by its index.
+    #[must_use]
+    pub const fn from_index(index: u8) -> Self {
+        match index {
+            1 => Self::X86_32,
+            2 => Self::X32,
+            _ => Self::X86_64,
+        }
+    }
+
     /// strace's personality suffix for the ABI, as in `open@64`.
     #[must_use]
     pub const fn suffix(self) -> &'static str {

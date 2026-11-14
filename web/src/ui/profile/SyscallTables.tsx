@@ -6,6 +6,7 @@ import { useModel } from "../../store";
 import { useAnswer } from "./context";
 import { Bytes, Duration, Unanswered } from "./parts";
 import { Tokens } from "./SyscallLog";
+import { SamplesDuring } from "./SyscallSummary";
 
 /** A plain table of rows, or what it is reading, why it could not, or
  * that there are none. */
@@ -62,8 +63,8 @@ function Failed({ count }: { count: number }) {
   return count > 0 ? <span className="error-text">{formatCount(count)}</span> : "0";
 }
 
-const FILES_HEAD = ["path", "opens", "failed", "read", "written", "fsync", "time"];
-const NETWORK_HEAD = ["endpoint", "connects", "failed", "connect time", "sent", "received"];
+const FILES_HEAD = ["path", "opens", "failed", "read", "written", "fsync", "time", ""];
+const NETWORK_HEAD = ["endpoint", "connects", "failed", "connect time", "sent", "received", ""];
 const PROCESSES_HEAD = ["process", "threads", "calls", "errors", "lifetime", "end"];
 const IN_FLIGHT_HEAD = ["thread", "call", "for"];
 
@@ -84,6 +85,7 @@ export function Files({ query }: { query: SyscallQuery }) {
           <Bytes key="written" bytes={file.written} />,
           <Duration key="fsync" ns={file.syncNs} />,
           <Duration key="time" ns={file.totalNs} />,
+          <SamplesDuring key="samples" during={`path:${file.path}`} name={file.path} />,
         ])}
       />
     </div>
@@ -106,6 +108,11 @@ export function Network({ query }: { query: SyscallQuery }) {
           <Duration key="connect" ns={endpoint.connectNs} />,
           <Bytes key="sent" bytes={endpoint.sent} />,
           <Bytes key="received" bytes={endpoint.received} />,
+          <SamplesDuring
+            key="samples"
+            during={`path:${endpoint.endpoint}`}
+            name={endpoint.endpoint}
+          />,
         ])}
       />
     </div>
