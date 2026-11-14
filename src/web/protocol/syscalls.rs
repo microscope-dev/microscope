@@ -165,6 +165,9 @@ pub struct SyscallHeatmap {
     /// Each slice's rows of counts, slice after slice.
     pub counts: Vec<u32>,
     pub most: u32,
+
+    /// Of each cell's calls, how many failed, as `counts` lays them out.
+    pub failed: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

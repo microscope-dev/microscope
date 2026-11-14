@@ -138,6 +138,10 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
     });
     return shownBuckets(rows);
   }, [data]);
+  const mostFailed = useMemo(
+    () => (data ? data.failed.reduce((most, each) => Math.max(most, each), 0) : 0),
+    [data],
+  );
   const height = 140;
 
   useEffect(() => {
@@ -167,8 +171,24 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
         }
       }
     }
+    // Failures over the rest, never too faint to find among many calls.
+    context.fillStyle = token("--error");
+    for (let slice = 0; slice < slices; slice++) {
+      for (let row = first; row <= last; row++) {
+        const failed = data.failed[slice * data.rows + row] ?? 0;
+        if (failed > 0) {
+          context.globalAlpha = Math.max(heatAlpha(failed, mostFailed), 0.6);
+          context.fillRect(
+            slice * column,
+            height - (row - first + 1) * cell,
+            Math.max(column, 1),
+            cell,
+          );
+        }
+      }
+    }
     context.globalAlpha = 1;
-  }, [data, width, first, last, scheme]);
+  }, [data, width, first, last, scheme, mostFailed]);
 
   const style = useMemo(() => ({ width, height }), [width]);
   const filter = `${look.sf ?? ""} trace=${call}`.trim();
@@ -214,6 +234,7 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
             · {bucketLabel(first)} to {bucketLabel(last)}
           </span>
         ) : null}
+        {mostFailed > 0 ? <span className="failed-key"> · failed</span> : null}
       </h3>
       {/* Measured without the section's padding, and never wider than
           it, so the canvas cannot widen the column it is measured in. */}
@@ -228,7 +249,11 @@ function Heatmap({ query, call }: { query: SyscallQuery; call: string }) {
             // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a canvas drawn here, not an image file
             role="img"
             aria-label="Latency heat map"
-            title="A cell's calls, in the log"
+            title={
+              mostFailed > 0
+                ? "A cell's calls, in the log; red cells hold failed calls"
+                : "A cell's calls, in the log"
+            }
             onClick={openCell}
           />
         )}

@@ -4858,6 +4858,10 @@ textarea.input {
   cursor: pointer;
 }
 
+.latency-map .failed-key {
+  color: var(--error);
+}
+
 .call-site {
   margin: 6px 0 0;
 }

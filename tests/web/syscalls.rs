@@ -270,6 +270,17 @@ async fn files_and_charts(tab: &mut Client, id: &str, scratch: &Path) {
     let heat = tab.ok("syscallHeatmap", selected).await;
     assert_eq!(heat["counts"].as_array().expect("counts").len(), 16 * 40);
     assert_eq!(Some(sum(&heat["counts"])), of_files["calls"].as_u64());
+    // And each failed one in its cell's failures.
+    assert_eq!(Some(sum(&heat["failed"])), of_files["errors"].as_u64());
+    assert!(
+        heat["failed"]
+            .as_array()
+            .expect("failed")
+            .iter()
+            .zip(heat["counts"].as_array().expect("counts"))
+            .all(|(failed, count)| failed.as_u64() <= count.as_u64()),
+        "{heat}"
+    );
 
     // And every call in its thread's kernel lane on the timeline once.
     let all = tab.ok("syscallSummary", json!({"profile": id})).await;

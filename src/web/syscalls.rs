@@ -687,9 +687,12 @@ fn heatmap(
     let slices = Slices::new(selection.span(trace), query.buckets);
     let rows = stats::BUCKETS;
     let mut counts = vec![0_u32; slices.count * rows];
+    let mut failed = vec![0_u32; slices.count * rows];
     calls(trace, &selection, |_, call, _| {
         if let (Some(duration), Some(slice)) = (call.duration(), slices.of(call.time())) {
-            counts[slice * rows + stats::bucket(duration)] += 1;
+            let cell = slice * rows + stats::bucket(duration);
+            counts[cell] += 1;
+            failed[cell] += u32::from(matches!(call.outcome, Outcome::Failed(_)));
         }
     });
 
@@ -699,6 +702,7 @@ fn heatmap(
         rows: u32::try_from(rows).unwrap_or(u32::MAX),
         most: counts.iter().copied().max().unwrap_or(0),
         counts,
+        failed,
     })
 }
 

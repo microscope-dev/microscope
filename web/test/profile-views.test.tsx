@@ -2299,6 +2299,7 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
     rows: 3,
     counts: [0, 0, 5, 4, 0, 0],
     most: 5,
+    failed: [0, 0, 0, 0, 0, 0],
   });
   const map = page.getByRole("img", { name: "Latency heat map" });
   await expect.element(page.getByText(/0 to/u)).toBeVisible();
@@ -2310,6 +2311,35 @@ it("reads a click on a heat map's top edge as its highest row, in the slice clic
   await vi.waitFor(() => expect(lookShown().sl).toBeDefined(), POLL);
   expect(lookShown().sl).toBe("2");
   expect(lookShown().range).toBe("1000-1500");
+});
+
+it("draws a heat map's cells of failed calls in the error color, however few failed", async () => {
+  const server = await mount(<KernelPane />, { summary: traced(), look: { sc: "read" } });
+  server.answer(await server.next("syscallSummary"), SUMMARY);
+  // Two slices of three rows: the first's slow calls all returned, one of
+  // the second's 40 fast calls failed.
+  server.answer(await server.next("syscallHeatmap"), {
+    start: 1000,
+    width: 500,
+    rows: 3,
+    counts: [0, 0, 5, 40, 0, 0],
+    most: 40,
+    failed: [0, 0, 0, 1, 0, 0],
+  });
+  await expect.element(page.getByText("· failed")).toBeVisible();
+  const map = page.getByRole("img", { name: "Latency heat map" });
+  await vi.waitFor(() => {
+    const element = map.element() as HTMLCanvasElement;
+    const context = element.getContext("2d");
+    const pixel = (x: number, y: number) => [
+      ...(context?.getImageData(Math.floor(x * element.width), Math.floor(y * element.height), 1, 1)
+        .data ?? []),
+    ];
+    const [failedRed = 0, , failedBlue = 0] = pixel(0.75, 5 / 6);
+    const [slowRed = 0, , slowBlue = 0] = pixel(0.25, 1 / 6);
+    expect(failedRed, "the failed call's cell is red").toBeGreaterThan(failedBlue);
+    expect(slowBlue, "the slow calls' cell keeps the accent").toBeGreaterThan(slowRed);
+  }, POLL);
 });
 
 it("says it is reading the log, and why a call could not be read", async () => {

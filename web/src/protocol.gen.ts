@@ -1982,7 +1982,11 @@ rows: number,
 /**
  * Each slice's rows of counts, slice after slice.
  */
-counts: Array<number>, most: number, };
+counts: Array<number>, most: number, 
+/**
+ * Of each cell's calls, how many failed, as `counts` lays them out.
+ */
+failed: Array<number>, };
 
 export type SyscallDetailQuery = { 
 /**
