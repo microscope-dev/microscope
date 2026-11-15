@@ -15,6 +15,68 @@ pub fn thread_local_storage(
         .find_map(|name| image.thread_local_within(scope, name))
 }
 
+#[derive(Debug)]
+pub struct Storage {
+    pub tls: ThreadLocal,
+    pub value: Field,
+
+    pub state_tls: ThreadLocal,
+    pub state: u64,
+    pub alive: u64,
+}
+
+impl Storage {
+    fn bind(image: &dyn RuntimeImage, scope: &str, value: &str) -> Option<Result<Self, Missing>> {
+        let tls = thread_local_storage(image, scope)?;
+        Some(tls.and_then(|tls| Self::bind_at(image, scope, value, tls)))
+    }
+
+    fn bind_at(
+        image: &dyn RuntimeImage,
+        scope: &str,
+        value: &str,
+        tls: ThreadLocal,
+    ) -> Result<Self, Missing> {
+        let [newest, older] = crate::rust_names::EAGER_STORAGE
+            .map(|storage| records::named(image, &format!("{storage}<{value}>")));
+        let storage = match newest.or_else(|missing| older.map_err(|_| missing)) {
+            Ok(storage) => storage,
+            Err(missing) => {
+                let Some(state_tls) =
+                    image.thread_local_within(scope, crate::rust_names::STATE_STATIC)
+                else {
+                    return Err(missing);
+                };
+
+                return Ok(Self {
+                    tls,
+                    value: Field {
+                        offset: 0,
+                        ty: records::named(image, value)?,
+                    },
+                    state_tls: state_tls?,
+                    state: 0,
+                    alive: crate::rust_names::STATE_STATIC_ALIVE,
+                });
+            }
+        };
+
+        let state = records::field(image, storage, &["state", "value", "value"])?;
+        let alive = records::enumerator(image, state.ty, "Alive")?;
+        if records::size(image, state.ty)? != 1 {
+            return Err("eager::Storage's state is not one byte".into());
+        }
+
+        Ok(Self {
+            tls,
+            value: records::field(image, storage, &["val", "value"])?,
+            state_tls: tls,
+            state: state.offset,
+            alive,
+        })
+    }
+}
+
 const FLAVORS: [(Flavor, &str, &str); 2] = [
     (
         Flavor::MultiThread,
@@ -76,10 +138,7 @@ impl Layout {
 
 #[derive(Debug)]
 pub struct Locals {
-    pub tls: ThreadLocal,
-
-    pub state: u64,
-    pub alive: u64,
+    pub storage: Storage,
 
     pub context: u64,
 
@@ -96,27 +155,13 @@ pub struct Locals {
 
 impl Locals {
     fn bind(image: &dyn RuntimeImage) -> Result<Option<Self>, Missing> {
-        let Some(tls) = thread_local_storage(image, LOCAL_SCOPE) else {
+        let Some(storage) = Storage::bind(image, LOCAL_SCOPE, "tokio::task::local::LocalData")
+        else {
             return Ok(None);
         };
 
-        let tls = tls?;
-
-        let storage = records::named(
-            image,
-            "std::sys::thread_local::native::eager::Storage<tokio::task::local::LocalData>",
-        )?;
-        let state = records::field(image, storage, &["state", "value", "value"])?;
-        let alive = records::enumerator(image, state.ty, "Alive")?;
-        if records::size(image, state.ty)? != 1 {
-            return Err("eager::Storage's state is not one byte".into());
-        }
-
-        let context = records::field(
-            image,
-            storage,
-            &["val", "value", "ctx", "inner", "__0", "value"],
-        )?;
+        let storage = storage?;
+        let context = records::field(image, storage.value.ty, &["ctx", "inner", "__0", "value"])?;
         pointer_sized(image, context.ty, "a LocalSet's context")?;
         let set = records::named(image, "tokio::task::local::LocalSet")?;
         let rc = records::field(image, set, &["context", "ptr", "pointer"])?;
@@ -132,10 +177,8 @@ impl Locals {
         };
 
         Ok(Some(Self {
-            tls,
-            state: state.offset,
-            alive,
-            context: context.offset,
+            context: records::within(storage.value.offset, context.offset)?,
+            storage,
             set: rc.offset,
             value: value.offset,
             shared: arc.offset,
@@ -178,10 +221,7 @@ impl Spawns {
 
 #[derive(Debug)]
 pub struct Context {
-    pub tls: ThreadLocal,
-
-    pub state: u64,
-    pub alive: u64,
+    pub storage: Storage,
 
     pub handle: Field,
     pub handle_option: Sum,
@@ -276,19 +316,9 @@ fn mutex(
 
 impl Context {
     fn bind(image: &dyn RuntimeImage) -> Result<Self, Missing> {
-        let tls = thread_local_storage(image, CONTEXT_SCOPE)
+        let storage = Storage::bind(image, CONTEXT_SCOPE, "tokio::runtime::context::Context")
             .ok_or("the program has no tokio::runtime::context::CONTEXT")??;
-        let storage = records::named(
-            image,
-            "std::sys::thread_local::native::eager::Storage<tokio::runtime::context::Context>",
-        )?;
-        let state = records::field(image, storage, &["state", "value", "value"])?;
-        let alive = records::enumerator(image, state.ty, "Alive")?;
-        if records::size(image, state.ty)? != 1 {
-            return Err("eager::Storage's state is not one byte".into());
-        }
-
-        let context = records::field(image, storage, &["val", "value"])?;
+        let context = storage.value;
         let field = |path: &[&str]| {
             records::field(image, context.ty, path).and_then(|found| {
                 Ok(Field {
@@ -326,9 +356,7 @@ impl Context {
         pointer_sized(image, id.ty, "task::Id")?;
 
         Ok(Self {
-            tls,
-            state: state.offset,
-            alive,
+            storage,
             handle,
             handle_option,
             handle_some: records::within(some.offset, inner.offset)?,
@@ -573,11 +601,12 @@ fn deque_words(
     deque: TypeReference,
 ) -> Result<(u64, u64, u64, u64), Missing> {
     let sized = |path: &[&str]| records::sized(image, deque, path, 8);
+    let raw = |name| sized(&["buf", "inner", name]).or_else(|_| sized(&["buf", name]));
     Ok((
         sized(&["head"])?,
         sized(&["len"])?,
-        sized(&["buf", "inner", "ptr"])?,
-        sized(&["buf", "inner", "cap"])?,
+        raw("ptr")?,
+        raw("cap")?,
     ))
 }
 

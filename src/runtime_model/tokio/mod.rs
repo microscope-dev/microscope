@@ -6,7 +6,7 @@ mod tasks;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use layout::{Context, Flavor, Layout, Locals, Owned, Tasks};
+use layout::{Context, Flavor, Layout, Locals, Owned, Storage, Tasks};
 
 use super::records::{self, Missing};
 use super::{
@@ -22,7 +22,7 @@ pub(super) const TASK_NOUN: (&str, &str) = ("task", "tasks");
 
 const VERIFIED: [(u64, u64); 4] = [(1, 51), (1, 52), (1, 53), (1, 54)];
 
-const VERSIONED_SOURCE: &str = "src/runtime/task/raw.rs";
+const VERSIONED_SOURCES: [&str; 2] = ["src/runtime/task/raw.rs", "src/runtime/task/core.rs"];
 
 const RUNNING: u64 = 0b1;
 const COMPLETE: u64 = 0b10;
@@ -120,9 +120,9 @@ pub fn detect(
     Some(Ok(Arc::new(TokioRuntime::bind(Arc::clone(image)))))
 }
 
-fn version(path: &std::path::Path) -> Option<(u64, u64, Arc<str>)> {
+fn version(path: &std::path::Path, source: &str) -> Option<(u64, u64, Arc<str>)> {
     let mut components = path.components().rev();
-    for _ in VERSIONED_SOURCE.split('/') {
+    for _ in source.split('/') {
         components.next()?;
     }
 
@@ -218,11 +218,11 @@ impl Cursor {
 impl TokioRuntime {
     fn bind(image: Arc<dyn RuntimeImage + Send + Sync>) -> Self {
         let [.., (major, minor)] = VERIFIED;
-        let caveat = match image
-            .source_path_ending(VERSIONED_SOURCE)
-            .as_deref()
-            .map(version)
-        {
+        let caveat = match VERSIONED_SOURCES.iter().find_map(|source| {
+            image
+                .source_path_ending(source)
+                .map(|path| version(&path, source))
+        }) {
             Some(Some((major, minor, _))) if VERIFIED.contains(&(major, minor)) => None,
             Some(Some((.., release))) => Some(format!(
                 "tokio {release} is unverified; its runtime is read as tokio {major}.{minor}'s"
@@ -352,15 +352,12 @@ impl TokioRuntime {
         locals: &Locals,
         thread: ThreadId,
     ) -> Result<Option<VirtualAddress>, Arc<str>> {
-        let base = thread_local(stop, &locals.tls, thread)?;
+        let Some(base) = alive(stop, &locals.storage, thread, "the local set context")? else {
+            return Ok(None);
+        };
+
         let unreadable =
             || Arc::<str>::from(format!("the local set context at {base:#x} is unreadable"));
-        let state =
-            records::read(stop, base.wrapping_add(locals.state), 1).ok_or_else(unreadable)?;
-        if state != locals.alive {
-            return Ok(None);
-        }
-
         let context =
             records::pointer(stop, base.wrapping_add(locals.context)).ok_or_else(unreadable)?;
         if context == records::NULL {
@@ -376,13 +373,11 @@ impl TokioRuntime {
         locals: Option<&Locals>,
         thread: ThreadId,
     ) -> Result<Option<ThreadContext>, Arc<str>> {
-        let base = thread_local(stop, &context.tls, thread)?;
-        let unreadable = || Arc::<str>::from(format!("the context at {base:#x} is unreadable"));
-        let state =
-            records::read(stop, base.wrapping_add(context.state), 1).ok_or_else(unreadable)?;
-        if state != context.alive {
+        let Some(base) = alive(stop, &context.storage, thread, "the context")? else {
             return Ok(None);
-        }
+        };
+
+        let unreadable = || Arc::<str>::from(format!("the context at {base:#x} is unreadable"));
 
         let option = base.wrapping_add(context.handle.offset);
         let runtime = if &*context.handle_option.active(stop, option)?.name == "Some" {
@@ -546,6 +541,22 @@ fn thread_local(
     thread: ThreadId,
 ) -> Result<VirtualAddress, Arc<str>> {
     stop.thread_local_address(thread, *tls)
+}
+
+fn alive(
+    stop: &dyn RuntimeStop,
+    storage: &Storage,
+    thread: ThreadId,
+    what: &str,
+) -> Result<Option<VirtualAddress>, Arc<str>> {
+    let at = thread_local(stop, &storage.state_tls, thread)?.wrapping_add(storage.state);
+    let state = records::read(stop, at, 1)
+        .ok_or_else(|| format!("the state of {what} at {at:#x} is unreadable"))?;
+    if state != storage.alive {
+        return Ok(None);
+    }
+
+    thread_local(stop, &storage.tls, thread).map(Some)
 }
 
 impl RuntimeModel for TokioRuntime {
