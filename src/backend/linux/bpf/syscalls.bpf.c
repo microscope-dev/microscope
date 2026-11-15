@@ -45,6 +45,8 @@
 #define FAULT_SKIP_ENTRY 0x5ca1ab1e
 // And of one whose exit it skips.
 #define FAULT_SKIP_EXIT 0x5ca1ab1f
+// And of one whose record's making it interleaves with another's.
+#define FAULT_INTERLEAVE 0x5ca1ab20
 #endif
 
 struct {
@@ -190,7 +192,13 @@ static __always_inline int sent(struct config *settings, u8 flags)
 	return (settings->flags & CONFIG_STREAM) && !(flags & CALL_SAMPLED_OUT);
 }
 
-// Where each CPU builds a record. Naming every record here also puts its
+// How many records each CPU can be making at once. The call programs run
+// preemptible: a thread preempted inside one, its record half made, can
+// leave the CPU to threads running others, and each makes its record in a
+// scratch slot of its own (claim).
+#define SCRATCHES 4
+
+// Where each CPU makes a record. Naming every record here also puts its
 // layout in the object's BTF, which a test compares with the decoders.
 struct scratch {
 	union {
@@ -210,10 +218,22 @@ struct scratch {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, SCRATCHES);
 	__type(key, u32);
 	__type(value, struct scratch);
 } BUFFER SEC(".maps");
+
+// Which of each CPU's scratch slots a program is making a record in.
+struct claims {
+	u32 busy[SCRATCHES];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, struct claims);
+} CLAIMS SEC(".maps");
 
 // A CPU's ring of records; microscope sizes each.
 struct ring {
@@ -243,7 +263,7 @@ struct {
 // Where each CPU builds a record of Python frames.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, SCRATCHES);
 	__type(key, u32);
 	__type(value, struct py_stack);
 } PY_SCRATCH SEC(".maps");
@@ -260,11 +280,45 @@ struct {
 // Where each CPU builds a record of JavaScript frames.
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, SCRATCHES);
 	__type(key, u32);
 	__type(value, struct v8_stack);
 } V8_SCRATCH SEC(".maps");
 
+
+// A scratch slot of this CPU's that no other program is making a record
+// in, which `release` gives back; SCRATCHES when every one is taken. The
+// programs that take them run with migration off, so only this CPU's
+// threads contend, and an exchange settles which one gets a slot.
+static __always_inline u32 claim(void)
+{
+	u32 zero = 0;
+	struct claims *claims = bpf_map_lookup_elem(&CLAIMS, &zero);
+	if (!claims)
+		return SCRATCHES;
+	for (u32 which = 0; which < SCRATCHES; which++)
+		if (!__sync_lock_test_and_set(&claims->busy[which], 1))
+			return which;
+	return SCRATCHES;
+}
+
+static __always_inline void release(u32 which)
+{
+	u32 zero = 0;
+	struct claims *claims = bpf_map_lookup_elem(&CLAIMS, &zero);
+	if (claims && which < SCRATCHES)
+		*(volatile u32 *)&claims->busy[which] = 0;
+}
+
+// A claimed slot's scratch record, or none for SCRATCHES.
+static __always_inline struct scratch *scratch(u32 which)
+{
+	return bpf_map_lookup_elem(&BUFFER, &which);
+}
+
+// A global function's place in a scratch record: the slot, above sixteen
+// bits of offset, since a BPF call takes five arguments.
+#define PLACE(which, offset) (((which) << 16) | (offset))
 
 // `value & mask`, computed where the verifier sees it: the barrier keeps
 // the compiler from dropping a mask it can prove redundant.
@@ -515,13 +569,13 @@ __noinline u32 count_strings(u64 address, u32 abi, u32 most)
 }
 
 // Copies the first `count` elements of the string array at `address` into
-// the scratch record from `start`, after the four bytes of its count, each
+// the scratch record from `place`, after the four bytes of its count, each
 // cut at `limit` bytes and NUL-terminated: the bytes used, count included.
 // Elements that no longer fit in a capture are left out.
-__noinline u32 copy_strings(u32 start, u64 address, u32 abi, u32 limit, u32 count)
+__noinline u32 copy_strings(u32 place, u64 address, u32 abi, u32 limit, u32 count)
 {
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
+	u32 start = place & 0xffff;
+	struct scratch *buffer = scratch(place >> 16);
 	if (!buffer)
 		return 4;
 	u32 step = abi == ABI_32 ? 4 : 8;
@@ -554,17 +608,17 @@ __noinline u32 copy_strings(u32 start, u64 address, u32 abi, u32 limit, u32 coun
 #define IOVECS_UNREADABLE 0xffffffff
 
 // Copies the first elements of the iovec array at `address` into the
-// scratch record from `start`, as blobs::push_iovec lays them out: each
+// scratch record from `place`, as blobs::push_iovec lays them out: each
 // base and length, then up to `limit` of its bytes, while `left` bytes
 // remain. `shape` holds the ABI above eight bits of the element count,
 // since a BPF call takes five arguments. The bytes used, or
 // IOVECS_UNREADABLE when not even the first element could be read.
-__noinline u32 copy_iovecs(u32 start, u64 address, u32 shape, u64 left, u32 limit)
+__noinline u32 copy_iovecs(u32 place, u64 address, u32 shape, u64 left, u32 limit)
 {
 	u32 abi = shape >> 8;
 	u32 count = shape & 0xff;
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
+	u32 start = place & 0xffff;
+	struct scratch *buffer = scratch(place >> 16);
 	if (!buffer)
 		return 0;
 	u32 step = abi == ABI_32 ? 4 : 8;
@@ -595,12 +649,13 @@ __noinline u32 copy_iovecs(u32 start, u64 address, u32 shape, u64 left, u32 limi
 	return pos;
 }
 
-// One argument's capture, at `off` in the scratch record: the offset
+// One argument's capture, at `place` in the scratch record: the offset
 // after it. A global function, so the verifier checks it once.
-__noinline int copy_arg(u32 slot, u32 index, u32 off, u32 phase, s64 ret)
+__noinline int copy_arg(u32 slot, u32 index, u32 place, u32 phase, s64 ret)
 {
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
+	u32 which = place >> 16;
+	u32 off = place & 0xffff;
+	struct scratch *buffer = scratch(which);
 	struct call_spec *spec = bpf_map_lookup_elem(&CALLS, &slot);
 	struct config *settings = config();
 	if (!buffer || !spec || !settings || index >= 6)
@@ -660,8 +715,8 @@ __noinline int copy_arg(u32 slot, u32 index, u32 off, u32 phase, s64 ret)
 		__builtin_memcpy(data, &count, 4);
 		len = 4;
 		if (copy.kind == COPY_STRINGS)
-			len = copy_strings(at + sizeof(struct capture_header), address, abi, copy.limit,
-					   count == STRINGS_UNENDED ? most : count);
+			len = copy_strings(PLACE(which, at + sizeof(struct capture_header)), address,
+					   abi, copy.limit, count == STRINGS_UNENDED ? most : count);
 		if (count == STRINGS_UNENDED) {
 			state = CAPTURE_TRUNCATED;
 			wanted = 0xffffffff;
@@ -689,8 +744,8 @@ __noinline int copy_arg(u32 slot, u32 index, u32 off, u32 phase, s64 ret)
 		// What a reading call filled is its result; a write sends all.
 		u64 left = copy.writes ? (failed(ret) || ret < 0 ? 0 : (u64)ret) : ~0ULL;
 		u32 shown = count < MOST_IOVECS ? count : MOST_IOVECS;
-		len = copy_iovecs(at + sizeof(struct capture_header), address, (abi << 8) | shown,
-				  left, copy.limit);
+		len = copy_iovecs(PLACE(which, at + sizeof(struct capture_header)), address,
+				  (abi << 8) | shown, left, copy.limit);
 		if (len == IOVECS_UNREADABLE) {
 			state = CAPTURE_UNREADABLE;
 			len = 0;
@@ -739,8 +794,8 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 			lost();
 		}
 	}
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
+	u32 which = claim();
+	struct scratch *buffer = scratch(which);
 	if (!buffer)
 		return -1;
 	struct call_record *record = (void *)buffer->data;
@@ -759,12 +814,25 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 	u32 off = sizeof(struct call_record);
 	if (phase <= READ_EXIT) {
 		for (u32 index = 0; index < 6; index++)
-			off = copy_arg(slot, index, off, phase, ret);
+			off = copy_arg(slot, index, PLACE(which, off), phase, ret);
 	}
 	if (off > SCRATCH)
 		off = SCRATCH;
+#ifdef MICROSCOPE_FAULTS
+	// Test builds only: another program on this CPU makes a getpid's
+	// record while this one, preempted, has its own half made.
+	if (kind == RECORD_CALL && entry->nr == 121 && entry->args[1] == FAULT_INTERLEAVE) {
+		u32 another = claim();
+		struct scratch *other = scratch(another);
+		if (other)
+			other->call.nr = 39;
+		release(another);
+	}
+#endif
 	record->header.size = off;
-	return emit(buffer->data, off);
+	int unsent = emit(buffer->data, off);
+	release(which);
+	return unsent;
 }
 
 // The statistics thread `tid` counts into: its own, or once THREAD_STATS
@@ -859,10 +927,12 @@ static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 	struct file *file = 0;
 	if (bpf_probe_read_kernel(&file, sizeof(file), &fds[fd]) || !file)
 		return;
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
-	if (!buffer)
+	u32 which = claim();
+	struct scratch *buffer = scratch(which);
+	if (!buffer) {
+		lost();
 		return;
+	}
 	struct file_record *record = &buffer->file;
 	struct inode *inode = BPF_CORE_READ(file, f_inode);
 	record->header.kind = RECORD_FILE;
@@ -889,17 +959,18 @@ static __always_inline void send_file(u32 tid, u32 tgid, s32 fd)
 		size = sizeof(*record) + NAME_MAX + 1;
 	record->header.size = size;
 	output(buffer->data, size);
+	release(which);
 }
 
 // Sends the current thread's Python frames, when microscope told the walker
 // its process's layout, before its stack: whether it did.
-static __always_inline int send_python(u32 tid, u32 tgid)
+static __always_inline int send_python(u32 which, u32 tid, u32 tgid)
 {
-	u32 host = bpf_get_current_pid_tgid() >> 32, zero = 0;
+	u32 host = bpf_get_current_pid_tgid() >> 32;
 	struct py_layout *layout = bpf_map_lookup_elem(&LAYOUTS, &host);
 	if (!layout)
 		return 0;
-	struct py_stack *stack = bpf_map_lookup_elem(&PY_SCRATCH, &zero);
+	struct py_stack *stack = bpf_map_lookup_elem(&PY_SCRATCH, &which);
 	if (!stack)
 		return 0;
 	struct py_stack_record *header = &stack->header;
@@ -925,13 +996,13 @@ static __always_inline int send_python(u32 tid, u32 tgid)
 // Sends the current thread's JavaScript frames, from the frame pointer and
 // instruction `regs` holds, when microscope told the walker its process's
 // V8 layout, before its stack: whether it did.
-static __always_inline int send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
+static __always_inline int send_v8(u32 which, u32 tid, u32 tgid, struct pt_regs *regs)
 {
-	u32 host = bpf_get_current_pid_tgid() >> 32, zero = 0;
+	u32 host = bpf_get_current_pid_tgid() >> 32;
 	struct v8_layout *layout = bpf_map_lookup_elem(&V8_LAYOUTS, &host);
 	if (!layout)
 		return 0;
-	struct v8_stack *stack = bpf_map_lookup_elem(&V8_SCRATCH, &zero);
+	struct v8_stack *stack = bpf_map_lookup_elem(&V8_SCRATCH, &which);
 	if (!stack)
 		return 0;
 	struct v8_stack_record *header = &stack->header;
@@ -968,9 +1039,10 @@ static __always_inline int send_v8(u32 tid, u32 tgid, struct pt_regs *regs)
 static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_regs *regs,
 				      u32 flags, u64 entered)
 {
-	u32 interpreted = send_python(tid, tgid) | send_v8(tid, tgid, regs);
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
+	// One slot holds the interpreted frames and the stack after them.
+	u32 which = claim();
+	u32 interpreted = send_python(which, tid, tgid) | send_v8(which, tid, tgid, regs);
+	struct scratch *buffer = scratch(which);
 	if (!buffer) {
 		lost();
 		return -1;
@@ -1019,9 +1091,9 @@ static __always_inline int send_stack(void *ctx, u32 tid, u32 tgid, struct pt_re
 	record->copied = copied;
 	u32 size = sizeof(*record) + frames * 8 + copied;
 	record->header.size = size;
-	if (output(buffer->data, bounded(size, 16383)))
-		return -1;
-	return 0;
+	int unsent = output(buffer->data, bounded(size, 16383));
+	release(which);
+	return unsent;
 }
 
 // Whether a call waits, as its spec says, from its arguments.
@@ -1349,10 +1421,14 @@ int process_exec(u64 *ctx)
 	// exec on; the call it was in before, at microscope's gate, is not.
 	know(task);
 	struct config *settings = config();
-	u32 zero = 0;
-	struct scratch *buffer = bpf_map_lookup_elem(&BUFFER, &zero);
-	if (!settings || !(settings->flags & CONFIG_STREAM) || !buffer)
+	if (!settings || !(settings->flags & CONFIG_STREAM))
 		return 0;
+	u32 which = claim();
+	struct scratch *buffer = scratch(which);
+	if (!buffer) {
+		lost();
+		return 0;
+	}
 	struct exec_record *record = (void *)buffer->data;
 	u32 tid = BPF_CORE_READ(task, pid);
 	record->header.kind = RECORD_EXEC;
@@ -1371,6 +1447,7 @@ int process_exec(u64 *ctx)
 		size = SCRATCH;
 	record->header.size = size;
 	output(buffer->data, size);
+	release(which);
 	return 0;
 }
 

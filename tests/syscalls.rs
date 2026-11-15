@@ -2971,6 +2971,52 @@ mod bpf {
         }
     }
 
+    /// A call's record is sent whole when another program on the CPU makes
+    /// a record while this one's is half made, as one does when the
+    /// kernel preempts the thread inside its program: the worker's exit
+    /// in another process, say. The test build's programs make a getpid's
+    /// record during the making of a getpgid's whose second argument is
+    /// `INTERLEAVE`. By the call's own kernel function, then by the
+    /// tracepoints.
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with just test-bpf"]
+    fn a_record_another_program_makes_meanwhile_leaves_a_call_whole() {
+        const INTERLEAVE: u64 = 0x5ca1_ab20;
+        for (hook, arguments) in [
+            ("fentry", &["--syscall-filter", "trace=getpgid"][..]),
+            ("tp_btf", &[]),
+        ] {
+            let directory = ScratchDir::new("syscalls-interleaved");
+            let code = recorded(directory.path(), arguments, &fixture(), &["interleaved"]);
+            assert_eq!(code, Some(0), "{arguments:?}");
+
+            let profile = read(directory.path());
+            assert_eq!(profile.setting("syscall hook"), Some(hook), "{arguments:?}");
+            let events = profile.syscalls().events;
+            let calls: Vec<_> = events
+                .iter()
+                .filter_map(|event| match &event.event {
+                    TraceEvent::Call(call)
+                        if matches!(call.call.name(), Some("getpgid" | "getpid")) =>
+                    {
+                        Some(call)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                matches!(&calls[..], [marked, plain]
+                    if marked.call.name() == Some("getpgid")
+                        && marked.args[1] == INTERLEAVE
+                        && matches!(marked.outcome, Outcome::Returned(_))
+                        && marked.duration().is_some()
+                        && plain.call.name() == Some("getpgid")
+                        && plain.args[1] == 0),
+                "{arguments:?}: {calls:#?}"
+            );
+        }
+    }
+
     /// A waiting call's stack is taken as the call begins. Each read the
     /// fixture's sleeper makes begins on one CPU and returns on another,
     /// whose ring its stack is not in, and keeps its own stack. The last

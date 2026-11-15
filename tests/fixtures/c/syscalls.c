@@ -306,6 +306,9 @@ static void migrate(int rounds) {
 // skips a program it finds already running on a CPU.
 #define SKIP_ENTRY 0x5ca1ab1eL
 #define SKIP_EXIT 0x5ca1ab1fL
+// And of one during whose record's making the build has another program on
+// the CPU make a record of its own.
+#define INTERLEAVE 0x5ca1ab20L
 
 static void *skipped_thread(void *unused) {
     (void)unused;
@@ -325,6 +328,13 @@ static void skipped(void) {
         pthread_join(thread, NULL) != 0) {
         _exit(50);
     }
+    syscall(SYS_getpgid, 0L, 0L);
+}
+
+// A getpgid whose record another program interleaves with, then one whose
+// record nothing does.
+static void interleaved(void) {
+    syscall(SYS_getpgid, 0L, INTERLEAVE);
     syscall(SYS_getpgid, 0L, 0L);
 }
 
@@ -474,6 +484,10 @@ int main(int argc, char **argv) {
     }
     if (strcmp(mode, "skipped") == 0) {
         skipped();
+        return 0;
+    }
+    if (strcmp(mode, "interleaved") == 0) {
+        interleaved();
         return 0;
     }
     if (strcmp(mode, "migrate") == 0 && argc > 2) {

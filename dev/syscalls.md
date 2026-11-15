@@ -259,6 +259,18 @@ How it reads calls:
   the memory cgroup of the process that made it, not to
   `perf_event_mlock_kb` or `RLIMIT_MEMLOCK`; a cgroup that cannot hold the
   rings gets smaller ones, down to 256 KiB (`SMALLEST_RING`).
+- A record is made in a per-CPU scratch slot (`BUFFER`, with
+  `PY_SCRATCH` and `V8_SCRATCH` for interpreted frames), then copied to the
+  ring. The call programs run preemptible, so a thread preempted with its
+  record half made can leave its CPU to threads whose programs make
+  records too, such as a worker's `exit_notify`. Each CPU has
+  `SCRATCHES` slots, and a program claims a free one with an atomic
+  exchange in `CLAIMS` and frees it once the record is sent. With one
+  slot, the preempted call sent the other program's record in place of
+  its own, and nothing counted it lost. When every slot is taken, the
+  record counts as dropped. No program holds two slots at once, and the
+  kernel's guard runs each program once per CPU at a time, so the slots
+  run out only when four programs are preempted on one CPU mid-record.
 - A record that does not fit counts one loss in `LOST`. A stack goes before
   the call or signal it belongs to; when the stack does not fit, that record
   carries `CALL_STACK_LOST`, and the reader shows it with an empty stack
@@ -453,7 +465,9 @@ strace's `-c` columns, in microseconds.
   makes one of each on the first thread and on a new thread, under fentry,
   filtered tracepoints, and the production preset. It checks that each is
   shown, with its entry unseen or its return unavailable, and that the
-  kernel counts all five calls.
+  kernel counts all five calls. `a_record_another_program_makes_meanwhile_leaves_a_call_whole`
+  has another program make a record in a scratch slot during a marked
+  getpgid's (`0x5ca1ab20`), and checks that the getpgid is sent whole.
 - `a_burst_of_copied_stacks_loses_no_calls` traces 6,600 calls of
   `syscall-load` with copied stacks, made in about 10 ms: 57 MB of records,
   which the rings hold whatever the reader does meanwhile, so that
